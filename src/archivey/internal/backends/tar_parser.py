@@ -188,7 +188,8 @@ class SparseFormat(Enum):
 
 
 # Not frozen, as no caller writes to it: a frozen init costs a microsecond per header
-# on the listing's hot path.
+# on the listing's hot path. Built positionally by parse_header_block, for the same
+# cost; test_hot_path_constructors pins this field order.
 @dataclass(slots=True)
 class HeaderBlock:
     """One decoded 512-byte header block. Strings are the stored bytes, cut at the
@@ -458,27 +459,29 @@ def parse_header_block(
         # never joins them; tarfile joins the prefix for any magic but its GNU types,
         # and names the member after the time (N11).
         prefix_shape = "gnu_prefix_bytes"
+    # Positional, in field order: a keyword call of twenty fields costs about half a
+    # microsecond more per header. test_hot_path_constructors pins the order.
     return HeaderBlock(
-        offset=offset,
-        format=header_format,
-        name=name,
-        typeflag=typeflag,
-        linkname=_cut_nul(block[157:257]),
-        uname=uname,
-        gname=gname,
-        devmajor=devmajor,
-        devminor=devminor,
-        device_number_fault=device_number_fault,
-        sparse_slots=sparse_slots,
-        sparse_extended=sparse_extended,
-        sparse_realsize=sparse_realsize,
-        signed_checksum=checksum == "signed",
-        prefix_shape=prefix_shape,
-        mode=mode,
-        uid=uid,
-        gid=gid,
-        size=size,
-        mtime=mtime,
+        offset,  # offset
+        header_format,  # format
+        name,  # name
+        mode,  # mode
+        uid,  # uid
+        gid,  # gid
+        size,  # size
+        mtime,  # mtime
+        typeflag,  # typeflag
+        _cut_nul(block[157:257]),  # linkname
+        uname,  # uname
+        gname,  # gname
+        devmajor,  # devmajor
+        devminor,  # devminor
+        sparse_slots,  # sparse_slots
+        sparse_extended,  # sparse_extended
+        sparse_realsize,  # sparse_realsize
+        device_number_fault,  # device_number_fault
+        checksum == "signed",  # signed_checksum
+        prefix_shape,  # prefix_shape
     )
 
 
@@ -527,8 +530,8 @@ def starts_with_header(prefix: bytes) -> bool:
     Detection's check for a TAR without magic: a v7 header, or one an old writer filled
     in without ``ustar``. The block must parse as :func:`parse_header_block` parses it,
     so its checksum matches the block's byte sum (the field itself counted as eight
-    spaces) and every numeric field is a number. Its name must also be non-empty. A zero block is not a header: an empty TAR has no header to
-    check.
+    spaces) and every numeric field is a number. Its name must also be non-empty. A zero
+    block is not a header: an empty TAR has no header to check.
 
     Text and binary data pass only when built to. It is the test ``tarfile.is_tarfile``
     and Commons Compress make, and GNU tar's own reading of the first block.

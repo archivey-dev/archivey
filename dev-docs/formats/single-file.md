@@ -112,13 +112,15 @@ only when the source's extension names its format; `always_probe_content=True` a
 ([`topics/detection.md`](../topics/detection.md) §2.6).
 [`topics/detection.md`](../topics/detection.md) has the order and why.
 
-What is codec-specific about a probe: it runs with accelerators off and decoder memory
-limits lifted, because a probe decodes a bounded sample and a capped probe would call a
-stream with a large dictionary "not this format" for a caller who opened it with
-`DecoderLimits.UNLIMITED` (`_PROBE_STREAM_CONFIG`). The open that follows applies the
-caller's limits. Lifting the cap does not mean reserving what the header declares: a probe
-sets `StreamConfig.probe_read_bound`, and the decoder is sized to that read (§4). The shared machinery around the probes (the sample size, the
-whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
+What is codec-specific about a probe: it runs with accelerators off and under the
+caller's `DecoderLimits` (`StreamCodec._decodes_sample`). It does not reserve what the
+header declares: a probe sets `StreamConfig.probe_read_bound`, the decoder is sized to
+that read (§4), and the cap is checked against that size, so a stream whose declared
+dictionary is over the cap is still recognised and then refused on open. A probe the cap
+refuses raises `ResourceLimitError`, which detection reads as "can't tell", not "not
+this format": it records `content_probe` as `CAPABILITY_UNAVAILABLE` and reports
+`DETECTION_DECODER_LIMITED`. The shared machinery around the probes (the sample size,
+the whole-source re-check, the decode allowance, and the `format_unconfirmed` stamp on a
 probe-only result) is on [`topics/detection.md`](../topics/detection.md) §2.4 and §4.1.
 
 Every match is then offered to the **inner-TAR probe** (`_probe_inner_tar`; its bounds are
@@ -150,8 +152,10 @@ decompressor at construction, handed to the first open; a second open raises
 **`open_archive` decodes one byte** of a seekable source (`_validate_at_open`), so a file
 that is not the codec its name or its detection claims fails at open rather than at the
 first read. It checks nothing further in: damage past the first byte still fails on the
-read. A valid empty stream opens and reads as `b""`. A pipe is not checked, because the
-byte would come out of its one pass. The cost is one decoded block, which matters only
+read. A valid empty stream opens and reads as `b""`. A pipe is checked only when
+detection's peek already holds all of it (`ArchiveSource.held_rest`): the byte is then
+decoded from a copy. Otherwise it is not checked, because the byte would come out of its
+one pass. The cost is one decoded block, which matters only
 for bzip2 ([`bzip2.md`](bzip2.md) §2.2). The byte is decoded with the standard library
 whatever `use_rapidgzip` / `use_indexed_bzip2` say, so no rapidgzip child starts at open.
 An `ON` accelerator is still resolved there (`StreamCodec.check_accelerator`), so rapidgzip
@@ -510,7 +514,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Cost and archive info |
 | Size from the xz index and lzip trailers on any seekable source whose end is cheap to reach: not a pipe or a deflated member stream |
 | Only lzip reports a digest |
-| Validation at open, one byte deep, deferred on a pipe |
+| Validation at open, one byte deep; on a pipe only when detection read all of it, else deferred to the first read |
 | A pipe needs `streaming=True` and gives one pass |
 | Concurrent and re-entrant opens are independent |
 | `password=` accepted and unused |

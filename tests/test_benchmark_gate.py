@@ -801,3 +801,34 @@ def test_compressed_tar_peers_read_the_file_once(
             raw.close()
     assert compressed_read <= path.stat().st_size * 1.05
     assert data_read == scale.common_members * scale.common_member_size
+
+
+def test_min_sample_s_records_the_mean_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each call "takes" a fixed time on a fake clock. With min_sample_s, every sample
+    # repeats its call until the minimum has passed and records the per-call mean, not
+    # the total (fails against `return total, result`) and not a single call (fails
+    # against a loop that stops after the first call).
+    now = [0.0]
+    monkeypatch.setattr(harness.time, "perf_counter", lambda: now[0])
+    calls = {"ay": 0, "std": 0}
+
+    def ay() -> str:
+        calls["ay"] += 1
+        now[0] += 0.002
+        return "result"
+
+    def std() -> None:
+        calls["std"] += 1
+        now[0] += 0.0005
+
+    ay_s, result, std_s = harness._interleaved_pair_times(
+        ay, std, rounds=3, min_sample_s=0.01
+    )
+    assert ay_s == pytest.approx(0.002)
+    assert std_s == pytest.approx(0.0005)
+    assert result == "result"
+    # One warmup each, then three samples of at least 0.01 s each.
+    assert calls["ay"] >= 1 + 3 * 5
+    assert calls["std"] >= 1 + 3 * 20

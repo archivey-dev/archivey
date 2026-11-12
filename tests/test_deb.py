@@ -273,6 +273,17 @@ def test_another_major_version_is_refused() -> None:
         open_archive(io.BytesIO(_deb(version=b"3.0\n")), format=DEB)
 
 
+def test_a_major_version_too_long_for_int_is_refused() -> None:
+    # int() raises ValueError on more than 4300 digits; the digits are compared as
+    # bytes, so the refusal is the one any other major version gets.
+    version = b"1" * 5000 + b".0\n"
+    with pytest.raises(UnsupportedFeatureError, match=r"version 1{20}\.\.\. \(5000"):
+        open_archive(io.BytesIO(_deb(version=version)), format=DEB)
+    # Leading zeros do not change the version.
+    with open_archive(io.BytesIO(_deb(version=b"0" * 5000 + b"2.0\n"))) as reader:
+        assert reader.read("usr/a") == b"alpha"
+
+
 @pytest.mark.parametrize(
     "version", [b"", b"two\n", b"2\n"], ids=["empty", "word", "no-minor"]
 )
@@ -337,6 +348,48 @@ def test_held_control_files_count_against_max_metadata_bytes() -> None:
         assert reader.read("usr/a") == b"alpha"
 
 
+def test_the_md5sums_map_is_charged_for_each_entry() -> None:
+    """For short ASCII names the digest map holds about three times the bytes of
+    md5sums itself: a name
+    and a digest object per line, and the dict's slot. Each entry is charged, so a
+    limit twice the file's size refuses a file of short lines."""
+    count = 20_000
+    sums = b"".join(b"%032x  usr/f%d\n" % (i, i) for i in range(count))
+    raw = _deb(control=[("./control", CONTROL), ("./md5sums", sums)])
+    limits = archivey.ListingLimits(max_metadata_bytes=2 * len(sums))
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(ResourceLimitError, match="md5sums entries"),
+        open_archive(io.BytesIO(raw), config=config) as reader,
+    ):
+        reader.members()
+    limits = archivey.ListingLimits(max_metadata_bytes=5 * len(sums))
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with open_archive(io.BytesIO(raw), config=config) as reader:
+        assert reader.read("usr/a") == b"alpha"
+
+
+@pytest.mark.parametrize(
+    "tail", ["\U0001f600".encode(), b"\xff"], ids=["astral", "undecodable"]
+)
+def test_md5sums_names_are_charged_at_their_str_width(tail: bytes) -> None:
+    """CPython stores a str at 1, 2 or 4 bytes a character, as its widest character
+    needs. An emoji makes a long name 4 bytes a character, and an undecodable byte
+    (a lone surrogate after decoding) 2: about 4 or 2 times the name's UTF-8 bytes.
+    The charge follows the width, so 2.5 times the file's size is refused."""
+    sums = b"".join(
+        b"%032x  usr/%s%d%s\n" % (i, b"a" * 1000, i, tail) for i in range(2000)
+    )
+    raw = _deb(control=[("./control", CONTROL), ("./md5sums", sums)])
+    limits = archivey.ListingLimits(max_metadata_bytes=int(2.5 * len(sums)))
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(ResourceLimitError, match="md5sums entries"),
+        open_archive(io.BytesIO(raw), config=config) as reader,
+    ):
+        reader.members()
+
+
 def test_reads_out_of_order_charge_the_control_files_once() -> None:
     """Each out-of-order read walks the package again; the control files it holds
     again were charged by the listing. Before, every walk added them to a total of
@@ -346,7 +399,11 @@ def test_reads_out_of_order_charge_the_control_files_once() -> None:
         reader.members()
         # The figure the limit checks.
         listed = reader._resource_usage().listing_metadata_bytes
-    held = 4 + len(CONTROL) + len(_md5sums(FILES))
+    # The digest map's entries, charged as the walk adds them.
+    from archivey.internal.backends.deb_reader import _MD5_ENTRY
+
+    entries = sum(len(name) + _MD5_ENTRY for name in FILES)  # ASCII names
+    held = 4 + len(CONTROL) + len(_md5sums(FILES)) + entries
     limits = archivey.ListingLimits(max_metadata_bytes=listed + held)
     config = archivey.ArchiveyConfig(listing_limits=limits)
     with open_archive(io.BytesIO(raw), config=config) as reader:

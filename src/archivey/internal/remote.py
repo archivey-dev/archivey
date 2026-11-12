@@ -254,6 +254,7 @@ class FsspecDecompressed:
     """
 
     url: str
+    """The URL as :func:`display_url` shows it, credentials removed."""
     protocol: str
     compression: str
 
@@ -261,7 +262,8 @@ class FsspecDecompressed:
     def of(cls, of: Any) -> FsspecDecompressed:
         fs = of.fs
         unstrip = getattr(fs, "unstrip_protocol", None)
-        url = unstrip(of.path) if callable(unstrip) else str(of.path)
+        # display_url: the URL reaches a diagnostic message a caller may log.
+        url = display_url(unstrip(of.path) if callable(unstrip) else str(of.path))
         return cls(url, protocol_of(fs), str(open_file_compression(of)))
 
 

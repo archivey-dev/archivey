@@ -1135,6 +1135,10 @@ def test_archive_integrity_codes_are_all_real_codes() -> None:
         DiagnosticCode.MEMBER_READERS_DISAGREE,
         # The transport an fsspec source arrives through, not the archive's bytes.
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE,
+        # An extraction policy's choice for the archivey:// tree, not a new finding.
+        DiagnosticCode.MEMBER_PATH_REFUSED,
+        # The caller's decoder memory cap stopped a detection step, not the bytes.
+        DiagnosticCode.DETECTION_DECODER_LIMITED,
     }
 
 

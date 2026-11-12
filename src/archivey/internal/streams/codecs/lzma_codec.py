@@ -29,6 +29,7 @@ from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
     check_decoder_memory,
+    probe_dictionary_origin,
     probe_lzma_dictionary,
 )
 from archivey.internal.hashing import crc32_digest
@@ -132,6 +133,7 @@ class XzCodec(_SizedLzmaCodec):
                 source,
                 config.probe_read_bound,
                 config.natives,
+                config.decoder_limits,
             )
         return XzDecompressorStream(
             source,
@@ -266,20 +268,20 @@ def _alone_payload_has_zero_run(prefix: bytes) -> bool:
     and read as a member of zeros, with no error.
 
     The two encoders measured never write a run like this. The longest zero run
-    measured anywhere in a payload: 3 bytes from liblzma (``FORMAT_ALONE``, presets 0-9, plain and extreme)
-    and 7 from the LZMA SDK encoder (7-Zip 23.01, levels 1-9, varied ``lc``/``lp``/
-    ``pb``, dictionary, ``a=0``/``a=1``, with and without an end marker), on zeros,
-    ``A``, ``ff``, ``ab`` and ``abc`` runs, random data, text and mixtures, and every
-    input of 1-64 zero bytes (``-mx=9``). The 7-byte run is a two-zero-byte input with
-    no end marker: two zero literals are all zero bits, so the whole payload is the
-    range-coder init plus a zero flush. Both encoders code the third byte of a run as a
-    match, and a match writes a one bit; that argument holds for any LZMA1 encoder, but
-    other ``.lzma`` writers (XZ for Java, the SDK's ``lzma`` tool, ``lzma-rs``) were
-    not run. A 16-byte run is over twice the longest one measured, and a run starting
-    anywhere in the first 32 bytes is caught, where the latest start seen to reach 4 KiB
-    of output over random heads was byte 10. The span bounds accidental collisions, not
-    crafted input: a head of 32 or more bytes built to keep the range coder decoding
-    before a zero run passes this rule (threat-model O10).
+    measured anywhere in a payload: 3 bytes from liblzma (``FORMAT_ALONE``, presets 0-9,
+    plain and extreme) and 7 from the LZMA SDK encoder (7-Zip 23.01, levels 1-9, varied
+    ``lc``/``lp``/ ``pb``, dictionary, ``a=0``/``a=1``, with and without an end marker),
+    on zeros, ``A``, ``ff``, ``ab`` and ``abc`` runs, random data, text and mixtures,
+    and every input of 1-64 zero bytes (``-mx=9``). The 7-byte run is a two-zero-byte
+    input with no end marker: two zero literals are all zero bits, so the whole payload
+    is the range-coder init plus a zero flush. Both encoders code the third byte of a
+    run as a match, and a match writes a one bit; that argument holds for any LZMA1
+    encoder, but other ``.lzma`` writers (XZ for Java, the SDK's ``lzma`` tool,
+    ``lzma-rs``) were not run. A 16-byte run is over twice the longest one measured, and
+    a run starting anywhere in the first 32 bytes is caught, where the latest start seen
+    to reach 4 KiB of output over random heads was byte 10. The span bounds accidental
+    collisions, not crafted input: a head of 32 or more bytes built to keep the range
+    coder decoding before a zero run passes this rule (threat-model O10).
     """
     payload = prefix[_ALONE_HEADER_SIZE:]
     window = payload[: _ALONE_ZERO_RUN_SPAN + _ALONE_ZERO_RUN - 1]
@@ -310,11 +312,15 @@ class _ClampedAloneDecompressor:
     header, so a detection probe (``StreamConfig.probe_read_bound``) rewrites bytes 1-4
     of its own copy to :func:`~archivey.internal.config.probe_lzma_dictionary` first.
     The output up to the bound is the same bytes. Each stream of a concatenated
-    ``.lzma`` gets a new one, so every header the probe reaches is clamped.
+    ``.lzma`` gets a new one, so every header the probe reaches is clamped. The clamped
+    dictionary, which is what liblzma reserves, is checked against ``limits``.
     """
 
-    def __init__(self, read_bound: int, natives: Natives = IN_PROCESS) -> None:
+    def __init__(
+        self, read_bound: int, limits: DecoderLimits, natives: Natives = IN_PROCESS
+    ) -> None:
         self._read_bound = read_bound
+        self._limits = limits
         self._dec = natives.lzma_decompressor(format=lzma.FORMAT_ALONE)
         self._header: bytes | None = b""
 
@@ -325,8 +331,13 @@ class _ClampedAloneDecompressor:
                 self._header = header
                 return b""
             self._header = None
-            dict_size = probe_lzma_dictionary(
-                int.from_bytes(header[1:5], "little"), self._read_bound
+            declared = int.from_bytes(header[1:5], "little")
+            dict_size = probe_lzma_dictionary(declared, self._read_bound)
+            check_decoder_memory(
+                dict_size,
+                limits=self._limits,
+                what="the LZMA dictionary a detection probe reserves",
+                counted_from=probe_dictionary_origin(declared),
             )
             data = header[:1] + dict_size.to_bytes(4, "little") + header[5:]
         return self._dec.decompress(data, max_length)
@@ -356,11 +367,12 @@ def _new_alone_decompressor(
     (``error-handling``). The single-file reader opens a codec stream eagerly at
     ``open_archive``, before that provenance is attached, so a refusal raised on open
     would reach the caller unstamped, telling them to raise the cap for a file the
-    probe may have misread. A probe (``read_bound``) clamps the dictionary instead.
+    probe may have misread. A probe (``read_bound``) clamps the dictionary instead, and
+    the cap is checked against the clamped size.
     """
     if read_bound is None:
         return new_capped_decompressor(limits, lzma.FORMAT_ALONE, natives)
-    return _ClampedAloneDecompressor(read_bound, natives)
+    return _ClampedAloneDecompressor(read_bound, limits, natives)
 
 
 def _alone_dictionary(header: bytes) -> int | None:
@@ -374,9 +386,9 @@ class LzmaAloneCodec(_LzmaErrorCodec):
     """Legacy LZMA Alone (``.lzma``) — framed standalone stream, not raw FORMAT_RAW.
 
     The stream takes ``refuse_input_after_end`` from the config, as every codec that
-    decodes through the default ``open`` does. No caller sets it for Alone today, since
-    no container uses Alone as a coder; one that does gets the same refusal as every
-    other codec.
+    decodes through the default ``open`` does. A XAR member (``application/x-lzma``)
+    reads Alone with it set and with ``single_stream``, so a further Alone stream is
+    input after the end and refused, where a ``.lzma`` file reads it on.
     """
 
     codec = Codec.LZMA_ALONE
@@ -403,8 +415,10 @@ class LzmaAloneCodec(_LzmaErrorCodec):
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:
+        # A container coder that is one stream (a XAR member) takes no further one.
+        if params.single_stream:
+            return never_starts
         # No magic: a further stream is one whose header liblzma would decode.
-        del params
         return _starts_alone_stream
 
     @override
@@ -425,6 +439,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
         read_at: ProbeReadAt | None = None,
         charge_decode: ProbeChargeDecode | None = None,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
     ) -> bool:
         """Recognize LZMA Alone: plausible 13-byte header that then yields decode output.
 
@@ -449,6 +464,7 @@ class LzmaAloneCodec(_LzmaErrorCodec):
             source_length=source_length,
             require_output=True,
             isolation=isolation,
+            decoder_limits=decoder_limits,
         )
 
 

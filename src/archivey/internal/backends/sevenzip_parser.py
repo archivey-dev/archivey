@@ -639,7 +639,8 @@ def find_signature_offset(fp: BinaryIO, *, limit: int = SFX_MAX) -> int:
     ``limit`` bytes (the shared :data:`~archivey.internal.sfx.SFX_MAX`, the same bound
     the RAR parser and ``detect_format`` use), which is what makes forced
     ``format=SEVEN_Z`` work on a stub the way forced ``format=RAR`` already does.
-    A candidate that fails :func:`~archivey.internal.backends.sevenzip_detect.validate_sevenzip_signature_header`
+    A candidate that fails
+    :func:`~archivey.internal.backends.sevenzip_detect.validate_sevenzip_signature_header`
     is skipped while a later ``VALID`` hit is sought; if none validate, the first
     identified candidate is used so a damaged or empty payload still reaches the
     parser.

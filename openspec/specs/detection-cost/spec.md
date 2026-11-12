@@ -11,9 +11,10 @@ through `ArchiveyConfig.detection_budget`, which `detect_format`, `open_archive`
 `open_stream` all read; they are **not** re-exported from `archivey.__all__`.
 
 This spec describes **what ships today**. The budget and the receipt carry no field for a
-tier that does not exist: a ZIP tail probe, if one is ever scheduled, adds its own budget
-and receipt fields then. A candidate ledger with its own budget fields was considered and
-decided against.
+tier that does not exist. The PE tail probe (`sfx_tail`) brought no budget field: it runs
+only when a PE's own layout says an overlay runs past the scan window, and that gate does
+the cost work, with a fixed tail allowance in the receipt check. A candidate ledger with
+its own budget fields was considered and decided against.
 
 ## Related specs
 
@@ -76,7 +77,16 @@ reads of 24 bytes, and that is the probe-seek allowance below. The Brotli chain 
 (see `format-detection`) reads `[0, end)`, and the fields bound it: it runs only when `end`
 is within the prefix/far/scan ceiling and the decode allowance covers it. The UDIF trailer is the same kind
 of fixed read: one 512-byte block on a cheap seek, with no budget field of its own, and
-that length is the trailer allowance below.
+that length is the trailer allowance below. The PE tail probe (`format-detection`, *A ZIP
+in a PE's overlay is found from its end record*) is the third: the 65 558-byte search span
+plus the fixed parts of the two records it confirms (a 46-byte central header and a 30-byte
+local header), 65 634 bytes in all, on the same cheap seek. That is the tail allowance
+below. It has no budget field because its gate, a PE whose overlay runs past the scan
+window, keeps it off every other source. It runs only when `max_scan_bytes` is above 0, is
+recorded as `sfx_tail` *not enabled by policy* when that field is 0 and *capability
+unavailable* when the source does not allow the read (a member stream, or a pipe whose
+bytes run past the window, whose end is not known), and records nothing on a source its
+gate excludes. Its bytes count in `unique_bytes_read` and not in `scanned_bytes`.
 
 `max_decode_input` SHALL be one allowance for the whole `detect_format` pass, not a limit
 per tier or per candidate: every tier that decodes draws on what earlier tiers left, so
@@ -121,10 +131,15 @@ record it *not enabled by policy*.
 A receipt is within its budget when each bounded counter is at most `passes` times its
 limit: `far_bytes`, `scanned_bytes`, `decode_input` and `decode_output` against the field
 of the same name, and `unique_bytes_read` against the largest of `max_prefix_bytes`,
-`max_far_bytes` and `max_scan_bytes` plus the probe-seek allowance, the trailer allowance,
-and, when `scanned_bytes` is positive, the SFX validator allowance: the smaller of
-`VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the bytes a hit validator may read past the
-window end to judge a candidate that starts inside it. `prefix_bytes` is not compared,
+`max_far_bytes`, `max_scan_bytes` and the 4096-byte executable header span (read under
+any prefix budget, so the layout matches a forced `format=`'s) plus the probe-seek allowance, the trailer allowance,
+and, when `scanned_bytes` is positive, the SFX validator allowance and the tail allowance.
+The validator allowance is the smaller of `VALIDATOR_PEEK_MAX` and `max_scan_bytes`, the
+bytes a hit validator may read past the window end to judge a candidate that starts inside
+it. The tail allowance is granted on the same condition because the probe runs only after
+an SFX scan, and the receipt can show that a scan ran but not that the probe did; a source
+that scanned without probing gets the allowance unused, and a source that did not scan
+never gets it. `prefix_bytes` is not compared,
 because it bills overlapping requests in full and `unique_bytes_read` stands in for it. A
 receipt that is not within its budget SHALL carry a *budget exhausted* or *capability
 unavailable* skip naming the tier that was cut short. The library does not expose this
@@ -144,6 +159,11 @@ check; the test suite asserts it.
 | Expensive-seek source, content probe asks past the budget ceiling | `read_at` returns `None`; `content_probe_read_at` recorded *budget exhausted*; within budget |
 | Pipe or member stream that reaches the trailer step (a bzip2 stream with a `koly` block after it) | Tail not read; `trailer` recorded *capability unavailable*; the near-magic answer (`BZ2`) stands |
 | Source shorter than the 512-byte trailer block | Tail not read; nothing recorded: there is no block to miss |
+| Signed PE with a 3 MiB overlay and a ZIP at its end, default budget | `ZIP`; `unique_bytes_read` ≤ scan ceiling + probe allowance + trailer allowance + tail allowance + validator allowance; `scanned_bytes` ≤ `max_scan_bytes` |
+| The same PE under `FAST` | Probe runs; the same bound under `FAST`'s scan ceiling |
+| The same PE as an `ArchiveStream` | Tail not read; `sfx_tail` recorded *capability unavailable*, not `trailer` |
+| Ordinary signed PE larger than the window | No `sfx_tail` record; no tail read; within budget |
+| Non-executable source (no SFX scan) | `scanned_bytes` 0, so no tail allowance in the bound |
 | Stub-only `vol.exe` beside `vol.7z.001` | `SEVEN_Z`; the receipt includes the stub pass's SFX scan; `passes` 2; within two budgets, not one; a skip both passes record is kept once |
 | `max_decode_output` below one 512-byte TAR header | Inner-TAR probe not run; `inner_tar` recorded *budget exhausted*; nothing charged |
 | `max_decode_input` 0, zlib stream | No content probe runs; `content_probe` recorded *not enabled by policy*; `decode_input` 0; detection fails |

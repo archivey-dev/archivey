@@ -46,7 +46,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `PASSWORD_ARGUMENT_UNUSED` | `UnusedArgumentContext`: `kind="unused_argument"`, `archive_name`, `argument="password"`, `format`, `reason` |
 | `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="directory"` |
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
-| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","zip64_end_of_central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
+| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","zip64_end_of_central_directory","end_of_archive_byte","end_of_archive_header"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
 | `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream","directory_padding"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `ARCHIVE_UNLISTED_DATA` | `UnlistedDataContext`: `kind="unlisted_data"`, `archive_name`, `format`, `member_name`, `member_id` (the name and id the pass gave the entry before dropping it), `offset` (of its local header), `compressed_size` |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
@@ -88,11 +88,16 @@ directory's (`observed_bytes` the record's offset, `expected_bytes` 0), or
 the record to the end of the file); `"zip64_end_of_central_directory"` for a ZIP64 end
 record a locator announces that is missing or does not match it, the classic record
 used instead (`observed_kind="absent"`, `observed_bytes` the locator's offset,
-`expected_bytes` 0);
+`expected_bytes` 0); `"end_of_archive_byte"` for an LHA archive that ends without the
+zero byte after its last header (`format="lha"`, `observed_kind="absent"`,
+`expected_bytes` 1, `observed_bytes` 0); `"end_of_archive_header"` for an ARJ
+archive that ends without its 4-byte end header (`format="arj"`,
+`observed_kind="absent"`, `expected_bytes` 4, `observed_bytes` 0);
 `"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
 trailer, a 7z next header or last packed stream, whichever is later, a RAR
-end-of-archive block, an ISO image's volume space and partitions, or a ZIP end record
-and its declared comment), whose `format`
+end-of-archive block, an ISO image's volume space and partitions, a ZIP end record
+and its declared comment, or an LHA end byte or ARJ end header, after either of which
+0x1A also counts as padding), whose `format`
 names the archive format and whose `observed_bytes` is the offset of the first non-zero
 byte past that end;
 `"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the
@@ -742,3 +747,68 @@ disposition is `COLLECT`.
 | `extract_all(members=["a.txt", "typo.txt"])` on an archive holding `a.txt` | `a.txt` extracted; the report carries one `MEMBER_SELECTOR_UNMATCHED` with `entry="typo.txt"`, `entry_kind="name"` |
 | Same call under `DiagnosticPolicy.STRICT` | No raise; the diagnostic is collected |
 | `stream_members(members=lambda m: False)` | No `MEMBER_SELECTOR_UNMATCHED` |
+
+### Requirement: Report a detection step the decoder memory cap stopped
+
+When the caller's `DecoderLimits.max_decoder_memory` refuses a decoder a detection step
+needs (`format-detection`), the system SHALL emit `DETECTION_DECODER_LIMITED`. It
+travels as every detection diagnostic does: on `FormatInfo.diagnostics`, on the
+reader's diagnostics when `open_archive` detects, and through `on_diagnostic`. A step
+that refuses once per candidate SHALL be reported once per detection pass for each
+stream format.
+
+#### Scenario: detection cap diagnostic
+
+- **WHEN** a detection step's decoder is over the caller's cap
+- **THEN** the code is emitted as below
+
+| Case | Expected |
+| --- | --- |
+| `.tar.zst`, 8 MiB window, `max_decoder_memory=4 MiB` | `ZST`; one `DETECTION_DECODER_LIMITED` on `FormatInfo.diagnostics`; WARNING on `archivey.detection`; `on_diagnostic` called |
+| Same file through `open_archive` | The same diagnostic reaches `on_diagnostic` before the read raises `ResourceLimitError` |
+| `.lzma` (LZMA Alone) under `max_decoder_memory=1024` | One diagnostic for the content probe |
+| LZMA Alone between 4 KiB and 64 KiB long, cap between the window's and the re-check's dictionary | The hit stands; one diagnostic for the whole-source re-check |
+| `.tar.xz` declaring 64 MiB, cap 32 MiB | `TAR_XZ`; no diagnostic (the probe reserves 4 KiB) |
+
+### Requirement: Only the caller's cap is reported as a detection limit
+
+The code SHALL be emitted only when the caller's cap refused the decoder. A probe's own
+fixed ceiling (an lzop or mozlz4 block, a bzip3 block size over 16 MiB, a zstd window
+over 128 MiB) and a `ResourceUnavailableError` (a decoder child that could not run) are
+not the caller's setting, and SHALL stay an INFO log on `archivey.detection`.
+
+#### Scenario: a probe ceiling is not the caller's cap
+
+- **WHEN** a `.tar.zst` whose window is over 128 MiB is detected with no cap
+- **THEN** it is `ZST` with `inner_tar` recorded as `CAPABILITY_UNAVAILABLE`, and no
+  `DETECTION_DECODER_LIMITED` is emitted
+
+### Requirement: Detection limit context
+
+The context of `DETECTION_DECODER_LIMITED` SHALL be `DetectionDecoderLimitContext`, a
+member of the `DiagnosticContext` union: `kind="detection_decoder_limit"`,
+`archive_name`, `tier` ∈ `{"inner_tar","content_probe","probe_completion"}` (the
+receipt's name for the step), `stream_format` (the codec's `StreamFormat` name),
+`max_decoder_memory` (the cap) and `needed` (what the decoder would have reserved, or
+`None` when the decoder only says it is over the cap, as libzstd does for a window).
+
+#### Scenario: detection limit context fields
+
+- **WHEN** the `.tar.zst` with an 8 MiB window is detected under a 4 MiB cap
+- **THEN** the context is `tier="inner_tar"`, `stream_format="ZSTD"`,
+  `max_decoder_memory=4194304`, `needed=None`, and the message names
+  `max_decoder_memory=4194304`
+
+### Requirement: The detection limit code is advisory
+
+`DETECTION_DECODER_LIMITED` SHALL NOT be a member of `ARCHIVE_INTEGRITY_CODES`: it
+reports the caller's cap, not the archive's bytes, and the read that follows refuses
+the same decoder with `ResourceLimitError`. Its log record is WARNING, as for any code
+outside `_INFO_LOG_CODES`.
+
+#### Scenario: the detection limit code under policies
+
+- **WHEN** the `.tar.zst` above is detected under `DiagnosticPolicy.STRICT`
+- **THEN** detection answers `ZST` and does not raise
+- **WHEN** it is detected with `raise_on=["detection_decoder_limited"]`
+- **THEN** `detect_format` raises `DiagnosticRaisedError`

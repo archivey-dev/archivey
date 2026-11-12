@@ -12,7 +12,6 @@ from __future__ import annotations
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
-    ResourceLimitError,
     UnsupportedFeatureError,
     exception_detail,
 )
@@ -20,6 +19,7 @@ from archivey.formats import Decompressor
 from archivey.internal.config import (
     DecoderLimits,
     StreamConfig,
+    decoder_cap_error,
 )
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
@@ -133,11 +133,13 @@ def _zstd_window_refusal(exc: Exception, limits: DecoderLimits) -> ArchiveyError
             if 1 << window_log_max <= cap
             else "the smallest window libzstd can be limited to"
         )
-        return ResourceLimitError(
+        return decoder_cap_error(
             f"Decoder limit reached: max_decoder_memory={cap} (a zstd frame declares "
             f"a window over {1 << window_log_max} bytes, {bound}; libzstd refused it "
             f"before allocating). The archive chose this number; raise "
-            f"DecoderLimits.max_decoder_memory if the archive is trusted."
+            f"DecoderLimits.max_decoder_memory if the archive is trusted.",
+            cap=cap,
+            needed=None,
         )
     return UnsupportedFeatureError(
         f"A zstd frame declares a window over {1 << window_log_max} bytes, the "

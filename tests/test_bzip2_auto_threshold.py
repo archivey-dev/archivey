@@ -58,7 +58,8 @@ def _config(mode: AcceleratorMode, compressed: bytes) -> StreamConfig:
 
 def test_the_auto_threshold_is_inside_the_child_break_even() -> None:
     """The child costs about 45 ms to start. A full read broke even near 0.6 MiB
-    compressed with 4 cores and near 2 MiB with one (``scripts/investigations/bench_bzip2_child.py``),
+    compressed with 4 cores and near 2 MiB with one
+    (``scripts/investigations/bench_bzip2_child.py``),
     so the gate sits between the two."""
     assert 600 * 1024 <= INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE <= 2 * 1024 * 1024
 

@@ -203,6 +203,65 @@ show what Microsoft's own writer does with stored and MSZIP folders, so
 
 How they were made is in libarchive's `test_read_format_cab.c` (`mkcab1` to `mkcab3`).
 
+## `lha_lhasa/`
+
+Twenty-nine LHA archives from lhasa's test suite (`test/archives/<tool>/<file>`, renamed
+`<tool>_<file>`; lhasa commit `75ed835`, v0.6.0), copied on 2026-11-09 (the MacLHA ones
+on 2026-11-10). Each was written by the tool its directory names, most on the system it ran on; no tool on the test image
+writes LHA, so `tests/test_lha.py` reads them beside the archives `tests/lha_util.py`
+writes. Their expected bytes are what lhasa 0.4.0 extracts.
+
+| Tool | Files | What they hold |
+| --- | --- | --- |
+| LHa for UNIX 1.14i | `lha_unix114i_*` | `-lh5-` level 0, `-lh6-` level 1, `-lh7-` level 2; symlinks; directories with Unix modes |
+| LHA for OS/2 2.08 | `lha_os2_208_*` | level 3, `-lh5-` and directories |
+| UNLHA32.DLL 2.67a | `unlha32_h2_lhx.lzh` | `-lhx-` |
+| LHARK-A 0.4d | `lhark04d_lh7.lzh` | LHARK's `-lh7-`, read as `-lk7-` |
+| LArc 3.33 | `larc333_lz4.lzs` | `-lz4-` (stored) |
+| PMARC2 (MSX-DOS) | `pmarc2_pm0.pma` | `-pm0-` (stored), no time |
+| LhA 1.22 (Amiga) | `lha_amiga_122_*` | `-lh4-`, `-lh1-`, a file in subdirectories |
+| LHarc 1.13 | `lharc113_lh1.lzh` | `-lh1-` |
+| LArc 3.33 | `larc333_lz5.lzs`, `larc333_initial.lzs` | `-lz5-`; one crafted to copy the whole starting ring (`initial.bin`), with no end byte |
+| By hand (lhasa's `lz5-to-lzs` script) | `generated_lzs.lzs` | `-lzs-`, with no end byte |
+| OS-9/68k LHA 2.01 | `lha_osk_201_h2_lh0.lzh` | the level-2 header two bytes longer than its size; OS-9 permissions |
+| MorphOS LhA 2.7.17 | `morphos_lha_2717_h2_metadata.lzh` | a `0x71` comment record, skipped |
+| LH/2 2.22 (OS/2) | `lh2_222_eas.lzh` | mixed levels 0 and 1, OS/2 extended attributes as a file |
+| MacLHA 2.24 | `maclha_224_*` | MacBinary-wrapped members at levels 0 to 2 (`-lh0-`, `-lh1-`, `-lh5-`), one made with "non-Mac" (no wrapper), TeachText files in subdirectories; lhasa's `test-decompress` gives their CRC-32s |
+
+lhasa is under the ISC license:
+
+> Copyright (c) 2011-2025, Simon Howard
+>
+> Permission to use, copy, modify, and/or distribute this software for any purpose with
+> or without fee is hereby granted, provided that the above copyright notice and this
+> permission notice appear in all copies.
+>
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD
+> TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO
+> EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+> DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
+> IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+> CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+## `arj_310/`
+
+ARJ archives written 2026-11-09 by ARJ 3.10 for Linux (`arj` 3.10.22 in Ubuntu), the
+open-source continuation of Robert Jung's ARJ. Nothing on the CI image writes ARJ.
+
+- `method1.arj` to `method4.arj`: the same four files (`words.txt`, 15 995 bytes of
+  random words; `runs.bin`, 37 353 bytes of repeated random runs and zeros; `small.txt`;
+  `empty`) with `arj a -m1` to `-m4`. ARJ stores `small.txt` and `empty` with method 0.
+  `tests/test_arj.py` pins their sizes and SHA-256.
+- `stored.arj`: `small.txt` with `-m0`.
+- `links.arj`: `arj a -a1 -r` of a file, a symlink to it, a hard link to it, a FIFO and a
+  directory, which ARJ for Unix stores as type-6 members with `U` extended headers.
+- `garbled.arj`: `small.txt` garbled with `-gsecret`.
+- `cc_bla_dos.arj` and `cc_bla_unix.arj`: Commons Compress's `bla.arj` (ARJ for Windows,
+  host 11) and `bla.unix.arj` (Apache-2.0, github.com/apache/commons-compress
+  `src/test/resources`), fetched 2026-11-09.
+
+See [`dev-docs/formats/arj.md`](../../../dev-docs/formats/arj.md).
+
 ## `reduce_pkzip092/`
 
 Two raw ZIP Reduce streams (method 5, compression factor 4) that PKZIP 0.92 wrote under

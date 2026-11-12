@@ -527,7 +527,8 @@ def _zip_build(entry: CorpusEntry, path: Path, *, aes: bool = False) -> None:
             zf.comment = entry.archive_comment.encode()
         for m in entry.members:
             zi = zipfile.ZipInfo(date_time=(2020, 9, 13, 12, 26, 41))
-            # Post-assign: ZipInfo.__init__ replaces os.sep on Windows (see zip_backslash/generate.py).
+            # Post-assign: ZipInfo.__init__ replaces os.sep on Windows (see
+            # zip_backslash/generate.py).
             zi.filename = m.name
             zi.create_system = (
                 3  # force Unix so modes/symlinks are deterministic on all OSes
@@ -955,10 +956,11 @@ def publish_cached(tmp: Path, final: Path) -> None:
     Parallel workers can build the same entry at once. A file already at ``final`` is
     kept, so ``final`` must name its bytes: it is keyed by content (`_build`), or its
     caller skips an existing file before building (`_decode_uu` in the libarchive
-    corpus, whose name is the fixture's). The build is published with a hard link, which never replaces a file: on Windows
-    a replace onto ``final`` fails while another worker has it open, and a worker that
-    opens ``final`` during someone else's replace gets ``PermissionError`` too. Where
-    links are not supported it falls back to ``os.replace``, tolerating that refusal.
+    corpus, whose name is the fixture's). The build is published with a hard link, which
+    never replaces a file: on Windows a replace onto ``final`` fails while another
+    worker has it open, and a worker that opens ``final`` during someone else's replace
+    gets ``PermissionError`` too. Where links are not supported it falls back to
+    ``os.replace``, tolerating that refusal.
     """
     try:
         os.link(tmp, final)

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import ClassVar, Literal, TypeVar
+from typing import ClassVar, Literal, NoReturn, TypeVar
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
@@ -103,6 +103,13 @@ class DiagnosticCode(StrEnum):
     PROBE_FORMAT_UNCONFIRMED = "probe_format_unconfirmed"
     """A format found only by decoding a sample of the content failed to read, so the
     file may not be in that format."""
+    DETECTION_DECODER_LIMITED = "detection_decoder_limited"
+    """Detection did not run a decode because the decoder it needed is over
+    ``DecoderLimits.max_decoder_memory``, so it could not tell what that decode would
+    have shown. Looking inside a compressed stream for an archive is the usual case: a
+    ``.tar.zst`` whose window is over the cap is reported as a bare ``.zst``. Advisory:
+    it reports the caller's cap, not the archive's bytes, and a read of the stream
+    refuses the same decoder."""
     EMPTY_ARCHIVE = "empty_archive"
     """The listing finished without error and found no members."""
     ENCODING_ARGUMENT_UNUSED = "encoding_argument_unused"
@@ -214,6 +221,12 @@ class DiagnosticCode(StrEnum):
     ``OpenFile`` with ``compression=`` records it too: it is read through fsspec's
     decompressing file, and archivey checks nothing about the object. Advisory: it
     describes how the archive arrives, not its bytes."""
+    MEMBER_PATH_REFUSED = "member_path_refused"
+    """A member is left out of an ``archivey://`` file system's tree
+    (:class:`~archivey.fsspec.ArchiveyFileSystem`) because the file system's extraction
+    policy refuses its name: ``extract_all(dest, policy=policy)`` would not write it
+    either. Advisory: the archive is read as before, and the member stays reachable
+    through ``fs.reader``."""
     MEMBER_READERS_DISAGREE = "member_readers_disagree"
     """A member takes a shape that real writers produce but readers make different
     trees of: a TAR regular file named like a directory, a link name on a TAR regular
@@ -306,6 +319,10 @@ DiagnosticCodeStr = Literal[
     "member-readers-disagree",
     "source_change_undetectable",
     "source-change-undetectable",
+    "detection_decoder_limited",
+    "detection-decoder-limited",
+    "member_path_refused",
+    "member-path-refused",
 ]
 
 
@@ -434,6 +451,28 @@ class UnconfirmedFormatContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class DetectionDecoderLimitContext(_JsonSafeContext):
+    """A detection step the caller's decoder memory cap stopped.
+
+    ``tier`` is the step, as the detection receipt names it: ``"inner_tar"`` (looking
+    inside a compressed stream for an archive), ``"content_probe"`` (decoding a sample
+    to recognize a format with no magic) or ``"probe_completion"`` (decoding the whole
+    source to confirm a probe's hit; the hit stands without it). ``stream_format`` is
+    the codec's :class:`~archivey.StreamFormat` name (``"ZSTD"``).
+    ``max_decoder_memory`` is the cap, and ``needed`` what the decoder would have
+    reserved, or ``None`` when the decoder only says it is over the cap (a zstd
+    window).
+    """
+
+    kind: Literal["detection_decoder_limit"] = "detection_decoder_limit"
+    archive_name: str | None = None
+    tier: Literal["inner_tar", "content_probe", "probe_completion"] = "inner_tar"
+    stream_format: str = ""
+    max_decoder_memory: int = 0
+    needed: int | None = None
+
+
+@dataclass(frozen=True)
 class FormatConflictContext(_JsonSafeContext):
     """Extension suggested one format; content detection chose another."""
 
@@ -492,8 +531,18 @@ class ArchiveEofContext(_JsonSafeContext):
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
       ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
       is 0.
+    - ``"end_of_archive_byte"`` (``ARCHIVE_EOF_MARKER_MISSING``) — an LHA archive
+      ends right after its last member, without the zero byte its writers put after
+      the last header. Every member is listed. ``format`` is ``"lha"``,
+      ``observed_kind`` is ``"absent"``, ``expected_bytes`` is 1 and
+      ``observed_bytes`` 0.
+    - ``"end_of_archive_header"`` (``ARCHIVE_EOF_MARKER_MISSING``) — an ARJ archive
+      ends right after its last member, without the 4-byte end header (``60 EA 00
+      00``) its writers put last. Every member is listed. ``format`` is ``"arj"``,
+      ``observed_kind`` is ``"absent"``, ``expected_bytes`` is 4 and
+      ``observed_bytes`` 0.
     - ``"zeros_to_eof"`` (``ARCHIVE_TRAILING_DATA``) — a non-zero byte follows the
-      archive's end within the first MiB past it, so the file carries something the
+      archive's end within the first MiB past it (64 KiB for LHA), so the file carries something the
       listing did not account for. ``format`` names where the end was: ``"tar"`` for
       the TAR trailer (complete, or its second block damaged and reported as
       ``"second_zero_block"`` first), ``"7z"`` for the later of a 7z archive's next
@@ -501,7 +550,10 @@ class ArchiveEofContext(_JsonSafeContext):
       block, ``"iso"`` for the furthest of an ISO image's volume space, the partitions
       its MBR or GPT lists and the GPT backup header, ``"zip"`` for the end of a ZIP's
       end-of-central-directory record and its declared comment, ``"cpio"`` for the
-      CPIO trailer; a format plugin names its own format. ``observed_bytes`` is
+      CPIO trailer, ``"lha"`` for an LHA archive's end byte and ``"arj"`` for an ARJ
+      archive's end header (where the scan covers 64 KiB and also allows the DOS
+      end-of-file byte 0x1A); a format plugin names
+      its own format. ``observed_bytes`` is
       that byte's offset past the end. RAR emits one per volume, and its offset counts from that
       volume's end block, unlike member offsets, which count across the whole set; the
       message names the volume.
@@ -1004,6 +1056,21 @@ class SourceChangeContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class PathRefusedContext(_JsonSafeContext):
+    """Why an ``archivey://`` file system's tree leaves a member out. ``policy`` is the
+    file system's :class:`~archivey.ExtractionPolicy` value and ``reason`` the refusal
+    the extraction checks give (``"Path traversal ('..') in member name"``).
+    """
+
+    kind: Literal["path_refused"] = "path_refused"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    policy: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class UnknownMemberTypeContext(_JsonSafeContext):
     """A member header has a type archivey does not know: a TAR typeflag, a RAR5
     redirect type, or the file-type bits of another format's mode, from a format plugin.
@@ -1117,6 +1184,7 @@ DiagnosticContext = (
     | EmptyArchiveContext
     | UnconfirmedFormatContext
     | FormatConflictContext
+    | DetectionDecoderLimitContext
     | ScanRaceContext
     | ArchiveEofContext
     | UnlistedDataContext
@@ -1138,6 +1206,7 @@ DiagnosticContext = (
     | SizeWrapContext
     | UnknownMemberTypeContext
     | SourceChangeContext
+    | PathRefusedContext
     | NameDuplicateContext
     | ReaderDisagreementContext
 )
@@ -1153,6 +1222,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.EXPLICIT_FORMAT_LISTED_EMPTY: "unconfirmed_format",
         DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED: "unconfirmed_format",
         DiagnosticCode.PROBE_FORMAT_UNCONFIRMED: "unconfirmed_format",
+        DiagnosticCode.DETECTION_DECODER_LIMITED: "detection_decoder_limit",
         DiagnosticCode.EMPTY_ARCHIVE: "empty_archive",
         DiagnosticCode.ENCODING_ARGUMENT_UNUSED: "unused_argument",
         DiagnosticCode.PASSWORD_ARGUMENT_UNUSED: "unused_argument",
@@ -1183,6 +1253,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_NAME_DUPLICATE: "name_duplicate",
         DiagnosticCode.MEMBER_READERS_DISAGREE: "reader_disagreement",
         DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE: "source_change",
+        DiagnosticCode.MEMBER_PATH_REFUSED: "path_refused",
     }
 )
 
@@ -1213,7 +1284,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are deliberately
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-one codes are deliberately
 **out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1238,6 +1309,9 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are delibera
   it to RAISE still gets that typed error, through ``escalate_as``. Its sibling
   ``EXTENSION_FORMAT_UNCONFIRMED`` is **in** the set: it also fires on an
   extension-only empty listing, a successful open that no byte confirmed.
+- ``DETECTION_DECODER_LIMITED`` — reports the caller's ``max_decoder_memory``, not
+  the archive: the decode detection skipped is the one a read would refuse under the
+  same cap. A caller who wants detection to fail rather than settle can raise it.
 - ``MEMBER_SELECTOR_UNMATCHED`` — reports the caller's ``members=`` argument, not the
   archive. A job that passes one fixed list of names to many archives would otherwise
   raise on every archive that lacks one of them.
@@ -1274,6 +1348,11 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Nineteen codes are delibera
 - ``SOURCE_CHANGE_UNDETECTABLE`` — describes the transport an ``fsspec`` source
   arrives through, not the archive's bytes, and holds for every read from such a
   store. ``STRICT`` would refuse every remote archive.
+- ``MEMBER_PATH_REFUSED`` — reports what an extraction policy chose for the
+  ``archivey://`` tree, not a new finding about the bytes: a name with hidden
+  characters is already reported (``MEMBER_NAME_BIDI_CONTROL``), and an absolute name
+  is ordinary. ``STRICT`` would refuse a whole archive for one name it can still
+  read.
 - ``MEMBER_NAME_DUPLICATE`` and ``MEMBER_READERS_DISAGREE`` — shapes real archives
   have (``tar -r`` appends, cabal sdists, v7 directories, star and GNU incremental
   headers), which archivey reads as the format's own tool does. ``STRICT`` would refuse
@@ -1361,6 +1440,8 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                         "end_of_archive_block",
                         "end_of_central_directory",
                         "zip64_end_of_central_directory",
+                        "end_of_archive_byte",
+                        "end_of_archive_header",
                     }
                 ),
             ),
@@ -1699,6 +1780,59 @@ class MemberListReport:
         return self.members[index]
 
 
+@dataclass(frozen=True)
+class VerifyReport:
+    """What :meth:`~archivey.ForwardArchiveReader.verify_all` found.
+
+    ``ok`` is the one answer to "did every check pass": no member failed and nothing
+    stopped the walk through the archive. The fields keep the detail. The report is
+    not a sequence, and testing its truth raises ``TypeError``, so the 0.3.0 idiom
+    ``if not reader.verify_all():`` fails loudly instead of quietly reading the report
+    as true: test ``ok``, or read ``failures`` and ``structure_error`` yourself.
+
+    Diagnostics do not count toward ``ok``: :class:`DiagnosticPolicy` already decides
+    which of them are errors, and a code it raises on stops ``verify_all()`` with
+    :class:`~archivey.DiagnosticRaisedError` instead of returning a report.
+
+    Experimental, like ``verify_all()``: any release, a patch included, may change it.
+    """
+
+    failures: tuple[tuple[ArchiveMember, ArchiveyError], ...]
+    """Each member that failed, with its error, in listing order. A check that covers
+    several members (a 7z folder CRC) pairs each member it covers with the same
+    error."""
+
+    structure_error: ArchiveyError | None
+    """Damage that stopped the walk through the archive, such as a ZIP cut inside its
+    central directory or a TAR cut inside a member: the members after it were never
+    reached. ``None`` when the walk reached the end. The same error as
+    ``members_report().error``."""
+
+    diagnostics: DiagnosticSummary
+    """The diagnostics emitted during this ``verify_all()`` call."""
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when no member failed and the walk reached the end of the archive."""
+        return not self.failures and self.structure_error is None
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "test VerifyReport.ok, not the report itself: a report is not empty or "
+            "true when every check passed"
+        )
+
+    def raise_for_failure(self) -> None:
+        """Raise ``structure_error`` if there is one, else the first member's error.
+
+        Does nothing when ``ok`` is ``True``.
+        """
+        if self.structure_error is not None:
+            raise self.structure_error
+        if self.failures:
+            raise self.failures[0][1]
+
+
 OnDiagnostic = Callable[[Diagnostic], None]
 """Optional synchronous callback invoked for COLLECT/RAISE diagnostics."""
 
@@ -1720,6 +1854,7 @@ def format_path_name(path: str | Path | None) -> str | None:
 __all__ = [
     "ARCHIVE_INTEGRITY_CODES",
     "ArchiveEofContext",
+    "DetectionDecoderLimitContext",
     "Diagnostic",
     "DiagnosticCode",
     "DiagnosticCodeStr",
@@ -1744,6 +1879,7 @@ __all__ = [
     "NameNormalizationContext",
     "OffsetWrapContext",
     "OnDiagnostic",
+    "PathRefusedContext",
     "ReaderDisagreementContext",
     "ScanRaceContext",
     "SeekIndexContext",
@@ -1758,6 +1894,7 @@ __all__ = [
     "UnknownMemberTypeContext",
     "UnlistedDataContext",
     "UnusedArgumentContext",
+    "VerifyReport",
     "format_path_name",
     "raw_name_to_base64",
     "validate_code_context",

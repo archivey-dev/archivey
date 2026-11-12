@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from archivey.config import ListingLimits
+from archivey.config import Budget, ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.types import ArchiveMember
 
@@ -128,12 +128,23 @@ class ListingLimitTracker:
     hands out (a held member, a walk charge, an archive comment, a link target
     weighed late, a TAR sparse map) is charged to the outermost tracker too, while
     the inner level is open, and its checks count it.
+
+    ``budget`` is the config's shared :class:`~archivey.config.Budget`, if any: each
+    tracker draws its own members from it, whatever its nesting.
     """
 
     def __init__(
-        self, limits: ListingLimits, outer: ListingLimitTracker | None = None
+        self,
+        limits: ListingLimits,
+        *,
+        budget: Budget | None = None,
+        outer: ListingLimitTracker | None = None,
     ) -> None:
         self._limits = limits
+        # The shared pool members are also drawn from, and how many this reader has
+        # drawn: a listing walked again after ``reset`` draws only past that.
+        self._budget = budget
+        self._budget_members = 0
         # The outermost tracker of the nest: this one, for a reader not read inside
         # another.
         self._root: ListingLimitTracker = outer._root if outer is not None else self
@@ -233,9 +244,19 @@ class ListingLimitTracker:
         max_meta = limits.max_metadata_bytes
         if max_meta is not None and next_bytes + self._nested_bytes > max_meta:
             self._check_metadata(next_bytes)
+        if self._budget is not None:
+            self._draw_budget_members(next_count)
         # Raises before storing, so a refused member changes neither total.
         self.metadata_bytes = next_bytes
         self.member_count = next_count
+
+    def _draw_budget_members(self, next_count: int) -> None:
+        """Draw the shared budget up to ``next_count`` members, past what this reader
+        has drawn already; the budget refuses, counting none, past its cap."""
+        budget = self._budget
+        if budget is not None and next_count > self._budget_members:
+            budget._draw_members(next_count - self._budget_members)
+            self._budget_members = next_count
 
     def hold_member(self, member: ArchiveMember, reason: str) -> None:
         """Charge a member a reader holds back before yielding it, as one member and
@@ -267,6 +288,9 @@ class ListingLimitTracker:
                 f"retained {next_bytes + self._nested_bytes} bytes, {held_bytes} of "
                 f"them for {held} {reason}",
             )
+        # Drawn as account_member draws, before the reader keeps it: the high-water
+        # mark means the register after the release does not draw it again.
+        self._draw_budget_members(next_count)
         self._charge_outward(nbytes, enforce=True, what=f"{held} {reason}")
         self._held[key] = (member, nbytes)
         self._held_bytes = held_bytes

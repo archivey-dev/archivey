@@ -15,8 +15,9 @@ index: list the members first, then open any one of them); a
 data, header, data, read in one forward pass, from a pipe too). The reader hands
 archivey members and bytes; archivey does the rest the same way for every format: name
 normalization and the name checks, listing limits, link resolution, safe extraction and
-its limits, and the size and digest checks on member data. Formats that do not fit, or need special features or more speed, are
-written against archivey's internal reader classes instead.
+its limits, and the size and digest checks on member data. Formats that do not fit, or
+need special features or more speed, are written against archivey's internal reader
+classes instead.
 
 A program registers a format with :func:`register_format`. Nothing is loaded
 automatically. Plugin code runs in the caller's process as trusted code: archivey's
@@ -32,10 +33,11 @@ A sequential format is also read inside each single-file compression stream arch
 decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
 archivey's codecs part-way (:meth:`ForwardStream.decompress`). Its walk can also read a
 member that is an archive in turn, a ``.deb``'s ``data.tar.xz`` say, as members of its
-own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). What the first version
-leaves out: an indexed format inside a compression stream, member data a library decodes
-in a sequential format, self-extracting stubs, multi-volume sets, passwords, and new
-diagnostic codes.
+own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). A sequential
+format whose library decodes each member hands archivey a stream of the decoded bytes
+(:attr:`MemberSpan.data`) instead of a count of stored bytes. What the first version
+leaves out: an indexed format inside a compression stream, self-extracting stubs,
+multi-volume sets, passwords, and new diagnostic codes.
 """
 
 from __future__ import annotations
@@ -266,7 +268,7 @@ class MemberSpan(NamedTuple):
 
     data: BinaryIO | io.RawIOBase | None = None
     """The member's decoded bytes, for a format whose library decodes each member
-    (LHA, ARJ, a libarchive wrapper), which has no stored bytes to describe with
+    (ACE, Zoo, a libarchive wrapper), which has no stored bytes to describe with
     ``data_length``; that stays 0. The stream need only be good until the walk moves
     on: archivey reads what the caller leaves of it, up to ``member.size``, before it
     asks the walk for the next member, so the library is past it, and then closes it.
@@ -297,7 +299,7 @@ class ReaderArchiveInfo(NamedTuple):
     comment: str | None = None
     extra: Mapping[str, object] = {}
     """Format-specific values, under keys that start with the format's name
-    (``"lha.method"``)."""
+    (``"zoo.method"``)."""
 
 
 class ReaderSource:
@@ -489,8 +491,11 @@ class ForwardStream:
 
         The caller's ``FormatPolicy`` holds here as for a member: under
         ``plugins=False`` a ``PluginStream`` raises ``UnsupportedFeatureError``, and a
-        package ``exclude_libraries`` turns off reads as missing. ``only`` and
-        ``exclude`` do not apply, since they check only the file the call opens.
+        package ``exclude_libraries`` turns off reads as missing. ``only`` and the
+        format entries of ``exclude`` do not apply, since they check only the file the
+        call opens. A :class:`~archivey.CompressionAlgorithm` in ``exclude`` does: a
+        format whose method it lists (``StreamFormat.XZ`` under
+        ``exclude={CompressionAlgorithm.XZ}``) raises ``UnsupportedFeatureError``.
 
         Raises ``ValueError`` for a format that is not a compression stream
         (``UNCOMPRESSED``), and ``ArchiveyUsageError`` when this stream has already
@@ -569,6 +574,16 @@ class ReaderContext:
     # ``_spanning_check(key)`` returns the check for one spanning check of the
     # archive. Internal, set by the adapter; not for plugins.
     _spanning_check: Callable[[object], _SpanningCheck] | None = None
+    # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
+    # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
+    # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of
+    # being reported as trailing data, and bzip2 and LZMA Alone end at their first
+    # stream, as a ZIP or 7z member's bzip2 does. Continuations the codec's data
+    # defines for a member (further xz streams and their padding, zstd and LZ4
+    # frames) still read. Internal, set by the adapter; not for plugins.
+    _decompress_coder: (
+        Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
+    ) = None
 
     def __init__(
         self,
@@ -754,8 +769,11 @@ class ReaderContext:
 
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, ``exclude_libraries`` holds, and under
-        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``;
-        ``only`` and ``exclude`` check only the file the call opens. A format that needs a
+        ``plugins=False`` a plugin format or codec raises ``UnsupportedFeatureError``,
+        and so does a format whose compression decodes with a
+        :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
+        format entries of ``exclude`` check only the file the call opens, and a method
+        entry holds for the inner reader's members too. A format that needs a
         seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
@@ -896,9 +914,12 @@ class ReaderContext:
         The caller's ``FormatPolicy`` holds for each member: under ``plugins=False`` a
         ``PluginStream`` raises ``UnsupportedFeatureError`` before the codec runs, and
         a package ``exclude_libraries`` turns off raises ``PackageNotInstalledError``.
-        ``only`` and ``exclude`` do not apply: they check only the file the call opens,
-        so a member stored with ``StreamFormat.XZ`` decodes under
-        ``exclude={StreamFormat.XZ}``.
+        ``only`` and the format entries of ``exclude`` do not apply: they check only the
+        file the call opens, so a member stored with ``StreamFormat.XZ`` decodes under
+        ``exclude={StreamFormat.XZ}``. A :class:`~archivey.CompressionAlgorithm` in
+        ``exclude`` does apply: ``exclude={CompressionAlgorithm.XZ}`` refuses that
+        call, for ``CompressionAlgorithm.XZ`` or ``StreamFormat.XZ``, with
+        ``UnsupportedFeatureError`` before the codec runs.
 
         Where the compressed data ends depends on the method. ``ZSTD`` and ``LZ4`` data
         is one or more frames, decoded together, and ``XZ`` data is one or more xz
@@ -1011,7 +1032,7 @@ class FormatHandler(ABC):
     ``ArchiveFormat.ZIP``, and is not registered."""
 
     extensions: ClassVar[tuple[str, ...]] = ()
-    """File extensions with the dot (``".lha"``). An extension a built-in format uses
+    """File extensions with the dot (``".zoo"``). An extension a built-in format uses
     (``".cpio"``) is refused at registration. A replacement plugin declares none: the
     built-in detection finds its files."""
 
@@ -1074,7 +1095,7 @@ class SequentialFormatHandler(FormatHandler):
     :attr:`~FormatHandler.magic` in the first 512 decoded bytes, so each magic must end
     within them. A format with no reliable magic is found there by its
     :attr:`~FormatHandler.probe` on those same 512 bytes, where the extension names it
-    inside the compressor (``.lha.gz``) or ``always_probe_content`` is set, as on an
+    inside the compressor (``.zoo.gz``) or ``always_probe_content`` is set, as on an
     uncompressed source."""
 
     @abstractmethod

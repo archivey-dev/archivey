@@ -1,4 +1,4 @@
-"""`scripts/investigations/find_unar_probe_member.py`: its model of the patched ``unar``, on fixtures.
+"""`scripts/investigations/find_unar_probe_member.py`: its patched-``unar`` model, on fixtures.
 
 The model says which members Debian's patched ``unar`` drops without running ``unar``.
 These tests hold it to what that ``unar`` does with the ``unar_drop*`` and

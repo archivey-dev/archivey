@@ -41,7 +41,12 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.config import DecoderLimits, probe_lzma_dictionary
+from archivey.internal.config import (
+    DecoderLimits,
+    check_decoder_memory,
+    probe_dictionary_origin,
+    probe_lzma_dictionary,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -131,7 +136,8 @@ def _parse_xz_header(data: bytes) -> int:
         raise CorruptionError(f"XZ stream header too short: {len(data)} bytes")
     if data[:6] != _XZ_STREAM_MAGIC:
         raise CorruptionError(
-            f"XZ stream header magic not found (got {quoted(data[:6].decode('ascii', 'surrogateescape'))})"
+            "XZ stream header magic not found "
+            f"(got {quoted(data[:6].decode('ascii', 'surrogateescape'))})"
         )
     stream_flags = data[6:8]
     stored_crc = struct.unpack_from("<I", data, 8)[0]
@@ -153,7 +159,8 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
         raise CorruptionError(f"XZ stream footer too short: {len(data)} bytes")
     if data[10:12] != _XZ_FOOTER_MAGIC:
         raise CorruptionError(
-            f"XZ stream footer magic 'YZ' not found (got {quoted(data[10:12].decode('ascii', 'surrogateescape'))})"
+            "XZ stream footer magic 'YZ' not found "
+            f"(got {quoted(data[10:12].decode('ascii', 'surrogateescape'))})"
         )
     stored_crc = struct.unpack_from("<I", data, 0)[0]
     backward_size_raw = struct.unpack_from("<I", data, 4)[0]
@@ -1431,20 +1438,24 @@ def _block_dictionary(header: bytes) -> int | None:
     the header does not parse here. Its CRC is not checked: liblzma checks it, and
     refuses the block, before it decodes anything."""
     try:
-        chain = _head_filter_chain(header, None)
+        chain = _head_filter_chain(header, None, None)
     except (ArchiveyError, IndexError):
         return None
     return chain[-1].get("dict_size") if chain else None
 
 
-def _head_filter_chain(header: bytes, read_bound: int | None) -> list[dict[str, int]]:
+def _head_filter_chain(
+    header: bytes, read_bound: int | None, limits: DecoderLimits | None
+) -> list[dict[str, int]]:
     """The raw filter chain a block header declares, its LZMA2 dictionary clamped.
 
     ``header`` is the whole block header, CRC included and already checked. Delta and
     the BCJ filters are kept as declared; only the LZMA2 dictionary changes, to
     :func:`~archivey.internal.config.probe_lzma_dictionary`, or stays as declared
     with no ``read_bound``. A chain this cannot build raises
-    ``UnsupportedFeatureError``, which the probe reads as "can't tell".
+    ``UnsupportedFeatureError``, which the probe reads as "can't tell". The clamped
+    dictionary, which is what liblzma reserves, is checked against ``limits``; with no
+    ``limits`` (reading a declaration, not building a decoder) it is not checked.
     """
     body = header[:-4]
     flags = body[1]
@@ -1467,12 +1478,15 @@ def _head_filter_chain(header: bytes, read_bound: int | None) -> list[dict[str, 
             raise CorruptionError("XZ block header filter properties are truncated")
         if index == last and filter_id == lzma.FILTER_LZMA2 and props_size == 1:
             declared = _lzma2_dictionary(props[0])
-            chain.append(
-                {
-                    "id": lzma.FILTER_LZMA2,
-                    "dict_size": probe_lzma_dictionary(declared, read_bound),
-                }
-            )
+            dict_size = probe_lzma_dictionary(declared, read_bound)
+            if limits is not None:
+                check_decoder_memory(
+                    dict_size,
+                    limits=limits,
+                    what="the LZMA2 dictionary a detection probe reserves",
+                    counted_from=probe_dictionary_origin(declared),
+                )
+            chain.append({"id": lzma.FILTER_LZMA2, "dict_size": dict_size})
         elif index < last and filter_id == lzma.FILTER_DELTA and props_size == 1:
             chain.append({"id": lzma.FILTER_DELTA, "dist": props[0] + 1})
         elif index < last and filter_id in _HEAD_BCJ_FILTERS and props_size in (0, 4):
@@ -1602,7 +1616,10 @@ def _starts_next_stream(source: _HeadInput) -> bool:
 
 
 def _decode_xz_head(
-    read: Callable[[int], bytes], size: int, natives: Natives = IN_PROCESS
+    read: Callable[[int], bytes],
+    size: int,
+    natives: Natives = IN_PROCESS,
+    limits: DecoderLimits = DecoderLimits(),
 ) -> bytes:
     """Up to ``size`` bytes of the xz data ``read`` returns, its dictionaries clamped.
 
@@ -1629,7 +1646,7 @@ def _decode_xz_head(
         if zlib.crc32(header[:-4]) & 0xFFFFFFFF != stored:
             raise CorruptionError("XZ block header CRC32 mismatch")
         dec = natives.lzma_decompressor(
-            format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size)
+            format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size, limits)
         )
         fed = 0
         try:
@@ -1651,7 +1668,10 @@ def _decode_xz_head(
 
 
 def open_xz_head(
-    source: BinaryIO, size: int, natives: Natives = IN_PROCESS
+    source: BinaryIO,
+    size: int,
+    natives: Natives = IN_PROCESS,
+    limits: DecoderLimits = DecoderLimits(),
 ) -> BinaryIO:
     """The first ``size`` bytes an xz source decodes to, for a detection probe.
 
@@ -1662,4 +1682,4 @@ def open_xz_head(
     at ``size``. ``source`` is the probe's bounded reader: nothing here limits how
     much input a block reads to reach ``size`` bytes.
     """
-    return io.BytesIO(_decode_xz_head(source.read, size, natives))
+    return io.BytesIO(_decode_xz_head(source.read, size, natives, limits))
