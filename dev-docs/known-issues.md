@@ -303,7 +303,7 @@ handles large buffers under PyPy (its cpyext build), or a pure-Python Deflate64 
 **Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
 ([`docs/install.md`](../docs/install.md) §PyPy).
 
-## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
+## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash; open, the 2026-11 soak did not reproduce it)
 
 **Symptom.** On GitHub Actions `ubuntu-latest` required legs with `--extra all` or
 `all-lowest` (py3.11 to 3.13, sometimes 3.14), the suite process dies with
@@ -327,8 +327,8 @@ stacks are not in a PPMd decode.
 
 1. The in-process rapidgzip decoder in a long-lived pytest process. Every codec now runs
    rapidgzip in a child process (Bug 4), bzip2 included, so the suite's own process no
-   longer loads it. The last recorded red runs predate the move and the rate has not been
-   re-measured since.
+   longer loads it. The last recorded red runs predate the move. The soak of 2026-11-10
+   (below) found no crash after it.
 2. Allocator layout: many natives loaded together, plus coverage and GC, with Hypothesis
    or `subprocess` only the tripwire.
 3. Not the gzip/zlib truncation-recovery logic: the crashes do not stack in
@@ -338,13 +338,26 @@ stacks are not in a PPMd decode.
 steps so a corrupted heap in one cannot take down another. That is CI hygiene, not a
 product fix.
 
-**What remains.** The cause. The next step is a soak rate, then an A/B run without
-rapidgzip.
+**Measured 2026-11-10 and 2026-11-11.** 32 whole-suite passes in the shape the crashes
+came from (one long-lived pytest process, serial, pytest-cov on, `PYTHONFAULTHANDLER=1`),
+and no process died. 30 ran on `ubuntu-latest` in two runs of `heap-corruption-soak.yml`
+(42834255485 at 7a0bfab and 43108671291 at 5cbc64d), each with py3.11, 3.12, 3.13 and 3.14
+`[all]` and py3.11 `[all-lowest]`, three passes each; 2 ran in a Linux container (py3.11
+`[all]`). In 2026-07 the same shape crashed in four CI runs within days, often on two legs
+of one run. Zero in 32 puts the per-pass rate below about 9% at 95% confidence (the rule
+of three), far under what those runs showed. The crash is not reproduced in the current tree;
+the cause was never found, so it is not shown fixed either.
+
+**What remains.** Re-run `heap-corruption-soak.yml` (on demand) after a native dependency
+upgrade or a change that brings a native decoder back into the parent process. If a pass
+dies, the A/B without rapidgzip in the investigation page is the next step. The four-step
+CI split stays: it is cheap, and it is what keeps one native crash from hiding the rest of
+the suite's results.
 
 **Upstream.** Unknown owner; nothing to file yet.
 
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
-the CI step split, the soak and A/B recipes, and the recorded red runs.
+the CI step split, the soak and A/B recipes, the recorded red runs and the 2026-11-10 soak.
 
 ## PyPy: a C `bool` member reads as an int (open, upstream)
 
