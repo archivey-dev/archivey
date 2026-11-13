@@ -1,4 +1,4 @@
-# Pitfalls
+# Best practices
 
 Code that runs fine on the first test archive can still go wrong with archivey. These are the cases
 that are easy to miss. Each one says what to do, what happens otherwise, and links to the page with
@@ -27,12 +27,31 @@ operation on closed file`.
 on. A stream kept in a list and read after the loop raises `ValueError`. Without `streaming=True`,
 `archive.open(member)` opens a member again later. [Reading once](reading.md#reading-once)
 
+**Put a `stream_members()` loop that can stop early in a `with` block.**
+
+```python
+with archive.stream_members() as members:
+    for member, stream in members:
+        ...
+```
+
+The pass ends when the block ends, even after an exception. A pass you leave with `break` ends at
+once on CPython, but one kept in a variable, or one an exception left, holds the archive until you
+close it: `open()`, `read()` and a new pass raise `ArchiveyUsageError` meanwhile. `with
+iter(archive) as members:` does the same for a loop over members.
+[Reading once](reading.md#reading-once)
+
 **Check `member.member_state_final` before acting on a streamed member.** A `stream_members` loop
 gives you each member before archivey has read the rest of the archive. For a ZIP from a pipe, a
 symlink is listed as a file and permissions are missing until the loop reaches the ZIP's index at
 the end. When names repeat, `is_current` can stay `True` on an old copy until the loop ends. Wait
 for the flag before you do something you can't take back with a member, such as uploading it or
-saving it to a database. `extract_all` already waits. [Reading once](reading.md#reading-once)
+saving it to a database. `extract_all` already waits.
+
+After a loop that runs to its end, every member is final, with two exceptions. A symlink's target
+stays unread under `ArchiveyConfig(read_link_targets=False)`. Without `streaming=True`, a member
+whose size the archive doesn't record, such as a `.bz2` file's, keeps `size=None` until something
+reads it to its end. [Reading once](reading.md#reading-once)
 
 **Read a solid archive with `stream_members()`.** In a `.tar.gz` or most 7z archives, members are
 compressed together, so reaching a member means decompressing the data before it.
@@ -41,9 +60,11 @@ times, which is slow on a large archive. On a solid 7z or RAR archive, archivey 
 `SOLID_OPEN_REDECOMPRESSES` the first time it decompresses data again.
 [Solid archives](reading.md#solid-archives)
 
-**Plan for one pass with `streaming=True`.** The first `stream_members()`, `for member in archive`
-or `extract_all` uses up the archive, even if you leave the loop with `break`. A second one raises
-`ArchiveyUsageError`. Without `streaming=True` you can loop again.
+**Open with `streaming=True` when you process each member once.** It's a promise to read the
+archive once, from start to end. `open()`, `read()` and `members()` then raise, so a read out of
+order fails during development, instead of quietly decompressing data again in production. It
+works on an ordinary file too, not only a pipe. You get one pass, through `stream_members()`, `for
+member in archive` or `extract_all`, and it is used up even if you leave the loop with `break`.
 [Reading once](reading.md#reading-once)
 
 **Pass an `ArchiveMember` to pick one copy of a repeated name.** An archive can hold several

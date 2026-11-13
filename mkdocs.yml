@@ -14,7 +14,7 @@ nav:
   - Errors and diagnostics: errors-and-diagnostics.md
   - Command line: cli.md
   - Recipes: recipes.md
-  - Pitfalls: pitfalls.md
+  - Best practices: best-practices.md
   - Formats and extras: formats.md
   - Adding a format: adding-a-format.md
   - Migrating from other libraries: migrating.md
@@ -77,7 +77,7 @@ plugins:
           - errors-and-diagnostics.md: The exception hierarchy, damaged archives, and non-fatal diagnostics
           - cli.md: The archivey command (list, test, extract, info) and its exit codes
           - recipes.md: Complete scripts for dataset downloads, HTTP streams, and checking uploaded archives
-          - pitfalls.md: Easy-to-miss cases with closing, one-pass streams, solid archives, errors and limits
+          - best-practices.md: Easy-to-miss cases with closing, one-pass streams, solid archives, errors and limits
           - formats.md: Per-format behaviour, extras each format needs, and format-specific member fields
           - adding-a-format.md: Adding a read-only format with the experimental archivey.formats API, the structures built-in readers share too
           - migrating.md: Equivalent calls and behaviour differences from zipfile, tarfile, py7zr and rarfile
