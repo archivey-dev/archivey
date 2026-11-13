@@ -79,10 +79,10 @@ off. Hence Decision 3.
 The link is explicit, so it survives the recipe's copy of a member to a temporary file
 (needed so a 7z, RAR or ISO inside can seek), works from any thread, and costs nothing
 for callers who do not nest. **Rejected:** inferring the parent from an archivey member
-stream passed as `source` as the only mechanism (lost through any copy; see Open
-Questions for inference as an addition); a context-manager scope (a thread-local,
-silent on another thread, the trap K2 found in `drawing_from`); keeping `Budget`
-alongside (opt-in, does nothing for the ratio, two scopes to explain).
+stream passed as `source` (lost through any copy; implicit; Resolved Questions); a
+context-manager scope (a thread-local, silent on another thread, the trap K2 found in
+`drawing_from`); keeping `Budget` alongside (opt-in, does nothing for the ratio, two
+scopes to explain).
 
 ### 2. A nest-root account replaces `Budget`
 The outermost reader owns one locked account. It holds the nest's member count and its
@@ -98,20 +98,34 @@ is a lifetime quota; the field's docs say so.
 
 ### 3. Ratio: each reader's own rule, plus one rule for the nest
 A `parent=` reader keeps the ratio rule a top-level reader has: its own tally against
-its own size. On top, the account sums every reader's archive-wide ratio tally, and the
-nest is held to `max_ratio` times the outermost archive's trusted size, after the root's
-`ratio_activation_threshold`. So the nest as a whole decodes at most `max_ratio` times
-the upload, whatever its depth and breadth; a child alone can never decode more than it
-could unlinked. Where the outermost reader has no size (a `DIRECTORY`, a stream of
-unknown length), the nest rule does not apply and each reader's own rule still does.
+its own size. On top, the nest is held to `max_ratio` times the outermost archive's
+trusted size, after the root's `ratio_activation_threshold`, on a sum defined as
+follows. Each reader adds one number, the most it has decoded of its archive in one
+pass: the largest of its container stream guard's position (`DecodeRatioGuard`), its
+member read tally (`ReadRatioTally`) and its largest single extraction (`BombTracker`).
+It adds only the growth of that number, so reading again, or extracting after reading,
+adds nothing, and a long-lived reader carries no quota. Each of those counters is
+already held to `max_ratio` times the reader's own size, so a nest of one is never
+refused by the nest rule where the reader's own rules pass: a lone reader behaves
+exactly as today. So the nest as a whole decodes at most `max_ratio` times the upload,
+whatever its depth and breadth; a child alone can never decode more than it could
+unlinked. Where the outermost reader has no size (a `DIRECTORY`, a stream of unknown
+length), the nest rule does not apply and each reader's own rule still does.
 
 `open_nested` readers keep today's rule (against the outermost size), which is sound
-because their bytes also pass through the outer reader's tally; they add their tally to
-the nest's too. The four existing ratio requirements in `safe-extraction` therefore
+because their bytes also pass through the outer reader's tally; they add nothing to the
+nest's sum, since their bytes are already in the outer reader's number (as they add no
+members). The four existing ratio requirements in `safe-extraction` therefore
 stand unchanged for a `parent=` reader, and the nest rule is a new requirement.
 
+The nest ratio error is the always-stop `ResourceLimitError`, as the per-reader one is.
+
 **Rejected:** judging a `parent=` child against the outermost size only (review FB1:
-weaker than unlinked, multiplied by breadth, off under a `DIRECTORY` parent).
+weaker than unlinked, multiplied by breadth, off under a `DIRECTORY` parent); summing
+every counter of every reader, or every decoded byte (review FB12: the counters overlap,
+so an honest `.tar.gz` at 476:1 listed and read sums to 953:1, and an honest `.deb` read
+once to 2372:1; a sum of every decoded byte is a default-on lifetime quota; maintainer
+card 2026-11-13).
 
 ### 4. Memory limits stay per reader for `parent=` children
 `max_decoder_memory`, `max_metadata_bytes`, `max_key_derivation_rounds` and
@@ -129,7 +143,7 @@ opened from a temporary-file path never spools).
 ### 5. Members: each reader's own cap, plus a total for the nest
 A `parent=` reader applies its own config's `max_members`, including the parse-time
 checks in ZIP, 7z, RAR, ISO, RPM and plugins through `context.config`, exactly as today.
-In addition each member it registers is drawn from the account, held to the root's
+In addition each member it registers is drawn from the account, held to the nest's
 `max_members`; the draw keeps the per-reader high-water mark `Budget` uses, so listing
 again does not count again. A reader `open_nested` builds does not draw: its members
 reach the root as the outer listing's members. Opening the same inner archive twice
@@ -140,11 +154,14 @@ RPM and plugins).
 ### 6. Which config each rule reads
 Every per-reader rule reads the child's own config (with `parent=` and no `config`, the
 parent's). The nest rules (member total, decoded-byte total, nest ratio) read the root's
-config, fixed when the root opened. A child config whose value for one of those three
-differs from the root's records `NEST_LIMIT_FROM_ROOT`, naming the field, at open: the
-argument is a resource the nest cannot use, so the spec's permit-and-record rule
-applies. **Rejected:** dropping it silently (FB6); refusing it (forces callers to
-rebuild configs to change a diagnostic policy).
+config, fixed when the root opened, and also the drawing reader's own config: a draw is
+held to the stricter of the two values. So a child config that tightens a nest total
+takes effect for that child's draws, and no value a caller passes is ever unread. A
+child config cannot loosen a nest total; the field docs and `security.md` say so.
+**Rejected:** dropping the child's value silently (FB6); refusing a differing value
+(forces callers to rebuild configs to change a diagnostic policy); a diagnostic for a
+differing value (FB13: fires for a tighter value that works as asked, re-fires for
+inherited configs, and needs a new public code for what the docs can state once).
 
 ### 7. Depth and name checks are two things
 A new nest depth, counted along `_nest_outer` across both kinds of nesting, drives both
@@ -167,11 +184,15 @@ still answers its trusted size, which the nest rule needs; the account outlives 
 readers that hold it. Closing a parent does not close its children.
 
 ### 10. Plumbing
-`_open_resolved` builds the reader inside `reading_inside(parent)`, the thread-local
-`open_nested` already uses, so no `open_read` signature changes. The child's constructor
-consumes the thread-local value once, so a reader that a password provider or an
-`on_diagnostic` callback opens during the open does not join the nest (FB11). The
-`drawing_from` thread-local from PR 1541 is not needed.
+`_open_resolved` wraps only the `backend.open_read(...)` call in
+`reading_inside(parent)`, the thread-local `open_nested` already uses, so no `open_read`
+signature changes and detection, which runs before and emits diagnostics, never sees the
+link. The child's base constructor consumes the thread-local value once, so a reader
+that a password provider or an `on_diagnostic` callback opens later in the open does not
+join the nest (FB11). After `open_read` returns, `_open_resolved` checks
+`reader._nest_outer is parent` and raises an internal error otherwise, so a backend or a
+plugin factory that builds a helper reader first fails a test rather than a limit
+(FB16). The `drawing_from` thread-local from PR 1541 is not needed.
 
 `ArchiveyFileSystem(budget=)` from PR 1541 is removed, and it takes no `parent=`: a
 filesystem is one top-level nest.
@@ -193,9 +214,10 @@ filesystem is one top-level nest.
 - **Default `None`.** The nest ratio total (Decision 3) is on by default and scales with
   the upload: it answers "is this a bomb?". `max_nest_decoded_bytes` is a fixed work
   budget per upload the caller sets: it answers "how much work will I do for one
-  request?", and it is the only nest total when the outermost reader has no size. Both
-  count the same bytes. A 1 MB upload under a 1 GiB cap is stopped by the ratio at
-  800 MB; a 100 MB upload of 50:1 logs passes the ratio (80 GB) and is stopped by the
-  cap at 1 GiB.
+  request?", and it is the only nest total when the outermost reader has no size. They
+  count differently: the ratio total counts each reader's one-pass high-water mark
+  (Decision 3), the fixed cap every byte decoded, again on every re-read. A 1 MB upload
+  under a 1 GiB cap is stopped by the ratio at 800 MB; a 100 MB upload of 50:1 logs
+  passes the ratio (80 GB) and is stopped by the cap at 1 GiB.
 - **No parent inference.** A caller who knowingly handles nested archives passes
   `parent=`; archivey does not force it.

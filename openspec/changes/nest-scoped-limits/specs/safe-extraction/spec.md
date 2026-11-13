@@ -13,16 +13,19 @@ decodes, summed across its levels and its threads; `None` disables it.
   the gap does not fit; a seek to an end the stream cannot size SHALL read to it,
   counted. A read that would cross the cap SHALL decode at most one byte past what is
   left, then raise the always-stop `ResourceLimitError`, so an extraction stops at that
-  member. Readers on several threads MAY each overshoot by one read. Once spent, the
+  member. This holds for a buffer's read-ahead over a source that cannot seek too.
+  Readers on several threads MAY each overshoot by one read. Once spent, the
   nest SHALL refuse every later read before it decodes.
 - **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
-  count where they are decoded, in every format: a compressed TAR's, cpio's or RPM
-  payload's skipped members and headers, a CAB folder's output before the member read,
-  the part of a streaming ZIP member the pass decodes, the solid prefix `unrar` or
-  `unar` decodes and does not emit, and a 7z header stored compressed. A member that is
-  read SHALL count once. A step that decodes all at once (a RAR prefix, a 7z header)
-  SHALL be counted before it runs, and refused, counting nothing, when it does not fit.
-  A sparse TAR member's holes SHALL count as they are read.
+  count where they are decoded, in every format (a compressed TAR's listing included): a
+  compressed TAR's, cpio's or RPM payload's skipped members and headers, a CAB folder's
+  output before the member read, the part of a streaming ZIP member the pass decodes,
+  the solid prefix `unrar` or `unar` decodes and does not emit, and a 7z header stored
+  compressed. A member that is read SHALL count once. A step that decodes all at once (a
+  RAR prefix, a 7z header) SHALL be counted before it runs, and refused, counting
+  nothing, when it does not fit. A sparse TAR member's holes SHALL count as they are
+  read. Other metadata a format decodes into memory (SquashFS metadata blocks, XAR's
+  table of contents) is held by the listing limits, not by this total.
 - A byte decoded again (a member read twice, a backward seek in compressed data, the
   same archive opened twice in one nest) SHALL count again.
 - The counter SHALL NOT refill while the nest lives, so on a reader kept open for long
@@ -36,7 +39,7 @@ decodes, summed across its levels and its threads; `None` disables it.
 
 | Case | Expected |
 | --- | --- |
-| `max_nest_decoded_bytes=350_000`, ZIP of five 100 000-byte members, two read by the outer reader and two by an inner reader opened with `parent=` | The fourth read raises `ResourceLimitError` naming `max_nest_decoded_bytes=350000`; 350 001 bytes counted |
+| `max_nest_decoded_bytes=350_000`, ZIP of five 100 000-byte members, two read by the outer reader and two by the same ZIP opened a second time with `parent=outer` | The fourth read raises `ResourceLimitError` naming `max_nest_decoded_bytes=350000`; 350 001 bytes counted |
 | Unlimited, `.tar.gz` of three 100 000-byte members, `stream_members()` reads only the third | At least 300 000 bytes counted; reading all three counts no more than the decoded tar's size |
 | `max_nest_decoded_bytes=2 * 100_000 + 10`, `extract_all` on the ZIP | Raises; two members written whole, no later member opened |
 | One config, two separate `open_archive` calls with no `parent=` | Each counts from zero |

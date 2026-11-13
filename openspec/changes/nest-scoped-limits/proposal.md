@@ -45,8 +45,7 @@ config's defaults with no extra object.
 ## Impact
 
 - Public API: `open_archive(parent=)` and `DecoderLimits.max_nest_decoded_bytes` added;
-  diagnostic `NEST_LIMIT_FROM_ROOT` added; `Budget`, `ArchiveyConfig.budget` removed
-  (`dev-docs/api-surface.txt`, `docs/api.md`).
+  `Budget`, `ArchiveyConfig.budget` removed (`dev-docs/api-surface.txt`, `docs/api.md`).
 - `src/archivey/core.py`, `config.py`, `internal/nesting.py`, `base_reader.py` (nest
   depth, account, nest ratio), `listing_limits.py`, `format_adapter.py` (depth check),
   `fsspec.py`, and the draw sites (base reader, TAR holes, RAR solid prefix, CAB folder

@@ -34,10 +34,10 @@ from the four methods.
 
 `source`, multi-volume ordering, `streaming`, password candidates/providers, encoding,
 configuration precedence, and backend selection retain their existing contracts.
-`parent` names the open reader whose archive this one was read from; the new reader then
-joins that reader's nest (see "A reader opened inside another joins its nest" and
-"Limits apply per nest"). `format=None` auto-detects; an explicit format bypasses
-detection.
+`parent` names the reader, open or closed, whose archive this one was read from; the new
+reader then joins that reader's nest (see "A reader opened inside another joins its
+nest" and "Limits apply per nest"). `format=None` auto-detects; an explicit format
+bypasses detection.
 
 **An explicit argument the resolved backend cannot act on is handled by its
 *intent*, and the rule SHALL be applied to every such argument:**
@@ -282,13 +282,13 @@ provider or an `on_diagnostic` callback) SHALL NOT join the nest.
 
 | Case | Expected |
 | --- | --- |
-| `parent=outer`, no `config` | `reader.config is outer.config`; in `outer`'s nest |
-| `parent=` with a `config` whose only difference is `diagnostic_policy` | Its own policy; no `NEST_LIMIT_FROM_ROOT` |
+| `outer` opened with `ListingLimits(max_members=2)`, inner of 3 members opened with `parent=outer` and no `config` | The inner listing raises `ResourceLimitError` naming `max_members=2`: the parent's config applies |
+| `parent=` with a `config` whose only difference is `diagnostic_policy` | Its own policy; the nest's totals |
 | `parent=` an object that is not an archivey reader | `ArchiveyUsageError` naming `parent` |
 | `parent=outer` after `outer` was closed (extract, then recurse) | Opens; in `outer`'s nest |
 | Ten archives chained with `parent=` | The tenth open raises `UnsupportedFeatureError`; the ninth opens |
 | `parent=` child whose archive holds the same name twice | `MEMBER_NAME_DUPLICATE` on the child's diagnostics |
-| `ListingLimits(max_members=5)`, outer of 3 members, inner of 3 opened with `parent=outer`, then `outer` closed | The inner listing raises `ResourceLimitError` naming `max_members=5` |
+| `ListingLimits(max_members=5)`, outer of 3 members, listed, then closed; inner of 3 opened with `parent=outer` | The inner listing raises `ResourceLimitError` naming `max_members=5` |
 
 ### Requirement: Limits apply per nest
 
@@ -297,23 +297,30 @@ with its own config, except where `ReaderContext.open_nested` shares them today
 (`max_metadata_bytes` through the outermost tracker, `max_decoder_memory` less what the
 open outer levels declared, `max_ratio` against the outermost archive). On top, an
 account owned by the outermost reader SHALL hold three totals for the whole nest, every
-level counted, closed ones included, read from the outermost reader's config:
+level counted, closed ones included. Each draw SHALL be held to the stricter of the
+outermost reader's config and the drawing reader's own config; a child config can
+tighten a nest total, never loosen it:
 
 - **Members.** Each member a `parent=` reader registers SHALL count against
   `max_members`, once per reader however often it lists. A member that an `open_nested`
-  reader yields SHALL count once, as the outer listing's member. Crossing it SHALL raise
-  `ResourceLimitError` naming `max_members` and the nest.
-- **Ratio.** The bytes every reader of the nest decodes, as each counts them for its
-  archive-wide ratio, SHALL be summed and held to `max_ratio` times the outermost
-  archive's trusted size, once the sum passes the outermost config's
-  `ratio_activation_threshold`. An outermost reader with no trusted size (a `DIRECTORY`,
-  a stream of unknown length) SHALL leave this total off.
+  reader yields SHALL count once, as the outer listing's member. A member a reader holds
+  back before listing it (a cpio or RPM hard-link set) SHALL be drawn when it is held.
+  Crossing the total SHALL raise `ResourceLimitError` naming `max_members` and the nest;
+  the refused member SHALL NOT be counted.
+- **Ratio.** Each reader opened as the outermost or with `parent=` SHALL add the most
+  it has decoded of its archive in one pass (the largest of its container stream's
+  decoded position, its member read tally and its largest single extraction), and only
+  that number's growth: reading again, or extracting after reading, SHALL add nothing.
+  A reader `open_nested` builds SHALL add nothing; its bytes are in its outer reader's
+  number. The sum SHALL be held to `max_ratio` times the outermost archive's trusted
+  size, once it passes `ratio_activation_threshold`, and crossing it SHALL raise the
+  always-stop `ResourceLimitError` naming `max_ratio` and the nest. A nest of one SHALL
+  never be refused by this total where the reader's own ratio rules pass. An outermost
+  reader with no trusted size (a `DIRECTORY`, a stream of unknown length) SHALL leave
+  this total off.
 - **Decoded bytes.** `DecoderLimits.max_nest_decoded_bytes` (`safe-extraction`).
 
-A child config whose `max_members`, `max_ratio`, `ratio_activation_threshold` or
-`max_nest_decoded_bytes` differs from the outermost reader's SHALL record
-`NEST_LIMIT_FROM_ROOT` at open, naming the field; the child's value still applies to the
-child's own per-reader checks. `ListingLimits.max_decoded_bytes`, `max_ppmd_held_input`
+`ListingLimits.max_decoded_bytes`, `max_ppmd_held_input`
 and `ExtractionLimits` SHALL stay per pass, decoder and call.
 
 #### Scenario: nest limit matrix
@@ -324,11 +331,15 @@ and `ExtractionLimits` SHALL stay per pass, decoder and call.
 | Case | Expected |
 | --- | --- |
 | Stored ZIP of 2.17 MB holding a 15 428-byte `.tar.xz` of 100 MiB of zeros; inner opened with `parent=outer` from a temporary-file copy; defaults | An inner read raises the always-stop `ResourceLimitError` naming `max_ratio` after about 11.5 MiB, at the same point as when opened without `parent=` |
-| `max_ratio=100`; outer ZIP of 1 MiB whose deflated members are inner `.tar.gz` archives at 90:1, together 90 MiB; each inner, decoding 90:1, opened with `parent=outer` from a copy | Every inner archive is within its own ratio; a read raises `ResourceLimitError` naming `max_ratio` and the nest once the nest has decoded 100 MiB, plus at most one read |
+| `max_ratio=100`; outer ZIP of 1 MiB whose deflated members are inner `.tar.gz` archives at 90:1, together 90 MiB; each inner, decoding 90:1, opened with `parent=outer` from a copy | Every inner archive is within its own ratio; a read raises `ResourceLimitError` naming `max_ratio` and the nest (always-stop) once the nest's sum passes 100 MiB, plus at most one read |
 | The same inner archive, outer opened from a directory | Inner held to its own ratio only; no nest ratio |
-| `ListingLimits(max_members=5)`, outer of 3 members, inner opened with `parent=` holding 3 | The inner listing raises `ResourceLimitError` naming `max_members=5` at its third member |
+| `ListingLimits(max_members=5)`, outer of 3 members, listed; inner opened with `parent=` holding 3 | The inner listing raises `ResourceLimitError` naming `max_members=5` at its third member |
 | The same, inner opened without `parent=` | Lists all 3: a separate nest |
 | The same, inner listed twice | The second listing counts nothing more |
 | `max_decoder_memory=256 MiB`, outer `.tar.xz` with a 200 MiB dictionary listed, inner `.7z` copied to a file needing 200 MiB opened with `parent=` | Opens and reads; its decoder memory is its own |
-| Child config with `ListingLimits(max_members=10)`, root default | `NEST_LIMIT_FROM_ROOT` naming `max_members`; the child refuses past 10 of its own; the nest holds to 262 144 |
+| Child config with `ListingLimits(max_members=10)`, root default, root listed 5 members; child of 8 | The child's listing raises naming `max_members=10` at its sixth member: the child's stricter value holds its draws on the nest |
+| Child config with `ListingLimits.UNLIMITED`, root `max_members=5`, root listed 3; child of 3 | The child's listing raises naming `max_members=5`: a child cannot loosen a nest total |
+| Default config, honest `.tar.gz` past the activation floor at about 500:1, listed, every member read, then extracted twice | No refusal: a nest of one is held only to its own rules |
+| Default config, honest `.deb` whose `data.tar.gz` is at about 500:1, read once with `stream_members()` | No refusal: the `open_nested` reader adds nothing to the nest's sum |
+| Default config, one member of an honest `.tar.gz` past the floor at 500:1 read 1000 times | No refusal: re-reads add nothing |
 | `ExtractionLimits(max_extracted_bytes=N)`, outer and inner each extracted | Each `extract_all` call is held to N on its own |
