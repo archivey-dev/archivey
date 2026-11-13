@@ -564,7 +564,7 @@ The arguments covered:
 | --- | --- |
 | `open_archive()`, `open_stream()`, `detect_format()` | `config` |
 | `open_archive()`, `open_stream()`, `detect_format()` | `source` |
-| `open_archive()` | `encoding`, `password` |
+| `open_archive()` | `encoding`, `password`, `budget` (a `Budget`) |
 | `ArchiveReader.extract_all()` | `dest`, `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
@@ -622,6 +622,7 @@ directory archive or extract into it.
 | `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
 | `open_archive(src, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
+| `open_archive(src, budget=10)` | `ArchiveyUsageError` naming `budget=`, also a `TypeError` |
 | `extract_all(dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
 | `extract_all(dest, filter=0)` | `ArchiveyUsageError` before the first member is offered |
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |
