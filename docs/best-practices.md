@@ -17,6 +17,14 @@ with archivey.open_archive("photos.zip") as archive:
 Otherwise the file stays open until you call `close()` or the reader is garbage collected, and
 nothing warns you. On Windows an open file can't be deleted or replaced.
 
+When you pass a file object you opened yourself, closing the archive leaves that file open, so
+close it with its own `with`:
+
+```python
+with open("photos.zip", "rb") as f, archivey.open_archive(f) as archive:
+    ...
+```
+
 **Read what you need inside the `with` block.** Once the archive is closed, `members()`, `open()`
 and `read()` raise `ArchiveyUsageError`, and a stream you opened from it raises `ValueError: I/O
 operation on closed file`.
@@ -35,11 +43,11 @@ with archive.stream_members() as members:
         ...
 ```
 
-The pass ends when the block ends, even after an exception. A pass you leave with `break` ends at
-once on CPython, but one kept in a variable, or one an exception left, holds the archive until you
-close it: `open()`, `read()` and a new pass raise `ArchiveyUsageError` meanwhile. `with
-iter(archive) as members:` does the same for a loop over members.
-[Reading once](reading.md#reading-once)
+The pass ends when the block ends, even after an exception. Without the block, a pass ends when
+nothing refers to it any more. That usually happens as soon as the loop ends, but not when your code
+still holds it, such as a pass stored in a variable and left with `break`. Until then the pass holds
+the archive, and `open()`, `read()` and a new pass raise `ArchiveyUsageError`. `with iter(archive)
+as members:` does the same for a loop over members. [Reading once](reading.md#reading-once)
 
 **Check `member.member_state_final` before acting on a streamed member.** A `stream_members` loop
 gives you each member before archivey has read the rest of the archive. For a ZIP from a pipe, a
@@ -51,7 +59,9 @@ saving it to a database. `extract_all` already waits.
 After a loop that runs to its end, every member is final, with two exceptions. A symlink's target
 stays unread under `ArchiveyConfig(read_link_targets=False)`. Without `streaming=True`, a member
 whose size the archive doesn't record, such as a `.bz2` file's, keeps `size=None` until something
-reads it to its end. [Reading once](reading.md#reading-once)
+reads it to its end. To settle them, `archive.verify_all()` reads every member to its end, which
+fills in those sizes, and `archive.open(member)` on a symlink reads its target.
+[Reading once](reading.md#reading-once)
 
 **Read a solid archive with `stream_members()`.** In a `.tar.gz` or most 7z archives, members are
 compressed together, so reaching a member means decompressing the data before it.
@@ -120,7 +130,8 @@ archivey refuses a member that decodes to more than 800 times its compressed siz
 member below that ratio is still read whole. `member.size` gives the size in advance, though some
 formats leave it unset. [Where the guarantees stop](security.md#where-the-guarantees-stop)
 
-**Create a new `Budget` for each upload or request.** A `Budget` counts everything decoded by
-every reader that uses its config, and it never refills. Once it's spent, the next read that
-decodes anything raises `ResourceLimitError`, in any reader that uses that config.
+**Create a new `Budget` for each upload or request.** A `Budget` is a total for one job. It
+counts every byte decoded by every reader that uses its config, nested archives included, and it
+counts a byte again each time a re-read decodes it again. It never refills, so once it's spent, the
+next read that decodes anything raises `ResourceLimitError`, in any reader that uses that config.
 [Hardening](security.md#hardening)
