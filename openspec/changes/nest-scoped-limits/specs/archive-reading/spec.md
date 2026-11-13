@@ -29,7 +29,8 @@ The distinction SHALL be static only: every reader returned at run time is an
 `ArchiveReader` instance, and a streaming reader still raises `ArchiveyUsageError`
 from the four methods.
 
-`tests/test_public_api.py` checks each case under both type checkers the project uses (ty and Pyrefly).
+`tests/test_public_api.py` checks each case under both type checkers the project uses
+(ty and Pyrefly).
 
 `source`, multi-volume ordering, `streaming`, password candidates/providers,
 encoding, configuration precedence, and backend selection retain their existing
@@ -52,11 +53,11 @@ nest's limits"). `format=None` auto-detects; an explicit format bypasses detecti
 `password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
 single value, an ordered sequence, and a provider callable SHALL open identically
 (accepted, never consulted). A single value or a sequence records one diagnostic; a
-provider callable records none, because it offers a password only if asked. A *wrong* password on an *encrypted*
-archive is unaffected and still raises. Each backend SHALL declare whether it consumes
-`encoding` (`ReadBackend.USES_ENCODING`) the same way it declares
-`ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than per-backend
-silence.
+provider callable records none, because it offers a password only if asked. A *wrong*
+password on an *encrypted* archive is unaffected and still raises. Each backend SHALL
+declare whether it consumes `encoding` (`ReadBackend.USES_ENCODING`) the same way it
+declares `ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than
+per-backend silence.
 
 A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=`
 naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:

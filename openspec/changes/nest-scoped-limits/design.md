@@ -2,15 +2,16 @@
 
 Two mechanisms bound work that spans more than one reader today:
 
-- **Format nesting** (`ReaderContext.open_nested`, #1346, ruling 2026-11-08 "charge across
-  the nesting"). The inner reader is built under `nesting.reading_inside(outer)` and finds
-  its outer reader through `enclosing_reader()` (`BaseArchiveReader._nest_outer`). It
-  then shares `max_metadata_bytes` through the outermost `ListingLimitTracker`, gets the
-  `max_decoder_memory` the outer levels left (`_PluginAdapter._nested_config`), and
-  measures `max_ratio` against the outermost archive (`_trusted_source_size`,
-  `_live_consumed`). Its members are yielded as the outer archive's members, so
-  `max_members` and extraction count them once. It is streaming-only and gets no
-  passwords, so spool and key-derivation limits never come up. `MAX_NESTED_DEPTH` is 8.
+- **Format nesting** (`ReaderContext.open_nested`, #1346, ruling 2026-11-08 "charge
+  across the nesting"). The inner reader is built under `nesting.reading_inside(outer)`
+  and finds its outer reader through `enclosing_reader()`
+  (`BaseArchiveReader._nest_outer`). It then shares `max_metadata_bytes` through the
+  outermost `ListingLimitTracker`, gets the `max_decoder_memory` the outer levels left
+  (`_PluginAdapter._nested_config`), and measures `max_ratio` against the outermost
+  archive (`_trusted_source_size`, `_live_consumed`). Its members are yielded as the
+  outer archive's members, so `max_members` and extraction count them once. It is
+  streaming-only and gets no passwords, so spool and key-derivation limits never come
+  up. `MAX_NESTED_DEPTH` is 8.
 - **`Budget`** (#1372, D1 on 11-11): a thread-safe pool of decoded bytes and members on
   `ArchiveyConfig.budget`, drawn by every reader whose config holds it. Its scope is the
   object, so a config reused across requests shares one pool that never refills (thread
@@ -74,9 +75,9 @@ root's limits and charge the account instead of a per-reader counter.
 
 ### 3. Shared while open, as `open_nested` does
 `max_metadata_bytes` keeps its outermost-tracker account; an inner level's charge comes
-off when it closes. `max_decoder_memory`: the inner reader's cap is what the open levels'
-largest declared working sets left, computed when it opens; `_nested_config` moves from
-`_PluginAdapter` to the shared nest code so both kinds use it.
+off when it closes. `max_decoder_memory`: the inner reader's cap is what the open
+levels' largest declared working sets left, computed when it opens; `_nested_config`
+moves from `_PluginAdapter` to the shared nest code so both kinds use it.
 
 ### 4. Ratio against the outermost archive
 `_trusted_source_size` and `_live_consumed` already walk `_nest_outer`; `parent=` sets
@@ -84,11 +85,12 @@ largest declared working sets left, computed when it opens; `_nested_config` mov
 handed to the outermost reader.
 
 ### 5. Limits come from the root
-A reader opened with `parent=` and no `config` uses its parent's config. With a `config`,
-its own non-limit settings apply (diagnostic policy, accelerators, formats), and so do
-the per-reader-only limits (`ListingLimits.max_decoded_bytes`, `max_ppmd_held_input`);
-every shared or summed limit is the root's. **Rejected:** refusing a child config whose
-limits differ (forces callers to rebuild configs to change a diagnostic policy).
+A reader opened with `parent=` and no `config` uses its parent's config. With a
+`config`, its own non-limit settings apply (diagnostic policy, accelerators, formats),
+and so do the per-reader-only limits (`ListingLimits.max_decoded_bytes`,
+`max_ppmd_held_input`); every shared or summed limit is the root's. **Rejected:**
+refusing a child config whose limits differ (forces callers to rebuild configs to change
+a diagnostic policy).
 
 ### 6. Members are counted once per nest
 A reader opened with `parent=` adds its members to the root account; its parse-time
@@ -105,8 +107,9 @@ on what other readers did; surprising for a repeat extraction of one reader).
 ### 8. Parent lifetime
 `parent` must be open when the child opens (`ArchiveyUsageError` otherwise) and must be
 an archivey reader. Closing a parent does not close its children; they keep drawing from
-the account, which outlives the readers that hold it. Depth counts both kinds of nesting;
-past `MAX_NESTED_DEPTH` the open raises `UnsupportedFeatureError`, as `open_nested` does.
+the account, which outlives the readers that hold it. Depth counts both kinds of
+nesting; past `MAX_NESTED_DEPTH` the open raises `UnsupportedFeatureError`, as
+`open_nested` does.
 
 ### 9. Plumbing
 `_open_resolved` builds the reader inside `reading_inside(parent)`, the thread-local

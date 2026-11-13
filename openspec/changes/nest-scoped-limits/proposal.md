@@ -1,9 +1,9 @@
 ## Why
 
-archivey bounds one archive well, but an archive a caller finds inside another and
-opens with `open_archive` gets a fresh set of limits: its ratio is measured against its
-own size, so the cap multiplies by 800 at every level, and its members, decoder memory
-and key derivations are counted as if the outer archive did not exist. `Budget` (PR 1372)
+archivey bounds one archive well, but an archive a caller finds inside another and opens
+with `open_archive` gets a fresh set of limits: its ratio is measured against its own
+size, so the cap multiplies by 800 at every level, and its members, decoder memory and
+key derivations are counted as if the outer archive did not exist. `Budget` (PR 1372)
 was added to close that gap, but it is a second concept with its own scope: a pool the
 caller must create per job and pass around, which silently becomes a process-wide quota
 when it is kept on a reused config. `ReaderContext.open_nested` already shows the better
@@ -36,8 +36,8 @@ shape: the inner reader "shares this archive's limits rather than getting its ow
 
 - `archive-reading`: `open_archive` takes `parent=`; a reader in a nest shares its
   limits; `max_members` counts per nest.
-- `safe-extraction`: the shared-budget requirement is replaced by a per-nest decoded-byte
-  total under `DecoderLimits.max_total_decoded_bytes`.
+- `safe-extraction`: the shared-budget requirement is replaced by a per-nest
+  decoded-byte total under `DecoderLimits.max_total_decoded_bytes`.
 
 ## Impact
 
@@ -49,6 +49,6 @@ shape: the inner reader "shares this archive's limits rather than getting its ow
   and the four draw sites (base reader, TAR holes, RAR solid prefix, CAB folder skip).
 - Docs: `docs/security.md`, the nested-upload recipe in `docs/recipes.md` (passes
   `parent=` instead of a budget), `dev-docs/threat-model.md`.
-- Tests: `tests/test_budget.py` becomes the nest-account tests; `test_format_api_nested.py`
-  and `test_argument_boundary.py` follow.
+- Tests: `tests/test_budget.py` becomes the nest-account tests;
+  `test_format_api_nested.py` and `test_argument_boundary.py` follow.
 - Supersedes the unmerged PR 1541 (`open_archive(budget=)`).

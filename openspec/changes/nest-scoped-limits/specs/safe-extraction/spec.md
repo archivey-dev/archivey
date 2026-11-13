@@ -2,8 +2,8 @@
 
 ### Requirement: A nest's decoded bytes are held to one total
 
-`DecoderLimits.max_total_decoded_bytes: int | None` SHALL cap the bytes every reader of a
-nest (archive-reading, "A reader opened inside another shares its nest's limits")
+`DecoderLimits.max_total_decoded_bytes: int | None` SHALL cap the bytes every reader of
+a nest (archive-reading, "A reader opened inside another shares its nest's limits")
 decodes, summed across its levels and its threads; `None` disables it.
 
 - **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an
