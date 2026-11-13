@@ -143,7 +143,7 @@ class ListingLimitTracker:
     weighed late, a TAR sparse map) is charged to the outermost tracker too, while
     the inner level is open, and its checks count it.
 
-    ``budget`` is the config's shared :class:`~archivey.config.Budget`, if any: each
+    ``budget`` is the reader's shared :class:`~archivey.config.Budget`, if any: each
     tracker draws its own members from it, whatever its nesting.
     """
 

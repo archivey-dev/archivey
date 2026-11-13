@@ -62,7 +62,7 @@ from typing import (
     cast,
 )
 
-from archivey.config import ArchiveyConfig, DecoderLimits
+from archivey.config import ArchiveyConfig, Budget, DecoderLimits
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticContext,
@@ -585,6 +585,9 @@ class ReaderContext:
     _decompress_coder: (
         Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
     ) = None
+    # The reader's ``open_archive(budget=)``, for a built-in reader that decodes past
+    # members itself (CAB's folder skip). Internal, set by the adapter; not for plugins.
+    _budget: Budget | None = None
 
     def __init__(
         self,

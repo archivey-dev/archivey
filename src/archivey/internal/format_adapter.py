@@ -308,6 +308,7 @@ class _PluginAdapter(BaseArchiveReader):
             usage=self._usage,
         )
         context._usage = self._usage
+        context._budget = self._budget
         context._spanning_check = self._new_spanning_check
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)

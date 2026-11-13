@@ -505,11 +505,10 @@ A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here,
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.
 
 If you need to look inside, give every level one `archivey.Budget`, and refuse the upload when
-archives are nested more deeply than you allow. Every reader whose config holds the budget draws
-from it, so the bytes decoded and the members listed at all levels count against one total:
+archives are nested more deeply than you allow. Every reader opened with the budget draws from it,
+so the bytes decoded and the members listed at all levels count against one total:
 
 ```python
-import dataclasses
 import io
 import tempfile
 import zipfile
@@ -530,9 +529,11 @@ CONFIG = archivey.ArchiveyConfig(
 MAX_DEPTH = 2
 
 
-def scan(source, config, depth=0):
+def scan(source, budget, depth=0):
     names = []
-    with archivey.open_archive(source, streaming=True, config=config) as archive:
+    with archivey.open_archive(
+        source, streaming=True, config=CONFIG, budget=budget
+    ) as archive:
         for member, stream in archive.stream_members():
             names.append("  " * depth + member.name)
             if not member.is_file or stream is None:
@@ -542,13 +543,13 @@ def scan(source, config, depth=0):
                     copy.write(chunk)
                 copy.seek(0)
                 try:
-                    archivey.detect_format(copy, config=config)
+                    archivey.detect_format(copy, config=CONFIG)
                 except archivey.FormatDetectionError:
                     continue
                 if depth + 1 > MAX_DEPTH:
                     raise RuntimeError("archives are nested too deeply")
                 copy.seek(0)
-                names += scan(copy, config, depth + 1)
+                names += scan(copy, budget, depth + 1)
     return names
 
 
@@ -561,8 +562,7 @@ with zipfile.ZipFile("upload.zip", "w") as zf:
 
 # A fresh budget for each upload: 100 MiB decoded and 10 000 members, all levels together.
 budget = archivey.Budget(max_decoded_bytes=100 * 2**20, max_members=10_000)
-config = dataclasses.replace(CONFIG, budget=budget)
-print("\n".join(scan("upload.zip", config)))
+print("\n".join(scan("upload.zip", budget)))
 ```
 
 Going over the budget raises `ResourceLimitError`. Each member is copied to a temporary file, which

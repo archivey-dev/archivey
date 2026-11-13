@@ -100,6 +100,7 @@ if TYPE_CHECKING:
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     ArchiveyConfig,
+    Budget,
     DecoderLimits,
     ExtractionLimits,
 )
@@ -183,7 +184,7 @@ from archivey.internal.naming import (
     normalize_hardlink_target,
     resolve_link_target_name,
 )
-from archivey.internal.nesting import enclosing_reader
+from archivey.internal.nesting import budget_for_new_reader, enclosing_reader
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
@@ -824,6 +825,9 @@ class BaseArchiveReader(ArchiveReader):
         # The reader this one reads inside, or ``None`` at the top: the readers of one
         # nest share their budgets (``archivey.internal.nesting``).
         self._nest_outer: BaseArchiveReader | None = enclosing_reader()
+        # The ``open_archive(budget=)`` this reader draws from, shared with the
+        # readers nested inside it (``archivey.internal.nesting``).
+        self._budget: Budget | None = budget_for_new_reader(self._nest_outer)
         self._member_streams = member_streams
         self._open_site = open_site
         # A random, opaque identity token (not id(self), which the allocator can reuse
@@ -923,18 +927,18 @@ class BaseArchiveReader(ArchiveReader):
         self._materialized: _Materialized | None = None
         self._listing_tracker = ListingLimitTracker(
             self._config.listing_limits,
-            budget=self._config.budget,
+            budget=self._budget,
             outer=None
             if self._nest_outer is None
             else self._nest_outer._listing_tracker,
         )
         # What one listing pass decodes (``ListingLimits.max_decoded_bytes``), and what
-        # a decode stage draws from: that and the config's budget (``_budget_drawn``).
+        # a decode stage draws from: that and the reader's budget (``_budget_drawn``).
         decode_cap = self._config.listing_limits.max_decoded_bytes
         self._listing_decode = (
             ListingDecodeCount(decode_cap) if decode_cap is not None else None
         )
-        self._stage_draws = StageDraws.of(self._config.budget, self._listing_decode)
+        self._stage_draws = StageDraws.of(self._budget, self._listing_decode)
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
@@ -1562,7 +1566,7 @@ class BaseArchiveReader(ArchiveReader):
         self, stream: BinaryIO, *, draw_budget: bool = True
     ) -> BinaryIO:
         """Wrap ``stream`` to count decoded/output bytes when measurement is on, and to
-        draw them from the config's :class:`~archivey.Budget` when it holds one.
+        draw them from the reader's :class:`~archivey.Budget` when it holds one.
 
         Backends call this on the stream that *is* the decompressor (or stored-data)
         output: member streams for ZIP/TAR/single-file, folder/solid-block streams for
@@ -1586,7 +1590,7 @@ class BaseArchiveReader(ArchiveReader):
         return stream
 
     def _budget_drawn(self, stream: BinaryIO, *, stage: bool = False) -> BinaryIO:
-        """``stream``, drawing every byte it delivers from the config's
+        """``stream``, drawing every byte it delivers from the reader's
         :class:`~archivey.Budget`, or ``stream`` itself when there is none.
 
         Put on a decode stage, it draws what the decoder produces whoever reads it: a
@@ -1597,7 +1601,7 @@ class BaseArchiveReader(ArchiveReader):
         (``_stage_draws``), which counts only while listing work runs, so a caller's
         own reads between walk steps do not count.
         """
-        budget = self._stage_draws if stage else self._config.budget
+        budget = self._stage_draws if stage else self._budget
         if budget is None:
             return stream
         # Imported here, as the other wrappers built only on request.
@@ -1827,7 +1831,7 @@ class BaseArchiveReader(ArchiveReader):
         records none, or records one that cannot be trusted (a macOS ZIP's size
         modulo 2³²).
 
-        ``draw_budget=False`` leaves the config's :class:`~archivey.Budget` to a decode
+        ``draw_budget=False`` leaves the reader's :class:`~archivey.Budget` to a decode
         stage below ``inner`` that draws every byte it produces (``_budget_drawn``),
         so the member's bytes are not drawn twice.
 

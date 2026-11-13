@@ -335,28 +335,29 @@ The costs were measured on one 2.8 GHz core.
 Going over a limit raises `ResourceLimitError`.
 
 These limits hold for one reader. To hold a whole job to one total, such as an upload with archives
-inside it, or a batch of archives read on several threads, put an `archivey.Budget` in the config:
+inside it, or a batch of archives read on several threads, pass an `archivey.Budget` to each
+`open_archive` call of that job:
 
 ```python
 budget = archivey.Budget(max_decoded_bytes=1 * 2**30, max_members=100_000)
-config = archivey.ArchiveyConfig(budget=budget)
+with archivey.open_archive("upload.zip", budget=budget) as archive:
+    ...
 ```
 
-Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
-members it lists from the one budget, so the total is shared across readers, nested archives and
-threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
-CAB folder to reach a later one is not free. A read that would go past the budget raises
-`ResourceLimitError`, and an extraction stops there.
+Every reader opened with that budget draws the bytes it decodes and the members it lists from it, so
+the total is shared across the job's readers, nested archives and threads. The config holds only
+settings, so one config can serve every job. Bytes decoded only to get past a member count too:
+skipping members of a `.tar.gz` or a CAB folder to reach a later one is not free. A read that would
+go past the budget raises `ResourceLimitError`, and an extraction stops there.
 
 A budget is the total for one job, and it is meant for processing each archive once. It counts the
 work archivey does, so a byte counts again each time it is decoded again: reading a member twice,
 opening the same archive again, or seeking back in a compressed member and reading on all use more
 of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and again when
 you read them. Listing again is free: the reader keeps its member list. It never refills, so make a
-new `Budget` for each upload or request rather than keeping one on a long-lived config. The
-per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory use are
-bounded by running the job in a process you can stop. See the [archives inside the
-upload](recipes.md#archives-inside-the-upload) recipe.
+new `Budget` for each upload or request. The per-reader limits still apply. Decoder memory stays a
+per-decoder limit, and time and memory use are bounded by running the job in a process you can stop.
+See the [archives inside the upload](recipes.md#archives-inside-the-upload) recipe.
 
 For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats
 people send today (ZIP, TAR, RAR, 7z, and gzip, bzip2, xz and zstd) and refuses ZIP members in the

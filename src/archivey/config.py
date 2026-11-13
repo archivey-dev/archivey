@@ -778,9 +778,10 @@ class Budget:
     that each stay inside them and together do not: a ZIP of a hundred ZIPs, each
     expanding to the limit, or the same archive opened in many threads. A budget is
     one count for all of them. Pass the same ``Budget`` as
-    :attr:`ArchiveyConfig.budget` to every reader that should share it (the readers
-    opened from one upload's nested archives, or the threads serving one request), and
-    each draws from it as it works.
+    :func:`~archivey.open_archive`'s ``budget=`` to every reader that should share it
+    (the readers opened from one upload's nested archives, or the threads serving one
+    request), and each draws from it as it works. An archive a format reads inside its
+    own (``ReaderContext.open_nested``) draws from its outer reader's budget.
 
     A budget is the total for one job, meant for processing each archive once. It
     counts the work archivey does, not the data the job ends up with: a byte counts
@@ -790,8 +791,8 @@ class Budget:
     restarts). An archive whose listing has to decode it (a ``.tar.gz``, a
     ``.cpio.gz``) counts once for the listing and again for each member read after
     it. Listing again does not count: the reader keeps its member list. Make a new
-    ``Budget`` for each job or request; one kept on a long-lived config runs out and
-    stays spent. What counts:
+    ``Budget`` for each job or request; one kept for the life of a process runs out
+    and stays spent. What counts:
 
     - member data counts against ``max_decoded_bytes`` as it is decoded: the reads of
       ``open()``, ``stream_members()``, ``read()``, ``extract_all`` and
@@ -834,7 +835,7 @@ class Budget:
     ``None`` on a field leaves that count unlimited. A budget is safe to share between
     threads. It cannot be pickled, since a copy in another process would be a
     separate pool, and ``copy.copy`` and ``copy.deepcopy`` return the budget itself,
-    so a copied config still shares it.
+    so an object copied with one still shares it.
     """
 
     __slots__ = (
@@ -934,7 +935,7 @@ class Budget:
         if cap is not None and total > cap:
             raise _budget_error(
                 f"Budget exhausted: max_decoded_bytes={cap} (the readers sharing "
-                f"this ArchiveyConfig.budget have decoded {total} bytes)"
+                f"this budget have decoded {total} bytes)"
             )
 
     def _refuse_bytes(self, n: int, what: str) -> None:
@@ -944,7 +945,7 @@ class Budget:
         cap = self._max_decoded_bytes
         raise _budget_error(
             f"Budget exhausted: max_decoded_bytes={cap} (the readers sharing this "
-            f"ArchiveyConfig.budget have decoded {self._decoded_bytes} bytes; {what} "
+            f"budget have decoded {self._decoded_bytes} bytes; {what} "
             f"would decode {n} more)"
         )
 
@@ -966,7 +967,7 @@ class Budget:
             if cap is not None and total > cap:
                 raise _budget_error(
                     f"Budget exhausted: max_members={cap} (the readers sharing this "
-                    f"ArchiveyConfig.budget would list {total} members)"
+                    f"budget would list {total} members)"
                 )
             self._members = total
 
@@ -1191,14 +1192,6 @@ class ArchiveyConfig:
     ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
-    budget: Budget | None = None
-    """A pool of decoded bytes and members shared with every other reader given the
-    same :class:`Budget` (``None``: none). Set it to hold an upload's nested archives,
-    or the readers of one request, to one total; the per-reader limits still apply
-    to each reader as well. A budget is one job's total and never refills: give each
-    job a new one, since a config kept for many jobs would share one that runs out.
-    """
-
     recover_partial_data: bool = True
     """Whether a read that meets damaged compressed data first hands back the bytes
     before the damage.
@@ -1280,9 +1273,6 @@ def _check_policy_fields(config: ArchiveyConfig) -> None:
             call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-    check_instance(
-        config.budget, Budget, call="ArchiveyConfig(budget=…)", allow_none=True
-    )
 
 
 def _convert_detection_budget(config: ArchiveyConfig) -> None:

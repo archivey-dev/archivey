@@ -41,6 +41,7 @@ from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
+    Budget,
     ExtractionLimits,
     ListingLimits,
     PasswordInput,
@@ -63,6 +64,7 @@ from archivey.exceptions import (
 from archivey.internal.arg_checks import (
     check_config,
     check_encoding,
+    check_instance,
     check_path_not_empty,
     raise_if_text_stream,
     raise_if_write_only_stream,
@@ -92,6 +94,7 @@ from archivey.internal.format_args import (
     outer_stream_format,
 )
 from archivey.internal.format_provenance import FormatProvenance, stamp_error_context
+from archivey.internal.nesting import drawing_from
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
@@ -376,6 +379,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
+    budget: Budget | None = None,
 ) -> ArchiveReader: ...
 
 
@@ -390,6 +394,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
+    budget: Budget | None = None,
 ) -> ForwardArchiveReader: ...
 
 
@@ -403,6 +408,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
+    budget: Budget | None = None,
 ) -> ForwardArchiveReader:
     """Open an archive for reading.
 
@@ -448,7 +454,15 @@ def open_archive(
     ``config`` supplies library tuning knobs (accelerator modes, the diagnostic
     policy, default extraction limits, and listing resource limits via
     ``listing_limits``). ``None`` selects the module default
-    :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`.
+    :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`. A config holds settings only, so one
+    config can serve every call.
+
+    ``budget`` is a :class:`~archivey.Budget` the reader draws the bytes it decodes and
+    the members it lists from, shared with every other reader given the same one: the
+    readers of one upload's nested archives, or the threads serving one request. A
+    budget is one job's total and never refills, so make a new one for each job.
+    ``None`` (the default) draws from none; the per-reader limits in ``config`` apply
+    either way.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
@@ -570,6 +584,7 @@ def open_archive(
             f"pass the archive's format, or None to auto-detect."
         )
     check_config(config, call="open_archive(config=…)")
+    check_instance(budget, Budget, call="open_archive(budget=…)")
     check_encoding(encoding, call="open_archive(encoding=…)")
 
     if streaming and concurrent_operations:
@@ -601,7 +616,7 @@ def open_archive(
     )
     slot = _SourceSlot(resolved.source)
     try:
-        with noting_fsspec_decoding(source):
+        with noting_fsspec_decoding(source), drawing_from(budget):
             return _open_resolved(
                 slot,
                 resolved,

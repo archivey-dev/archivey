@@ -1,9 +1,8 @@
-"""``ArchiveyConfig.budget``: one pool of decoded bytes and members for many readers."""
+"""``open_archive(budget=)``: one pool of decoded bytes and members for many readers."""
 
 from __future__ import annotations
 
 import copy
-import dataclasses
 import gzip
 import io
 import pickle
@@ -40,9 +39,7 @@ def _tar(count: int = 3, *, size: int = _MEMBER) -> bytes:
 
 
 def _open(data: bytes, budget: Budget, **kwargs: object) -> archivey.ArchiveReader:
-    return archivey.open_archive(
-        io.BytesIO(data), config=ArchiveyConfig(budget=budget), **kwargs
-    )
+    return archivey.open_archive(io.BytesIO(data), budget=budget, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -59,9 +56,27 @@ def test_bad_limits_are_refused_at_construction(kwargs: dict[str, object]) -> No
         Budget(**kwargs)  # type: ignore[arg-type]
 
 
-def test_config_refuses_a_budget_of_another_type() -> None:
+def test_open_archive_refuses_a_budget_of_another_type() -> None:
     with pytest.raises(ArchiveyUsageError, match="budget="):
-        ArchiveyConfig(budget=10)  # type: ignore[arg-type]
+        archivey.open_archive(io.BytesIO(_zip()), budget=10)  # type: ignore[arg-type]
+
+
+def test_a_config_has_no_budget() -> None:
+    """A config holds settings only, so one config can serve every job: the budget,
+    one job's running total, goes to each call."""
+    assert not hasattr(ArchiveyConfig(), "budget")
+    with pytest.raises(TypeError):
+        ArchiveyConfig(budget=Budget())  # type: ignore[call-arg]
+
+
+def test_one_config_reused_with_a_budget_per_job_never_runs_out() -> None:
+    data = _zip(count=1)
+    config = ArchiveyConfig()
+    for _ in range(5):
+        budget = Budget(max_decoded_bytes=_MEMBER)
+        with archivey.open_archive(io.BytesIO(data), config=config, budget=budget) as r:
+            r.read(r.members()[0])
+        assert budget.decoded_bytes == _MEMBER
 
 
 def test_reads_of_two_readers_draw_from_one_pool() -> None:
@@ -196,11 +211,9 @@ def test_threads_share_one_count() -> None:
 
 def test_copies_share_the_budget_and_pickle_is_refused() -> None:
     budget = Budget(max_members=3)
-    config = ArchiveyConfig(budget=budget)
     assert copy.copy(budget) is budget
     assert copy.deepcopy(budget) is budget
-    assert copy.deepcopy(config).budget is budget
-    assert dataclasses.replace(config, read_link_targets=False).budget is budget
+    assert copy.deepcopy({"budget": budget})["budget"] is budget
     with pytest.raises(TypeError, match="cannot be pickled"):
         pickle.dumps(budget)
 
@@ -449,7 +462,7 @@ def _open_pipe(data: bytes, budget: Budget) -> archivey.ArchiveReader:
     from tests.streams_util import NonSeekableBytesIO
 
     return archivey.open_archive(
-        NonSeekableBytesIO(data), config=ArchiveyConfig(budget=budget), streaming=True
+        NonSeekableBytesIO(data), budget=budget, streaming=True
     )
 
 
@@ -527,9 +540,7 @@ def test_a_tar_gz_on_a_pipe_stops_one_byte_past_the_budget(pipe: bool) -> None:
     budget = Budget(max_decoded_bytes=20_000)
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
     with (
-        archivey.open_archive(
-            source, config=ArchiveyConfig(budget=budget), streaming=True
-        ) as reader,
+        archivey.open_archive(source, budget=budget, streaming=True) as reader,
         pytest.raises(ResourceLimitError, match="Budget exhausted"),
     ):
         for _member, stream in reader.stream_members():
@@ -567,13 +578,13 @@ def test_a_solid_rar_open_draws_the_prefix_unrar_decodes_first() -> None:
 
     path = Path(__file__).parent / "fixtures" / "rar" / "basic_solid__.rar"
     budget = Budget()
-    with archivey.open_archive(path, config=ArchiveyConfig(budget=budget)) as reader:
+    with archivey.open_archive(path, budget=budget) as reader:
         assert reader.read("subdir/file2.txt") == b"Hello, universe!"
     # file1.txt (13 bytes) comes first in the solid stream.
     assert budget.decoded_bytes == 13 + 16
     budget = Budget(max_decoded_bytes=20)
     with (
-        archivey.open_archive(path, config=ArchiveyConfig(budget=budget)) as reader,
+        archivey.open_archive(path, budget=budget) as reader,
         pytest.raises(ResourceLimitError, match="solid prefix"),
     ):
         reader.read("implicit_subdir/file3.txt")
@@ -587,13 +598,29 @@ def test_an_encoded_7z_header_is_drawn_before_it_decodes() -> None:
 
     path = Path(__file__).parent / "fixtures" / "sevenzip" / "solid_three_members.7z"
     budget = Budget()
-    with archivey.open_archive(path, config=ArchiveyConfig(budget=budget)):
+    with archivey.open_archive(path, budget=budget):
         header = budget.decoded_bytes
     assert header > 0
     budget = Budget(max_decoded_bytes=header - 1)
     with (
         pytest.raises(ResourceLimitError, match="encoded 7z header"),
-        archivey.open_archive(path, config=ArchiveyConfig(budget=budget)),
+        archivey.open_archive(path, budget=budget),
     ):
         pass
     assert budget.decoded_bytes == 0
+
+
+def test_a_budget_reaches_only_the_call_it_is_passed_to() -> None:
+    """Readers opened after a call with a budget, or while its reader is open, draw
+    nothing from it unless they are given it too."""
+    data = _zip(count=1)
+    budget = Budget()
+    with _open(data, budget) as first:
+        with archivey.open_archive(io.BytesIO(data)) as other:
+            other.read(other.members()[0])
+        assert budget.decoded_bytes == 0
+        first.read(first.members()[0])
+    assert budget.decoded_bytes == _MEMBER
+    with archivey.open_archive(io.BytesIO(data)) as later:
+        later.read(later.members()[0])
+    assert budget.decoded_bytes == _MEMBER

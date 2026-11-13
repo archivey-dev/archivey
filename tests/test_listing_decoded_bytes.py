@@ -106,14 +106,14 @@ def test_it_draws_with_a_budget_and_both_hold() -> None:
     data = gzip.compress(tar, mtime=0)
     budget = Budget()
     with archivey.open_archive(
-        io.BytesIO(data), config=_config(len(tar), budget=budget)
+        io.BytesIO(data), config=_config(len(tar)), budget=budget
     ) as reader:
         reader.members()
     assert budget.decoded_bytes >= 3 * _MEMBER
     small = Budget(max_decoded_bytes=_MEMBER)
     with (
         archivey.open_archive(
-            io.BytesIO(data), config=_config(len(tar), budget=small)
+            io.BytesIO(data), config=_config(len(tar)), budget=small
         ) as reader,
         pytest.raises(ResourceLimitError, match="Budget exhausted"),
     ):
@@ -281,7 +281,8 @@ def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
     with (
         archivey.open_archive(
             NonSeekableBytesIO(data),
-            config=_config(None, budget=Budget(max_decoded_bytes=1000)),
+            config=_config(None),
+            budget=Budget(max_decoded_bytes=1000),
             streaming=True,
         ) as reader,
         pytest.raises(ResourceLimitError, match="max_decoded_bytes"),

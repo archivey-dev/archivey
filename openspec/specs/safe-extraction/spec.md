@@ -1017,11 +1017,13 @@ turns it off.
 
 ### Requirement: A shared budget holds many readers to one total
 
-`ArchiveyConfig.budget` SHALL take an `archivey.Budget(max_decoded_bytes=,
-max_members=)` or `None` (the default: no shared budget). Every reader opened with a
-config holding a budget SHALL draw from it, whether the readers run one after another,
-nest, or run on several threads; copies of the config (`copy`, `deepcopy`,
-`dataclasses.replace`) SHALL share the same budget, and a budget SHALL refuse to be
+`open_archive(budget=)` (and `ArchiveyFileSystem(budget=)`) SHALL take an
+`archivey.Budget(max_decoded_bytes=, max_members=)` or `None` (the default: no shared
+budget). `ArchiveyConfig` SHALL hold no budget, so one config can serve many jobs.
+Every reader opened with a budget SHALL draw from it, whether the readers run one after
+another, nest, or run on several threads; a reader a format opens inside its own
+(`ReaderContext.open_nested`) SHALL draw from its outer reader's budget. `copy` and
+`deepcopy` of a budget SHALL return the budget itself, and a budget SHALL refuse to be
 pickled.
 
 - **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an

@@ -563,15 +563,13 @@ def test_a_member_the_nest_refuses_to_hold_is_not_drawn_from_the_budget(
     monkeypatch.setitem(_KINDS, b"H", HoldingBoxesHandler.format)
     data = _boxes((b"H", _boxes((b"H", _boxes((b"T", _tar([("a", b"a")])))))))
     budget = Budget(max_members=100)
-    config = ArchiveyConfig(
-        listing_limits=ListingLimits(max_metadata_bytes=1000), budget=budget
-    )
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1000))
     with registration_scope():
         register_format(HoldingBoxesHandler)
         with pytest.raises(
             ResourceLimitError, match="max_metadata_bytes=1000.*inner archive"
         ):
-            _names(data, HoldingBoxesHandler.format, config)
+            _names(data, HoldingBoxesHandler.format, config, budget=budget)
     assert budget.members == 2
 
 
@@ -643,8 +641,16 @@ def test_walk_charges_of_inner_levels_count_against_one_metadata_budget(
             assert tracker._nested_bytes == 0
 
 
-def _names(data: bytes, fmt: ArchiveFormat, config: ArchiveyConfig) -> list[str]:
-    with open_archive(io.BytesIO(data), format=fmt, config=config) as reader:
+def _names(
+    data: bytes,
+    fmt: ArchiveFormat,
+    config: ArchiveyConfig,
+    *,
+    budget: Budget | None = None,
+) -> list[str]:
+    with open_archive(
+        io.BytesIO(data), format=fmt, config=config, budget=budget
+    ) as reader:
         return [m.name for m in reader.members()]
 
 

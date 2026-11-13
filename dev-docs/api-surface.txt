@@ -178,9 +178,8 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, budget: Budget | None = None, recover_partial_data: bool = True) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: bool = True) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
-field archivey.ArchiveyConfig.budget: Budget | None = None
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
 field archivey.ArchiveyConfig.diagnostic_policy: DiagnosticPolicy = <factory>
@@ -663,7 +662,7 @@ function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | 
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]
 function archivey.list_supported_formats(*, config: ArchiveyConfig | None = None) -> list[ArchiveFormat]
-function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None) -> ForwardArchiveReader
+function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, budget: Budget | None = None) -> ForwardArchiveReader
 function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
 function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
 module archivey.detection_cost
@@ -1251,7 +1250,7 @@ function archivey.terminal.escape_control_chars(text: str) -> str
 function archivey.terminal.quoted(text: str) -> str
 module archivey.fsspec
 class archivey.fsspec.ArchiveyFileSystem(AbstractArchiveFileSystem)
-init archivey.fsspec.ArchiveyFileSystem(fo: str | os.PathLike[str] | OpenFile | BinaryIO = '', *, target_protocol: str | None = None, target_options: dict[str, Any] | None = None, format: ArchiveFormat | str | None = None, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, **kwargs: Any) -> None
+init archivey.fsspec.ArchiveyFileSystem(fo: str | os.PathLike[str] | OpenFile | BinaryIO = '', *, target_protocol: str | None = None, target_options: dict[str, Any] | None = None, format: ArchiveFormat | str | None = None, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, budget: Budget | None = None, policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT, **kwargs: Any) -> None
 attribute archivey.fsspec.ArchiveyFileSystem.cachable = False
 method archivey.fsspec.ArchiveyFileSystem.close(self) -> None
 method archivey.fsspec.ArchiveyFileSystem.cp_file(self, *args: Any, **kwargs: Any) -> Any
