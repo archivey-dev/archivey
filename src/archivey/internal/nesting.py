@@ -51,7 +51,12 @@ def enclosing_reader() -> BaseArchiveReader | None:
 @contextmanager
 def drawing_from(budget: Budget | None) -> Generator[None]:
     """Build top-level readers that draw from ``budget`` on this thread while the
-    block runs (``open_archive(budget=)``)."""
+    block runs (``open_archive(budget=)``).
+
+    A thread-local rather than an argument because the reader's constructor sits
+    under every backend's ``open_read``. The cost: a reader built on another thread,
+    or after the block ends, and not under :func:`reading_inside`, draws from no
+    budget, with no error. Build every reader on this thread inside the block."""
     before = getattr(_local, "budget", None)
     _local.budget = budget
     try:

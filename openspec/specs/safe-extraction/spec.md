@@ -1057,8 +1057,8 @@ pickled.
 #### Scenario: Two readers share one budget
 
 - **GIVEN** `Budget(max_decoded_bytes=350_000)` and a ZIP of five 100 000-byte members
-- **WHEN** one reader reads two members, closes, and a second reader with the same
-  config reads two more
+- **WHEN** one reader reads two members, closes, and a second reader opened with the
+  same budget reads two more
 - **THEN** the second reader's second read raises `ResourceLimitError` naming
   `max_decoded_bytes=350000`
 - **AND** the budget has drawn 350 001 bytes
