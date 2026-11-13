@@ -1,8 +1,9 @@
 # nest-scoped-limits — an archive opened inside another counts toward its upload's totals
 
-**Status:** Design revised after review round 1; waiting on the maintainer's go. Depends
-on nothing; supersedes the budget-argument commits on the same pull request. Breaking:
-yes, but only for Budget, which was never released. Effort: medium.
+**Status:** Design revised after review round 1; maintainer questions settled; review
+round 2 next. Depends on nothing; supersedes the budget-argument commits on the same
+pull request. Breaking: yes, but only for Budget, which was never released. Effort:
+medium.
 
 **Why it matters:** Today an archive that a caller finds inside an upload and opens on
 its own gets a fresh set of limits, so the ratio cap multiplies by eight hundred at
@@ -21,9 +22,8 @@ caller-opened archives; format-level nesting keeps its sharing because its level
 at once. Extraction limits stay per call, and the listing decode cap per pass. Unrelated
 archives in one request get no shared total; the caller bounds that.
 
-**Your call later:** The name and default of the decoded-byte cap (recommended: a name
-that says "nest", no cap by default), and whether to infer the parent from a member
-stream later.
+**Settled:** The decoded-byte cap is named max_nest_decoded_bytes and has no default
+value; the parent is never inferred.
 
 **Bottom line:** A medium refactor that leaves one concept instead of two and closes the
 ratio compounding, best done before 0.4.0 ships Budget.

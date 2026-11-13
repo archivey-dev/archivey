@@ -186,17 +186,16 @@ filesystem is one top-level nest.
 - [Two rules for members and ratio] → each is the familiar per-archive rule plus one
   total; the error says which one was crossed.
 
-## Open Questions
+## Resolved Questions (maintainer, 2026-11-13)
 
-- Name and home of the decoded-byte total. Recommendation:
-  `DecoderLimits.max_nest_decoded_bytes`, the scope in the name, beside
-  `ListingLimits.max_decoded_bytes` (one pass) and
-  `ExtractionLimits.max_extracted_bytes` (one call). Alternative: a `NestLimits` class
-  holding it, if more nest totals come.
-- Its default. Recommendation: `None`. With the nest ratio rule the nest already has a
-  default-on total that scales with the upload; a fixed number would be a lifetime quota
-  on long-lived readers.
-- Inferring `parent` when `source` is a member stream of an open archivey reader and
-  `parent` is not given (FB11). Safer by default; the cost is a second way in and a
-  changed result for callers who pass member streams today. Recommendation: not in this
-  change; reconsider once `parent=` has users.
+- **Name and home:** `DecoderLimits.max_nest_decoded_bytes`. "Nest", not "nested": the
+  cap counts every level, the outermost included.
+- **Default `None`.** The nest ratio total (Decision 3) is on by default and scales with
+  the upload: it answers "is this a bomb?". `max_nest_decoded_bytes` is a fixed work
+  budget per upload the caller sets: it answers "how much work will I do for one
+  request?", and it is the only nest total when the outermost reader has no size. Both
+  count the same bytes. A 1 MB upload under a 1 GiB cap is stopped by the ratio at
+  800 MB; a 100 MB upload of 50:1 logs passes the ratio (80 GB) and is stopped by the
+  cap at 1 GiB.
+- **No parent inference.** A caller who knowingly handles nested archives passes
+  `parent=`; archivey does not force it.
