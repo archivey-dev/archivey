@@ -513,11 +513,12 @@ per-call listing-limits override.
 class ListingLimits:
     max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
+    max_decoded_bytes: int | None = 4 * 2**30  # 4 GiB
     UNLIMITED: ClassVar["ListingLimits"]
 ```
 
-`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables both.
-Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
+`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables all three.
+Crossing any guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
 substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
@@ -550,6 +551,29 @@ non-seekable source has no directory to read at open: its forward pass charges
 `max_members` on the local headers as it yields members, and again on the directory
 entries it reads after the last member (`format-zip`).
 
+`max_decoded_bytes` SHALL cap the bytes one listing pass decodes on its own: a
+compressed TAR's (or cpio's, or an RPM payload's, or another `decompress()` layer's)
+stream as the walk reads headers and skips member data, the start of each compressed
+member a streaming ZIP pass decodes as it passes over it (up to the link-target cap
+and a reparse prefix), a solid folder decoded up to the symlinks whose targets the
+listing reads, the first header a reader parses at open, and a 7z header stored
+compressed, decoded at open. Each
+reader's listing SHALL count from zero, and so SHALL a walk started over after a
+failure. Bytes a caller reads from a member SHALL NOT
+count, whether between walk steps or on another thread. The step that crosses the cap
+SHALL decode at most one byte past it and raise `ResourceLimitError` naming
+`max_decoded_bytes`; a 7z header that does not fit SHALL be refused before it is
+decoded. Detection's decoding is held by `DetectionBudget`, not by this cap.
+
+#### Scenario: listing a .tar.gz past the decode cap
+
+- **GIVEN** `ListingLimits(max_decoded_bytes=100_000)` and a `.tar.gz` of three
+  100 000-byte members
+- **WHEN** `members()` runs, or a streaming `stream_members()` pass skips every member
+- **THEN** it raises `ResourceLimitError` naming `max_decoded_bytes=100000`
+- **AND** a streaming pass that reads every member instead counts only the headers,
+  and lists under a cap of 50 000
+
 #### Scenario: listing-limits matrix
 
 | Case | Expected |
@@ -558,7 +582,7 @@ entries it reads after the last member (`format-zip`).
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-zip`, `format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
 | RAR archive whose compressed RAR 1.5-4 comments, each weighed by the larger of its declared size and its packed bytes, total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
-| `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
+| `ListingLimits.UNLIMITED` | Count, metadata and decoded-bytes guards disabled |
 | `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared or packed size, whichever is larger) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |

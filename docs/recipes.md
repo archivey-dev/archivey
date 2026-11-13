@@ -68,9 +68,10 @@ with archivey.open_archive("dataset.tar.gz", config=config) as archive:
 
 `ExtractionLimits.UNLIMITED` turns off the byte and entry caps of extraction,
 `DecoderLimits(max_ratio=None)` the expansion check for reads, listing and extraction, and
-`ListingLimits.UNLIMITED` both listing limits. Listing still costs about 1.5 KiB of memory per
+`ListingLimits.UNLIMITED` all three listing limits. Listing still costs about 1.5 KiB of memory per
 member. To keep some protection, raise single fields instead, such as
-`ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`.
+`ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`, which keeps the 4 GiB cap on what
+a listing decodes.
 [Hardening](security.md#hardening) lists each limit with its default and what it costs.
 
 ### Extract while downloading
@@ -228,8 +229,8 @@ reaches the end raises if the data is damaged. No password is given, so an encry
 
 Each setting in `CONFIG` does one job:
 
-- `listing_limits` caps how many members the archive may list and how much text their names,
-  comments and link targets may take.
+- `listing_limits` caps how many members the archive may list, how much text their names,
+  comments and link targets may take, and how much a listing may decode before you read anything.
 - `decoder_limits` caps the memory the archive can ask a decoder for. Lower it to what one upload
   may use on your server.
 - `ProcessIsolation.NATIVE_DECODERS` runs every native decoder, such as zlib, bz2 and lzma, in a

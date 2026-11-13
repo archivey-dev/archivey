@@ -408,6 +408,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: ListingLimits(max_metadata_bytes=b),
             ),
             _case(
+                "ListingLimits",
+                "max_decoded_bytes",
+                bad,
+                lambda b=bad: ListingLimits(max_decoded_bytes=b),
+            ),
+            _case(
                 "ExtractionLimits",
                 "max_extracted_bytes",
                 bad,

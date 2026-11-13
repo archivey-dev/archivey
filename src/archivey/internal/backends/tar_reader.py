@@ -720,7 +720,9 @@ class TarReader(BaseArchiveReader):
             # The first member's headers are parsed at open, so a file that is not a
             # tar fails here (DR-15b).
             self._walker = self._new_walker()
-            first = self._step(self._walker)
+            # Part of the first listing pass: what it decodes counts toward the cap.
+            with self._listing_work():
+                first = self._step(self._walker)
             self._check_first(first)
             # The walk that hands out ``first`` is the open-time one; a random-access
             # walk started over after a discarded failure builds its own.

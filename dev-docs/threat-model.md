@@ -384,7 +384,8 @@ archive declares; for a ZIP read from a pipe, the listing budget and the bound o
 data its pass keeps for link targets beside it.
 
 **Mechanism.**
-- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
+- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB; its third cap,
+  `max_decoded_bytes`, bounds decode work and has its own bullet below) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
   reader's member walk (and as a plugin reader holds one back to yield later, through
   `ReaderContext.hold()`: CPIO's newc hard links waiting for their data), by every call that lists: `members()`, `members_report()`,
@@ -535,6 +536,18 @@ data its pass keeps for link targets beside it.
   above). A Windows reparse
   buffer is read only as far as its own header declares. `read_link_targets=False` stops
   listing from reading these targets at all.
+- `ListingLimits.max_decoded_bytes` (4 GiB) caps the bytes one listing decodes on its
+  own, where `max_members` and `max_metadata_bytes` bound memory, not work.
+  `internal/listing_limits.py` `ListingDecodeCount` counts, on the listing's thread,
+  every byte a listing decode stage produces (`BaseArchiveReader._budget_drawn` with
+  `stage=True`: the archive's own codec stream, a `decompress()` layer, a stream opened
+  during listing work) while listing work runs (`_listing_work`): a walk step, the first
+  header a reader parses at open, a 7z encoded header, the link targets
+  `_finalize_links` reads (a solid 7z folder up to its last link). A caller's member
+  reads between steps do not count. A compressed TAR, cpio or RPM payload is decoded
+  whole to list; a ZIP read from a pipe decodes about 4 KiB of each compressed member it
+  passes over. The error is an `AlwaysStopResourceLimitError`, so the ZIP pass's drain
+  does not skip past it.
 
 **Residual.** Format-local parser ceilings allocate up to their limit during
 `open_archive` (7z: `max_members` or header size, whichever is tighter). The header-size

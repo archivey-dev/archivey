@@ -103,6 +103,7 @@ from archivey.internal.base_reader import (
     _apply_last_entry_wins_is_current,
     pass_has_data,
 )
+from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.listing_limits import member_metadata_bytes
@@ -1186,7 +1187,7 @@ class _PassData:
             n = min(n, declared + 1 - self._size)
         # A codec member's decoded bytes are drawn here, not by the caller's stream
         # (``_open_member``), so a drain past a member nobody read draws them too.
-        budget = self._reader._config.budget if self._method() != 0 else None
+        budget = self._reader._stage_draws if self._method() != 0 else None
         if budget is not None:
             n = budget._read_cap(n)
         try:
@@ -1464,6 +1465,10 @@ class _PassData:
                 else:
                     while self._read_chunk(_DRAIN_CHUNK):
                         pass
+            except AlwaysStopResourceLimitError:
+                # The Budget or the listing's decode cap: archive-wide, never a
+                # reason to skip this member and walk on.
+                raise
             except ArchiveyError as exc:
                 failure = self._as_read_failure(exc) if encrypted else exc
                 # Only bit-3 data is decoded to find its end.
@@ -1487,6 +1492,8 @@ class _PassData:
             try:
                 while (want := self._wants_prefix()) and self._read_chunk(want):
                     pass
+            except AlwaysStopResourceLimitError:
+                raise
             except ArchiveyError as exc:
                 self._capture = None
                 self._failure = self._as_read_failure(exc) if encrypted else exc
