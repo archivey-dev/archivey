@@ -56,7 +56,8 @@ def drawing_from(budget: Budget | None) -> Generator[None]:
     A thread-local rather than an argument because the reader's constructor sits
     under every backend's ``open_read``. The cost: a reader built on another thread,
     or after the block ends, and not under :func:`reading_inside`, draws from no
-    budget, with no error. Build every reader on this thread inside the block."""
+    budget, with no error. Build every top-level reader on this thread inside the
+    block."""
     before = getattr(_local, "budget", None)
     _local.budget = budget
     try:
