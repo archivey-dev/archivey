@@ -1,4 +1,4 @@
-# Best practices
+# Gotchas
 
 Code that runs fine on the first test archive can still go wrong with archivey. These are the cases
 that are easy to miss. Each one says what to do, what happens otherwise, and links to the page with
