@@ -91,8 +91,8 @@ reader, `StageDraws`, TAR holes, RAR solid prefix, CAB folder skip, 7z encoded h
 keep their shape and read `self._nest_account`. Every reader of a nest, of either kind,
 draws decoded bytes from it; members are drawn per Decision 5.
 
-The decoded-byte cap is `DecoderLimits.max_nest_decoded_bytes` (default `None`; name and
-default are Open Questions). The counter never refills, so on a long-lived reader (an
+The decoded-byte cap is `DecoderLimits.max_nest_decoded_bytes` (default `None`; see
+Resolved Questions). The counter never refills, so on a long-lived reader (an
 `ArchiveyFileSystem`, a server reader with `concurrent_operations=True`) any fixed cap
 is a lifetime quota; the field's docs say so.
 

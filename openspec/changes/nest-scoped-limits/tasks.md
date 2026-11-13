@@ -6,9 +6,8 @@
 - [ ] 1.2 `BaseArchiveReader`: the outermost reader creates the account; a nested reader
   of either kind takes its `_nest_outer`'s; replace every `config.budget` read and
   `StageDraws`' budget with it
-- [ ] 1.3 Add `DecoderLimits.max_nest_decoded_bytes` (default `None`; name and default
-  are Open Questions in design.md) and draw decoded bytes against it; document that it
-  never refills
+- [ ] 1.3 Add `DecoderLimits.max_nest_decoded_bytes` (default `None`) and draw decoded
+  bytes against it; document that it never refills
 - [ ] 1.4 Nest ratio: add each reader's archive-wide ratio tally to the account; hold
   the sum to the root's `max_ratio` times the outermost trusted size after the root's
   `ratio_activation_threshold`; off when the outermost has no trusted size. A `parent=`
