@@ -281,12 +281,13 @@ def _bind_annotation_names() -> None:
     """Give the modules that import a public annotation's type only for type checking
     that type at runtime, so ``typing.get_type_hints`` resolves every public signature.
 
-    These modules import each other (``types`` and ``diagnostics`` raise
-    ``exceptions``' errors, and ``exceptions`` names their classes in its constructors),
-    so the names cannot be imported at the top of the module. This is the one place
-    such names are bound, once every module has loaded; a module with no cycle imports
-    its annotation types directly. ``tests/test_public_annotations.py`` fails when a new
-    public annotation needs one.
+    These modules import each other, so the names cannot be imported at the top of the
+    module: ``types`` and ``diagnostics`` raise ``exceptions``' errors, and
+    ``exceptions`` names their classes in its constructors; ``diagnostics`` builds on
+    ``types``' classes, and ``ArchiveMember.diagnostics`` returns ``Diagnostic``. This
+    is the one place such names are bound, once every module has loaded; a module with
+    no cycle imports its annotation types directly. ``tests/test_public_annotations.py``
+    fails when a new public annotation needs one.
     """
     import archivey.exceptions as exceptions_module
     import archivey.types as types_module
