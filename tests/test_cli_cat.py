@@ -265,10 +265,10 @@ def test_cat_reads_an_archive_from_stdin(tar_xz: Path) -> None:
 
 
 def test_cat_from_stdin_names_stdin_when_the_format_must_seek() -> None:
-    rar = Path(__file__).parent / "fixtures" / "rar" / "wildcard_names__.rar"
-    run = _Run(["cat", "-"], stdin=rar.read_bytes())
+    sevenzip = Path(__file__).parent / "fixtures" / "sevenzip" / "encrypted_link.7z"
+    run = _Run(["cat", "-"], stdin=sevenzip.read_bytes())
     assert run.code == EXIT_FAIL
-    assert "stdin: the rar format cannot be read from a pipe" in run.stderr
+    assert "stdin: the 7z format cannot be read from a pipe" in run.stderr
 
 
 def test_cat_without_a_standard_input_says_so(tar_xz: Path) -> None:

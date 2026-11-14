@@ -846,9 +846,18 @@ The members and their bytes are the same as from a file, except where a pipe can
   member's password check accepts, and the header password of an archive with encrypted headers.
   RAR 1.5-4 data has no password check, so an encrypted member raises `UnsupportedFeatureError`
   when there are several candidates: pass the one password.
-- When a member fails, every member after it that has data raises too, because the output of
-  `unrar` can no longer be matched to the members. That includes a member with no size in its
-  header, and in a solid archive a member compressed with an unknown RAR version.
+- Some failures stop `unrar`'s output from lining up with the members. Then that member and every
+  member after it that has data raise. These failures are a member cut short, a wrong password, a
+  member with no size in its header, a RAR 1.5-4 member of 4 GiB or more, and in a solid archive a
+  member compressed with an unknown RAR version. A member that only fails its checksum raises, and
+  the members after it are read as from a file.
+- A member cut short raises `TruncatedError` when the source ends within the 4 MiB archivey reads
+  ahead of it. A longer member cut short raises `CorruptionError` instead.
+- A member larger than one volume is listed before archivey has read the header after it. A
+  RAR 1.5-4 owner (`rar -ow`) or file comment stored in that header is then missing from the
+  member, which carries a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic saying so.
+- Closing the reader doesn't wait for a source that has stopped sending. The thread reading it
+  removes the temporary volumes when its read returns.
 - A volume set, `rar_decompressor="unar"` and a missing or older `unrar` raise
   `StreamNotSeekableError` at open, naming the fix: a seekable source, or `unrar` 7.00.
 

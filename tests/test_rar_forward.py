@@ -7,15 +7,21 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import struct
 import subprocess
+import threading
+import time
+import zlib
 from pathlib import Path
 from typing import BinaryIO
 
 import pytest
 
 from archivey import ArchiveyConfig, SpoolLimits, open_archive
+from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
+    PackageNotInstalledError,
     StreamNotSeekableError,
     UnsupportedFeatureError,
 )
@@ -28,6 +34,8 @@ from archivey.internal.backends import (
 from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
 from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
 from tests.conftest import requires_binary, requires_unrar_cli
+from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
+from tests.test_rar_owner import OWNER_NAMES_RAR4
 from tests.test_rar_synthetic import _password
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -163,7 +171,11 @@ class _PipeStream(io.RawIOBase):
 
 @pytest.fixture
 def rolling_unrar() -> None:
-    if not unrar_reads_rolling_volumes():
+    try:
+        reads = unrar_reads_rolling_volumes()
+    except PackageNotInstalledError:
+        pytest.skip("no RARLAB unrar")
+    if not reads:
         pytest.skip("this unrar is older than the one rolling volumes were measured on")
 
 
@@ -223,10 +235,14 @@ def _file_copies(path: Path, password: str | None) -> set[str]:
 
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
+# The default volumes hold every fixture in the first one, written on the caller's
+# thread; 2 000-byte volumes split most members, so the thread that writes the later
+# volumes runs the walk and lists the members.
+@pytest.mark.parametrize("limit", [None, 4000], ids=["one-volume", "many-volumes"])
 @pytest.mark.parametrize("cut", [None, 0.5, 0.9])
 @pytest.mark.parametrize("path", _SINGLE, ids=lambda p: p.name)
 def test_a_pipe_pass_gives_what_the_seekable_pass_gives(
-    path: Path, cut: float | None
+    path: Path, cut: float | None, limit: int | None
 ) -> None:
     """Every committed single-volume RAR fixture, whole or cut short, read from a pipe:
     the same members, bytes and errors as a streaming pass over the same bytes in a
@@ -242,7 +258,200 @@ def test_a_pipe_pass_gives_what_the_seekable_pass_gives(
             fields, _ = entry
             if fields[0] in copies:
                 expected[index] = (fields, ("raises", "UnsupportedFeatureError"))
-    assert _pass(_pipe(data), password) == expected
+    config = None if limit is None else _config(limit)
+    assert _pass(_pipe(data), password, config=config) == expected
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("limit", [None, 4000], ids=["one-volume", "many-volumes"])
+@pytest.mark.parametrize("path", _SINGLE, ids=lambda p: p.name)
+def test_a_pipe_pass_that_reads_some_members_lists_them_all(
+    path: Path, limit: int | None
+) -> None:
+    """Reading every other member, or none: the listing is the seekable pass's, and
+    the members read give its bytes. ``unrar``'s output of the members skipped is
+    read past, so it never fills its pipe while the walk waits for a volume."""
+    data = path.read_bytes()
+    password = _password(path)
+    config = None if limit is None else _config(limit)
+
+    def listing(source: BinaryIO, every: int | None, **kwargs: object) -> list[object]:
+        out: list[object] = []
+        try:
+            with open_archive(
+                source, streaming=True, password=password, **kwargs
+            ) as reader:
+                for index, (member, stream) in enumerate(reader.stream_members()):
+                    entry: list[object] = [member.name, member.uname]
+                    if stream is not None and every is not None and index % every == 0:
+                        try:
+                            entry.append(hashlib.sha256(stream.read()).hexdigest())
+                        except ArchiveyError as exc:
+                            entry.append(_outcome(exc))
+                    out.append(entry)
+        except ArchiveyError as exc:
+            out.append(_outcome(exc))
+        return out
+
+    copies = _file_copies(path, password)
+    for every in (None, 2):
+        expected = listing(io.BytesIO(data), every)
+        for entry in expected:
+            if isinstance(entry, list) and entry[0] in copies and len(entry) == 3:
+                entry[2] = ("raises", "UnsupportedFeatureError")
+        assert listing(_pipe(data), every, config=config) == expected
+
+
+def _owner_archive(*sizes: int) -> bytes:
+    """``OWNER_NAMES_RAR4`` (``a.txt``, then a ``UOW`` header naming root) with one
+    such pair per size: members ``m0.bin``, ``m1.bin`` ... of that many stored random
+    bytes."""
+    main, file, uow, end = _rar3_parse(OWNER_NAMES_RAR4)
+    blocks = [main]
+    for index, size in enumerate(sizes):
+        block = {"type": file["type"], "header": bytearray(file["header"])}
+        _rar3_rename(block, f"m{index}.bin".encode())
+        data = os.urandom(size)
+        header = block["header"]
+        struct.pack_into("<II", header, 7, size, size)
+        struct.pack_into("<I", header, 16, zlib.crc32(data))
+        header[25] = 0x30  # stored
+        block["data"] = data
+        blocks += [block, {**uow, "header": bytearray(uow["header"])}]
+    blocks.append(end)
+    return _rar3_build(blocks)
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("size", [5_000, 50_000], ids=["one-volume", "split"])
+def test_an_owner_after_a_split_member_is_reported_missing(size: int) -> None:
+    """A member split across two volumes is listed when the first is written, before
+    the walk reads the ``UOW`` header after it: the pipe lists it without the owner a
+    file gives, and says so. A member that fits one volume keeps its owner."""
+    data = _owner_archive(size)
+    with open_archive(io.BytesIO(data), streaming=True) as reader:
+        ((member, stream),) = [
+            (m, s.read() if s is not None else None) for m, s in reader.stream_members()
+        ]
+        assert (member.uname, member.gname) == ("root", "root")
+    with open_archive(_pipe(data), streaming=True, config=_config()) as reader:
+        got = []
+        for piped, piped_stream in reader.stream_members():
+            assert piped_stream is not None
+            got.append((piped, piped_stream.read()))
+    ((piped, piped_data),) = got
+    assert piped_data == stream
+    codes = [d.code for d in piped.diagnostics]
+    if size < 20_000:
+        assert (piped.uname, piped.gname) == ("root", "root")
+        assert DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED not in codes
+    else:
+        assert (piped.uname, piped.gname) == (None, None)
+        assert DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED in codes
+
+
+class _StallingStream(io.RawIOBase):
+    """A non-seekable source that gives ``data[:stall_at]``, then blocks until
+    ``release`` is set, then ends."""
+
+    def __init__(self, data: bytes, stall_at: int) -> None:
+        self._data = data[:stall_at]
+        self._at = 0
+        self.release = threading.Event()
+        self.stalled = threading.Event()
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def readinto(self, buffer: bytearray | memoryview) -> int:  # type: ignore[override]
+        if self._at >= len(self._data):
+            self.stalled.set()
+            self.release.wait(30)
+            return 0
+        n = min(len(buffer), 4093, len(self._data) - self._at)
+        memoryview(buffer).cast("B")[:n] = self._data[self._at : self._at + n]
+        self._at += n
+        return n
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_closing_does_not_wait_for_a_source_that_stopped_sending(
+    volumes_made: list[rl.RollingVolumes],
+) -> None:
+    """The thread that writes the volumes reads the caller's source: closing stops
+    waiting for it, and the thread removes the volumes once its read returns."""
+    data = _owner_archive(30_000, 30_000, 30_000, 30_000)
+    source = _StallingStream(data, int(len(data) * 0.8))
+    try:
+        reader = open_archive(
+            io.BufferedReader(source), streaming=True, config=_config()
+        )
+        it = reader.stream_members()
+        for _ in range(2):
+            _member, stream = next(it)
+            assert stream is not None
+            assert len(stream.read()) == 30_000
+        # The thread now reads ahead into the last member, where the source stops
+        # sending, to finish the volume that ends the third.
+        assert source.stalled.wait(10)
+        started = time.monotonic()
+        it.close()
+        reader.close()
+        assert time.monotonic() - started < 10
+    finally:
+        source.release.set()
+    (volumes,) = volumes_made
+    deadline = time.monotonic() + 10
+    while volumes.dir.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not volumes.dir.exists()
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize(
+    ("sizes", "fail_after", "limit"),
+    [
+        # The walk reads a small member's data ahead to tell whether it is whole.
+        pytest.param((30_000,) * 4, 80_000, 40_000, id="reading-ahead"),
+        # A member larger than the forward source keeps is read as it is copied.
+        pytest.param((5_000_000,), 4_600_000, 4_000_000, id="copying"),
+    ],
+)
+def test_a_failed_source_read_raises_its_own_error(
+    sizes: tuple[int, ...], fail_after: int, limit: int
+) -> None:
+    """An ``OSError`` reading the source, on the thread that writes the later
+    volumes, reaches the caller as it is, not as a failure to write a volume."""
+    data = _owner_archive(*sizes)
+
+    class _Failing(_PipeStream):
+        def __init__(self) -> None:
+            super().__init__(data)
+            self._given = 0
+
+        def readinto(self, buffer: bytearray | memoryview) -> int:  # type: ignore[override]
+            if self._given > fail_after:
+                raise ConnectionResetError("the peer reset the connection")
+            n = super().readinto(buffer)
+            self._given += n
+            return n
+
+    with (
+        open_archive(
+            io.BufferedReader(_Failing()), streaming=True, config=_config(limit)
+        ) as reader,
+        pytest.raises(ConnectionResetError, match="peer reset"),
+    ):
+        for _member, stream in reader.stream_members():
+            if stream is not None:
+                stream.read()
 
 
 def _rar(tmp_path: Path, files: dict[str, bytes], *switches: str) -> bytes:
@@ -419,15 +628,13 @@ def test_several_passwords_on_rar4_data_encryption_are_refused() -> None:
 
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
-@pytest.mark.parametrize("password", ["password", ["wrong", "password"]])
-def test_a_header_password_is_found_from_several(password: object) -> None:
+@pytest.mark.parametrize("password", ["header_password", ["wrong", "header_password"]])
+def test_a_header_password_is_found(password: str | list[str]) -> None:
+    """One candidate, and several, where the walk restarts after the wrong one."""
     raw = (_FIXTURES / "encrypted_header__rar4.rar").read_bytes()
     with open_archive(io.BytesIO(raw), password="header_password") as reader:
         expected = {m.name: reader.read(m) for m in reader.members() if m.is_file}
-    del password
-    with open_archive(
-        _pipe(raw), streaming=True, password=["wrong", "header_password"]
-    ) as reader:
+    with open_archive(_pipe(raw), streaming=True, password=password) as reader:
         got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
     assert got == expected
 

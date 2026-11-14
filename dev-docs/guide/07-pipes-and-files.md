@@ -249,7 +249,7 @@ and bytes read per operation, and a PR that adds a seek to a common path fails i
 | Compromise | Where | Why it is acceptable |
 | --- | --- | --- |
 | A pipe with `streaming=False` is refused | `core.py` | The alternative is an unbounded hidden copy (ADR 0010) |
-| 7z, RAR, ISO, SquashFS, CAB, XAR cannot come from a pipe | backend declarations | Their layouts need seeks; the caller can buffer |
+| 7z, ISO, SquashFS, CAB, XAR cannot come from a pipe, nor RAR without `unrar` 7.00 | backend declarations | Their layouts need seeks (RAR's `unrar` needs files); the caller can buffer |
 | Member streams do not seek by default | ADR 0003 | Seeking backwards in compressed data can be very costly; opting in is one keyword |
 | One live member stream by default | ADR 0003 | Overlap on a solid archive thrashes the decoder |
 | `stream_members()` streams never seek | ADR 0003 amendment | A pass reads forward; that is its whole point |

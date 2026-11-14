@@ -443,9 +443,6 @@ AUTO_CHOSE_UNAR_NOTE = (
 _UNAR_MAX_OLD_STYLE_VOLUMES = 901
 
 
-# Why a RAR cannot come from a pipe. The block headers are at the front, but the header
-# walk seeks past each member's packed data (and to the RAR5 quick-open record), and
-# unrar reads members from a file on disk.
 def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     """Each volume's number in its set, when the names leave a gap; else ``None``.
 
@@ -1719,7 +1716,13 @@ class _RollingUnrarStream(_UnrarOwnedStream):
 
     A failure of the thread (the source ended early, a disk error, a question it
     does not answer) stopped ``unrar``, so it is raised in place of the exit status.
+
+    Closing waits for the thread for up to :attr:`_FEEDER_WAIT` seconds (forever with
+    ``None``: the thread reads a seekable source, which answers); a thread still
+    writing a volume then removes the volumes itself when it returns.
     """
+
+    _FEEDER_WAIT: float | None = None
 
     def __init__(
         self,
@@ -1735,6 +1738,11 @@ class _RollingUnrarStream(_UnrarOwnedStream):
         self._release = release
         super().__init__(stdout, proc, **kwargs)
 
+    @property
+    def feeder(self) -> VolumeFeeder:
+        """The thread that writes the volumes and answers ``unrar``'s prompts."""
+        return self._feeder
+
     @override
     def _raise_for_returncode(self, rc: int) -> None:
         error = self._feeder.error
@@ -1749,15 +1757,15 @@ class _RollingUnrarStream(_UnrarOwnedStream):
         try:
             super().close()
         finally:
-            try:
-                # unrar is gone, so its stderr ends and the thread returns; it
-                # may first finish the volume it is writing.
-                self._feeder.join()
-            finally:
-                try:
-                    self._volumes.close()
-                finally:
-                    self._release()
+            # unrar is gone, so its stderr ends and the thread returns; it may first
+            # finish the volume it is writing.
+            self._feeder.close_after(self._remove_volumes, timeout=self._FEEDER_WAIT)
+
+    def _remove_volumes(self) -> None:
+        try:
+            self._volumes.close()
+        finally:
+            self._release()
 
 
 # What one read's ``unrar`` runs use: ``mask`` and ``close()``, and ``path()`` for a
@@ -4651,7 +4659,8 @@ class RarReader(BaseArchiveReader):
         goes can fill it in as each member is listed. ``on_pipe`` is given the
         function that starts the process (or returns the running one's output), for
         a pass whose listing has to read that output itself
-        (``rar_forward_reader``).
+        (``rar_forward_reader``). Such a pass may start the process to list, so
+        the ``_pipe`` promise below holds only for a pass without ``on_pipe``.
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
@@ -4680,8 +4689,10 @@ class RarReader(BaseArchiveReader):
             A caller that iterates the pass without reading any member — listing a
             solid RAR through ``stream_members``, or an extraction whose selector
             matches nothing — never spawns a process and is never asked for a
-            password. The stream-source copy lives here too, so that caller also
-            writes nothing.
+            password, unless the pass was given ``on_pipe``: a pass that reads its
+            source forward starts the process when its listing needs a volume
+            ``unrar`` has to finish first. The stream-source copy lives here too, so
+            that caller also writes nothing.
             """
             nonlocal solid
             if solid is None:

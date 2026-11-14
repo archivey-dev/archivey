@@ -21,7 +21,11 @@ first read.
 | `-hp`, several password candidates | The candidate that decrypts the headers |
 | RAR5 data encryption, several candidates | The candidate the first listed member's PswCheck accepts when `unrar` starts; an encrypted member it does not fit raises `UnsupportedFeatureError` on its first read |
 | RAR 1.5-4 data encryption, several candidates | Each encrypted member raises `UnsupportedFeatureError` on its first read |
-| A member that fails (digest, length, password, no size) | That member raises; every later member with data raises too |
+| A member whose output does not line up (cut short, wrong password, no size, RAR 1.5-4 past 4 GiB, unknown version in a solid archive) | That member raises; every later member with data raises too |
+| A member that fails its digest | That member raises; the later members read as from a seekable source |
+| A member cut short past the 4 MiB the source reads ahead | `CorruptionError` instead of `TruncatedError` |
+| A RAR 1.5-4 `UOW` or `CMT` after a member larger than one volume | The member is listed without it and carries `MEMBER_HEADER_RECORD_SKIPPED` |
+| The caller closes while the source has stopped sending | `close()` returns; the thread reading the source removes the volumes when its read returns |
 | `unar`, no `unrar` 7.00 or later | `StreamNotSeekableError` at open |
 | Listing only (`members_report()`) | No volume written |
 | RAR5 file copy | Its stream raises `UnsupportedFeatureError` on its first read |

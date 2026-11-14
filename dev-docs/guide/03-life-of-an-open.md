@@ -107,7 +107,7 @@ Before any backend code runs, `_open_resolved` checks, in this order:
 3. **Raw CD sector images** claimed as ISO are refused by name.
 4. **Recognized-only formats** (DMG) are refused with an explanation.
 5. **Read-once capability.** If the source cannot seek and the format needs seeking *in
-   either mode* (7z, RAR, ISO, SquashFS, CAB, XAR), it is refused with a message naming
+   either mode* (7z, ISO, SquashFS, CAB, XAR), it is refused with a message naming
    the only fix: buffer it. The backend's `NON_SEEKABLE_REASON` supplies the "because".
    This comes before the missing-package check on purpose: a piped ISO without `pycdlib`
    should be told about the pipe, not sent to install a package first.

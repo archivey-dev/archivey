@@ -11,10 +11,10 @@ Registers keep the status — this page states the behaviour and links the row.
 | --- | --- |
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable only, in both access modes |
+| Source | Seekable in both access modes; non-seekable with `streaming=True` and RARLAB `unrar` 7.00 or later, one volume only (§2.6) |
 | Listing cost | `REQUIRES_SCANNING` — a header-to-header walk cached at open (§1). RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
-| Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
+| Stream capability | `FORWARD_ONLY` — of the source, which a pass reads front to back (§2.6). Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Compressed member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3). Stored encrypted members need `cryptography` instead |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
 | Refuses | Non-seekable sources without RARLAB `unrar` 7.00 or later, and a volume set from one (§2.6) · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3); a large member on a path source whose name is not plain is copied instead, and refused (`ResourceLimitError`) only when that copy is over `SpoolLimits.max_bytes` · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
@@ -1186,9 +1186,11 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   is written on the caller's thread; `unrar` starts on the first member read, or when
   the listing needs a member past volume 1. From then on the feeder thread writes the
   volumes, and the walk runs on it. A member is queued to the caller once the walk has
-  read the next header (a RAR 1.5-4 `UOW` or `CMT` after it still reaches it), or when
+  read the next header (a RAR 1.5-4 `UOW` or `CMT` after it then reaches it), or when
   the volume holding its first part is written, whichever is first: a member split
-  across volumes is listed before `unrar` prints it, so the caller can drain it. While
+  across volumes is listed before `unrar` prints it, so the caller can drain it. Such a
+  member misses a `UOW` or `CMT` after it, and is given `MEMBER_HEADER_RECORD_SKIPPED`
+  when the walk reaches one (`_report_late_records`). While
   waiting for the next member, the caller reads past `unrar`'s output of the members it
   was given, so `unrar` never blocks on a full pipe while the walk waits for its prompt.
 - **Listing without a pass** (`members_report()`) walks with the data skipped and writes
@@ -1203,6 +1205,11 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   is refused as `TruncatedError` when the source ends inside the 4 MiB the forward
   source reads ahead; a longer one is padded with zeros so the members before it in its
   volume still decode, and fails its own digest check.
+- **Closing** sets a flag the walk checks before each read of the source, and waits
+  only a second for the feeder thread: it reads the caller's source, which may never
+  answer. A thread still blocked then removes the volumes when its read returns
+  (`VolumeFeeder.close_after`). An `OSError` reading the source reaches the caller as it
+  is (`SourceReadError` carries it out of the volume write).
 - **A RAR 1.5-4 symlink's target** is its data: up to 64 KiB of it is kept as the walk
   passes it, for `_ensure_link_target`.
 

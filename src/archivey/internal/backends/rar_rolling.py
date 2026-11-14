@@ -79,6 +79,7 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.internal.logs import backends as logger
 from archivey.internal.resource_usage import ResourceUsageRecorder
 
 # RAR5 MAIN archive flags and ENDARC flag (``headers5.hpp``).
@@ -240,6 +241,18 @@ def _part_rar3(raw: bytes, data_size: int, before: bool, after: bool) -> bytes:
     return bytes(header)
 
 
+class SourceReadError(Exception):
+    """A read of the archive's source failed while a volume was written.
+
+    Kept apart from a failure to write the volume, which is a ``ReadError`` about
+    the volume: ``cause`` is the source's own ``OSError``, raised as it is.
+    """
+
+    def __init__(self, cause: OSError) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class _Pending:
     """The member being written: its header and the data streams left to copy."""
 
@@ -258,7 +271,10 @@ class _Pending:
                 self._index += 1
                 self._part_left = self._parts[self._index][1]
             stream = self._parts[self._index][0]
-            chunk = stream.read(min(size, self._part_left, _COPY_CHUNK))
+            try:
+                chunk = stream.read(min(size, self._part_left, _COPY_CHUNK))
+            except OSError as exc:
+                raise SourceReadError(exc) from exc
             if not chunk:
                 raise TruncatedError(
                     f"RAR member data ends {self.left} bytes before its packed size"
@@ -442,7 +458,8 @@ class VolumeFeeder:
 
     A failure while writing a volume (the source ends early, a disk error) stops
     ``unrar`` too, and is kept in :attr:`error` for the reader to raise in place of
-    the exit status. A thread is needed because Windows cannot poll a pipe.
+    the exit status: an ``OSError`` reading the source as it is, any other failure
+    as an ``ArchiveyError``. A thread is needed because Windows cannot poll a pipe.
     """
 
     def __init__(self, proc: subprocess.Popen[bytes], volumes: RollingVolumes) -> None:
@@ -450,13 +467,23 @@ class VolumeFeeder:
         self._proc = proc
         self._volumes = volumes
         #: Why the feeder stopped ``unrar``, if it did.
-        self.error: ArchiveyError | None = None
+        self.error: ArchiveyError | OSError | None = None
         #: The last bytes ``unrar`` wrote on stderr, for a diagnosis.
         self.stderr_tail = b""
+        # ``_exited`` and ``_on_exit`` under ``_lock``: the cleanup a caller left for
+        # the thread when it stopped waiting for it (``close_after``).
+        self._lock = threading.Lock()
+        self._exited = False
+        self._on_exit: Callable[[], None] | None = None
         self._thread = threading.Thread(
             target=self._run, name="archivey-unrar-volumes", daemon=True
         )
         self._thread.start()
+
+    @property
+    def running(self) -> bool:
+        """Whether the thread is still answering prompts or writing a volume."""
+        return self._thread.is_alive()
 
     def _expected(self) -> bytes:
         return volume_name(self._volumes.count + 1).encode("ascii")
@@ -496,6 +523,9 @@ class VolumeFeeder:
                 if expected in seen:
                     try:
                         self._volumes.write_next()
+                    except SourceReadError as exc:
+                        self._stop(exc.cause)
+                        return
                     except ArchiveyError as exc:
                         self._stop(exc)
                         return
@@ -537,8 +567,16 @@ class VolumeFeeder:
                 stderr.close()
             except OSError:
                 pass
+            with self._lock:
+                self._exited = True
+                cleanup, self._on_exit = self._on_exit, None
+            if cleanup is not None:
+                try:
+                    cleanup()
+                except Exception:  # noqa: BLE001 - no caller is left to raise to
+                    logger.debug("rolling volume cleanup failed", exc_info=True)
 
-    def _stop(self, error: ArchiveyError) -> None:
+    def _stop(self, error: ArchiveyError | OSError) -> None:
         self.error = error
         try:
             self._proc.kill()
@@ -547,6 +585,23 @@ class VolumeFeeder:
 
     def join(self, timeout: float | None = None) -> None:
         self._thread.join(timeout)
+
+    def close_after(
+        self, cleanup: Callable[[], None], *, timeout: float | None = None
+    ) -> None:
+        """Run ``cleanup`` once the thread has returned.
+
+        Waits up to ``timeout`` seconds (forever with ``None``). When the thread is
+        still writing a volume then, as it is while a read of a source that has
+        stopped sending blocks, the thread runs ``cleanup`` itself as it returns, and
+        this returns at once.
+        """
+        self._thread.join(timeout)
+        with self._lock:
+            if not self._exited:
+                self._on_exit = cleanup
+                return
+        cleanup()
 
 
 def start_rolling_unrar(

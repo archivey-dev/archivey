@@ -11,7 +11,8 @@ single-volume RAR read from a pipe or socket. It never holds the archive:
    size, as the seekable reader's solid pass cuts it (``RarReader._drive_solid_pass``).
 3. A member is listed once its header and data are in a volume and the walk has read
    the next header, which may still add to it (a RAR 1.5-4 owner or file comment), or
-   when the volume that holds its first part is written, whichever comes first.
+   when the volume that holds its first part is written, whichever comes first. A member
+   listed the second way misses what that next header adds, and is reported.
 
 Volume 1 is written on the caller's thread; ``unrar`` starts on the first member read,
 or when the listing needs a member past volume 1. Then the thread that answers
@@ -31,12 +32,14 @@ from __future__ import annotations
 
 import io
 import queue
+import subprocess
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
 
 from archivey.config import RarDecompressor
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
+from archivey.diagnostics import DiagnosticCode, MemberHeaderRecordContext
 from archivey.exceptions import (
     ArchiveyError,
     EncryptionError,
@@ -49,6 +52,7 @@ from archivey.formats import ArchiveFormat
 from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
 from archivey.internal.backends.rar_parser import (
+    RAR3_UOW_NAME,
     ForwardMember,
     ForwardWalk,
     RarArchive,
@@ -68,11 +72,17 @@ from archivey.internal.backends.rar_reader import (
     _share_unknown_copy_size,
     _size_left_unknown,
 )
-from archivey.internal.backends.rar_rolling import RollingVolumes, start_rolling_unrar
+from archivey.internal.backends.rar_rolling import (
+    RollingVolumes,
+    SourceReadError,
+    VolumeFeeder,
+    start_rolling_unrar,
+)
 from archivey.internal.backends.rar_synthetic import SyntheticMember, has_packed_data
 from archivey.internal.backends.rar_unar import uses_no_dictionary
 from archivey.internal.backends.rar_unrar import open_unrar_p
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.logs import backends as logger
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidatesExhausted
@@ -99,6 +109,13 @@ _ROLLING_FIX = (
     "Use a seekable source (a file, or the stream read into a BytesIO), or install "
     "RARLAB unrar 7.00 or later."
 )
+
+
+class _Closed(ReadError):
+    """The reader was closed while a volume was being written; the walk ends."""
+
+    def __init__(self) -> None:
+        super().__init__("The RAR reader was closed during its pass")
 
 
 class _End:
@@ -164,10 +181,17 @@ class _PaddedSpan:
     it reads zeros for the rest, so the volume is still written and the members
     before it in that volume still decode; the member is marked cut."""
 
-    def __init__(self, span: ForwardSpan, size: int, on_cut: Callable[[], None]):
+    def __init__(
+        self,
+        span: ForwardSpan,
+        size: int,
+        on_cut: Callable[[], None],
+        stopping: Callable[[], bool],
+    ):
         self._span = span
         self._left = size
         self._on_cut = on_cut
+        self._stopping = stopping
         self._cut = False
 
     def read(self, n: int = -1) -> bytes:
@@ -175,6 +199,8 @@ class _PaddedSpan:
             n = self._left
         if n <= 0:
             return b""
+        if self._stopping():
+            raise _Closed()
         data = b"" if self._cut else self._span.read(n)
         if not data:
             if not self._cut:
@@ -195,6 +221,11 @@ class _ForwardPass:
         self._reader = reader
         self.queue: queue.SimpleQueue[ForwardMember | _End] = queue.SimpleQueue()
         self._held: ForwardMember | None = None
+        #: The members the walk released before it read the header after them
+        #: (``_release_held`` from a volume write), by ``id`` of the parsed member.
+        self.early: set[int] = set()
+        #: Set when the reader closes: the walk stops at its next read of the source.
+        self.stopping = False
         self._charge = _rolling_volume_bytes(reader._config.spool_limits)
         self._released = False
         self.stream: _RollingUnrarStream | None = None
@@ -214,7 +245,7 @@ class _ForwardPass:
                 self._entries(),
                 solid=archive.is_solid,
                 volume_bytes=self._charge,
-                on_written=self._release_held,
+                on_written=self._release_early,
             )
         except BaseException:
             self._release()
@@ -227,6 +258,17 @@ class _ForwardPass:
         if held is not None:
             self.queue.put(held)
 
+    def _release_early(self) -> None:
+        """A volume is written: list the member the walk holds now, before the walk
+        reads the header after it, so the caller can read the output ``unrar``
+        makes before it asks for the next volume. A record in that next header (a
+        RAR 1.5-4 ``UOW`` owner or ``CMT`` comment) then reaches a member already
+        listed, which is reported (``RarForwardReader._report_late_records``)."""
+        held = self._held
+        if held is not None:
+            self.early.add(id(held.member))
+        self._release_held()
+
     def _entries(self) -> Iterator[SyntheticMember]:
         """The synthetic members of the volumes, made as the walk reaches them."""
         reader = self._reader
@@ -234,6 +276,8 @@ class _ForwardPass:
         found = reader._take_first()
         try:
             while found is not None:
+                if self.stopping:
+                    raise _Closed()
                 self._release_held()
                 self._held = found
                 entry = reader._forward_entry(found, position)
@@ -243,7 +287,9 @@ class _ForwardPass:
                 found = reader._next_found()
         except Exception as exc:  # noqa: BLE001 - handed to the listing
             # The volume being written ends here, so the members already in it are
-            # still decoded; the listing raises this after them.
+            # still decoded; the listing raises this after them, and so does the
+            # read of the member the walk held, whose data it was reading.
+            reader._fwalk_error = exc
             self._release_held()
             self.queue.put(_End(exc))
             return
@@ -266,7 +312,8 @@ class _ForwardPass:
             usage=reader._usage,
             opener=open_unrar_p,
         )
-        self.stream = _RollingUnrarStream(
+        self.stream = _ForwardUnrarStream(
+            self,
             stdout,
             proc,
             feeder,
@@ -290,6 +337,8 @@ class _ForwardPass:
                 if self.volumes.count == 0:
                     try:
                         self.volumes.write_next()
+                    except SourceReadError as exc:
+                        raise exc.cause from None
                     except OSError as exc:
                         raise ReadError(
                             f"Could not write the first RAR volume for unrar: {exc}"
@@ -304,12 +353,13 @@ class _ForwardPass:
                 return self.queue.get(timeout=_WAIT_SECONDS)
             except queue.Empty:
                 pass
-            if not self.stream._feeder._thread.is_alive():
+            feeder = self.stream.feeder
+            if not feeder.running:
                 try:
                     return self.queue.get_nowait()
                 except queue.Empty:
                     pass
-                error = self.stream._feeder.error
+                error = feeder.error
                 if error is not None:
                     raise error
                 raise ReadError(
@@ -341,11 +391,38 @@ class _ForwardPass:
     def close(self) -> None:
         """Remove the volumes when ``unrar`` never started: its stream owns them
         otherwise."""
+        self.stopping = True
         if self.stream is None:
             try:
                 self.volumes.close()
             finally:
                 self._release()
+
+
+class _ForwardUnrarStream(_RollingUnrarStream):
+    """The pass's ``unrar`` output. Its close stops the walk first, and waits only
+    briefly for the thread: that thread reads the caller's source, which may have
+    stopped sending, so it removes the volumes itself once its read returns."""
+
+    _FEEDER_WAIT = 1.0
+
+    def __init__(
+        self,
+        fpass: _ForwardPass,
+        stdout: BinaryIO,
+        proc: subprocess.Popen[bytes],
+        feeder: VolumeFeeder,
+        volumes: RollingVolumes,
+        release: Callable[[], None],
+        **kwargs: bool,
+    ) -> None:
+        self._fpass = fpass
+        super().__init__(stdout, proc, feeder, volumes, release, **kwargs)
+
+    @override
+    def close(self) -> None:
+        self._fpass.stopping = True
+        super().close()
 
 
 class RarForwardReader(RarReader):
@@ -392,6 +469,8 @@ class RarForwardReader(RarReader):
         self._fed: set[int] = set()
         # Why the members from here on are not in the volumes, once one stopped them.
         self._data_end: str | None = None
+        # What stopped the walk, set before the member it held is listed.
+        self._fwalk_error: Exception | None = None
         # Per-pass state, filled as members are listed (``_list_member``).
         self._pass_costs: dict[int, _DictionaryCost] = {}
         self._window = self._decoded = 0
@@ -585,8 +664,15 @@ class RarForwardReader(RarReader):
     @override
     def _entry_data(self, raw: RarMemberInfo) -> list[tuple[BinaryIO, int]]:
         cut = self._cut
+        fpass = self._fpass
+        assert fpass is not None  # only a pass writes volumes
         span = ForwardSpan(self._fsource, raw.data_offset, raw.compress_size)
-        padded = _PaddedSpan(span, raw.compress_size, lambda: cut.add(id(raw)))
+        padded = _PaddedSpan(
+            span,
+            raw.compress_size,
+            lambda: cut.add(id(raw)),
+            lambda: fpass.stopping,
+        )
         return [(cast("BinaryIO", padded), raw.compress_size)]
 
     # -- listing, on the caller's thread --------------------------------------------
@@ -597,12 +683,68 @@ class RarForwardReader(RarReader):
         if fpass is None:
             yield from self._iter_members_without_data()
             return
+        # The member listed last when the pass released it early, with what its
+        # header had then: ``(member, owner, comment, skipped records)``.
+        early: tuple[ArchiveMember, object, object, object] | None = None
         while True:
             item = fpass.next_found()
+            if early is not None:
+                # The walk has read every header up to ``item``.
+                self._report_late_records(*early)
+                early = None
             if isinstance(item, _End):
                 self._finish_walk(item.error)
                 return
-            yield self._list_member(item)
+            member = self._list_member(item)
+            raw = item.member
+            if id(raw) in fpass.early:
+                early = (member, raw.owner, raw.comment, raw.skipped_header_records)
+            yield member
+
+    def _report_late_records(
+        self,
+        member: ArchiveMember,
+        owner: object,
+        comment: object,
+        skipped: object,
+    ) -> None:
+        """Report a RAR 1.5-4 ``UOW`` or ``CMT`` header the walk read after
+        ``member`` was listed; ``owner``, ``comment`` and ``skipped`` are what its
+        parsed header held when it was."""
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        late = []
+        if raw.owner is not owner or raw.skipped_header_records is not skipped:
+            late.append((RAR3_UOW_NAME, "owner"))
+        if raw.comment is not comment:
+            late.append(("CMT", "comment"))
+        for record, what in late:
+            reason = (
+                "come after a member listed before the walk reached it: read from a "
+                "non-seekable source, a member split across two of the pass's "
+                "volumes is listed once the first is written"
+            )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+                message=(
+                    f"This member's RAR 1.5-4 {record} {what} header was read after "
+                    "the member was listed, because the member spans two of the "
+                    "volumes the pass writes from a non-seekable source; the member "
+                    f"is listed without its {what}. Read the archive from a file to "
+                    "get it."
+                ),
+                context=MemberHeaderRecordContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=member.member_id,
+                    record=record,
+                    record_id=None,
+                    reason=reason,
+                ),
+                member=member,
+                attach_to_member=True,
+                logger=logger,
+            )
 
     def _iter_members_without_data(self) -> Iterator[ArchiveMember]:
         """The listing when no pass reads data: the walk skips each member's data.
@@ -724,7 +866,7 @@ class RarForwardReader(RarReader):
     ) -> int | Callable[[], BinaryIO] | None:
         """Where ``member``'s output is in the pass, or the refusal its read raises."""
 
-        def refuse(error: ArchiveyError) -> Callable[[], BinaryIO]:
+        def refuse(error: Exception) -> Callable[[], BinaryIO]:
             def _refused() -> BinaryIO:
                 raise error
 
@@ -738,6 +880,8 @@ class RarForwardReader(RarReader):
         if unknown_version is not None:
             return refuse(self._unknown_compression_error(member, unknown_version))
         if has_packed_data(raw) and id(raw) not in self._fed:
+            if self._fwalk_error is not None and self._data_end is None:
+                return refuse(self._fwalk_error)
             return refuse(
                 self._not_fed_error(
                     member, self._data_end or "its data was not read into the pass"
