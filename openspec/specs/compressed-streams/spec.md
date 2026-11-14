@@ -1103,7 +1103,8 @@ on such a source SHALL lose nothing: it copies its
 zlib state (`decompressobj.copy()`) before each call, and when a call raises, the copy
 decodes the same input again one output byte per call up to the error. The decoder
 returns those bytes and raises the error from its next call. A decoder in a decoder
-child, which has no `copy()`, keeps the bound above.
+child, which has no `copy()`, keeps the bound above, and so does every such decoder under
+PyPy, which never frees a copy (`dev-docs/known-issues.md`).
 
 #### Scenario: read sizes on a pipe
 

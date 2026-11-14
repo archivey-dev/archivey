@@ -35,7 +35,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
-from tests.conftest import requires
+from tests.conftest import CPYTHON, requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
 
@@ -116,7 +116,12 @@ _DEFLATE_FAMILY: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
 
 _DEFLATE_WBITS = {"gzip": 31, "zlib": zlib.MAX_WBITS, "deflate": -zlib.MAX_WBITS}
 
+# PyPy never frees a zlib ``copy()``, so a deflate decoder there takes none and a pipe
+# loses the failing call's bytes (dev-docs/known-issues.md).
+_COPIES_ZLIB = pytest.mark.skipif(not CPYTHON, reason="PyPy takes no zlib copy")
 
+
+@_COPIES_ZLIB
 @pytest.mark.parametrize("name", list(_DEFLATE_FAMILY))
 @pytest.mark.parametrize("size", [512, 1 << 20])
 def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
@@ -145,6 +150,7 @@ def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
     assert _prefix(NonSeekableBytesIO(damaged), codec, size) == expected
 
 
+@_COPIES_ZLIB
 def test_a_second_gzip_member_from_a_pipe_gets_every_byte_before_the_error() -> None:
     first = _text(200_000, 2)
     data = gzip.compress(first, mtime=0) + _damage(
@@ -515,6 +521,7 @@ def test_recovery_off_does_not_decode_again(
         assert got < recovered[0]
 
 
+@_COPIES_ZLIB
 def test_recovery_off_takes_no_deflate_copy_on_a_pipe() -> None:
     """On a pipe the deflate decoder keeps the bytes before an error by copying its
     state before each call; with recovery off it takes no copy, so the failing call's
@@ -524,6 +531,36 @@ def test_recovery_off_takes_no_deflate_copy_on_a_pipe() -> None:
     lost = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20, _NO_RECOVERY)
     assert lost[1] == kept[1] is not None
     assert lost[0] < kept[0]
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_a_deflate_decoder_takes_no_copy_under_pypy(
+    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PyPy never frees a zlib ``copy()``: one per feed grew a test worker by
+    gigabytes, so under PyPy the decoder keeps a decoder child's behaviour."""
+    monkeypatch.setattr(deflate_decoder, "UNDER_PYPY", True)
+    decoder = (
+        GzipDecoder() if decoder_type is GzipDecoder else ZlibDecoder(zlib.MAX_WBITS)
+    )
+    decoder.keep_output_before_errors()
+    taken = []
+    real = decoder._decomp
+
+    class _Spy:
+        def __getattr__(self, name: str) -> Any:
+            if name == "copy":
+                taken.append(name)
+            return getattr(real, name)
+
+    decoder._decomp = _Spy()
+    data = (
+        gzip.compress(PAYLOAD[:5000])
+        if decoder_type is GzipDecoder
+        else zlib.compress(PAYLOAD[:5000])
+    )
+    decoder.feed(data, 1 << 10)
+    assert taken == []
 
 
 def _lzop(data: bytes) -> bytes:

@@ -380,6 +380,29 @@ has the same gap. Truth tests (`if decoder.eof:`) are unaffected.
 **Evidence.** A two-line check under PyPy 3.11.17:
 `d = ZstdDecompressor(); d.decompress(compress(b"abc")); type(d.eof)` is `int`.
 
+## PyPy: a zlib `decompressobj.copy()` is never freed (open, upstream)
+
+**Symptom.** Under PyPy 3.11.17, each `copy()` of a zlib decompressor stays allocated after
+the copy is dropped and collected: about 12 KiB for a fresh decompressor and 44 KiB for one
+mid-stream. A decompressor that `zlib.decompressobj()` builds is freed. A gzip, zlib or
+raw deflate read from a pipe took one copy per feed to keep the bytes before an error, so a
+suite run grew PyPy workers by gigabytes. Each 1-byte-feed pass over a 10 KB gzip kept
+30 MiB. On CI's 16 GB runner the PyPy job was shut down partway through the suite.
+
+**What archivey does.** Under PyPy those decoders take no copy, so a bounded pipe read
+loses the output of the call that raised, as a decoder in a decoder child does
+(`keep_output_before_errors` in `internal/streams/codecs/deflate_decoder.py`;
+`compressed-streams` spec). Snapshot seek points still take copies, but only on declared
+seek demand and only about one per MiB of output.
+
+**What remains.** Snapshot seek points under PyPy leak their copies.
+
+**Upstream.** Not filed with PyPy.
+
+**Evidence.** Under PyPy 3.11.17, `d = zlib.decompressobj(31)` followed by 5,000
+`c = d.copy(); del c` and `gc.collect()` raises RSS by 59 MiB. 5,000 new
+`decompressobj(31)` raise it by 1 MiB.
+
 ## PyPy: `BufferedRandom.readinto` over-reports its last partial fill (open, upstream)
 
 **Symptom.** Under PyPy 3.11.17, `io.BufferedRandom.readinto` (a file opened `w+b` or

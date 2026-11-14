@@ -36,6 +36,7 @@ from archivey.internal.streams.decompressor_stream import (
     truncated_message,
     zlib_error,
 )
+from archivey.internal.streams.native_memory import UNDER_PYPY
 
 # Output between two snapshot seek points one decode records (:class:`ZlibSnapshot`).
 # A seek decodes about half of it on average: about 2 ms on a 4-core machine.
@@ -114,7 +115,10 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
 
     @override
     def keep_output_before_errors(self) -> None:
-        self._keep = hasattr(self._decomp, "copy")
+        # PyPy never frees a ``decompressobj.copy()``: one per feed kept about 44 KiB
+        # each (30 MiB for one 1-byte-feed pass over a 10 KB gzip). There a pipe keeps
+        # the stream's behaviour, as a decompressor in a decoder child does.
+        self._keep = hasattr(self._decomp, "copy") and not UNDER_PYPY
 
     def _raise_pending(self) -> None:
         if self._raise_next is not None:
