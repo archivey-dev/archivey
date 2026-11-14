@@ -16,7 +16,7 @@ import io
 import pytest
 
 from archivey import ArchiveFormat, ArchiveyError, CorruptionError, open_archive
-from tests.conftest import requires_binary
+from tests.conftest import requires, requires_binary
 
 _INPUT = bytes.fromhex(
     "526172211a07010009efc86f0b0105070406010180808000dbe1b3ee2302030ba20004c806a4"
@@ -29,6 +29,7 @@ _INPUT = bytes.fromhex(
 
 
 @requires_binary("unrar")
+@requires("cryptography")  # the header is AES-encrypted
 @pytest.mark.parametrize(
     "password",
     [["", "password"], "", b"", "password", ["password", ""]],
