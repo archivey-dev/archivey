@@ -67,6 +67,10 @@ def numbered_name(name: str, n: int, *, is_dir: bool) -> str:
         The candidate name. This function does not look at the filesystem: the caller
         checks whether the candidate is free and tries ``n + 1`` when it is not.
     """
+    # Imported here, as in match_glob below: this module stays light at import.
+    from archivey.internal.arg_checks import check_bool
+
+    check_bool(is_dir, call="numbered_name(is_dir=…)")
     if is_dir:
         return f"{name} ({n})"
     path = PurePath(name)
@@ -133,7 +137,7 @@ def match_glob(
             ``ValueError``.
     """
     # Imported here: arg_checks imports the stream modules, which this light module
-    # does not otherwise need at import.
+    # does not otherwise need at import. numbered_name above does the same.
     from archivey.internal.arg_checks import check_bool
 
     check_bool(with_contents, call="match_glob(with_contents=…)")

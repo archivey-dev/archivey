@@ -46,6 +46,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import io
+import stat
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -54,6 +55,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from archivey import (
+    AcceleratorMode,
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
@@ -74,7 +76,8 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
-from archivey.paths import match_glob
+from archivey.formats import unix_member_type
+from archivey.paths import match_glob, numbered_name
 
 # An ArchiveyError is permitted only for the arguments named here; see the module
 # docstring.
@@ -645,6 +648,34 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "with_contents",
                 bad,
                 lambda b=bad: match_glob("*", with_contents=b),
+            ),
+            _case(
+                "numbered_name",
+                "is_dir",
+                bad,
+                lambda b=bad: numbered_name("photo.jpg", 1, is_dir=b),
+            ),
+            _case(
+                "unix_member_type",
+                "has_data",
+                bad,
+                lambda b=bad: unix_member_type(stat.S_IFIFO, has_data=b),
+            ),
+            _case(
+                "AcceleratorMode.enabled_for",
+                "seekable",
+                bad,
+                lambda b=bad: AcceleratorMode.AUTO.enabled_for(
+                    seekable=b, available=True
+                ),
+            ),
+            _case(
+                "AcceleratorMode.enabled_for",
+                "available",
+                bad,
+                lambda b=bad: AcceleratorMode.AUTO.enabled_for(
+                    seekable=True, available=b
+                ),
             ),
         ]
     for bad in ("x", ArchiveyConfig, 0, ()):
@@ -1327,3 +1358,13 @@ def test_max_ppmd_in_process_input_kwarg_is_gone() -> None:
     """
     with pytest.raises(TypeError, match="max_ppmd_in_process_input"):
         DecoderLimits(max_ppmd_in_process_input=1)  # type: ignore[call-arg]
+
+
+def test_dry_run_is_checked_before_the_closed_reader(
+    archive: Path, tmp_path: Path
+) -> None:
+    # The flag's own error names it, as the enum arguments' do, even on a closed reader.
+    with open_archive(archive) as reader:
+        pass
+    with pytest.raises(TypeError, match="dry_run"):
+        reader.extract_all(tmp_path / "out", dry_run="false")  # type: ignore[arg-type]

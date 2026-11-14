@@ -4988,11 +4988,7 @@ class BaseArchiveReader(ArchiveReader):
         format and whatever ``seekable_members`` says (``_iter_stream_members`` makes
         each handle forward-only); ``tell()`` works.
         """
-        if not isinstance(file_copy_streams, bool):
-            raise _UsageTypeError(
-                "stream_members(file_copy_streams=…) takes True or False, but got "
-                f"{describe_value(file_copy_streams)}."
-            )
+        check_bool(file_copy_streams, call="stream_members(file_copy_streams=…)")
         return MemberPassImpl(
             self._stream_members(
                 members, FileCopyPass(streams=file_copy_streams), hold_to_ratio=True
@@ -5201,10 +5197,10 @@ class BaseArchiveReader(ArchiveReader):
         abort_on = coerce_enum_collection(
             abort_on, AbortOn, call="extract_all()", param="abort_on="
         )
+        check_bool(dry_run, call="extract_all(dry_run=…)")
         self._state.require_open("extract_all()")
         check_extraction_limits(limits, call="extract_all(limits=…)")
         check_callable(on_progress, call="extract_all(on_progress=…)")
-        check_bool(dry_run, call="extract_all(dry_run=…)")
         # ``filter`` is not consulted until the first member is offered, by which point
         # the extraction is under way; a non-callable there reads as
         # ``TypeError: 'int' object is not callable`` with nothing naming the argument.

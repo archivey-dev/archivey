@@ -32,6 +32,7 @@ from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
+    check_bool,
     check_callable,
     check_encoding,
     check_instance,
@@ -89,6 +90,8 @@ class AcceleratorMode(Enum):
         also falls back (tiny members do not repay per-stream accelerator setup).
         Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.
         """
+        check_bool(seekable, call="AcceleratorMode.enabled_for(seekable=…)")
+        check_bool(available, call="AcceleratorMode.enabled_for(available=…)")
         if self is AcceleratorMode.OFF:
             return False
         if self is AcceleratorMode.ON:

@@ -599,9 +599,11 @@ flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
 `open_stream(seekable=)`, `detect_format(follow_stub_volumes=)`,
 `format_availability(check_programs=)`, `extract_all(dry_run=)`,
 `stream_members(file_copy_streams=)`, `ArchiveStream.verify(password_only=)`,
-`FormatPolicy(plugins=)` and `archivey.paths.match_glob(with_contents=)`. A string such
-as `"false"` is truthy, so a flag loaded from text would silently switch a guard or a
-mode on.
+`FormatPolicy(plugins=)`, `AcceleratorMode.enabled_for(seekable=, available=)`, and the
+helpers for format handlers and extraction code
+`archivey.paths.match_glob(with_contents=)`, `archivey.paths.numbered_name(is_dir=)` and
+`archivey.formats.unix_member_type(has_data=)`. A string such as `"false"` is truthy, so
+a flag loaded from text would silently switch a guard or a mode on.
 
 An empty string passed as a path SHALL raise an `ArchiveyUsageError` that is also a
 `ValueError` at the entry point, before anything is read or created. This covers the

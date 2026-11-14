@@ -69,6 +69,7 @@ from archivey.diagnostics import (
     MemberTimestampContext,
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
+from archivey.internal.arg_checks import check_bool
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
@@ -1346,6 +1347,7 @@ def unix_member_type(
     ``"unknown"`` included, as every built-in format does, and report
     ``"unknown"`` as ``MEMBER_TYPE_UNKNOWN`` too.
     """
+    check_bool(has_data, call="unix_member_type(has_data=…)")
     member_type = _UNIX_TYPES.get(mode & 0o170000)
     if member_type is not None:
         return member_type, None
