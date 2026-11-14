@@ -420,16 +420,19 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
     waiting for it (and for ``unrar``, which waits on a volume prompt), and the thread
     removes the volumes once its read returns. Until then the caller's own close of
     the source waits for that read, as the docs say."""
-    data = _owner_archive(30_000, 30_000, 30_000, 30_000)
+    # Members under 4 KiB, Windows' pipe buffer: the output ``unrar`` makes of a
+    # member nobody reads yet fits the pipe, so it goes on to ask for the volume
+    # whose writing reaches the stall.
+    data = _owner_archive(3000, 3000, 3000, 3000)
     source = _StallingStream(data, int(len(data) * 0.8))
     buffered = io.BufferedReader(source)
     try:
-        reader = open_archive(buffered, streaming=True, config=_config())
+        reader = open_archive(buffered, streaming=True, config=_config(4000))
         it = reader.stream_members()
         for _ in range(2):
             _member, stream = next(it)
             assert stream is not None
-            assert len(stream.read()) == 30_000
+            assert len(stream.read()) == 3000
         # The thread now reads ahead into the last member, where the source stops
         # sending, to finish the volume that ends the third.
         assert source.stalled.wait(10)
