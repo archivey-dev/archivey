@@ -897,13 +897,14 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
   proves once it passes: `CHECKSUM`. Such a check runs only when all the members it
   covers are read, so a read of one member alone, `verify()` included, can end at
   `LENGTH` below it, and `verify_all()` reaches it. A TAR file whose data lies inside
-  `.bz2` or `.bz3` blocks whose CRCs passed SHALL reach `CHECKSUM` once those blocks
-  are checked, before the walk reaches the stream's end: each byte passed a check
-  stored with it. Bytes decoded from a restart point the file's own index named do
-  not count, and neither do bytes an accelerator decoded.
-  `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
-  what the stream knows without opening it. Once the stream is open it MAY rise (a
-  password confirmed by another member), and it SHALL fall only when the format
+  `.bz2` or `.bz3` blocks whose CRCs passed, or inside `.xz` blocks whose checks passed,
+  SHALL reach `CHECKSUM` once those blocks are checked, before the walk reaches the
+  stream's end: each byte passed a check stored with it. An `.xz` block is checked once
+  the decode is past its end, or at the end of its stream. Bytes decoded from a restart
+  point the file's own index named do not count, and neither do bytes an accelerator
+  decoded. `verified` SHALL NOT exceed it. Before a lazy stream opens its member it
+  describes what the stream knows without opening it. Once the stream is open it MAY
+  rise (a password confirmed by another member), and it SHALL fall only when the format
   shows, late, that no read can check every byte: a read finds a stream or frame of
   an `.xz`, `.zst` or `.lz4` file that carries no check (below), or a walk over a
   compressed TAR, CPIO or ar archive finds a stream or frame of the stream it is read
@@ -984,7 +985,8 @@ level adds no new error and no new way to read.
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
 | `.tar.bz2` walked in a streaming pass, a file whose data lies in blocks already checked | `verified` is `CHECKSUM` before the walk reaches the stream's end |
 | Same, a block after the file damaged | the file stays at `CHECKSUM`; the files in the damaged block stay below it, and the walk raises `CorruptionError` |
-| `.tar.gz` walked in a streaming pass, before the end | no file is at `CHECKSUM` |
+| `.tar.xz` of several blocks with a check, walked in a streaming pass, a file whose data lies in blocks the decode is past | `verified` is `CHECKSUM` before the walk reaches the stream's end |
+| `.tar.gz`, a one-block `.tar.xz`, or a `.tar.xz` with no check, walked in a streaming pass, before the end | no file is at `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
 | 7z folder of several files with only a folder CRC, a file read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` for all once the folder is read and its CRC matches |
 | Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH`, below their `CHECKSUM` ceiling |

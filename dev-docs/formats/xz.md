@@ -183,6 +183,18 @@ cannot place a point: liblzma refuses an index that disagrees with the blocks. A
 not yet decoded to its end has no block points, so a seek back inside the stream being
 read resumes at an earlier stream or the start.
 
+The same walk also runs on every other read of a stream whose check liblzma runs, so
+that each block's check can count for the output it covers: a compressed TAR raises the
+files whose data lies in checked blocks to `CHECKSUM` before the stream ends
+(`_XzState._note_checked`, `checked_spans`). liblzma reads a block's check before it
+hands out any output of the next block, so output past a block's end means that block's
+check passed. At the end of a stream the remaining blocks count only if the walk read
+the index and agrees with liblzma, as for block points. The block right before damage
+never counts: liblzma raises before any output past its end, and the call that raises
+loses its output. A walk kept only for checks gives up on a stream whose LZMA2 chunks
+average under 4 KiB compressed (`_CHECK_WALK_BYTES_PER_CHUNK`), since each chunk header
+is a Python step.
+
 The index parser follows liblzma: the index must fill its declared length exactly, its
 variable-length integers must be minimally encoded, its CRC-32 must match, and the header
 and footer must name the same check. Stream padding is found by scanning backwards in

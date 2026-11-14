@@ -182,7 +182,9 @@ def test_a_codec_with_no_check_never_sets_a_checksum_ceiling(streaming: bool) ->
 
 def test_a_frame_without_a_check_found_later_drops_the_ceiling() -> None:
     # The first xz stream carries a check, the second does not: CHECKSUM is the
-    # ceiling until the walk finds the second, then every file falls to LENGTH.
+    # ceiling until the walk finds the second, then the files it holds fall to
+    # LENGTH. The file wholly in the first stream passed that stream's block check
+    # (``checked_spans``), so it keeps CHECKSUM.
     import lzma
 
     big = random.Random(7).randbytes(1 << 20)
@@ -198,7 +200,10 @@ def test_a_frame_without_a_check_found_later_drops_the_ceiling() -> None:
                 assert member.verifiable is Verification.CHECKSUM
                 first = False
         members = [m for m in reader.members_report().members if m.is_file]
-    assert {m.verifiable for m in members} == {Verification.LENGTH}
+    levels = {m.name: m for m in members}
+    assert levels["big"].verified is Verification.CHECKSUM
+    assert levels["big"].verifiable is Verification.CHECKSUM
+    assert levels["a"].verifiable is Verification.LENGTH
 
 
 @pytest.mark.parametrize("streaming", [False, True])
