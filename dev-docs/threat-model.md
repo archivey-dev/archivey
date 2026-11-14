@@ -545,10 +545,10 @@ data its pass keeps for link targets beside it.
   during listing work) while listing work runs (`_listing_work`): a walk step, the first
   header a reader parses at open, a 7z encoded header, the link targets
   `_finalize_links` reads (a solid 7z folder up to its last link). A caller's member
-  reads between steps do not count. A compressed TAR, cpio or RPM payload is decoded
-  whole to list; a ZIP read from a pipe decodes about 4 KiB of each compressed member it
-  passes over. The error is an `AlwaysStopResourceLimitError`, so the ZIP pass's drain
-  does not skip past it.
+  reads between steps do not count. A compressed TAR or cpio is decoded whole to list
+  (an RPM lists from its header and decodes nothing); a ZIP read from a pipe decodes
+  about 4 KiB of each compressed member it passes over. The error is an
+  `AlwaysStopResourceLimitError`, so the ZIP pass's drain does not skip past it.
 
 **Residual.** Format-local parser ceilings allocate up to their limit during
 `open_archive` (7z: `max_members` or header size, whichever is tighter). The header-size

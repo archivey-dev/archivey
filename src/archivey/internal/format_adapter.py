@@ -485,6 +485,12 @@ class _PluginAdapter(BaseArchiveReader):
             validate_code_context(code, details)
         except ValueError as exc:
             raise ArchiveyUsageError(f"ReaderContext.report(): {exc}") from None
+        if self._walk_step == _REWALK and getattr(
+            self._reader, "data_on_demand", False
+        ):
+            # A walk that lists from a header (``SequentialReader.data_on_demand``)
+            # reports, started over, only what the listing walk reported already.
+            return
         if member is None:
             self._send_report(code, message, details, None, None)
         elif self._walk_step == _REWALK:
@@ -2138,7 +2144,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             if decoded is not None:
                 self._listing_decoded = None
                 with self._translated_errors(member.name), guard:
-                    decoded.finish()
+                    self._leave_decoded(decoded)
                 prefix += decoded.consumed
                 with boundary, guard:
                     span = self._walk_next(walk)
@@ -2315,7 +2321,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             expected, custom = self._member_digests(member, span.digests, "walk")
         decoded: _Decoded | None = None
         if data is not None:
-            stream = self._decoded_stream(data, index)
+            stream = self._decoded_stream(data, index, layer)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
@@ -2512,7 +2518,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                             self._translated_errors(current.name),
                             self._handle_guard(),
                         ):
-                            current.finish()
+                            self._leave_decoded(current)
                 except ArchiveyError:
                     # Safe to drop: the listing walk drained this member the same
                     # way and would have failed on it, so a member that raises here
@@ -2580,7 +2586,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                             data.close()
                     raise
                 return _Decoded(
-                    self._decoded_stream(data, index),
+                    self._decoded_stream(data, index, walk.layer),
                     span.checked,
                     index,
                     decoded.size,
@@ -2590,26 +2596,49 @@ class SequentialReaderAdapter(_PluginAdapter):
             name = _listed_name(span)
             with self._translated_errors(name), guard:
                 if data is not None:
-                    _Decoded(
-                        self._decoded_stream(data, index),
-                        span.checked,
-                        index,
-                        span.member.size,
-                        name,
-                    ).finish()
+                    self._leave_decoded(
+                        _Decoded(
+                            self._decoded_stream(data, index, walk.layer),
+                            span.checked,
+                            index,
+                            span.member.size,
+                            name,
+                        )
+                    )
                 elif span.data_length:
                     layer = walk.layer
                     assert layer is not None
                     layer.forward.skip(span.data_length)
             index += 1
 
-    def _decoded_stream(self, data: BinaryIO | io.RawIOBase, index: int) -> BinaryIO:
+    def _leave_decoded(self, decoded: _Decoded) -> None:
+        """The walk moves past ``decoded``: read what the caller left of it, so the
+        reader's library is past it, and close it. A reader whose data reads the
+        archive only when read (``SequentialReader.data_on_demand``) is not drained:
+        the stream is closed, and nothing it would have decoded is decoded."""
+        if self._sequential.data_on_demand:
+            decoded.close()
+        else:
+            decoded.finish()
+
+    def _decoded_stream(
+        self, data: BinaryIO | io.RawIOBase, index: int, layer: _Layer | None
+    ) -> BinaryIO:
         """A reader's decoded data as archivey reads it: full-count, counted as
         decompressed output, the drain's bytes too (``_decoded_parts`` does not count
         them again), and held to the ratio, the drain too, as the data of the member
-        at ``index`` of the walk."""
+        at ``index`` of the walk.
+
+        It draws from the nest account, except for a ``data_on_demand`` reader over a layer
+        that draws already (``decompress()``): its data is a window of that layer's
+        bytes, drawn there, so each byte is drawn once, as a span's is."""
+        drawn = (
+            layer is not None
+            and layer.drawn
+            and getattr(self._reader, "data_on_demand", False)
+        )
         return self._ratio_guarded(
-            self._track_decompressed(_full_count(data)),
+            self._track_decompressed(_full_count(data), draw_budget=not drawn),
             self._decoded_ratio_tally,
             index,
         )
@@ -2734,12 +2763,16 @@ class SequentialReaderAdapter(_PluginAdapter):
             )
         # A sequential plugin declares is_solid when its members share one decode
         # (compression that starts part-way), so the later headers sit inside it.
+        # A walk whose data reads the archive on demand lists from a header at the
+        # start, before any of that decode.
+        if self._sequential.data_on_demand:
+            listing = ListingCost.INDEXED
+        elif info.is_solid:
+            listing = ListingCost.REQUIRES_DECOMPRESSION
+        else:
+            listing = ListingCost.REQUIRES_SCANNING
         return CostReceipt(
-            listing_cost=(
-                ListingCost.REQUIRES_DECOMPRESSION
-                if info.is_solid
-                else ListingCost.REQUIRES_SCANNING
-            ),
+            listing_cost=listing,
             access_cost=AccessCost.SOLID if info.is_solid else AccessCost.DIRECT,
             stream_capability=capability,
             solid_block_count=None,
