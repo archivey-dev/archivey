@@ -4,6 +4,7 @@ check passes, rather than when a decode from the start reaches the stream's end.
 
 A codec whose decoder hands out only checked bytes (bzip2 one block at a time, bzip3)
 says so with ``checks_every_byte``; ``DecompressorStream`` then adds each call's output
+<<<<<<< HEAD
 to its :class:`CheckedSpans`. A decoder that hands out bytes before their check runs
 reports the ranges whose check has passed since instead (``DecodeOut.checked``: xz
 blocks), and the stream adds those. A compressed TAR reader asks for the spans added
@@ -15,6 +16,21 @@ matched it. It does not prove the blocks are in the order the writer put them, o
 none is missing; the stream's whole-stream check (bzip2's combined CRC, xz's index)
 proves that, at the end. The ``CHECKSUM`` level says "every byte passed a checksum
 stored with the data", which a block CRC is.
+=======
+to its :class:`CheckedSpans`. A compressed TAR reader watches them
+(:meth:`CheckedSpans.watch`), asks for the spans added since it last asked
+(:meth:`CheckedSpans.take_new`), and raises each listed member whose data lies inside
+the spans (``TarReader._refresh_member_levels``).
+
+What a block check proves: every byte of the member came out of a block whose stored
+CRC matched it. It does not prove the blocks are in the order the writer put them, or
+that none is missing; the stream's whole-stream check (bzip2's combined CRC) proves
+that, at the end. The ``CHECKSUM`` level says "every byte passed a checksum stored with
+the data", which a block CRC is. So a stream with one whole block cut out between two
+intact markers can raise a member that straddles the gap, with the next block's bytes
+in place of its own, before the whole-stream check fails; such damage removes exactly
+a block, which random damage rarely does.
+>>>>>>> claude/project-thread-rngpt2-verify
 """
 
 from __future__ import annotations
@@ -40,7 +56,16 @@ class CheckedSpans:
         self._starts: list[int] = []
         self._ends: list[int] = []
         self._new: list[tuple[int, int]] = []
+        # Whether a reader takes the new ranges (:meth:`watch`): until then none are
+        # logged, so a stream nobody watches keeps only the merged spans.
+        self._watched = False
         self._lock = threading.Lock()
+
+    def watch(self) -> None:
+        """Log the ranges added from now on, for :meth:`take_new`. A reader that
+        watches tests what it starts tracking later against :meth:`covers`."""
+        with self._lock:
+            self._watched = True
 
     def add(self, start: int, end: int) -> None:
         """Record that every byte of ``[start, end)`` passed its check."""
@@ -48,10 +73,13 @@ class CheckedSpans:
             return
         with self._lock:
             new = self._new
-            if new and new[-1][1] == start:
+            if self._watched and new and new[-1][1] == start:
                 new[-1] = (new[-1][0], end)
-            else:
+            elif self._watched:
                 new.append((start, end))
+                if len(new) > MAX_SPANS:
+                    # A reader that stopped asking: the oldest range loses its raise.
+                    del new[0]
             starts, ends = self._starts, self._ends
             # The spans that touch or overlap [start, end) merge with it.
             lo = bisect.bisect_left(ends, start)
