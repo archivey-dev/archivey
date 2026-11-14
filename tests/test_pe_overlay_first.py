@@ -3,8 +3,8 @@
 The overlay start is where the PE format itself says appended data begins. A valid
 archive there is the payload, so a decoy in the program's own sections never competes
 with it, and a 7z SFX whose certificate follows it is accepted at once. Detection, the
-RAR, 7z and LHA readers' scans and the forward ZIP walk all apply the rule, so a forced
-``format=`` opens the same payload, seekable or not.
+RAR, 7z, LHA and ARJ readers' scans and the forward ZIP walk all apply the rule, so a
+forced ``format=`` opens the same payload, seekable or not.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from archivey.types import ArchiveFormat
 from tests.lha_util import Member, archive
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
 from tests.streams_util import NonSeekableBytesIO
+from tests.test_arj import _archive as _arj
 from tests.test_sevenzip_trailing_data import _stored_7z
 
 _RAR = (
@@ -213,3 +214,16 @@ def test_lha_at_the_overlay_start_beats_a_section_archive_and_a_later_one(
     assert info.payload_offset == _OVERLAY
     assert _names(data) == ["real.txt"]
     assert _names(data, ArchiveFormat.LHA) == ["real.txt"]
+
+
+def test_arj_at_the_overlay_start_beats_a_section_archive() -> None:
+    # ARJ's validator takes the first header that reads, so without the rule the scan
+    # takes the decoy in the section.
+    decoy = _arj((b"decoy.txt", b"decoy"))
+    real = _arj((b"real.txt", b"real data"))
+    data = _with_image(b"\0" * 512 + decoy, real)
+    info = detect_format(io.BytesIO(data))
+    assert info.format is ArchiveFormat.ARJ
+    assert info.payload_offset == _OVERLAY
+    assert _names(data) == ["real.txt"]
+    assert _names(data, ArchiveFormat.ARJ) == ["real.txt"]
