@@ -437,6 +437,16 @@ class _Materialized:
     report: MemberListReport
 
 
+def _data_owner(member: ArchiveMember) -> ArchiveMember:
+    """The member whose data a read of ``member`` decodes, for the per-member ratio:
+    a RAR file copy's source (a copy is a ``FILE``, so the link follow does not reach
+    it, and it stores no data of its own), else ``member``."""
+    copied = member.link_target_member
+    if copied is not None and member.extra.get(EXTRA_IS_FILE_COPY):
+        return copied
+    return member
+
+
 def _new_read_ratio_tally() -> ReadRatioTally:
     # Imported here: the codec layer imports reader-side modules at load.
     from archivey.internal.bomb_tracker import ReadRatioTally
@@ -1541,10 +1551,24 @@ class BaseArchiveReader(ArchiveReader):
             return replace(limits, max_ratio=nest_ratio)
         return limits
 
-    def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
+    def _hold_to_ratio(
+        self,
+        stream: ArchiveStreamImpl,
+        member: ArchiveMember,
+        *,
+        counted_as: ArchiveMember,
+    ) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
         ``decoder_limits.max_ratio``, as extraction holds what it writes
-        (:class:`MemberRatioGuard`). ``member`` is the member whose data it reads.
+        (:class:`MemberRatioGuard`). ``member`` is the member whose data it reads;
+        ``counted_as`` is the member the caller asked for, which the archive-wide
+        total counts the output under.
+
+        The two differ for a link the read follows and for a file copy, whose bytes
+        are another member's. The per-member rule judges ``member``'s output against
+        its own compressed size. The archive-wide total counts each member the caller
+        reads, so N links or copies of one member's data count N times: they are N
+        times its bytes handed out, and one small header each in the archive.
 
         Extraction's own passes are not held here: its ``BombTracker`` applies the
         limits the ``extract_all`` call was given.
@@ -1553,13 +1577,29 @@ class BaseArchiveReader(ArchiveReader):
         if limits.max_ratio is None:
             return
         tally = self._read_ratio_tally
+        key = counted_as._member_id
+        assert key is not None, counted_as.name
         if member.size is not None and self._member_data_is_stream_bytes(member):
             # Its output is its own bytes of the archive stream, so neither rule can
             # refuse it here: its ratio is 1:1, and the archive stream's decode is held
             # by the outer ratio guard where it is compressed. It still counts toward
             # the archive-wide total, in full, for the members a guard does judge.
-            assert member._member_id is not None, member.name
-            self._nest.report_pass(tally.advance(member._member_id, member.size))
+            total = tally.advance(key, member.size)
+            if counted_as is not member:
+                # A link to it: its bytes are handed out again, past what the archive
+                # stream decodes, so no other guard sees them. Judged here, at its
+                # size, before any of it is read.
+                from archivey.internal.bomb_tracker import refuse_past_archive_ratio
+
+                refuse_past_archive_ratio(
+                    total,
+                    limits=limits,
+                    static_size=self._trusted_source_size(),
+                    consumed=self._live_consumed(),
+                    counted="member data read",
+                    member_name=counted_as.name,
+                )
+            self._nest.report_pass(total)
             return
         # Imported here, as in ``_open_outer_codec_stream``.
         from archivey.internal.bomb_tracker import MemberRatioGuard
@@ -1571,6 +1611,8 @@ class BaseArchiveReader(ArchiveReader):
                 inner,
                 limits=limits,
                 member=member,
+                tally_key=key,
+                member_name=counted_as.name,
                 tally=tally,
                 static_size=static_size,
                 consumed=consumed,
@@ -4489,7 +4531,7 @@ class BaseArchiveReader(ArchiveReader):
                 if judged:
                     self._settle_solid_open(judged[0], decoded=True)
                     judged.clear()
-                self._hold_to_ratio(stream, opened[0])
+                self._hold_to_ratio(stream, _data_owner(opened[0]), counted_as=member)
                 stream._level_member = self._level_member(opened[0])
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
@@ -5068,16 +5110,7 @@ class BaseArchiveReader(ArchiveReader):
                         stream._make_forward_only()
                         stream._level_member = m
                         if hold_to_ratio:
-                            # A file copy decodes its source's bytes again: held, and
-                            # counted once, as that source.
-                            copied = m.link_target_member
-                            self._hold_to_ratio(
-                                stream,
-                                copied
-                                if copied is not None
-                                and m.extra.get(EXTRA_IS_FILE_COPY)
-                                else m,
-                            )
+                            self._hold_to_ratio(stream, _data_owner(m), counted_as=m)
                     current = stream
                     # Suspended at the yield: this thread runs the caller's loop body,
                     # which is not re-entry (see OperationToken.suspended).
