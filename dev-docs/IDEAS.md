@@ -221,9 +221,11 @@ Each idea carries a status:
   the pass would hold the small sidecar back until it has seen the next member.
 - **Pathlib-like navigation.** *Open idea.* An `ArchivePath` with `/`, `iterdir()`,
   `glob()` and `read_bytes()`, as `zipfile.Path` does.
-- **fsspec integration.** *In progress* (the `fsspec-integration` OpenSpec change).
-  An fsspec `OpenFile` or URL already opens as a remote source. The file system that
-  lets pandas, dask and pyarrow read members by path is in review.
+- **fsspec integration.** *Built* (the `fsspec-integration` OpenSpec change). An fsspec
+  `OpenFile` opens as a remote source, and `ArchiveyFileSystem` (`archivey://`) lets
+  pandas, dask and pyarrow read members by path. Batched fetches for whole-archive
+  passes were dropped. Later work, each on its own evidence, is listed in the change's
+  `tasks.md` §7.
 - **A persisted member index.** *Open idea.* Save the member offsets a listing found, so
   a later open of the same archive (a remote one above all) lists with no walk. It needs
   a way to tell that the archive has not changed since.
