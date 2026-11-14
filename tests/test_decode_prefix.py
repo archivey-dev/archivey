@@ -196,48 +196,88 @@ class _CountsCopies:
         return getattr(self._inner, name)
 
 
-def _one_byte_feeds(
-    decoder_type: type[ZlibDecoder | GzipDecoder], data: bytes, copies: list[int]
-) -> tuple[bytes, int]:
-    """What a decoder that keeps the output before errors gives from one-byte feeds of
-    ``data`` before it raises, and how many feeds it took."""
+def _fed_in_pieces(
+    decoder_type: type[ZlibDecoder | GzipDecoder],
+    data: bytes,
+    piece: int,
+    copies: list[int],
+    *,
+    unbounded_at: int | None = None,
+) -> tuple[bytes, int, int]:
+    """What a decoder that keeps the output before errors gives from ``data`` fed in
+    ``piece``-byte feeds of at most 64 KiB of output each, before it raises: the bytes,
+    the feeds that returned, and the bytes the failing feed handed back (the feed
+    after it raises). The feed at offset ``unbounded_at`` asks for all its output."""
     decoder: ZlibDecoder | GzipDecoder = (
         GzipDecoder() if decoder_type is GzipDecoder else ZlibDecoder(zlib.MAX_WBITS)
     )
     decoder._decomp = _CountsCopies(decoder._decomp, copies)
     decoder.keep_output_before_errors()
     got = bytearray()
-    steps = 0
+    steps = recovered = 0
     with pytest.raises(ArchiveyError):
-        for i in range(len(data)):
-            got += decoder.feed(data[i : i + 1], 1 << 16).data
+        for i in range(0, len(data), piece):
+            limit = -1 if i == unbounded_at else 1 << 16
+            out = decoder.feed(data[i : i + piece], limit).data
+            got += out
             steps += 1
+            if decoder._raise_next is not None:
+                recovered = len(out)
         decoder.flush()
-    return bytes(got), steps
+    return bytes(got), steps, recovered
+
+
+def _damaged_stream(decoder_type: type[ZlibDecoder | GzipDecoder]) -> bytes:
+    if decoder_type is GzipDecoder:
+        return _damage(gzip.compress(PAYLOAD[:30_000], mtime=0), 0.5)
+    return _damage(zlib.compress(PAYLOAD[:30_000]), 0.5)
 
 
 @pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
-def test_one_byte_steps_share_a_copy_and_still_keep_the_prefix(
-    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+def test_one_byte_steps_share_a_copy(
+    decoder_type: type[ZlibDecoder | GzipDecoder],
 ) -> None:
     """A source that returns one byte per read makes one step per byte. The steps share
-    one ``decompressobj.copy()`` up to the replay bounds instead of taking one each
-    (under PyPy each copy stays allocated, and partly leaks), and an error hands back
-    the same bytes as a copy taken before every step."""
-    if decoder_type is GzipDecoder:
-        good = gzip.compress(PAYLOAD[:30_000], mtime=0)
-    else:
-        good = zlib.compress(PAYLOAD[:30_000])
-    damaged = _damage(good, 0.5)
+    one ``decompressobj.copy()`` up to the replay bounds instead of taking one each:
+    under PyPy each copy stays allocated, and part of it is never freed."""
     copies: list[int] = []
-    got, steps = _one_byte_feeds(decoder_type, damaged, copies)
+    got, steps, _ = _fed_in_pieces(
+        decoder_type, _damaged_stream(decoder_type), 1, copies
+    )
     assert got
     assert steps > 4 * deflate_decoder.REPLAY_MAX_STEPS
     assert len(copies) <= steps // deflate_decoder.REPLAY_MAX_STEPS + 1
+
+
+@pytest.mark.parametrize("unbounded", [False, True], ids=["bounded", "one-unbounded"])
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_the_replay_hands_back_what_a_copy_per_step_does(
+    decoder_type: type[ZlibDecoder | GzipDecoder],
+    unbounded: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failing step decodes again from the shared copy through every step since
+    it, so it hands back the bytes a copy taken just before it would. An unbounded step
+    in between moves the decoder without being recorded, so the next bounded step takes
+    a fresh copy. The pieces are large enough that the failing step hands bytes back,
+    so a replay from the wrong state shows in them."""
+    damaged = _damaged_stream(decoder_type)
+    piece = 64
+    unbounded_at = (len(damaged) // 4) // piece * piece if unbounded else None
+    copies: list[int] = []
+    shared = _fed_in_pieces(
+        decoder_type, damaged, piece, copies, unbounded_at=unbounded_at
+    )
+    assert shared[2] > 0
+    assert len(copies) < shared[1] // 2
     monkeypatch.setattr(deflate_decoder, "REPLAY_MAX_STEPS", 1)
     per_step: list[int] = []
-    assert _one_byte_feeds(decoder_type, damaged, per_step) == (got, steps)
-    assert len(per_step) == steps + 1
+    assert (
+        _fed_in_pieces(
+            decoder_type, damaged, piece, per_step, unbounded_at=unbounded_at
+        )
+        == shared
+    )
 
 
 @pytest.mark.parametrize("name", ["gzip", "xz"])

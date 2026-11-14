@@ -487,7 +487,7 @@ read: one parametrised case of `tests/test_arrived_codec_input.py` took 64,121 c
 and grew its worker by 2.7 GB. In the merge queue's PyPy job that put the runner's four
 workers past its 16 GB, the runner stopped answering, and the job ran into its
 45-minute limit with no log (2026-11-13 and 14). The path now takes one copy per
-`REPLAY_MAX_STEPS` steps, MiB of input or 8 MiB of output, and replays the steps since
+`REPLAY_MAX_STEPS` steps, 1 MiB of input or 8 MiB of output, and replays the steps since
 the copy on an error. What remains on PyPy: about 7 MiB leaked per GiB of compressed
 input read through a pipe, and as much per GiB of output from snapshot seek points
 (`ZlibSnapshot`, one copy per MiB of output and one per seek).
