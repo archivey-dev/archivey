@@ -362,12 +362,12 @@ Where a pipe and a file differ, on damaged archives or ones no writer produces:
 - A data descriptor or local header whose CRC-32 or sizes differ from the central directory's
   (other than a directory CRC-32 of 0, [below](#damaged-and-unusual-endings)) makes the pass raise
   `CorruptionError` for that member once it reaches the directory. A read from a file checks the
-  data against the directory. So when the data matches the directory, a file read reads the
-  member, and from a pipe the member's own read already fails, since the pass checks the values
-  next to the data. When the data matches the local header or descriptor, the member reads from a
-  pipe, and a read from a file raises `CorruptionError`.
+  data against the directory. So when the data matches the directory, a read from a file
+  succeeds, and from a pipe the member's own read already fails, since the pass checks the values
+  next to the data. When the data matches the local header or descriptor, a read from a pipe
+  succeeds, and a read from a file raises `CorruptionError`.
 - Bytes between the end of a member's compressed stream and its data descriptor (bit 3) count
-  into its compressed size, and the member reads. A read from a file raises `CorruptionError` on
+  into its compressed size, and are allowed. A read from a file raises `CorruptionError` on
   them ([Damaged and unusual endings](#damaged-and-unusual-endings)).
 - Two members with the same name whose directory order reverses their order in the file list and
   stream as from a file. Extraction raises `CorruptionError` for that name, where extraction from
@@ -404,7 +404,7 @@ sending side when the ZIP is done.
   directory stores 0:** the member is read, from a file and a pipe alike, as `unzip` reads it. The
   directory's name is used and `MEMBER_LOCAL_NAME_DIFFERS` is reported, which `STRICT` refuses. The
   data is checked against the local CRC-32 and `MEMBER_LOCAL_CRC_USED` is reported, which `STRICT`
-  reads: Adobe AIR packages store `META-INF/AIR/hash` this way.
+  allows: Adobe AIR packages store `META-INF/AIR/hash` this way.
 - **Bytes missing from the middle of the archive** (or added there) move the central directory, and
   the offsets it gives with it. The members after the damage are where the directory says; each
   member before it is read from the offset it stores, when a local header with its name, method,
@@ -435,11 +435,11 @@ sending side when the ZIP is done.
   `CorruptionError` once the data before them has been read, for every method, whatever the
   declared size and CRC cover. So does an LZMA member without an end marker, or a PPMd member,
   whose declared size stops short of its data. One zero byte after LZMA data without an end
-  marker reads, because 7-Zip's encoder sometimes writes it. From a pipe, bytes between the stream
-  and a data descriptor are the one exception ([ZIP from a pipe](#zip-from-a-pipe)). Under ZipCrypto
-  these read as the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
-  because the bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
-  second DEFLATE stream, with a size and CRC that cover both streams. See
+  marker is allowed, because 7-Zip's encoder sometimes writes it. From a pipe, bytes between the
+  stream and a data descriptor are the one exception ([ZIP from a pipe](#zip-from-a-pipe)). Under
+  ZipCrypto these raise the password-or-damage `EncryptionError` instead, caused by that
+  `CorruptionError`, because the bytes are encrypted. With rapidgzip, one crafted shape may be
+  accepted instead: a long second DEFLATE stream, with a size and CRC that cover both streams. See
   [Where the guarantees stop](security.md#where-the-guarantees-stop).
 - `ListingLimits.max_members` is checked at open against the entry count the end record declares,
   and again as the directory is read, in `stream_members()` too. From a pipe it is checked as the
@@ -447,10 +447,10 @@ sending side when the ZIP is done.
 
 ### Archives from macOS
 
-- **A ZIP over 4 GiB that macOS wrote without ZIP64** reads. Finder's Compress (Archive Utility,
-  `ditto -c -k`) stores every offset past 4 GiB with its top bits cut off, so 7-Zip and Python's
-  `zipfile` fail on such an archive. Archivey adds back the missing multiple of 4 GiB where an
-  offset falls below the end of the members before it, but only when a local header with the
+- **A ZIP over 4 GiB that macOS wrote without ZIP64** can be read. Finder's Compress (Archive
+  Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut off, so 7-Zip and
+  Python's `zipfile` fail on such an archive. Archivey adds back the missing multiple of 4 GiB where
+  an offset falls below the end of the members before it, but only when a local header with the
   member's name is at the corrected offset. The member's CRC-32 is still checked. Each correction
   reports `ARCHIVE_OFFSET_WRAPPED`, which `STRICT` does not raise on, since macOS writes such
   archives by default.
@@ -479,7 +479,7 @@ sending side when the ZIP is done.
 - A method archivey cannot read lists normally, and reading the member raises
   `UnsupportedFeatureError`. So does an LZMA member with `lc + lp` over 4 (which 7-Zip writes with
   `-mm=LZMA:lc=8` and liblzma cannot decode), and a PPMd member with restore method 2. Under
-  ZipCrypto both read as the password-or-damage `EncryptionError` instead, because those settings
+  ZipCrypto both raise the password-or-damage `EncryptionError` instead, because those settings
   are encrypted.
 - "Version needed to extract" never refuses a member: only a method or encryption archivey cannot
   read does.
