@@ -33,6 +33,12 @@ from archivey.internal.streams.codecs.deflate_decoder import (
     ZlibSnapshot,
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
+from archivey.internal.streams.native_memory import ZLIB_COPY_LEAKS
+
+# Where ``copy()`` leaks (PyPy), no snapshot is taken; the last test here pins that.
+_SNAPSHOTS = pytest.mark.skipif(
+    ZLIB_COPY_LEAKS, reason="no zlib snapshots where copy() leaks (PyPy)"
+)
 
 
 @functools.cache
@@ -63,6 +69,7 @@ def _snapshots(stream: Any) -> list[int]:
     ]
 
 
+@_SNAPSHOTS
 def test_a_forward_read_records_snapshots_and_seeks_resume_from_them() -> None:
     payload = _payload()
     with _open(gzip.compress(payload, 6)) as stream:
@@ -80,6 +87,7 @@ def test_a_forward_read_records_snapshots_and_seeks_resume_from_them() -> None:
         assert engine._find_best_seek_point(5_000_000).decompressed_offset > 4_000_000
 
 
+@_SNAPSHOTS
 def test_a_decode_resumed_from_a_snapshot_still_checks_the_trailer() -> None:
     payload = _payload()
     data = bytearray(gzip.compress(payload, 6))
@@ -93,6 +101,7 @@ def test_a_decode_resumed_from_a_snapshot_still_checks_the_trailer() -> None:
             stream.read()
 
 
+@_SNAPSHOTS
 def test_without_declared_seeking_no_snapshot_is_taken() -> None:
     payload = _payload()
     with _open(gzip.compress(payload, 6), seekable=False) as stream:
@@ -100,6 +109,7 @@ def test_without_declared_seeking_no_snapshot_is_taken() -> None:
         assert _snapshots(stream) == []
 
 
+@_SNAPSHOTS
 def test_a_second_pass_adds_no_snapshot_beside_the_first_ones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -134,6 +144,7 @@ def test_a_second_pass_adds_no_snapshot_beside_the_first_ones(
     assert all(b - a >= gap for a, b in itertools.pairwise(points))
 
 
+@_SNAPSHOTS
 def test_snapshots_keep_their_spacing_on_data_that_compresses_well() -> None:
     """One 64 KiB read of zeros decodes to far more than a feed's 1 MiB of output, so
     snapshots are taken on the feeds that go on with the input left over."""
@@ -147,6 +158,7 @@ def test_snapshots_keep_their_spacing_on_data_that_compresses_well() -> None:
         assert stream.read(1000) == bytes(1000)
 
 
+@_SNAPSHOTS
 def test_snapshots_past_the_memory_cap_are_thinned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -171,6 +183,7 @@ def _open_codec(codec: Codec, data: bytes) -> Any:
     return open_codec_stream(codec, io.BytesIO(data), config=config)
 
 
+@_SNAPSHOTS
 @pytest.mark.parametrize(
     ("codec", "wbits"), [(Codec.ZLIB, zlib.MAX_WBITS), (Codec.DEFLATE, -15)]
 )
@@ -191,6 +204,7 @@ def test_zlib_and_raw_deflate_seek_from_snapshots(codec: Codec, wbits: int) -> N
         )
 
 
+@_SNAPSHOTS
 def test_a_zlib_decode_resumed_from_a_snapshot_still_checks_the_adler() -> None:
     payload = _payload()
     data = bytearray(zlib.compress(payload, 6))
@@ -204,6 +218,7 @@ def test_a_zlib_decode_resumed_from_a_snapshot_still_checks_the_adler() -> None:
             stream.read()
 
 
+@_SNAPSHOTS
 def test_a_zip_member_seeks_from_snapshots(tmp_path: Path) -> None:
     payload = _payload()
     path = tmp_path / "a.zip"
@@ -226,6 +241,7 @@ def _compressed(wbits: int) -> bytes:
     return packer.compress(_payload()) + packer.flush()
 
 
+@_SNAPSHOTS
 @pytest.mark.parametrize(
     ("make", "wbits"),
     [
@@ -254,6 +270,7 @@ def test_every_snapshot_resumes_at_its_own_offsets(make: Any, wbits: int) -> Non
         assert out[:100_000] == payload[start : start + 100_000]
 
 
+@_SNAPSHOTS
 def test_snapshots_a_resumed_decode_records_are_at_their_true_offsets() -> None:
     """Fails when a decoder resumed from a snapshot counts its output from 0: the points
     it records past the first pass's end then carry wrong output offsets."""
@@ -270,3 +287,21 @@ def test_snapshots_a_resumed_decode_records_are_at_their_true_offsets() -> None:
         for target in later:
             stream.seek(target + 1000)
             assert stream.read(5000) == payload[target + 1000 : target + 6000]
+
+
+def test_where_copies_leak_no_snapshot_is_taken_and_seeks_still_land(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Where ``copy()`` leaks (PyPy; patched in here, so every interpreter runs it),
+    a gzip read on seek demand records no snapshot, and a backward seek decodes from
+    the start of the member instead, to the same bytes."""
+    from archivey.internal.streams.codecs import deflate_decoder
+
+    monkeypatch.setattr(deflate_decoder, "ZLIB_COPY_LEAKS", True)
+    payload = _payload()
+    with _open(gzip.compress(payload, mtime=0)) as stream:
+        assert stream.read() == payload
+        assert _snapshots(stream) == []
+        target = len(payload) - (2 << 20)
+        assert stream.seek(target) == target
+        assert stream.read(4096) == payload[target : target + 4096]

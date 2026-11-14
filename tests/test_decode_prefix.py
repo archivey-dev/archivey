@@ -35,7 +35,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
-from archivey.internal.streams.native_memory import UNDER_PYPY
+from archivey.internal.streams.native_memory import ZLIB_COPY_LEAKS
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
@@ -122,7 +122,7 @@ _DEFLATE_WBITS = {"gzip": 31, "zlib": zlib.MAX_WBITS, "deflate": -zlib.MAX_WBITS
 # PyPy leaks part of every copy (dev-docs/known-issues.md §"PyPy: native decoder
 # memory"): a pipe loses the failing call's bytes there, as with a decoder in a child.
 _DEFLATE_COPIES = pytest.mark.skipif(
-    UNDER_PYPY, reason="no deflate copies under PyPy: its copy() leaks"
+    ZLIB_COPY_LEAKS, reason="no zlib copies where copy() leaks (PyPy)"
 )
 
 
@@ -300,9 +300,9 @@ def test_under_pypy_a_pipe_takes_no_copy_and_loses_at_most_the_failing_call(
     feeds before the failing one gave. Both interpreters run it with the flag patched;
     the reference keeps copies, which PyPy can take, only not without a leak."""
     damaged = _damaged_stream(decoder_type)
-    monkeypatch.setattr(deflate_decoder, "UNDER_PYPY", False)
+    monkeypatch.setattr(deflate_decoder, "ZLIB_COPY_LEAKS", False)
     kept = _fed_in_pieces(decoder_type, damaged, 64, [])
-    monkeypatch.setattr(deflate_decoder, "UNDER_PYPY", True)
+    monkeypatch.setattr(deflate_decoder, "ZLIB_COPY_LEAKS", True)
     copies: list[int] = []
     got, steps, recovered = _fed_in_pieces(decoder_type, damaged, 64, copies)
     assert copies == []

@@ -488,10 +488,15 @@ and grew its worker by 2.7 GB. In the merge queue's PyPy job that put the runner
 workers past its 16 GB, the runner stopped answering, and the job ran into its
 45-minute limit with no log (2026-11-13 and 14). The path now takes one copy per
 `REPLAY_MAX_STEPS` steps, 1 MiB of input or 8 MiB of output, and replays the steps since
-the copy on an error; under PyPy it takes none (maintainer's choice, 2026-11-14), so a
-damaged pipe loses the failing call's bytes there, at most 64 KiB, as with a decoder in
-a child. What remains on PyPy: snapshot seek points (`ZlibSnapshot`, one copy per MiB of
-output on declared seek demand, and one per seek) leak about 7 MiB per GiB of output.
+the copy on an error. Where the copy leaks (`native_memory.ZLIB_COPY_LEAKS`: every
+PyPy so far; `_PYPY_ZLIB_COPY_FIXED` names the first fixed release once one exists),
+archivey takes no zlib copy at all (maintainer's ruling, 2026-11-14: a leak that never
+ends would grow a long-lived process without bound). There, a damaged pipe loses the
+failing call's bytes, at most 64 KiB, as every other codec does on a pipe, and gzip,
+zlib and raw DEFLATE record no snapshot seek points (`ZlibSnapshot`), so a backward seek
+decodes again from the start of the member. On a 64 MiB text gzip under PyPy 3.11.15,
+15 random seeks took 4.8 ms median with snapshots and 71 ms (max 384 ms) without; a
+full read is about 600 ms.
 
 **Upstream.** Not filed; PyPy documents that native memory needs
 `add_memory_pressure` from whoever allocates it. The copy that is never freed is a PyPy

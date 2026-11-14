@@ -33,6 +33,18 @@ from collections.abc import Callable
 
 UNDER_PYPY = sys.implementation.name == "pypy"
 
+# The first PyPy release whose ``zlib`` ``decompressobj.copy()`` frees the inflate state
+# it overwrites; ``None`` while no release does (7.3.23 is the latest checked). Every
+# earlier PyPy loses about 7 KiB per copy for good: ``rpython/rlib/rzlib.py``'s
+# ``inflateCopy`` allocates the copy with ``inflateInit()``, and zlib's ``inflateCopy``
+# overwrites that state. A process that reads many archives would grow without bound, so
+# where this holds, archivey takes no zlib copy at all (``codecs/deflate_decoder.py``).
+_PYPY_ZLIB_COPY_FIXED: tuple[int, int, int] | None = None
+ZLIB_COPY_LEAKS = UNDER_PYPY and (
+    _PYPY_ZLIB_COPY_FIXED is None
+    or tuple(getattr(sys, "pypy_version_info", (0, 0, 0))[:3]) < _PYPY_ZLIB_COPY_FIXED
+)
+
 # PyPy's own module; no type checker knows it.
 _add_memory_pressure: Callable[[int], None] | None = (
     importlib.import_module("__pypy__").add_memory_pressure if UNDER_PYPY else None

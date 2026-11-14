@@ -782,7 +782,9 @@ On declared seek demand or restart points, the standard library engine SHALL rec
 seek point inside a gzip member about every MiB of output, whose state is a `zlib`
 `decompressobj.copy()` taken between two feeds. A decode resumed from one MUST still
 check the member's CRC-32 and ISIZE, which the copy carries. A decompressor in a decoder
-child has no `copy()` and records none.
+child has no `copy()` and records none. Neither does any decompressor under a PyPy whose
+`copy()` leaks memory (every release so far): a backward seek there decodes again from
+the start of the member.
 
 #### Scenario: snapshot matrix
 

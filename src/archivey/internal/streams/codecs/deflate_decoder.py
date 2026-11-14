@@ -36,7 +36,7 @@ from archivey.internal.streams.decompressor_stream import (
     truncated_message,
     zlib_error,
 )
-from archivey.internal.streams.native_memory import UNDER_PYPY
+from archivey.internal.streams.native_memory import ZLIB_COPY_LEAKS
 
 # Output between two snapshot seek points one decode records (:class:`ZlibSnapshot`).
 # A seek decodes about half of it on average: about 2 ms on a 4-core machine.
@@ -127,7 +127,7 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
     is replayed; any other error, ``MemoryError`` included, raises at once. A source
     that can seek is decoded again instead, so it never takes a copy. A decompressor
     in a decoder child has no ``copy()``, and keeps the stream's behaviour; so does
-    every decompressor under PyPy, whose copies leak.
+    every decompressor where a copy leaks (``ZLIB_COPY_LEAKS``: PyPy).
     """
 
     _decomp: Any
@@ -143,10 +143,9 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
 
     @override
     def keep_output_before_errors(self) -> None:
-        # Not under PyPy, whose ``copy()`` leaks zlib's inflate state on every call
-        # (``dev-docs/known-issues.md`` §"PyPy: native decoder memory"); the stream
-        # then loses at most the call that failed, as with a decoder in a child.
-        self._keep = hasattr(self._decomp, "copy") and not UNDER_PYPY
+        # Not where ``copy()`` leaks (``ZLIB_COPY_LEAKS``: PyPy); the stream then
+        # loses at most the call that failed, as with a decoder in a child.
+        self._keep = hasattr(self._decomp, "copy") and not ZLIB_COPY_LEAKS
 
     def _raise_pending(self) -> None:
         if self._raise_next is not None:
@@ -242,7 +241,9 @@ class ZlibDecoder(_KeepsOutputBeforeErrors):
         # byte produced, for snapshot points; counted only on declared seek demand.
         self._fed_end = start.compressed_offset if start is not None else 0
         self._produced = start.decompressed_offset if start is not None else 0
-        self._snapshots = index and hasattr(self._decomp, "copy")
+        self._snapshots = (
+            index and hasattr(self._decomp, "copy") and not ZLIB_COPY_LEAKS
+        )
         self._last_snapshot = self._produced
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
@@ -372,7 +373,9 @@ class GzipDecoder(_KeepsOutputBeforeErrors):
             self._decomp = natives.zlib_decompressobj(GZIP_WBITS)
         # Snapshot seek points (ZlibSnapshot): only on declared seek demand, and only
         # where ``copy()`` exists. The output offset of the last one, or of the start.
-        self._snapshots = index and hasattr(self._decomp, "copy")
+        self._snapshots = (
+            index and hasattr(self._decomp, "copy") and not ZLIB_COPY_LEAKS
+        )
         self._last_snapshot = self._produced
         # Post-member bytes not yet resolved (NUL padding / next magic / junk).
         # Never store unconsumed_tail here — that lives on the decompressobj.
