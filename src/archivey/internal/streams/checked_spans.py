@@ -17,8 +17,10 @@ that none is missing; the stream's whole-stream check (bzip2's combined CRC, xz'
 index) proves that, at the end. The ``CHECKSUM`` level says "every byte passed a
 checksum stored with the data", which a block CRC is. So a stream with one whole block
 cut out between two intact markers can raise a member that straddles the gap, with the
-next block's bytes in place of its own, before the whole-stream check fails; such
-damage removes exactly a block, which random damage rarely does.
+next block's bytes in place of its own, before the whole-stream check fails. Such
+damage removes exactly a block, which random damage rarely does, and it keeps the
+whole-stream check from passing: ``verify_all()`` then returns every member the block
+checks raised as a failure (``BaseArchiveReader._unproven_checksum_ids``).
 """
 
 from __future__ import annotations

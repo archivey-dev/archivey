@@ -2006,6 +2006,26 @@ class TarReader(BaseArchiveReader):
             raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     @override
+    def _unproven_checksum_ids(self) -> set[int]:
+        """The files the codec's block checks raised.
+
+        A block check proves the block's bytes, not that the blocks are all there and
+        in order: a whole block cut out between two intact markers leaves a file that
+        straddles the gap at ``CHECKSUM`` with the next block's bytes. The whole-stream
+        check (bzip2's combined CRC, xz's index) shows that. Damage that keeps it from
+        running (``_note_spanning_unreachable``) makes these files failures of
+        ``verify_all()``; their level stays. Once it passes, nothing is noted.
+        """
+        with self._level_lock:
+            return {
+                id(member)
+                for member, done in zip(
+                    self._level_members, self._level_done, strict=True
+                )
+                if done
+            }
+
+    @override
     def _refresh_member_levels(self) -> None:
         """Raise to ``CHECKSUM`` every tracked member whose data the codec's block or
         frame checks now cover (``checked_spans``), without waiting for the walk to
