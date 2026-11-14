@@ -11,6 +11,8 @@ Observed behavior, inferred defects, and proposed design changes are distinct.
 
 ## F1. Equivalent decompression calls apply different ratio protection
 
+**Status (2026-11-14):** Fixed in #1553 (0.4.0). DR-9's 2026-10-30 ruling settles it: `max_ratio` holds every decode, and the ruling names the unguarded bare `.bz2` spelling as its reason. `open_stream()` is that spelling, and the threat model records no exception for it. Not a question for the maintainer.
+
 **Compatibility: breaking to fix. Confidence: behavior confirmed; intent unclear.**
 
 **Both sides:** [`src/archivey/config.py:635`][f1-config] defines
@@ -58,6 +60,8 @@ with archivey.open_stream(io.BytesIO(packed), config=config) as stream:
 
 ## F2. FormatPolicy discards library policies supplied as generators
 
+**Status (2026-11-14):** Fixed in #1554 (0.4.0): the iterable is read once.
+
 **Compatibility: non-breaking contract correction. Confidence: confirmed bug.**
 
 **Both sides:** [`src/archivey/format_policy.py:467`][f2-signature] accepts
@@ -90,6 +94,8 @@ print(FormatPolicy(only_libraries=iter(["brotli"])).only_libraries)
 
 ## F3. Report truth tests have incompatible meanings
 
+**Status (2026-11-14):** Maintainer decision, pending. Recommendation: make `bool()` raise on `ExtractionReport` and `MemberListReport` as it does on `VerifyReport`, and give `MemberListReport` `ok` and `raise_for_failure()`. Breaking, so before 0.4.0.
+
 **Compatibility: breaking to fix. Confidence: confirmed behavior; design recommendation.**
 
 **Both sides:** [`src/archivey/diagnostics.py:1782`][f3-extraction] and
@@ -109,6 +115,8 @@ alongside the extraction/verification equivalents. This is a design recommendati
 not an implementation bug: the sequence behavior is documented.
 
 ## F4. Boolean validation differs between configuration and operation arguments
+
+**Status (2026-11-14):** Fixed in #1554 (0.4.0). The fix reverses the error-handling spec's sentence that exempted truthiness flags, and the matching test exemptions. DR-15 and the config switches' guard support it. The maintainer merges the PR.
 
 **Compatibility: non-breaking invalid-input rejection. Confidence: confirmed for the opening flags.**
 
@@ -131,6 +139,8 @@ specifically confirmed the three `open_archive()` flags above.
 
 ## F5. The policy reference overstates protection against external symlinks
 
+**Status (2026-11-14):** Fixed in #1556 (docs).
+
 **Compatibility: non-breaking documentation correction. Confidence: confirmed.**
 
 **Both sides:** [`src/archivey/types.py:1895`][f5-type] says checks holding
@@ -152,6 +162,8 @@ the destination.
 
 ## F6. Some invalid config combinations escape the ValueError contract
 
+**Status (2026-11-14):** Fixed in #1554 (0.4.0): both conflicts raise the usage error that is also a `ValueError` (DR-15).
+
 **Compatibility: non-breaking. Confidence: confirmed.**
 
 **Both sides:** [`src/archivey/exceptions.py:464`][f6-contract] says unusable
@@ -171,6 +183,8 @@ invalid argument combinations. Existing `ArchiveyUsageError` handlers continue
 to work.
 
 ## F7. Documented string construction conflicts with constructor types
+
+**Status (2026-11-14):** Maintainer decision, pending. Recommendation: keep the enum-only field annotations (`config.py`'s `_convert_enum_fields` docstring and `tests/test_enum_arguments.py` record that choice), and change the docstring examples to the enum spelling.
 
 **Compatibility: non-breaking. Confidence: intentional discrepancy; design recommendation.**
 
@@ -196,6 +210,8 @@ No type checker was executed for this finding.
 
 ## F8. The documented list of formats readable from pipes is stale
 
+**Status (2026-11-14):** Fixed in #1556 (docs): the docstrings point at `required_source`, and the user pages list every forward-only format.
+
 **Compatibility: non-breaking documentation correction. Confidence: confirmed.**
 
 **Both sides:** [`src/archivey/core.py:548`][f8-core] says every format
@@ -215,6 +231,8 @@ supported inputs, or provision temporary-storage limits.
 
 ## F9. open_stream(seekable=False) incorrectly promises no accelerator
 
+**Status (2026-11-14):** Fixed in #1556 (docs).
+
 **Compatibility: non-breaking documentation correction. Confidence: confirmed contradiction.**
 
 **Both sides:** [`src/archivey/core.py:1274`][f9-core] says “no seek index or
@@ -233,6 +251,8 @@ selection. Explain that sequential acceleration can still occur, and point to
 `AcceleratorMode.OFF` when callers require it disabled.
 
 ## F10. Several public annotations cannot be resolved at runtime
+
+**Status (2026-11-14):** Fixed in #1555: every public annotation resolves; `tests/test_public_annotations.py` keeps it so.
 
 **Compatibility: non-breaking. Confidence: confirmed.**
 
@@ -256,6 +276,8 @@ once their modules finish loading.
 
 ## F11. Report slicing works but is typed as integer indexing only
 
+**Status (2026-11-14):** Fixed in #1555: `int` and `slice` overloads.
+
 **Compatibility: non-breaking. Confidence: confirmed.**
 
 **Both sides:** [`src/archivey/diagnostics.py:1785`][f11-extraction] declares
@@ -273,6 +295,8 @@ annotation is also false for slices.
 tuple return types, respectively.
 
 ## F12. Nesting depth is an unadjustable limit with a different error category
+
+**Status (2026-11-14):** Won't fix; settled by DR-9. The depth bound is DR-9's structural case: `MAX_NESTED_DEPTH`'s comment says it keeps a self-nesting walk under Python's recursion limit, and the bound has a spec row (`format-plugins`, `archive-reading`). It is not a configured resource limit, so `ResourceLimitError` ("configured resource exhaustion") would be the wrong category. `UnsupportedFeatureError` stays.
 
 **Compatibility: breaking exception change. Confidence: confirmed behavior; inferred design concern.**
 

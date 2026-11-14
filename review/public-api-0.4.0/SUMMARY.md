@@ -30,6 +30,28 @@ original request excluded style nits. Compatibility labels treat corrections to
 documented input contracts as non-breaking, while noting migration-sensitive
 behavior in each finding.
 
+## Triage (2026-11-14)
+
+Checked against `main` at `c3bfd214`. A cold review of this report (round 1 on #1550)
+reproduced eleven findings; F9 needs rapidgzip absent, and the code path is plain from
+`config.py`. Each finding's status is under its heading in
+[`api-consistency.md`](api-consistency.md).
+
+| ID | Outcome | Where | 0.4.0 |
+| --- | --- | --- | --- |
+| F1 | Fixed (DR-9 settles it) | #1553 | Yes: behaviour change |
+| F2 | Fixed | #1554 | Yes |
+| F3 | Maintainer decision | pending | If changed, yes: breaking |
+| F4 | Fixed (reverses a spec sentence) | #1554 | Yes: behaviour change |
+| F5 | Fixed (docs) | #1556 | Yes |
+| F6 | Fixed | #1554 | Yes |
+| F7 | Maintainer decision | pending | Either way, non-breaking |
+| F8 | Fixed (docs) | #1556 | Yes |
+| F9 | Fixed (docs) | #1556 | Yes |
+| F10 | Fixed | #1555 | Yes |
+| F11 | Fixed | #1555 | Yes |
+| F12 | Won't fix (DR-9 structural bound) | — | — |
+
 ## What is actually fine
 
 - The separate `ArchiveyUsageError` root is deliberate and documented. This review
