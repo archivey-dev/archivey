@@ -337,6 +337,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.backends.rar_reader._RollingUnrarStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
     ),
+    "archivey.internal.backends.rar_forward_reader._ForwardUnrarStream": (
+        "assigns _fpass, then the parent's fields, before DelegatingStream.__init__"
+    ),
     "archivey.internal.streams.respawn.RespawnStream": "plain assignments only",
     "archivey.internal.backends.rar_copy_sources._TeeBlock": "plain assignments only",
     "archivey.internal.backends.sevenzip_pipeline._DecodedPastSizeCheck": (
