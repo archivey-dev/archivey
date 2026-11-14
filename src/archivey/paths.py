@@ -134,7 +134,8 @@ def match_glob(
         ArchiveyUsageError: No pattern was given, a pattern has an empty component
             (``""``, ``"/"``, ``"a//b"``; a leading ``/`` is allowed), or a ``[...]``
             set is malformed, such as the reversed range ``[z-a]``. It is also a
-            ``ValueError``.
+            ``ValueError``. A ``with_contents`` that is not a ``bool`` raises it too,
+            as a ``TypeError``.
     """
     # Imported here: arg_checks imports the stream modules, which this light module
     # does not otherwise need at import. numbered_name above does the same.
