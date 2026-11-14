@@ -41,8 +41,16 @@ from archivey import (
 from archivey.cli.choices import cli_choices, from_cli_choice
 from archivey.cli.errors import CliError
 from archivey.cli.main import build_parser
-from archivey.config import AcceleratorMode, ArchiveyConfig, RarDecompressor
-from archivey.detection_cost import DetectionBudgetPreset
+from archivey.config import (
+    AcceleratorMode,
+    AcceleratorModeStr,
+    ArchiveyConfig,
+    ProcessIsolation,
+    ProcessIsolationStr,
+    RarDecompressor,
+    RarDecompressorStr,
+)
+from archivey.detection_cost import DetectionBudgetPreset, DetectionBudgetPresetStr
 from archivey.diagnostics import DiagnosticCode, DiagnosticCodeStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.internal.enum_args import (
@@ -54,6 +62,7 @@ from archivey.internal.enum_args import (
 from archivey.types import (
     AbortOnStr,
     ContainerFormat,
+    ContainerFormatStr,
     ExtractionPolicyStr,
     OnBlockedStr,
     OnErrorStr,
@@ -61,6 +70,7 @@ from archivey.types import (
     OptionalLibraryStr,
     OverwritePolicyStr,
     StreamFormat,
+    StreamFormatStr,
 )
 from tests.extract_util import open_and_extract
 
@@ -72,6 +82,7 @@ PUBLIC_ENUMS: tuple[type[Enum], ...] = (
     OnBlocked,
     AbortOn,
     AcceleratorMode,
+    ProcessIsolation,
     RarDecompressor,
     DetectionBudgetPreset,
     ContainerFormat,
@@ -355,45 +366,24 @@ LITERAL_ALIASES: tuple[tuple[type[Enum], object], ...] = (
     (OnBlocked, OnBlockedStr),
     (DiagnosticCode, DiagnosticCodeStr),
     (OptionalLibrary, OptionalLibraryStr),
+    (AcceleratorMode, AcceleratorModeStr),
+    (ProcessIsolation, ProcessIsolationStr),
+    (RarDecompressor, RarDecompressorStr),
+    (DetectionBudgetPreset, DetectionBudgetPresetStr),
+    (ContainerFormat, ContainerFormatStr),
+    (StreamFormat, StreamFormatStr),
 )
 
 
 #: Enums coerced at a public boundary that deliberately carry no ``Literal`` alias,
-#: with the reason, so the next reader does not "fix" the gap by adding one back.
-ALIASES_NOT_WANTED = {
-    "AcceleratorMode": (
-        "ArchiveyConfig's accelerator fields stay annotated AcceleratorMode rather "
-        "than AcceleratorMode | str: what the field holds after construction is always "
-        "a member, and the union would describe the constructor's input on the "
-        "attribute every consumer reads, obliging each of them to handle a string that "
-        "cannot arrive. See the archived coerce-public-enum-arguments design note."
-    ),
-    "ProcessIsolation": (
-        "ArchiveyConfig.process_isolation stays annotated ProcessIsolation, for the "
-        "same reason as AcceleratorMode: __post_init__ converts the name, so the field "
-        "always holds a member."
-    ),
-    "RarDecompressor": (
-        "ArchiveyConfig.rar_decompressor stays annotated RarDecompressor, for the same "
-        "reason as AcceleratorMode: __post_init__ converts the name, so the field always "
-        "holds a member."
-    ),
-    "ContainerFormat": (
-        "ArchiveFormat's container field, for the same reason as AcceleratorMode: "
-        "__post_init__ converts a hand-built string pair, so the field always holds a "
-        "member, and the code that reads it tests it with `is`."
-    ),
-    "DetectionBudgetPreset": (
-        "ArchiveyConfig.detection_budget stays annotated DetectionBudget, for the same "
-        "reason as AcceleratorMode: __post_init__ converts a preset member or its name, "
-        "so the field always holds a budget, and every consumer reads it as one. Its "
-        "only other consumer, detect_format(budget=), was removed."
-    ),
-    "StreamFormat": (
-        "ArchiveFormat's stream field; see ContainerFormat. format= arguments take "
-        "their string spellings through archivey.internal.format_args instead."
-    ),
-}
+#: with the reason. Empty: the enum fields of ``ArchiveyConfig`` and ``ArchiveFormat``
+#: were listed here once, on the ground that the field holds a member after
+#: construction. That is still true of the field, but not of the constructor: the docs
+#: show ``ArchiveyConfig(process_isolation="none")`` and ``ArchiveFormat("raw_stream",
+#: "gz")``, and a typed caller copying either must not need a suppression. Those
+#: constructors now take the alias as input while the fields stay the enum
+#: (``tests/test_api_surface.py`` holds the two signatures together).
+ALIASES_NOT_WANTED: dict[str, str] = {}
 
 
 def _enums_coerced_under_src() -> set[str]:

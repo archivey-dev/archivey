@@ -661,7 +661,8 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveFormat(...)` | `container`, `stream` (a plugin's member passes through unconverted) |
 | `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
@@ -669,6 +670,20 @@ with `-` and `_` used interchangeably, so the dash spelling the CLI's `--help`
 advertises is also valid in library code. Surrounding whitespace SHALL be ignored.
 Accepting a string makes the enum **values** part of the public API: a value cannot
 afterwards be renamed without breaking callers silently.
+
+Each covered enum SHALL have a `Literal` alias beside it (`OverwritePolicyStr`,
+`AcceleratorModeStr`, `ContainerFormatStr`, …) that lists every value and the dash form
+of each value holding `_`, and the parameter's declared type SHALL accept that alias as
+well as the enum, never a bare `str`. A type checker then accepts each value and its dash
+form, and still flags a misspelling. A member name, another case or surrounding
+whitespace stays valid at runtime but still gets a type-checker diagnostic, since a
+`Literal` cannot list them. The test suite SHALL fail when an alias and its enum
+disagree, or when a coerced enum has no alias and no recorded reason for its absence.
+Where the parameter is a dataclass field (`ArchiveyConfig`, `ArchiveFormat`), only the
+constructor's input type is widened: the field SHALL stay annotated with the type it
+holds after conversion (the enum, and `DetectionBudget` for `detection_budget`), since it
+never holds a string, and the test suite SHALL fail when the declared constructor and
+the generated one differ in anything but those input types.
 
 The conversion SHALL be unambiguous. No two members of a covered enum may share a
 normalized spelling, and the test suite SHALL fail if a new member introduces such a
@@ -699,6 +714,7 @@ vocabulary rather than two that can drift.
 | `extract_all(dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
 | `ArchiveyConfig(use_rapidgzip="on")` | Field holds `AcceleratorMode.ON`, not the string |
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
+| `ArchiveyConfig(process_isolation="none")` under a type checker | No diagnostic; `config.process_isolation` is typed `ProcessIsolation` |
 | `DiagnosticPolicy(raise_on=["ARCHIVE_TRAILING_DATA"])` | The field holds `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
 | `DiagnosticPolicy(ignore="archive_trailing_data")` | `ArchiveyUsageError` naming the list spelling |
 | `DiagnosticPolicy(ignore={"ARCHIVE_TRAILING_DATA": "raise"})` | `ArchiveyUsageError` (a `TypeError`): a mapping is refused, not read as its keys |
