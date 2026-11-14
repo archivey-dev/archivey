@@ -535,8 +535,7 @@ class ForwardArchiveReader(ABC):
         """Materialize the member listing and return a report.
 
         ``report.ok`` (``report.error is None``) means ``report.members`` is complete.
-        A non-``None``
-        error is terminal archive damage found while listing (a
+        A non-``None`` error is terminal archive damage found while listing (a
         :class:`~archivey.exceptions.CorruptionError`, including
         :class:`~archivey.exceptions.TruncatedError`): the tuple is the recovered
         prefix. Only that damage is returned instead of raised. Every other failure
