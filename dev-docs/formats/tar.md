@@ -576,35 +576,35 @@ Backward goes to the nearest resume point before the target and decodes forward 
 there. A random-access reader asks its codec stream for restart points whether or not
 `seekable_members=True` was passed (`StreamConfig.restart_points`, maintainer ruling
 2026-11-10, fsspec-integration task 3.6): a zlib snapshot about every MiB for gzip and
-zlib, and every gzip member, zstd frame, bzip3 block, xz block and lzip member start and
-every `compress` CLEAR code a decode passes. The listing decodes the whole stream, so it
-passes them all. These are only points a decode found: the file's own index (the xz
-index, lzip trailers, a zstd seek table, a BGZF, mgzip or bzip3 walk) is read on
-declared seek demand only (maintainer ruling 2026-11-10, after a crafted xz index made a
-default read return another member's bytes). xz finds its blocks from the block and
-LZMA2 chunk headers as it decodes, and keeps them once liblzma has decoded the stream to
-its end and the stream's index lists the same blocks (`_XzBlockWalker`). The gzip
-snapshots cost about 40 KiB of memory per MiB of output, capped at `MAX_SNAPSHOT_BYTES`
-(32 MiB). In return a member read after the listing resumes near the member instead of
-decoding the archive again from its first byte. Accelerator `AUTO` still resolves as for
-a stream read once, since only `seekable_members=True` declares seek demand. Plain bzip2
-has no restart point but the start, unless the `rapidgzip` accelerator is engaged and
-brings its own index. A streaming reader keeps none: its walk never seeks back. Each
-backward seek that discards 1 MiB or more reports `STREAM_REWIND_REDECOMPRESSES` with
-the byte count; the first on a stream logs, later ones only escalate, and a caller who
-wants a rewind to fail sets that code to `RAISE`. A listing ends at the far end of the
-stream, so the first `open()` after `members()` is already a backward seek.
-`stream_members()` decodes the stream once and is the path `docs/formats.md` tells
-callers to use. On a random-access reader whose walk has not ended it is one pass
-(`_iter_with_data_random_access`): the walk parses one header at a time, registers the
-member as it arrives (so `members()` afterwards serves the same list), and the member's
-data is read from where its header left the stream, before the next header. On a plain
-tar that read is clamped to the file's length and issued once, and a read larger than
-the 8 KiB buffer rewinds the prefetched tail so the file's own buffer is what comes
-back. A compressed tar keeps stepped reads: rewinding a codec would decode the tail
-again. After a full listing it reads the members' data in archive order, one forward
-sweep after a single seek back to the first member. `extract_all()` takes the one-pass
-path too (§2.4).
+zlib (none under PyPy, [`gzip.md`](gzip.md) §2.3), and every gzip member, zstd frame,
+bzip3 block, xz block and lzip member start and every `compress` CLEAR code a decode
+passes. The listing decodes the whole stream, so it passes them all. These are only
+points a decode found: the file's own index (the xz index, lzip trailers, a zstd seek
+table, a BGZF, mgzip or bzip3 walk) is read on declared seek demand only (maintainer
+ruling 2026-11-10, after a crafted xz index made a default read return another member's
+bytes). xz finds its blocks from the block and LZMA2 chunk headers as it decodes, and
+keeps them once liblzma has decoded the stream to its end and the stream's index lists
+the same blocks (`_XzBlockWalker`). The gzip snapshots cost about 40 KiB of memory per
+MiB of output, capped at `MAX_SNAPSHOT_BYTES` (32 MiB). In return a member read after
+the listing resumes near the member instead of decoding the archive again from its first
+byte. Accelerator `AUTO` still resolves as for a stream read once, since only
+`seekable_members=True` declares seek demand. Plain bzip2 has no restart point but the
+start, unless the `rapidgzip` accelerator is engaged and brings its own index. A
+streaming reader keeps none: its walk never seeks back. Each backward seek that discards
+1 MiB or more reports `STREAM_REWIND_REDECOMPRESSES` with the byte count; the first on a
+stream logs, later ones only escalate, and a caller who wants a rewind to fail sets that
+code to `RAISE`. A listing ends at the far end of the stream, so the first `open()`
+after `members()` is already a backward seek. `stream_members()` decodes the stream once
+and is the path `docs/formats.md` tells callers to use. On a random-access reader whose
+walk has not ended it is one pass (`_iter_with_data_random_access`): the walk parses one
+header at a time, registers the member as it arrives (so `members()` afterwards serves
+the same list), and the member's data is read from where its header left the stream,
+before the next header. On a plain tar that read is clamped to the file's length and
+issued once, and a read larger than the 8 KiB buffer rewinds the prefetched tail so the
+file's own buffer is what comes back. A compressed tar keeps stepped reads: rewinding a
+codec would decode the tail again. After a full listing it reads the members' data in
+archive order, one forward sweep after a single seek back to the first member.
+`extract_all()` takes the one-pass path too (§2.4).
 
 **`streaming=True` hands each member out as the pass reaches it.** A member's stream is
 good only until the pass moves on, because the walk reads through whatever the consumer

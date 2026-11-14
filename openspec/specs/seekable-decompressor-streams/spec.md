@@ -818,8 +818,9 @@ holds SHALL NOT be recorded.
 
 On declared seek demand or restart points, the standard library engine SHALL record zlib
 snapshot points in a zlib stream and in raw DEFLATE (such as a ZIP member's), as in a
-gzip member (§"gzip decodes record zlib snapshot points"). A zlib stream resumed from
-one MUST still check its Adler-32, which the copy carries.
+gzip member (§"gzip decodes record zlib snapshot points"), and records none under a PyPy
+whose `copy()` leaks memory, as there. A zlib stream resumed from one MUST still check
+its Adler-32, which the copy carries.
 
 #### Scenario: zlib and raw DEFLATE snapshot matrix
 
@@ -830,4 +831,5 @@ one MUST still check its Adler-32, which the copy carries.
 | --- | --- |
 | zlib or raw DEFLATE stream, read forward with seek demand, then seek back | Resumes at the nearest snapshot before the target |
 | ZIP DEFLATE member opened with `seekable_members=True`, rapidgzip off | Same |
+| Either, under a PyPy whose `copy()` leaks | No snapshot; a backward seek decodes again from the start of the stream |
 | zlib Adler-32 damaged, seek back to a snapshot and read on | `CorruptionError` at the end of the stream |

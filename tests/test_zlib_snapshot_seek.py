@@ -289,17 +289,23 @@ def test_snapshots_a_resumed_decode_records_are_at_their_true_offsets() -> None:
             assert stream.read(5000) == payload[target + 1000 : target + 6000]
 
 
+@pytest.mark.parametrize(
+    ("codec", "wbits"),
+    [(Codec.GZIP, 31), (Codec.ZLIB, zlib.MAX_WBITS), (Codec.DEFLATE, -15)],
+    ids=["gzip", "zlib", "deflate"],
+)
 def test_where_copies_leak_no_snapshot_is_taken_and_seeks_still_land(
-    monkeypatch: pytest.MonkeyPatch,
+    codec: Codec, wbits: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Where ``copy()`` leaks (PyPy; patched in here, so every interpreter runs it),
-    a gzip read on seek demand records no snapshot, and a backward seek decodes from
-    the start of the member instead, to the same bytes."""
+    a gzip, zlib or raw DEFLATE read on seek demand records no snapshot, and a
+    backward seek decodes from the start of the stream instead, to the same bytes."""
     from archivey.internal.streams.codecs import deflate_decoder
 
     monkeypatch.setattr(deflate_decoder, "ZLIB_COPY_LEAKS", True)
     payload = _payload()
-    with _open(gzip.compress(payload, mtime=0)) as stream:
+    packer = zlib.compressobj(6, zlib.DEFLATED, wbits)
+    with _open_codec(codec, packer.compress(payload) + packer.flush()) as stream:
         assert stream.read() == payload
         assert _snapshots(stream) == []
         target = len(payload) - (2 << 20)
