@@ -250,14 +250,14 @@ them.
 A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is compressed in, and so
 does a `.tar.xz` written in several blocks, as `xz` does when it compresses with more than one
 thread. A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check,
-without waiting for the end of the archive. If a later block is damaged, the files in the earlier
-blocks keep `CHECKSUM`, except, in a `.tar.xz`, the files that end in the block right before the
-damage: an xz block counts as checked only once the decompressor is past its end. `verify_all()`
+without waiting for the end of the archive. When the bzip2 accelerator decompresses the archive
+(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more), no file reaches
+`CHECKSUM` before the end of the archive, as above. If a later block is damaged, the files in the
+earlier blocks keep `CHECKSUM`, except, in a `.tar.xz`, the files that end in the block right before
+the damage: an xz block counts as checked only once the decompressor is past its end. `verify_all()`
 still returns the files that kept `CHECKSUM`: only the check at the end of the archive shows that no
 block is missing, and a file that spans a block cut out whole has passed every block check with the
-wrong bytes. This doesn't happen when the bzip2 accelerator decompresses the archive
-(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more): its files wait for
-the end of the archive, as above.
+wrong bytes.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the

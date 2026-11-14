@@ -316,6 +316,25 @@ def test_verify_all_of_an_intact_archive_fails_nothing() -> None:
         }
 
 
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(lambda data: bz2.compress(data, 1), id="bzip2"),
+        pytest.param(gzip.compress, id="gzip"),
+    ],
+)
+def test_verify_all_of_an_intact_archive_from_a_pipe_fails_nothing(compress) -> None:
+    """A streaming walk over a source that cannot seek reads the codec's tail through
+    the walk buffer's read-ahead; its end still counts as reached, so the whole-stream
+    check passes and no file is left unconfirmed."""
+    source = NonSeekableBytesIO(compress(_tar()))
+    with archivey.open_archive(source, streaming=True) as archive:
+        report = archive.verify_all()
+        files = [m for m in archive._listed if m.is_file]
+    assert report.failures == ()
+    assert {m.verified for m in files} == {Verification.CHECKSUM}
+
+
 def test_listing_then_random_access_keeps_checksum() -> None:
     blob = bz2.compress(_tar(), 1)
     with archivey.open_archive(io.BytesIO(blob)) as archive:
