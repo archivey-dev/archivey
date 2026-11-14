@@ -13,7 +13,10 @@ What a block check proves: every byte of the member came out of a block whose st
 CRC matched it. It does not prove the blocks are in the order the writer put them, or
 that none is missing; the stream's whole-stream check (bzip2's combined CRC) proves
 that, at the end. The ``CHECKSUM`` level says "every byte passed a checksum stored with
-the data", which a block CRC is.
+the data", which a block CRC is. So a stream with one whole block cut out between two
+intact markers can raise a member that straddles the gap, with the next block's bytes
+in place of its own, before the whole-stream check fails; such damage removes exactly
+a block, which random damage rarely does.
 """
 
 from __future__ import annotations
