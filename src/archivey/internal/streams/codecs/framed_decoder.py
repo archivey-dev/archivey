@@ -503,6 +503,12 @@ class FramedDecoder(BaseDecoder):
         return self._draining
 
     @property
+    def checks_every_byte(self) -> bool:
+        """Whether every byte this decoder hands out has passed a block check: its
+        decompressor says so (``checks_output``: bzip2 one block at a time, bzip3)."""
+        return bool(getattr(self._decomp, "checks_output", False))
+
+    @property
     @override
     def holds_back_errors(self) -> bool:
         # A raise here comes only after the bytes earlier calls gave (``_raise_next``),

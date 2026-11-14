@@ -55,6 +55,8 @@ Package map:
   ZipCrypto member's CRC).
 - :mod:`.verification` — what each layer of a member stream has proved
   (``ask_verification_proofs``), for ``ArchiveStream.verified``.
+- :mod:`.checked_spans` — the decoded ranges whose block or frame checks passed
+  (``CheckedSpans``), so a compressed TAR reader raises the members they cover.
 - :mod:`.respawn` — ``RespawnStream``: seeks over a stream that only reads forward,
   reading through on a forward seek and reopening it on a backward one.
 - :mod:`.blocks` — ``BlockStream``: a file stored as fixed-size blocks that each

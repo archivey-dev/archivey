@@ -69,6 +69,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.checked_spans import CheckedSpans
 from archivey.internal.streams.child_process import is_no_verdict
 from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.native_memory import end_lzma_decoder
@@ -1132,6 +1133,9 @@ class DecompressorStream(ReadOnlyIOStream):
         # The output offset of the decoder's next byte, whoever reads it: the size a
         # decode reaches the end with (_publish_size).
         self._decoder_pos = 0
+        # The output that passed a block or frame check, for a decoder that hands out
+        # only checked bytes (``checks_every_byte``): see ``checked_spans``.
+        self.checked_spans = CheckedSpans()
         self._make_decoder = make_decoder
         # The frame checks seen by decoders this stream has since replaced (a seek).
         self._frame_checks = FrameChecks()
@@ -1614,6 +1618,12 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         if out.data:
             self._fresh_index_point = None
+            if not self._decode_from_index and getattr(
+                self._decoder, "checks_every_byte", False
+            ):
+                # Offsets counted from an index point are the index's, not proved.
+                start = self._decoder_pos
+                self.checked_spans.add(start, start + len(out.data))
         self._decoder_pos += len(out.data)
         if out.points:
             points = out.points

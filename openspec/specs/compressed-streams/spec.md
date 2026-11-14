@@ -896,7 +896,11 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
   is read from, for a file whose data is a slice of it), it is the level that check
   proves once it passes: `CHECKSUM`. Such a check runs only when all the members it
   covers are read, so a read of one member alone, `verify()` included, can end at
-  `LENGTH` below it, and `verify_all()` reaches it.
+  `LENGTH` below it, and `verify_all()` reaches it. A TAR file whose data lies inside
+  `.bz2` or `.bz3` blocks whose CRCs passed SHALL reach `CHECKSUM` once those blocks
+  are checked, before the walk reaches the stream's end: each byte passed a check
+  stored with it. Bytes decoded from a restart point the file's own index named do
+  not count, and neither do bytes an accelerator decoded.
   `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
   what the stream knows without opening it. Once the stream is open it MAY rise (a
   password confirmed by another member), and it SHALL fall only when the format
@@ -978,6 +982,9 @@ level adds no new error and no new way to read.
 | `.tar.xz` whose stream has check type None | every file's `verifiable` is `LENGTH` once the walk finds it |
 | `.tar.gz` cut inside its footer, the files whole, walked to the end | every file's `verified` is `LENGTH` and `verifiable` stays `CHECKSUM`; `verify_all()` returns every file |
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
+| `.tar.bz2` walked in a streaming pass, a file whose data lies in blocks already checked | `verified` is `CHECKSUM` before the walk reaches the stream's end |
+| Same, a block after the file damaged | the file stays at `CHECKSUM`; the files in the damaged block stay below it, and the walk raises `CorruptionError` |
+| `.tar.gz` walked in a streaming pass, before the end | no file is at `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
 | 7z folder of several files with only a folder CRC, a file read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` for all once the folder is read and its CRC matches |
 | Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH`, below their `CHECKSUM` ceiling |
