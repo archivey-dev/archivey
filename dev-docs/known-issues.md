@@ -473,8 +473,28 @@ estimates alone. The PyPy CI job runs the pins above; nothing measures the zstd 
 windows, what a caller who leaves streams unclosed really uses, or what the same drops
 cost in a long-lived process with a large heap, the shape the ENOMEM failures had.
 
+**zlib copies.** PyPy's `decompressobj.copy()` leaks zlib's inflate state, about
+7 KiB, on every call: `inflateCopy` in `rpython/rlib/rzlib.py` allocates the copy with
+`inflateInit()`, whose state zlib's `inflateCopy` then overwrites without freeing. No
+collection reaches it. The rest of a copy, its 32 KiB window, waits for a major
+collection, which copies barely bring forward (40 KB of pressure per copy did not change
+the growth). Measured on PyPy 3.11.15 (7.3.23): 60,000 copies hold 2.6 GB; with
+`gc.collect()` every 1,000 copies, 200,000 copies keep 1.5 GB; the same count of new
+decompressors stays at 98 MB. The pipe path that keeps the bytes before a zlib error
+(`_KeepsOutputBeforeErrors` in `codecs/deflate_decoder.py`) used to take a copy before
+every bounded step, which is one copy per byte on a source that returns one byte per
+read: one parametrised case of `tests/test_arrived_codec_input.py` took 64,121 copies
+and grew its worker by 2.7 GB. In the merge queue's PyPy job that put the runner's four
+workers past its 16 GB, the runner stopped answering, and the job ran into its
+45-minute limit with no log (2026-11-13 and 14). The path now takes one copy per
+`REPLAY_MAX_STEPS` steps, MiB of input or 8 MiB of output, and replays the steps since
+the copy on an error. What remains on PyPy: about 7 MiB leaked per GiB of compressed
+input read through a pipe, and as much per GiB of output from snapshot seek points
+(`ZlibSnapshot`, one copy per MiB of output and one per seek).
+
 **Upstream.** Not filed; PyPy documents that native memory needs
-`add_memory_pressure` from whoever allocates it.
+`add_memory_pressure` from whoever allocates it. The copy that is never freed is a PyPy
+bug (the `rzlib` cause above), not filed yet.
 
 **Evidence.** PR #927. On main, the PyPy job's extras step had 163 failures and
 53 errors, 154 of them ENOMEM, with one worker's `[heap]` mapping at 74 GB. With the fix

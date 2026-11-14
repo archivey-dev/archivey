@@ -90,27 +90,54 @@ def _zlib_label(wbits: int) -> str:
     return "zlib" if wbits > 0 else "deflate"
 
 
+# How far a replay from :class:`_KeepsOutputBeforeErrors`'s copy may reach: at most this
+# many successful steps, compressed bytes fed or bytes of output after the copy before
+# the next bounded step takes a fresh one. They cap what the error path decodes again
+# (about 10 ms at the input and output caps) and the input the replay keeps alive. A
+# pipe read in 64 KiB pieces then takes one copy per MiB of input, a source that
+# returns one byte per read one per 256 bytes.
+REPLAY_MAX_STEPS = 256
+REPLAY_MAX_INPUT = 1 << 20
+REPLAY_MAX_OUTPUT = 8 << 20
+
+
 class _KeepsOutputBeforeErrors(BaseDecoder):
     """Inflate steps that keep the bytes zlib decodes before an error, on a pipe.
 
     CPython's ``decompressobj.decompress`` drops a call's output when the call raises,
     and a pipe cannot be decoded again (``DecompressorStream._redecode_to_error``).
-    Once :meth:`keep_output_before_errors` is called, each step first takes
-    ``decompressobj.copy()`` (the 32 KiB window and the state). When the step raises,
-    the copy decodes the same input again one output byte per call up to the error;
-    those bytes are handed back, and the next call raises the error. Only a bounded
-    step takes the copy: an unbounded ``read()`` raises without the prefix
-    (``compressed-streams``), and replaying a whole unbounded step one byte per call
-    could cost millions of calls. Only a zlib error is replayed; any other error,
-    ``MemoryError`` included, raises at once. The copy costs within 1% on a 40 MB
-    pipe read; a source that can seek is decoded again instead, so it never takes
-    one. A decompressor in a decoder child has no ``copy()``, and keeps the stream's
-    behaviour.
+    Once :meth:`keep_output_before_errors` is called, a bounded step works from a
+    ``decompressobj.copy()`` (the 32 KiB window and the state) taken before it or
+    before an earlier step, and the steps decoded since that copy. When the step
+    raises, the copy decodes those earlier steps again, then the failing step's input
+    one output byte per call up to the error; those bytes are handed back, and the next
+    call raises the error. zlib decodes the same input from the same state to the same
+    output, so the replay reaches the state the failing step started from.
+
+    One copy serves the steps until one of the ``REPLAY_MAX_*`` bounds is reached.
+    A copy per step would cost 39 KiB per step, and a pipe that returns one byte per
+    read makes one step per byte; under PyPy each copy also stays allocated until a
+    major collection, which the copies barely bring forward, and part of it is never
+    freed (``dev-docs/known-issues.md`` §"PyPy: native decoder memory").
+
+    Only a bounded step uses the copy: an unbounded ``read()`` raises without the
+    prefix (``compressed-streams``), and replaying a whole unbounded step one byte per
+    call could cost millions of calls; such a step drops the copy. Only a zlib error
+    is replayed; any other error, ``MemoryError`` included, raises at once. A source
+    that can seek is decoded again instead, so it never takes a copy. A decompressor
+    in a decoder child has no ``copy()``, and keeps the stream's behaviour.
     """
 
     _decomp: Any
     _keep = False
     _raise_next: Exception | None = None
+    # The copy, the decompressor it was taken from, and the bounded steps
+    # ``(data, max_length)`` that object decoded since, with their input and output.
+    _base: Any = None
+    _base_of: Any = None
+    _since: list[tuple[bytes, int]]
+    _since_input = 0
+    _since_output = 0
 
     @override
     def keep_output_before_errors(self) -> None:
@@ -125,18 +152,36 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
     ) -> bytes:
         if not self._keep or max_length <= 0:
             # ``_inflate`` reads 0 as no limit too.
+            self._base = self._base_of = None
             return _inflate(self._decomp, data, max_length, error)
-        snapshot = self._decomp.copy()
+        if (
+            self._base is None
+            or self._base_of is not self._decomp
+            or len(self._since) >= REPLAY_MAX_STEPS
+            or self._since_input >= REPLAY_MAX_INPUT
+            or self._since_output >= REPLAY_MAX_OUTPUT
+        ):
+            self._base = self._decomp.copy()
+            self._base_of = self._decomp
+            self._since = []
+            self._since_input = self._since_output = 0
         try:
-            return _inflate(self._decomp, data, max_length, error)
+            out = _inflate(self._decomp, data, max_length, error)
         except Exception as exc:
             if not isinstance(exc.__cause__, zlib.error):
                 raise
-            recovered = _decode_to_error(snapshot, data, max_length)
+            replay, self._base = self._base, None
+            for earlier, limit in self._since:
+                replay.decompress(earlier, limit)
+            recovered = _decode_to_error(replay, data, max_length)
             if not recovered:
                 raise
             self._raise_next = exc
             return recovered
+        self._since.append((data, max_length))
+        self._since_input += len(data)
+        self._since_output += len(out)
+        return out
 
 
 def _decode_to_error(decomp: Any, data: bytes, max_length: int) -> bytes:

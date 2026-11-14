@@ -181,6 +181,65 @@ def test_an_unbounded_inflate_step_is_not_replayed(
     assert replays == []
 
 
+class _CountsCopies:
+    """A ``decompressobj`` that counts its ``copy()`` calls."""
+
+    def __init__(self, inner: Any, copies: list[int]) -> None:
+        self._inner = inner
+        self._copies = copies
+
+    def copy(self) -> Any:
+        self._copies.append(1)
+        return self._inner.copy()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _one_byte_feeds(
+    decoder_type: type[ZlibDecoder | GzipDecoder], data: bytes, copies: list[int]
+) -> tuple[bytes, int]:
+    """What a decoder that keeps the output before errors gives from one-byte feeds of
+    ``data`` before it raises, and how many feeds it took."""
+    decoder: ZlibDecoder | GzipDecoder = (
+        GzipDecoder() if decoder_type is GzipDecoder else ZlibDecoder(zlib.MAX_WBITS)
+    )
+    decoder._decomp = _CountsCopies(decoder._decomp, copies)
+    decoder.keep_output_before_errors()
+    got = bytearray()
+    steps = 0
+    with pytest.raises(ArchiveyError):
+        for i in range(len(data)):
+            got += decoder.feed(data[i : i + 1], 1 << 16).data
+            steps += 1
+        decoder.flush()
+    return bytes(got), steps
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_one_byte_steps_share_a_copy_and_still_keep_the_prefix(
+    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source that returns one byte per read makes one step per byte. The steps share
+    one ``decompressobj.copy()`` up to the replay bounds instead of taking one each
+    (under PyPy each copy stays allocated, and partly leaks), and an error hands back
+    the same bytes as a copy taken before every step."""
+    if decoder_type is GzipDecoder:
+        good = gzip.compress(PAYLOAD[:30_000], mtime=0)
+    else:
+        good = zlib.compress(PAYLOAD[:30_000])
+    damaged = _damage(good, 0.5)
+    copies: list[int] = []
+    got, steps = _one_byte_feeds(decoder_type, damaged, copies)
+    assert got
+    assert steps > 4 * deflate_decoder.REPLAY_MAX_STEPS
+    assert len(copies) <= steps // deflate_decoder.REPLAY_MAX_STEPS + 1
+    monkeypatch.setattr(deflate_decoder, "REPLAY_MAX_STEPS", 1)
+    per_step: list[int] = []
+    assert _one_byte_feeds(decoder_type, damaged, per_step) == (got, steps)
+    assert len(per_step) == steps + 1
+
+
 @pytest.mark.parametrize("name", ["gzip", "xz"])
 def test_a_pipe_loses_at_most_one_call(name: str) -> None:
     """A pipe cannot be decoded again: a read loses at most the decoder call that
