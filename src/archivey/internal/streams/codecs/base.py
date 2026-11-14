@@ -473,6 +473,9 @@ class StreamCodec:
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
             frame_check=self.frame_check(),
+            # The file's own index (a zstd seek table, a bzip3 header walk) only on
+            # declared seek demand; restart points alone keep the points a decode finds.
+            file_index=config.seekable,
         )
 
     def frame_check(self) -> FrameCheck | None:

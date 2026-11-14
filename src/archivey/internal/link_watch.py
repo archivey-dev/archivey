@@ -164,9 +164,10 @@ class LinkWatch:
         self._changed[path] = None
 
     def note_change(self, dest_path: Path) -> None:
-        """Report that the entry at ``dest_path`` was, or is about to be, replaced or
-        removed. The caller reports only symlinks and directories (see the module
-        docstring)."""
+        """Report that a symlink appeared at ``dest_path`` without being tracked (a
+        target kept as stored under ``TRUSTED``), or that the entry there was, or is
+        about to be, replaced or removed. The caller reports only symlinks and
+        directories (see the module docstring)."""
         self._changed[self._physical(dest_path)] = None
 
     @property

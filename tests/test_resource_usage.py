@@ -33,7 +33,7 @@ from archivey.internal.streams.codecs.zstd_framing import (
     frame_window_size,
 )
 from tests.conftest import requires, requires_zstd, zstd_backend
-from tests.streams_util import make_lzip_member
+from tests.streams_util import lzma_alone_with_filter, make_lzip_member
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -159,13 +159,14 @@ def test_the_largest_declaration_wins() -> None:
 
 
 def _lzma1_alone(data: bytes) -> bytes:
-    filters = [{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20}]
-    return lzma.compress(data, format=lzma.FORMAT_ALONE, filters=filters)
+    return lzma_alone_with_filter(data, {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20})
 
 
 def _lzma2_xz(data: bytes) -> bytes:
+    # The check is named: PyPy's lzma passes the default -1 on to liblzma with a
+    # filter chain, which refuses it ("Internal error").
     filters = [{"id": lzma.FILTER_LZMA2, "dict_size": 1 << 20}]
-    return lzma.compress(data, filters=filters)
+    return lzma.compress(data, check=lzma.CHECK_CRC64, filters=filters)
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ nav:
   - Errors and diagnostics: errors-and-diagnostics.md
   - Command line: cli.md
   - Recipes: recipes.md
+  - Gotchas: gotchas.md
   - Formats and extras: formats.md
   - Adding a format: adding-a-format.md
   - Migrating from other libraries: migrating.md
@@ -70,12 +71,13 @@ plugins:
         Using archivey:
           - opening.md: open_archive and open_stream sources, formats, passwords, name encodings, configuration
           - reading.md: Solid archives, streaming=True, seekable_members and concurrent_operations
-          - remote.md: Reading an archive on S3, HTTP or another fsspec store by range requests, without downloading it
+          - remote.md: Reading an archive on S3, HTTP or another fsspec store by range requests, without downloading it, and the archivey:// file system over an archive's members
           - extracting.md: extract_all arguments, extraction policies, overwrite, limits, filters
           - security.md: What safe extraction guarantees, where it stops, and resource limits
           - errors-and-diagnostics.md: The exception hierarchy, damaged archives, and non-fatal diagnostics
           - cli.md: The archivey command (list, test, extract, info) and its exit codes
           - recipes.md: Complete scripts for dataset downloads, HTTP streams, and checking uploaded archives
+          - gotchas.md: Easy-to-miss cases with closing, one-pass streams, solid archives, errors and limits
           - formats.md: Per-format behaviour, extras each format needs, and format-specific member fields
           - adding-a-format.md: Adding a read-only format with the experimental archivey.formats API, the structures built-in readers share too
           - migrating.md: Equivalent calls and behaviour differences from zipfile, tarfile, py7zr and rarfile

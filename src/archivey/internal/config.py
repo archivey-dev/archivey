@@ -72,6 +72,12 @@ class StreamConfig:
     """Declared seek demand (``MemberStreams.SEEKABLE``): accelerator ``AUTO``
     resolution and index construction key off it."""
 
+    restart_points: bool = False
+    """Record restart points (the decoder's seek index) without declaring seek demand:
+    accelerator ``AUTO`` resolves as for a stream read once. A compressed TAR opened for
+    random access sets it, because a member read after the listing seeks back into the
+    decoded stream. See :attr:`records_restart_points`."""
+
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """The caller's ``ArchiveyConfig.use_rapidgzip``: whether a gzip stream may go
     through rapidgzip (``AUTO`` applies the gates the size fields below feed)."""
@@ -182,6 +188,12 @@ class StreamConfig:
         from archivey.internal.streams.codecs.isolated import natives_for
 
         return natives_for(self.process_isolation)
+
+    @property
+    def records_restart_points(self) -> bool:
+        """Whether the decoder records restart points: on declared seek demand
+        (:attr:`seekable`) or when asked for them alone (:attr:`restart_points`)."""
+        return self.seekable or self.restart_points
 
 
 def stream_config_from_archivey(

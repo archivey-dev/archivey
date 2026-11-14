@@ -195,6 +195,12 @@ class DiagnosticCode(StrEnum):
     MEMBER_LOCAL_CRC_USED = "member_local_crc_used"
     """A ZIP member's central directory entry stores CRC-32 0 and its local header
     another value, which the data is checked against. Adobe AIR writes such files."""
+    MEMBER_LOCAL_OFFSET_SHIFTED = "member_local_offset_shifted"
+    """A ZIP member's local header is at its stored offset, not where the central
+    directory's own position puts it: bytes were lost from the archive (or added to
+    it) between the member and the directory. The member is read from its stored
+    offset, where a local header with its name, method, CRC-32 and sizes is, and its
+    data is still checked against its CRC-32."""
     ARCHIVE_OFFSET_WRAPPED = "archive_offset_wrapped"
     """A ZIP stores an offset past 4 GiB in a 32-bit field without ZIP64, as macOS
     Archive Utility does, and archivey corrected it."""
@@ -316,6 +322,8 @@ DiagnosticCodeStr = Literal[
     "member-link-data-ignored",
     "member_header_ambiguous",
     "member-header-ambiguous",
+    "member_local_offset_shifted",
+    "member-local-offset-shifted",
     "archive_offset_wrapped",
     "archive-offset-wrapped",
     "member_size_wrapped",
@@ -975,17 +983,25 @@ class LocalHeaderContext(_JsonSafeContext):
     the local header a non-zero value (``local_crc32``). The data is checked against
     the local value, as unzip checks it, and ``hashes`` holds it. Every Adobe AIR
     package stores ``META-INF/AIR/hash`` this way; ``STRICT`` reads it.
+    ``"offset"`` (``MEMBER_LOCAL_OFFSET_SHIFTED``): the local header is not where the
+    central directory's position puts it (``central_offset``) but at the offset the
+    entry stores (``local_offset``), both absolute positions in the file. Bytes were
+    lost from the archive, or added to it, between the member and the directory; the
+    member is read from ``local_offset``, where a header with its name, method, CRC-32
+    and sizes is, and the CRC-32 still checks the data. ``STRICT`` refuses the member.
     """
 
     kind: Literal["local_header"] = "local_header"
     archive_name: str | None = None
     member_name: str = ""
     member_id: int | None = None
-    field: Literal["name", "method", "crc32"] = "name"
+    field: Literal["name", "method", "crc32", "offset"] = "name"
     local_raw_name_base64: str | None = None
     local_crc32: int | None = None
     local_method: int | None = None
     central_method: int | None = None
+    local_offset: int | None = None
+    central_offset: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1285,6 +1301,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS: "local_header",
         DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS: "local_header",
         DiagnosticCode.MEMBER_LOCAL_CRC_USED: "local_header",
+        DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED: "local_header",
         DiagnosticCode.ARCHIVE_OFFSET_WRAPPED: "offset_wrap",
         DiagnosticCode.MEMBER_SIZE_WRAPPED: "size_wrap",
         DiagnosticCode.MEMBER_TYPE_UNKNOWN: "unknown_member_type",
@@ -1319,6 +1336,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.SEEK_INDEX_DEGRADED,
         DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS,
         DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS,
+        DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
         DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
     }
 )
@@ -1498,6 +1516,10 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 frozenset({"method"}),
             ),
             DiagnosticCode.MEMBER_LOCAL_CRC_USED: ("field", frozenset({"crc32"})),
+            DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED: (
+                "field",
+                frozenset({"offset"}),
+            ),
         }
     )
 )

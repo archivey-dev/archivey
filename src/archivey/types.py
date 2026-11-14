@@ -662,8 +662,9 @@ class MemberType(Enum):
     SYMLINK = "symlink"
     """A symbolic link. ``link_target`` holds the target as stored."""
     HARDLINK = "hardlink"
-    """A hard link to another member, whose data it shares. ``link_target`` names that
-    member, and ``link_target_member`` is the member when the archive has it."""
+    """A hard link to another member, whose data it shares. ``link_target`` is that
+    member's listed name, and ``link_target_member`` is the member when the archive
+    has it."""
     OTHER = "other"
     """An entry with no data that is not a file, directory or link, such as a device,
     FIFO or socket. Extraction refuses it under every policy."""
@@ -1384,9 +1385,14 @@ class ArchiveMember:
     """Owner group name, if recorded."""
 
     link_target: str | None = None
-    """For a symlink/hardlink, the raw target path string as stored. For a ``FILE``
-    that is a stored copy of an earlier member (``extra["is_file_copy"]``), the
-    source's path as stored."""
+    """For a symlink, the target path string as stored. For a hard link, the name of
+    the member it links to, normalized in every format as member names are
+    (``./b`` lists as ``b``), so it equals that member's ``name``. A hard-link
+    target that ends in ``/`` keeps the ``/``: it names a directory, and does not
+    refer to a file of the same name. A target that names only the archive root
+    (``./``, ``/``) lists as ``.``, as such a member name does, and names no
+    member. For a ``FILE`` that is a stored copy of an earlier member
+    (``extra["is_file_copy"]``), the source's path as stored."""
 
     # compare=False: identity is path/type/metadata, not the resolved peer object
     # (resolution is late-bound and would make equality order-dependent).

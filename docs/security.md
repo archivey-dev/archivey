@@ -279,14 +279,21 @@ in the repository measures what each limit costs in time and memory on your mach
   archive read from a pipe, aren't checked. It has no cost of its own. A compressed tar is held to it
   whenever archivey decodes it, listing included, since listing one decodes all of it. The default
   sits below DEFLATE's ceiling of about 1032:1, so a gzip of zeros (1003 to 1032:1) is refused every
-  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`; that field still
-  works, deprecated, and set there it overrides this one.
+  time rather than by a few bytes. It used to be `extraction_limits.max_ratio`, which 0.4.0
+  removed.
 - **`listing_limits.max_members`**, default 262,144, caps the members an archive can list. It costs
   about 25-50 µs and 1.5 KiB of memory per member, under 15 s and 384 MiB at the default.
 - **`listing_limits.max_metadata_bytes`**, default 64 MiB, caps the text kept for names, comments
   and link targets. A ZIP read from a pipe also keeps up to this much of its small members' data, in
   case they are links, on top of the text. It costs about 1.7 MiB of memory per MiB counted, 110 MiB
   at the default, and up to 64 MiB more for a ZIP read from a pipe.
+- **`listing_limits.max_decoded_bytes`**, default 4 GiB, caps what one listing decodes before you
+  read anything: listing a `.tar.gz` decodes all of it. Member data you read doesn't count. It costs
+  the decoding itself: measured with the standard library's decoders on 4 cores, gzip about 110-145
+  MiB/s, xz 55-65 MiB/s and bzip2 23-26 MiB/s, so about 30 s, 70 s and 3 minutes at the default. A
+  ZIP read from a pipe counts much less, about 4 KiB per compressed member it passes over, the start
+  it keeps in case the member is a link. A solid 7z counts its folder up to the last symlink whose
+  target the listing reads; `read_link_targets=False` skips that.
 - **`decoder_limits.max_decoder_memory`**, default 2 GiB, caps the memory an archive can ask a
   decoder for, and the memory of rapidgzip's process for gzip, zlib and DEFLATE. It costs the memory
   itself. Detection's trial decodes are held to the same cap. A stream whose decoder is over it is

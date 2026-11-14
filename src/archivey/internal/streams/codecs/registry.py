@@ -285,7 +285,8 @@ def open_codec_stream(
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
-    ``config.seekable`` gates native index construction and accelerator ``AUTO``
+    ``config.records_restart_points`` (seek demand or restart points) gates native
+    index construction, and ``config.seekable`` alone gates accelerator ``AUTO``
     resolution; for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
     read (``_sequential_read_pays`` in ``rapidgzip_select.py``,
     ``_bzip2_sequential_read_pays`` in ``bzip2_codec.py``).
@@ -445,8 +446,10 @@ def _decoder_config(
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
     # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
-    # these two rules before it gets here, so a ZIP member's config is copied once: a
-    # change to either rule belongs there too.
+    # these two rules before it gets here, so a ZIP member's config is copied once:
+    # a change to either rule belongs there too. ``restart_points`` needs no rule here:
+    # only a random-access reader's outer codec stream sets it, and random access
+    # refuses a source that cannot seek before any codec opens.
     source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make

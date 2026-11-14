@@ -53,7 +53,9 @@ Whatever the caller passed becomes one `ArchiveSource`:
   `None` reads loudly, bounds every read to what the source can still supply, and
   **never closes the caller's object**.
 - **An `fsspec` `OpenFile`** becomes a `RangeSource` (`internal/remote.py`) that fetches
-  byte ranges itself, with a planner that decides how much to fetch at once.
+  byte ranges itself, with a planner that decides how much to fetch at once. It is never
+  searched for sibling volumes (maintainer ruling, 2026-11-11): a remote set comes as a
+  list of `OpenFile` objects.
 
 The `ArchiveSource` is *the* stream that detection and the backend read. It also carries
 cheap facts settled once: `path`, `size` (only when it is a fact, such as `stat()`),

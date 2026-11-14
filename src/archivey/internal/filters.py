@@ -277,6 +277,18 @@ SYMLINK_ESCAPES = "Symlink target escapes destination"
 SYMLINK_LOOPS = "Symlink target is part of a symlink loop"
 
 
+def is_rooted_link_target(target: str) -> bool:
+    """Whether a SYMLINK's stored ``target`` starts at the filesystem root (``/``).
+
+    Under ``TRUSTED`` such a link is written as stored, wherever it points, as GNU
+    tar, cpio and unsquashfs write it: a root filesystem or an initramfs image holds
+    hundreds (``usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh``). A drive or UNC
+    target never gets here (refused on every OS), and neither does a single-``\\``
+    target, which is a relative name on POSIX.
+    """
+    return target.startswith("/")
+
+
 def link_resolution_problem(path: Path, root: Path) -> str | None:
     """Why ``path`` does not resolve to a place inside ``root``, or ``None`` when it
     does: ``SYMLINK_LOOPS`` for a loop on the way, else ``SYMLINK_ESCAPES``. A path
@@ -453,6 +465,7 @@ def check_universal(
     link_target_on_disk: Callable[[str], str] | None = None,
     show_os_error: Callable[[OSError], None] | None = None,
     dest_resolved: bool = False,
+    rooted_link_targets: bool = False,
 ) -> None:
     """Enforce the non-bypassable universal path-safety constraints on ``member``.
 
@@ -477,6 +490,13 @@ def check_universal(
     (:func:`resolve_or_raise_on_loop`), so it is not resolved again. The coordinator
     resolves its destination once per run and passes it so.
 
+    ``rooted_link_targets`` lets a SYMLINK whose target starts with ``/`` point where
+    its target says, inside the destination or not (:func:`is_rooted_link_target`).
+    The coordinator passes it under ``TRUSTED`` only. The target's string checks
+    still apply, and the member's own path is still checked: the link may lead out,
+    but no member is written through it, because a later member's parent must
+    resolve inside the destination.
+
     Everything here meets one of two criteria. Either the *write itself* is dangerous
     or impossible — escaping the destination, a NUL the OS truncates on, a device
     node — or the *outcome would differ by OS*: a symlink target with a Windows drive
@@ -497,7 +517,13 @@ def check_universal(
     )
     target = member.link_target
     if target is not None and member.type == MemberType.SYMLINK:
-        _check_symlink_target(member, target, dest_root, link_target_on_disk)
+        _check_symlink_target(
+            member,
+            target,
+            dest_root,
+            link_target_on_disk,
+            rooted_link_targets=rooted_link_targets,
+        )
 
 
 def _resolve_parent_within(
@@ -553,6 +579,8 @@ def _check_symlink_target(
     target: str,
     dest_root: Path,
     link_target_on_disk: Callable[[str], str] | None,
+    *,
+    rooted_link_targets: bool = False,
 ) -> None:
     """Refuse symlink ``member``, whose target is ``target``, when the target escapes
     ``dest_root`` (the resolved destination).
@@ -584,6 +612,8 @@ def _check_symlink_target(
     # valid on POSIX, and ADR 0013 rules that extracting beats refusing. Only
     # TRUSTED keeps that `\` literal: STRICT and STANDARD write a TAR `\` as `/`,
     # so `link_target_on_disk` below turns `\foo` into `/foo`, an escape.
+    if rooted_link_targets and is_rooted_link_target(target):
+        return
     if link_target_on_disk is not None:
         target = link_target_on_disk(target)
     problem = link_resolution_problem((dest_root / name).parent / target, dest_root)
@@ -1011,6 +1041,37 @@ def _collapse_dotdot(name: str) -> str:
         kept += [segment, separator]
     joined = "".join(kept)
     return joined.lstrip("/\\") or "."
+
+
+def extracted_top_segment(name: str) -> str:
+    """The first segment of the furthest-reaching path that ``name`` can extract to, as
+    stored, or ``""`` when that path is the destination itself.
+
+    It makes the rewrites that move a name between directories: the root is dropped, as
+    every policy drops it with :func:`sanitize_names` and ``STANDARD`` and ``TRUSTED``
+    drop it without; each ``..`` is resolved as :func:`sanitize_names` resolves it; and
+    both ``/`` and ``\\`` separate segments, as they do on Windows and in these
+    rewrites. The segment keeps its spelling. :func:`extracted_top_key` also folds it
+    as the filesystem may, for a test that must catch every spelling.
+    """
+    resolved = _collapse_dotdot(strip_absolute_root(name))
+    for segment in _SEP_SPLIT.split(resolved):
+        if segment not in ("", "."):
+            return segment
+    return ""
+
+
+def extracted_top_key(name: str) -> str:
+    """:func:`extracted_top_segment`, folded as :func:`collision_key` folds a name under
+    ``STANDARD``: NFC, case-folded, and a trailing dot or space trimmed.
+
+    Two names with the same key can land in one directory: ``STRICT`` trims the trailing
+    dot or space, Win32 trims it too, and a case-insensitive filesystem (Windows, and
+    macOS by default) makes ``D/`` and ``d/`` one directory. A reader that keeps two
+    trees apart in one listing compares a member's key with the other tree's, so that no
+    extraction rewrite and no filesystem moves the member into the other tree.
+    """
+    return collision_key(extracted_top_segment(name), ExtractionPolicy.STANDARD)
 
 
 def _sanitize_segment(segment: str) -> str:

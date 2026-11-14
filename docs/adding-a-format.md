@@ -192,8 +192,8 @@ your format stores: at least `type`, `name` and, for a file, `size`. The name is
 but not cleaned up. archivey normalizes it (`./a//b` becomes `a/b`) and reports
 `MEMBER_NAME_NORMALIZED` when that changes it, as for a built-in format. A leading `./`
 alone, or a directory's added `/`, is not reported. A hard link's `link_target` names
-another member, so archivey normalizes it the same way: give it as the archive stores
-it too.
+another member, so archivey normalizes it the same way, as in every format: give it as
+the archive stores it too.
 `ReaderContext.decode_name()` decodes stored bytes the way the built-in formats do: valid
 UTF-8 wins, then the caller's `encoding=`, then UTF-8 with no byte lost.
 
@@ -509,7 +509,9 @@ bytes, from a file or a pipe.
   `probe` is not found inside a compressor: name it with its extension or `format=`.
 - **Cost.** One compression stream holds every member, so the archive is solid:
   `archive.info.is_solid` is `True`, the listing needs decompression, and with random
-  access, reading a member before the last one read decodes again from the start.
+  access, reading a member before the last one read decodes again from the nearest
+  restart point before it: about every MiB for gzip, a frame, member or block boundary
+  the listing passed for xz, zstd, lzip and bzip3, and the start for bzip2.
   On a reader that has not listed the archive yet, `stream_members()` and
   `extract_all()` read each member's data as the walk reaches it, so they decode the
   archive once, as for a `.tar.gz`. Once the archive is listed (`members()` first), a
@@ -584,9 +586,9 @@ def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
   outer listing, after the walk renames them.
 - **Yield every span, in order.** The inner reader numbers its members as the outer
   listing will, so yield each span before taking the next. The walk may change the
-  member first: rename it (and a hard link's `link_target` with it, as the inner
-  archive stores it; archivey normalizes both), or add `MemberSpan.digests` from a
-  checksum list the outer archive keeps.
+  member first: rename it (and a hard link's `link_target` with it: the inner listing
+  has normalized it already, and archivey normalizes the renamed one again), or add
+  `MemberSpan.digests` from a checksum list the outer archive keeps.
 - **Cost.** Inner members are decoded data, so the rules of the next section hold: a
   pass reads them once, and `open()` of one afterwards walks the archive again to it.
   Have `archive_info()` return `ReaderArchiveInfo(is_solid=True)`.

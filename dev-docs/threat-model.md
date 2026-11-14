@@ -55,6 +55,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 | archivey to a terminal or log | Messages carrying archive-derived text | Escaped at construction ([terminal](#attacker-bytes-reaching-a-terminal-are-inert)) |
 | Directory source to other processes | The tree between listing and reading | No-follow opens and identity checks ([directory sources](#directory-sources-changed-concurrently)) |
 | Caller to fsspec, through `archivey://` | A `str` archive location given to `ArchiveyFileSystem`, which fsspec opens with whatever protocol it names; a URL chained on `::` | Not defended: the location is trusted caller input, unlike a `str` given to `open_archive`, which is only ever a local path. A member name belongs in the path given to `open()`, never formatted into a URL, where a `::` in it would name a protocol of its own (`ArchiveyFileSystem` docstring). The tree holds only paths extraction under the file system's policy writes |
+| Remote store to archivey | Bytes of an `OpenFile` read by range, one request each, from an object that can be replaced between requests | Partly: a replacement shorter than the size taken at open raises `SourceChangedError` when a range comes back short; one the same length or longer is not detected, and only member checksums catch changed member bytes. `SOURCE_CHANGE_UNDETECTABLE` says so at open. Pinning an object version is the caller's remedy (`docs/remote.md`, fsspec-integration design D7) |
 | Caller to archivey | Recursion into nested archives the caller opens, time budgets | Not defended: the caller bounds them, and can cap their decoded bytes and members with one shared `ArchiveyConfig.budget` ([non-guarantees](#4-accepted-non-guarantees)); a format's own nesting (`open_nested`) shares one `max_metadata_bytes`, one `max_decoder_memory` and the outermost archive's `max_ratio` denominator across its levels ([nested-archive amplification](#nested-archive-amplification)) |
 
 ## 3. Defended properties
@@ -64,7 +65,14 @@ Paths are under `src/archivey/` unless they start with `tests/`.
 ### Extraction stays in the destination
 
 **Property.** No member writes, links or replaces anything outside the destination, and
-no member replaces the destination itself.
+no member replaces the destination itself. One link may point out: under `TRUSTED` only,
+a symlink whose stored target starts at `/` is written as stored (maintainer ruling,
+2026-11-11), as GNU tar, cpio and unsquashfs write it, so a root filesystem or an
+initramfs image extracts. The link itself changes nothing outside, and nothing is
+written outside the destination through it under any policy: the parent check below
+refuses a member whose parent resolves through it to outside, and the escape check
+refuses a link that resolves through it to outside. A target that leads back into the
+destination is followed there, as any symlink is.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
@@ -89,6 +97,15 @@ no member replaces the destination itself.
   `os.path.realpath` and non-strict `Path.resolve()` keep such a component as a name
   and go on, so a link chain whose expansion passes `PATH_MAX` (`ENAMETOOLONG`) looked
   inside to them while the kernel followed it outside (CVE-2025-4517 in `tarfile`).
+- Under `TRUSTED`, `check_universal(rooted_link_targets=True)` and `_write_symlink` skip
+  the escape check for a target that starts with `/` (`filters.is_rooted_link_target`),
+  and the link is not tracked for recheck: it may point out already, and it stays even
+  when a later member changes where its target resolves (the exception in "A later
+  member cannot make an extracted symlink escape"). Its creation is still reported as a
+  change (`LinkWatch.note_change`), so a link made before it whose walk runs through its
+  path is rechecked, and removed if it now leads out. A drive or UNC target is still
+  refused, and a single `\` target is a relative name on POSIX. The `archivey://` tree
+  lists such a link and walks nothing through it.
 - `internal/extraction.py` `ExtractionCoordinator._write_symlink` re-resolves a new
   symlink against the live tree after `os.symlink` and removes it if it escapes, which
   catches a chain staged by earlier members. That is the third layer after the lexical
@@ -163,7 +180,11 @@ TAR.
 ### A later member cannot make an extracted symlink escape
 
 **Property.** No symlink the archive created is left on disk resolving outside the
-destination at any point a later member could observe, in either streaming mode.
+destination at any point a later member could observe, in either streaming mode. The
+one exception is a symlink whose stored target starts at `/`, which `TRUSTED` writes as
+stored wherever it points ("Extraction stays in the destination"): it is not rechecked,
+so it stays even when a later member makes its target resolve elsewhere. A relative
+link that resolves through it is rechecked as any other.
 
 A later member can change what an earlier link resolves to. Archive `l -> a/../secret`,
 then `a -> .`: when `l` is created, `a` does not exist, so `l` resolves to
@@ -364,7 +385,8 @@ archive declares; for a ZIP read from a pipe, the listing budget and the bound o
 data its pass keeps for link targets beside it.
 
 **Mechanism.**
-- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB) is enforced by
+- `ListingLimits` (`max_members` 262,144, `max_metadata_bytes` 64 MiB; its third cap,
+  `max_decoded_bytes`, bounds decode work and has its own bullet below) is enforced by
   `internal/listing_limits.py` `ListingLimitTracker` as members are registered into the
   reader's member walk (and as a plugin reader holds one back to yield later, through
   `ReaderContext.hold()`: CPIO's newc hard links waiting for their data), by every call that lists: `members()`, `members_report()`,
@@ -483,14 +505,26 @@ data its pass keeps for link targets beside it.
   (`internal/backends/tar_parser.py` `TarWalker`) parses the next header, so the walk
   stops at the member that crosses a cap. The walker charges each member's headers to a
   budget before it reads them: an extended header (PAX `x` or `g`, GNU `L` or `K`) at
-  its declared size, and a sparse map at 24 bytes per entry from its entry count before
+  its declared size, each distinct keyword of a PAX header at 256 bytes more as it is
+  parsed (`PAX_KEYWORD_BYTES`: a short keyword keeps about 270 bytes of objects for 9
+  stored, so by bytes alone a header of millions of them under the cap keeps about 30
+  times its size), and a sparse map at 24 bytes per entry from its entry count before
   its entries are parsed, or block by block for an old GNU map's extension blocks. The
   budget is what is left of `max_metadata_bytes`, in every walk, streaming included. The
-  headers ahead of one member are one chain and draw on one budget. An over-limit tar
-  then costs about the cap plus one ordinary header. The PAX global records are held
-  once per global header, not once per member: members with none of their own share one
-  read-only snapshot. Each member is still charged for them, so the cap counts them as
-  if copied.
+  headers ahead of one member are one chain and draw on one budget. The PAX global
+  records are held once per global header, not once per member: members with none of
+  their own share one read-only snapshot. A member with records of its own gets a copy
+  of the global ones, in the walker and as text in `extra["tar.pax_headers"]`, so the
+  walker charges that copy 96 bytes per global record before it makes it. Registration
+  weighs each `extra["tar.pax_headers"]` entry, copied or shared, at 96 bytes plus its
+  keyword and value (`TEXT_ENTRY_BYTES`, `internal/listing_limits.py`), about what an
+  entry keeps (70 to 93 bytes measured). An over-limit tar then costs about the cap for
+  the registered members, plus the global records in force (at most the cap divided by
+  `PAX_KEYWORD_BYTES` of them, about 270 bytes each) and one member's headers. Measured
+  under the default 64 MiB cap: one global header of 200,000 keywords followed by 100
+  members that each have an `x` header (a 1.9 MB archive) peaks at 86 MB RSS, and 1,500
+  members that each have 10,000 keywords peak at 92 MB. About 39 MB of each figure is
+  the interpreter's own.
 - A symlink target stored as member data (ZIP, 7z, RAR3/4) is read with a cap of
   `MAX_LINK_TARGET_BYTES` (4096, Linux `PATH_MAX`; `internal/base_reader.py`). A member
   declaring more is not opened; a read with no declared size stops at 4097 bytes. An
@@ -503,6 +537,18 @@ data its pass keeps for link targets beside it.
   above). A Windows reparse
   buffer is read only as far as its own header declares. `read_link_targets=False` stops
   listing from reading these targets at all.
+- `ListingLimits.max_decoded_bytes` (4 GiB) caps the bytes one listing decodes on its
+  own, where `max_members` and `max_metadata_bytes` bound memory, not work.
+  `internal/listing_limits.py` `ListingDecodeCount` counts, on the listing's thread,
+  every byte a listing decode stage produces (`BaseArchiveReader._budget_drawn` with
+  `stage=True`: the archive's own codec stream, a `decompress()` layer, a stream opened
+  during listing work) while listing work runs (`_listing_work`): a walk step, the first
+  header a reader parses at open, a 7z encoded header, the link targets
+  `_finalize_links` reads (a solid 7z folder up to its last link). A caller's member
+  reads between steps do not count. A compressed TAR, cpio or RPM payload is decoded
+  whole to list; a ZIP read from a pipe decodes about 4 KiB of each compressed member it
+  passes over. The error is an `AlwaysStopResourceLimitError`, so the ZIP pass's drain
+  does not skip past it.
 
 **Residual.** Format-local parser ceilings allocate up to their limit during
 `open_archive` (7z: `max_members` or header size, whichever is tighter). The header-size

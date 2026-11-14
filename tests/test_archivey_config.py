@@ -31,7 +31,7 @@ def test_config_types_are_frozen() -> None:
         cfg.rar_allow_glob_member_concatenation = True  # type: ignore[misc]
     limits = ExtractionLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        limits.max_ratio = 1.0  # type: ignore[misc]
+        limits.max_entries = 1  # type: ignore[misc]
     listing = ListingLimits()
     with pytest.raises(dataclasses.FrozenInstanceError):
         listing.max_members = 1  # type: ignore[misc]

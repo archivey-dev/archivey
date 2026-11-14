@@ -513,11 +513,12 @@ per-call listing-limits override.
 class ListingLimits:
     max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
+    max_decoded_bytes: int | None = 4 * 2**30  # 4 GiB
     UNLIMITED: ClassVar["ListingLimits"]
 ```
 
-`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables both.
-Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
+`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables all three.
+Crossing any guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
 substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
@@ -550,6 +551,29 @@ non-seekable source has no directory to read at open: its forward pass charges
 `max_members` on the local headers as it yields members, and again on the directory
 entries it reads after the last member (`format-zip`).
 
+`max_decoded_bytes` SHALL cap the bytes one listing pass decodes on its own: a
+compressed TAR's (or cpio's, or an RPM payload's, or another `decompress()` layer's)
+stream as the walk reads headers and skips member data, the start of each compressed
+member a streaming ZIP pass decodes as it passes over it (up to the link-target cap
+and a reparse prefix), a solid folder decoded up to the symlinks whose targets the
+listing reads, the first header a reader parses at open, and a 7z header stored
+compressed, decoded at open. Each
+reader's listing SHALL count from zero, and so SHALL a walk started over after a
+failure. Bytes a caller reads from a member SHALL NOT
+count, whether between walk steps or on another thread. The step that crosses the cap
+SHALL decode at most one byte past it and raise `ResourceLimitError` naming
+`max_decoded_bytes`; a 7z header that does not fit SHALL be refused before it is
+decoded. Detection's decoding is held by `DetectionBudget`, not by this cap.
+
+#### Scenario: listing a .tar.gz past the decode cap
+
+- **GIVEN** `ListingLimits(max_decoded_bytes=100_000)` and a `.tar.gz` of three
+  100 000-byte members
+- **WHEN** `members()` runs, or a streaming `stream_members()` pass skips every member
+- **THEN** it raises `ResourceLimitError` naming `max_decoded_bytes=100000`
+- **AND** a streaming pass that reads every member instead counts only the headers,
+  and lists under a cap of 50 000
+
 #### Scenario: listing-limits matrix
 
 | Case | Expected |
@@ -558,7 +582,7 @@ entries it reads after the last member (`format-zip`).
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-zip`, `format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
 | RAR archive whose compressed RAR 1.5-4 comments, each weighed by the larger of its declared size and its packed bytes, total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
-| `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
+| `ListingLimits.UNLIMITED` | Count, metadata and decoded-bytes guards disabled |
 | `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared or packed size, whichever is larger) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
@@ -582,9 +606,11 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 - `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
   `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
-  PAX keywords), and 72 bytes for each entry whose key is not text (a ZIP extra
-  field's tag in `zip.extra_fields`, whose count the archive sets and whose value may
-  be empty). Top-level `extra` keys are format-defined literals and are not counted
+  PAX keywords) with 96 bytes more for each such entry, and 72 bytes for each entry
+  whose key is not text (a ZIP extra field's tag in `zip.extra_fields`). The archive
+  sets how many entries there are, and each keeps objects that outweigh a short key
+  and value many times. Top-level `extra` keys are format-defined literals and are not
+  counted
 - Exclude: `_raw` (apart from a TAR sparse map, below), `hashes`, diagnostics, Python
   object overhead
 
@@ -631,7 +657,13 @@ and `streaming=True` included), SHALL raise `ResourceLimitError` naming
 `max_metadata_bytes` without reading its data. The headers ahead of one member form a
 chain the parser holds whole until the member is built, so each header of the chain, and
 the member's sparse map, SHALL be weighed against what the headers before it in the
-chain left, not against the member's whole share.
+chain left, not against the member's whole share. Each distinct keyword of a PAX
+header SHALL also be weighed 256 bytes as the header is parsed, before anything is kept
+for it; a keyword repeated in one header SHALL NOT be weighed again (a PAX sparse 0.0
+map repeats two keywords once per fragment). A member with PAX records of its own gets
+a copy of the global records in force, so that copy SHALL be weighed 96 bytes per
+global record before it is made. Either weight crossing what the chain left SHALL
+raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 #### Scenario: metadata accounting matrix
 
@@ -641,6 +673,7 @@ chain left, not against the member's whole share.
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
 | `extra` holds opaque non-str/bytes object | Not counted, and neither is its top-level key |
 | `extra` holds a dict with a long key (PAX keyword) | The key counts, like its value |
+| `extra["tar.pax_headers"]` holds many short keywords with empty values | Each entry counts 96 bytes plus its key and value, so the budget bounds them |
 | `extra["zip.extra_fields"]` holds many empty fields | Each entry counts 72 bytes, so the budget bounds them |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
@@ -648,6 +681,8 @@ chain left, not against the member's whole share.
 | RAR compressed comments whose declared (or larger packed) sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
 | TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
 | TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
+| TAR PAX header of many distinct short keywords, its bytes under what is left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
+| TAR PAX global header of many records, then members that each have a PAX record of their own | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the copy that crosses the cap is made |
 
 ### Requirement: Name lookup and member identity
 
@@ -907,16 +942,23 @@ inherent to a single pass.
 **Target-name resolution:** hardlink targets are archive-root relative and in
 the member-name namespace: `.` and empty segments are dropped and `..` is
 **retained**, exactly as `normalize_member_name` treats a name, so `a/../b` names
-the member stored as `a/../b` and never the member `b`. Symlink targets are
-filesystem paths: they join to the link's directory first and `..` is collapsed.
+the member stored as `a/../b` and never the member `b`. Every format, built-in or
+plugin, SHALL list a hardlink's `link_target` in that normalized form, so it equals
+the `name` of the member it links to (`./b` lists as `b`, in TAR as in CPIO). A
+hardlink target that ends in `/` SHALL keep the `/`: it names a directory and SHALL
+NOT resolve to a non-directory member of the same name. A target that names only the
+archive root (`./`, `/`, `//`) lists as `.`, as a root-only member name does, and
+names no member. A symlink's `link_target` SHALL stay as stored; to look it up, the
+target is a filesystem path that joins to the link's directory first, and `..` is
+collapsed.
 A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
 stored as `/a` (`tar -P` writes both), and so is a `..` that climbs out of the root:
 `../a` names the member stored as `../a` (extraction refuses that member, and every
 link to it; `safe-extraction`). Absolute and `..`-escaping symlink targets stay
 unresolved (`None`; open → `LinkTargetNotFoundError`); the escape test runs on the
 collapsed form. A RAR file copy's source lookup keeps that escape test for its
-hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffixed
-forms.
+hardlink-style target (`format-rar`). A target without a final `/` is looked up
+under its bare and its `/`-suffixed spelling, since a directory's name ends in `/`.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
 depth limit. Missing target and cycle → `LinkTargetNotFoundError` (a `ReadError`).
@@ -1362,7 +1404,7 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 | --- | --- |
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`), and on member reads |
-| `ExtractionLimits(max_ratio=100)` | `DeprecationWarning`; in `extraction_limits` it overrides `decoder_limits.max_ratio` for the reader, in `extract_all(limits=...)` for that extraction; an `<unset>` ratio field reads as the `DecoderLimits` default and warns nothing |
+| `ExtractionLimits(max_ratio=100)` | `TypeError`: `ExtractionLimits` holds no ratio field; `decoder_limits` holds them |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
@@ -1822,16 +1864,17 @@ that link its target and not the listing, and opening the link SHALL read it aga
 `ArchiveStream` and `MemberPass` SHALL stay public types for annotations and
 `isinstance`, as base classes with no public constructor: every stream and pass
 archivey hands out SHALL be an instance of an internal subclass, so how one is built
-can change in any release. Until archivey 0.4.0, calling either base directly SHALL
-still work, building that internal subclass, and SHALL emit a `DeprecationWarning`
-(DR-12a).
+can change in any release. Calling either base directly, or a subclass that leaves an
+abstract method unimplemented, SHALL raise
+`TypeError` naming where to get one.
 
 #### Scenario: construction matrix
 
 | Call | Result |
 |---|---|
-| `ArchiveStream(open_fn, translate=…)` | Working stream; `DeprecationWarning` naming `ArchiveReader.open()` |
-| `MemberPass(generator)` | Working pass; `DeprecationWarning` naming `stream_members()` |
+| `ArchiveStream(open_fn, translate=…)` | `TypeError` naming `ArchiveReader.open()` |
+| `MemberPass(generator)` | `TypeError` naming `stream_members()` |
+| A subclass of either that implements every abstract method | Builds as written |
 | `reader.open()`, `reader.read()`, `stream_members()`, iterating a reader, `open_stream()` | No `DeprecationWarning` |
 
 #### Scenario: internal subclasses

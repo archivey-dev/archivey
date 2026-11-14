@@ -86,7 +86,6 @@ from typing import (
     NamedTuple,
     NoReturn,
     Self,
-    TypeVar,
     cast,
 )
 
@@ -163,7 +162,11 @@ from archivey.internal.format_provenance import (
     stamp_error_context,
     unconfirmed_context,
 )
-from archivey.internal.listing_limits import ListingLimitTracker
+from archivey.internal.listing_limits import (
+    ListingDecodeCount,
+    ListingLimitTracker,
+    StageDraws,
+)
 from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.measurement import (
     ByteCounter,
@@ -177,6 +180,7 @@ from archivey.internal.naming import (
     emit_member_name_controls,
     link_target_name_keys,
     name_controls_possible,
+    normalize_hardlink_target,
     resolve_link_target_name,
 )
 from archivey.internal.nesting import enclosing_reader
@@ -320,9 +324,6 @@ _DRAIN_BATCH = 256
 # The read size verify_all() uses to read a member again for a spanning check.
 _VERIFY_ALL_CHUNK = 1 << 20
 
-_ArgT = TypeVar("_ArgT")
-_RetT = TypeVar("_RetT")
-
 
 def _closer_of(source: Iterator[object]) -> Callable[[], None] | None:
     """The ``close`` of a backend's pass iterator when it is a generator, else ``None``.
@@ -465,7 +466,7 @@ def reject_start_offset(
     """Refuse a nonzero ``open_read(start_offset=…)``, or any ``end_offset`` or
     ``program_resources``, for a format that cannot honour it.
 
-    Only the self-extracting formats (RAR / 7z / ZIP / LHA) are ever handed a nonzero
+    Only the self-extracting formats (RAR / 7z / ZIP / LHA / ARJ) are ever handed a nonzero
     offset, because only they can carry an executable stub and only they are scanned for
     one by ``detect_format``. Reaching here with an offset means a caller invented one,
     and reading from byte 0 instead would answer with the wrong bytes rather than say so.
@@ -528,7 +529,7 @@ class ReadBackend(ABC):
     # through every single-file codec declares it.
     INNER_MAGIC: tuple[MagicSignature, ...] = ()
     # Magic to hunt for *behind an executable stub*, for the formats that ship as
-    # self-extracting archives (RAR / 7z / ZIP / LHA). The offset is where the magic
+    # self-extracting archives (RAR / 7z / ZIP / LHA / ARJ). The offset is where the magic
     # sits in the *payload* (0, or 2 for LHA's method id), wherever in the file the
     # payload starts; the
     # detector searches for them within the shared SFX_MAX window when the leading
@@ -551,7 +552,7 @@ class ReadBackend(ABC):
     # are inert data and do not have this problem.
     SFX_HIT_VALIDATOR: ClassVar[HitValidator | None] = None
     # Whether this backend's parser finds a payload behind a stub with its own capped
-    # forward scan (``sfx.scan_for_magic``), as the RAR, 7z and LHA parsers do. The
+    # forward scan (``sfx.scan_for_magic``), as the RAR, 7z, LHA and ARJ parsers do. The
     # detector applies the same rejection cap to these formats only, so detection
     # gives up exactly where forced ``format=`` does. A format whose reader locates
     # its directory another way (ZIP reads the end of central directory from the
@@ -927,6 +928,13 @@ class BaseArchiveReader(ArchiveReader):
             if self._nest_outer is None
             else self._nest_outer._listing_tracker,
         )
+        # What one listing pass decodes (``ListingLimits.max_decoded_bytes``), and what
+        # a decode stage draws from: that and the config's budget (``_budget_drawn``).
+        decode_cap = self._config.listing_limits.max_decoded_bytes
+        self._listing_decode = (
+            ListingDecodeCount(decode_cap) if decode_cap is not None else None
+        )
+        self._stage_draws = StageDraws.of(self._config.budget, self._listing_decode)
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
@@ -975,10 +983,6 @@ class BaseArchiveReader(ArchiveReader):
         # What open() and stream_members() streams have decoded, for the archive-wide
         # ratio they are held to.
         self._read_ratio_tally = _new_read_ratio_tally()
-        # The ratio fields an ``extract_all`` call applies, set on its thread for the
-        # length of the call: a compressed container's decode guard, built at open,
-        # holds that call's decodes to them (``_run_ratio_limits``).
-        self._extraction_ratio = threading.local()
 
         # --- Measurement ---------------------------------------------------------
         # Opt-in benchmark counters (see archivey.internal.measurement). When measurement
@@ -1498,35 +1502,8 @@ class BaseArchiveReader(ArchiveReader):
     # --- Decompression-ratio limits on the streams the caller reads -------------------
 
     def _ratio_limits(self) -> DecoderLimits:
-        """The ratio fields this reader's decodes are held to: ``decoder_limits``, or
-        what a deprecated ``extraction_limits`` ratio field sets."""
-        from archivey.internal.bomb_tracker import ratio_limits
-
-        config = self._config
-        return ratio_limits(config.decoder_limits, config.extraction_limits)
-
-    def _run_ratio_limits(self) -> DecoderLimits | None:
-        """The ratio fields of the ``extract_all`` call running on this thread, or
-        ``None`` outside one."""
-        return getattr(self._extraction_ratio, "limits", None)
-
-    def _outside_extraction_ratio(
-        self, callback: Callable[[_ArgT], _RetT]
-    ) -> Callable[[_ArgT], _RetT]:
-        """``callback``, run with no ``extract_all`` ratio in force on its thread
-        (``_run_ratio_limits``): a caller's ``filter``, selector or ``on_progress``
-        that reads the reader is held to the reader's limits, not the call's."""
-        run_ratio = self._extraction_ratio
-
-        def call(arg: _ArgT, /) -> _RetT:
-            outer = getattr(run_ratio, "limits", None)
-            run_ratio.limits = None
-            try:
-                return callback(arg)
-            finally:
-                run_ratio.limits = outer
-
-        return call
+        """The ratio fields this reader's decodes are held to."""
+        return self._config.decoder_limits
 
     def _hold_to_ratio(self, stream: ArchiveStreamImpl, member: ArchiveMember) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
@@ -1600,17 +1577,27 @@ class BaseArchiveReader(ArchiveReader):
         if counter is not None:
             stream = OutputCountingStream(stream, counter)
         if draw_budget:
-            stream = self._budget_drawn(stream)
+            # Opened for listing work (a link target the listing reads): that work
+            # counts toward the listing's cap too.
+            listing = self._listing_decode
+            stream = self._budget_drawn(
+                stream, stage=listing is not None and listing.room() is not None
+            )
         return stream
 
-    def _budget_drawn(self, stream: BinaryIO) -> BinaryIO:
+    def _budget_drawn(self, stream: BinaryIO, *, stage: bool = False) -> BinaryIO:
         """``stream``, drawing every byte it delivers from the config's
         :class:`~archivey.Budget`, or ``stream`` itself when there is none.
 
         Put on a decode stage, it draws what the decoder produces whoever reads it: a
         member's reads, and the bytes of members skipped on the way to another.
+        ``stage=True`` is for a stream listing work decodes (a compressed archive's
+        own stream, a ``decompress()`` layer, a stream opened during
+        :meth:`_listing_work`): it also draws from ``ListingLimits.max_decoded_bytes``
+        (``_stage_draws``), which counts only while listing work runs, so a caller's
+        own reads between walk steps do not count.
         """
-        budget = self._config.budget
+        budget = self._stage_draws if stage else self._config.budget
         if budget is None:
             return stream
         # Imported here, as the other wrappers built only on request.
@@ -1622,6 +1609,21 @@ class BaseArchiveReader(ArchiveReader):
             stream._hold_inner(lambda inner: BudgetDrawStream(inner, budget))
             return stream
         return BudgetDrawStream(stream, budget)
+
+    @contextlib.contextmanager
+    def _listing_work(self) -> Generator[None]:
+        """Count what the reader decodes in this block, on this thread, toward
+        ``ListingLimits.max_decoded_bytes``: listing work the caller does not
+        control, as a walk step's is (``_pull_members_locked``)."""
+        listing_decode = self._listing_decode
+        if listing_decode is None:
+            yield
+            return
+        entered = listing_decode.enter()
+        try:
+            yield
+        finally:
+            listing_decode.leave(entered)
 
     def _seek_handle_wrapper(self) -> Callable[[BinaryIO], BinaryIO] | None:
         """Return a ``SharedSource(wrap_handle=…)`` callback when measurement is on."""
@@ -2024,7 +2026,8 @@ class BaseArchiveReader(ArchiveReader):
         """
         self._listing_tracker.assert_within_limits()
         # Under the walk lock: a pass cursor beside it links the members it yields.
-        with self._walk_lock:
+        # Link targets read to finish the listing count toward its decode cap.
+        with self._walk_lock, self._listing_work():
             self._finalize_links(error=error, child_scope=child_scope)
             return self._publish_materialized(error=error)
 
@@ -2283,8 +2286,14 @@ class BaseArchiveReader(ArchiveReader):
                 "back into the reader that triggered them."
             )
         self._walk_pulling = True
+        # What the walk decodes from here to the end of the step counts toward the
+        # listing's cap; a caller's reads between steps do not.
+        listing_decode = self._listing_decode
+        entered = listing_decode.enter() if listing_decode is not None else None
         try:
             if self._walk is None:
+                if listing_decode is not None:
+                    listing_decode.start_pass()
                 self._account_archive_comment()
                 self._walk = self._iter_members()
             # Read once for the batch: only ``_end_walk`` and ``_abandon_walk`` drop
@@ -2324,6 +2333,8 @@ class BaseArchiveReader(ArchiveReader):
             raise
         finally:
             self._walk_pulling = False
+            if listing_decode is not None:
+                listing_decode.leave(entered)
 
     def _pull_replayable(self, position: int) -> ArchiveMember:
         """Advance a random-access walk to ``position``, replaying what a failed one did.
@@ -2697,6 +2708,11 @@ class BaseArchiveReader(ArchiveReader):
         """
         member._member_id = idx
         member._archive_id = self._archive_id
+        if member.type is MemberType.HARDLINK and member.link_target:
+            # A hard link names another member, so its target lists in that member's
+            # name form, whichever reader built it (``normalize_hardlink_target``).
+            # Done before the presentation checks below, which look the target up.
+            member.link_target = normalize_hardlink_target(member.link_target)
         # A nested reader's members are checked again, by name, as the outer
         # listing lists them (``ReaderContext.open_nested``): only once, there.
         if idx >= self._walk_presented and not self._nested_depth:
@@ -4077,10 +4093,7 @@ class BaseArchiveReader(ArchiveReader):
 
         Listing such an archive decodes all of it, so the decoded stream is held to
         ``decoder_limits.max_ratio`` of the archive's size (:class:`DecodeRatioGuard`)
-        in every use, not only in ``extract_all``. An ``extract_all`` call on this
-        thread holds its own decodes to the ratio fields it applies instead, for the
-        length of the call (``_run_ratio_limits``); a read after it is judged again
-        under the reader's limits.
+        in every use, not only in ``extract_all``.
         """
         # Imported here: the codec layer imports reader-side modules at load.
         from archivey.internal.bomb_tracker import DecodeRatioGuard
@@ -4107,6 +4120,11 @@ class BaseArchiveReader(ArchiveReader):
                     usage=self._usage,
                 ),
                 report_trailing_data=True,
+                # Random access reads members after the listing has decoded past
+                # them, so each read seeks back. Restart points let it resume near
+                # the member and not decode again from the start. A streaming walk
+                # never seeks back, so it keeps none.
+                restart_points=not streaming,
                 # The members are read through this stream, several small ones to
                 # one read (the TAR walk reads ahead): a failing call that lost its
                 # bytes would take whole members before the damage with it. So it
@@ -4124,7 +4142,7 @@ class BaseArchiveReader(ArchiveReader):
         # The archive stream is the decode stage: it draws every byte decoded, the
         # headers and the members a walk skips too, so its members draw nothing more
         # (``draw_budget=False``).
-        decoded = self._budget_drawn(decoded)
+        decoded = self._budget_drawn(decoded, stage=True)
         limits = self._ratio_limits()
         if limits.max_ratio is None:
             return decoded
@@ -4133,7 +4151,6 @@ class BaseArchiveReader(ArchiveReader):
             limits=limits,
             static_size=self._trusted_source_size(),
             consumed=self._live_consumed(),
-            run_limits=self._run_ratio_limits,
         )
 
     # --- Public API: listing ----------------------------------------------------------
@@ -5132,7 +5149,6 @@ class BaseArchiveReader(ArchiveReader):
         # Imported here (not at module top) to keep the import graph tidy: extraction.py
         # type-checks against BaseArchiveReader.
         from archivey.internal.extraction import ExtractionCoordinator
-        from archivey.internal.selection import CollectionSelector
 
         # The reader's open config applies to the whole reader lifetime; only the
         # extraction limits have a per-call override (see archive-reading).
@@ -5140,27 +5156,15 @@ class BaseArchiveReader(ArchiveReader):
             limits if limits is not None else self._config.extraction_limits
         )
         collector = self._diagnostics_collector
-        # The caller's code the call runs is not one of its decodes: a read it makes is
-        # held to the reader's limits, as on a ZIP.
-        outside = self._outside_extraction_ratio
         coordinator = ExtractionCoordinator(
             policy=policy,
             overwrite=overwrite,
             on_error=on_error,
             abort_on=abort_on,
-            on_progress=None if on_progress is None else outside(on_progress),
-            # A members= collection is archivey's own code, and the coordinator asks
-            # it for more than a verdict: only the caller's predicate is wrapped.
-            selector=(
-                selector
-                if selector is None or isinstance(selector, CollectionSelector)
-                else outside(selector)
-            ),
-            filter=None if filter is None else outside(filter),
+            on_progress=on_progress,
+            selector=selector,
+            filter=filter,
             limits=effective_limits,
-            # The reader's ratio, a deprecated field of its config's extraction limits
-            # included, under the call's: a per-call ``limits=`` that sets no ratio
-            # field keeps it.
             ratio=self._ratio_limits(),
             dry_run=dry_run,
         )
@@ -5170,15 +5174,8 @@ class BaseArchiveReader(ArchiveReader):
             # The report covers only the emits this call makes, on its own thread:
             # open-phase diagnostics stay on reader.diagnostics, and on a CONCURRENT
             # reader other threads emit into the same collector meanwhile.
-            run_ratio = self._extraction_ratio
-            outer = getattr(run_ratio, "limits", None)
-            # The call's limits govern its decodes, the container's decode included.
-            run_ratio.limits = coordinator.ratio
-            try:
-                with self._internal_member_opens(), collector.scoped() as scope:
-                    results = coordinator.run(self, dest_path)
-            finally:
-                run_ratio.limits = outer
+            with self._internal_member_opens(), collector.scoped() as scope:
+                results = coordinator.run(self, dest_path)
         finally:
             self._state.release_pass(token)
         report = ExtractionReport(

@@ -576,17 +576,13 @@ class _PluginAdapter(BaseArchiveReader):
             raise held
 
     def _name_member(self, member: ArchiveMember, index: int) -> None:
-        """Give a listed member the names callers see, and send what was reported on
-        it before: the name normalized, and a hard link's target the same way, since
-        a link names another member by its listed name."""
+        """Give a listed member the name callers see, and send what was reported on
+        it before. A hard link's target is normalized at registration, as for every
+        reader (``BaseReader._register_member``)."""
         presented = member.name
         member.name = normalize_member_name(
             presented, member.type, backslash_is_separator=False
         )
-        if member.type is MemberType.HARDLINK and member.link_target:
-            member.link_target = normalize_member_name(
-                member.link_target, MemberType.FILE, backslash_is_separator=False
-            )
         self._send_held_reports(member)
         self._report_listed(member, presented, index)
 
@@ -1243,20 +1239,22 @@ class _Primed(io.RawIOBase):
 
     @override
     def readinto(self, buffer: Any) -> int:
-        view = memoryview(buffer).cast("B")
-        head = self._head
-        if head:
-            n = min(len(view), len(head))
-            view[:n] = head[:n]
-            self._head = head[n:]
-            return n
-        # One read of the source's own, as a raw stream does it: a buffered ``read(n)``
-        # loops until ``n`` bytes or the end, and so reaches a cut payload's missing end
-        # before the bytes ahead of it have been handed on.
-        read = getattr(self._data, "read1", self._data.read)
-        got = read(len(view)) or b""
-        view[: len(got)] = got
-        return len(got)
+        # Both views are released before the return: ``RawIOBase.read`` resizes
+        # ``buffer`` next, which PyPy refuses while a dropped view waits for a collection.
+        with memoryview(buffer) as outer, outer.cast("B") as view:
+            head = self._head
+            if head:
+                n = min(len(view), len(head))
+                view[:n] = head[:n]
+                self._head = head[n:]
+                return n
+            # One read of the source's own, as a raw stream does it: a buffered
+            # ``read(n)`` loops until ``n`` bytes or the end, and so reaches a cut
+            # payload's missing end before the bytes ahead of it have been handed on.
+            read = getattr(self._data, "read1", self._data.read)
+            got = read(len(view)) or b""
+            view[: len(got)] = got
+            return len(got)
 
 
 class SpanningCheck:
@@ -1811,7 +1809,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             # The first step of the walk is taken now, so a file that is not one of
             # the format's archives fails to open (DR-15b), as a TAR does.
             walk = self._new_walk()
-            with self._translated_errors(), self._handle_guard():
+            with (
+                self._translated_errors(),
+                self._handle_guard(),
+                self._listing_work(),
+            ):
                 first = self._walk_next(walk)
             self._open_walk: tuple[Iterator[MemberSpan], object] | None = (
                 walk,
@@ -2026,7 +2028,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 collector=self._diagnostics_collector,
             )
             self._layer_streams.append(decoded)
-            decoded = self._guarded_layer(self._budget_drawn(decoded))
+            decoded = self._guarded_layer(self._budget_drawn(decoded, stage=True))
             assert self._source is not None
             buffered = ReadAheadStream(
                 decoded, _WALK_BUFFER, fill_arrived=not self._source.seekable()
@@ -2055,7 +2057,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 )
                 self._layer_streams.append(decoded)
                 shared = self._layer_sources[key] = SharedSource(
-                    self._guarded_layer(self._budget_drawn(decoded))
+                    self._guarded_layer(self._budget_drawn(decoded, stage=True))
                 )
             layer = self._random_access_layer(walk, shared, compressed=True)
         walk.layer = layer
@@ -2072,8 +2074,7 @@ class SequentialReaderAdapter(_PluginAdapter):
     ) -> BinaryIO:
         """``stream``, bytes the walk decodes, held to ``decoder_limits.max_ratio`` of
         the archive's size in every use, listing included, as
-        ``_open_outer_codec_stream`` holds an outer compression stream (an
-        ``extract_all`` call's ratio governing its own decodes). Its bytes count
+        ``_open_outer_codec_stream`` holds an outer compression stream. Its bytes count
         toward ``tally`` as ``key``'s."""
         limits = self._ratio_limits()
         if limits.max_ratio is None:
@@ -2085,7 +2086,6 @@ class SequentialReaderAdapter(_PluginAdapter):
             consumed=self._live_consumed(),
             tally=tally,
             key=key,
-            run_limits=self._run_ratio_limits,
         )
 
     @override
@@ -2161,7 +2161,28 @@ class SequentialReaderAdapter(_PluginAdapter):
                 if left:
                     forward.skip(left)
                 span = self._walk_next(walk)
+        with boundary, guard:
+            self._read_codec_end()
         self._raise_members_the_codec_checked()
+
+    def _read_codec_end(self) -> None:
+        """Run the outer codec's end checks when the walk stopped at its last byte.
+
+        A codec that read its decoded size from an index (an xz index, a zstd seek
+        table, lzip trailers: random access records restart points, which reads them)
+        stops a read at that size without decoding what follows the data. The walk's
+        views are clamped to the same size, so they never ask past it, and the check
+        after the data would not run. One read at the end decodes the rest, as a
+        codec that does not know its size does on its last read. A TAR walk reaches
+        the same bytes through its end-of-archive checks.
+        """
+        codec = self._codec_stream
+        shared = self._shared
+        if codec is None or shared is None:
+            return
+        size = shared.size
+        if size is not None and codec.tell() == size:
+            codec.read(1)
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` once the walk ends at the end of an

@@ -10,10 +10,12 @@ listed. Parsers that keep metadata before members exist (7z, RAR, ISO) weigh it 
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 
 from archivey.config import Budget, ListingLimits
 from archivey.exceptions import ResourceLimitError
+from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.types import ArchiveMember
 
 
@@ -52,6 +54,16 @@ def text_bytes(value: str | bytes | None) -> int:
 # a ZIP extra field with one byte of data (CPython 3.11, int key over 256).
 NUMBERED_ENTRY_BYTES = 72
 
+# What one entry of a nested dict keyed by text retains beyond its key's and value's
+# bytes: the key's ``str`` object and the dict slot. Measured 70 to 93 bytes for
+# ``extra["tar.pax_headers"]`` entries with short keywords and empty values (CPython
+# 3.11, 100 to 350,000 entries, by how full the dict's table is). The archive-reading
+# spec sets this weight. Without it a PAX entry of a short keyword would weigh about 5
+# bytes against the 90 it keeps, and TAR gives each member that has PAX records of its
+# own a copy of the global ones, so a 2 MB archive of one large global header and 100
+# small members would keep 1.5 GB under the default 64 MiB cap.
+TEXT_ENTRY_BYTES = 96
+
 
 def _extra_bytes(extra: Mapping[str, object]) -> int:
     """Sum retained ``str``/``bytes`` lengths in ``extra`` (one-level nested dicts).
@@ -63,7 +75,9 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
     ``extra["tar.pax_headers"]``, where the keyword is as attacker-sized as the value.
     A nested key that is not text (a ZIP extra field's tag in
     ``extra["zip.extra_fields"]``) weighs ``NUMBERED_ENTRY_BYTES``: the archive sets
-    how many entries there are, and an empty value would otherwise weigh nothing.
+    how many entries there are, and an empty value would otherwise weigh nothing. A
+    nested text key weighs ``TEXT_ENTRY_BYTES`` more than its bytes, for the same
+    reason: the objects an entry keeps outweigh a short key and value many times.
     """
     total = 0
     for value in extra.values():
@@ -73,7 +87,7 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
         if isinstance(value, dict):
             for nested_key, nested in value.items():
                 key_bytes = (
-                    _retained_bytes(nested_key)
+                    TEXT_ENTRY_BYTES + _retained_bytes(nested_key)
                     if isinstance(nested_key, (str, bytes))
                     else NUMBERED_ENTRY_BYTES
                 )
@@ -414,3 +428,138 @@ def metadata_limit_error(max_meta: int, detail: str) -> ResourceLimitError:
     return ResourceLimitError(
         f"Listing limit reached: max_metadata_bytes={max_meta} ({detail})"
     )
+
+
+class ListingDecodeCount:
+    """The bytes one listing pass decodes, held to ``ListingLimits.max_decoded_bytes``.
+
+    Counts only while listing work runs on the thread that does it (:meth:`enter` /
+    :meth:`leave`, around ``BaseArchiveReader._pull_members_locked`` and
+    ``BaseArchiveReader._listing_work``: a walk step, the steps taken at open, the
+    listing's link targets), so the bytes a caller reads from a member, between steps
+    or on another thread, do not count. :meth:`start_pass` starts the count over for
+    each later walk. Draws come through :class:`StageDraws`, from the decode stages
+    that also draw a :class:`~archivey.Budget`.
+    """
+
+    __slots__ = ("_cap", "_drawn", "_started", "_thread")
+
+    def __init__(self, cap: int) -> None:
+        self._cap = cap
+        self._drawn = 0
+        self._started = False
+        self._thread: int | None = None
+
+    @property
+    def drawn(self) -> int:
+        return self._drawn
+
+    def start_pass(self) -> None:
+        """A walk starts. The first one keeps what opening the archive decoded (a 7z
+        header): that is part of the first listing. A walk started over counts from
+        zero."""
+        if self._started:
+            self._drawn = 0
+        self._started = True
+
+    def enter(self) -> int | None:
+        """Count on this thread until :meth:`leave`; returns what to pass to it."""
+        previous = self._thread
+        self._thread = threading.get_ident()
+        return previous
+
+    def leave(self, previous: int | None) -> None:
+        self._thread = previous
+
+    def _active(self) -> bool:
+        return self._thread is not None and self._thread == threading.get_ident()
+
+    def room(self) -> int | None:
+        """Bytes left in this pass, or ``None`` when no listing work runs on this thread."""
+        if not self._active():
+            return None
+        return max(0, self._cap - self._drawn)
+
+    def check_left(self) -> None:
+        if self._active() and self._drawn > self._cap:
+            raise self._error(0)
+
+    def draw(self, n: int) -> None:
+        if n <= 0 or not self._active():
+            return
+        self._drawn += n
+        if self._drawn > self._cap:
+            raise self._error(0)
+
+    def refuse(self, n: int, what: str) -> None:
+        raise self._error(n, what)
+
+    def _error(self, n: int, what: str = "") -> AlwaysStopResourceLimitError:
+        detail = f"listing this archive has decoded {self._drawn} bytes" + (
+            f"; {what} would decode {n} more" if what else ""
+        )
+        # Archive-wide like the Budget's: nothing that skips one member's failure
+        # (``OnError.CONTINUE``, the forward ZIP's drain) may go on decoding past it.
+        return AlwaysStopResourceLimitError(
+            f"Listing limit reached: max_decoded_bytes={self._cap} ({detail})"
+        )
+
+
+class StageDraws:
+    """A decode stage's draws: the config's :class:`~archivey.Budget` and the listing
+    pass's :class:`ListingDecodeCount`, either of which may be absent. Answers the
+    calls :class:`~archivey.internal.streams.counting.BudgetDrawStream` and the direct
+    draw sites make of a budget, as the tighter of the two."""
+
+    __slots__ = ("_budget", "_listing")
+
+    def __init__(self, budget: Budget | None, listing: ListingDecodeCount) -> None:
+        self._budget = budget
+        self._listing = listing
+
+    @staticmethod
+    def of(
+        budget: Budget | None, listing: ListingDecodeCount | None
+    ) -> Budget | StageDraws | None:
+        """What a decode stage draws from: ``None`` for nothing, the budget alone when
+        there is no listing cap."""
+        if listing is None:
+            return budget
+        return StageDraws(budget, listing)
+
+    def _bytes_room(self) -> int | None:
+        listing = self._listing.room()
+        budget = self._budget._bytes_room() if self._budget is not None else None
+        if listing is None:
+            return budget
+        return listing if budget is None else min(listing, budget)
+
+    def _check_bytes_left(self) -> None:
+        if self._budget is not None:
+            self._budget._check_bytes_left()
+        self._listing.check_left()
+
+    def _read_cap(self, want: int) -> int:
+        self._check_bytes_left()
+        room = self._bytes_room()
+        return want if room is None else min(want, room + 1)
+
+    def _draw_bytes(self, n: int) -> None:
+        if self._budget is not None:
+            self._budget._draw_bytes(n)
+        self._listing.draw(n)
+
+    def _refuse_bytes(self, n: int, what: str) -> None:
+        budget = self._budget
+        if budget is not None:
+            room = budget._bytes_room()
+            if room is not None and n > room:
+                budget._refuse_bytes(n, what)
+        self._listing.refuse(n, what)
+
+    def _draw_whole(self, n: int, what: str) -> None:
+        self._check_bytes_left()
+        room = self._bytes_room()
+        if room is not None and n > room:
+            self._refuse_bytes(n, what)
+        self._draw_bytes(n)

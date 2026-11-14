@@ -711,9 +711,12 @@ def _links_stay_inside(
     one step up into the wrapper and back down can land on a name the working directory
     has and the wrapper did not, so that blocks too.
 
-    The walk follows each symlink on the way, so a chain cannot hide a climb, and an
-    absolute target always blocks. A path that ends at nothing is walked by name. A
-    directory that cannot be listed blocks too: what is under it was not checked.
+    The walk follows each symlink on the way, so a chain cannot hide a climb. A link
+    whose own target is absolute (``usr/bin/pwsh -> /opt/...``, which only
+    ``TRUSTED`` writes) names the same path after the move, so it does not block; an
+    absolute target met on the way through another link's target does, since that
+    walk leaves ``root``. A path that ends at nothing is walked by name. A directory
+    that cannot be listed blocks too: what is under it was not checked.
 
     ``links`` is every symlink under ``root`` with its target, and ``readlink`` answers
     each step from the same source. An ``OSError`` raised while ``links`` is listed
@@ -721,7 +724,8 @@ def _links_stay_inside(
     """
     try:
         return all(
-            _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], readlink)
+            _is_absolute_target(target)
+            or _walk_stays_inside(path.parent, target, root, [_MAX_LINK_HOPS], readlink)
             is not None
             for path, target in links
         )

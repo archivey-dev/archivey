@@ -20,7 +20,7 @@ import pathlib
 import threading
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
 from typing import ClassVar, NoReturn
 
@@ -255,50 +255,17 @@ INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
-class _InheritedFloat(float):
-    """The default of a deprecated ``ExtractionLimits`` ratio field: not set, so
-    :class:`DecoderLimits` decides. A ``float`` of the default value, so it reads as
-    one; told apart by type."""
-
-    __slots__ = ()
-
-
-class _InheritedInt(int):
-    """:class:`_InheritedFloat` for the integer ratio fields."""
-
-    __slots__ = ()
-
-
-def ratio_field_is_set(value: object) -> bool:
-    """Whether a deprecated ``ExtractionLimits`` ratio field was given a value."""
-    return not isinstance(value, (_InheritedFloat, _InheritedInt))
-
-
-_DEPRECATED_RATIO_FIELDS = (
-    "max_ratio",
-    "ratio_activation_threshold",
-    "live_ratio_activation_threshold",
-)
-
-
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
     Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
-    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the guard
-    fields to ``None``.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` sets every field to
+    ``None``.
 
-    The ratio fields (:attr:`max_ratio`, :attr:`ratio_activation_threshold`,
-    :attr:`live_ratio_activation_threshold`) are deprecated: the ratio holds every
-    decode, reads and listing included, so it lives on :class:`DecoderLimits`. A ratio
-    field set here still overrides the :class:`DecoderLimits` one, with a
-    ``DeprecationWarning``: in :attr:`ArchiveyConfig.extraction_limits` for every
-    decode of the reader, and in ``extract_all(limits=...)`` for that extraction.
-    Left unset, they read as the :class:`DecoderLimits` defaults. :attr:`UNLIMITED`
-    still turns the ratio off for the extraction it is passed to, until these fields
-    go.
+    The decompression ratio is :attr:`DecoderLimits.max_ratio`, which holds every
+    decode, reads and listing included.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -311,17 +278,9 @@ class ExtractionLimits:
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
-    max_ratio: float | None = _InheritedFloat(800.0)
-    """Deprecated: use :attr:`DecoderLimits.max_ratio`, which holds reads too.
-
-    Set here, it overrides that field: in :attr:`ArchiveyConfig.extraction_limits` for
-    the reader, in ``extract_all(limits=...)`` for that extraction only.
-    """
-
-    ratio_activation_threshold: int = _InheritedInt(5 * 2**20)
-    """Deprecated: use :attr:`DecoderLimits.ratio_activation_threshold`. Set here, it
-    overrides that field as :attr:`max_ratio` does."""
-
+    # Keyword-only, so a second positional argument raises rather than setting an
+    # entry cap the caller may not have meant.
+    _: KW_ONLY
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
 
@@ -334,40 +293,15 @@ class ExtractionLimits:
     quadratic in its size.
     """
 
-    live_ratio_activation_threshold: int = _InheritedInt(256 * 2**20)
-    """Deprecated: use :attr:`DecoderLimits.live_ratio_activation_threshold`. Set
-    here, it overrides that field as :attr:`max_ratio` does."""
-
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
         # allow_none and allow_float come from the field annotations.
         check_limit_fields(self, cls="ExtractionLimits")
-        set_fields = [
-            name
-            for name in _DEPRECATED_RATIO_FIELDS
-            if ratio_field_is_set(getattr(self, name))
-        ]
-        # ``max_ratio=None`` alone is what ``UNLIMITED`` holds, and a copy of it made
-        # with ``dataclasses.replace`` passes the value on as if the caller had set
-        # it. It stays silent, so ``replace(UNLIMITED, max_entries=...)`` does not
-        # warn about a field the caller never wrote; written by hand, it still works.
-        if set_fields and not (set_fields == ["max_ratio"] and self.max_ratio is None):
-            warnings.warn(
-                "The ratio fields of ExtractionLimits (max_ratio, "
-                "ratio_activation_threshold, live_ratio_activation_threshold) are "
-                "deprecated and will be removed in a future release; set them on "
-                "DecoderLimits, which holds reads and listing as well as extraction.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
 
 
-# ``UNLIMITED`` keeps turning the ratio off for an extraction until the deprecated
-# fields go.
 ExtractionLimits.UNLIMITED = ExtractionLimits(
     max_extracted_bytes=None,
-    max_ratio=None,
     max_entries=None,
 )
 
@@ -408,7 +342,9 @@ class ListingLimits:
     makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
     open.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than is left of ``max_metadata_bytes``, before reading it.
+    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
+    header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
+    keyword does not count again.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it.
@@ -438,14 +374,16 @@ class ListingLimits:
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
-    (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
-    keys are fixed per format and do not count. Non-ASCII text counts four bytes per
-    character, so it is an upper bound rather than an exact size. A TAR sparse member's
-    map, which the listing keeps to read the member, counts 24 bytes per entry, and
-    each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
-    data. A cabinet's block tables, read as members of each folder are first opened
-    and kept for the reader's life, count 256 bytes per data block on a running total
-    of their own, so opening a member can raise too.
+    (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
+    archive comment. Each distinct PAX keyword also counts 256 bytes once while its header
+    is parsed. The top-level ``extra`` keys are fixed per format and do not
+    count. Non-ASCII text counts four bytes per character, so it is an upper bound
+    rather than an exact size. A TAR sparse member's map, which the listing keeps to
+    read the member, counts 24 bytes per entry, and each ZIP extra field kept in
+    ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A cabinet's block
+    tables, read as members of each folder are first opened and kept for the reader's
+    life, count 256 bytes per data block on a running total of their own, so opening a
+    member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
@@ -458,6 +396,29 @@ class ListingLimits:
     added while it reads, and its members count once, as the outer listing lists them.
     """
 
+    max_decoded_bytes: int | None = 4 * 2**30
+    """Most bytes one listing may decode. 4 GiB.
+
+    Some archives can only be listed by decoding them: a ``.tar.gz`` (or any
+    compressed TAR, cpio or RPM payload) is one compressed stream, and its member
+    headers sit between the members' data, so listing it decodes all of it. A
+    streaming ZIP decodes the start of each compressed member it passes over (up to
+    about 4 KiB, in case the directory makes it a link), so it counts about 4 KiB a
+    member. A solid 7z decodes its folder up to the last symlink whose target it reads
+    (``read_link_targets``). That work happens on ``open_archive`` and the first
+    listing call, before the caller has read anything, so this caps it. Each reader's
+    listing counts from zero, and so does a walk started over after a failure; a reader
+    keeps its listing, so listing again decodes nothing. The bytes a caller reads from
+    a member do not count, only those the reader decodes on its own: the header read
+    at open, the data a walk passes over to reach the next header, the link targets it
+    reads. A 7z header stored compressed counts too, at open.
+
+    :attr:`DecoderLimits.max_ratio` already holds a listing's decode to a multiple of
+    the archive's size; this is the absolute cap, for a large archive that compresses
+    well. Detection has its own cap (:class:`~archivey.detection_cost.DetectionBudget`)
+    and does not count here.
+    """
+
     UNLIMITED: ClassVar[ListingLimits]
 
     def __post_init__(self) -> None:
@@ -467,6 +428,7 @@ class ListingLimits:
 ListingLimits.UNLIMITED = ListingLimits(
     max_members=None,
     max_metadata_bytes=None,
+    max_decoded_bytes=None,
 )
 
 
@@ -563,7 +525,10 @@ class DecoderLimits:
     folder's ``main``, ``call`` and ``jump`` branches), so when it has more than one,
     their LZMA dictionaries, PPMd memory sizes and zstd windows count together against
     it. A zstd window counts as the first frame declares it, when the zstd coder reads a
-    packed stream directly.
+    packed stream directly. An LZMA Alone stream with a known size counts its dictionary
+    twice, because archivey reads it with two decoders at once: liblzma cannot be
+    trusted to read an end marker after a known size (before 5.2.6 never, and in every
+    version measured not when a read boundary falls just before the marker).
 
     That number is a policy choice, not a limit of the format, so here
     is what it was chosen against. Measured on 7-Zip 23.01, a writer
@@ -1165,6 +1130,10 @@ class ArchiveyConfig:
     To read a set then, pass its volumes as a list. That suits a directory other users
     can write to, where a planted part (a hard link to a file the caller can read and
     they cannot, which looks like any file) would end up inside an extracted member.
+
+    An ``fsspec.core.OpenFile`` is never searched, whatever this says: pass a remote
+    set as a list of ``OpenFile`` objects. With this ``True`` a lone remote
+    ``x.7z.001`` is still refused by its name, and the message says to pass the list.
     """
 
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)

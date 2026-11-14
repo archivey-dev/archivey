@@ -720,7 +720,9 @@ class TarReader(BaseArchiveReader):
             # The first member's headers are parsed at open, so a file that is not a
             # tar fails here (DR-15b).
             self._walker = self._new_walker()
-            first = self._step(self._walker)
+            # Part of the first listing pass: what it decodes counts toward the cap.
+            with self._listing_work():
+                first = self._step(self._walker)
             self._check_first(first)
             # The walk that hands out ``first`` is the open-time one; a random-access
             # walk started over after a discarded failure builds its own.
@@ -1012,11 +1014,6 @@ class TarReader(BaseArchiveReader):
         for member in self._listed:
             if member.is_file and self._member_data_is_stream_bytes(member):
                 raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
-
-    def _iter_members_progressive(self) -> Iterator[ArchiveMember]:
-        """Forward-only member walk. Yields bare members; the base's shared progressive
-        pass stamps ids and resolves backward links."""
-        return self._iter_members()
 
     @override
     def _pass_reads_through_walk(self) -> bool:

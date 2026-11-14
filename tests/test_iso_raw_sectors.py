@@ -24,6 +24,7 @@ from archivey import (
     open_archive,
 )
 from tests.conftest import requires
+from tests.streams_util import hold_views
 
 _SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 
@@ -261,6 +262,28 @@ def test_raw_ranges_cover_whole_sectors() -> None:
     assert layout.raw_range(2048, 4096) == (2352, 4704)
     assert layout.raw_range(2047, 2049) == (0, 4704)
     assert layout.raw_range(4096, 4096) == (4704, 4704)
+
+
+def test_a_cooked_view_releases_its_views_of_the_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``RawIOBase.read`` resizes the buffer after ``readinto`` returns. PyPy frees a
+    dropped view only at a collection, so a view still alive makes the resize raise
+    ``BufferError``. ``hold_views`` keeps every view alive, the cast one included,
+    which shows that on CPython too."""
+    from archivey.internal.backends import cd_sectors
+
+    held = hold_views(monkeypatch, cd_sectors)
+    data = bytes(range(256)) * 8
+    view = cd_sectors._CookedView(
+        lambda first, end: data[first * 2048 : end * 2048], len(data), 2040, None
+    )
+    for want in (data[2040:], b""):
+        buffer = bytearray(16)
+        n = view.readinto(buffer)
+        del buffer[n:]  # BufferError while a view of it is alive
+        assert buffer == want
+    assert len(held) == 4  # the view and its cast, for each of the two calls
 
 
 @requires("pycdlib")
