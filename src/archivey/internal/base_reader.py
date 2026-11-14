@@ -2627,6 +2627,12 @@ class BaseArchiveReader(ArchiveReader):
                 return listed
         return None
 
+    def _refresh_member_levels(self) -> None:
+        """Raise listed members whose data a codec's block or frame checks have
+        covered since the last call (``checked_spans``). A member stream runs it
+        before it syncs its member's level. Default: nothing; the compressed TAR
+        reader overrides it."""
+
     def _level_member(self, member: ArchiveMember) -> ArchiveMember:
         """The member whose verification level a stream of ``member`` raises.
 
@@ -4533,6 +4539,7 @@ class BaseArchiveReader(ArchiveReader):
                     judged.clear()
                 self._hold_to_ratio(stream, _data_owner(opened[0]), counted_as=member)
                 stream._level_member = self._level_member(opened[0])
+                stream._level_refresh = self._refresh_member_levels
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
                 registered = self._register_public_stream(stream, token=reservation)
@@ -5109,6 +5116,7 @@ class BaseArchiveReader(ArchiveReader):
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
                         stream._level_member = m
+                        stream._level_refresh = self._refresh_member_levels
                         if hold_to_ratio:
                             self._hold_to_ratio(stream, _data_owner(m), counted_as=m)
                     current = stream

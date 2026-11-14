@@ -183,6 +183,8 @@ class Bzip2BlockDecompressor:
     # A failed block raises only once every byte before it is handed out: see
     # ``Decoder.holds_back_errors``.
     holds_back_errors = True
+    # Every byte handed out passed its block's CRC (``checked_spans``).
+    checks_output = True
 
     def __init__(
         self,

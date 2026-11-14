@@ -42,6 +42,7 @@ from archivey.exceptions import (
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.checked_spans import LevelRefresh
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     retire_decoder_children,
@@ -379,6 +380,9 @@ class ArchiveStreamImpl(ArchiveStream):
     # stream proves raises it (``raise_member_level``). ``None`` for a stream of no
     # listed member (``open_stream()``), which keeps its own level.
     _level_member: ArchiveMember | None = None
+    # The reader's refresh of its members' levels from the checks of the codec under
+    # them (``checked_spans``), run before each sync.
+    _level_refresh: LevelRefresh | None = None
     # Set by ``_sync_member_level`` while a frame read later may still lower the
     # member's ``verifiable`` (``_frame_verdict``): each read and seek then asks for
     # one (``_sync_frame_unchecked``), so the member's ceiling falls with this
@@ -1181,6 +1185,8 @@ class ArchiveStreamImpl(ArchiveStream):
         member = self._level_member
         if member is None:
             return
+        if self._level_refresh is not None:
+            self._level_refresh()
         if self._inner is None:
             return
         # The layers are asked once: a sync runs on every open, end of data and close,

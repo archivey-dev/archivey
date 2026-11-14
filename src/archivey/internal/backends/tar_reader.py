@@ -56,6 +56,7 @@ sets it to ``RAISE`` (``DiagnosticPolicy.STRICT`` does so for all of them).
 
 from __future__ import annotations
 
+import bisect
 import io
 import re
 import threading
@@ -133,6 +134,7 @@ from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
     MemberStreamParts,
 )
+from archivey.internal.streams.checked_spans import find_checked_spans
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.internal.streams.resume import (
     ask_resume_offset,
@@ -697,6 +699,15 @@ class TarReader(BaseArchiveReader):
         # a second close is a no-op): left to the garbage collector, a stream held by a
         # failed open's traceback would keep its rapidgzip child process running.
         self._owned_codec_stream: BinaryIO | None = None
+        # The listed files whose data are the codec stream's own bytes, by data offset:
+        # their ranges and members, in listing order, which is offset order. A member
+        # rises to CHECKSUM once the codec's block checks cover its range
+        # (``_refresh_member_levels``); ``_level_done`` marks those raised.
+        self._level_starts: list[int] = []
+        self._level_ends: list[int] = []
+        self._level_members: list[ArchiveMember] = []
+        self._level_done: list[bool] = []
+        self._level_lock = threading.Lock()
         # Random access only: the current walk's own buffered view (see _new_walker).
         self._walker_view: BinaryIO | None = None
         # The last PAX records a member without records of its own was built from,
@@ -922,6 +933,7 @@ class TarReader(BaseArchiveReader):
             # The codec's checksum covers this member's bytes, and a walk to the end
             # runs it (``_raise_members_the_codec_checked``).
             mark_spanning_checksum(member)
+            self._track_member_level(member)
         span = member._raw
         if isinstance(span, TarSpan) and span.sparse is not None:
             self._listing_tracker.account_retained_bytes(
@@ -974,6 +986,8 @@ class TarReader(BaseArchiveReader):
             index += 1
             with self._translated_errors():
                 entry = self._step(walker)
+            # The step decoded through the member's data: its blocks may cover it.
+            self._refresh_member_levels()
         self._verify_tar_eof(walker, entry, last_member=last_member, member_count=index)
         self._raise_members_the_codec_checked()
 
@@ -1964,6 +1978,57 @@ class TarReader(BaseArchiveReader):
                 size=member.size,
                 draw_budget=not self._compressed,
             )
+
+    def _track_member_level(self, member: ArchiveMember) -> None:
+        """Keep ``member``'s data range, so the codec's block checks can raise it."""
+        span = member._raw
+        if not isinstance(span, TarSpan) or span.stored_size <= 0:
+            return
+        start = span.data_offset
+        end = start + span.stored_size
+        codec = self._owned_codec_stream
+        spans = find_checked_spans(codec) if codec is not None else None
+        with self._level_lock:
+            if self._level_starts and start < self._level_starts[-1]:
+                return  # not in offset order: left to the walk's end
+            # A check that passed before the member was listed (the walk decodes
+            # ahead of the headers it parses) was taken already: test it here.
+            done = spans is not None and spans.covers(start, end)
+            self._level_starts.append(start)
+            self._level_ends.append(end)
+            self._level_members.append(member)
+            self._level_done.append(done)
+        if done:
+            raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+
+    @override
+    def _refresh_member_levels(self) -> None:
+        """Raise to ``CHECKSUM`` every tracked member whose data the codec's block or
+        frame checks now cover (``checked_spans``), without waiting for the walk to
+        reach the stream's end.
+
+        Only the members a newly checked range touches are looked at, and a member's
+        range is tested against all the checked spans, so a member that two decodes
+        covered in two pieces rises too.
+        """
+        codec = self._owned_codec_stream
+        if codec is None or not self._level_starts:
+            return
+        spans = find_checked_spans(codec)
+        if spans is None:
+            return
+        with self._level_lock:
+            starts, ends = self._level_starts, self._level_ends
+            for start, end in spans.take_new():
+                i = bisect.bisect_right(ends, start)
+                while i < len(starts) and starts[i] < end:
+                    if not self._level_done[i] and spans.covers(starts[i], ends[i]):
+                        self._level_done[i] = True
+                        member = self._level_members[i]
+                        raise_member_level(
+                            member, Verification.CHECKSUM, Verification.CHECKSUM
+                        )
+                    i += 1
 
     def _member_body(self, member: ArchiveMember, *, in_walk: bool) -> BinaryIO:
         """``member``'s bytes, before the public wrapper.
