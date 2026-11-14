@@ -310,6 +310,12 @@ class ReaderSource:
     open at the same time do not move each other.
     """
 
+    # Where this source's byte 0 sits in the file: nonzero only for a built-in format
+    # read behind a self-extracting stub, whose reader sees the archive alone. Errors
+    # name file offsets (``sfx.file_offset``), so they point where a hex editor shows
+    # the bytes. Set by archivey only; a plugin's source always starts the file.
+    _origin: int = 0
+
     def __init__(
         self,
         view: Callable[[int, int | None], BinaryIO],
@@ -351,7 +357,7 @@ class ReaderSource:
         if len(data) < n:
             raise TruncatedError(
                 f"the archive ends {len(data)} bytes into the {n} bytes at offset "
-                f"{offset}"
+                f"{self._origin + offset}"
             )
         return data
 

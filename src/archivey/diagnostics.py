@@ -541,15 +541,16 @@ class ArchiveEofContext(_JsonSafeContext):
       record that does not match the archive. ``observed_kind="nonzero"``: the entry
       count it declares (classic, or ZIP64 when stdlib used that record) is not the
       number of entries the central directory holds; ``observed_bytes`` is the
-      record's offset and ``expected_bytes`` is 0. ``observed_kind="short"``: the
-      archive comment length runs past the end of the file; ``expected_bytes`` is
+      record's offset in the file, a self-extractor's stub included, and
+      ``expected_bytes`` is 0. ``observed_kind="short"``: the archive comment length
+      runs past the end of the file; ``expected_bytes`` is
       the record's declared size (22 plus the comment length) and ``observed_bytes``
       the bytes from the record to the end of the file.
     - ``"zip64_end_of_central_directory"`` (``ARCHIVE_EOF_MARKER_MISSING``) — the ZIP64
       end record a locator announces is missing or does not match it, and the classic
       end record, none of whose fields needs it, is used instead. ``observed_kind`` is
-      ``"absent"``, ``observed_bytes`` is the locator's offset and ``expected_bytes``
-      is 0.
+      ``"absent"``, ``observed_bytes`` is the locator's offset in the file and
+      ``expected_bytes`` is 0.
     - ``"end_of_archive_byte"`` (``ARCHIVE_EOF_MARKER_MISSING``) — an LHA archive
       ends right after its last member, without the zero byte its writers put after
       the last header. Every member is listed. ``format`` is ``"lha"``,

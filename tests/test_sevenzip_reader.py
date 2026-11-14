@@ -1853,7 +1853,7 @@ def test_next_header_offset_overflow_is_typed_corruption() -> None:
     start_crc = zlib.crc32(start_header) & 0xFFFFFFFF
     blob = MAGIC_7Z + bytes([0, 4]) + struct.pack("<I", start_crc) + start_header
 
-    with raises_corruption_not_truncation(match="next-header offset"):
+    with raises_corruption_not_truncation(match="next-header distance"):
         load_sevenzip_archive(io.BytesIO(blob))
 
 
