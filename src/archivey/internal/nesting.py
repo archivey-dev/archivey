@@ -216,7 +216,8 @@ class NestDraws:
             if judges_ratio
             else None
         )
-        self._floor = max(
+        # A lower floor judges sooner: the stricter of the two, as for the caps.
+        self._floor = min(
             root.decoder_limits.ratio_activation_threshold,
             own.decoder_limits.ratio_activation_threshold,
         )

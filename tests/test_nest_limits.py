@@ -15,6 +15,7 @@ import random
 import tarfile
 import threading
 import zipfile
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -888,6 +889,26 @@ def test_nesting_cannot_compound_the_ratio() -> None:
             for name in names:
                 with archivey.open_archive(
                     io.BytesIO(parent.read(name)), parent=parent
+                ) as child:
+                    child.read("p.bin")
+
+
+def test_a_child_config_cannot_raise_the_nest_ratio_floor() -> None:
+    """A child whose ``ratio_activation_threshold`` is higher than the root's is still
+    judged from the root's: a higher floor would loosen the nest total."""
+    outer, _inner = _compounding_outer()
+    lax = replace(
+        _RATIO,
+        decoder_limits=replace(
+            _RATIO.decoder_limits, ratio_activation_threshold=1 << 40
+        ),
+    )
+    with archivey.open_archive(io.BytesIO(outer), config=_RATIO) as parent:
+        names = [m.name for m in parent.members() if m.name.endswith(".tar.gz")]
+        with pytest.raises(ResourceLimitError, match="Nest decompression ratio"):
+            for name in names:
+                with archivey.open_archive(
+                    io.BytesIO(parent.read(name)), parent=parent, config=lax
                 ) as child:
                     child.read("p.bin")
 

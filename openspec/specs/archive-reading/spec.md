@@ -2036,17 +2036,18 @@ tighten a nest total, never loosen it:
   back before listing it (a cpio or RPM hard-link set) SHALL be drawn when it is held.
   Crossing the total SHALL raise `ResourceLimitError` naming `max_members` and the nest;
   the refused member SHALL NOT be counted.
-- **Ratio.** Each reader opened as the outermost or with `parent=` SHALL add the most
-  it has decoded of its archive in one pass (the largest of its container stream's
-  decoded position, its member read tally and its largest single extraction), and only
-  that number's growth: reading again, or extracting after reading, SHALL add nothing.
-  A reader `open_nested` builds SHALL add nothing; its bytes are in its outer reader's
+- **Ratio.** Each reader opened as the outermost or with `parent=` SHALL add the most it
+  has decoded of its archive in one pass (the largest of its container stream's decoded
+  position, its member read tally and its largest single extraction), and only that
+  number's growth: reading again, or extracting after reading, SHALL add nothing. A
+  reader `open_nested` builds SHALL add nothing; its bytes are in its outer reader's
   number. The sum SHALL be held to `max_ratio` times the outermost archive's trusted
-  size, once it passes `ratio_activation_threshold`, and crossing it SHALL raise the
-  always-stop `ResourceLimitError` naming `max_ratio` and the nest. A nest of one SHALL
-  never be refused by this total where the reader's own ratio rules pass. An outermost
-  reader with no trusted size (a `DIRECTORY`, a stream of unknown length) SHALL leave
-  this total off.
+  size, once it passes `ratio_activation_threshold` (the lower of the outermost reader's
+  and the drawing reader's, since a higher floor would loosen the total), and crossing
+  it SHALL raise the always-stop `ResourceLimitError` naming `max_ratio` and the nest. A
+  nest of one SHALL never be refused by this total where the reader's own ratio rules
+  pass. An outermost reader with no trusted size (a `DIRECTORY`, a stream of unknown
+  length) SHALL leave this total off.
 - **Decoded bytes.** `DecoderLimits.max_nest_decoded_bytes` (`safe-extraction`).
 
 `ListingLimits.max_decoded_bytes`, `max_ppmd_held_input`
@@ -2061,6 +2062,7 @@ and `ExtractionLimits` SHALL stay per pass, decoder and call.
 | --- | --- |
 | Stored ZIP of 2.17 MB holding a 15 428-byte `.tar.xz` of 100 MiB of zeros; inner opened with `parent=outer` from a temporary-file copy; defaults | An inner read raises the always-stop `ResourceLimitError` naming `max_ratio` after about 11.5 MiB, at the same point as when opened without `parent=` |
 | `max_ratio=100`; outer ZIP of 1 MiB whose deflated members are inner `.tar.gz` archives at 90:1, together 90 MiB; each inner, decoding 90:1, opened with `parent=outer` from a copy | Every inner archive is within its own ratio; a read raises `ResourceLimitError` naming `max_ratio` and the nest (always-stop) once the nest's sum passes 100 MiB, plus at most one read |
+| The same, each inner opened with a config whose `ratio_activation_threshold` is far above the root's | Refused as in the row above: the nest ratio's floor is the lower of the two |
 | The same inner archive, outer opened from a directory | Inner held to its own ratio only; no nest ratio |
 | `ListingLimits(max_members=5)`, outer of 3 members, listed; inner opened with `parent=` holding 3 | The inner listing raises `ResourceLimitError` naming `max_members=5` at its third member |
 | The same, inner opened without `parent=` | Lists all 3: a separate nest |
