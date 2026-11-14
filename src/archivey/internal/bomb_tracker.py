@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.nesting import NestDraws
     from archivey.internal.streams.streamtools.readahead import _ReadsAhead
     from archivey.types import ArchiveMember
 
@@ -128,6 +129,8 @@ class BombTracker:
         self._compressed_source_size = (
             source.compressed_source_size if source is not None else None
         )
+        # The reader's draws on its nest, which counts this extraction as one pass.
+        self._nest = getattr(source, "_nest", None)
         self._max_entries = max_entries
         self._entry_count = 0
         self._total_bytes = 0  # decoded output, cumulative across all members
@@ -321,6 +324,10 @@ class BombTracker:
         )
         if refusal is not None:
             raise AlwaysStopResourceLimitError(refusal + detail)
+        if self._nest is not None:
+            # This extraction's output is one pass over the archive: the nest ratio
+            # counts the most any one pass decoded.
+            self._nest.report_pass(output)
 
 
 # How far a forward seek moves the decoder before the guard checks again. A codec
@@ -503,6 +510,7 @@ class DecodeRatioGuard(_RatioGuard):
         consumed: Callable[[], int | None] | None,
         tally: ReadRatioTally | None = None,
         key: int = 0,
+        nest: NestDraws | None = None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
@@ -510,6 +518,7 @@ class DecodeRatioGuard(_RatioGuard):
         self._consumed = consumed
         self._tally = tally
         self._key = key
+        self._nest = nest
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
@@ -531,6 +540,8 @@ class DecodeRatioGuard(_RatioGuard):
             raise AlwaysStopResourceLimitError(
                 f"{refusal} ({position} bytes of the archive decoded)"
             )
+        if self._nest is not None:
+            self._nest.report_pass(position)
 
 
 class ReadRatioTally:
@@ -595,9 +606,11 @@ class MemberRatioGuard(_RatioGuard):
         tally: ReadRatioTally,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
+        nest: NestDraws | None = None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
+        self._nest = nest
         self._member_name = member.name
         self._compressed_size = member.compressed_size
         # Never decoded past: the member's recorded size bounds a seek's gap.
@@ -737,3 +750,5 @@ class MemberRatioGuard(_RatioGuard):
                 f"{refusal} ({total} bytes of member data read)",
                 member_name=self._member_name,
             )
+        if self._nest is not None:
+            self._nest.report_pass(total)

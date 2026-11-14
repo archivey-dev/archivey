@@ -6055,11 +6055,11 @@ class RarReader(BaseArchiveReader):
     def _drawing_solid_prefix(
         self, member: ArchiveMember, spawn: Callable[[], BinaryIO]
     ) -> Callable[[], BinaryIO]:
-        """``spawn``, drawing from the config's budget the solid prefix each run
+        """``spawn``, drawing from the reader's budget the solid prefix each run
         decodes and does not emit (:meth:`_solid_run`), before the process starts:
         the pipe's own bytes are drawn as they are read, the prefix is not. A prefix
         that does not fit is refused, drawing nothing, before any process runs."""
-        budget = self._config.budget
+        budget = self._nest
         run = self._solid_run(member) if budget is not None else None
         if budget is None or run is None or run.offset <= 0:
             return spawn

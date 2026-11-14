@@ -183,7 +183,12 @@ from archivey.internal.naming import (
     normalize_hardlink_target,
     resolve_link_target_name,
 )
-from archivey.internal.nesting import enclosing_reader
+from archivey.internal.nesting import (
+    NestAccount,
+    NestDraws,
+    enclosing_reader,
+    take_joining_parent,
+)
 from archivey.internal.open_site import OpenSite
 from archivey.internal.password import is_unverified_data_error
 from archivey.internal.password_confirm import UnverifiedPasswordReadWatch
@@ -821,9 +826,30 @@ class BaseArchiveReader(ArchiveReader):
         # (``ReaderContext.open_nested``) knows its depth from the start, so the checks
         # its open makes already skip what the outer listing checks.
         self._nested_depth = self._diagnostics_collector.nesting_depth
-        # The reader this one reads inside, or ``None`` at the top: the readers of one
-        # nest share their budgets (``archivey.internal.nesting``).
+        # The nest this reader belongs to (``archivey.internal.nesting``). The reader
+        # this one reads inside through ``ReaderContext.open_nested``, which shares
+        # more of its limits, or ``None``:
         self._nest_outer: BaseArchiveReader | None = enclosing_reader()
+        # The reader the caller named with ``open_archive(parent=)``, or ``None``:
+        self._nest_parent: BaseArchiveReader | None = (
+            take_joining_parent() if self._nest_outer is None else None
+        )
+        up = self._nest_outer if self._nest_outer is not None else self._nest_parent
+        # How many archives sit above this one in its nest, both kinds counted.
+        self._nest_level: int = 0 if up is None else up._nest_level + 1
+        # The nest's outermost reader, whose config sets the nest's totals.
+        self._nest_root: BaseArchiveReader = self if up is None else up._nest_root
+        account = (
+            NestAccount(self._trusted_source_size) if up is None else up._nest.account
+        )
+        # This reader's draws on the nest's totals, under the stricter of the
+        # outermost reader's config and its own.
+        self._nest: NestDraws = NestDraws(
+            account,
+            root=self._nest_root._config,
+            own=self._config,
+            judges_ratio=self._nest_outer is None,
+        )
         self._member_streams = member_streams
         self._open_site = open_site
         # A random, opaque identity token (not id(self), which the allocator can reuse
@@ -923,18 +949,20 @@ class BaseArchiveReader(ArchiveReader):
         self._materialized: _Materialized | None = None
         self._listing_tracker = ListingLimitTracker(
             self._config.listing_limits,
-            budget=self._config.budget,
+            # A reader ``open_nested`` builds draws no members: they reach the
+            # outermost listing as its members, and it draws them.
+            budget=self._nest if self._nest_outer is None else None,
             outer=None
             if self._nest_outer is None
             else self._nest_outer._listing_tracker,
         )
         # What one listing pass decodes (``ListingLimits.max_decoded_bytes``), and what
-        # a decode stage draws from: that and the config's budget (``_budget_drawn``).
+        # a decode stage draws from: that and the reader's budget (``_budget_drawn``).
         decode_cap = self._config.listing_limits.max_decoded_bytes
         self._listing_decode = (
             ListingDecodeCount(decode_cap) if decode_cap is not None else None
         )
-        self._stage_draws = StageDraws.of(self._config.budget, self._listing_decode)
+        self._stage_draws = StageDraws.of(self._nest, self._listing_decode)
         # How close this reader came to each reader-lifetime limit (private; read by
         # the scan script and ``archivey extract --dry-run``).
         self._usage = ResourceUsageRecorder()
@@ -1502,8 +1530,16 @@ class BaseArchiveReader(ArchiveReader):
     # --- Decompression-ratio limits on the streams the caller reads -------------------
 
     def _ratio_limits(self) -> DecoderLimits:
-        """The ratio fields this reader's decodes are held to."""
-        return self._config.decoder_limits
+        """The ratio fields this reader's decodes are held to: its config's, with
+        ``max_ratio`` the stricter of its own and the nest's where the nest ratio
+        judges it (a child cannot loosen it, and its guards report to the nest)."""
+        limits = self._config.decoder_limits
+        nest_ratio = self._nest.max_ratio
+        if nest_ratio is not None and (
+            limits.max_ratio is None or nest_ratio < limits.max_ratio
+        ):
+            return replace(limits, max_ratio=nest_ratio)
+        return limits
 
     def _hold_to_ratio(
         self,
@@ -1539,6 +1575,7 @@ class BaseArchiveReader(ArchiveReader):
             # by the outer ratio guard where it is compressed. It still counts toward
             # the archive-wide total, in full, for the members a guard does judge.
             total = tally.advance(key, member.size)
+            self._nest.report_pass(total)
             if counted_as is not member:
                 # A link to it, or a copy: its bytes are handed out again, past what
                 # the archive stream decodes, so no other guard sees them. Judged here,
@@ -1559,6 +1596,7 @@ class BaseArchiveReader(ArchiveReader):
                 tally=tally,
                 static_size=static_size,
                 consumed=consumed,
+                nest=self._nest,
             )
         )
 
@@ -1609,11 +1647,11 @@ class BaseArchiveReader(ArchiveReader):
         self, stream: BinaryIO, *, draw_budget: bool = True
     ) -> BinaryIO:
         """Wrap ``stream`` to count decoded/output bytes when measurement is on, and to
-        draw them from the config's :class:`~archivey.Budget` when it holds one.
+        draw them from the reader's nest account (``_nest``).
 
         Backends call this on the stream that *is* the decompressor (or stored-data)
         output: member streams for ZIP/TAR/single-file, folder/solid-block streams for
-        solid 7z/RAR. Identity when measurement is off and there is no budget.
+        solid 7z/RAR.
 
         ``draw_budget=False`` counts without drawing, for member data a decode stage
         below already draws (:meth:`_budget_drawn`): a compressed TAR's members, whose
@@ -1633,8 +1671,8 @@ class BaseArchiveReader(ArchiveReader):
         return stream
 
     def _budget_drawn(self, stream: BinaryIO, *, stage: bool = False) -> BinaryIO:
-        """``stream``, drawing every byte it delivers from the config's
-        :class:`~archivey.Budget`, or ``stream`` itself when there is none.
+        """``stream``, drawing every byte it delivers from the reader's
+        nest account (:class:`~archivey.internal.nesting.NestDraws`).
 
         Put on a decode stage, it draws what the decoder produces whoever reads it: a
         member's reads, and the bytes of members skipped on the way to another.
@@ -1644,8 +1682,12 @@ class BaseArchiveReader(ArchiveReader):
         (``_stage_draws``), which counts only while listing work runs, so a caller's
         own reads between walk steps do not count.
         """
-        budget = self._stage_draws if stage else self._config.budget
-        if budget is None:
+        budget = self._stage_draws if stage else self._nest
+        if budget is None or (
+            isinstance(budget, NestDraws) and budget.max_decoded_bytes is None
+        ):
+            # No byte cap to judge: the nest's members and ratio draw elsewhere, and
+            # a layer that only counts would cost every read.
             return stream
         # Imported here, as the other wrappers built only on request.
         from archivey.internal.streams.counting import BudgetDrawStream
@@ -1874,7 +1916,7 @@ class BaseArchiveReader(ArchiveReader):
         records none, or records one that cannot be trusted (a macOS ZIP's size
         modulo 2³²).
 
-        ``draw_budget=False`` leaves the config's :class:`~archivey.Budget` to a decode
+        ``draw_budget=False`` leaves the reader's nest account to a decode
         stage below ``inner`` that draws every byte it produces (``_budget_drawn``),
         so the member's bytes are not drawn twice.
 
@@ -4198,6 +4240,7 @@ class BaseArchiveReader(ArchiveReader):
             limits=limits,
             static_size=self._trusted_source_size(),
             consumed=self._live_consumed(),
+            nest=self._nest,
         )
 
     # --- Public API: listing ----------------------------------------------------------

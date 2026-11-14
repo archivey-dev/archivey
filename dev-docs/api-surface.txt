@@ -178,9 +178,8 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, budget: Budget | None = None, recover_partial_data: bool = True) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO, process_isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: bool = True) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
-field archivey.ArchiveyConfig.budget: Budget | None = None
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
 field archivey.ArchiveyConfig.diagnostic_policy: DiagnosticPolicy = <factory>
@@ -213,12 +212,6 @@ field archivey.BackendUse.kind: BackendKindStr
 field archivey.BackendUse.name: str
 field archivey.BackendUse.path: str | None = None
 field archivey.BackendUse.used_for: str
-class archivey.Budget()
-init archivey.Budget(*, max_decoded_bytes: int | None = None, max_members: int | None = None) -> None
-property archivey.Budget.decoded_bytes: int
-property archivey.Budget.max_decoded_bytes: int | None
-property archivey.Budget.max_members: int | None
-property archivey.Budget.members: int
 class archivey.CompressionAlgorithm(Enum)
 open-enum archivey.CompressionAlgorithm
 value archivey.CompressionAlgorithm.STORED = 'stored'
@@ -306,10 +299,11 @@ value archivey.CreateSystem.OS_X_DARWIN = 19
 value archivey.CreateSystem.UNKNOWN = 255
 constant archivey.DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig(...)
 class archivey.DecoderLimits()
-init archivey.DecoderLimits(max_decoder_memory: int | None = 2147483648, max_key_derivation_rounds: int | None = 33554432, max_ppmd_held_input: int | None = 16777216, max_ratio: float | None = 800.0, ratio_activation_threshold: int = 5242880, live_ratio_activation_threshold: int = 268435456) -> None
+init archivey.DecoderLimits(max_decoder_memory: int | None = 2147483648, max_key_derivation_rounds: int | None = 33554432, max_ppmd_held_input: int | None = 16777216, max_ratio: float | None = 800.0, ratio_activation_threshold: int = 5242880, live_ratio_activation_threshold: int = 268435456, max_nest_decoded_bytes: int | None = None) -> None
 field archivey.DecoderLimits.live_ratio_activation_threshold: int = 268435456
 field archivey.DecoderLimits.max_decoder_memory: int | None = 2147483648
 field archivey.DecoderLimits.max_key_derivation_rounds: int | None = 33554432
+field archivey.DecoderLimits.max_nest_decoded_bytes: int | None = None
 field archivey.DecoderLimits.max_ppmd_held_input: int | None = 16777216
 field archivey.DecoderLimits.max_ratio: float | None = 800.0
 field archivey.DecoderLimits.ratio_activation_threshold: int = 5242880
@@ -663,7 +657,7 @@ function archivey.detect_format(source: SourceItem, *, config: ArchiveyConfig | 
 function archivey.format_availability(fmt: ArchiveFormat | str, *, check_programs: bool = True, config: ArchiveyConfig | None = None) -> FormatAvailability
 function archivey.list_known_formats() -> list[ArchiveFormat]
 function archivey.list_supported_formats(*, config: ArchiveyConfig | None = None) -> list[ArchiveFormat]
-function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None) -> ForwardArchiveReader
+function archivey.open_archive(source: OpenSourceInput, *, format: ArchiveFormat | str | None = None, streaming: bool = False, seekable_members: bool = False, concurrent_operations: bool = False, password: PasswordInput = None, encoding: str | None = None, config: ArchiveyConfig | None = None, parent: ForwardArchiveReader | None = None) -> ForwardArchiveReader
 function archivey.open_stream(source: SourceItem, *, format: StreamFormat | PluginStream | ArchiveFormat | str | None = None, seekable: bool = False, config: ArchiveyConfig | None = None) -> ArchiveStream
 function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
 module archivey.detection_cost

@@ -135,8 +135,8 @@ archivey refuses a member that decodes to more than 800 times its compressed siz
 member below that ratio is still read whole. `member.size` gives the size in advance, though some
 formats leave it unset. [Where the guarantees stop](security.md#where-the-guarantees-stop)
 
-**Create a new `Budget` for each upload or request.** A `Budget` is a total for one job. It
-counts every byte decoded by every reader that uses its config, nested archives included, and it
-counts a byte again each time a re-read decodes it again. It never refills, so once it's spent, the
-next read that decodes anything raises `ResourceLimitError`, in any reader that uses that config.
-[Hardening](security.md#hardening)
+**Open an archive found inside another with `parent=`.** Pass the reader it came from, as in
+`open_archive(inner, parent=outer)`, and every level counts against one set of totals: one
+`max_members`, `max_ratio` times the outermost archive's size, and `max_nest_decoded_bytes` if you
+set it. A reader opened without `parent=` shares nothing with any other reader, so one config can
+serve every request. [Hardening](security.md#hardening)
