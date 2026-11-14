@@ -244,6 +244,27 @@ def test_a_member_whose_data_ends_early_raises_and_closes_its_stream() -> None:
     assert stream.closed
 
 
+class _ResetSource(BytesIO):
+    def read(self, size: int | None = -1, /) -> bytes:
+        raise ConnectionResetError("the peer reset the connection")
+
+
+def test_a_failed_source_read_in_volume_1_raises_its_own_error() -> None:
+    """``start_rolling_unrar`` writes volume 1 itself: a source ``OSError`` there is
+    raised as it is, not as the wrapper that carries it out of the volume write."""
+    member = rs.SyntheticMember(
+        header=_rar5_header(10), data=lambda: [(_ResetSource(), 10)], data_size=10
+    )
+    volumes = rl.RollingVolumes(5, [member], solid=False, volume_bytes=1000)
+    try:
+        with pytest.raises(ConnectionResetError, match="peer reset"):
+            rl.start_rolling_unrar(
+                volumes, password=None, member=None, version_control=False, rar5=True
+            )
+    finally:
+        volumes.close()
+
+
 def test_a_non_last_part_carries_no_checksum() -> None:
     """RAR5: the part split after drops its CRC32 and hash record; the last part
     keeps the member's header. RAR 1.5-4: FILE_CRC 0xFFFFFFFF on the first part."""

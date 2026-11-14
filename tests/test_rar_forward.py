@@ -352,6 +352,38 @@ def test_an_owner_after_a_split_member_is_reported_missing(size: int) -> None:
         assert DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED in codes
 
 
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_an_owner_arriving_while_its_member_is_built_is_kept_or_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The walk attaches a ``UOW`` on its own thread, which may be while the caller's
+    thread builds the member. Each member has its owner or the diagnostic saying it
+    is missing, never neither. A pause after each member is built widens the window
+    the walk lands in."""
+    real = rar_forward_reader.RarForwardReader._list_member
+
+    def slow(self: rar_forward_reader.RarForwardReader, found: object) -> object:
+        member = real(self, found)  # type: ignore[arg-type]
+        time.sleep(0.3)
+        return member
+
+    monkeypatch.setattr(rar_forward_reader.RarForwardReader, "_list_member", slow)
+    data = _owner_archive(*(30_000,) * 5)
+    members = []
+    with open_archive(_pipe(data), streaming=True, config=_config()) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+            members.append(member)
+    assert len(members) == 5
+    for member in members:
+        reported = DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED in [
+            d.code for d in member.diagnostics
+        ]
+        assert (member.uname == "root") != reported, member.name
+
+
 class _StallingStream(io.RawIOBase):
     """A non-seekable source that gives ``data[:stall_at]``, then blocks until
     ``release`` is set, then ends."""
@@ -385,13 +417,14 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
     volumes_made: list[rl.RollingVolumes],
 ) -> None:
     """The thread that writes the volumes reads the caller's source: closing stops
-    waiting for it, and the thread removes the volumes once its read returns."""
+    waiting for it (and for ``unrar``, which waits on a volume prompt), and the thread
+    removes the volumes once its read returns. Until then the caller's own close of
+    the source waits for that read, as the docs say."""
     data = _owner_archive(30_000, 30_000, 30_000, 30_000)
     source = _StallingStream(data, int(len(data) * 0.8))
+    buffered = io.BufferedReader(source)
     try:
-        reader = open_archive(
-            io.BufferedReader(source), streaming=True, config=_config()
-        )
+        reader = open_archive(buffered, streaming=True, config=_config())
         it = reader.stream_members()
         for _ in range(2):
             _member, stream = next(it)
@@ -403,9 +436,15 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
         started = time.monotonic()
         it.close()
         reader.close()
-        assert time.monotonic() - started < 10
+        assert time.monotonic() - started < 4
+        closer = threading.Thread(target=buffered.close)
+        closer.start()
+        closer.join(1)
+        assert closer.is_alive()  # the read the thread is blocked in holds the lock
     finally:
         source.release.set()
+    closer.join(10)
+    assert not closer.is_alive()
     (volumes,) = volumes_made
     deadline = time.monotonic() + 10
     while volumes.dir.exists() and time.monotonic() < deadline:

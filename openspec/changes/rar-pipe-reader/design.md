@@ -123,10 +123,10 @@ on the caller's thread. A member is queued once the walk has read the next heade
 RAR 1.5-4 `UOW` or `CMT` service header after it reaches it, or when the volume holding
 its first part is written, whichever comes first: a member split across volumes must be
 listed before `unrar` prints it. Such a member misses a `UOW` or `CMT` after it, and is
-given `MEMBER_HEADER_RECORD_SKIPPED` when the walk reads one. The demultiplexing is the
-solid pass's (`plan`, `pipe_offset`, per-member digest and size checks), fed from that
-queue instead of `_listed_members()` of a full list. Stored members go through `unrar`
-too: one data path, and `unrar` already prints them in order.
+given `MEMBER_HEADER_RECORD_SKIPPED` once the next member is listed or the pass ends.
+The demultiplexing is the solid pass's (`plan`, `pipe_offset`, per-member digest and
+size checks), fed from that queue instead of `_listed_members()` of a full list. Stored
+members go through `unrar` too: one data path, and `unrar` already prints them in order.
 
 No deadlock: before it waits on the queue, the caller reads past `unrar`'s output of the
 members it has been given (`SolidBlockReader.skip_to`), and every member whose output

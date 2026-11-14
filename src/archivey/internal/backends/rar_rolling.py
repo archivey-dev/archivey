@@ -621,11 +621,18 @@ def start_rolling_unrar(
     ``opener`` is that function, or the caller's name for it.
 
     The caller owns the process (stop it, then :meth:`VolumeFeeder.join`) and closes
-    ``volumes`` after it.
+    ``volumes`` after it. A failed read of the source while volume 1 is written
+    raises the source's ``OSError`` as it is.
     """
     if volumes.count > 1:
         raise ValueError("unrar starts on the first volume, which has been removed")
-    first = volumes.path(1) if volumes.count else volumes.write_next()
+    if volumes.count:
+        first = volumes.path(1)
+    else:
+        try:
+            first = volumes.write_next()
+        except SourceReadError as exc:
+            raise exc.cause from None
     proc, stdout = opener(
         first,
         password=password,

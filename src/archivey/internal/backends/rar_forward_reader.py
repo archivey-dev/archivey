@@ -422,6 +422,16 @@ class _ForwardUnrarStream(_RollingUnrarStream):
     @override
     def close(self) -> None:
         self._fpass.stopping = True
+        if not self.closed:
+            # ``unrar`` may be waiting for the answer to a volume prompt that the
+            # thread, blocked on the source, has not sent. It does not stop for a
+            # terminate signal there, but it exits at the end of its input.
+            stdin = self._proc.stdin
+            if stdin is not None:
+                try:
+                    stdin.close()
+                except (OSError, ValueError):
+                    pass
         super().close()
 
 
@@ -684,7 +694,8 @@ class RarForwardReader(RarReader):
             yield from self._iter_members_without_data()
             return
         # The member listed last when the pass released it early, with what its
-        # header had then: ``(member, owner, comment, skipped records)``.
+        # parsed header held just before the member was built from it:
+        # ``(member, owner, comment, skipped records)``.
         early: tuple[ArchiveMember, object, object, object] | None = None
         while True:
             item = fpass.next_found()
@@ -695,10 +706,14 @@ class RarForwardReader(RarReader):
             if isinstance(item, _End):
                 self._finish_walk(item.error)
                 return
-            member = self._list_member(item)
             raw = item.member
+            # Taken before the member is built: the walk may attach a record to ``raw``
+            # on its own thread while the member is being built, and the report then
+            # checks the member, not this snapshot (``_report_late_records``).
+            before = (raw.owner, raw.comment, raw.skipped_header_records)
+            member = self._list_member(item)
             if id(raw) in fpass.early:
-                early = (member, raw.owner, raw.comment, raw.skipped_header_records)
+                early = (member, *before)
             yield member
 
     def _report_late_records(
@@ -710,13 +725,25 @@ class RarForwardReader(RarReader):
     ) -> None:
         """Report a RAR 1.5-4 ``UOW`` or ``CMT`` header the walk read after
         ``member`` was listed; ``owner``, ``comment`` and ``skipped`` are what its
-        parsed header held when it was."""
+        parsed header held just before the member was built.
+
+        A record that arrived while the member was being built may be in it already,
+        so a changed header is reported only when the member lacks what it adds. A
+        ``UOW`` header that named no owner adds only a skipped record, which is
+        reported whenever it changed.
+        """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         late = []
-        if raw.owner is not owner or raw.skipped_header_records is not skipped:
+        new_owner = raw.owner
+        if (
+            new_owner is not owner
+            and new_owner is not None
+            and (member.uname, member.gname, member.uid, member.gid)
+            != (new_owner.uname, new_owner.gname, new_owner.uid, new_owner.gid)
+        ) or (raw.skipped_header_records is not skipped and new_owner is None):
             late.append((RAR3_UOW_NAME, "owner"))
-        if raw.comment is not comment:
+        if raw.comment is not comment and member.comment is None:
             late.append(("CMT", "comment"))
         for record, what in late:
             reason = (
@@ -781,7 +808,12 @@ class RarForwardReader(RarReader):
     def _list_member(self, found: ForwardMember) -> ArchiveMember:
         """The member the walk found, typed and priced, as it is listed."""
         raw = found.member
-        raw.comment = self._resolve_rar3_comment(raw.comment)
+        comment = raw.comment
+        resolved = self._resolve_rar3_comment(comment)
+        if resolved is not comment:
+            # Only when it changes: the walk may set a comment that arrived late on
+            # its own thread, which an assignment here could overwrite.
+            raw.comment = resolved
         if self._archive.is_solid and self._seen_encrypted:
             self._behind_encryption.add(id(raw))
         if raw.is_encrypted or raw.encryption_unknown:

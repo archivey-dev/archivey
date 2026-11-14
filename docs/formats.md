@@ -853,11 +853,15 @@ The members and their bytes are the same as from a file, except where a pipe can
   the members after it are read as from a file.
 - A member cut short raises `TruncatedError` when the source ends within the 4 MiB archivey reads
   ahead of it. A longer member cut short raises `CorruptionError` instead.
-- A member larger than one volume is listed before archivey has read the header after it. A
-  RAR 1.5-4 owner (`rar -ow`) or file comment stored in that header is then missing from the
-  member, which carries a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic saying so.
-- Closing the reader doesn't wait for a source that has stopped sending. The thread reading it
-  removes the temporary volumes when its read returns.
+- A member split across two of those volumes is listed before archivey has read the header after
+  it. A RAR 1.5-4 owner (`rar -ow`) or file comment stored in that header is then missing from the
+  member. The member gets a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic saying so once the next
+  member is listed, or the pass ends, so check `member.diagnostics` after the loop.
+- Closing the reader doesn't wait for a source that has stopped sending, but a read of the source
+  may still be pending afterwards, on the thread that writes the volumes. Closing or reading the
+  source then waits for that read to return, and the thread removes the temporary volumes when it
+  does. To bound the wait on a socket, give it a timeout, or call `shutdown()` on it before you
+  close it.
 - A volume set, `rar_decompressor="unar"` and a missing or older `unrar` raise
   `StreamNotSeekableError` at open, naming the fix: a seekable source, or `unrar` 7.00.
 

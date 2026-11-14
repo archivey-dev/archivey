@@ -1190,7 +1190,9 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   the volume holding its first part is written, whichever is first: a member split
   across volumes is listed before `unrar` prints it, so the caller can drain it. Such a
   member misses a `UOW` or `CMT` after it, and is given `MEMBER_HEADER_RECORD_SKIPPED`
-  when the walk reaches one (`_report_late_records`). While
+  when the next member is listed or the pass ends (`_report_late_records`). The walk can
+  attach the record on its own thread while the caller builds the member, so the
+  snapshot is taken before the build and the report checks the member itself. While
   waiting for the next member, the caller reads past `unrar`'s output of the members it
   was given, so `unrar` never blocks on a full pipe while the walk waits for its prompt.
 - **Listing without a pass** (`members_report()`) walks with the data skipped and writes
@@ -1205,11 +1207,14 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   is refused as `TruncatedError` when the source ends inside the 4 MiB the forward
   source reads ahead; a longer one is padded with zeros so the members before it in its
   volume still decode, and fails its own digest check.
-- **Closing** sets a flag the walk checks before each read of the source, and waits
-  only a second for the feeder thread: it reads the caller's source, which may never
-  answer. A thread still blocked then removes the volumes when its read returns
-  (`VolumeFeeder.close_after`). An `OSError` reading the source reaches the caller as it
-  is (`SourceReadError` carries it out of the volume write).
+- **Closing** sets a flag the walk checks before each read of the source, closes
+  `unrar`'s stdin (it ignores a terminate signal while it waits for a volume prompt's
+  answer, but exits at the end of its input), and waits up to a second for the feeder
+  thread: it reads the caller's source, which may never answer. A thread still blocked
+  then removes the volumes when its read returns (`VolumeFeeder.close_after`). That read
+  holds the source's own lock, so the caller's close of a buffered source waits for it
+  too; the user docs say how to bound that wait. An `OSError` reading the source reaches
+  the caller as it is (`SourceReadError` carries it out of the volume write).
 - **A RAR 1.5-4 symlink's target** is its data: up to 64 KiB of it is kept as the walk
   passes it, for `_ensure_link_target`.
 
