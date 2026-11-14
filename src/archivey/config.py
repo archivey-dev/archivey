@@ -662,7 +662,9 @@ class DecoderLimits:
     Every decode of member data is held to it: ``open()``, ``read()``,
     ``stream_members()`` and ``extract_all``, and for a container inside a compression
     stream (a ``.tar.gz``, a format handler's ``.cpio.xz``) listing too, since listing
-    one decodes all of it. Two checks, each from the decoded output:
+    one decodes all of it. The stream :func:`~archivey.open_stream` returns is held
+    too, against the size of its source, by the archive-wide check alone. Two checks,
+    each from the decoded output:
 
     - **Per member**, against the member's recorded compressed size. A member over it
       fails on its own: a read of it raises

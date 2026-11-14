@@ -32,6 +32,7 @@ archive container.
 from __future__ import annotations
 
 import errno
+import io
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -145,9 +146,13 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from archivey.config import DecoderLimits
     from archivey.formats import FormatHandler
     from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 __all__ = [
     "DEFAULT_ARCHIVEY_CONFIG",
@@ -1309,7 +1314,10 @@ def open_stream(
         StreamNotSeekableError: ``seekable=True`` and the source cannot seek.
         ResourceLimitError: The stream asks a decoder for more memory than
             :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
-            stream that starts the decoder.
+            stream that starts the decoder; or it decodes past
+            ``DecoderLimits.max_ratio`` of the compressed bytes, raised by the read or
+            seek that crosses it, as a member read of the same bytes through
+            :func:`open_archive` is.
         UnsupportedFeatureError: ``config.formats`` does not allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
             installed.
@@ -1474,7 +1482,7 @@ def _open_stream_from_source(
         # What has arrived, one read of the source per feed, as the readers feed a
         # codec (``BaseArchiveReader._codec_input``).
         codec_source = OneReadEachStream(cast("BinaryIO", codec_input.arrived_view()))
-    return open_codec_stream(
+    stream = open_codec_stream(
         codec,
         codec_source,
         config=stream_config,
@@ -1482,6 +1490,78 @@ def _open_stream_from_source(
         seekable=seekable and source_is_seekable,
         on_close=codec_input.close,
     )
+    _hold_stream_to_ratio(stream, codec_input, effective_config.decoder_limits)
+    return stream
+
+
+def _hold_stream_to_ratio(
+    stream: ArchiveStreamImpl, codec_input: ArchiveSource, limits: DecoderLimits
+) -> None:
+    """Hold the decoded stream to ``limits.max_ratio`` of the compressed bytes, as a
+    member read of the same bytes through :func:`open_archive` is held (DR-9).
+
+    The denominator is the compressed length, found as a member read of the same bytes
+    finds it (``SingleFileReader._probe_compressed_size``), in this order:
+
+    - the source's size hint;
+    - else, on a source whose seeks are cheap, one ``SEEK_END``, on a fresh handle for
+      a path and with the position restored for a stream. A block device is the path
+      that needs it: it has no ``stat`` size, and the codec opens the path itself, so
+      nothing would count the bytes it reads;
+    - else the bytes the codec has taken, judged live as for ``open_archive`` on a
+      pipe: the furthest offset reached on a source whose seek may re-decode or that
+      refuses ``SEEK_END``, and the bytes pulled from a pipe.
+    """
+    if limits.max_ratio is None:
+        return
+    # Imported here: the guard module imports reader-side modules at load.
+    from archivey.internal.bomb_tracker import DecodeRatioGuard
+
+    static_size: int | None = None
+    consumed: Callable[[], int | None] | None = None
+    if codec_input.seekable() or codec_input.seek_is_expensive:
+        static_size = codec_input.size_hint
+    if static_size is None and codec_input.seekable():
+        if codec_input.seek_is_expensive:
+            # A seek to the end could decode a whole member; count what the codec
+            # reads from this source instead (it reads this source: only a path goes
+            # to the codec as a path, and a path is never an expensive seek).
+            consumed = lambda: codec_input.bytes_reached  # noqa: E731
+        else:
+            static_size = _seek_end_length(codec_input)
+            if static_size is None:
+                # Refused SEEK_END. A regular file or a block device answers it, so a
+                # path does not get here, where this count would see nothing.
+                consumed = lambda: codec_input.bytes_reached  # noqa: E731
+    elif static_size is None:
+        consumed = lambda: codec_input.bytes_pulled  # noqa: E731
+    stream._hold_inner(
+        lambda inner: DecodeRatioGuard(
+            inner,
+            limits=limits,
+            static_size=static_size,
+            consumed=consumed,
+            holds_errors=False,
+            counted="the stream decoded",
+        )
+    )
+
+
+def _seek_end_length(source: ArchiveSource) -> int | None:
+    """The absolute end offset of a source whose seeks are cheap, or ``None`` when it
+    refuses the seek. A path is measured on a handle of its own; a stream's position
+    is restored, since the codec may already be reading it."""
+    try:
+        if source.path is not None:
+            with open(source.path, "rb") as f:
+                return f.seek(0, io.SEEK_END)
+        pos = source.tell()
+        try:
+            return source.seek(0, io.SEEK_END)
+        finally:
+            source.seek(pos)
+    except OSError:
+        return None
 
 
 def _resolve_stream_format(
