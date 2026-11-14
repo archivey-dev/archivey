@@ -110,8 +110,8 @@ _STDERR_TAIL = 4096
 # The width of a volume number in a volume name. ``unrar`` increments the number
 # in place, keeping the width (``NextVolumeName``), so every name is known ahead.
 _NUMBER_WIDTH = 6
-# Any ``unrar`` question shows its answers as ``[C]ontinue, [Q]uit``: a letter in
-# brackets. Only the next-volume prompt is answered; any other question stops unrar.
+# Any other ``unrar`` question shows its answers as ``[R]etry, [A]bort``: a letter in
+# brackets. It stops unrar, whose default answer to a read error is *Retry*.
 _QUESTION = re.compile(rb"\[[^\]\s]\]")
 
 
@@ -432,12 +432,13 @@ _O_BINARY = getattr(os, "O_BINARY", 0)
 class VolumeFeeder:
     """Answer ``unrar -vp``'s next-volume prompts from a thread, writing each volume.
 
-    The thread reads ``unrar``'s stderr. When the name of the volume after the one
-    on disk appears there, it writes that volume (:meth:`RollingVolumes.write_next`)
-    and answers with an empty line; after the last volume it closes stdin, so any
-    later question ends ``unrar`` (it exits on end of input). Any other question
-    (a bracketed answer letter without the expected name) stops ``unrar``: its
-    default answer to a read error is *Retry*, which would ask again forever.
+    The thread reads ``unrar``'s stderr. When the name of the volume after the one on
+    disk appears there, whatever words surround it, it writes that volume
+    (:meth:`RollingVolumes.write_next`) and answers with an empty line; after the last
+    volume it closes stdin, so any later question ends ``unrar`` (it exits on end of
+    input). Any other question (a bracketed answer letter without the expected name)
+    stops ``unrar``: its default answer to a read error is *Retry*, which would ask
+    again forever.
 
     A failure while writing a volume (the source ends early, a disk error) stops
     ``unrar`` too, and is kept in :attr:`error` for the reader to raise in place of
@@ -489,7 +490,10 @@ class VolumeFeeder:
                 if self._volumes.finished:
                     continue
                 expected = self._expected()
-                if expected in seen and _QUESTION.search(seen, seen.index(expected)):
+                # The name alone is the prompt: with ``-idq`` unrar prints the next
+                # volume's name only when it asks for it, and a translated unrar
+                # may word the question and its answer letters differently.
+                if expected in seen:
                     try:
                         self._volumes.write_next()
                     except ArchiveyError as exc:
@@ -511,7 +515,7 @@ class VolumeFeeder:
                             stdin.close()
                     except (BrokenPipeError, OSError):
                         return  # unrar exited; its status says why
-                elif _QUESTION.search(seen) and expected not in seen:
+                elif _QUESTION.search(seen):
                     self._stop(
                         ReadError(
                             "unrar asked a question archivey does not answer while "

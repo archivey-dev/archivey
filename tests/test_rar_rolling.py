@@ -22,7 +22,6 @@ import pytest
 from archivey import ArchiveyConfig, SpoolLimits, open_archive
 from archivey.exceptions import (
     ArchiveyError,
-    CorruptionError,
     ReadError,
     ResourceLimitError,
     TruncatedError,
@@ -147,8 +146,9 @@ def _member(header: bytes, data: bytes) -> rs.SyntheticMember:
     )
 
 
-def _rar5_header(size: int) -> bytes:
-    """A RAR5 FILE header for a stored member of ``size`` bytes with a CRC32."""
+def _rar5_header(size: int, extra: bytes = b"") -> bytes:
+    """A RAR5 FILE header for a stored member of ``size`` bytes with a CRC32, and
+    ``extra`` as its extra area."""
     fields = (
         rs._vint(0x04)  # file flags: CRC32 present
         + rs._vint(size)
@@ -159,9 +159,17 @@ def _rar5_header(size: int) -> bytes:
         + rs._vint(1)
         + b"m"
     )
-    return rs._rar5_block(
-        rs._vint(2) + rs._vint(rs._RAR5_FLAG_DATA) + rs._vint(size) + fields
-    )
+    flags = rs._RAR5_FLAG_DATA
+    sizes = rs._vint(size)
+    if extra:
+        flags |= rl._RAR5_FLAG_EXTRA
+        sizes = rs._vint(len(extra)) + sizes
+    return rs._rar5_block(rs._vint(2) + rs._vint(flags) + sizes + fields + extra)
+
+
+def _extra_record(kind: int, body: bytes) -> bytes:
+    record = rs._vint(kind) + body
+    return rs._vint(len(record)) + record
 
 
 def test_volumes_hold_one_file_at_a_time_and_split_with_whole_parts() -> None:
@@ -254,6 +262,20 @@ def test_a_non_last_part_carries_no_checksum() -> None:
     assert plain.raw == header
 
 
+def test_a_non_last_rar5_part_drops_only_the_hash_record() -> None:
+    """The extra area of the part split after keeps every record but the hash
+    (BLAKE2sp); the last part keeps the hash."""
+    time = _extra_record(3, rs._vint(0x3) + b"\x01\x02\x03\x04")
+    digest = _extra_record(2, rs._vint(0) + bytes(range(32)))
+    owner = _extra_record(6, rs._vint(0x1) + rs._vint(1) + b"u")
+    header = _rar5_header(10, time + digest + owner)
+    first = rl.part_header(5, header, data_size=4, before=False, after=True)
+    last = rl.part_header(5, header, data_size=6, before=True, after=False)
+    assert first.endswith(time + owner) and digest not in first
+    assert last.endswith(time + digest + owner)
+    assert rs.parse_stored_header(5, first).split
+
+
 # --- The feeder --------------------------------------------------------------------
 
 
@@ -317,6 +339,29 @@ def test_the_feeder_answers_only_the_expected_volume() -> None:
         assert volumes.count == 2
         assert proc.stdin.getvalue() == b"\n"
         assert proc.killed and isinstance(feeder.error, ReadError)
+    finally:
+        volumes.close()
+
+
+def test_the_feeder_answers_a_translated_prompt_by_the_volume_name() -> None:
+    """A translated unrar words the prompt and its answer letters its own way, and a
+    multibyte letter is no bracketed byte: the name alone, split across reads, is
+    the prompt."""
+    data = b"z" * 10
+    volumes = rl.RollingVolumes(
+        5, [_member(_rar5_header(10), data)] * 3, solid=False, volume_bytes=80
+    )
+    try:
+        volumes.write_next()
+        proc = _FakeProc(
+            "\nIns\u00e9rez le disque /t/v.part0000".encode(),
+            "02.rar [\u00c7]ontinuer, [\u00d6]ffnen ".encode(),
+        )
+        feeder = rl.VolumeFeeder(proc, volumes)  # type: ignore[arg-type]
+        feeder.join()
+        assert volumes.count == 2
+        assert proc.stdin.getvalue() == b"\n"
+        assert not proc.killed and feeder.error is None
     finally:
         volumes.close()
 
@@ -397,16 +442,20 @@ _KINDS = ["rar5", "rar5-p", "rar4-p"]
 @requires_unrar_cli()
 @requires_binary("rar")
 @pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("over_threshold", [True, False])
 @pytest.mark.parametrize("kind", _KINDS)
 def test_a_large_member_of_a_stream_reads_through_rolling_volumes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     unrar_runs: list[dict[str, object]],
     kind: str,
+    over_threshold: bool,
 ) -> None:
-    """A member over the spool limit, read from a stream, is not refused: it is
-    fed to unrar one volume at a time, and the spool never holds more than one."""
-    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
+    """A member over the spool limit, read from a stream, is not refused, whether
+    or not it packs more than the copy threshold: it is fed to unrar one volume at
+    a time, and the spool never holds more than one."""
+    if over_threshold:
+        monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 0)
     raw, password, files = _archive(tmp_path, kind, {"big.bin": _text(150_000)})
     unrar_runs.clear()  # the fixture's own reads
     with open_archive(
@@ -470,6 +519,25 @@ def test_a_solid_pass_over_a_stream_is_one_rolling_run(
 @requires_unrar_cli()
 @requires_binary("rar")
 @pytest.mark.usefixtures("rolling_unrar")
+def test_a_small_solid_pass_over_a_stream_is_copied_whole(
+    tmp_path: Path, unrar_runs: list[dict[str, object]]
+) -> None:
+    """Packed members that fit one run are copied whole and read with one plain
+    unrar: rolling volumes would read every header again for nothing."""
+    files = {f"f{i}.bin": _text(6_000) for i in range(5)}
+    raw = _rar(tmp_path, files, "-ma5", "-s")
+    got: dict[str, bytes] = {}
+    with open_archive(BytesIO(raw), config=_config(None)) as reader:
+        for member, stream in reader.stream_members():
+            if stream is not None and member.is_file:
+                got[member.name] = stream.read()
+    assert got == files
+    assert [run.get("volume_pause", False) for run in unrar_runs] == [False]
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+@pytest.mark.usefixtures("rolling_unrar")
 def test_a_rolling_pass_closed_early_removes_its_volumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -492,14 +560,20 @@ def test_a_rolling_pass_closed_early_removes_its_volumes(
     assert not made[0].dir.exists()
 
 
+# What the TruncatedError says for each place the source is cut.
+_CUT_MESSAGE = {"header": "header", "data": "data ends"}
+
+
 @requires_unrar_cli()
 @requires_binary("rar")
 @pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("cut", ["header", "data"])
 def test_a_source_cut_short_while_feeding_raises_truncated(
-    tmp_path: Path,
+    tmp_path: Path, cut: str
 ) -> None:
-    """The source ends while a later volume is written: the read raises what the
-    source raised, not unrar's exit status."""
+    """The source ends after the first volume, in the next member's header (read
+    again for its volume) or in the member's packed data: the read raises that,
+    not unrar's exit status."""
     payload = _text(200_000)
     raw = _rar(tmp_path, {"a.bin": payload, "b.bin": b"tail"}, "-ma5", "-s")
     with open_archive(BytesIO(raw), config=_config(40_000)) as reader:
@@ -508,12 +582,14 @@ def test_a_source_cut_short_while_feeding_raises_truncated(
         real_view = source.view
 
         def short_view(start: int, length: int | None = None) -> object:
-            if start > 30_000:
+            if cut == "header" and start > 30_000:
                 return BytesIO(b"")
+            if cut == "data" and (length or 0) > 30_000:
+                return real_view(start, 30_000)
             return real_view(start, length)
 
         reader._shared.view = short_view  # type: ignore[method-assign]
-        with pytest.raises((TruncatedError, CorruptionError)):
+        with pytest.raises(TruncatedError, match=_CUT_MESSAGE[cut]):
             for _member, stream in reader.stream_members():
                 if stream is not None:
                     stream.read()

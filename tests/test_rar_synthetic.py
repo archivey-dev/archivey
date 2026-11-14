@@ -534,6 +534,7 @@ def _member_copy(reader: RarReader, name: str) -> object:
     return reader._synthetic_file(member, member._raw)
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_a_member_over_the_spool_limit_does_not_refuse_the_next() -> None:
     """A member copy refused for its size records nothing: a smaller one still fits.
 
@@ -547,6 +548,7 @@ def test_a_member_over_the_spool_limit_does_not_refuse_the_next() -> None:
         assert small is not None
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_a_member_refused_beside_another_copy_fits_once_that_closes() -> None:
     with _stream_reader("basic_nonsolid__.rar", 76 + 72 - 1) as reader:
         big = _member_copy(reader, "subdir/file2.txt")

@@ -28,10 +28,14 @@ Data-open shapes, under ``unrar``:
   the original archive with an include mask instead (``RarReader._synthetic_file``)
 - Solid pass (``stream_members`` / extraction) → one program's output, read
   through :class:`SolidBlockReader` and cut by offset
-  (``RarReader._drive_solid_pass``). Over a stream source, when the pass splits into
-  runs (``RarReader._solid_pass_run_plan``), one ``unrar`` run per run of whole solid
-  streams (:class:`_SolidPassPipe`); otherwise one pipe over a copy of the whole
-  archive
+  (``RarReader._drive_solid_pass``). Over a stream source whose packed members
+  pass one run, with an ``unrar`` that reads rolling volumes, one ``unrar`` run fed
+  the members as volumes (:mod:`.rar_rolling`); with an older one, when the pass
+  splits into runs (``RarReader._solid_pass_run_plan``), one ``unrar`` run per run of
+  whole solid streams (:class:`_SolidPassPipe`); otherwise one pipe over a copy of
+  the whole archive
+- A stream source's copy over 64 MiB packed, or one the spool limit has no room for,
+  is fed to ``unrar`` as rolling volumes too, when it reads them (:class:`_RollingRead`)
 - Stream / non-path sources may be copied to a temp file when a program needs the
   original archive, so it can open a real path (and resolve sibling volumes)
 
@@ -290,29 +294,56 @@ def _no_cleanup() -> None:
 
 
 def _rar_member_copy_notes(
-    source: ArchiveSource, limits: SpoolLimits, *, solid: bool
+    source: ArchiveSource, limits: SpoolLimits, *, solid: bool, rolling: bool
 ) -> tuple[str, ...]:
     """Open-time caveat for a stream source of an archive read with ``unrar``.
 
     Each read ``unrar`` serves copies a synthetic archive (``rar_synthetic``), not
     the whole archive: one member's packed bytes, or for a ``solid`` archive its
     solid stream up to the member, and a few whole streams at a time for a pass.
+    With ``rolling`` (``unrar`` reads rolling volumes, ``rar_rolling``), the copies
+    that would be large or not fit are written as volumes, one on disk at a time.
     """
     if source.path is not None or source.volume_paths:
         return ()
     limit = limits.max_bytes
+    volumes = (
+        "written as RAR volumes instead, one file of up to "
+        f"{_rolling_volume_bytes(limits)} bytes on disk at "
+        "a time, and one volume is charged to SpoolLimits.max_bytes"
+    )
     if solid:
         note = (
             "Reading a member that RARLAB unrar has to read, such as a compressed one, "
             "will copy the packed bytes of its solid stream, from the stream start up "
             "to that member, to disk so unrar can read them. Each stream is copied "
             "once, and again from its start when a read goes further in while an "
-            "earlier read still holds the copy. A pass (stream_members(), "
-            "extract_all()) copies whole solid streams a few at a time, up to 64 MiB "
-            "of packed bytes or one larger stream, or the whole archive when that "
-            "would be one run, a member has an unknown compression version, a volume "
-            "is missing, or a RAR 1.5-4 member passes 4 GiB."
+            "earlier read still holds the copy. "
         )
+        whole = (
+            "a member has an unknown compression version, a volume is missing, or a "
+            "RAR 1.5-4 member passes 4 GiB."
+        )
+        if not rolling:
+            note += (
+                "A pass (stream_members(), extract_all()) copies whole solid streams "
+                "a few at a time, up to 64 MiB of packed bytes or one larger stream, "
+                "or the whole archive when that would be one run, " + whole
+            )
+        else:
+            note += f"A stream whose copy does not fit is {volumes}, from the stream "
+            note += "start on each read. A pass (stream_members(), extract_all()) "
+            if _pass_run_bytes(limits):
+                note += (
+                    "whose members pack more than 64 MiB is written as volumes too; "
+                    "a smaller one copies the whole archive, and so does any pass "
+                    "where " + whole
+                )
+            else:
+                note += (
+                    "is written as volumes too, except that it copies the whole "
+                    "archive when " + whole
+                )
         what = "a solid stream"
         refused = (
             f"A copy that would pass SpoolLimits.max_bytes={limit} is refused instead "
@@ -321,8 +352,15 @@ def _rar_member_copy_notes(
     else:
         note = (
             "Reading a member that RARLAB unrar has to read, such as a compressed one, "
-            "will copy that member's packed bytes to disk so unrar can read them. A "
-            "pass (stream_members(), extract_all()) copies such members in batches of "
+            "will copy that member's packed bytes to disk so unrar can read them. "
+        )
+        if rolling:
+            note += (
+                "A member that packs more than 64 MiB, or more than "
+                f"SpoolLimits.max_bytes has room for, is {volumes}. "
+            )
+        note += (
+            "A pass (stream_members(), extract_all()) copies such members in batches of "
             "up to 64 MiB of packed bytes, and reading one member of a batch decodes "
             "the members before it in that batch. "
             "(A RAR 1.5-4 member split past 4 GiB with no 64-bit size fields copies "
@@ -332,6 +370,11 @@ def _rar_member_copy_notes(
         refused = (
             f"A member whose packed bytes pass SpoolLimits.max_bytes={limit} is "
             "refused instead of copied."
+        )
+    if rolling:
+        refused = (
+            f"Any other copy that would pass SpoolLimits.max_bytes={limit} is refused "
+            "instead of made."
         )
     if limit is None:
         return (f"{note} The copy has no size limit (SpoolLimits.max_bytes=None).",)
@@ -639,6 +682,16 @@ class _PassRun:
     start: int
     indices: list[int]
     packed: int
+
+
+def _rolling_volume_bytes(limits: SpoolLimits) -> int:
+    """The size of one rolling volume: :data:`_ROLLING_VOLUME_BYTES`, or half the
+    spool limit when that is smaller, which leaves room for the copies a pass keeps
+    beside it (a file copy's source)."""
+    limit = limits.max_bytes
+    if limit is None:
+        return _ROLLING_VOLUME_BYTES
+    return max(1, min(_ROLLING_VOLUME_BYTES, limit // 2))
 
 
 def _pass_run_bytes(limits: SpoolLimits) -> int:
@@ -2039,7 +2092,10 @@ class RarReader(BaseArchiveReader):
             # Reads through unrar copy one member, or one solid stream, not the
             # archive.
             notes = _rar_member_copy_notes(
-                source, self._config.spool_limits, solid=self._archive.is_solid
+                source,
+                self._config.spool_limits,
+                solid=self._archive.is_solid,
+                rolling=self._rolling_ok(),
             )
         if (
             self._unar_policy is not None
@@ -4052,8 +4108,16 @@ class RarReader(BaseArchiveReader):
 
         groups = self._solid_pass_groups()
         # A stream source's pass: one unrar run fed rolling volumes, or runs of
-        # whole solid streams each copied whole.
-        rolling = groups is not None and self._rolling_ok()
+        # whole solid streams each copied whole. An archive whose packed members
+        # fit one run is copied whole either way (_solid_pass_run_plan): measured
+        # on 4,000 members of 250 B from a BytesIO, rolling volumes took 612 ms
+        # against 456 ms for the whole copy, as they read every header again.
+        rolling = (
+            groups is not None
+            and sum(g.packed for g in groups)
+            > _pass_run_bytes(self._config.spool_limits)
+            and self._rolling_ok()
+        )
         runs = None if groups is None or rolling else self._solid_pass_run_plan(groups)
 
         def _spawn() -> BinaryIO:
@@ -4450,7 +4514,8 @@ class RarReader(BaseArchiveReader):
 
     def _solid_pass_run_plan(self, groups: list[_PassRun]) -> list[_PassRun] | None:
         """The runs of solid streams a pass over a stream source reads one at a time,
-        when its ``unrar`` cannot be fed rolling volumes.
+        when its ``unrar`` cannot be fed rolling volumes or the packed members fit
+        one run.
 
         Each run is whole solid streams (``groups``, :meth:`_solid_pass_groups`). A
         run takes the next stream while its packed bytes stay within
@@ -4498,7 +4563,10 @@ class RarReader(BaseArchiveReader):
             charge = SyntheticArchive.overhead(version) + sum(e.size for e in entries)
             with self._materialize_lock:
                 self._reserve_synthetic(
-                    charge, False, name, "the packed bytes of one run of solid streams"
+                    charge,
+                    name,
+                    "the packed bytes of one run of solid streams",
+                    fallback=False,
                 )
             synthetic: SyntheticArchive | None = None
 
@@ -5897,9 +5965,11 @@ class RarReader(BaseArchiveReader):
         would pass :data:`_SYNTHETIC_IN_PLACE_THRESHOLD` packed bytes or the spool
         limit, and a RAR 1.5-4 member joined past 4 GiB without 64-bit size fields.
         A stream source falls back only for that unsupported header, and then
-        copies the whole archive. Its copy over the spool limit raises
-        ``ResourceLimitError`` for that copy's bytes alone, and records nothing: a
-        later copy that fits still goes ahead.
+        copies the whole archive. Its member over the threshold, or over what the
+        spool limit has room for, is fed to ``unrar`` as rolling volumes
+        (:class:`_RollingRead`) when that ``unrar`` reads them; otherwise a copy
+        over the spool limit raises ``ResourceLimitError`` for that copy's bytes
+        alone, and records nothing: a later copy that fits still goes ahead.
 
         Each header is read again here, before anything is spawned, and checked
         against the listing (``CorruptionError`` when it differs). A nonsolid copy
@@ -5915,18 +5985,21 @@ class RarReader(BaseArchiveReader):
         entry = self._synthetic_entry(member.name, raw, 0)
         if entry is None:
             return None
-        if (
-            not in_place
-            and entry.size > _SYNTHETIC_IN_PLACE_THRESHOLD
-            and self._rolling_ok()
-        ):
-            # Not copied whole: fed to unrar one volume at a time.
+        # A stream source's member over the threshold, or one the spool limit has
+        # no room to copy, is fed to unrar one volume at a time instead.
+        rolling = not in_place and self._rolling_ok()
+        if rolling and entry.size > _SYNTHETIC_IN_PLACE_THRESHOLD:
             return _RollingRead(lambda: [entry], None, solid=False)
         charge = SyntheticArchive.overhead(self._archive.version) + entry.size
         with self._materialize_lock:
             if not self._reserve_synthetic(
-                charge, in_place, member.name, "this member's packed bytes"
+                charge,
+                member.name,
+                "this member's packed bytes",
+                fallback=in_place or rolling,
             ):
+                if rolling:
+                    return _RollingRead(lambda: [entry], None, solid=False)
                 return None
             synthetic = _SyntheticFile(self, [entry], charge)
             self._synthetic_files.add(synthetic)
@@ -5974,10 +6047,10 @@ class RarReader(BaseArchiveReader):
     def _reserve_synthetic(
         self,
         charge: int,
-        in_place: bool,
         name: str,
         what: str,
         *,
+        fallback: bool,
         keep: _SolidStream | None = None,
     ) -> bool:
         """Charge a synthetic copy to the spool budget; under ``_materialize_lock``.
@@ -5987,10 +6060,12 @@ class RarReader(BaseArchiveReader):
         until it fits; ``keep`` is the stream the copy extends, never removed. A
         read of a removed stream later copies it again. Without that, earlier reads
         would refuse a copy that fits the limit on its own. When removing them all
-        would not make room, nothing is removed. ``False`` sends a source on disk
-        back to the original archive. A stream source has no such fallback: the
-        refusal raises, naming ``what``, and is not recorded, so a smaller copy
-        later still fits.
+        would not make room, nothing is removed.
+
+        ``fallback`` says the caller has another way to read when the charge does
+        not fit (the original archive on disk, rolling volumes), and gets
+        ``False``. Without one the refusal raises ``ResourceLimitError``, naming
+        ``what``, and is not recorded, so a smaller copy later still fits.
         """
         # Named only when this copy refuses: a fallback's own copy names itself.
         budget = self._spool_budget(None)
@@ -6006,9 +6081,10 @@ class RarReader(BaseArchiveReader):
                 self._drop_solid_stream(start, stream)
                 if budget.try_reserve(charge):
                     return True
-        if not in_place:
+        if not fallback:
             budget = self._spool_budget(what)
             with self._translated_errors(name):
+                # Raises for any charge try_reserve refused.
                 budget.check_fits(charge)
         return False
 
@@ -6093,16 +6169,18 @@ class RarReader(BaseArchiveReader):
                 charge += overhead
             if in_place and stream.size() + charge > _SYNTHETIC_IN_PLACE_THRESHOLD:
                 return None
-            if not in_place and self._rolling_ok():
-                # A chain the spool limit has no room to keep is fed to unrar one
-                # volume at a time instead, each read from the stream start.
-                if not self._reserve_synthetic(
-                    charge, True, member.name, what, keep=stream
-                ):
-                    return self._rolling_chain(member, chain, mask)
-            elif not self._reserve_synthetic(
-                charge, in_place, member.name, what, keep=stream
+            # A stream source's chain the spool limit has no room to keep is fed
+            # to unrar one volume at a time instead, each read from the stream start.
+            rolling = not in_place and self._rolling_ok()
+            if not self._reserve_synthetic(
+                charge,
+                member.name,
+                what,
+                fallback=in_place or rolling,
+                keep=stream,
             ):
+                if rolling:
+                    return self._rolling_chain(member, chain, mask)
                 return None
             created = stream.file is None
             try:
@@ -6138,15 +6216,6 @@ class RarReader(BaseArchiveReader):
                 ok = False  # no usable unrar: the read refuses as it does today
             self._rolling_volumes = ok
         return ok
-
-    def _rolling_volume_bytes(self) -> int:
-        """The size of one rolling volume: :data:`_ROLLING_VOLUME_BYTES`, or half
-        the spool limit when that is smaller, which leaves room for the copies a
-        pass keeps beside it (a file copy's source)."""
-        limit = self._config.spool_limits.max_bytes
-        if limit is None:
-            return _ROLLING_VOLUME_BYTES
-        return max(1, min(_ROLLING_VOLUME_BYTES, limit // 2))
 
     def _rolling_chain(
         self, member: ArchiveMember, chain: list[int], mask: str
@@ -6184,18 +6253,10 @@ class RarReader(BaseArchiveReader):
         other reads' copies keep out.
         """
         version = self._archive.version
-        volume_bytes = charge = self._rolling_volume_bytes()
+        volume_bytes = charge = _rolling_volume_bytes(self._config.spool_limits)
         with self._materialize_lock:
-            reserved = self._reserve_synthetic(charge, False, name, what)
-        if not reserved:
-            raise ResourceLimitError(
-                f"RAR member {quoted(name)} cannot be read now: {what} "
-                f"({charge} bytes) does not fit the spool limit beside the copies "
-                "other open reads hold. Close those reads, or raise the limit.",
-                archive_name=self._archive_name,
-                member_name=name,
-                source_format=ArchiveFormat.RAR,
-            )
+            if not self._reserve_synthetic(charge, name, what, fallback=False):
+                raise AssertionError("a refused spool charge check_fits let through")
 
         def release() -> None:
             with self._materialize_lock:

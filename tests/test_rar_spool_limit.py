@@ -369,12 +369,15 @@ def _only_note(source: object, max_bytes: int | None) -> str:
     return note
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_cost_note_names_the_limit() -> None:
     blob = _SOLID.read_bytes()
     # A solid archive: a read copies its solid stream up to the member.
     note = _only_note(io.BytesIO(blob), len(blob))
     assert "will copy the packed bytes of its solid stream" in note
     assert "copies whole solid streams a few at a time" in note
+    assert "is refused instead of made" in note
+    assert "RAR volumes" not in note
     assert f"SpoolLimits.max_bytes={len(blob)}" in note
     # A nonsolid set: unrar reads each member from a copy of that member alone.
     note = _only_note(_volume_streams(), _volume_total())
@@ -384,6 +387,24 @@ def test_cost_note_names_the_limit() -> None:
         note = _only_note(source, None)
         assert "will copy" in note
         assert "no size limit" in note
+
+
+@pytest.mark.parametrize("solid", [True, False])
+def test_cost_note_names_rolling_volumes(
+    monkeypatch: pytest.MonkeyPatch, solid: bool
+) -> None:
+    """With an unrar that reads rolling volumes, the note says which copies are
+    written as volumes instead of refused, and the size of one volume."""
+    monkeypatch.setattr(rar_reader.RarReader, "_rolling_ok", lambda self: True)
+    source = io.BytesIO(_SOLID.read_bytes()) if solid else _volume_streams()
+    note = _only_note(source, 40_000)
+    assert "written as RAR volumes instead, one file of up to 20000 bytes" in note
+    assert "Any other copy that would pass SpoolLimits.max_bytes=40000" in note
+    if solid:
+        assert "copies whole solid streams" not in note
+        assert "is written as volumes too" in note
+    else:
+        assert "more than SpoolLimits.max_bytes has room for" in note
 
 
 @pytest.mark.parametrize(
@@ -518,6 +539,9 @@ def test_volume_set_limit_stops_mid_copy_and_removes_the_directory(
     monkeypatch: pytest.MonkeyPatch,
     temp_artifacts: list[Path],
     no_unrar: None,
+    # The refused member copy falls back to the whole set's copy, not to rolling
+    # volumes, as with an older unrar.
+    no_rolling_volumes: None,
     sources: Callable[[], list[io.BytesIO | Path]],
     limit: int,
 ) -> None:

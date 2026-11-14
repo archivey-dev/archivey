@@ -1616,8 +1616,8 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   or runs of streams, and the whole archive only in the fallbacks §2.3 lists. Every copy
   is charged to `SpoolLimits.max_bytes`. Design and measurements:
   `openspec/changes/rar-synthetic-archives` (PR 1151). With `unrar` 7.00 or later, the
-  copies that would be whole (over 64 MiB, a solid chain the limit has no room for, a
-  stream-source solid pass) are written as rolling volumes instead
+  copies that would be whole (over 64 MiB, a member or solid chain the limit has no room
+  for, a stream-source solid pass past one run) are written as rolling volumes instead
   (`internal/backends/rar_rolling.py`): `unrar -vp` prompts before each next volume and
   holds none open at the prompt, so one volume is on disk at a time. A non-last part
   carries no checksum (`MergeArchive` checks a part only against one its header holds),
