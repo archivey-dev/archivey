@@ -982,13 +982,14 @@ rules extraction applies to what it writes:
   read or seek that crosses it SHALL raise `ResourceLimitError` for that member. It is
   not the always-stop kind, so a pass can go on to the next member.
 - **Across the reader.** The output of all the reader's member reads together, each
-  member counted once at the furthest offset any read of it reached, is judged by the
-  archive-wide rule (`archive_ratio_refusal`: the static denominator, or the live one
-  past `live_ratio_activation_threshold`). Crossing it SHALL raise the always-stop
-  `ResourceLimitError`. Where neither denominator exists (an archive read from a
-  non-seekable stream that is not inside a compression stream: no trusted size, and no
-  counter installed), this rule does not apply to reads, as it does not to extraction;
-  extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
+  member the caller reads counted once at the furthest offset any read of it reached, is
+  judged by the archive-wide rule (`archive_ratio_refusal`: the static denominator, or
+  the live one past `live_ratio_activation_threshold`). Crossing it SHALL raise the
+  always-stop `ResourceLimitError`. Where neither denominator exists (an archive read
+  from a non-seekable stream that is not inside a compression stream: no trusted size,
+  and no counter installed), this rule does not apply to reads, as it does not to
+  extraction; extraction keeps `max_extracted_bytes` there, and a read keeps only the
+  per-member rule.
 
 A member whose data is a run of the archive stream's own bytes, as every TAR member's is
 except a sparse one's (a TAR is compressed as a whole, if at all), SHALL NOT be held:
@@ -997,7 +998,13 @@ archive-wide ratio. It SHALL be counted toward the archive-wide total at its rec
 size when its stream is handed out, read or not, so a member that is held (a sparse
 one) is judged with it. Counting more than was read can only refuse sooner.
 
-A RAR file copy is held, and counted, as the member whose data it repeats. The read
+A link that `open()` follows (a hard link or symlink) and a RAR file copy hand out
+another member's data. The per-member rule SHALL judge them as that member, against its
+`compressed_size`. The archive-wide total SHALL count them as the member the caller
+asked for, so N members that hand out one member's data count N times: their output is
+N times those bytes, and each costs the archive only a small record. Where that data is
+the archive stream's own bytes, the read SHALL be judged at its recorded size when the
+stream is handed out, since no guard sees those bytes again. The read
 that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
 reach the decoder in steps of at most 1 MiB, so a `read()` of a whole member stops
 within a step of the limit instead of first holding all of it in memory. A decoder
@@ -1013,6 +1020,8 @@ turns it off.
 | `stream_members()` over an archive whose second member is over the ratio | The second member's read raises; the pass yields the third |
 | Archive of many members under 5 MiB each, together past the ratio of the archive's size | The read that crosses the archive-wide ratio raises the always-stop error |
 | The same member read twice | Counted once toward the archive-wide total |
+| Many hard links or symlinks to one TAR or RPM file, each read with `read()`, together past the ratio of the archive's size | The `open()` that crosses the archive-wide ratio raises the always-stop error |
+| Many XAR files naming one heap range, or ISO records naming one extent, each read | The read that crosses the archive-wide ratio raises the always-stop error |
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
 
 ### Requirement: Progress Reporting via on_progress Callback
