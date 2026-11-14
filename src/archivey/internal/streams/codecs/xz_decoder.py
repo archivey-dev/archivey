@@ -704,6 +704,14 @@ def _report_unverifiable_check(
     )
 
 
+# A walk kept only for block checks gives up once its stream averages fewer compressed
+# bytes than this per LZMA2 chunk, past ``_CHECK_WALK_SLACK`` chunks (``_chunk``).
+# liblzma writes chunks of up to 64 KiB compressed, and only a block's last chunk is
+# short.
+_CHECK_WALK_BYTES_PER_CHUNK = 4096
+_CHECK_WALK_SLACK = 64
+
+
 def _runs_check(check: int) -> bool:
     """Whether liblzma runs a stream's check: not ``CHECK_NONE``, and one it implements
     (an unknown ID is decoded without it, ``_report_unverifiable_check``)."""
@@ -799,6 +807,10 @@ class _XzBlockWalker:
         # :class:`_XzState` takes them (``_take_checked``); unlike ``blocks``, never
         # thinned.
         self.ended: list[tuple[int, int]] = []
+        # LZMA2 chunk headers read, and whether the walk is kept only to tell which
+        # output each block check covers, which gives up on tiny chunks (``_chunk``).
+        self.chunks = 0
+        self.checks_only = False
 
     @property
     def decompressed_size(self) -> int:
@@ -851,6 +863,19 @@ class _XzBlockWalker:
         self._expect(1, self._chunk, skip=(field[0] + 1) * 4 - 1)
 
     def _chunk(self, field: bytes) -> None:
+        self.chunks += 1
+        if (
+            self.checks_only
+            and self.chunks
+            > _CHECK_WALK_SLACK + self._pos // _CHECK_WALK_BYTES_PER_CHUNK
+        ):
+            # Each chunk header is a Python step: a stream of chunks far smaller than
+            # an encoder writes would make the walk cost far more than liblzma's
+            # decode. A walk kept only for block checks gives up; its members wait for
+            # the stream's end. A walk for block points goes on (threat model, "No
+            # CPU or wall-clock bound").
+            self.failed = True
+            return
         control = field[0]
         if control == 0:
             self._end_block()
@@ -1148,6 +1173,7 @@ class _XzState:
                     # Walked for block points, or to tell which output each block
                     # check covers (``_note_checked``).
                     self._walker = _XzBlockWalker(check)
+                    self._walker.checks_only = not self._walk_blocks
                     self._walk_checks = _runs_check(check)
                 self._unchecked.clear()
                 self._bytes_fed = _STREAM_HEADER_SIZE

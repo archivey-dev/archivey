@@ -241,25 +241,20 @@ checksum for the whole compressed stream, checked at its end. Its files have `ve
 archive to its end and that checksum matches, every file in it reaches `CHECKSUM`, whether or not
 you read it, except a sparse TAR file, whose holes are not stored bytes: listing the archive does
 that, and so does a `stream_members()` pass that runs to the end. When that read finds the
-stream carries no checksum (an `.xz` written with no check), the files' `verifiable` falls to
-`LENGTH`, since no read can do better. Damage never lowers it: when the checksum fails, or the
+stream carries no checksum (an `.xz` written with no check), the `verifiable` of the files in it
+falls to `LENGTH`, since no read can do better; a file that an earlier stream's checks already
+covered keeps `CHECKSUM` (below). Damage never lowers it: when the checksum fails, or the
 archive is cut or damaged before it, the files stay below `CHECKSUM` and `verify_all()` returns
 them.
 
-<<<<<<< HEAD
 A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is compressed in, and so
 does a `.tar.xz` written in several blocks, as `xz` does when it compresses with more than one
 thread. A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check,
 without waiting for the end of the archive. If a later block is damaged, the files in the earlier
-blocks keep `CHECKSUM`.
-=======
-A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is compressed in.
-A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check, without
-waiting for the end of the archive. If a later block is damaged, the files in the earlier blocks
-keep `CHECKSUM`. This doesn't happen when the bzip2 accelerator decompresses the archive
-(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more): its files wait for
-the end of the archive, as above.
->>>>>>> claude/project-thread-rngpt2-verify
+blocks keep `CHECKSUM`, except, in a `.tar.xz`, the files that end in the block right before the
+damage: an xz block counts as checked only once the decompressor is past its end. This doesn't
+happen when the bzip2 accelerator decompresses the archive (`use_indexed_bzip2`; under `AUTO`, a
+`.tar.bz2` file on disk of 1 MiB or more): its files wait for the end of the archive, as above.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the

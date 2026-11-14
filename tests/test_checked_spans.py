@@ -14,8 +14,10 @@ import gzip
 import io
 import lzma
 import random
+import struct
 import subprocess
 import tarfile
+import zlib
 
 import pytest
 
@@ -227,8 +229,15 @@ def test_without_block_checks_nothing_rises_before_the_end(blob) -> None:
     assert Verification.CHECKSUM not in set(levels.values())
 
 
-def test_the_members_before_a_damaged_block_are_checksum_verified() -> None:
-    blob = bytearray(bz2.compress(_tar(), 1))
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(lambda data: bz2.compress(data, 1), id="bzip2"),
+        pytest.param(_xz_blocks, id="xz-blocks", marks=requires_binary("xz")),
+    ],
+)
+def test_the_members_before_a_damaged_block_are_checksum_verified(compress) -> None:
+    blob = bytearray(compress(_tar()))
     blob[len(blob) * 3 // 4] ^= 0x55
     seen: list[archivey.ArchiveMember] = []
     source = NonSeekableBytesIO(bytes(blob))
@@ -241,7 +250,7 @@ def test_the_members_before_a_damaged_block_are_checksum_verified() -> None:
             if stream is not None:
                 stream.read()
     files = [m for m in seen if m.is_file]
-    # The first block holds well over the first member.
+    # The first blocks hold well over the first member.
     assert files[0].verified is Verification.CHECKSUM
     assert files[-1].verified is not Verification.CHECKSUM
 
@@ -265,3 +274,66 @@ def test_bzip2_the_accelerator_decodes_raises_only_at_the_end(tmp_path) -> None:
     config = archivey.ArchiveyConfig(use_indexed_bzip2=AcceleratorMode.ON)
     levels = _levels_while_streaming(b"", source=path, config=config)
     assert Verification.CHECKSUM not in set(levels.values())
+
+
+def _mbi(v: int) -> bytes:
+    out = bytearray()
+    while v >= 0x80:
+        out.append((v & 0x7F) | 0x80)
+        v >>= 7
+    out.append(v)
+    return bytes(out)
+
+
+def _tiny_chunk_xz(data: bytes) -> bytes:
+    """One xz stream (CRC32 check, one block) storing ``data`` as one-byte LZMA2
+    uncompressed chunks: a Python walk step for every four input bytes."""
+    flags = b"\x00\x01"  # CRC32
+    header = b"\xfd7zXZ\x00" + flags + struct.pack("<I", zlib.crc32(flags))
+    # block header: size byte, flags (1 filter), filter LZMA2 id 0x21, props size 1,
+    # dict byte Block header: size byte, flags (one filter), LZMA2 (0x21) with its
+    # dictionary property, padding, CRC32.
+    content = bytes([0x00]) + b"\x21" + b"\x01" + b"\x16"
+    raw = b"\x00" + content  # size byte placeholder
+    total = len(raw) + 4
+    total += -total % 4
+    size_byte = total // 4 - 1
+    hdr = bytes([size_byte]) + content
+    hdr += b"\x00" * (total - 4 - len(hdr))
+    hdr += struct.pack("<I", zlib.crc32(hdr))
+    chunks = bytearray()
+    for i, b in enumerate(data):
+        chunks += bytes([1 if i == 0 else 2, 0, 0, b])
+    chunks += b"\x00"
+    block = hdr + bytes(chunks)
+    unpadded = len(block) + 4
+    block += b"\x00" * (-len(block) % 4)
+    block += struct.pack("<I", zlib.crc32(data))
+    index = b"\x00" + _mbi(1) + _mbi(unpadded) + _mbi(len(data))
+    index += b"\x00" * (-len(index) % 4)
+    index += struct.pack("<I", zlib.crc32(index))
+    back = struct.pack("<I", len(index) // 4 - 1)
+    footer = struct.pack("<I", zlib.crc32(back + flags)) + back + flags + b"YZ"
+    return header + block + index + footer
+
+
+def test_a_walk_over_tiny_xz_chunks_stops(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stream of one-byte chunks would make the walk for block checks a Python step
+    per few input bytes; it stops early, and the decode is unchanged."""
+    from archivey.internal.streams.codecs import xz_decoder
+
+    steps = 0
+    chunk = xz_decoder._XzBlockWalker._chunk
+
+    def counting(self: object, field: bytes) -> None:
+        nonlocal steps
+        steps += 1
+        chunk(self, field)
+
+    monkeypatch.setattr(xz_decoder._XzBlockWalker, "_chunk", counting)
+    data = random.Random(1).randbytes(50_000)
+    blob = _tiny_chunk_xz(data)
+    assert lzma.decompress(blob) == data
+    with open_codec_stream(Codec.XZ, io.BytesIO(blob)) as stream:
+        assert stream.read() == data
+    assert steps < 1000
