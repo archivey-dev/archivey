@@ -234,8 +234,9 @@ def test_type_checker_takes_the_documented_string_spellings(
     The docs set these fields by their strings (``process_isolation="none"``,
     ``ArchiveFormat("raw_stream", "gz")``), so a typed caller copying the docs must get
     no diagnostic, while the attribute still reads as the enum alone. The input types are
-    ``Literal`` lists, not ``str``, so the two misspellings at the end are the only
-    diagnostics.
+    ``Literal`` lists, not ``str``, so the only diagnostics are the three calls at the
+    end: two misspellings, and the member name ``"UNAR"``, which the runtime accepts but
+    no ``Literal`` lists.
     """
     sample = _STRING_SPELLING_TYPING_SAMPLE
     diagnostics = _checker_diagnostics(checker, sample, tmp_path)
