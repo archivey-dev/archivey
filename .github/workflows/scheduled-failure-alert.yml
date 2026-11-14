@@ -10,7 +10,8 @@ name: Scheduled failure alert
 # closes nothing, because some of them (the accelerator crash search and fuzz soak) run
 # a much shorter budget than the scheduled run. Cancelled and skipped runs change
 # nothing. Dispatched and pull request runs are ignored; the person who started them is
-# already looking.
+# already looking. Each report names the failed jobs and marks those the previous
+# report did not name as new, so a second failure in a red workflow stands out.
 #
 # `workflows` matches each workflow's `name:`. A new scheduled workflow goes in this list
 # or in the exclusions of `test_every_scheduled_workflow_is_alerted` in
@@ -32,6 +33,8 @@ on:
 
 permissions:
   issues: write
+  # Read the run's jobs, to name the ones that failed.
+  actions: read
 
 concurrency:
   group: scheduled-failure-alert-${{ github.event.workflow_run.workflow_id }}
@@ -54,6 +57,7 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
           EVENT: ${{ github.event.workflow_run.event }}
           # Assigned so the alert reaches a person even with repository watching off.
           ASSIGNEE: davitf
@@ -63,6 +67,43 @@ jobs:
           number=$(gh issue list --state open --limit 500 \
             --json number,title --jq "map(select(.title == \"$title\")) | .[0].number // empty")
           line="\`$CONCLUSION\` on ${SHA:0:12}: $RUN_URL"
+          # Name the failed jobs, and mark the ones the previous report did not name,
+          # so a new failure in a workflow that is already red does not read as the
+          # same old one. The names also go in a hidden marker the next report reads.
+          jobs=""
+          if [ "$CONCLUSION" != "success" ]; then
+            jobs=$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+              --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name' \
+              | sort -u) || jobs=""
+          fi
+          previous=""
+          if [ -n "$number" ]; then
+            previous=$(gh issue view "$number" --json body,comments \
+              --jq '[.body] + [.comments[].body] | map(select(contains("<!-- failed-jobs:"))) | last // ""' \
+              | sed -n 's/^<!-- failed-jobs: \(.*\) -->$/\1/p' | tr '\t' '\n') || previous=""
+          fi
+          job_lines=""
+          new_count=0
+          while IFS= read -r job; do
+            [ -n "$job" ] || continue
+            if [ -n "$previous" ] && ! grep -qxF -- "$job" <<<"$previous"; then
+              job_lines+="- **new:** \`$job\`"$'\n'
+              new_count=$((new_count + 1))
+            else
+              job_lines+="- \`$job\`"$'\n'
+            fi
+          done <<<"$jobs"
+          marker="<!-- failed-jobs: $(tr '\n' '\t' <<<"$jobs" | sed 's/\t$//') -->"
+          if [ -n "$job_lines" ]; then
+            jobs_block=$'\n\nFailed jobs:\n'"$job_lines"$'\n'"$marker"
+          else
+            jobs_block=""
+          fi
+          if [ "$new_count" -gt 0 ]; then
+            still="New failure in $new_count job(s)"
+          else
+            still="Still failing"
+          fi
           if [ "$CONCLUSION" = "success" ]; then
             # Only a scheduled run proves the workflow green again: a post-merge run
             # may have searched for a minute where the scheduled one searches for many.
@@ -71,10 +112,10 @@ jobs:
                 --comment "Green again, $line"
             fi
           elif [ -n "$number" ]; then
-            gh issue comment "$number" --body "Still failing, $line"
+            gh issue comment "$number" --body "$still, $line$jobs_block"
           else
             gh issue create --title "$title" --assignee "$ASSIGNEE" --body "$(cat <<BODY
-          The \`$EVENT\` run of \`$WORKFLOW\` on \`main\` failed, $line
+          The \`$EVENT\` run of \`$WORKFLOW\` on \`main\` failed, $line$jobs_block
 
           This issue gets a comment on each further failed scheduled or post-merge run
           and closes on the next green scheduled run. See dev-docs/maintenance.md for what a red run of each
