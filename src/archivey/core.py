@@ -32,6 +32,7 @@ archive container.
 from __future__ import annotations
 
 import errno
+import io
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1494,11 +1495,12 @@ def _hold_stream_to_ratio(
     """Hold the decoded stream to ``limits.max_ratio`` of the compressed bytes, as a
     member read of the same bytes through :func:`open_archive` is held (DR-9).
 
-    The denominator is the source's size when it is known and trusted, as a reader
-    takes it (``BaseArchiveReader._trusted_source_size``); otherwise the compressed
-    bytes taken from the source so far: the furthest offset reached on a seekable
-    source, the bytes pulled from a pipe. A path goes to the codec as a path, and its
-    size is always known.
+    The denominator is the compressed length, found as a member read of the same bytes
+    finds it (``SingleFileReader._probe_compressed_size``): the source's size hint,
+    else, on a source whose seeks are cheap, one ``SEEK_END``. A block device is the
+    path that needs the seek: it has no ``stat`` size, and the codec opens the path
+    itself, so nothing would count the bytes it reads. Only a pipe has no length; the
+    bytes pulled from it are the live denominator, as for ``open_archive`` on a pipe.
     """
     if limits.max_ratio is None:
         return
@@ -1509,11 +1511,18 @@ def _hold_stream_to_ratio(
     consumed: Callable[[], int | None] | None = None
     if codec_input.seekable() or codec_input.seek_is_expensive:
         static_size = codec_input.size_hint
-    if static_size is None:
-        if codec_input.seekable():
+    if static_size is None and codec_input.seekable():
+        if codec_input.seek_is_expensive:
+            # A seek to the end could decode a whole member; count what the codec
+            # reads from this source instead (it reads this source: only a path goes
+            # to the codec as a path, and a path is never an expensive seek).
             consumed = lambda: codec_input.bytes_reached  # noqa: E731
         else:
-            consumed = lambda: codec_input.bytes_pulled  # noqa: E731
+            codec_input.seek(0, io.SEEK_END)
+            static_size = codec_input.tell()
+            codec_input.seek(0)
+    elif static_size is None:
+        consumed = lambda: codec_input.bytes_pulled  # noqa: E731
     stream._hold_inner(
         lambda inner: DecodeRatioGuard(
             inner,

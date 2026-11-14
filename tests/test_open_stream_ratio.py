@@ -115,3 +115,31 @@ def test_one_read_of_a_gzip_with_a_bad_crc_raises() -> None:
         pytest.raises(CorruptionError),
     ):
         stream.read()
+
+
+def test_a_path_with_no_stat_size_is_held_by_its_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A block device: seekable, but stat gives no size, and the codec opens the path
+    # itself, so no count of the source's bytes would ever grow. The length comes
+    # from a seek to the end, as a member read of the same bytes finds it.
+    import os
+    import stat as stat_module
+
+    import archivey.internal.source as source_module
+
+    path = tmp_path / "bomb.gz"
+    path.write_bytes(gzip.compress(bytes(8 * _MIB)))
+    real_stat = os.stat
+
+    def block_device_stat(p: object, *args: object, **kwargs: object) -> object:
+        st = real_stat(p, *args, **kwargs)  # type: ignore[arg-type]
+        if str(p) != str(path):
+            return st
+        fields = list(st)
+        fields[0] = stat_module.S_IFBLK | 0o600
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(source_module.os, "stat", block_device_stat)
+    with open_stream(path) as stream, pytest.raises(ResourceLimitError):
+        _drain(stream)
