@@ -132,7 +132,9 @@ _CASES = [
     pytest.param("tar-symlinks"),
 ]
 # A pass hands out no stream for a link, so only the formats whose sharers are files.
-_PASS_CASES = _CASES[:3]
+_PASS_CASES = [
+    case for case in _CASES if case.values[0] in {"xar-stored", "xar-gzip", "iso"}
+]
 
 
 def _open(case: str, raw: bytes, config: ArchiveyConfig | None = None) -> ArchiveReader:
