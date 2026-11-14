@@ -251,6 +251,38 @@ def test_a_damaged_block_header_keeps_the_block_before_it(
     assert got == DATA[:good]
 
 
+@pytest.mark.parametrize("chunk", [7, 4096, 1 << 20])
+@pytest.mark.parametrize("bit", [0, 13, 40, 47])
+@pytest.mark.parametrize("block", [1, 6, 7])
+def test_a_resumed_decode_keeps_the_last_block_before_a_damaged_end_marker(
+    chunk: int, bit: int, block: int
+) -> None:
+    """Resumed at a block, with the end-of-stream magic damaged: the final feed after
+    ``end_input()`` recovers the last block too."""
+    blob = bytearray(_bz2())
+    eos = find_markers(bytes(blob), 0, 8 * len(blob))[-1][0]
+    at = eos + bit
+    blob[at // 8] ^= 0x80 >> (at % 8)
+    comp, decoded, state = _block_starts(_bz2())[block]
+    decomp = Bzip2BlockDecompressor()
+    decomp.resume(state)
+    rest = bytes(blob[comp:])
+    got = bytearray()
+    pos = 0
+    with pytest.raises(OSError):
+        while True:
+            if not decomp.needs_input:
+                got += decomp.decompress(b"")
+            elif pos < len(rest):
+                got += decomp.decompress(rest[pos : pos + chunk])
+                pos += chunk
+            else:
+                decomp.end_input()
+                while True:
+                    got += decomp.decompress(b"")
+    assert bytes(got) == DATA[decoded:]
+
+
 def test_restart_points_are_the_blocks_and_a_seek_decodes_one_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

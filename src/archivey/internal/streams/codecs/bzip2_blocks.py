@@ -401,7 +401,7 @@ class Bzip2BlockDecompressor:
         if self._input_ended:
             if self._fed >= self._input_end():
                 return False
-            out = self._feed_to(self._input_end())
+            out = self._feed_block_to(self._input_end())
         else:
             # A marker not found yet starts at ``_scanned`` or later. A block ends
             # where the next marker starts, so feeding only bits before ``_scanned``
