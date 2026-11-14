@@ -15,6 +15,7 @@ import struct
 import zipfile
 import zlib
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,11 @@ FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 class CountingMemoryFS(MemoryFileSystem):
     """A memory file system of its own that records ``ls`` calls and the paths that
     ``info``, ``exists`` and ``cat_file`` were asked about: the calls a search for
-    sibling volumes would make."""
+    sibling volumes would make.
+
+    Only calls from outside the file system count. Older fsspec (2024.2) has ``_open``
+    check each parent folder with ``isfile``, which calls ``info``; those checks are the
+    file system's own, not a search by archivey."""
 
     cachable = False
 
@@ -50,31 +55,39 @@ class CountingMemoryFS(MemoryFileSystem):
         self.pseudo_dirs = [""]
         self.listings = 0
         self.asked: list[str] = []
+        self._depth = 0
+
+    @contextmanager
+    def _call(self, path: str | None = None) -> Iterator[None]:
+        if self._depth == 0 and path is not None:
+            self.asked.append(self._strip_protocol(path))
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
 
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
-        self.listings += 1
-        return super().ls(path, detail=detail, **kwargs)
+        if self._depth == 0:
+            self.listings += 1
+        with self._call():
+            return super().ls(path, detail=detail, **kwargs)
 
     def info(self, path: str, **kwargs: Any) -> Any:
-        self.asked.append(self._strip_protocol(path))
-        return super().info(path, **kwargs)
+        with self._call(path):
+            return super().info(path, **kwargs)
 
     def exists(self, path: str, **kwargs: Any) -> bool:
-        self.asked.append(self._strip_protocol(path))
-        return super().exists(path, **kwargs)
+        with self._call(path):
+            return super().exists(path, **kwargs)
 
     def cat_file(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        self.asked.append(self._strip_protocol(path))
-        return super().cat_file(path, *args, **kwargs)
+        with self._call(path):
+            return super().cat_file(path, *args, **kwargs)
 
-    def pipe_file(self, path: str, value: bytes, *args: Any, **kwargs: Any) -> Any:
-        # Writing a test file is setup, not a search: older fsspec (2024.2) asks
-        # info() about each parent folder while it writes.
-        listings, asked = self.listings, list(self.asked)
-        try:
-            return super().pipe_file(path, value, *args, **kwargs)
-        finally:
-            self.listings, self.asked = listings, asked
+    def _open(self, path: str, *args: Any, **kwargs: Any) -> Any:
+        with self._call():
+            return super()._open(path, *args, **kwargs)
 
     def assert_no_search(self, named: str) -> None:
         """No listing, and no question about any file but the one named."""
