@@ -50,6 +50,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     TruncatedError,
+    exception_detail,
 )
 from archivey.internal.backends.rar_parser import load_vint
 from archivey.internal.backends.rar_synthetic import (
@@ -521,7 +522,12 @@ class VolumeFeeder:
                     return
         except BaseException as exc:  # noqa: BLE001 - reported through error
             if self.error is None:
-                self._stop(ReadError(f"The RAR volume feeder failed: {exc!r}"))
+                self._stop(
+                    ReadError(
+                        "The RAR volume feeder failed: "
+                        + exception_detail(exc, with_type=True)
+                    )
+                )
         finally:
             try:
                 stderr.close()
