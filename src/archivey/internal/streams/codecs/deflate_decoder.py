@@ -36,6 +36,7 @@ from archivey.internal.streams.decompressor_stream import (
     truncated_message,
     zlib_error,
 )
+from archivey.internal.streams.native_memory import UNDER_PYPY
 
 # Output between two snapshot seek points one decode records (:class:`ZlibSnapshot`).
 # A seek decodes about half of it on average: about 2 ms on a 4-core machine.
@@ -125,7 +126,8 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
     call could cost millions of calls; such a step drops the copy. Only a zlib error
     is replayed; any other error, ``MemoryError`` included, raises at once. A source
     that can seek is decoded again instead, so it never takes a copy. A decompressor
-    in a decoder child has no ``copy()``, and keeps the stream's behaviour.
+    in a decoder child has no ``copy()``, and keeps the stream's behaviour; so does
+    every decompressor under PyPy, whose copies leak.
     """
 
     _decomp: Any
@@ -141,7 +143,10 @@ class _KeepsOutputBeforeErrors(BaseDecoder):
 
     @override
     def keep_output_before_errors(self) -> None:
-        self._keep = hasattr(self._decomp, "copy")
+        # Not under PyPy, whose ``copy()`` leaks zlib's inflate state on every call
+        # (``dev-docs/known-issues.md`` §"PyPy: native decoder memory"); the stream
+        # then loses at most the call that failed, as with a decoder in a child.
+        self._keep = hasattr(self._decomp, "copy") and not UNDER_PYPY
 
     def _raise_pending(self) -> None:
         if self._raise_next is not None:

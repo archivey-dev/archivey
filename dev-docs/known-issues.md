@@ -488,9 +488,10 @@ and grew its worker by 2.7 GB. In the merge queue's PyPy job that put the runner
 workers past its 16 GB, the runner stopped answering, and the job ran into its
 45-minute limit with no log (2026-11-13 and 14). The path now takes one copy per
 `REPLAY_MAX_STEPS` steps, 1 MiB of input or 8 MiB of output, and replays the steps since
-the copy on an error. What remains on PyPy: about 7 MiB leaked per GiB of compressed
-input read through a pipe, and as much per GiB of output from snapshot seek points
-(`ZlibSnapshot`, one copy per MiB of output and one per seek).
+the copy on an error; under PyPy it takes none (maintainer's choice, 2026-11-14), so a
+damaged pipe loses the failing call's bytes there, at most 64 KiB, as with a decoder in
+a child. What remains on PyPy: snapshot seek points (`ZlibSnapshot`, one copy per MiB of
+output on declared seek demand, and one per seek) leak about 7 MiB per GiB of output.
 
 **Upstream.** Not filed; PyPy documents that native memory needs
 `add_memory_pressure` from whoever allocates it. The copy that is never freed is a PyPy

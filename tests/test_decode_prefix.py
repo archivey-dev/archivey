@@ -35,6 +35,7 @@ from archivey.internal.streams.codecs import (
 )
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
+from archivey.internal.streams.native_memory import UNDER_PYPY
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
@@ -117,6 +118,15 @@ _DEFLATE_FAMILY: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
 _DEFLATE_WBITS = {"gzip": 31, "zlib": zlib.MAX_WBITS, "deflate": -zlib.MAX_WBITS}
 
 
+# Under PyPy the deflate decoders take no ``decompressobj.copy()`` on a pipe, because
+# PyPy leaks part of every copy (dev-docs/known-issues.md §"PyPy: native decoder
+# memory"): a pipe loses the failing call's bytes there, as with a decoder in a child.
+_DEFLATE_COPIES = pytest.mark.skipif(
+    UNDER_PYPY, reason="no deflate copies under PyPy: its copy() leaks"
+)
+
+
+@_DEFLATE_COPIES
 @pytest.mark.parametrize("name", list(_DEFLATE_FAMILY))
 @pytest.mark.parametrize("size", [512, 1 << 20])
 def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
@@ -145,6 +155,7 @@ def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
     assert _prefix(NonSeekableBytesIO(damaged), codec, size) == expected
 
 
+@_DEFLATE_COPIES
 def test_a_second_gzip_member_from_a_pipe_gets_every_byte_before_the_error() -> None:
     first = _text(200_000, 2)
     data = gzip.compress(first, mtime=0) + _damage(
@@ -249,6 +260,7 @@ def test_one_byte_steps_share_a_copy(
     assert len(copies) <= steps // deflate_decoder.REPLAY_MAX_STEPS + 1
 
 
+@_DEFLATE_COPIES
 @pytest.mark.parametrize("unbounded", [False, True], ids=["bounded", "one-unbounded"])
 @pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
 def test_the_replay_hands_back_what_a_copy_per_step_does(
@@ -278,6 +290,26 @@ def test_the_replay_hands_back_what_a_copy_per_step_does(
         )
         == shared
     )
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_under_pypy_a_pipe_takes_no_copy_and_loses_at_most_the_failing_call(
+    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under PyPy the decoders take no copy, and a damaged pipe hands back what the
+    feeds before the failing one gave. Both interpreters run it with the flag patched;
+    the reference keeps copies, which PyPy can take, only not without a leak."""
+    damaged = _damaged_stream(decoder_type)
+    monkeypatch.setattr(deflate_decoder, "UNDER_PYPY", False)
+    kept = _fed_in_pieces(decoder_type, damaged, 64, [])
+    monkeypatch.setattr(deflate_decoder, "UNDER_PYPY", True)
+    copies: list[int] = []
+    got, steps, recovered = _fed_in_pieces(decoder_type, damaged, 64, copies)
+    assert copies == []
+    assert recovered == 0
+    assert steps == kept[1] - 1
+    assert got == kept[0][: len(got)]
+    assert len(kept[0]) - len(got) == kept[2]
 
 
 @pytest.mark.parametrize("name", ["gzip", "xz"])
@@ -614,6 +646,7 @@ def test_recovery_off_does_not_decode_again(
         assert got < recovered[0]
 
 
+@_DEFLATE_COPIES
 def test_recovery_off_takes_no_deflate_copy_on_a_pipe() -> None:
     """On a pipe the deflate decoder keeps the bytes before an error by copying its
     state before each call; with recovery off it takes no copy, so the failing call's

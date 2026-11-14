@@ -1099,11 +1099,12 @@ call that raised. Each call SHALL be fed compressed input up to the next multipl
 as it is) and SHALL ask for what the read asks, at most 64 KiB.
 
 Unless the caller set `recover_partial_data=False`, a gzip, zlib or raw deflate decoder
-on such a source SHALL lose nothing: it copies its
-zlib state (`decompressobj.copy()`) before each call, and when a call raises, the copy
-decodes the same input again one output byte per call up to the error. The decoder
-returns those bytes and raises the error from its next call. A decoder in a decoder
-child, which has no `copy()`, keeps the bound above.
+on such a source SHALL lose nothing: it keeps a copy of its zlib state
+(`decompressobj.copy()`) taken before the call or a few calls earlier, and when a call
+raises, the copy decodes the calls since it again and then the failing call's input one
+output byte per call up to the error. The decoder returns those bytes and raises the
+error from its next call. A decoder in a decoder child, which has no `copy()`, keeps the
+bound above, and so does every such decoder under PyPy, whose `copy()` leaks memory.
 
 #### Scenario: read sizes on a pipe
 
