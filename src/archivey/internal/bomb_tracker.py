@@ -376,9 +376,11 @@ class _RatioGuard(DelegatingStream):
     rule (:meth:`_judge`).
 
     The measure is the furthest offset decoded, so a backward seek that decodes again
-    costs nothing here. Reads and seeks forward go to the decoder in steps of at most
-    1 MiB, a seek to the end included, so a refusal comes within a step of the limit,
-    from the call that crosses it, whose bytes are withheld.
+    costs nothing here. Near the limit, reads and seeks forward go to the decoder in
+    steps of at most 1 MiB, a seek to the end included, so a refusal comes within a step
+    of the limit, from the call that crosses it, whose bytes are withheld. Further from
+    it, a read or a seek toward an end the guard cannot see asks for at most 16 MiB per
+    call (``_READ_TO_END_STEP``).
     """
 
     # Changes no bytes and no positions: verification and resume offsets look

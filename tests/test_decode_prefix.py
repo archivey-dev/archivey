@@ -217,8 +217,9 @@ def _fed_in_pieces(
 ) -> tuple[bytes, int, int]:
     """What a decoder that keeps the output before errors gives from ``data`` fed in
     ``piece``-byte feeds of at most 64 KiB of output each, before it raises: the bytes,
-    the feeds that returned, and the bytes the failing feed handed back (the feed
-    after it raises). The feed at offset ``unbounded_at`` asks for all its output."""
+    the feeds that returned, and the bytes the failing feed handed back. That feed meets
+    the error, returns the bytes before it and keeps the error; the feed after it
+    raises. The feed at offset ``unbounded_at`` asks for all its output."""
     decoder: ZlibDecoder | GzipDecoder = (
         GzipDecoder() if decoder_type is GzipDecoder else ZlibDecoder(zlib.MAX_WBITS)
     )
