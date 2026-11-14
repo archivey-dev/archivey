@@ -331,19 +331,15 @@ def _rar_member_copy_notes(
                 "or the whole archive when that would be one run, " + whole
             )
         else:
-            note += f"A stream whose copy does not fit is {volumes}, from the stream "
-            note += "start on each read. A pass (stream_members(), extract_all()) "
-            if _pass_run_bytes(limits):
-                note += (
-                    "whose members pack more than 64 MiB is written as volumes too; "
-                    "a smaller one copies the whole archive, and so does any pass "
-                    "where " + whole
-                )
-            else:
-                note += (
-                    "is written as volumes too, except that it copies the whole "
-                    "archive when " + whole
-                )
+            note += (
+                f"A stream whose copy does not fit is {volumes}, from the stream "
+                "start on each read. A pass (stream_members(), extract_all()) is "
+                "written as volumes too when it would otherwise copy several runs of "
+                "whole solid streams (more than 64 MiB of packed bytes, or more than "
+                "one stream under a limit below 128 MiB) or a whole archive that "
+                "does not fit; otherwise it copies the whole archive, and so does "
+                "any pass where " + whole
+            )
         what = "a solid stream"
         refused = (
             f"A copy that would pass SpoolLimits.max_bytes={limit} is refused instead "
@@ -4108,17 +4104,19 @@ class RarReader(BaseArchiveReader):
 
         groups = self._solid_pass_groups()
         # A stream source's pass: one unrar run fed rolling volumes, or runs of
-        # whole solid streams each copied whole. An archive whose packed members
-        # fit one run is copied whole either way (_solid_pass_run_plan): measured
-        # on 4,000 members of 250 B from a BytesIO, rolling volumes took 612 ms
-        # against 456 ms for the whole copy, as they read every header again.
+        # whole solid streams each copied whole. A pass the old route reads as one
+        # copy of the whole archive keeps that copy when it fits the spool limit:
+        # rolling volumes save no disk there, and measured on 4,000 members of
+        # 250 B from a BytesIO they took 612 ms against 456 ms for the whole copy,
+        # as they read every header again.
+        runs = None if groups is None else self._solid_pass_run_plan(groups)
         rolling = (
             groups is not None
-            and sum(g.packed for g in groups)
-            > _pass_run_bytes(self._config.spool_limits)
+            and (runs is not None or not self._whole_copy_fits())
             and self._rolling_ok()
         )
-        runs = None if groups is None or rolling else self._solid_pass_run_plan(groups)
+        if rolling:
+            runs = None
 
         def _spawn() -> BinaryIO:
             password = self._archive_data_password()
@@ -4463,6 +4461,16 @@ class RarReader(BaseArchiveReader):
             finally:
                 end_run()
 
+    def _whole_copy_fits(self) -> bool:
+        """Whether the copy of the whole stream source for ``unrar`` fits the spool
+        limit beside the copies already charged; ``False`` when its size is not
+        known and there is a limit."""
+        size = self._spool_copy_size()
+        if size is None:
+            return self._config.spool_limits.max_bytes is None
+        with self._materialize_lock:
+            return self._spool_budget(None).would_fit(size)
+
     def _solid_pass_groups(self) -> list[_PassRun] | None:
         """The solid streams of a pass over a stream source, each with the archive
         indices of its members with packed data (:func:`has_packed_data`), in order.
@@ -4513,9 +4521,8 @@ class RarReader(BaseArchiveReader):
             yield entry
 
     def _solid_pass_run_plan(self, groups: list[_PassRun]) -> list[_PassRun] | None:
-        """The runs of solid streams a pass over a stream source reads one at a time,
-        when its ``unrar`` cannot be fed rolling volumes or the packed members fit
-        one run.
+        """The runs of solid streams a pass over a stream source reads one at a time
+        when it is not fed rolling volumes. ``groups`` is left as it is.
 
         Each run is whole solid streams (``groups``, :meth:`_solid_pass_groups`). A
         run takes the next stream while its packed bytes stay within
@@ -4535,7 +4542,7 @@ class RarReader(BaseArchiveReader):
                 runs[-1].indices.extend(group.indices)
                 runs[-1].packed += group.packed
             else:
-                runs.append(group)
+                runs.append(_PassRun(group.start, list(group.indices), group.packed))
         return runs if len(runs) > 1 else None
 
     def _solid_pass_runs(

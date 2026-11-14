@@ -519,20 +519,47 @@ def test_a_solid_pass_over_a_stream_is_one_rolling_run(
 @requires_unrar_cli()
 @requires_binary("rar")
 @pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("limit", [None, 100 << 20])
 def test_a_small_solid_pass_over_a_stream_is_copied_whole(
-    tmp_path: Path, unrar_runs: list[dict[str, object]]
+    tmp_path: Path, unrar_runs: list[dict[str, object]], limit: int | None
 ) -> None:
-    """Packed members that fit one run are copied whole and read with one plain
-    unrar: rolling volumes would read every header again for nothing."""
+    """Packed members that fit one run, in a whole copy that fits the limit, are
+    copied whole and read with one plain unrar: rolling volumes would read every
+    header again for nothing. A limit under 128 MiB, where each stream is a run
+    of its own, does not change that for an archive of one stream."""
     files = {f"f{i}.bin": _text(6_000) for i in range(5)}
     raw = _rar(tmp_path, files, "-ma5", "-s")
     got: dict[str, bytes] = {}
-    with open_archive(BytesIO(raw), config=_config(None)) as reader:
+    with open_archive(BytesIO(raw), config=_config(limit)) as reader:
         for member, stream in reader.stream_members():
             if stream is not None and member.is_file:
                 got[member.name] = stream.read()
     assert got == files
     assert [run.get("volume_pause", False) for run in unrar_runs] == [False]
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+@pytest.mark.usefixtures("rolling_unrar")
+def test_a_pass_of_several_runs_rolls_every_member_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unrar_runs: list[dict[str, object]],
+) -> None:
+    """A pass the old route would read as several runs, some holding more than one
+    solid stream, is one rolling run over each member once."""
+    monkeypatch.setattr(rar_reader, "_SYNTHETIC_IN_PLACE_THRESHOLD", 20_000)
+    files = {f"f{i}.bin": _text(6_000) for i in range(6)}
+    raw = _rar(tmp_path, files, "-ma5", "-s2")
+    unrar_runs.clear()
+    got: dict[str, bytes] = {}
+    with open_archive(BytesIO(raw), config=_config(None)) as reader:
+        assert len(reader._solid_pass_groups() or []) == 3
+        for member, stream in reader.stream_members():
+            if stream is not None and member.is_file:
+                got[member.name] = stream.read()
+    assert got == files
+    assert [run.get("volume_pause") for run in unrar_runs] == [True]
 
 
 @requires_unrar_cli()

@@ -316,8 +316,8 @@ in the repository measures what each limit costs in time and memory on your mach
   member's read copies its solid stream up to it into one such file
   per stream, grown by later reads and removed when the reader closes. With `unrar` 7.00 or later, a
   copy from a stream source over 64 MiB or over what the limit has room for, and a pass over a solid
-  RAR from a stream source that packs over 64 MiB (any size under a limit below 128 MiB), are
-  written as RAR volumes instead, one on disk at a time (16 MiB, or half the limit). Otherwise a
+  RAR from a stream source that would otherwise take several runs or a whole copy over the limit,
+  are written as RAR volumes instead, one on disk at a time (16 MiB, or half the limit). Otherwise a
   pass over a solid RAR copies whole solid streams a few at a time, up to 64 MiB of packed bytes or
   one larger stream, or the whole archive when that would be one run, a member has an unknown
   compression version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB. A RAR opened from a
