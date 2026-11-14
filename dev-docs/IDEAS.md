@@ -265,6 +265,8 @@ Each idea carries a status:
   reproducible output (`SOURCE_DATE_EPOCH`, stable ordering, normalized metadata) and the
   metadata-fidelity boundary (xattrs, ACLs, owners), because both shape the writer API
   ([`investigations/archive-writing-design.md`](investigations/archive-writing-design.md)).
+  The conversion design draft is
+  [`investigations/archive-conversion-design.md`](investigations/archive-conversion-design.md).
 - **Copy compressed data through without recompressing.** *Open idea.* When the source
   and destination use the same codec and parameters (deflate to deflate), copy the
   compressed bytes instead of decoding and encoding again.
