@@ -69,6 +69,7 @@ source ends inside SHALL be graded `DAMAGED`. When the source does not start wit
 | A DOS `MZ`, PE or ELF stub, then an archive | The same |
 | Bytes with no executable cue, then an archive | Found by the leading-bytes scan; members read |
 | The same, with `format=ARJ` | The reader's own scan finds the same archive |
+| A PE with an archive in its sections and another at its overlay start | The one at the overlay start (`format-detection`, *Overlay start first*), detected and with `format=ARJ` |
 | `60 EA` in the stub, bare or with a header whose CRC-32 fails | The candidate is passed over |
 | A stub and no `60 EA`, with `format=ARJ` | `CorruptionError` ("Not an ARJ archive") |
 | A stub cut inside the main header, with `format=ARJ` | `TruncatedError` |
