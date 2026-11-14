@@ -1541,7 +1541,10 @@ from a pipe, or the furthest offset a seekable stream of unknown size has reache
 live rule waits for `live_ratio_activation_threshold` (256 MiB), so before that only the
 per-member rule holds reads from such a source. A container inside a compression stream
 (a `.tar.gz`) holds its whole decode, listing included, to the archive-wide ratio
-(`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything. A sequential
+(`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything; the stream
+`open_stream()` returns gets the same guard against its source's size
+(`core._hold_stream_to_ratio`; a source with no stat size is measured by a seek to its
+end, a pipe by the bytes taken). A sequential
 format handler's walk is held the same way to what it decodes by itself
 (`format_adapter.SequentialReaderAdapter._ratio_guarded`): the layers that
 `ForwardStream.decompress()` opens share one total, each layer counted at the furthest

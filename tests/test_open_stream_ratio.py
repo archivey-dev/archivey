@@ -143,3 +143,15 @@ def test_a_path_with_no_stat_size_is_held_by_its_length(
     monkeypatch.setattr(source_module.os, "stat", block_device_stat)
     with open_stream(path) as stream, pytest.raises(ResourceLimitError):
         _drain(stream)
+
+
+def test_a_seekable_stream_with_no_size_hint_is_held_by_its_length() -> None:
+    # A SpooledTemporaryFile is seekable but has no stat size: the length comes from
+    # a seek to the end, not from the live count and its 256 MiB floor.
+    import tempfile
+
+    with tempfile.SpooledTemporaryFile(max_size=64 * _MIB) as f:
+        f.write(gzip.compress(bytes(8 * _MIB)))
+        f.seek(0)
+        with open_stream(f) as stream, pytest.raises(ResourceLimitError):
+            _drain(stream)
