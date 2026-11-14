@@ -24,6 +24,7 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     OptionalLibrary,
+    OptionalLibraryStr,
     PluginContainer,
     PluginStream,
     StreamFormat,
@@ -31,7 +32,6 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.formats import FormatHandler, IndexedFormatHandler
-    from archivey.types import OptionalLibraryStr
 
 __all__ = ["FormatPolicy"]
 
@@ -150,6 +150,9 @@ def _coerce_libraries(
             f"{{OptionalLibrary.{values.name}}}."
         )
     if isinstance(values, Iterable) and not isinstance(values, (str, bytes)):
+        # Read once: a generator would be empty for the conversion below, and an
+        # exclusion read as empty silently turns the excluded code back on.
+        values = tuple(values)
         stdlib = sorted(
             v for v in values if isinstance(v, str) and v.lower() in _STDLIB_CODECS
         )

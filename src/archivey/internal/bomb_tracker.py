@@ -398,6 +398,17 @@ class _RatioGuard(DelegatingStream):
         # one read; a subclass sets it.
         self._size: int | None = None
 
+    def try_get_size(self) -> int | None:
+        """The inner stream's cheap size, as ``ArchiveStreamImpl.size`` asks it: a
+        guard changes no bytes, so the decoded length is the decoder's."""
+        inner = self._inner
+        try_get_size = getattr(inner, "try_get_size", None)
+        if callable(try_get_size):
+            result = try_get_size()
+            return result if isinstance(result, int) else None
+        size = getattr(inner, "size", None)
+        return size if isinstance(size, int) and not isinstance(size, bool) else None
+
     def _judge(self, position: int) -> None:
         """Raise if ``position`` decoded bytes break the rule; called as it grows."""
         raise NotImplementedError
@@ -529,6 +540,11 @@ class DecodeRatioGuard(_RatioGuard):
     With a ``tally``, the guard is one of several whose decoded bytes count toward one
     total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
     the rule judges the total, not this stream's bytes alone.
+
+    ``open_stream()`` uses it too, for a bare compressed stream judged against the
+    stream's size. That caller passes ``holds_errors=False``, so a single ``read()``
+    raises the decoder's error rather than holding it for a later read, and
+    ``counted="the stream decoded"`` for its message (see ``__init__``).
     """
 
     def __init__(
@@ -541,8 +557,17 @@ class DecodeRatioGuard(_RatioGuard):
         tally: ReadRatioTally | None = None,
         key: int = 0,
         nest: NestDraws | None = None,
+        holds_errors: bool = True,
+        counted: str = "the archive decoded",
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
+        # A container's decode holds the decoder's error after a whole step for the
+        # next call, so the members before the damage are not lost with the step. A
+        # stream handed to the caller raises it from the call that meets it, as a
+        # member stream does (MemberRatioGuard): a single ``read()`` must not return
+        # damaged data without an error.
+        self._holds_errors = holds_errors
+        self._counted = counted
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
@@ -563,7 +588,7 @@ class DecodeRatioGuard(_RatioGuard):
             limits=limits,
             static_size=self._static_size,
             consumed=self._consumed,
-            counted="the archive decoded",
+            counted=self._counted,
         )
         if self._nest is not None:
             self._nest.report_pass(position)
@@ -665,16 +690,6 @@ class MemberRatioGuard(_RatioGuard):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
-
-    def try_get_size(self) -> int | None:
-        """The inner stream's cheap size, as ``ArchiveStreamImpl.size`` asks it."""
-        inner = self._inner
-        try_get_size = getattr(inner, "try_get_size", None)
-        if callable(try_get_size):
-            result = try_get_size()
-            return result if isinstance(result, int) else None
-        size = getattr(inner, "size", None)
-        return size if isinstance(size, int) and not isinstance(size, bool) else None
 
     @override
     def _room(self) -> float:

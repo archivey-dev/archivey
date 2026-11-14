@@ -530,16 +530,19 @@ def test_resolve_hardlink_uses_target_as_archive_path(target: str) -> None:
 @example(target="../x")
 @example(target="/../a")
 @example(target="a/../b")
+@example(target="../")
+@example(target="a/")
 @given(target=_pathish)
 def test_resolve_hardlink_keeps_dot_dot_like_a_member_name(target: str) -> None:
     """Without ``within_root``, a hardlink target resolves to the name
-    ``normalize_member_name`` gives a member stored under it, ``..`` included."""
+    ``normalize_member_name`` gives a member stored under it, ``..`` included. A
+    target ending in ``/`` names a directory, so it is compared with a directory
+    member's name, which keeps the final ``/``."""
     result = resolve_link_target_name("ignored/link", target, MemberType.HARDLINK)
     if result is None:
         return
-    assert result == normalize_member_name(
-        target, MemberType.FILE, backslash_is_separator=False
-    )
+    kind = MemberType.DIRECTORY if target.endswith("/") else MemberType.FILE
+    assert result == normalize_member_name(target, kind, backslash_is_separator=False)
 
 
 @example(link_name="a/b", target="../x", member_type=MemberType.SYMLINK)

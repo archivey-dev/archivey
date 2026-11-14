@@ -591,11 +591,19 @@ rather than several frames into a member-name decode.
 The raw exceptions the contract already permits SHALL continue to escape unchanged:
 `KeyError` for an unknown member **name**, `TypeError` for `len()` / `in`,
 `io.UnsupportedOperation` for an unsupported `seek`,
-`ValueError` for I/O on a closed stream, and `OSError`. Boolean flags read for their
-truthiness are not covered, there being no wrong type to find, except
-`ArchiveyConfig`'s guard switches (`rar_allow_glob_member_concatenation`,
-`read_link_targets`), which SHALL be a `bool`: a string such as `"false"` is truthy
-and would silently switch the guard.
+`ValueError` for I/O on a closed stream, and `OSError`. Every public boolean flag SHALL
+be a `bool`, refused otherwise with an `ArchiveyUsageError` that is also a `TypeError`,
+before anything is read: `ArchiveyConfig`'s switches
+(`rar_allow_glob_member_concatenation`, `read_link_targets` and the rest), and the call
+flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
+`open_stream(seekable=)`, `detect_format(follow_stub_volumes=)`,
+`format_availability(check_programs=)`, `extract_all(dry_run=)`,
+`stream_members(file_copy_streams=)`, `ArchiveStream.verify(password_only=)`,
+`FormatPolicy(plugins=)`, `AcceleratorMode.enabled_for(seekable=, available=)`, and the
+helpers for format handlers and extraction code
+`archivey.paths.match_glob(with_contents=)`, `archivey.paths.numbered_name(is_dir=)` and
+`archivey.formats.unix_member_type(has_data=)`. A string such as `"false"` is truthy, so
+a flag loaded from text would silently switch a guard or a mode on.
 
 An empty string passed as a path SHALL raise an `ArchiveyUsageError` that is also a
 `ValueError` at the entry point, before anything is read or created. This covers the
@@ -617,6 +625,7 @@ otherwise open the current directory as a directory archive or extract into it.
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
 | `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction; the refusal is never switched off by a truthy string |
+| `open_archive(src, streaming="false")`, `open_stream(src, seekable=0)` | `ArchiveyUsageError` that is also a `TypeError`, naming the flag, before the source is read |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
 | `DecoderLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `DecoderLimits(ratio_activation_threshold=None)` or `DecoderLimits(live_ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |
@@ -661,7 +670,8 @@ The parameters covered:
 | Entry point | Parameters |
 | --- | --- |
 | `ArchiveReader.extract_all()` | `policy`, `overwrite`, `on_error`, `abort_on` |
-| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveyConfig(...)` | `use_rapidgzip`, `use_indexed_bzip2`, `process_isolation`, `rar_decompressor`, `detection_budget` (a `DetectionBudget` passes through unconverted) |
+| `ArchiveFormat(...)` | `container`, `stream` (a plugin's member passes through unconverted) |
 | `DiagnosticPolicy(...)` | `ignore`, `raise_on` |
 
 A member SHALL be reachable by its `value`, by its member **name**, in any case, and
@@ -669,6 +679,20 @@ with `-` and `_` used interchangeably, so the dash spelling the CLI's `--help`
 advertises is also valid in library code. Surrounding whitespace SHALL be ignored.
 Accepting a string makes the enum **values** part of the public API: a value cannot
 afterwards be renamed without breaking callers silently.
+
+Each covered enum SHALL have a `Literal` alias beside it (`OverwritePolicyStr`,
+`AcceleratorModeStr`, `ContainerFormatStr`, …) that lists every value and the dash form
+of each value holding `_`, and the parameter's declared type SHALL accept that alias as
+well as the enum, never a bare `str`. A type checker then accepts each value and its dash
+form, and still flags a misspelling. A member name, another case or surrounding
+whitespace stays valid at runtime but still gets a type-checker diagnostic, since a
+`Literal` cannot list them. The test suite SHALL fail when an alias and its enum
+disagree, or when a coerced enum has no alias and no recorded reason for its absence.
+Where the parameter is a dataclass field (`ArchiveyConfig`, `ArchiveFormat`), only the
+constructor's input type is widened: the field SHALL stay annotated with the type it
+holds after conversion (the enum, and `DetectionBudget` for `detection_budget`), since it
+never holds a string, and the test suite SHALL fail when the declared constructor and
+the generated one differ in anything but those input types.
 
 The conversion SHALL be unambiguous. No two members of a covered enum may share a
 normalized spelling, and the test suite SHALL fail if a new member introduces such a
@@ -699,6 +723,7 @@ vocabulary rather than two that can drift.
 | `extract_all(dest, overwrite="nonsense")` | `ArchiveyUsageError` naming `overwrite` and the valid spellings; nothing written to `dest` |
 | `ArchiveyConfig(use_rapidgzip="on")` | Field holds `AcceleratorMode.ON`, not the string |
 | `ArchiveyConfig(use_rapidgzip="sometimes")` | `ArchiveyUsageError` at construction, not at the later stream open |
+| `ArchiveyConfig(process_isolation="none")` under a type checker | No diagnostic; `config.process_isolation` is typed `ProcessIsolation` |
 | `DiagnosticPolicy(raise_on=["ARCHIVE_TRAILING_DATA"])` | The field holds `DiagnosticCode.ARCHIVE_TRAILING_DATA`, so that code raises |
 | `DiagnosticPolicy(ignore="archive_trailing_data")` | `ArchiveyUsageError` naming the list spelling |
 | `DiagnosticPolicy(ignore={"ARCHIVE_TRAILING_DATA": "raise"})` | `ArchiveyUsageError` (a `TypeError`): a mapping is refused, not read as its keys |

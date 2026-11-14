@@ -78,9 +78,10 @@ held, archivey runs a garbage collection and tries once more before it raises. W
 [`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every
 format, and so does `extract_all`. Streams from the pass never seek.
 
-A pipe, a socket or an HTTP response can only be read this way. TAR and ZIP archives and single
-compressed files can come from one. 7z, RAR and ISO archives need a file or another source that
-can seek.
+A pipe, a socket or an HTTP response can only be read this way. TAR, ZIP, cpio, ar, deb, RPM and
+makeself archives and single compressed files can come from one. 7z, RAR, ISO, SquashFS, CAB, XAR,
+LHA and ARJ archives need a file or another source that can seek.
+`archivey.format_availability(format).required_source` says which a format needs.
 
 A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an
 index at its end. From a pipe, archivey finds each member by the short header in front of it, and
@@ -220,7 +221,7 @@ format, and the mistake shows up during development.
 |---|---|---|
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
-| Read from a pipe | `streaming=True` | [TAR, ZIP and single compressed files only](#reading-once) |
+| Read from a pipe | `streaming=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-once) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
 | Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |

@@ -27,6 +27,7 @@ from archivey.diagnostics import (
     MemberListReport,
     VerifyReport,
 )
+from archivey.internal.arg_checks import check_bool
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
@@ -222,14 +223,18 @@ class ArchiveStream(ReadOnlyIOStream):
         stream is still put back where it was. Otherwise compare the result with
         ``verifiable``: when they are equal, nothing more can be checked. A closed
         stream raises ``ValueError``, as every ``io`` method does, also after
-        ``verify()`` consumed it. Which reads a target needs can get cheaper in a later
-        release; the result and the errors stay the same.
+        ``verify()`` consumed it. A ``password_only`` that is not a ``bool`` raises
+        :class:`~archivey.ArchiveyUsageError` (also a ``TypeError``) before anything is
+        read; on a closed stream the ``ValueError`` comes first. Which reads a target
+        needs can get cheaper in a later release; the result and the errors stay the
+        same.
 
         Experimental: any release, a patch included, may change or remove this method,
         its arguments or what it returns.
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        check_bool(password_only, call="verify(password_only=…)")
         level = Verification.UNLOCKED if password_only else Verification.CHECKSUM
         if not self.seekable():
             if self._verify_consumed():
@@ -647,9 +652,10 @@ class ForwardArchiveReader(ABC):
         ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises
         ``io.UnsupportedOperation``, and ``tell()`` works. A nested archive read from
         it is a non-seekable source: ``open_archive()`` accepts it only with
-        ``streaming=True`` and only for TAR, ZIP and single-file compressors. For a member
-        you need to seek, nested archives included, use :meth:`~ArchiveReader.open` under
-        ``seekable_members=True``.
+        ``streaming=True``, and only for a format that reads forward
+        (``format_availability(format).required_source`` is ``FORWARD_ONLY``). For a
+        member you need to seek, nested archives included, use
+        :meth:`~ArchiveReader.open` under ``seekable_members=True``.
 
         On a default reader the pass owns the reader while it runs:
         :meth:`~ArchiveReader.open`, :meth:`~ArchiveReader.read`,
