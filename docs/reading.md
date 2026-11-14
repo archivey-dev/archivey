@@ -66,18 +66,17 @@ with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
 `streaming=True` is a promise to read the archive once, from start to end. When set, `open`, `read`
 and `members()` raise, so an out-of-order read fails right away instead of quietly costing time. If
 you plan to read an archive in one pass, setting it catches that mistake, even on an ordinary file.
-You get one pass, through `stream_members`, `for member in archive` or `extract_all`, and it is
-used up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and
-`members()` raise even without `streaming=True`, since the pass is still using the archive. A pass
-you leave with `break` ends at once on CPython. One kept in a variable, or one an exception left,
+You get one pass, through `stream_members`, `for member in archive` or `extract_all`, and it is used
+up even if you leave the loop early. Inside a `stream_members` loop, `open`, `read` and `members()`
+raise even without `streaming=True`, since the pass is still using the archive. A pass you leave
+with `break` ends at once on CPython. One your code still refers to, such as one kept in a variable,
 holds the archive until you close it, so use it in a `with` block when the loop can stop early:
 `with archive.stream_members() as members:` ends the pass at the end of the block, and `with
 iter(archive) as members:` does the same for a loop over members. A pass or member stream that
 nothing refers to any more never blocks the next call, on any Python: when a call finds the archive
 held, archivey runs a garbage collection and tries once more before it raises. With
-[`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every format,
-and so does `extract_all`.
-Streams from the pass never seek.
+[`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every
+format, and so does `extract_all`. Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. TAR and ZIP archives and single
 compressed files can come from one. 7z, RAR and ISO archives need a file or another source that

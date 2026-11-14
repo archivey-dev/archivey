@@ -63,12 +63,13 @@ reads it to its end. To settle them, `archive.verify_all()` reads every member t
 fills in those sizes, and `archive.open(member)` on a symlink reads its target.
 [Reading once](reading.md#reading-once)
 
-**Read a solid archive with `stream_members()`.** In a `.tar.gz` or most 7z archives, members are
-compressed together, so reaching a member means decompressing the data before it.
-`stream_members()` decompresses it once. Reading members by name can decompress the same data many
-times, which is slow on a large archive. On a solid 7z or RAR archive, archivey records
-`SOLID_OPEN_REDECOMPRESSES` the first time it decompresses data again.
-[Solid archives](reading.md#solid-archives)
+**Read a solid archive with `stream_members()`.** In a `.tar.xz` or most 7z archives, members are
+compressed together, so reaching a member means decompressing the data before it. `stream_members()`
+decompresses it once. Reading members by name can decompress the same data many times, which is slow
+on a large archive. A `.tar.gz` is cheaper to read by name, because archivey keeps a restart point
+about every MiB while it lists one. On a solid 7z or RAR archive, archivey records
+`SOLID_OPEN_REDECOMPRESSES` the first time it decompresses data again. [Solid
+archives](reading.md#solid-archives)
 
 **Open with `streaming=True` when you process each member once.** It's a promise to read the
 archive once, from start to end. `open()`, `read()` and `members()` then raise, so a read out of
@@ -90,16 +91,20 @@ two members can have the same name. `extract_all` keeps every file inside the de
 handles these cases. Code that writes files itself has to check the names itself. [What each
 policy does with unusual members](extracting.md#what-each-policy-does-with-unusual-members)
 
-**Catch errors around `extract_all`, and decide what to do with what's already written.**
+**Catch errors around `extract_all`, and decide what to do with what's already written.** When
+the extraction gets a folder of its own, removing that folder on an error removes only what it
+wrote:
 
 ```python
+import os
 import shutil
 
+os.mkdir("out")  # raises if "out" exists, so the folder holds only this extraction
 try:
     with archivey.open_archive("download.zip") as archive:
         archive.extract_all("out/")
 except archivey.ArchiveyError:
-    shutil.rmtree("out/", ignore_errors=True)
+    shutil.rmtree("out")
     raise
 ```
 
@@ -110,11 +115,11 @@ written before it stay in the destination, but the damaged member doesn't leave 
 
 ## Errors
 
-**Catch the other exceptions you care about next to `ArchiveyError`.** `ArchiveyError` covers
-every problem with the archive, but not every exception archivey raises. A member name the archive
-doesn't have raises `KeyError`, a mistake in the calling code raises `ArchiveyUsageError`, a
-missing file or a disk error raises `OSError`, and running out of memory raises `MemoryError`.
-[Exceptions](errors-and-diagnostics.md#exceptions)
+**Catch the other exceptions you care about next to `ArchiveyError`.** `ArchiveyError` covers every
+problem with the archive, but not every exception archivey raises. `open` and `read` with a name the
+archive doesn't have raise `KeyError` (`get` returns `None`), a mistake in the calling code raises
+`ArchiveyUsageError`, a missing file or a disk error raises `OSError`, and running out of memory
+raises `MemoryError`. [Exceptions](errors-and-diagnostics.md#exceptions)
 
 **Look at `archive.diagnostics`, or make diagnostics raise.** Some problems don't raise. A TAR cut
 off exactly between two members, for example, still lists the members before the cut and records
