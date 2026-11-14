@@ -558,7 +558,7 @@ def test_selected_unar_missing_does_not_fall_back_to_unrar(
 def test_config_accepts_the_name() -> None:
     config = ArchiveyConfig(rar_decompressor="UNAR")  # pyright: ignore[reportArgumentType]
     assert config.rar_decompressor is RarDecompressor.UNAR
-    config = ArchiveyConfig(rar_decompressor="auto")  # pyright: ignore[reportArgumentType]
+    config = ArchiveyConfig(rar_decompressor="auto")
     assert config.rar_decompressor is RarDecompressor.AUTO
     assert ArchiveyConfig().rar_decompressor is RarDecompressor.AUTO
 

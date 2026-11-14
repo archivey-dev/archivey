@@ -21,12 +21,13 @@ import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     DetectionBudget,
     DetectionBudgetPreset,
+    DetectionBudgetPresetStr,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
 from archivey.exceptions import ArchiveyUsageError, _UsageTypeError, _UsageValueError
@@ -101,6 +102,15 @@ class AcceleratorMode(Enum):
         )
 
 
+# The string spellings of ``AcceleratorMode``, which ``ArchiveyConfig`` takes for
+# ``use_rapidgzip`` and ``use_indexed_bzip2``, so a type checker flags a bad one at the
+# call. Deliberately narrower than what ``internal.enum_args`` accepts: coercion also
+# takes the member *name* and ignores case, and a literal can express neither. Keep it
+# beside the enum: ``tests/test_enum_arguments.py`` fails if the two drift. The same
+# holds for ``ProcessIsolationStr`` and ``RarDecompressorStr`` below.
+AcceleratorModeStr = Literal["auto", "on", "off"]
+
+
 class ProcessIsolation(Enum):
     """Which native decoders run in a child process, where a crash on hostile input
     costs the member being read instead of the caller's process.
@@ -158,6 +168,12 @@ class ProcessIsolation(Enum):
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
 
 
+# The string spellings of ``ProcessIsolation``, for ``process_isolation``.
+ProcessIsolationStr = Literal[
+    "known_crashes", "known-crashes", "native_decoders", "native-decoders", "none"
+]
+
+
 class RarDecompressor(Enum):
     """Which external program decompresses RAR member data.
 
@@ -208,6 +224,10 @@ class RarDecompressor(Enum):
     ``None``. The ``format_availability()`` query answers for ``AUTO`` whatever this
     setting is, and still runs the ``unrar`` identification probe; pass it
     ``check_programs=False`` to avoid that."""
+
+
+# The string spellings of ``RarDecompressor``, for ``rar_decompressor``.
+RarDecompressorStr = Literal["unrar", "unar", "auto", "none"]
 
 
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
@@ -1027,6 +1047,45 @@ class ArchiveyConfig:
     error either way: only the partial bytes before an error differ.
     """
 
+    if TYPE_CHECKING:
+        # The constructor's input types, wider than the fields for the enum fields and
+        # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
+        # preset) to what the field holds, so a typed caller writing
+        # ``process_isolation="none"``, as documented, needs no suppression, and a
+        # caller reading the field sees the member only. ``@dataclass`` does not
+        # replace an ``__init__`` the class body defines, and this one exists only for
+        # type checkers, so the runtime keeps the generated one. Each default is
+        # ``...`` here: the field's own default applies, and is not written twice.
+        # ``tests/test_api_surface.py`` fails if this and the generated ``__init__``
+        # differ in anything but the widened annotations.
+        def __init__(
+            self,
+            use_rapidgzip: AcceleratorMode | AcceleratorModeStr = ...,
+            use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = ...,
+            process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
+            zip_unflagged_fallback_encoding: str = ...,
+            rar_allow_glob_member_concatenation: bool = ...,
+            rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
+            read_link_targets: bool = ...,
+            extraction_limits: ExtractionLimits = ...,
+            listing_limits: ListingLimits = ...,
+            decoder_limits: DecoderLimits = ...,
+            spool_limits: SpoolLimits = ...,
+            detection_budget: (
+                DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr
+            ) = ...,
+            always_probe_content: bool = ...,
+            discover_volumes: bool = ...,
+            diagnostic_policy: DiagnosticPolicy = ...,
+            max_retained_diagnostic_references: int = ...,
+            on_diagnostic: OnDiagnostic | None = ...,
+            formats: FormatPolicy = ...,
+            max_read_through: int = ...,
+            unrar_path: str | os.PathLike[str] | None = ...,
+            unar_path: str | os.PathLike[str] | None = ...,
+            recover_partial_data: bool = ...,
+        ) -> None: ...
+
     def __post_init__(self) -> None:
         """Check the fields at construction, and convert the ones that hold enums or
         program paths.
@@ -1090,9 +1149,10 @@ def _check_policy_fields(config: ArchiveyConfig) -> None:
 def _convert_detection_budget(config: ArchiveyConfig) -> None:
     """Replace a :class:`DetectionBudgetPreset` member, or its name, with its budget.
 
-    The field then always holds the :class:`DetectionBudget` that detection reads. The
-    annotation stays the budget alone, for the reason :func:`_convert_enum_fields`
-    gives. ``tests/test_enum_arguments.py`` records the exemption.
+    The field then always holds the :class:`DetectionBudget` that detection reads, so
+    its annotation is the budget alone; the constructor's input type also names the
+    preset and ``DetectionBudgetPresetStr``, for the reason :func:`_convert_enum_fields`
+    gives.
     """
     if isinstance(config.detection_budget, DetectionBudget):
         return
@@ -1158,14 +1218,14 @@ def _convert_enum_fields(config: ArchiveyConfig) -> None:
     always holds a member, and a bad spelling names itself at the call site that
     wrote it rather than during some later stream open.
 
-    The fields stay annotated with the enum alone, with no ``Literal`` alias beside
-    it (as do ``ArchiveFormat``'s two fields), because that is what they hold once
-    constructed, and the annotation is read by every consumer of the attribute, not
-    only by the constructor's callers. A string is still accepted at construction: a
-    type checker flags it, which is the right answer for a typed caller who has the
-    enum imported anyway, and an untyped script gets the conversion.
-    ``tests/test_enum_arguments.py`` records the exemption so the gap is not "fixed"
-    back into a union.
+    The fields are annotated with the enum alone, because that is what they hold once
+    constructed, and every consumer of the attribute reads that annotation. The
+    constructor's input types are wider: the ``__init__`` declared for type checkers in
+    the class body takes the enum or its ``Literal`` alias (``AcceleratorModeStr``,
+    ``ProcessIsolationStr``, ``RarDecompressorStr``). The docs show these fields set by
+    their string spellings, and a typed caller who copies such an example must not need
+    a suppression for it; a misspelling is still a type error, because the alias lists
+    the spellings, not ``str``.
     """
     # Each call names its enum class directly: ``tests/test_enum_arguments.py`` reads
     # the coerced classes from the second argument of every ``coerce_enum`` call.

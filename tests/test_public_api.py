@@ -122,16 +122,11 @@ def _checker_command(
     return [exe, "check", "--output-format", "min-text", "sample.py"]
 
 
-@pytest.mark.parametrize("checker", ["ty", "pyrefly"])
-def test_type_checker_refuses_random_access_on_a_streaming_reader(
-    checker: str, tmp_path: Path
-) -> None:
-    """``open_archive``'s overloads, as seen by each checker CI runs.
+def _checker_diagnostics(checker: str, sample: str, tmp_path: Path) -> list[str]:
+    """Run ``checker`` on ``sample`` as a caller's module, and return its diagnostics.
 
-    CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
-    every ``assert_type`` holds and the one diagnostic is ``forward.members()``. Both
-    checkers, because the library is kept clean on both so that one's blind spot
-    cannot hide what the other would catch.
+    Each diagnostic is one line, ``sample.py:L:C...``. Skips when the checker is not
+    installed (it is a dev dependency).
     """
     exe = shutil.which(checker)
     if exe is None:
@@ -141,7 +136,7 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
         "python_version"
     ]
     src = Path(archivey.__file__).resolve().parent.parent
-    (tmp_path / "sample.py").write_text(_OPEN_ARCHIVE_TYPING_SAMPLE)
+    (tmp_path / "sample.py").write_text(sample)
     # Without a config file Pyrefly falls back to a preset that reports nothing here.
     (tmp_path / "pyrefly.toml").write_text(
         f"search-path = [{json.dumps(src.as_posix())}]\n"
@@ -154,9 +149,6 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
         cwd=tmp_path,
         check=False,
     )
-    refused_line = _OPEN_ARCHIVE_TYPING_SAMPLE.splitlines().index(
-        "        forward.members()"
-    )
     output = result.stdout + result.stderr
     # ty prints ``sample.py:L:C: ...``; Pyrefly prints ``ERROR sample.py:L:C-C: ...``.
     diagnostics = [
@@ -164,9 +156,93 @@ def test_type_checker_refuses_random_access_on_a_streaming_reader(
         for line in output.splitlines()
         if line.startswith(("sample.py:", "ERROR sample.py:"))
     ]
-    assert len(diagnostics) == 1, output
-    assert diagnostics[0].startswith(f"sample.py:{refused_line + 1}:"), diagnostics
+    # Neither checker may have failed without a diagnostic to show for it.
+    assert diagnostics or result.returncode == 0, output
+    return diagnostics
+
+
+def _line_of(sample: str, text: str) -> int:
+    """The 1-based line of ``sample`` that is exactly ``text``."""
+    return sample.splitlines().index(text) + 1
+
+
+@pytest.mark.parametrize("checker", ["ty", "pyrefly"])
+def test_type_checker_refuses_random_access_on_a_streaming_reader(
+    checker: str, tmp_path: Path
+) -> None:
+    """``open_archive``'s overloads, as seen by each checker CI runs.
+
+    CI type-checks ``src/`` only, so the overloads' effect on a caller is checked here:
+    every ``assert_type`` holds and the one diagnostic is ``forward.members()``. Both
+    checkers, because the library is kept clean on both so that one's blind spot
+    cannot hide what the other would catch.
+    """
+    diagnostics = _checker_diagnostics(checker, _OPEN_ARCHIVE_TYPING_SAMPLE, tmp_path)
+    refused_line = _line_of(_OPEN_ARCHIVE_TYPING_SAMPLE, "        forward.members()")
+    assert len(diagnostics) == 1, diagnostics
+    assert diagnostics[0].startswith(f"sample.py:{refused_line}:"), diagnostics
     assert "`members`" in diagnostics[0], diagnostics
+
+
+_STRING_SPELLING_TYPING_SAMPLE = """\
+from typing import assert_type
+
+from archivey import (
+    AcceleratorMode,
+    ArchiveFormat,
+    ArchiveyConfig,
+    ContainerFormat,
+    PluginContainer,
+    PluginStream,
+    ProcessIsolation,
+    RarDecompressor,
+    StreamFormat,
+)
+from archivey.detection_cost import DetectionBudget
+
+
+def check() -> None:
+    config = ArchiveyConfig(
+        use_rapidgzip="off",
+        use_indexed_bzip2="auto",
+        process_isolation="none",
+        rar_decompressor="unrar",
+        detection_budget="fast",
+    )
+    ArchiveyConfig(process_isolation="native-decoders")
+    ArchiveyConfig(use_rapidgzip=AcceleratorMode.ON)
+    assert_type(config.use_rapidgzip, AcceleratorMode)
+    assert_type(config.process_isolation, ProcessIsolation)
+    assert_type(config.rar_decompressor, RarDecompressor)
+    assert_type(config.detection_budget, DetectionBudget)
+    fmt = ArchiveFormat("raw_stream", "gz")
+    ArchiveFormat("tar", "Z")
+    assert_type(fmt.container, ContainerFormat | PluginContainer)
+    assert_type(fmt.stream, StreamFormat | PluginStream)
+    ArchiveyConfig(process_isolation="nonee")
+    ArchiveFormat("raw_stream", "gzz")
+"""
+
+
+@pytest.mark.parametrize("checker", ["ty", "pyrefly"])
+def test_type_checker_takes_the_documented_string_spellings(
+    checker: str, tmp_path: Path
+) -> None:
+    """``ArchiveyConfig`` and ``ArchiveFormat`` take a string spelling, typed.
+
+    The docs set these fields by their strings (``process_isolation="none"``,
+    ``ArchiveFormat("raw_stream", "gz")``), so a typed caller copying the docs must get
+    no diagnostic, while the attribute still reads as the enum alone. The input types are
+    ``Literal`` lists, not ``str``, so the two misspellings at the end are the only
+    diagnostics.
+    """
+    sample = _STRING_SPELLING_TYPING_SAMPLE
+    diagnostics = _checker_diagnostics(checker, sample, tmp_path)
+    refused = [
+        _line_of(sample, '    ArchiveyConfig(process_isolation="nonee")'),
+        _line_of(sample, '    ArchiveFormat("raw_stream", "gzz")'),
+    ]
+    assert [int(d.split(":")[1]) for d in diagnostics] == refused, diagnostics
 
 
 def test_member_streams_is_demoted_from_the_surface(tmp_path) -> None:

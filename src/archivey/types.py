@@ -143,6 +143,36 @@ class ContainerFormat(StrEnum):
     :class:`~archivey.ArchiveyUsageError`."""
 
 
+# The string spellings of ``ContainerFormat``, which ``ArchiveFormat`` takes for its
+# ``container`` argument, so a type checker flags a bad one at the call. Deliberately
+# narrower than what ``internal.enum_args`` accepts: coercion also takes the member
+# *name* and ignores case, and a literal can express neither. A plugin's container has
+# no spelling here: it is passed as its member. Keep it beside the enum:
+# ``tests/test_enum_arguments.py`` fails if the two drift.
+ContainerFormatStr = Literal[
+    "zip",
+    "tar",
+    "rar",
+    "7z",
+    "iso",
+    "ar",
+    "deb",
+    "cpio",
+    "rpm",
+    "makeself",
+    "squashfs",
+    "xar",
+    "cab",
+    "lha",
+    "arj",
+    "dmg",
+    "directory",
+    "raw_stream",
+    "raw-stream",
+    "unknown",
+]
+
+
 class PluginContainer(StrEnum):
     """Base class for a container enum that a format plugin defines.
 
@@ -222,6 +252,29 @@ class StreamFormat(StrEnum):
     magic."""
 
 
+# The string spellings of ``StreamFormat``, which ``ArchiveFormat`` takes for its
+# ``stream`` argument; see ``ContainerFormatStr``. A plugin's stream has no spelling
+# here: it is passed as its member.
+StreamFormatStr = Literal[
+    "uncompressed",
+    "gz",
+    "bz2",
+    "xz",
+    "zst",
+    "lz4",
+    "lz",
+    "lzma",
+    "zz",
+    "br",
+    "Z",
+    "lzo",
+    "bz3",
+    "mozlz4",
+    "uu",
+    "b64",
+]
+
+
 @dataclass(frozen=True)
 class ArchiveFormat:
     """A ``(container, stream)`` pair identifying how an archive is packaged.
@@ -246,6 +299,19 @@ class ArchiveFormat:
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
     ``UNCOMPRESSED``, or a member of a :class:`~archivey.PluginStream` subclass for a
     compression format a plugin adds."""
+
+    if TYPE_CHECKING:
+        # The constructor's input types, wider than the fields: a string spelling is
+        # converted to the member in ``__post_init__``, so the fields hold members only.
+        # ``@dataclass`` does not replace an ``__init__`` the class body defines, and
+        # this one exists only for type checkers, so the runtime keeps the generated
+        # one. ``tests/test_api_surface.py`` fails if the two differ in anything but
+        # these annotations.
+        def __init__(
+            self,
+            container: ContainerFormat | PluginContainer | ContainerFormatStr,
+            stream: StreamFormat | PluginStream | StreamFormatStr,
+        ) -> None: ...
 
     def __post_init__(self) -> None:
         # Converted, not only checked: both enums are ``StrEnum``, so a member is a
