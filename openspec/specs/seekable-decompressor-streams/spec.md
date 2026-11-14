@@ -331,11 +331,13 @@ hand the operation to the standard library decoder, so the bytes delivered and t
 `use_indexed_bzip2=OFF`. The standard library SHALL start at the newest block from rapidgzip's
 index at or before the position delivered to the caller, among a bounded number of the newest
 such blocks it keeps as seek points; where there is none, at the start of the stream. A bzip2
-block carries no window. A decode started at a block that meets the end of its stream (the
-combined CRC, which it cannot check) SHALL start over from the start of the stream. A
-damaged block after the start is a verdict, as from a decode from the start: blocks
-decode on their own, so that decode gives the same bytes before it and the same error.
-One that runs out of input first SHALL raise the standard library's `TruncatedError`.
+block carries no window. A decode started at such a block SHALL check the stream's
+combined CRC at its end from the block CRCs read at the index's blocks. When it does not
+match, or could not be read, the decode SHALL start over from the start of the stream,
+which decides. A damaged block after the start is a verdict, as from a decode from the
+start: blocks decode on their own, so that decode gives the same bytes before it and the
+same error. One that runs out of input first SHALL raise the standard library's
+`TruncatedError`.
 
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations. For a zlib stream the system SHALL check the Adler-32 after

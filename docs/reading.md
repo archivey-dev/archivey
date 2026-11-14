@@ -95,12 +95,12 @@ sender to close the pipe ([Single-file compressors](formats.md#single-file-compr
 where).
 
 Damaged compressed data can raise sooner from a pipe than from a file. From a file, a read with a
-size that meets the damage first gives you every byte before it: archivey goes back and
-decompresses that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be
-read twice, so the read that meets the damage raises, and up to 64 KiB before the damage can be
-lost (none for gzip and other deflate data, or for bzip2). bzip2 checks its data in blocks of up to
-900 kB and gives you none of a block whose check fails, from a file or a pipe: the bytes you get
-end where that block starts. On a compressed tar the decompressor reads ahead of the members, so
+size that meets the damage first gives you every byte before it: archivey goes back and decompresses
+that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be read twice,
+so the read that meets the damage raises, and up to 64 KiB before the damage can be lost (none for
+gzip and other deflate data, or for bzip2). bzip2 checks its data in blocks, usually about 900 kB of
+output each, and gives you none of a block whose check fails, from a file or a pipe: the bytes you
+get end where that block starts. On a compressed tar the decompressor reads ahead of the members, so
 damage near the start of a `.tar.xz` from a pipe can make the open fail with no members listed,
 where the same bytes in a file list the members before the damage first.
 

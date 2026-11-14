@@ -110,8 +110,11 @@ def test_any_feed_size_decodes_the_stream(chunk: int, level: int) -> None:
     want = DATA if chunk > 7 else DATA[:150_000]
     out, decomp = _decode(blob + b"after", chunk=chunk)
     assert out == want
-    # What was fed past the end-of-stream marker; small feeds stop sooner.
-    assert decomp.unused_data == (b"after" if chunk > 7 else decomp.unused_data)
+    # What was fed past the end-of-stream marker: all of it for large feeds; small
+    # feeds stop sooner, at a prefix of it.
+    assert decomp.eof
+    if chunk > 7:
+        assert decomp.unused_data == b"after"
     assert b"after".startswith(decomp.unused_data)
 
 
@@ -218,6 +221,29 @@ def test_a_damaged_block_gives_none_of_its_bytes(
     error, whatever the read size or source."""
     blob, good = _damaged()
     source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
+    config = _config(process_isolation=isolation)
+    with open_codec_stream(Codec.BZIP2, source, config=config) as stream:
+        got, error = _read_all(stream, size)
+    assert isinstance(error, CorruptionError)
+    assert got == DATA[:good]
+
+
+@pytest.mark.parametrize("pipe", [False, True])
+@pytest.mark.parametrize("size", [61, 1 << 20])
+@pytest.mark.parametrize(
+    "isolation", [ProcessIsolation.NONE, ProcessIsolation.NATIVE_DECODERS]
+)
+@pytest.mark.parametrize("block", [1, 4, 6])
+def test_a_damaged_block_header_keeps_the_block_before_it(
+    pipe: bool, size: int, isolation: ProcessIsolation, block: int
+) -> None:
+    """A block whose magic is damaged: ``bz2`` checks the block before it and refuses
+    the header in one call. That block's bytes still come out, then the error."""
+    blob = bytearray(_bz2())
+    _comp, good, _state = _block_starts(bytes(blob))[block]
+    bit = find_markers(bytes(blob), 0, 8 * len(blob))[block][0]
+    blob[bit // 8 + 2] ^= 0x10
+    source = NonSeekableBytesIO(bytes(blob)) if pipe else io.BytesIO(bytes(blob))
     config = _config(process_isolation=isolation)
     with open_codec_stream(Codec.BZIP2, source, config=config) as stream:
         got, error = _read_all(stream, size)

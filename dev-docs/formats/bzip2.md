@@ -256,13 +256,16 @@ further in, the standard library starts at the newest block at or before it from
 accelerator's index (`available_block_offsets()`, which still answers after the error), and
 keeps up to eight such blocks as seek points. A bzip2 block carries nothing from the blocks
 before it, so the takeover resumes there as at the standard library's own block points
-(`bzip2_blocks.py`), at level 9, which accepts a block of any level. The index gives no
-block CRCs, so a resumed decode that meets its stream's end marker cannot check the
-combined CRC, and starts the decode over from the origin, which decides. A damaged block
-after the point is a verdict: blocks decode on their own, so a decode from the origin
-gives the same bytes before it and the same error. Scanning the source for the block
-magic instead of reading the index would find blocks, but not where their output starts,
-which only decoding everything before them tells.
+(`bzip2_blocks.py`), at the level its stream header gives. The index gives no block
+CRCs, so they are read from the block headers at the index's blocks, and folded into the
+combined CRC each point carries (`Bzip2BlockStart.from_index`). A resumed decode that
+meets its stream's end marker checks it; when it does not match, or a stream header is
+not right before the first indexed block (level 9, which accepts a block of any level,
+and no combined CRC), the decode starts over from the origin, which decides. A damaged
+block after the point is a verdict: blocks decode on their own, so a decode from the
+origin gives the same bytes before it and the same error. Scanning the source for the
+block magic instead of reading the index would find blocks, but not where their output
+starts, which only decoding everything before them tells.
 
 ### 2.4 Extract
 
@@ -321,6 +324,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Opening a small `.bz2` decodes up to 900 kB | **format** | Open-time validation needs the first block (§1, §2.2) |
 | A backward seek re-decodes from the start | **format** | Pass `seekable_members=True`: every block read is then a seek point. A random-access read of a `.tar.bz2` keeps the points too |
 | A block whose data is intact but whose stored CRC is wrong gives none of its bytes | **archivey** | A block's output is held until its CRC passes (§2.3); nothing tells a wrong CRC from wrong data |
+| A damaged block, or a damaged block magic, costs about two more decodes of one block | **library** | `bz2` checks a block and refuses the bytes after it in one call, which drops the call's output. So when a feed raises, the block being decoded is decoded again up to its end, the last 4 KiB one byte at a time, and its bytes come out before the error if it passes (`_recover_block`); a damaged block fails again |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
 | A cut or damaged stream right after the data costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
 | With `pack_size` declared on a source that is not cut there, the accelerator reads through input after the end that the standard library refuses under `refuse_input_after_end` | **archivey** | Only the accelerator's input is clipped (§2.3). No reader produces that source: the 7z reader cuts each coder's input at its packed size |

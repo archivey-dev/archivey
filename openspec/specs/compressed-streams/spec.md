@@ -1165,6 +1165,14 @@ a later one raises, and raise the error from its next call.
 - **THEN** it gets every byte of the blocks before that block, none of that block, then
   `CorruptionError`
 
+#### Scenario: a damaged bzip2 block magic
+
+- **GIVEN** a bzip2 stream of several blocks with a bit flipped in the magic of a block
+  after the first, so the block before it ends in bytes that are no marker
+- **WHEN** it is read as in the scenario above
+- **THEN** it gets every byte of the blocks before the damaged magic, the block right
+  before it included, then `CorruptionError`
+
 #### Scenario: a bad bzip3 block header
 
 - **GIVEN** a two-block `.bz3` file followed by a block header that fails its size checks,

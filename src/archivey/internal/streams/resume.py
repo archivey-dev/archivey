@@ -115,8 +115,9 @@ class ResumeReachedStreamEnd(Exception):
     caller decodes again from the start.
 
     Raised by ``DeflateResumeDecoder`` (the gzip CRC-32 or zlib Adler-32) and by
-    ``Bzip2BlockDecompressor`` resumed at a point with no combined CRC (the bzip2
-    takeover's points: the stream's combined CRC folds in the blocks before them).
+    ``Bzip2BlockDecompressor`` resumed at a point whose combined CRC is not known, or
+    was read from rapidgzip's index and does not match at the end (the bzip2
+    takeover's points, ``Bzip2BlockStart.from_index``).
 
     It is control flow, not an error a caller may see: it is not an ``ArchiveyError``.
     Only ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py`` adds resume points to a

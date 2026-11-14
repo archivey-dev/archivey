@@ -22,6 +22,11 @@ block always decodes to at least one byte (``bz2`` refuses an empty one), so the
 cannot miss a block. Between matches no more input is fed than ends before the first
 byte a match not found yet can start at, so no block can end unseen there.
 
+**A damaged marker.** When the bytes after a block are no marker, ``bz2`` checks the
+block and refuses those bytes in the same call, and that call's output is lost. The
+block is then decoded again, fed up to its end only, so its checked bytes still come
+out before the error (:meth:`~Bzip2BlockDecompressor._recover_block`).
+
 **Seek points.** A block carries no state from the blocks before it, so a decode can
 start at any block start: :meth:`~Bzip2BlockDecompressor.take_block_starts` lists the
 blocks checked so far, and :meth:`~Bzip2BlockDecompressor.resume` starts at one.
@@ -55,7 +60,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, ResourceLimitError
 from archivey.internal.config import decoder_cap_error
 from archivey.internal.streams.resume import ResumeReachedStreamEnd
 
@@ -83,6 +88,9 @@ MAX_BLOCK_OUTPUT = 9 * 100_000 // 5 * 259
 # 5 MB stream than calls of 1 MiB (3.11, 0.97 s against 0.70 s); 32 KiB calls cost more
 # calls. The drain asks again until a call returns nothing.
 _DRAIN_CALL = 1 << 20
+# The slices a block is fed in to find where it ends (``_recover_block``): the bytes
+# of the last one are then fed one at a time.
+_RECOVER_SLICE = 4096
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,7 +384,7 @@ class Bzip2BlockDecompressor:
     def _at_candidate(self, bit: int, magic: int, crc: int) -> None:
         """Feed up to the marker at ``bit`` and drain: output there means the block
         before it ended there."""
-        out = self._feed_to(bit)
+        out = self._feed_block_to(bit)
         if not out:
             return  # inside the block: not a block start
         self._block_checked(out)
@@ -400,15 +408,83 @@ class Bzip2BlockDecompressor:
             target = self._fed + (self._scanned - 1 - self._fed) // 8 * 8
             if target <= self._fed:
                 return False
-            out = self._feed_to(target)
+            out = self._feed_block_to(target)
         if out:
-            # Output with no marker after it: the block's end is not a marker, so its
-            # header is damaged, and ``bz2`` raises there. Or the input ended right
-            # after the block. Its bytes passed their CRC; no point is kept.
-            self._block = None
-            self._combined = None
-            self._release(out)
+            # Output with no marker after it: the input ended right after the block.
+            # Its bytes passed their CRC; no point is kept.
+            self._end_block(out)
         return True
+
+    def _feed_block_to(self, bit: int) -> bytearray:
+        """:meth:`_feed_to`, and when ``bz2`` raises, the block being decoded handed
+        out before the error if it is whole.
+
+        The error can come after the block's end: the block ended in this feed and the
+        bytes after it are no marker (a damaged block header), so ``bz2`` checked the
+        block, then refused those bytes, in one call, and the call's output is gone.
+        The block is decoded again up to its end only (:meth:`_recover_block`).
+        """
+        try:
+            return self._feed_to(bit)
+        except OSError:
+            # ``bz2``'s error for data it refuses, in this process or in a child.
+            out = self._recover_block()
+            if out is None:
+                raise
+            self._end_block(out)
+            raise
+
+    def _end_block(self, out: bytearray) -> None:
+        """Release the block that gave ``out`` with no marker after it: its bytes
+        passed their CRC, but no block follows it, so no point is kept and the
+        combined CRC is no longer known."""
+        self._block = None
+        self._combined = None
+        self._release(out)
+
+    def _recover_block(self) -> bytearray | None:
+        """The output of the block being decoded, which ends before ``_fed`` and is
+        followed by bytes that are no marker; ``None`` when the block itself is
+        damaged.
+
+        A fresh ``bz2`` is given the block alone, behind a made-up stream header, so
+        it never reaches the bytes after it. ``bz2`` gives a block's output only once
+        all its bits are in, and checks the CRC in that same call, so output with no
+        error is the whole block, checked. The block's end is not known: a first
+        decode feeds it ``_RECOVER_SLICE`` bytes at a time and finds the slice where
+        ``bz2`` raises; a second feeds everything before that slice at once, then
+        the slice one byte at a time, so the call that completes the block holds at
+        most 7 bits after it, too few for ``bz2`` to read the next header.
+        """
+        block, level = self._block, self._level
+        if block is None or level is None:
+            return None
+        start = block[0]
+        header = STREAM_HEADER + str(level).encode()
+        data = header + self._bits(start, -(-(self._fed - start) // 8))
+        try:
+            decomp = self._new_bz2()
+            for at in range(0, len(data), _RECOVER_SLICE):
+                try:
+                    out = self._drain(decomp, data[at : at + _RECOVER_SLICE])
+                except Exception:  # noqa: BLE001 - the slice the block ends in
+                    break
+                if out:
+                    return out
+            else:
+                return None
+            decomp = self._new_bz2()
+            if self._drain(decomp, data[:at]):
+                return None  # the block ended before the slice, and bz2 raised
+            for i in range(at, min(at + _RECOVER_SLICE, len(data))):
+                out = self._drain(decomp, data[i : i + 1])
+                if out:
+                    return out
+        except ResourceLimitError:
+            raise
+        except Exception:  # noqa: BLE001 - not whole: the first error stands
+            return None
+        return None
 
     def _feed_to(self, bit: int) -> bytearray:
         """Feed ``bz2`` every bit before ``bit`` (in whole bytes from ``_fed``), then
@@ -420,6 +496,10 @@ class Bzip2BlockDecompressor:
         decomp = self._decoder()
         if self._prefix:
             data, self._prefix = self._prefix + data, b""
+        return self._drain(decomp, data)
+
+    def _drain(self, decomp: Decompressor, data: bytes) -> bytearray:
+        """Feed ``data`` to ``decomp`` and take all the output it gives for it."""
         out = bytearray(decomp.decompress(data, _DRAIN_CALL))
         while True:
             more = decomp.decompress(b"", _DRAIN_CALL)
@@ -454,7 +534,12 @@ class Bzip2BlockDecompressor:
 
     def _drop_fed(self) -> None:
         """Drop the input bytes no marker read or feed needs again."""
-        keep_from = (min(self._fed, self._scanned) - self._input_bit) // 8
+        keep = min(self._fed, self._scanned)
+        if self._block is not None:
+            # The block being decoded is decoded again from its start when the bytes
+            # after it are no marker (``_recover_block``).
+            keep = min(keep, self._block[0])
+        keep_from = (keep - self._input_bit) // 8
         if keep_from > 0:
             del self._input[:keep_from]
             self._input_bit += 8 * keep_from
