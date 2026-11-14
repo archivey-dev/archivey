@@ -9,9 +9,9 @@ Used for:
   decode stage, for the benchmark solid-block invariant.
 - *Source seek storms* (:class:`SeekCountingStream`) — ``seek`` calls on the
   archive-facing handle, for the benchmark seek axis.
-- *A shared budget* (:class:`BudgetDrawStream`) — bytes leaving a decode stage, drawn
-  from an :class:`~archivey.Budget` several readers share. Installed only when the
-  reader's config holds one.
+- *A nest's account* (:class:`BudgetDrawStream`) — bytes leaving a decode stage, drawn
+  from the account every reader of a nest shares
+  (:class:`~archivey.internal.nesting.NestDraws`).
 
 Measurement wrappers share a :class:`~archivey.internal.measurement.ByteCounter` /
 :class:`~archivey.internal.measurement.SeekCounter` so multiple layers can feed one
@@ -35,9 +35,9 @@ from archivey.internal.streams.streamtools.binaryio import (
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
-    from archivey.config import Budget
     from archivey.internal.listing_limits import StageDraws
     from archivey.internal.measurement import ByteCounter, SeekCounter
+    from archivey.internal.nesting import NestDraws
     from archivey.internal.streams.streamtools.readahead import _ReadsAhead
 
 
@@ -149,7 +149,8 @@ _BUDGET_STEP = 1 << 24
 
 class BudgetDrawStream(DelegatingStream):
     """Wrap a decoded (or stored) stream and draw every delivered byte from a shared
-    :class:`~archivey.Budget`, as :class:`OutputCountingStream` counts them.
+    nest's account (:class:`~archivey.internal.nesting.NestDraws`), as
+    :class:`OutputCountingStream` counts them.
 
     A read that could cross the limit asks the decoder for at most one byte past
     what is left, so the read that crosses it decodes one byte more than the budget
@@ -166,7 +167,7 @@ class BudgetDrawStream(DelegatingStream):
     # inner's, as for ``OutputCountingStream``.
     forwards_verification = True
 
-    def __init__(self, inner: BinaryIO, budget: Budget | StageDraws) -> None:
+    def __init__(self, inner: BinaryIO, budget: NestDraws | StageDraws) -> None:
         super().__init__(inner)
         self._budget = budget
         self._pos = 0

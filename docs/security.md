@@ -127,10 +127,11 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   name as the pass meets it, so a hostile archive is refused before the rest of it is decoded, and
   the extraction can stop for a member the index would have left out. A run that stops before the
   index leaves nothing of its own in the destination.
-- **Limits apply to each archive separately.** A small archive can hold archives that each expand
-  up to the limit, and those can hold more, so the total grows with every level you extract. Be
-  careful if you extract archives found inside other archives. An archive that a format reads
-  inside its own, through a format plugin's `open_nested`, is different: it shares the outer
+- **An archive you open on its own has its own limits.** A small archive can hold archives that each
+  expand up to the limit, and those can hold more, so the total grows with every level you open.
+  Open an archive found inside another with `parent=` set to the outer reader, and the levels count
+  against the upload's totals together ([Hardening](#hardening)). An archive that a format reads
+  inside its own, through a format plugin's `open_nested`, always shares the outer
   archive's limits.
 - **Accelerators are on by default for large streams.** If you open an archive with
   `seekable_members=True` and the `seekable` extra is installed, archivey reads bzip2 data of 1 MiB
@@ -334,28 +335,38 @@ The costs were measured on one 2.8 GHz core.
 
 Going over a limit raises `ResourceLimitError`.
 
-These limits hold for one reader. To hold a whole job to one total, such as an upload with archives
-inside it, or a batch of archives read on several threads, put an `archivey.Budget` in the config:
+These limits hold for each reader. When you find an archive inside another and open it, pass the
+reader you found it in as `parent=`:
 
 ```python
-budget = archivey.Budget(max_decoded_bytes=1 * 2**30, max_members=100_000)
-config = archivey.ArchiveyConfig(budget=budget)
+with archivey.open_archive("upload.zip", config=config) as upload:
+    ...
+    with archivey.open_archive(inner_copy, parent=upload) as inner:
+        ...
 ```
 
-Every reader opened with that config, or with a copy of it, draws the bytes it decodes and the
-members it lists from the one budget, so the total is shared across readers, nested archives and
-threads. Bytes decoded only to get past a member count too: skipping members of a `.tar.gz` or a
-CAB folder to reach a later one is not free. A read that would go past the budget raises
-`ResourceLimitError`, and an extraction stops there.
+The inner reader keeps every limit it would have on its own, and it joins the upload's nest: the
+upload and every archive opened inside it, at any depth. The whole nest is then held to three
+totals from the outermost reader's config:
 
-A budget is the total for one job, and it is meant for processing each archive once. It counts the
-work archivey does, so a byte counts again each time it is decoded again: reading a member twice,
-opening the same archive again, or seeking back in a compressed member and reading on all use more
-of it. Listing a `.tar.gz` decodes it all, so its members count once for the listing and again when
-you read them. Listing again is free: the reader keeps its member list. It never refills, so make a
-new `Budget` for each upload or request rather than keeping one on a long-lived config. The
-per-reader limits still apply. Decoder memory stays a per-decoder limit, and time and memory use are
-bounded by running the job in a process you can stop. See the [archives inside the
+- `ListingLimits.max_members`, counting the members of every level together.
+- `DecoderLimits.max_ratio` times the size of the upload. Each reader counts the most it has decoded
+  of its archive in one pass, so reading a member again adds nothing, while an archive inside an
+  archive can't multiply the ratio at every level.
+- `DecoderLimits.max_nest_decoded_bytes`, if you set it: a fixed amount of decoding work for the
+  whole upload, whatever its size. It counts every byte decoded, again each time it is decoded
+  again, including bytes decoded only to get past a member, and it never refills. It is off by
+  default.
+
+Going over a total raises `ResourceLimitError`, and an extraction stops there. The parent can
+already be closed, so you can extract an upload first and open what you find afterwards. With no
+`config`, the inner reader uses its parent's; a config you give it can make the totals stricter,
+never looser. A nest holds at most nine archives in a chain.
+
+An archive opened without `parent=` starts a nest of its own, so one config can serve every request.
+Archives that aren't inside each other, such as a batch read on several threads, share no total:
+bound those by the upload size and the number of archives, and run the job in a process you can
+stop, which also bounds time and memory. See the [archives inside the
 upload](recipes.md#archives-inside-the-upload) recipe.
 
 For files you didn't make, `ArchiveyConfig(formats=FormatPolicy.COMMON)` opens only the formats

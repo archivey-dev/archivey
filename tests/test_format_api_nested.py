@@ -16,6 +16,7 @@ import lzma
 import tarfile
 import zipfile
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 
@@ -24,7 +25,6 @@ from archivey import (
     ArchiveMember,
     ArchiveyConfig,
     ArchiveyUsageError,
-    Budget,
     CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
@@ -60,6 +60,7 @@ from archivey.internal.format_adapter import (
     registration_scope,
 )
 from archivey.internal.listing_limits import ListingLimitTracker
+from archivey.internal.nesting import NestAccount, NestDraws
 from tests.streams_util import (
     NonSeekableBytesIO,
     hold_views,
@@ -555,31 +556,42 @@ def test_what_inner_levels_keep_counts_against_one_metadata_budget(
             assert tracker._nested_bytes == 0
 
 
-def test_a_member_the_nest_refuses_to_hold_is_not_drawn_from_the_budget(
+def test_a_member_the_nest_refuses_to_hold_is_not_drawn_from_the_account(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The 3rd level's held member crosses the nest's 1000 bytes: the shared budget
-    keeps the 2 members the outer levels drew, not 3."""
+    """The 3rd level's held member crosses the nest's 1000 bytes. Only the outermost
+    reader draws members from the nest's account (an inner level's members reach the
+    outermost listing as its own): it keeps the 1 member the outermost level held."""
     monkeypatch.setitem(_KINDS, b"H", HoldingBoxesHandler.format)
     data = _boxes((b"H", _boxes((b"H", _boxes((b"T", _tar([("a", b"a")])))))))
-    budget = Budget(max_members=100)
-    config = ArchiveyConfig(
-        listing_limits=ListingLimits(max_metadata_bytes=1000), budget=budget
-    )
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1000))
+    accounts: list[NestAccount] = []
+    real_init = NestAccount.__init__
+
+    def recording_init(self: NestAccount, *args: Any, **kwargs: Any) -> None:
+        real_init(self, *args, **kwargs)
+        accounts.append(self)
+
+    monkeypatch.setattr(NestAccount, "__init__", recording_init)
     with registration_scope():
         register_format(HoldingBoxesHandler)
         with pytest.raises(
             ResourceLimitError, match="max_metadata_bytes=1000.*inner archive"
         ):
             _names(data, HoldingBoxesHandler.format, config)
-    assert budget.members == 2
+    # One nest, one account, whatever the depth.
+    assert len(accounts) == 1
+    assert accounts[0].members == 1
 
 
 def test_a_hold_the_budget_refuses_takes_its_nest_charge_back() -> None:
-    """The nest's charge goes first; when the shared budget then refuses the member,
-    the outermost tracker keeps nothing of it."""
-    budget = Budget(max_members=1)
-    limits = ListingLimits(max_metadata_bytes=10_000)
+    """The nest's charge goes first; when the account then refuses the member, the
+    outermost tracker keeps nothing of it."""
+    limits = ListingLimits(max_members=1, max_metadata_bytes=10_000)
+    config = ArchiveyConfig(listing_limits=limits)
+    budget = NestDraws(
+        NestAccount(lambda: None), root=config, own=config, judges_ratio=True
+    )
     outer = ListingLimitTracker(limits, budget=budget)
     inner = ListingLimitTracker(limits, budget=budget, outer=outer)
     inner.hold_member(ArchiveMember(name="a", type=MemberType.FILE), "held")
@@ -587,7 +599,7 @@ def test_a_hold_the_budget_refuses_takes_its_nest_charge_back() -> None:
     assert charged > 0
     with pytest.raises(ResourceLimitError, match="max_members"):
         inner.hold_member(ArchiveMember(name="b", type=MemberType.FILE), "held")
-    assert budget.members == 1
+    assert budget.account.members == 1
     assert outer._nested_bytes == inner._charged_outward == charged
     inner.leave_nest()
     assert outer._nested_bytes == 0

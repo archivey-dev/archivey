@@ -97,7 +97,7 @@ from archivey.internal.format_args import (
 )
 from archivey.internal.logs import detection as detection_logger
 from archivey.internal.naming import emit_member_name_normalized, normalize_member_name
-from archivey.internal.nesting import reading_inside
+from archivey.internal.nesting import MAX_NESTED_DEPTH, reading_inside
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
@@ -201,12 +201,6 @@ def _reads_full(stream: object) -> bool:
     return _type_reads_full(type(stream))
 
 
-# How many archives deep ``ReaderContext.open_nested`` reads. The formats that nest
-# go one level (a ``.deb``'s tars) or two (a ``.pkg``'s XAR payload); the bound turns
-# a walk that keeps naming its own format into an archivey error before Python's
-# recursion limit does, since each level holds a reader and a few generator frames.
-MAX_NESTED_DEPTH = 8
-
 # The walk steps ``ReaderContext.hold()`` tells apart (``_PluginAdapter._walk_step``).
 _LISTING = "listing"
 _REWALK = "rewalk"
@@ -308,6 +302,7 @@ class _PluginAdapter(BaseArchiveReader):
             usage=self._usage,
         )
         context._usage = self._usage
+        context._nest = self._nest
         context._spanning_check = self._new_spanning_check
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
@@ -708,7 +703,7 @@ class _PluginAdapter(BaseArchiveReader):
                 "a seekable source",
                 source_format=fmt,
             )
-        if self._nested_depth >= MAX_NESTED_DEPTH:
+        if self._nest_level >= MAX_NESTED_DEPTH:
             raise UnsupportedFeatureError(
                 f"{fmt.display_name} archive nested more than {MAX_NESTED_DEPTH} "
                 "archives deep",
@@ -2080,6 +2075,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             consumed=self._live_consumed(),
             tally=tally,
             key=key,
+            nest=self._nest,
         )
 
     @override

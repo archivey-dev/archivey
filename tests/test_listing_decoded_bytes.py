@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import archivey
-from archivey import ArchiveyConfig, Budget, ListingLimits, ResourceLimitError
+from archivey import ArchiveyConfig, DecoderLimits, ListingLimits, ResourceLimitError
 
 _MEMBER = 100_000
 
@@ -101,21 +101,18 @@ def test_none_disables_it() -> None:
         assert len(reader.members()) == 3
 
 
-def test_it_draws_with_a_budget_and_both_hold() -> None:
+def test_it_draws_from_the_nest_and_both_hold() -> None:
     tar = _tar()
     data = gzip.compress(tar, mtime=0)
-    budget = Budget()
-    with archivey.open_archive(
-        io.BytesIO(data), config=_config(len(tar), budget=budget)
-    ) as reader:
+    with archivey.open_archive(io.BytesIO(data), config=_config(len(tar))) as reader:
         reader.members()
-    assert budget.decoded_bytes >= 3 * _MEMBER
-    small = Budget(max_decoded_bytes=_MEMBER)
+        assert reader._nest.account.decoded_bytes >= 3 * _MEMBER  # type: ignore[attr-defined]
+    small = _config(
+        len(tar), decoder_limits=DecoderLimits(max_nest_decoded_bytes=_MEMBER)
+    )
     with (
-        archivey.open_archive(
-            io.BytesIO(data), config=_config(len(tar), budget=small)
-        ) as reader,
-        pytest.raises(ResourceLimitError, match="Budget exhausted"),
+        archivey.open_archive(io.BytesIO(data), config=small) as reader,
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes"),
     ):
         reader.members()
 
@@ -277,14 +274,17 @@ def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
     ):
         for _member, _stream in reader.stream_members():
             pass
-    # A spent Budget stops the pass too: the drain re-raises it, not skips the member.
+    # A spent nest total stops the pass too: the drain re-raises it, not skips the
+    # member.
     with (
         archivey.open_archive(
             NonSeekableBytesIO(data),
-            config=_config(None, budget=Budget(max_decoded_bytes=1000)),
+            config=_config(
+                None, decoder_limits=DecoderLimits(max_nest_decoded_bytes=1000)
+            ),
             streaming=True,
         ) as reader,
-        pytest.raises(ResourceLimitError, match="max_decoded_bytes"),
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes"),
     ):
         for _member, _stream in reader.stream_members():
             pass
