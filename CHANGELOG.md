@@ -77,6 +77,11 @@ removed.
   `SOURCE_CHANGE_UNDETECTABLE` and `MEMBER_PATH_REFUSED`.
 - `HashAlgorithm` gains `MD5`, `SHA1`, `SHA256` and `SHA512`, for the digests RPM and
   XAR record.
+- `ArchiveyConfig` and `ArchiveFormat` are typed to take the string spellings the docs
+  show (`ArchiveyConfig(process_isolation="none")`), through new `Literal` aliases:
+  `AcceleratorModeStr`, `ProcessIsolationStr` and `RarDecompressorStr` in
+  `archivey.config`, `DetectionBudgetPresetStr` in `archivey.detection_cost`, and
+  `ContainerFormatStr` and `StreamFormatStr` in `archivey.types`.
 
 ### Experimental
 
@@ -162,6 +167,9 @@ removed.
   command line either.
 - A `.deb` whose data tar writes into `DEBIAN/` is refused, as `dpkg-deb` refuses it,
   instead of replacing the control files in the listing and in extraction.
+- `open_stream()` is held to `DecoderLimits.max_ratio`, as a member read is, so a bare
+  `.gz` or `.bz2` bomb that `open_archive()` refuses no longer decodes in full through
+  it.
 - Each hard link, symlink or RAR file copy that a read follows counts its bytes against
   the archive-wide ratio limit. Before, links to one file counted its bytes once, so a
   `.tar.gz` of one file and many hard links could be read out far past `max_ratio`.
