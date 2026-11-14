@@ -1897,8 +1897,8 @@ The CLI passes `OnBlocked.SKIP`: it reports refused members itself.
 
 ### Requirement: Dry-run extraction
 
-`extract_all()` SHALL accept `dry_run: bool = False`, read for its
-truthiness like the other boolean flags.
+`extract_all()` SHALL accept `dry_run: bool = False`, refusing a value that is not a
+`bool` as the other boolean flags do (`error-handling`).
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into
 a private scratch directory, and SHALL NOT create or change anything under `dest`.

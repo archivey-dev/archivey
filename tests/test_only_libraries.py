@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyUsageError, ContainerFormat, FormatPolicy, OptionalLibrary
+from archivey import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    ArchiveyUsageError,
+    ContainerFormat,
+    FormatPolicy,
+    OptionalLibrary,
+)
 from archivey.internal.format_adapter import registration_scope
 from tests.test_format_api import _plugin_with
 from tests.test_format_policy import StdlibZipPlugin
@@ -132,3 +139,24 @@ def test_no_check_reads_exclude_libraries_alone() -> None:
             if isinstance(node, ast.Attribute) and node.attr == "exclude_libraries":
                 offenders.append(f"{path.relative_to(_SRC)}:{node.lineno}")
     assert offenders == []
+
+
+@pytest.mark.parametrize("param", ["exclude_libraries", "only_libraries"])
+def test_library_policy_reads_a_generator_once(param: str) -> None:
+    # A generator is an Iterable, as the signature says: it must not be used up by
+    # the validation and reach the conversion empty.
+    policy = FormatPolicy(**{param: (name for name in ["brotli"])})
+    assert getattr(policy, param) == frozenset({OptionalLibrary.BROTLI})
+
+
+def test_library_policy_refuses_a_bad_name_in_a_generator() -> None:
+    with pytest.raises(ValueError, match="TYPO"):
+        FormatPolicy(exclude_libraries=iter(["TYPO"]))
+
+
+def test_config_conflict_with_the_library_policy_is_a_value_error() -> None:
+    with pytest.raises(ValueError, match="turns rapidgzip off"):
+        ArchiveyConfig(
+            use_rapidgzip=AcceleratorMode.ON,
+            formats=FormatPolicy(exclude_libraries={"rapidgzip"}),
+        )
