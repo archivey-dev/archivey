@@ -540,6 +540,11 @@ class DecodeRatioGuard(_RatioGuard):
     With a ``tally``, the guard is one of several whose decoded bytes count toward one
     total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
     the rule judges the total, not this stream's bytes alone.
+
+    ``open_stream()`` uses it too, for a bare compressed stream judged against the
+    stream's size. That caller passes ``holds_errors=False``, so a single ``read()``
+    raises the decoder's error rather than holding it for a later read, and
+    ``counted="the stream decoded"`` for its message (see ``__init__``).
     """
 
     def __init__(
