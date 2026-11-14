@@ -198,6 +198,57 @@ def test_the_members_before_a_damaged_block_are_checksum_verified() -> None:
     assert files[-1].verified is not Verification.CHECKSUM
 
 
+def _without_block(blob: bytes, index: int) -> bytes:
+    """``blob``, a bzip2 stream, with its block ``index`` cut out whole: every other
+    block and the end marker intact, so each block left passes its CRC and only the
+    combined CRC at the end shows the gap."""
+    bits = "".join(f"{byte:08b}" for byte in blob)
+    magic = f"{0x314159265359:048b}"
+    starts = [i for i in range(len(bits) - 47) if bits.startswith(magic, i)]
+    cut = bits[: starts[index]] + bits[starts[index + 1] :]
+    cut += "0" * (-len(cut) % 8)
+    return bytes(int(cut[i : i + 8], 2) for i in range(0, len(cut), 8))
+
+
+def test_verify_all_fails_the_files_a_cut_out_block_leaves_unconfirmed() -> None:
+    """The file that straddles the gap passed every block check, with the next
+    block's bytes in place of its own; only the whole-stream check, which the damage
+    keeps from running, would catch it. verify_all() returns every file the block
+    checks raised; their level stays."""
+    blob = _without_block(bz2.compress(_tar(), 1), 2)
+    contents = dict(_members())
+    with archivey.open_archive(io.BytesIO(blob)) as archive:
+        report = archive.verify_all()
+    assert report.structure_error is not None
+    failed = {m.name for m, _ in report.failures}
+    raised = {
+        m.name: m
+        for m in archive._listed
+        if m.is_file and m.verified is Verification.CHECKSUM
+    }
+    assert raised, "the blocks before the gap raise their files"
+    assert set(raised) <= failed
+    # Among them, a file whose data the gap changed.
+    wrong = []
+    with (
+        pytest.raises(CorruptionError),
+        archivey.open_archive(io.BytesIO(blob)) as archive,
+    ):
+        for member, stream in archive.stream_members(lambda m: m.name in raised):
+            if stream is not None and stream.read() != contents[member.name]:
+                wrong.append(member.name)
+    assert wrong
+
+
+def test_verify_all_of_an_intact_archive_fails_nothing() -> None:
+    with archivey.open_archive(io.BytesIO(bz2.compress(_tar(), 1))) as archive:
+        report = archive.verify_all()
+        assert report.failures == ()
+        assert {m.verified for m in archive.members() if m.is_file} == {
+            Verification.CHECKSUM
+        }
+
+
 def test_listing_then_random_access_keeps_checksum() -> None:
     blob = bz2.compress(_tar(), 1)
     with archivey.open_archive(io.BytesIO(blob)) as archive:

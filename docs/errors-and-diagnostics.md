@@ -249,7 +249,9 @@ them.
 A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is compressed in.
 A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check, without
 waiting for the end of the archive. If a later block is damaged, the files in the earlier blocks
-keep `CHECKSUM`. This doesn't happen when the bzip2 accelerator decompresses the archive
+keep `CHECKSUM`, but `verify_all()` still returns them: only the check at the end of the archive
+shows that no block is missing, and a file that spans a block cut out whole has passed every block
+check with the wrong bytes. This doesn't happen when the bzip2 accelerator decompresses the archive
 (`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more): its files wait for
 the end of the archive, as above.
 

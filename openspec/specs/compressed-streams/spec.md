@@ -900,7 +900,9 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
   `.bz2` or `.bz3` blocks whose CRCs passed SHALL reach `CHECKSUM` once those blocks
   are checked, before the walk reaches the stream's end: each byte passed a check
   stored with it. Bytes decoded from a restart point the file's own index named do
-  not count, and neither do bytes an accelerator decoded.
+  not count, and neither do bytes an accelerator decoded. When damage keeps the
+  stream's whole check from passing, `verify_all()` SHALL return each file the block
+  checks raised as a failure: only that check shows no block is missing.
   `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
   what the stream knows without opening it. Once the stream is open it MAY rise (a
   password confirmed by another member), and it SHALL fall only when the format
@@ -983,7 +985,8 @@ level adds no new error and no new way to read.
 | `.tar.gz` cut inside its footer, the files whole, walked to the end | every file's `verified` is `LENGTH` and `verifiable` stays `CHECKSUM`; `verify_all()` returns every file |
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
 | `.tar.bz2` walked in a streaming pass, a file whose data lies in blocks already checked | `verified` is `CHECKSUM` before the walk reaches the stream's end |
-| Same, a block after the file damaged | the file stays at `CHECKSUM`; the files in the damaged block stay below it, and the walk raises `CorruptionError` |
+| Same, a block after the file damaged | the file stays at `CHECKSUM`; the files in the damaged block stay below it, and the walk raises `CorruptionError`; `verify_all()` returns the file, as the whole-stream check did not pass |
+| `.tar.bz2` with one whole block cut out between intact markers | the files the blocks before the gap raised, the one spanning the gap among them, are at `CHECKSUM`; `verify_all()` returns each of them |
 | `.tar.gz` walked in a streaming pass, before the end | no file is at `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
 | 7z folder of several files with only a folder CRC, a file read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` for all once the folder is read and its CRC matches |
