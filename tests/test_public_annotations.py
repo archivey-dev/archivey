@@ -32,11 +32,14 @@ def _annotated() -> Iterator[tuple[str, Callable[..., object] | type]]:
             yield name, obj
 
 
-@pytest.mark.parametrize(("name", "obj"), list(_annotated()), ids=lambda v: str(v))
-def test_public_annotation_resolves(
-    name: str, obj: Callable[..., object] | type
-) -> None:
-    typing.get_type_hints(obj)
+_ANNOTATED = dict(_annotated())
+
+
+# Parametrized by name only: an object's repr carries its address, which differs
+# between xdist workers, and they must collect the same test ids.
+@pytest.mark.parametrize("name", sorted(_ANNOTATED))
+def test_public_annotation_resolves(name: str) -> None:
+    typing.get_type_hints(_ANNOTATED[name])
 
 
 def test_report_slices_are_typed_as_tuples() -> None:
