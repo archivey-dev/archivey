@@ -504,9 +504,10 @@ however far in it starts.
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.
 
-If you need to look inside, give every level one `archivey.Budget`, and refuse the upload when
-archives are nested more deeply than you allow. Every reader opened with the budget draws from it,
-so the bytes decoded and the members listed at all levels count against one total:
+If you need to look inside, open each inner archive with `parent=` set to the reader you found it
+in, and refuse the upload when archives are nested more deeply than you allow. The levels then
+count against the upload's totals together: its members, its ratio, and the decoded bytes you allow
+for one upload:
 
 ```python
 import io
@@ -520,7 +521,11 @@ CONFIG = archivey.ArchiveyConfig(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    decoder_limits=archivey.DecoderLimits(
+        max_decoder_memory=256 * 2**20,
+        # All levels of one upload together.
+        max_nest_decoded_bytes=100 * 2**20,
+    ),
     process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
     always_probe_content=True,
@@ -529,10 +534,12 @@ CONFIG = archivey.ArchiveyConfig(
 MAX_DEPTH = 2
 
 
-def scan(source, budget, depth=0):
+def scan(source, parent=None, depth=0):
     names = []
+    # An inner archive takes its parent's config.
+    config = CONFIG if parent is None else None
     with archivey.open_archive(
-        source, streaming=True, config=CONFIG, budget=budget
+        source, streaming=True, config=config, parent=parent
     ) as archive:
         for member, stream in archive.stream_members():
             names.append("  " * depth + member.name)
@@ -549,7 +556,7 @@ def scan(source, budget, depth=0):
                 if depth + 1 > MAX_DEPTH:
                     raise RuntimeError("archives are nested too deeply")
                 copy.seek(0)
-                names += scan(copy, budget, depth + 1)
+                names += scan(copy, archive, depth + 1)
     return names
 
 
@@ -560,16 +567,14 @@ with zipfile.ZipFile("upload.zip", "w") as zf:
     zf.writestr("report.txt", "hello")
     zf.writestr("more.zip", inner.getvalue())
 
-# A fresh budget for each upload: 100 MiB decoded and 10 000 members, all levels together.
-budget = archivey.Budget(max_decoded_bytes=100 * 2**20, max_members=10_000)
-print("\n".join(scan("upload.zip", budget)))
+print("\n".join(scan("upload.zip")))
 ```
 
-Going over the budget raises `ResourceLimitError`. Each member is copied to a temporary file, which
-can seek, so an inner 7z, RAR or ISO archive opens too. The copy is drawn from the budget as it's
-decoded, before anything is opened from it, so a nested archive can't use more than what's left.
-An inner archive's bytes count twice: once as the outer member, and again as it's decoded. The
-temporary files take disk space up to the budget at each level.
+Going over a total raises `ResourceLimitError`. Each member is copied to a temporary file, which can
+seek, so an inner 7z, RAR or ISO archive opens too. The copy counts as decoded before anything is
+opened from it, so a nested archive can't use more than what's left. An inner archive's bytes count
+twice: once as the outer member, and again as it's decoded. The temporary files take disk space up
+to `max_nest_decoded_bytes` at each level.
 
 ### Pin the code that reads uploads
 

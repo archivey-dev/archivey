@@ -30,7 +30,6 @@ fsspec = pytest.importorskip("fsspec")
 from archivey import (  # noqa: E402
     ArchiveyConfig,
     ArchiveyUsageError,
-    Budget,
     DiagnosticCode,
     ExtractionPolicy,
     open_archive,
@@ -994,14 +993,3 @@ def test_dask_worker_processes_read_through_the_file_system(tmp_path: Path) -> N
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == "ok"
-
-
-def test_a_budget_reaches_the_reader_and_refuses_pickling(tmp_path: Path) -> None:
-    path = tmp_path / "a.zip"
-    path.write_bytes(_zip_bytes([("a.txt", b"x" * 100)]))
-    budget = Budget(max_decoded_bytes=1000)
-    with ArchiveyFileSystem(str(path), budget=budget) as fs:
-        assert fs.cat("a.txt") == b"x" * 100
-        assert budget.decoded_bytes == 100
-        with pytest.raises(TypeError, match="cannot be pickled"):
-            pickle.dumps(fs)

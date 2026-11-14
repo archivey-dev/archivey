@@ -164,11 +164,12 @@ differing value (FB13: fires for a tighter value that works as asked, re-fires f
 inherited configs, and needs a new public code for what the docs can state once).
 
 ### 7. Depth and name checks are two things
-A new nest depth, counted along `_nest_outer` across both kinds of nesting, drives both
-depth checks. Today's `_nested_depth` keeps its other job alone, "the outer listing
-checks my names", true only for `open_nested` readers; a `parent=` reader runs its own
-duplicate-name and NUL checks. Counted in archives: nine levels, the outermost
-included, open; the tenth raises `UnsupportedFeatureError`, as `open_nested` does today.
+A new nest depth, counted along `_nest_outer` and `_nest_parent` across both kinds of
+nesting, drives both depth checks. Today's `_nested_depth` keeps its other job alone,
+"the outer listing checks my names", true only for `open_nested` readers; a `parent=`
+reader runs its own duplicate-name and NUL checks. Counted in archives: nine levels, the
+outermost included, open; the tenth raises `UnsupportedFeatureError`, as `open_nested`
+does today.
 
 ### 8. Extraction limits stay per `extract_all` call
 `ExtractionLimits` is an operation's argument (`extract_all(limits=)`), and a caller
@@ -185,13 +186,13 @@ readers that hold it. Closing a parent does not close its children.
 
 ### 10. Plumbing
 `_open_resolved` wraps only the `backend.open_read(...)` call in
-`reading_inside(parent)`, the thread-local `open_nested` already uses, so no `open_read`
-signature changes and detection, which runs before and emits diagnostics, never sees the
-link. The child's base constructor consumes the thread-local value once, so a reader
-that a password provider or an `on_diagnostic` callback opens later in the open does not
-join the nest (FB11). After `open_read` returns, `_open_resolved` checks
-`reader._nest_outer is parent` and raises an internal error otherwise, so a backend or a
-plugin factory that builds a helper reader first fails a test rather than a limit
+`nesting.joining(parent)`, a thread-local beside the one `open_nested` uses, so no
+`open_read` signature changes and detection, which runs before and emits diagnostics,
+never sees the link. The child's base constructor consumes the thread-local value once,
+so a reader that a password provider or an `on_diagnostic` callback opens later in the
+open does not join the nest (FB11). After `open_read` returns, `_open_resolved` checks
+`reader._nest_parent is parent` and raises an internal error otherwise, so a backend or
+a plugin factory that builds a helper reader first fails a test rather than a limit
 (FB16). The `drawing_from` thread-local from PR 1541 is not needed.
 
 `ArchiveyFileSystem(budget=)` from PR 1541 is removed, and it takes no `parent=`: a

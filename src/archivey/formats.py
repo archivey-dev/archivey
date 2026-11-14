@@ -62,7 +62,7 @@ from typing import (
     cast,
 )
 
-from archivey.config import ArchiveyConfig, Budget, DecoderLimits
+from archivey.config import ArchiveyConfig, DecoderLimits
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticContext,
@@ -88,6 +88,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.internal.nesting import NestDraws
     from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
@@ -585,9 +586,10 @@ class ReaderContext:
     _decompress_coder: (
         Callable[[BinaryIO, StreamFormat, int | None], BinaryIO] | None
     ) = None
-    # The reader's ``open_archive(budget=)``, for a built-in reader that decodes past
-    # members itself (CAB's folder skip). Internal, set by the adapter; not for plugins.
-    _budget: Budget | None = None
+    # What the reader draws decoded bytes from on its nest's account, for a built-in
+    # reader that decodes past members itself (CAB's folder skip). Internal, set by
+    # the adapter; not for plugins.
+    _nest: NestDraws | None = None
 
     def __init__(
         self,

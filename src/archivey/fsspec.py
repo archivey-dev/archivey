@@ -45,7 +45,7 @@ from archivey.terminal import quoted
 from archivey.types import ArchiveMember, ExtractionPolicy, MemberType
 
 if TYPE_CHECKING:
-    from archivey.config import ArchiveyConfig, Budget, PasswordInput
+    from archivey.config import ArchiveyConfig, PasswordInput
     from archivey.formats import ArchiveFormat
     from archivey.internal.base_reader import BaseArchiveReader
     from archivey.reader import ArchiveReader, ArchiveStream
@@ -533,9 +533,7 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     The archive is opened once, with ``seekable_members=True`` and
     ``concurrent_operations=True``, and the reader is :attr:`reader`. ``format``,
-    ``password``, ``encoding``, ``config`` and ``budget`` are
-    :func:`~archivey.open_archive`'s. A file system given a ``budget`` cannot be
-    pickled, since a budget cannot.
+    ``password``, ``encoding`` and ``config`` are :func:`~archivey.open_archive`'s.
 
     **The tree is what extraction writes.** Each path is the relative path
     ``reader.extract_all(dest, policy=policy)`` gives the member, into an empty
@@ -603,7 +601,6 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
         password: PasswordInput = None,
         encoding: str | None = None,
         config: ArchiveyConfig | None = None,
-        budget: Budget | None = None,
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         **kwargs: Any,
     ) -> None:
@@ -628,7 +625,6 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
             password=password,
             encoding=encoding,
             config=config,
-            budget=budget,
             seekable_members=True,
             concurrent_operations=True,
         )

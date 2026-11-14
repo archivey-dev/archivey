@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
-from archivey.config import Budget, ListingLimits
+from archivey.config import ListingLimits
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.types import ArchiveMember
+
+if TYPE_CHECKING:
+    from archivey.internal.nesting import NestDraws
 
 
 def _str_retained_bytes(value: str) -> int:
@@ -143,15 +147,16 @@ class ListingLimitTracker:
     weighed late, a TAR sparse map) is charged to the outermost tracker too, while
     the inner level is open, and its checks count it.
 
-    ``budget`` is the reader's shared :class:`~archivey.config.Budget`, if any: each
-    tracker draws its own members from it, whatever its nesting.
+    ``budget`` is what the reader draws its members from on its nest's account
+    (:class:`~archivey.internal.nesting.NestDraws`), or ``None`` for a reader
+    ``open_nested`` builds: its members reach the outermost listing, which draws them.
     """
 
     def __init__(
         self,
         limits: ListingLimits,
         *,
-        budget: Budget | None = None,
+        budget: NestDraws | None = None,
         outer: ListingLimitTracker | None = None,
     ) -> None:
         self._limits = limits
@@ -439,7 +444,7 @@ class ListingDecodeCount:
     listing's link targets), so the bytes a caller reads from a member, between steps
     or on another thread, do not count. :meth:`start_pass` starts the count over for
     each later walk. Draws come through :class:`StageDraws`, from the decode stages
-    that also draw a :class:`~archivey.Budget`.
+    that also draw a :class:`~archivey.internal.nesting.NestDraws`.
     """
 
     __slots__ = ("_cap", "_drawn", "_started", "_thread")
@@ -498,7 +503,7 @@ class ListingDecodeCount:
         detail = f"listing this archive has decoded {self._drawn} bytes" + (
             f"; {what} would decode {n} more" if what else ""
         )
-        # Archive-wide like the Budget's: nothing that skips one member's failure
+        # Archive-wide like the nest's totals: nothing that skips one member's failure
         # (``OnError.CONTINUE``, the forward ZIP's drain) may go on decoding past it.
         return AlwaysStopResourceLimitError(
             f"Listing limit reached: max_decoded_bytes={self._cap} ({detail})"
@@ -506,21 +511,22 @@ class ListingDecodeCount:
 
 
 class StageDraws:
-    """A decode stage's draws: the config's :class:`~archivey.Budget` and the listing
-    pass's :class:`ListingDecodeCount`, either of which may be absent. Answers the
-    calls :class:`~archivey.internal.streams.counting.BudgetDrawStream` and the direct
-    draw sites make of a budget, as the tighter of the two."""
+    """A decode stage's draws: the reader's
+    :class:`~archivey.internal.nesting.NestDraws` and the listing pass's
+    :class:`ListingDecodeCount`, either of which may be absent. Answers the calls
+    :class:`~archivey.internal.streams.counting.BudgetDrawStream` and the direct draw
+    sites make, as the tighter of the two."""
 
     __slots__ = ("_budget", "_listing")
 
-    def __init__(self, budget: Budget | None, listing: ListingDecodeCount) -> None:
+    def __init__(self, budget: NestDraws | None, listing: ListingDecodeCount) -> None:
         self._budget = budget
         self._listing = listing
 
     @staticmethod
     def of(
-        budget: Budget | None, listing: ListingDecodeCount | None
-    ) -> Budget | StageDraws | None:
+        budget: NestDraws | None, listing: ListingDecodeCount | None
+    ) -> NestDraws | StageDraws | None:
         """What a decode stage draws from: ``None`` for nothing, the budget alone when
         there is no listing cap."""
         if listing is None:

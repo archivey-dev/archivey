@@ -15,7 +15,8 @@ config's defaults with no extra object.
 - `open_archive(..., parent=reader)`: the new reader joins `reader`'s nest. `parent` may
   be closed, so extract-then-recurse keeps the nest.
 - A `parent=` reader keeps every limit it would have on its own (its own ratio, decoder
-  memory, metadata, key derivation, spool, members). Linking never weakens a limit.
+  memory, metadata, key derivation, spool, members); its ratio cap is the stricter of
+  its own `max_ratio` and the outermost reader's. Linking never weakens a limit.
 - On top, an account the outermost reader owns holds three totals for the whole nest,
   every level counted, from the outermost reader's config: members (`max_members`),
   `max_ratio` times the outermost archive's size, and the new

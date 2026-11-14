@@ -6059,7 +6059,7 @@ class RarReader(BaseArchiveReader):
         decodes and does not emit (:meth:`_solid_run`), before the process starts:
         the pipe's own bytes are drawn as they are read, the prefix is not. A prefix
         that does not fit is refused, drawing nothing, before any process runs."""
-        budget = self._budget
+        budget = self._nest
         run = self._solid_run(member) if budget is not None else None
         if budget is None or run is None or run.offset <= 0:
             return spawn

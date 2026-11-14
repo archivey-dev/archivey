@@ -41,7 +41,6 @@ from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
     AcceleratorMode,
     ArchiveyConfig,
-    Budget,
     ExtractionLimits,
     ListingLimits,
     PasswordInput,
@@ -94,7 +93,7 @@ from archivey.internal.format_args import (
     outer_stream_format,
 )
 from archivey.internal.format_provenance import FormatProvenance, stamp_error_context
-from archivey.internal.nesting import drawing_from
+from archivey.internal.nesting import joining
 from archivey.internal.open_site import OpenSite, capture_open_site
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
@@ -147,7 +146,7 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.formats import FormatHandler
-    from archivey.internal.base_reader import ReadBackend
+    from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 __all__ = [
@@ -379,7 +378,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-    budget: Budget | None = None,
+    parent: ForwardArchiveReader | None = None,
 ) -> ArchiveReader: ...
 
 
@@ -394,7 +393,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-    budget: Budget | None = None,
+    parent: ForwardArchiveReader | None = None,
 ) -> ForwardArchiveReader: ...
 
 
@@ -408,7 +407,7 @@ def open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
-    budget: Budget | None = None,
+    parent: ForwardArchiveReader | None = None,
 ) -> ForwardArchiveReader:
     """Open an archive for reading.
 
@@ -457,12 +456,16 @@ def open_archive(
     :data:`~archivey.DEFAULT_ARCHIVEY_CONFIG`. A config holds settings only, so one
     config can serve every call.
 
-    ``budget`` is a :class:`~archivey.Budget` the reader draws the bytes it decodes and
-    the members it lists from, shared with every other reader given the same one: the
-    readers of one upload's nested archives, or the threads serving one request. A
-    budget is one job's total and never refills, so make a new one for each job.
-    ``None`` (the default) draws from none; the per-reader limits in ``config`` apply
-    either way.
+    ``parent`` is the reader this archive was read from, when the caller found it
+    inside another archive: open or closed, a reader ``open_archive`` returned. The new
+    reader joins the parent's nest. It keeps every limit it would have on its own, and
+    the whole nest is also held to three totals set by its outermost reader's config:
+    ``ListingLimits.max_members``, ``DecoderLimits.max_ratio`` times the outermost
+    archive's size, and ``DecoderLimits.max_nest_decoded_bytes``. With no ``config``,
+    the reader uses its parent's. A child's config can tighten those totals, never
+    loosen them. A nest holds at most nine archives in a chain; the tenth raises
+    :exc:`~archivey.exceptions.UnsupportedFeatureError`. ``None`` (the default) starts
+    a new nest.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
@@ -584,7 +587,7 @@ def open_archive(
             f"pass the archive's format, or None to auto-detect."
         )
     check_config(config, call="open_archive(config=…)")
-    check_instance(budget, Budget, call="open_archive(budget=…)")
+    _check_parent(parent)
     check_encoding(encoding, call="open_archive(encoding=…)")
 
     if streaming and concurrent_operations:
@@ -605,7 +608,12 @@ def open_archive(
 
     passwords = _PasswordCandidates.from_input(password)
 
-    effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG
+    if config is not None:
+        effective_config = config
+    elif parent is not None:
+        effective_config = cast("BaseArchiveReader", parent)._config
+    else:
+        effective_config = DEFAULT_ARCHIVEY_CONFIG
     # Collector is created before detection so open + detect share one budget /
     # occurrence order, and reader.diagnostics covers both.
     collector = collector_from_config(effective_config)
@@ -616,7 +624,7 @@ def open_archive(
     )
     slot = _SourceSlot(resolved.source)
     try:
-        with noting_fsspec_decoding(source), drawing_from(budget):
+        with noting_fsspec_decoding(source):
             return _open_resolved(
                 slot,
                 resolved,
@@ -628,11 +636,35 @@ def open_archive(
                 collector=collector,
                 member_streams=member_streams,
                 open_site=open_site,
+                parent=cast("BaseArchiveReader | None", parent),
             )
     except BaseException:
         # Once a reader exists it closes its source; until then nobody else will.
         slot.current.close()
         raise
+
+
+def _check_parent(parent: object) -> None:
+    """Refuse an ``open_archive(parent=)`` that is not a reader ``open_archive``
+    returned, or whose nest is already as deep as a nest may go."""
+    # Imported here: ``base_reader`` imports this module's neighbours.
+    from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.nesting import MAX_NESTED_DEPTH
+
+    check_instance(parent, ForwardArchiveReader, call="open_archive(parent=…)")
+    if parent is None:
+        return
+    if not isinstance(parent, BaseArchiveReader):
+        raise _UsageTypeError(
+            "open_archive(parent=…) takes a reader open_archive returned, but got "
+            f"a {type(parent).__name__} built some other way."
+        )
+    if parent._nest_level >= MAX_NESTED_DEPTH:
+        raise UnsupportedFeatureError(
+            f"archive nested more than {MAX_NESTED_DEPTH} archives deep: "
+            f"open_archive(parent=…) names a reader already {parent._nest_level} "
+            "archives inside its outermost one"
+        )
 
 
 def _refuse_format_off_by_policy(
@@ -1086,6 +1118,7 @@ def _open_resolved(
     collector: DiagnosticCollector,
     member_streams: MemberStreams,
     open_site: OpenSite | None,
+    parent: BaseArchiveReader | None = None,
 ) -> ArchiveReader:
     """Detect the format of a resolved source and hand it to its backend.
 
@@ -1165,21 +1198,29 @@ def _open_resolved(
         # remote object for damage it salvages or reports; the open ends with the
         # change instead (``fsspec-integration`` design D7).
         with raising_source_change(archive_source.remote_sources):
-            reader = backend.open_read(
-                archive_source,
-                format=resolved_format,
-                streaming=streaming,
-                passwords=passwords,
-                encoding=encoding,
-                archive_name=archive_name,
-                config=config,
-                collector=collector,
-                member_streams=member_streams,
-                open_site=open_site,
-                start_offset=payload_offset,
-                end_offset=payload_end,
-                program_resources=_program_resources(archive_source, backend_cls),
-            )
+            # Only the backend's build sees the parent, so detection's callbacks
+            # cannot join the nest; the first reader built takes it.
+            with joining(parent):
+                reader = backend.open_read(
+                    archive_source,
+                    format=resolved_format,
+                    streaming=streaming,
+                    passwords=passwords,
+                    encoding=encoding,
+                    archive_name=archive_name,
+                    config=config,
+                    collector=collector,
+                    member_streams=member_streams,
+                    open_site=open_site,
+                    start_offset=payload_offset,
+                    end_offset=payload_end,
+                    program_resources=_program_resources(archive_source, backend_cls),
+                )
+            if reader._nest_parent is not parent:
+                raise AssertionError(
+                    f"{backend_cls.__name__}.open_read built a reader that did not "
+                    f"join open_archive(parent=)'s nest"
+                )
             reader._format_provenance = provenance
             reader._format_info = decision.format_info
             # After provenance, so an open-time decode failure carries

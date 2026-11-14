@@ -564,7 +564,7 @@ The arguments covered:
 | --- | --- |
 | `open_archive()`, `open_stream()`, `detect_format()` | `config` |
 | `open_archive()`, `open_stream()`, `detect_format()` | `source` |
-| `open_archive()` | `encoding`, `password`, `budget` (a `Budget`) |
+| `open_archive()` | `encoding`, `password`, `parent` (an archivey reader) |
 | `ArchiveReader.extract_all()` | `dest`, `limits`, `on_progress` |
 | `ArchiveReader.extract_all()`, `ArchiveReader.stream_members()` | `members` |
 | `ArchiveReader.extract_all()` | `filter` |
@@ -574,10 +574,10 @@ The arguments covered:
 | `DetectionBudget(...)` | every field |
 
 `ArchiveyConfig`, the `*Limits` types and `DetectionBudget` SHALL validate their own
-fields at construction, through one shared field check. Validating `config=` at an entry point does not reach them: the object
-passed there is of the right type and the wrong one is a field in, and a limit is a
-promise about an operation that has not begun, so construction is the last place a
-message can still name what the caller wrote.
+fields at construction, through one shared field check. Validating `config=` at an entry
+point does not reach them: the object passed there is of the right type and the wrong
+one is a field in, and a limit is a promise about an operation that has not begun, so
+construction is the last place a message can still name what the caller wrote.
 
 A value that silently disables a guard SHALL be refused on the same footing as a wrong
 type: `None` on a field that is not optional, and a NaN or an infinity on a float
@@ -598,14 +598,16 @@ truthiness are not covered, there being no wrong type to find, except
 and would silently switch the guard.
 
 An empty string passed as a path SHALL raise an `ArchiveyUsageError` that is also a
-`ValueError` at the entry point, before
-anything is read or created. This covers the `source` of `open_archive()` (alone or as
-an item of a volume list), `open_stream()` and `detect_format()`, and the `dest` of
-`ArchiveReader.extract_all()`. `Path("")` is `Path(".")`, so an empty string, typically
-an unset environment variable, would otherwise open the current directory as a
-directory archive or extract into it.
+`ValueError` at the entry point, before anything is read or created. This covers the
+`source` of `open_archive()` (alone or as an item of a volume list), `open_stream()` and
+`detect_format()`, and the `dest` of `ArchiveReader.extract_all()`. `Path("")` is
+`Path(".")`, so an empty string, typically an unset environment variable, would
+otherwise open the current directory as a directory archive or extract into it.
 
 #### Scenario: object argument refusal matrix
+
+- **WHEN** a call is made as each row says
+- **THEN** it behaves as the row's Expected column says
 
 | Case | Expected |
 | --- | --- |
@@ -622,7 +624,7 @@ directory archive or extract into it.
 | `DetectionBudget(..., max_far_bytes=None)` or a negative or `float` field | `ArchiveyUsageError` at construction naming the field; not a `TypeError` or `ValueError` mid-detection, and not a tier silently switched off |
 | `open_archive(src, encoding="rot13")` | `ArchiveyUsageError` naming the argument; not a `LookupError` during a member-name decode |
 | `open_archive(src, encoding=0)` | `ArchiveyUsageError`; not silently ignored |
-| `open_archive(src, budget=10)` | `ArchiveyUsageError` naming `budget=`, also a `TypeError` |
+| `open_archive(src, parent=10)` | `ArchiveyUsageError` naming `parent=`, also a `TypeError` |
 | `extract_all(dest, on_progress=0)` | `ArchiveyUsageError` before any output is written |
 | `extract_all(dest, filter=0)` | `ArchiveyUsageError` before the first member is offered |
 | `extract_all(dest, members="notes.txt")` | `ArchiveyUsageError` naming the list spelling; not a clean extraction of nothing |

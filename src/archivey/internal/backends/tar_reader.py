@@ -2004,7 +2004,7 @@ class TarReader(BaseArchiveReader):
         drawn below it, by the codec stream of a compressed tar. The member itself
         draws nothing then (``draw_budget=False``), and holes are bytes no decoder
         produces."""
-        budget = self._budget
+        budget = self._nest
         if budget is None or not self._compressed:
             return None
 

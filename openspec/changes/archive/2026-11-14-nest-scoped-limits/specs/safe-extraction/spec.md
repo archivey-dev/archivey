@@ -28,6 +28,9 @@ decodes, summed across its levels and its threads; `None` disables it.
   table of contents) is held by the listing limits, not by this total.
 - A byte decoded again (a member read twice, a backward seek in compressed data, the
   same archive opened twice in one nest) SHALL count again.
+- A reader whose cap, the stricter of its own and the outermost reader's, is `None`
+  SHALL count nothing, so its reads pay for no counting: a child that sets a cap the
+  outermost reader does not set counts only the bytes of the readers that set one.
 - The counter SHALL NOT refill while the nest lives, so on a reader kept open for long
   (an `ArchiveyFileSystem`, a reader shared by a server) the cap bounds every read it
   ever serves; the field's documentation SHALL say so.
@@ -40,7 +43,7 @@ decodes, summed across its levels and its threads; `None` disables it.
 | Case | Expected |
 | --- | --- |
 | `max_nest_decoded_bytes=350_000`, ZIP of five 100 000-byte members, two read by the outer reader and two by the same ZIP opened a second time with `parent=outer` | The fourth read raises `ResourceLimitError` naming `max_nest_decoded_bytes=350000`; 350 001 bytes counted |
-| Unlimited, `.tar.gz` of three 100 000-byte members, `stream_members()` reads only the third | At least 300 000 bytes counted; reading all three counts no more than the decoded tar's size |
+| `max_nest_decoded_bytes=10**12`, `.tar.gz` of three 100 000-byte members, `stream_members()` reads only the third | At least 300 000 bytes counted; reading all three counts no more than the decoded tar's size |
 | `max_nest_decoded_bytes=2 * 100_000 + 10`, `extract_all` on the ZIP | Raises; two members written whole, no later member opened |
 | One config, two separate `open_archive` calls with no `parent=` | Each counts from zero |
 
