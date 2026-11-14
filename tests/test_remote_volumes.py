@@ -67,6 +67,15 @@ class CountingMemoryFS(MemoryFileSystem):
         self.asked.append(self._strip_protocol(path))
         return super().cat_file(path, *args, **kwargs)
 
+    def pipe_file(self, path: str, value: bytes, *args: Any, **kwargs: Any) -> Any:
+        # Writing a test file is setup, not a search: older fsspec (2024.2) asks
+        # info() about each parent folder while it writes.
+        listings, asked = self.listings, list(self.asked)
+        try:
+            return super().pipe_file(path, value, *args, **kwargs)
+        finally:
+            self.listings, self.asked = listings, asked
+
     def assert_no_search(self, named: str) -> None:
         """No listing, and no question about any file but the one named."""
         assert self.listings == 0
