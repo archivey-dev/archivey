@@ -648,9 +648,10 @@ class ForwardArchiveReader(ABC):
         ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises
         ``io.UnsupportedOperation``, and ``tell()`` works. A nested archive read from
         it is a non-seekable source: ``open_archive()`` accepts it only with
-        ``streaming=True`` and only for TAR, ZIP and single-file compressors. For a member
-        you need to seek, nested archives included, use :meth:`~ArchiveReader.open` under
-        ``seekable_members=True``.
+        ``streaming=True``, and only for a format that reads forward
+        (``format_availability(format).required_source`` is ``FORWARD_ONLY``). For a
+        member you need to seek, nested archives included, use
+        :meth:`~ArchiveReader.open` under ``seekable_members=True``.
 
         On a default reader the pass owns the reader while it runs:
         :meth:`~ArchiveReader.open`, :meth:`~ArchiveReader.read`,
