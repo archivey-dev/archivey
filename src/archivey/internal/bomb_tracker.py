@@ -364,6 +364,11 @@ class BombTracker:
 # serves a forward seek by decoding the gap, so one seek over a huge member would
 # decode all of it before a check after the seek could refuse.
 _GUARD_STEP = 1 << 20
+# The most one decoder read asks for when the guard reads on to an end it does not know.
+# The room can reach gigabytes, and a decoder may allocate what a read asks for before
+# it reads: ``RawIOBase.read`` does, and under PyPy that buffer is real memory, not
+# pages the kernel hands out as they are touched.
+_READ_TO_END_STEP = _GUARD_STEP * 16
 
 
 class _RatioGuard(DelegatingStream):
@@ -417,7 +422,9 @@ class _RatioGuard(DelegatingStream):
         """How far past the current position one call may decode before a check.
 
         At least a step; more where no position before it can break the rule, so a
-        large read stays one read of the decoder (``math.inf``: the rest of it).
+        large read takes few reads of the decoder (``math.inf``: the rest of it, in
+        one). A read toward an end the guard cannot see still asks for at most
+        ``_READ_TO_END_STEP`` per call (:meth:`_step`).
         """
         return _GUARD_STEP
 
@@ -428,8 +435,8 @@ class _RatioGuard(DelegatingStream):
             size = self._size
             if room == math.inf or (size is not None and self._pos + room >= size):
                 return -1
-            return int(room)
-        return int(min(left, room))
+            return int(min(room, _READ_TO_END_STEP))
+        return int(min(left, room, _READ_TO_END_STEP))
 
     def _check(self, position: int) -> None:
         """Judge ``position`` if it is past the furthest offset judged so far."""
@@ -748,7 +755,7 @@ class MemberRatioGuard(_RatioGuard):
             # Refused before the drain, not after decoding it all.
             raise io.UnsupportedOperation("seek")
         while data := read_blocking(
-            self._inner, min(int(self._room()), _GUARD_STEP * 16)
+            self._inner, min(int(self._room()), _READ_TO_END_STEP)
         ):
             self._pos += len(data)
             self._check(self._pos)

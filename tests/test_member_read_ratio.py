@@ -23,6 +23,7 @@ from archivey import (
     TruncatedError,
     open_archive,
 )
+from archivey.internal import bomb_tracker
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
     MemberRatioGuard,
@@ -433,6 +434,25 @@ def test_a_seek_to_the_end_under_the_ratio_lands_there() -> None:
     guard = _guard(_Decoder(data), size=None, compressed_size=len(data))
     assert guard.seek(-3, io.SEEK_END) == len(data) - 3
     assert guard.read() == b"abc"
+
+
+def test_a_read_to_an_unknown_end_asks_the_decoder_for_bounded_pieces() -> None:
+    """The room for an unsized member can reach gigabytes. A read to its end asks the
+    decoder for at most ``_READ_TO_END_STEP`` per call: a decoder may allocate what a
+    read asks for, and under PyPy that is real memory."""
+    asked: list[int] = []
+
+    class _Recording(_Decoder):
+        def readinto(self, b: memoryview) -> int:  # type: ignore[override]
+            asked.append(len(b))
+            return super().readinto(b)
+
+    data = b"abc" * _MIB
+    guard = _guard(_Recording(data), size=None, compressed_size=len(data))
+    assert guard.read() == data
+    assert guard.read(1 << 40) == b""
+    assert asked
+    assert max(asked) <= bomb_tracker._READ_TO_END_STEP
 
 
 def test_a_relative_seek_in_steps_lands_where_it_was_asked() -> None:
