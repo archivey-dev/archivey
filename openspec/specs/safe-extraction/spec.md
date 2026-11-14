@@ -1455,11 +1455,17 @@ Immutability is structural, not deep: `ExtractionResult.member` is the original
 mutable, caller-read-only `ArchiveMember`, whose documented late-bound metadata
 and diagnostics may still change; `error` may be an ordinary exception object.
 
+The report iterates, indexes and sizes as `results`. Testing its truth SHALL raise
+`TypeError`, as for `VerifyReport` and `MemberListReport`: a sequence's truth is
+whether it is empty, so a failed extraction would read as true and an empty archive's
+clean one as false. `ok` and `raise_for_failure()` answer whether it succeeded.
+
 #### Scenario: report immutability matrix
 
 | Case | Expected |
 | --- | --- |
 | Caller keeps a report and reader later does more work | Result tuple/outcomes and diagnostic summary stay unchanged; referenced member may receive documented late-bound updates |
+| `bool(report)` / `if report:` | `TypeError` naming `ok` |
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 

@@ -519,6 +519,8 @@ init archivey.MemberListReport(members: tuple[ArchiveMember, ...], error: Archiv
 field archivey.MemberListReport.diagnostics: DiagnosticSummary
 field archivey.MemberListReport.error: ArchiveyError | None
 field archivey.MemberListReport.members: tuple[ArchiveMember, ...]
+property archivey.MemberListReport.ok: bool
+method archivey.MemberListReport.raise_for_failure(self) -> None
 class archivey.MemberPass(Iterator)
 method archivey.MemberPass.close(self) -> None
 alias archivey.MemberSelector = Iterable[str | ArchiveMember] | Callable[[ArchiveMember], bool] | None

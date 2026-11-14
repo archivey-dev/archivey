@@ -282,9 +282,10 @@ with archivey.open_archive("download.zip") as archive:
 ```
 
 With `on_blocked="skip"` the call returns the report instead, and `report.ok` is `False` when a
-member was refused or failed; `report.raise_for_failure()` raises the first one's error. If you'd
-rather stop at the first refused member, `abort_on=["blocked_member"]` raises there, and its error
-has no report.
+member was refused or failed; `report.raise_for_failure()` raises the first one's error. Test
+`report.ok`, not the report: `if report:` raises `TypeError`, since a report of a failed extraction
+is not empty. If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` raises
+there, and its error has no report.
 
 ## Damaged members
 
