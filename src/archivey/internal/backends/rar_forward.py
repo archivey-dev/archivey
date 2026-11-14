@@ -19,12 +19,15 @@ from __future__ import annotations
 import io
 from typing import BinaryIO
 
+from archivey.internal.overrides import override
+from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
+
 #: The bytes before the read position kept for a seek back.
 KEEP_BYTES = 4 << 20
 _SKIP_CHUNK = 1 << 20
 
 
-class ForwardSource(io.RawIOBase):
+class ForwardSource(ReadOnlyIOStream):
     """``inner``, read once from its current position, which is offset ``start``."""
 
     def __init__(
@@ -42,12 +45,11 @@ class ForwardSource(io.RawIOBase):
         # Where ``inner`` ended, once a read found nothing more.
         self._end: int | None = None
 
-    def readable(self) -> bool:
-        return True
-
+    @override
     def seekable(self) -> bool:
         return False
 
+    @override
     def tell(self) -> int:
         return self._pos
 
@@ -71,8 +73,9 @@ class ForwardSource(io.RawIOBase):
             del self._held[:drop]
             self._held_at += drop
 
-    def read(self, size: int | None = -1) -> bytes:
-        if size is None or size < 0:
+    @override
+    def read(self, size: int = -1, /) -> bytes:
+        if size < 0:
             parts = []
             while chunk := self.read(_SKIP_CHUNK):
                 parts.append(chunk)
@@ -92,12 +95,8 @@ class ForwardSource(io.RawIOBase):
         self._trim()
         return bytes(out)
 
-    def readinto(self, buffer: bytearray | memoryview) -> int:  # type: ignore[override]
-        data = self.read(len(buffer))
-        memoryview(buffer).cast("B")[: len(data)] = data
-        return len(data)
-
-    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         if whence == io.SEEK_CUR:
             offset += self._pos
         elif whence == io.SEEK_END:

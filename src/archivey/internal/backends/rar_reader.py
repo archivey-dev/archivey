@@ -442,15 +442,10 @@ AUTO_CHOSE_UNAR_NOTE = (
 # reports 901 volumes for a longer set, and the member is then short.
 _UNAR_MAX_OLD_STYLE_VOLUMES = 901
 
+
 # Why a RAR cannot come from a pipe. The block headers are at the front, but the header
 # walk seeks past each member's packed data (and to the RAR5 quick-open record), and
 # unrar reads members from a file on disk.
-_NON_SEEKABLE_REASON = (
-    "the header walk seeks past each member's data, and unrar reads members from a "
-    "file on disk"
-)
-
-
 def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     """Each volume's number in its set, when the names leave a gap; else ``None``.
 
@@ -1953,10 +1948,30 @@ class RarReader(BaseArchiveReader):
         self._decompressor = _resolve_decompressor(
             self._config.rar_decompressor, self._unrar_program, self._unar_program
         )
+        self._open_archive(
+            source,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            program_resources=program_resources,
+        )
 
+    def _open_archive(
+        self,
+        source: ArchiveSource,
+        *,
+        start_offset: int,
+        end_offset: int | None,
+        program_resources: ProgramResources | None,
+    ) -> None:
+        """The open steps after the per-reader state: the parse and the member table
+        (:meth:`__init__` lists them). The forward reader replaces them
+        (``rar_forward_reader``)."""
+        archive_name = self._archive_name
         if not source.seekable():
+            # ``RarReadBackend.open_read`` routes such a source to the forward reader.
             raise StreamNotSeekableError(
-                f"RAR archives require a seekable source: {_NON_SEEKABLE_REASON}.",
+                "RarReader reads a seekable source; a non-seekable one is read by "
+                "RarForwardReader.",
                 archive_name=archive_name,
                 source_format=ArchiveFormat.RAR,
             )
@@ -3487,6 +3502,11 @@ class RarReader(BaseArchiveReader):
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
+        self._after_last_member()
+
+    def _after_last_member(self) -> None:
+        """After the last member: raise the walk's terminal damage, or report what the
+        walk found after the members."""
         if self._archive.truncated is not None:
             # Terminal damage after the prefix, so the listing keeps what the file
             # holds and reports the rest as missing (``members_report().error``).
@@ -4621,11 +4641,17 @@ class RarReader(BaseArchiveReader):
         ],
         *,
         costs: dict[int, _DictionaryCost] | None = None,
+        on_pipe: Callable[[Callable[[], SolidBlockReader]], None] | None = None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """The solid pass over one process's output, demultiplexed by offset.
 
         ``costs`` replaces :meth:`_pass_dictionary_costs` when the output comes
-        from one process per run of solid streams (:class:`_SolidPassPipe`).
+        from one process per run of solid streams (:class:`_SolidPassPipe`), and
+        is read only when a member's stream is made, so a pass that lists as it
+        goes can fill it in as each member is listed. ``on_pipe`` is given the
+        function that starts the process (or returns the running one's output), for
+        a pass whose listing has to read that output itself
+        (``rar_forward_reader``).
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
@@ -4667,6 +4693,9 @@ class RarReader(BaseArchiveReader):
                         tracked if sources is None else sources.tee(tracked)
                     )
             return solid
+
+        if on_pipe is not None:
+            on_pipe(_pipe)
 
         def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             # Read straight from the archive (RAR3/4 stores the target as plain
@@ -6041,15 +6070,18 @@ class RarReader(BaseArchiveReader):
             )
         except SyntheticUnsupported:
             return None
-        parts = raw.data_parts or [(raw.data_offset, raw.compress_size)]
-        shared = self._shared
         return SyntheticMember(
             header=header,
-            data=lambda: [
-                (shared.view(start, length), length) for start, length in parts
-            ],
+            data=lambda: self._entry_data(raw),
             data_size=raw.compress_size,
         )
+
+    def _entry_data(self, raw: RarMemberInfo) -> list[tuple[BinaryIO, int]]:
+        """The streams of ``raw``'s packed data for a synthetic archive, in order,
+        each with its length."""
+        parts = raw.data_parts or [(raw.data_offset, raw.compress_size)]
+        shared = self._shared
+        return [(shared.view(start, length), length) for start, length in parts]
 
     def _reserve_synthetic(
         self,
@@ -6816,8 +6848,8 @@ class RarReadBackend(ReadBackend):
     SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
-    SUPPORTS_STREAMING_NON_SEEKABLE = False
-    NON_SEEKABLE_REASON = _NON_SEEKABLE_REASON
+    # Read front to back by ``RarForwardReader``, with RARLAB unrar 7.00 or later.
+    SUPPORTS_STREAMING_NON_SEEKABLE = True
     OPTIONAL_DEPENDENCY = None
 
     @classmethod
@@ -6846,7 +6878,16 @@ class RarReadBackend(ReadBackend):
         program_resources: ProgramResources | None = None,
     ) -> RarReader:
         del format
-        return RarReader(
+        reader_cls = RarReader
+        if not source.seekable():
+            # Only streaming=True gets here with such a source (open_archive refuses
+            # random access on one). Imported here: that module builds on this one.
+            from archivey.internal.backends.rar_forward_reader import (
+                RarForwardReader,
+            )
+
+            reader_cls = RarForwardReader
+        return reader_cls(
             source,
             streaming,
             passwords,

@@ -287,6 +287,18 @@ def requires_unrar_cli() -> pytest.MarkDecorator:
     )
 
 
+def unrar_reads_from_pipes() -> bool:
+    """Whether archivey reads a RAR archive from a non-seekable source here: that takes
+    RARLAB ``unrar`` 7.00 or later (``RarForwardReader``)."""
+    from archivey.exceptions import ArchiveyError
+    from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
+
+    try:
+        return unrar_reads_rolling_volumes()
+    except ArchiveyError:
+        return False
+
+
 SEVEN_ZIP_CLI_TIMEOUT = 30.0
 """Seconds a ``7z`` command-line run may take before :func:`run_7z` stops it."""
 

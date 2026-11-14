@@ -211,6 +211,20 @@ class SolidBlockReader:
         self._advance_to(slice_)
         return slice_
 
+    def skip_to(self, offset: int) -> int:
+        """Read and discard the block up to ``offset``, or to its end when it ends
+        first, and return the position reached. The member opened last, if any, can no
+        longer be read. Nothing happens when ``offset`` is not ahead of the position."""
+        if self._closed:
+            raise ValueError("SolidBlockReader is closed")
+        if offset > self._pos:
+            self._current = None
+            try:
+                skip_forward(self._block, offset - self._pos, on_chunk=self._credit)
+            except EOFError:
+                pass
+        return self._pos
+
     def _credit(self, n: int) -> None:
         self._pos += n
 

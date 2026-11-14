@@ -414,7 +414,8 @@ class _NonSeekable(io.RawIOBase):
 # The documented table, written out rather than derived, so a backend that flips
 # SUPPORTS_STREAMING_NON_SEEKABLE has to change this list too instead of silently
 # agreeing with itself.
-# TAR, ar, deb, CPIO, RPM, makeself, ZIP and the raw codecs read from a pipe. DMG reports
+# TAR, ar, deb, CPIO, RPM, makeself, ZIP, RAR (with RARLAB unrar 7.00 or later) and the
+# raw codecs read from a pipe. DMG reports
 # the same shape so the spool recipe does not copy a file that open refuses from either
 # shape.
 _FORWARD_ONLY_CONTAINERS = {
@@ -425,6 +426,7 @@ _FORWARD_ONLY_CONTAINERS = {
     ContainerFormat.RPM,
     ContainerFormat.MAKESELF,
     ContainerFormat.ZIP,
+    ContainerFormat.RAR,
     ContainerFormat.RAW_STREAM,
     ContainerFormat.DMG,
 }
@@ -526,13 +528,10 @@ def test_the_read_once_refusal_does_not_depend_on_optional_packages(
 @pytest.mark.parametrize(
     ("fmt", "reason"),
     [
-        # RAR headers sit at the front; the header walk's seeks and unrar needing a
-        # file are what stop a pipe.
-        (ArchiveFormat.RAR, "the header walk seeks past each member's data"),
         (ArchiveFormat.SEVEN_Z, "its index is at the end of the file"),
         (ArchiveFormat.ISO, "at absolute offsets in the image"),
     ],
-    ids=["RAR", "7z", "ISO"],
+    ids=["7z", "ISO"],
 )
 def test_the_read_once_refusal_names_the_format_s_own_reason(
     fmt: ArchiveFormat, reason: str
@@ -547,7 +546,7 @@ def test_the_read_once_refusal_names_the_format_s_own_reason(
 def test_a_backend_sets_its_own_reason_exactly_when_it_refuses_pipes() -> None:
     """Every seek-only backend says why; no pipe-capable backend carries dead text.
 
-    Fails if any one of the three ``NON_SEEKABLE_REASON`` lines is deleted, or if a
+    Fails if any one of the ``NON_SEEKABLE_REASON`` lines is deleted, or if a
     backend that streams from a pipe sets one nobody reads.
     """
     assert _SEEK_ONLY_FORMATS, "the registry should still have seek-only formats"
