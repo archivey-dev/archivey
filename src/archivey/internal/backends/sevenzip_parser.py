@@ -714,7 +714,8 @@ def read_signature_and_next_header(
 
     if fields.next_header_offset > _MAX_SEEK_OFFSET:
         raise CorruptionError(
-            f"7z next-header offset {fields.next_header_offset} exceeds the seekable range"
+            f"7z next-header distance {fields.next_header_offset} past the start "
+            "header exceeds the seekable range"
         )
     if fields.next_header_size > MAX_NEXT_HEADER_SIZE:
         raise CorruptionError(

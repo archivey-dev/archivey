@@ -1762,6 +1762,7 @@ class ZipReader(BaseArchiveReader):
             stopped,
             whole=True,
             file_size=file_size,
+            origin=self._origin,
         ) or CorruptionError(NO_END_RECORD_MSG)
 
     def _list_walked_members(self, walked: _WalkedMembers) -> None:

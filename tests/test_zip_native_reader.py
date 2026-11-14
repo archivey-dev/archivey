@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import gc
 import io
+import re
 import struct
 import threading
 import tracemalloc
@@ -1228,3 +1229,53 @@ def test_decoded_name_field_order_is_pinned() -> None:
         "unicode_extra_fault",
         "unicode_path_used",
     )
+
+
+class _ReadPipe(io.RawIOBase):
+    """A source that cannot seek, for the forward reader."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        chunk = self._data.read(len(buffer))
+        buffer[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("damage", ["junk_after_directory", "junk_for_directory"])
+def test_a_missing_end_record_behind_a_stub_names_the_offset_in_the_file(
+    damage: str,
+) -> None:
+    """With no end record, the reader walks the local headers and words why none
+    follows them. Detected, forced and from a pipe, the message names the offset in
+    the file: the plain archive's offset plus the stub's length."""
+    stub = pe_file(0x1000)
+    data = _zip()
+    eocd = data.rfind(b"PK\x05\x06")
+    if damage == "junk_after_directory":
+        broken = data[:eocd] + b"JUNK" * 8
+    else:
+        directory = data.find(b"PK\x01\x02")
+        broken = data[:directory] + b"JUNK" * 8
+
+    def offset(source: object, fmt: ArchiveFormat | None = None) -> int:
+        pipe = isinstance(source, _ReadPipe)
+        with (
+            pytest.raises(CorruptionError) as exc,
+            open_archive(source, format=fmt, streaming=pipe) as reader,  # type: ignore[arg-type]
+        ):
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+        match = re.search(r"stream offset (\d+)", str(exc.value))
+        assert match is not None, str(exc.value)
+        return int(match.group(1))
+
+    plain = offset(io.BytesIO(broken))
+    assert offset(io.BytesIO(stub + broken)) == plain + len(stub)
+    assert offset(io.BytesIO(stub + broken), ArchiveFormat.ZIP) == plain + len(stub)
+    assert offset(_ReadPipe(stub + broken), ArchiveFormat.ZIP) == plain + len(stub)
