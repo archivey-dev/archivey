@@ -249,7 +249,9 @@ them.
 A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is compressed in.
 A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check, without
 waiting for the end of the archive. If a later block is damaged, the files in the earlier blocks
-keep `CHECKSUM`.
+keep `CHECKSUM`. This doesn't happen when the bzip2 accelerator decompresses the archive
+(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more): its files wait for
+the end of the archive, as above.
 
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the

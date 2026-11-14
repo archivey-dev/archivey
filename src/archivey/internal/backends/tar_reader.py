@@ -785,6 +785,10 @@ class TarReader(BaseArchiveReader):
                 source, format.stream, streaming, member_streams=member_streams
             )
             self._owned_codec_stream = stream
+            spans = find_checked_spans(stream)
+            if spans is not None:
+                # Before the first member is listed (``_refresh_member_levels``).
+                spans.watch()
             if not streaming:
                 # Each walk buffers its own view (_new_walker). A second buffer here
                 # would fill the first one in a loop, and a loop that reaches a damaged
