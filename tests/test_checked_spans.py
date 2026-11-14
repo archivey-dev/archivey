@@ -253,6 +253,16 @@ def test_the_members_before_a_damaged_block_are_checksum_verified(compress) -> N
     # The first blocks hold well over the first member.
     assert files[0].verified is Verification.CHECKSUM
     assert files[-1].verified is not Verification.CHECKSUM
+    # The whole-stream check did not pass, so verify_all() returns the raised ones.
+    with archivey.open_archive(io.BytesIO(bytes(blob))) as archive:
+        report = archive.verify_all()
+        raised = [
+            m
+            for m in archive._listed
+            if m.is_file and m.verified is Verification.CHECKSUM
+        ]
+    assert raised
+    assert {id(m) for m in raised} <= {id(m) for m, _ in report.failures}
 
 
 def _without_block(blob: bytes, index: int) -> bytes:
