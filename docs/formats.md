@@ -359,9 +359,16 @@ What a pipe cannot read:
 
 Where a pipe and a file differ, on damaged archives or ones no writer produces:
 
-- A data descriptor that disagrees with the central directory, or a local header the directory
-  contradicts, makes the pass raise `CorruptionError` for that member once it reaches the
-  directory. A read from a file reads it.
+- A data descriptor or local header whose CRC-32 or sizes differ from the central directory's
+  (other than a directory CRC-32 of 0, [below](#damaged-and-unusual-endings)) makes the pass raise
+  `CorruptionError` for that member once it reaches the directory. A read from a file checks the
+  data against the directory. So when the data matches the directory, a file read reads the
+  member, and from a pipe the member's own read already fails, since the pass checks the values
+  next to the data. When the data matches the local header or descriptor, the member reads from a
+  pipe, and a read from a file raises `CorruptionError`.
+- Bytes between the end of a member's compressed stream and its data descriptor (bit 3) count
+  into its compressed size, and the member reads. A read from a file raises `CorruptionError` on
+  them ([Damaged and unusual endings](#damaged-and-unusual-endings)).
 - Two members with the same name whose directory order reverses their order in the file list and
   stream as from a file. Extraction raises `CorruptionError` for that name, where extraction from
   a file writes the copy the directory lists last.
@@ -428,9 +435,10 @@ sending side when the ZIP is done.
   `CorruptionError` once the data before them has been read, for every method, whatever the
   declared size and CRC cover. So does an LZMA member without an end marker, or a PPMd member,
   whose declared size stops short of its data. One zero byte after LZMA data without an end
-  marker reads, because 7-Zip's encoder sometimes writes it. Under ZipCrypto these read as the
-  password-or-damage `EncryptionError` instead, caused by that `CorruptionError`, because the
-  bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
+  marker reads, because 7-Zip's encoder sometimes writes it. From a pipe, bytes between the stream
+  and a data descriptor are the one exception ([ZIP from a pipe](#zip-from-a-pipe)). Under ZipCrypto
+  these read as the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
+  because the bytes are encrypted. With rapidgzip, one crafted shape may read instead: a long
   second DEFLATE stream, with a size and CRC that cover both streams. See
   [Where the guarantees stop](security.md#where-the-guarantees-stop).
 - `ListingLimits.max_members` is checked at open against the entry count the end record declares,
@@ -514,9 +522,10 @@ sending side when the ZIP is done.
   UTF-8, the name decodes as an unflagged name that is not UTF-8 does. A
   `member_name_encoding_inferred` diagnostic names the encoding used, with
   `declared_encoding="utf-8"`, and `STRICT` refuses the archive. `raw_name` keeps the stored bytes.
-- **An Info-ZIP Unicode Path extra field** (`0x7075`) whose checksum matches the stored bytes
-  outranks the guess and names the member in UTF-8. `raw_name` is then the field's UTF-8 bytes, and
-  `extra["alternate_raw_name"]` holds the stored ones. A malformed field (too short, or matching
+- **An Info-ZIP Unicode Path extra field** (`0x7075`) on an unflagged name, whose checksum
+  matches the stored bytes, outranks the guess and `encoding=`, and names the member in UTF-8.
+  `raw_name` is then the field's UTF-8 bytes, and `extra["alternate_raw_name"]` holds the stored
+  ones. On a flagged name the field is not read. A malformed field (too short, or matching
   with an empty, cut-short or non-UTF-8 name) is dropped with a `member_header_record_skipped`
   diagnostic, and the archive opens on every Python version. Python 3.12's `zipfile` refuses a
   too-short field or a non-UTF-8 name.
