@@ -983,12 +983,10 @@ def test_a_childs_decoder_memory_is_its_own(tmp_path) -> None:
     import lzma
 
     raw = _tar_of({"a": b"a" * 1000})
-    xz = lzma.compress(
-        raw,
-        format=lzma.FORMAT_XZ,
-        filters=[{"id": lzma.FILTER_LZMA2, "dict_size": 40 << 20}],
-    )
-    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=64 << 20))
+    # Preset 6 declares an 8 MiB dictionary. (PyPy's ``lzma`` refuses a ``filters=``
+    # chain, so the size comes from the preset.)
+    xz = lzma.compress(raw, format=lzma.FORMAT_XZ, preset=6)
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=12 << 20))
     with archivey.open_archive(io.BytesIO(xz), config=config) as parent:
         parent.members()
         with archivey.open_archive(io.BytesIO(xz), parent=parent) as child:
