@@ -296,15 +296,36 @@ def test_a_streaming_zip_counts_the_start_of_each_member_it_passes() -> None:
 
 
 def test_a_decompress_layer_counts() -> None:
-    """An RPM's payload is a format adapter ``decompress()`` layer."""
+    """A format adapter ``decompress()`` layer counts what listing decodes."""
+    from archivey.internal.format_adapter import registration_scope
+    from tests.test_format_api_sequential import (
+        ToysContainer,
+        _RpmishReader,
+        _variant,
+        build_rpmish,
+    )
+
+    data = build_rpmish()
+    with registration_scope():
+        fmt = _variant(_RpmishReader, ToysContainer.RPMISH)
+        with archivey.open_archive(
+            io.BytesIO(data), format=fmt, config=_config(None)
+        ) as reader:
+            assert len(reader.members()) == 5
+        with (
+            archivey.open_archive(
+                io.BytesIO(data), format=fmt, config=_config(1)
+            ) as reader,
+            pytest.raises(ResourceLimitError, match="max_decoded_bytes=1"),
+        ):
+            reader.members()
+
+
+def test_an_rpm_lists_from_its_header_without_decoding() -> None:
+    """An RPM's payload is decoded only when a member's data is read."""
     from tests.test_rpm import _F, _build, _Package
 
     files = [_F(f"/opt/f{i}".encode(), data=bytes([i]) * _MEMBER) for i in range(3)]
     data = _build(_Package(files))
-    with archivey.open_archive(io.BytesIO(data), config=_config(None)) as reader:
+    with archivey.open_archive(io.BytesIO(data), config=_config(1)) as reader:
         assert len(reader.members()) == 3
-    with (
-        archivey.open_archive(io.BytesIO(data), config=_config(_MEMBER)) as reader,
-        pytest.raises(ResourceLimitError, match="max_decoded_bytes=100000"),
-    ):
-        reader.members()

@@ -400,7 +400,7 @@ class ListingLimits:
     """Most bytes one listing may decode. 4 GiB.
 
     Some archives can only be listed by decoding them: a ``.tar.gz`` (or any
-    compressed TAR, cpio or RPM payload) is one compressed stream, and its member
+    compressed TAR or cpio) is one compressed stream, and its member
     headers sit between the members' data, so listing it decodes all of it. A
     streaming ZIP decodes the start of each compressed member it passes over (up to
     about 4 KiB, in case the directory makes it a link), so it counts about 4 KiB a

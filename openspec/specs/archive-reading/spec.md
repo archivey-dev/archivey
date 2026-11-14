@@ -552,7 +552,7 @@ non-seekable source has no directory to read at open: its forward pass charges
 entries it reads after the last member (`format-zip`).
 
 `max_decoded_bytes` SHALL cap the bytes one listing pass decodes on its own: a
-compressed TAR's (or cpio's, or an RPM payload's, or another `decompress()` layer's)
+compressed TAR's (or cpio's, or another `decompress()` layer's)
 stream as the walk reads headers and skips member data, the start of each compressed
 member a streaming ZIP pass decodes as it passes over it (up to the link-target cap
 and a reparse prefix), a solid folder decoded up to the symlinks whose targets the
