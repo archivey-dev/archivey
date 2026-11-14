@@ -17,7 +17,7 @@ The duck-typing helper itself is generic ``getattr`` plumbing, so it lives in
 re-exports it as the archivey-facing name.
 
 :class:`ResumeReachedStreamEnd` is the signal both mid-stream resume decoders
-(``deflate_resume`` and ``bzip2_resume``) raise when they cannot give a verdict.
+(``deflate_resume`` and ``bzip2_blocks``) raise when they cannot give a verdict.
 """
 
 from __future__ import annotations
@@ -115,8 +115,9 @@ class ResumeReachedStreamEnd(Exception):
     caller decodes again from the start.
 
     Raised by ``DeflateResumeDecoder`` (the gzip CRC-32 or zlib Adler-32) and by
-    ``Bzip2ResumeDecoder`` (the combined CRC, whose failure ``bz2`` reports the same
-    way as a damaged block, so that decoder raises this on either).
+    ``Bzip2BlockDecompressor`` resumed at a point whose combined CRC is not known, or
+    was read from rapidgzip's index and does not match at the end (the bzip2
+    takeover's points, ``Bzip2BlockStart.from_index``).
 
     It is control flow, not an error a caller may see: it is not an ``ArchiveyError``.
     Only ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py`` adds resume points to a

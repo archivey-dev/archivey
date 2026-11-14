@@ -1129,11 +1129,18 @@ child, which has no `copy()`, keeps the bound above.
 ### Requirement: In-house decoders hand back their bytes before an error
 
 The decoders archivey implements (`.Z` LZW, lzop, ZIP Shrink, Reduce, Implode and DCL
-Implode), and the bzip3 decoder, which reads the block framing itself and calls libbzip3
-once per block, SHALL return the bytes they decoded before a corrupt code or a failed
-block, and raise the error from the next call. A decoder that calls its decompressor more
-than once per call (`FramedDecoder`) SHALL return the bytes earlier calls gave when a
-later one raises, and raise the error from its next call.
+Implode), the bzip3 decoder, which reads the block framing itself and calls libbzip3
+once per block, and the bzip2 decoder, which feeds `bz2` one block at a time, SHALL
+return the bytes they decoded before a corrupt code or a failed block, and raise the
+error from the next call. The bzip2 decoder SHALL hand out a block's bytes only once
+`bz2` has checked the block's CRC, and SHALL hand out none of a block whose CRC fails:
+the inverse Burrows-Wheeler transform scrambles a damaged block as a whole. It finds
+block starts by their 48-bit magic and confirms each by the output a drain gives there,
+and it checks the stream's combined CRC itself. Holding a block holds its output, at
+most 46.6 MB, which counts against `DecoderLimits.max_decoder_memory` as it grows: a
+block over the cap raises `ResourceLimitError`. A decoder that calls its decompressor
+more than once per call (`FramedDecoder`) SHALL return the bytes earlier calls gave when
+a later one raises, and raise the error from its next call.
 
 #### Scenario: a bad LZW code
 
@@ -1148,6 +1155,23 @@ later one raises, and raise the error from its next call.
 - **GIVEN** an lzop file of stored 256 KiB blocks whose third block is damaged
 - **WHEN** it is read in `read(512)` or `read(1 MiB)` steps, from a file or a pipe
 - **THEN** it gets the first two blocks whole, then the error
+
+#### Scenario: a damaged bzip2 block
+
+- **GIVEN** a bzip2 stream of several blocks with a byte flipped inside its fourth
+  block, or a block whose data is intact and whose stored CRC is wrong
+- **WHEN** it is read in `read(61)`, `read(4 KiB)` or `read(1 MiB)` steps, from a file
+  or a pipe, under `process_isolation` `NONE` or `NATIVE_DECODERS`
+- **THEN** it gets every byte of the blocks before that block, none of that block, then
+  `CorruptionError`
+
+#### Scenario: a damaged bzip2 block magic
+
+- **GIVEN** a bzip2 stream of several blocks with a bit flipped in the magic of a block
+  after the first, so the block before it ends in bytes that are no marker
+- **WHEN** it is read as in the scenario above
+- **THEN** it gets every byte of the blocks before the damaged magic, the block right
+  before it included, then `CorruptionError`
 
 #### Scenario: a bad bzip3 block header
 
