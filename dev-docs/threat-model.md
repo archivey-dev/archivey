@@ -1543,8 +1543,9 @@ per-member rule holds reads from such a source. A container inside a compression
 (a `.tar.gz`) holds its whole decode, listing included, to the archive-wide ratio
 (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything; the stream
 `open_stream()` returns gets the same guard against its source's size
-(`core._hold_stream_to_ratio`; a source with no stat size is measured by a seek to its
-end, a pipe by the bytes taken). A sequential
+(`core._hold_stream_to_ratio`: the size hint; else, when seeks are cheap, a seek to the
+end; else the bytes the codec has taken, the furthest offset on a source whose seek may
+re-decode or refuses the seek to its end, the bytes pulled from a pipe). A sequential
 format handler's walk is held the same way to what it decodes by itself
 (`format_adapter.SequentialReaderAdapter._ratio_guarded`): the layers that
 `ForwardStream.decompress()` opens share one total, each layer counted at the furthest

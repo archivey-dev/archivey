@@ -1496,11 +1496,16 @@ def _hold_stream_to_ratio(
     member read of the same bytes through :func:`open_archive` is held (DR-9).
 
     The denominator is the compressed length, found as a member read of the same bytes
-    finds it (``SingleFileReader._probe_compressed_size``): the source's size hint,
-    else, on a source whose seeks are cheap, one ``SEEK_END``. A block device is the
-    path that needs the seek: it has no ``stat`` size, and the codec opens the path
-    itself, so nothing would count the bytes it reads. Only a pipe has no length; the
-    bytes pulled from it are the live denominator, as for ``open_archive`` on a pipe.
+    finds it (``SingleFileReader._probe_compressed_size``), in this order:
+
+    - the source's size hint;
+    - else, on a source whose seeks are cheap, one ``SEEK_END``, on a fresh handle for
+      a path and with the position restored for a stream. A block device is the path
+      that needs it: it has no ``stat`` size, and the codec opens the path itself, so
+      nothing would count the bytes it reads;
+    - else the bytes the codec has taken, judged live as for ``open_archive`` on a
+      pipe: the furthest offset reached on a source whose seek may re-decode or that
+      refuses ``SEEK_END``, and the bytes pulled from a pipe.
     """
     if limits.max_ratio is None:
         return
@@ -1518,9 +1523,11 @@ def _hold_stream_to_ratio(
             # to the codec as a path, and a path is never an expensive seek).
             consumed = lambda: codec_input.bytes_reached  # noqa: E731
         else:
-            codec_input.seek(0, io.SEEK_END)
-            static_size = codec_input.tell()
-            codec_input.seek(0)
+            static_size = _seek_end_length(codec_input)
+            if static_size is None:
+                # Refused SEEK_END. A regular file or a block device answers it, so a
+                # path does not get here, where this count would see nothing.
+                consumed = lambda: codec_input.bytes_reached  # noqa: E731
     elif static_size is None:
         consumed = lambda: codec_input.bytes_pulled  # noqa: E731
     stream._hold_inner(
@@ -1533,6 +1540,23 @@ def _hold_stream_to_ratio(
             counted="the stream decoded",
         )
     )
+
+
+def _seek_end_length(source: ArchiveSource) -> int | None:
+    """The absolute end offset of a source whose seeks are cheap, or ``None`` when it
+    refuses the seek. A path is measured on a handle of its own; a stream's position
+    is restored, since the codec may already be reading it."""
+    try:
+        if source.path is not None:
+            with open(source.path, "rb") as f:
+                return f.seek(0, io.SEEK_END)
+        pos = source.tell()
+        try:
+            return source.seek(0, io.SEEK_END)
+        finally:
+            source.seek(pos)
+    except OSError:
+        return None
 
 
 def _resolve_stream_format(

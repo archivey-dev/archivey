@@ -155,3 +155,41 @@ def test_a_seekable_stream_with_no_size_hint_is_held_by_its_length() -> None:
         f.seek(0)
         with open_stream(f) as stream, pytest.raises(ResourceLimitError):
             _drain(stream)
+
+
+class _NoSeekEnd(io.RawIOBase):
+    """Seekable, but a seek to the end raises, as some device or socket wrappers do."""
+
+    def __init__(self, data: bytes) -> None:
+        self._buf = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray) -> int:  # type: ignore[override]
+        return self._buf.readinto(b)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if whence == io.SEEK_END:
+            raise OSError(29, "Illegal seek")
+        return self._buf.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._buf.tell()
+
+
+def test_a_stream_that_refuses_a_seek_to_the_end_still_reads() -> None:
+    data = _random(100_000)
+    with open_stream(_NoSeekEnd(gzip.compress(data))) as stream:
+        assert stream.read() == data
+
+
+def test_a_stream_opened_part_way_keeps_its_position() -> None:
+    data = _random(100_000)
+    source = io.BytesIO(b"x" * 8 + gzip.compress(data))
+    source.seek(8)
+    with open_stream(source) as stream:
+        assert stream.read() == data
