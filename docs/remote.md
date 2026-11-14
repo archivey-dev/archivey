@@ -32,6 +32,62 @@ them from nowhere else: a string passed to `open_archive` is always a local path
 raises `FileNotFoundError` and fetches nothing. A program that passes file names from its users to
 `open_archive` can't be made to fetch a URL.
 
+## An archive as a file system
+
+Archivey also adds an fsspec protocol, `archivey`, that shows the members of an archive as files.
+Chained to the archive's own URL with `::`, it reaches one member, so a library that takes fsspec
+URLs, such as pandas, reads straight from inside the archive:
+
+```python
+import pandas as pd
+
+labels = pd.read_csv("archivey://data/labels.csv::s3://bucket/dataset.zip")
+```
+
+fsspec finds the protocol once archivey is installed, with no `import archivey`. The same file
+system is a class you can create yourself, to list the archive or open several members from one
+open:
+
+```python
+import fsspec
+from archivey.fsspec import ArchiveyFileSystem
+
+with ArchiveyFileSystem(fsspec.open("s3://bucket/dataset.zip", anon=True)) as fs:
+    print(fs.find(""))                  # every file extraction would write
+    with fs.open("data/labels.csv") as f:
+        header = f.readline()
+```
+
+The archive can be an `OpenFile`, a URL, a local path or a binary file object, and `format`,
+`password`, `encoding` and `config` are those of `open_archive`. The file system opens the
+archive once and reads it as the rest of this page describes. `fs.reader` is that
+`ArchiveReader`, and closing the file system, or leaving its `with` block, closes it. The file
+system is read-only: `fs.open` in a write or append mode raises `NotImplementedError`, while
+`"r"` opens a member as text. A member opened either way can seek.
+
+The files listed are the ones `extract_all` would write into an empty folder, under the same
+names, in all but a few edge cases. `policy=` (default `"strict"`) is the extraction policy that
+decides this, and a member that extraction would refuse is left out. A member named
+`../notes.txt` isn't listed under any policy, and of `Readme` and `README` only the first is
+listed under `"strict"` and `"standard"`, which treat them as the same name. Each member left out
+logs a warning and adds a `MEMBER_PATH_REFUSED` diagnostic to `fs.reader.diagnostics`. [What
+each policy does with unusual members](extracting.md#what-each-policy-does-with-unusual-members)
+says which members those are, and the [API reference](api.md#fsspec-file-system) says how
+symlinks and hard links are listed and which edge cases the tree doesn't model.
+
+??? note "Why not list every member, as `archive.members()` does?"
+    A file system invites code that copies what it lists to disk by those names, with
+    `fs.get` or a loop of its own. If the list held `../notes.txt`, or both `Readme` and
+    `README` on a disk that doesn't tell them apart, that code would write outside its folder
+    or overwrite one file with the other. Listing what extraction writes keeps those names out
+    of the tree. The reader in `fs.reader` still lists every member.
+
+Unlike `open_archive`, the file system takes a string as a URL, so it reaches whatever protocol
+the string names. fsspec splits a URL at each `::`, so a member name from a user, if formatted
+into an `archivey://` URL, can name another file to open as the archive, even a local one. A
+name passed to `fs.open` is only a path inside the archive: `fs.open("x::file:///etc/passwd")`
+raises `FileNotFoundError`.
+
 ## What reading costs
 
 Each request to a remote store takes time before the first byte comes back, so archivey tries to
@@ -48,7 +104,12 @@ because some formats keep an index and others have to be walked from the start
   this).
 - **A solid archive** has to be decompressed from the start of a block to reach a member in it,
   so reading a member near its end fetches everything before it
-  ([Solid archives](reading.md#solid-archives)). Compressed TARs are solid this way.
+  ([Solid archives](reading.md#solid-archives)). Compressed TARs are solid this way, but
+  listing one keeps restart points, so a read after the listing fetches only from the nearest
+  point before the member. A `.tar.gz` has one about every MiB of the decompressed TAR, further
+  apart once the TAR passes about 800 MiB, and a `.tar.xz` written in several blocks has one per
+  block. Other compressed TARs restart only where the stream starts a
+  new part, and most have just one, so a read there fetches the stream again from its start.
 - **A pass over every member**, with `stream_members()` or `extract_all()`, reads the archive
   from start to end. Archivey makes each request larger as the reads stay in order, up to 8 MiB,
   so a 40 MB ZIP is read in fewer than ten requests.

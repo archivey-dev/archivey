@@ -123,13 +123,13 @@
 
 ## 6. Docs
 
-- [ ] 6.1 `docs/` page "Remote archives and fsspec": the two ways in, why an
+- [x] 6.1 `docs/` page "Remote archives and fsspec": the two ways in, why an
       `OpenFile` beats an open file, the `OpenFile` fields archivey refuses, the cache to
       pick when passing an open file (from 1.5's numbers), the file system, its
       extraction-view tree and `policy=`, the RAR download, and that an `archivey://`
       URL reaches the network where `open_archive(str)` never does (member names from a
       caller go to `fs.open()`, never into a URL).
-- [ ] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
+- [x] 6.2 `dev-docs/threat-model.md`: a remote-source section with two lines: chained
       URLs reach the protocol they name, and a same-length replacement of an unpinned
       remote object is not detected (design D7).
 - [x] 6.3 IDEAS.md: replace the fsspec entry with a pointer to this change, and add
