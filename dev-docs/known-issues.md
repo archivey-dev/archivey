@@ -473,8 +473,34 @@ estimates alone. The PyPy CI job runs the pins above; nothing measures the zstd 
 windows, what a caller who leaves streams unclosed really uses, or what the same drops
 cost in a long-lived process with a large heap, the shape the ENOMEM failures had.
 
+**zlib copies.** PyPy's `decompressobj.copy()` leaks zlib's inflate state, about
+7 KiB, on every call: `inflateCopy` in `rpython/rlib/rzlib.py` allocates the copy with
+`inflateInit()`, whose state zlib's `inflateCopy` then overwrites without freeing. No
+collection reaches it. The rest of a copy, its 32 KiB window, waits for a major
+collection, which copies barely bring forward (40 KB of pressure per copy did not change
+the growth). Measured on PyPy 3.11.15 (7.3.23): 60,000 copies hold 2.6 GB; with
+`gc.collect()` every 1,000 copies, 200,000 copies keep 1.5 GB; the same count of new
+decompressors stays at 98 MB. The pipe path that keeps the bytes before a zlib error
+(`_KeepsOutputBeforeErrors` in `codecs/deflate_decoder.py`) used to take a copy before
+every bounded step, which is one copy per byte on a source that returns one byte per
+read: one parametrised case of `tests/test_arrived_codec_input.py` took 64,121 copies
+and grew its worker by 2.7 GB. In the merge queue's PyPy job that put the runner's four
+workers past its 16 GB, the runner stopped answering, and the job ran into its
+45-minute limit with no log (2026-11-13 and 14). The path now takes one copy per
+`REPLAY_MAX_STEPS` steps, 1 MiB of input or 8 MiB of output, and replays the steps since
+the copy on an error. Where the copy leaks (`native_memory.ZLIB_COPY_LEAKS`: every
+PyPy so far; `_PYPY_ZLIB_COPY_FIXED` names the first fixed release once one exists),
+archivey takes no zlib copy at all (maintainer's ruling, 2026-11-14: a leak that never
+ends would grow a long-lived process without bound). There, a damaged pipe loses the
+failing call's bytes, at most 64 KiB, as every other codec does on a pipe, and gzip,
+zlib and raw DEFLATE record no snapshot seek points (`ZlibSnapshot`), so a backward seek
+decodes again from the start of the member. On a 64 MiB text gzip under PyPy 3.11.15,
+15 random seeks took 4.8 ms median with snapshots and 71 ms (max 384 ms) without; a
+full read is about 600 ms.
+
 **Upstream.** Not filed; PyPy documents that native memory needs
-`add_memory_pressure` from whoever allocates it.
+`add_memory_pressure` from whoever allocates it. The copy that is never freed is a PyPy
+bug (the `rzlib` cause above), not filed yet.
 
 **Evidence.** PR #927. On main, the PyPy job's extras step had 163 failures and
 53 errors, 154 of them ENOMEM, with one worker's `[heap]` mapping at 74 GB. With the fix

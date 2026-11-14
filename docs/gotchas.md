@@ -67,9 +67,9 @@ fills in those sizes, and `archive.open(member)` on a symlink reads its target.
 compressed together, so reaching a member means decompressing the data before it. `stream_members()`
 decompresses it once. Reading members by name can decompress the same data many times, which is slow
 on a large archive. A `.tar.gz` is cheaper to read by name, because archivey keeps a restart point
-about every MiB while it lists one. On a solid 7z or RAR archive, archivey records
-`SOLID_OPEN_REDECOMPRESSES` the first time it decompresses data again. [Solid
-archives](reading.md#solid-archives)
+about every MiB while it lists one ([not under PyPy](install.md#pypy)). On a solid 7z or RAR
+archive, archivey records `SOLID_OPEN_REDECOMPRESSES` the first time it decompresses data again.
+[Solid archives](reading.md#solid-archives)
 
 **Open with `streaming=True` when you process each member once.** It's a promise to read the
 archive once, from start to end. `open()`, `read()` and `members()` then raise, so a read out of
