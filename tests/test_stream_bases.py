@@ -431,6 +431,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     )
     from archivey.internal.backends import (
         rar_copy_sources,
+        rar_forward,
         rar_reader,
         sevenzip_pipeline,
         sevenzip_reader,
@@ -505,6 +506,9 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
         rar_reader._RollingUnrarStream,  # the unrar pipe fed rolling volumes
+        # A pipe RAR walk's archive source: archive offsets under the header walk
+        # and the rolling volumes, never under a member's decompressed chain.
+        rar_forward.ForwardSource,
         respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,

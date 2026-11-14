@@ -432,6 +432,7 @@ def test_a_header_password_is_found_from_several(password: object) -> None:
     assert got == expected
 
 
+@pytest.mark.usefixtures("rolling_unrar")
 def test_a_volume_set_is_refused_from_a_pipe() -> None:
     raw = (_FIXTURES / "tinyvol_rnn.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError, match="volume set"):
