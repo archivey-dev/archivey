@@ -187,9 +187,48 @@ def test_a_stream_that_refuses_a_seek_to_the_end_still_reads() -> None:
         assert stream.read() == data
 
 
-def test_a_stream_opened_part_way_keeps_its_position() -> None:
+class _NoSizeHint(io.RawIOBase):
+    """Seekable, with no size an ``ArchiveSource`` can read off it, so the guard
+    measures it by a seek to the end (a ``BytesIO`` would give its buffer length)."""
+
+    def __init__(self, data: bytes) -> None:
+        self._buf = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray) -> int:  # type: ignore[override]
+        return self._buf.readinto(b)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        return self._buf.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._buf.tell()
+
+
+@pytest.mark.parametrize("seekable", [False, True])
+def test_the_length_probe_leaves_the_source_where_the_codec_left_it(
+    seekable: bool,
+) -> None:
+    # The guard measures a source with no size hint by a seek to its end after the
+    # codec has opened it; with seekable=True the codec has already read (gzip finds
+    # its trailer). The probe must put the source back there, not at its start, or a
+    # codec reading on from the shared position would start over. The built-in codecs
+    # re-seek before they read, so compare the position with an unguarded open too.
     data = _random(100_000)
-    source = io.BytesIO(b"x" * 8 + gzip.compress(data))
-    source.seek(8)
-    with open_stream(source) as stream:
-        assert stream.read() == data
+    packed = b"x" * 8 + gzip.compress(data)
+
+    def opened_at(config: ArchiveyConfig) -> int:
+        source = _NoSizeHint(packed)
+        source.seek(8)
+        with open_stream(source, config=config, seekable=seekable) as stream:
+            position = source.tell()
+            assert stream.read() == data
+        return position
+
+    unguarded = ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=None))
+    assert opened_at(ArchiveyConfig()) == opened_at(unguarded)
