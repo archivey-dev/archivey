@@ -31,4 +31,4 @@
   early close removes the volumes
 - [x] 3.2 `docs/formats.md`, `docs/opening.md`, `docs/security.md`,
   `dev-docs/formats/rar.md`, `dev-docs/threat-model.md`
-- [ ] 3.3 Sync the delta specs and archive this change in the PR that finishes it
+- [x] 3.3 Sync the delta specs and archive this change in the PR that finishes it

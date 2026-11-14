@@ -25,7 +25,7 @@ What a pipe cannot do, and the pass refuses instead: read a member whose output 
 not line up (a member of unknown size, a wrong password, an unknown compression
 version in a solid archive) or any member after it, read a RAR5 file copy (its source
 bytes were not kept), and give each member its own password from several candidates.
-The design is tracked internally; ``openspec/changes/rar-pipe-reader`` holds it.
+The design is tracked internally; ``openspec/changes/archive/2026-11-14-rar-pipe-reader`` holds it.
 """
 
 from __future__ import annotations
