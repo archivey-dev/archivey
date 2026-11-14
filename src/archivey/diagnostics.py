@@ -164,7 +164,9 @@ class DiagnosticCode(StrEnum):
     """A member's TAR headers state a field in a way no known writer produces, and
     readers disagree on the result: both a GNU long name and a PAX ``path``, a field
     set twice, a global header naming or sizing members, or a NUL inside a PAX name.
-    archivey reads it as GNU tar does; another tool may list another name or size."""
+    archivey reads it as GNU tar does; another tool may list another name or size.
+    Also an RPM symlink whose payload stores another target than the package
+    header: archivey keeps the header's, as ``rpm`` installs it."""
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     """An encrypted member's stream was closed or seeked before its checksum
     confirmed the password, and nothing stronger had confirmed it, so the bytes read
@@ -753,8 +755,9 @@ class LinkDataContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class HeaderAmbiguityContext(_JsonSafeContext):
-    """A member's TAR headers take a shape no known writer produces, which readers
-    resolve differently. archivey reads it as GNU tar 1.35 does.
+    """A member's headers take a shape no known writer produces, which readers
+    resolve differently. archivey reads a TAR as GNU tar 1.35 does, and an RPM as
+    ``rpm`` does.
 
     ``ambiguity`` names the shape:
 
@@ -799,6 +802,11 @@ class HeaderAmbiguityContext(_JsonSafeContext):
     - ``"newline_in_value"``: a PAX value, other than an extended attribute's or an
       ACL's, or a PAX keyword holds a newline; a reader that splits records on lines
       reads another record.
+    - ``"copies_differ"`` (RPM): a symlink's payload entry stores another target than
+      the header's ``FILELINKTOS``. The member keeps the header's, which ``rpm``
+      installs and the header digests cover; ``rpm2cpio | cpio`` makes the payload's.
+      It is found when a read of another file passes the entry, after the link is
+      listed. ``field`` is ``"FILELINKTOS"``.
 
     ``field`` is the PAX keyword (the header field's name for ``"field_tail"``,
     ``"size"`` for ``"size_on_no_data"``, ``"chksum"`` for ``"signed_checksum"`` and
@@ -831,6 +839,7 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "signed_checksum",
         "magic_version",
         "newline_in_value",
+        "copies_differ",
     ] = "repeated"
     field: str = ""
     more_fields: int = 0

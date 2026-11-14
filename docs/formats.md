@@ -72,9 +72,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   (xz, gzip and bzip2 in core; Zstandard as for a `.zst` file). Listing: needs decompression.
   Members: solid. Readable from a pipe.
 - **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
-  needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: needs
-  decompression. Members: solid. Readable from a pipe. A package with an uncompressed
-  payload (rare) lists header by header, and its members are direct.
+  needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: from
+  the package header, with nothing decompressed. Members: solid (direct for an
+  uncompressed payload, which is rare). Readable from a pipe.
 - **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
   the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
@@ -1455,11 +1455,13 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
 
 - **Needs:** nothing for gzip, bzip2, xz and LZMA payloads; a Zstandard payload (Fedora's
   default) needs what a `.zst` file needs.
-- **Listing:** the file list is in the package header, but listing walks the payload to find
-  each file's data, so it needs decompression.
-- **Reading members:** solid: one compression stream holds every file. A package with an
-  uncompressed payload, which `rpmbuild` writes only when asked, reads as a CPIO archive:
-  listing header by header, members direct.
+- **Listing:** from the package header alone. Nothing is decompressed until you read a
+  member's data.
+- **Reading members:** solid: one compression stream holds every file, so opening a member
+  out of order decodes the files before it again. Members are listed in the order `rpm`
+  writes their data (hard-linked files last), so `stream_members()` and `extract_all` read
+  the payload once, front to back. A package with an uncompressed payload, which `rpmbuild`
+  writes only when asked, is not solid.
 - **From a pipe:** yes, with `streaming=True`.
 - Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for the package's
   `/usr/bin/tool`, which is the member's `raw_name`. A source package's names are relative.
@@ -1474,6 +1476,10 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
 - Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
   is checked as its data is read.
 - `%ghost` files are listed in the package but never stored, and are not members.
+- A symlink's target comes from the header, as `rpm` installs it. The payload stores the
+  target again; when a read of a later file passes that copy and it differs,
+  `MEMBER_HEADER_AMBIGUOUS` is reported for the link, which `STRICT` raises.
+  `rpm2cpio | cpio` would make the payload's target.
 - **Hard links.** Files that share an inode are one file. The package stores the data with
   the last of them, so archivey lists that one as the `FILE` and the others after it as
   `HARDLINK` members to it.
@@ -1483,8 +1489,11 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
   `rpm.signed` and `rpm.payload_compressor`. Signatures are reported, not checked: use
   `rpm -K` for that.
 - Delta RPMs, and payloads compressed with something archivey cannot decode, raise
-  `UnsupportedFeatureError`. A payload that does not match its header (a missing file, a file
-  the header does not list) raises `CorruptionError`.
+  `UnsupportedFeatureError`. Damage to the payload is found only when a member's data is
+  read, since listing never reads it. A file the payload lacks raises `CorruptionError` when
+  its data is read, and the files after it still read. A payload whose structure is damaged
+  (an entry that does not parse, a file the header does not list, a size other than the
+  header's) raises `CorruptionError` for the file being read and every file after it.
 
 ## makeself
 
