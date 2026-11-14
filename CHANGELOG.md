@@ -171,6 +171,10 @@ removed.
 
 ### Fixed
 
+- For an archive behind a self-extracting stub (ZIP, 7z, LHA, ARJ), every offset in an
+  error or diagnostic now counts from the start of the file, stub included, as RAR's
+  already did. That includes the `observed_bytes`, `local_offset` and `central_offset`
+  fields of a ZIP's diagnostic context.
 - About 40 bugs found since 0.3.0, most of them by fuzzing each reader and by comparing
   archivey with each format's official tool on real archives.
 
