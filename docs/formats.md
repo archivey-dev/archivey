@@ -359,9 +359,13 @@ What a pipe cannot read:
 
 Where a pipe and a file differ, on damaged archives or ones no writer produces:
 
-- A data descriptor that disagrees with the central directory, or a local header whose CRC-32 or
-  sizes the directory contradicts, makes the pass raise `CorruptionError` for that member once it
-  reaches the directory. A read from a file reads it.
+- A data descriptor or local header whose CRC-32 or sizes differ from the central directory's
+  (other than a directory CRC-32 of 0, [below](#damaged-and-unusual-endings)) makes the pass raise
+  `CorruptionError` for that member once it reaches the directory. A read from a file checks the
+  data against the directory. So when the data matches the directory, a file read reads the
+  member, and from a pipe the member's own read already fails, since the pass checks the values
+  next to the data. When the data matches the local header or descriptor, the member reads from a
+  pipe, and a read from a file raises `CorruptionError`.
 - Bytes between the end of a member's compressed stream and its data descriptor (bit 3) count
   into its compressed size, and the member reads. A read from a file raises `CorruptionError` on
   them ([Damaged and unusual endings](#damaged-and-unusual-endings)).
