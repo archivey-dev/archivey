@@ -145,9 +145,13 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from archivey.config import DecoderLimits
     from archivey.formats import FormatHandler
     from archivey.internal.base_reader import BaseArchiveReader, ReadBackend
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 
 __all__ = [
     "DEFAULT_ARCHIVEY_CONFIG",
@@ -1304,7 +1308,10 @@ def open_stream(
         StreamNotSeekableError: ``seekable=True`` and the source cannot seek.
         ResourceLimitError: The stream asks a decoder for more memory than
             :class:`~archivey.DecoderLimits` allows, raised by the read of the returned
-            stream that starts the decoder.
+            stream that starts the decoder; or it decodes past
+            ``DecoderLimits.max_ratio`` of the compressed bytes, raised by the read or
+            seek that crosses it, as a member read of the same bytes through
+            :func:`open_archive` is.
         UnsupportedFeatureError: ``config.formats`` does not allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
             installed.
@@ -1469,13 +1476,48 @@ def _open_stream_from_source(
         # What has arrived, one read of the source per feed, as the readers feed a
         # codec (``BaseArchiveReader._codec_input``).
         codec_source = OneReadEachStream(cast("BinaryIO", codec_input.arrived_view()))
-    return open_codec_stream(
+    stream = open_codec_stream(
         codec,
         codec_source,
         config=stream_config,
         collector=collector,
         seekable=seekable and source_is_seekable,
         on_close=codec_input.close,
+    )
+    _hold_stream_to_ratio(stream, codec_input, effective_config.decoder_limits)
+    return stream
+
+
+def _hold_stream_to_ratio(
+    stream: ArchiveStreamImpl, codec_input: ArchiveSource, limits: DecoderLimits
+) -> None:
+    """Hold the decoded stream to ``limits.max_ratio`` of the compressed bytes, as a
+    member read of the same bytes through :func:`open_archive` is held (DR-9).
+
+    The denominator is the source's size when it is known and trusted, as a reader
+    takes it (``BaseArchiveReader._trusted_source_size``); otherwise the compressed
+    bytes taken from the source so far: the furthest offset reached on a seekable
+    source, the bytes pulled from a pipe. A path goes to the codec as a path, and its
+    size is always known.
+    """
+    if limits.max_ratio is None:
+        return
+    # Imported here: the guard module imports reader-side modules at load.
+    from archivey.internal.bomb_tracker import DecodeRatioGuard
+
+    static_size: int | None = None
+    consumed: Callable[[], int | None] | None = None
+    if codec_input.seekable() or codec_input.seek_is_expensive:
+        static_size = codec_input.size_hint
+    if static_size is None:
+        if codec_input.seekable():
+            consumed = lambda: codec_input.bytes_reached  # noqa: E731
+        else:
+            consumed = lambda: codec_input.bytes_pulled  # noqa: E731
+    stream._hold_inner(
+        lambda inner: DecodeRatioGuard(
+            inner, limits=limits, static_size=static_size, consumed=consumed
+        )
     )
 
 

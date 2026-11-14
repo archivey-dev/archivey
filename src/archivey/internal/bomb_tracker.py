@@ -398,6 +398,17 @@ class _RatioGuard(DelegatingStream):
         # one read; a subclass sets it.
         self._size: int | None = None
 
+    def try_get_size(self) -> int | None:
+        """The inner stream's cheap size, as ``ArchiveStreamImpl.size`` asks it: a
+        guard changes no bytes, so the decoded length is the decoder's."""
+        inner = self._inner
+        try_get_size = getattr(inner, "try_get_size", None)
+        if callable(try_get_size):
+            result = try_get_size()
+            return result if isinstance(result, int) else None
+        size = getattr(inner, "size", None)
+        return size if isinstance(size, int) and not isinstance(size, bool) else None
+
     def _judge(self, position: int) -> None:
         """Raise if ``position`` decoded bytes break the rule; called as it grows."""
         raise NotImplementedError
@@ -665,16 +676,6 @@ class MemberRatioGuard(_RatioGuard):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
-
-    def try_get_size(self) -> int | None:
-        """The inner stream's cheap size, as ``ArchiveStreamImpl.size`` asks it."""
-        inner = self._inner
-        try_get_size = getattr(inner, "try_get_size", None)
-        if callable(try_get_size):
-            result = try_get_size()
-            return result if isinstance(result, int) else None
-        size = getattr(inner, "size", None)
-        return size if isinstance(size, int) and not isinstance(size, bool) else None
 
     @override
     def _room(self) -> float:
