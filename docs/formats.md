@@ -855,6 +855,13 @@ On a compressed tar, the stream's own checksum adds three cases:
   that packs more than 64 MiB is read in place instead. For a header-encrypted (`-hp`) archive the
   temporary file holds the member's header decrypted: its sizes, times and checksum, but not its
   name.
+- **With `unrar` 7.00 or later, a large copy is written 16 MiB at a time.** Where a read would
+  copy more than 64 MiB to one temporary file (a member of an archive opened from a stream, or one
+  without a plain name), archivey writes the copy as a set of RAR volumes instead, and only one
+  volume is on disk at a time: `unrar` asks for each next volume (`-vp`), archivey deletes the
+  volume `unrar` has finished, writes the next one and answers. A volume is 16 MiB, or half of
+  `SpoolLimits.max_bytes` when that is smaller. A reread after a backward seek writes the volumes
+  again from the source.
 - **A pass over an archive that is not solid reads members in batches.** `stream_members()` and
   `extract_all()` put the compressed, unencrypted members that have a CRC32 into batches of up to
   64 MiB of packed bytes, one temporary RAR file and one `unrar` run per batch, and split its
@@ -874,10 +881,13 @@ On a compressed tar, the stream's own checksum adds three cases:
   time. When a copy would pass `SpoolLimits.max_bytes` and removing the files of other
   streams that no open member stream holds makes room, those files are removed, least recently
   read first, and a later read of such a stream copies it again. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in
-  place instead.
-- **A pass over a solid archive opened from a stream source copies a few solid streams at a time.**
-  `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a file object
-  run one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
+  place instead. From a stream source with `unrar` 7.00 or later, a stream whose copy doesn't fit
+  is written as volumes one at a time, as above, from the stream's start on each read.
+- **A pass over a solid archive opened from a stream source is one `unrar` run.** With `unrar` 7.00
+  or later, `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a
+  file object write the archive's packed members as volumes, one on disk at a time, and run one
+  `unrar` over them. An older `unrar` copies a few solid streams at a time: it gets
+  one `unrar` per run of whole solid streams, each on a temporary file holding that run alone,
   removed when its output ends. A run takes streams until it holds 64 MiB of packed bytes, so many
   small streams share one `unrar` start; a larger stream runs alone, and so does every stream when
   `SpoolLimits.max_bytes` is under 128 MiB. An archive that would be a single run is copied whole

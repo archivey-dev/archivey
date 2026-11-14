@@ -687,6 +687,7 @@ def test_a_read_further_in_while_the_stream_is_held_starts_a_new_generation(
     assert not new.exists()
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_a_solid_stream_copy_over_the_spool_limit_is_refused_and_not_recorded() -> None:
     """A stream source cannot fall back: the copy up to the member raises, and a
     read nearer the stream start that fits still copies (nothing is spawned here)."""
@@ -878,6 +879,7 @@ def test_idle_streams_go_least_recently_read_first(tmp_path: Path) -> None:
         assert list(reader._solid_streams) == [0, 4]
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 @requires_binary("rar")
 @pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
@@ -1000,6 +1002,7 @@ def test_a_batch_file_that_cannot_be_made_gives_its_charge_back(
     assert got == expected
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 @requires_binary("rar")
 def test_a_solid_run_file_that_cannot_be_made_gives_its_charge_back(
@@ -1023,6 +1026,7 @@ def test_a_solid_run_file_that_cannot_be_made_gives_its_charge_back(
         assert _charged_beyond_streams(reader) == 0
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 @pytest.mark.parametrize(
     ("fixture", "streams", "password"),
@@ -1051,6 +1055,7 @@ def test_a_solid_pass_over_a_stream_runs_each_stream_under_a_small_limit(
     assert live.live == 0
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 @requires_binary("rar")
 def test_a_solid_pass_over_a_stream_joins_small_streams_into_runs(
@@ -1137,6 +1142,7 @@ def test_a_solid_pass_fits_a_limit_below_the_archive() -> None:
     assert _pass_bytes(BytesIO(raw), config=_limited(limit)) == expected
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 def test_a_solid_pass_closed_early_removes_its_file(
     monkeypatch: pytest.MonkeyPatch,
@@ -1152,6 +1158,11 @@ def test_a_solid_pass_closed_early_removes_its_file(
     assert live.live == 0
 
 
+def _run_plan(reader: RarReader) -> list[rr._PassRun] | None:
+    groups = reader._solid_pass_groups()
+    return None if groups is None else reader._solid_pass_run_plan(groups)
+
+
 def test_a_stream_pass_charges_each_member_its_own_run() -> None:
     """One stream per run: a member pays for its solid chain alone. One run over
     both streams: the whole archive's walk, as unrar keeps the window across."""
@@ -1159,7 +1170,7 @@ def test_a_stream_pass_charges_each_member_its_own_run() -> None:
     with open_archive(BytesIO(raw), config=_limited(_ONE_STREAM_PER_RUN)) as reader:
         assert isinstance(reader, RarReader)
         members = reader._archive.members
-        runs = reader._solid_pass_run_plan()
+        runs = _run_plan(reader)
         assert runs is not None and len(runs) == 2
         costs = reader._stream_pass_costs(runs)
         last = reader._members[-1]
@@ -1169,7 +1180,7 @@ def test_a_stream_pass_charges_each_member_its_own_run() -> None:
             assert costs[id(member)] == rr._chain_dictionary_cost(members, chain)
     with open_archive(BytesIO(raw)) as reader:
         assert isinstance(reader, RarReader)
-        assert reader._solid_pass_run_plan() is None
+        assert _run_plan(reader) is None
         packed = [
             i
             for i, info in enumerate(reader._archive.members)

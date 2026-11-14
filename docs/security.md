@@ -314,7 +314,10 @@ in the repository measures what each limit costs in time and memory on your mach
   to 64 MiB of packed bytes, one file per batch, made when one of its members is read and removed when the pass
   moves to the next batch; reading one member of a batch decodes the members before it in that batch. A solid
   member's read copies its solid stream up to it into one such file
-  per stream, grown by later reads and removed when the reader closes, and a pass over a solid
+  per stream, grown by later reads and removed when the reader closes. With `unrar` 7.00 or later,
+  a copy over 64 MiB from a stream source, a solid stream copy that doesn't fit, and a pass over a
+  solid RAR from a stream source are written as RAR volumes instead, one on disk at a time (16 MiB,
+  or half the limit). With an older `unrar`, a pass over a solid
   RAR copies whole solid streams a few at a time, up to 64 MiB of packed bytes or one larger
   stream, or the whole archive when that would be one run, a member has an unknown compression
   version, a volume is missing, or a RAR 1.5-4 member passes 4 GiB. A RAR opened from a file

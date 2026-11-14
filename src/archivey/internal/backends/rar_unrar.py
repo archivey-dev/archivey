@@ -68,6 +68,8 @@ from archivey.types import MissingComponent
 # Ubuntu 22.04 apt packages work; 5.x is still refused. Parsed from the
 # identification banner, not from a second spawn.
 _UNRAR_VERSION_FLOOR: tuple[int, int] = (6, 0)
+# The first ``unrar`` version rolling volumes were measured on.
+_ROLLING_VOLUMES_FLOOR: tuple[int, int] = (7, 0)
 # Prefer the freeware reader. The writer is the same vendor's decompressor
 # under a different PATH name (Ubuntu ``apt install rar`` Suggests ``unrar``
 # and does not put ``unrar`` on PATH).
@@ -464,6 +466,22 @@ def find_rarlab_unrar(program: str | None = None) -> str:
     if run_cause is not None:
         raise _unrar_missing(not_installed) from run_cause
     raise _unrar_missing(not_installed)
+
+
+def unrar_reads_rolling_volumes(program: str | None = None) -> bool:
+    """Whether the ``unrar`` archivey runs reads rolling volumes (:mod:`rar_rolling`).
+
+    Measured on ``unrar`` 7.00 and later only. 6.x has the same ``-vp`` code in its
+    source, but no 6.x binary has been run against rolling volumes, so it keeps the
+    whole copy. Raises what :func:`find_rarlab_unrar` raises.
+    """
+    found = find_rarlab_unrar(program)
+    cached = _cached_unrar.get(found)
+    return (
+        cached is not None
+        and cached.version is not None
+        and cached.version >= _ROLLING_VOLUMES_FLOOR
+    )
 
 
 def _password_arg(password: str | bytes | None) -> str:
@@ -935,8 +953,14 @@ def open_unrar_p(
     rar5: bool = False,
     program: str | None = None,
     usage: ResourceUsageRecorder | None = None,
+    volume_pause: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] -- archive``.
+
+    ``volume_pause`` reads a set of rolling volumes (:mod:`rar_rolling`): it adds
+    ``-vp`` and replaces ``-inul`` with ``-idq``, which keeps the next-volume prompt
+    on stderr. stdin and stderr are then pipes the caller owns: the password, when
+    there is one, is written to stdin, which stays open for the prompts' answers.
 
     ``program`` is ``ArchiveyConfig.unrar_path`` (see :func:`find_rarlab_unrar`).
     ``usage`` records the binary that ran, for ``ArchiveReader.backends_used``.
@@ -976,7 +1000,12 @@ def open_unrar_p(
     unrar = find_rarlab_unrar(program)
     if usage is not None:
         usage.note_backend("program", "unrar", "RAR", unrar)
-    cmd: list[str | bytes] = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
+    cmd: list[str | bytes] = [
+        unrar,
+        "p",
+        *(("-vp", "-idq") if volume_pause else ("-inul",)),
+        _RAR_DISABLE_CONFIG,
+    ]
     if version_control:
         cmd.append("-ver")
     pass_arg = _password_arg(password)
@@ -1010,15 +1039,19 @@ def open_unrar_p(
         cmd,
         name="unrar",
         not_started=_NOT_INSTALLED_MSG,
-        stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
+        stdin=subprocess.PIPE if feed_password or volume_pause else subprocess.DEVNULL,
         env=_unrar_env(),
         cwd=cwd,
+        stderr=subprocess.PIPE if volume_pause else subprocess.DEVNULL,
     )
     if stdin_bytes is not None:
         assert proc.stdin is not None
         try:
             proc.stdin.write(stdin_bytes + b"\n")
-            proc.stdin.close()
+            if volume_pause:
+                proc.stdin.flush()
+            else:
+                proc.stdin.close()
         except BrokenPipeError:
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass
