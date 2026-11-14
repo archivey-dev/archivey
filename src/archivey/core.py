@@ -546,8 +546,9 @@ def open_archive(
     Raises:
         FormatDetectionError: No format matches the source's contents or name.
         StreamNotSeekableError: The source cannot seek and ``streaming=False``, or the
-            format needs to seek in either access mode (every format except TAR, ZIP and
-            the single-file compressed streams).
+            format needs to seek in either access mode: one whose
+            ``format_availability(format).required_source`` is ``SEEKABLE``, such as 7z,
+            RAR or ISO.
         CorruptionError: The archive's header is damaged or cut short. A numbered split
             set with a missing part raises the subclass
             :class:`~archivey.TruncatedError`.
@@ -1272,8 +1273,12 @@ def open_stream(
     bytes already decoded, so open it with ``compression=None``.
 
     ``seekable=False`` (the default) returns a forward-only stream: ``seekable()`` is
-    ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index or
-    accelerator is instantiated. Pass ``seekable=True`` to opt into the
+    ``False``, ``seek()`` raises ``io.UnsupportedOperation``, and no seek index is
+    built. A sequential read can still use an accelerator: ``AUTO`` picks rapidgzip for
+    a large gzip or bzip2 that qualifies
+    (:attr:`~archivey.ArchiveyConfig.use_rapidgzip`,
+    :attr:`~archivey.ArchiveyConfig.use_indexed_bzip2`), and ``ON`` asks for it. Set
+    both to ``OFF`` to keep it out. Pass ``seekable=True`` to opt into the
     seekable-decompressor-streams contract (native indexes, demand-driven accelerator
     ``AUTO``, loud slow rewinds on the non-accelerated path).
 
