@@ -858,13 +858,9 @@ class _FolderStream:
 
     def skip(self, n: int) -> None:
         """Pass ``n`` bytes of output. A compressed folder decodes them, and draws
-        them from the config's budget here: a member's own stream draws only what
+        them from the reader's budget here: a member's own stream draws only what
         its caller reads."""
-        budget = (
-            self._reader._context.config.budget
-            if self._folder.method != _STORED
-            else None
-        )
+        budget = self._reader._context._nest if self._folder.method != _STORED else None
         while n > 0:
             if not self._pending and self._folder.method == _STORED:
                 # Whole stored blocks are skipped without reading them.

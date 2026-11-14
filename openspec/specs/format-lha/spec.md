@@ -105,6 +105,7 @@ offset.
 | A small archive inside the stub, then the real one ending the file | The real one |
 | Only the archive inside the stub | That archive, with `ARCHIVE_TRAILING_DATA` |
 | A signed PE stub, then an archive | Read up to the certificate table, which is not trailing data |
+| A PE with an archive in its sections and another at its overlay start, followed by more data or a later archive | The one at the overlay start (`format-detection`, *Overlay start first*), detected and with `format=LHA` |
 | A stub and no archive, with `format=LHA` | `CorruptionError` ("Not an LHA archive") |
 
 ### Requirement: Refuse damaged and unsupported LHA archives

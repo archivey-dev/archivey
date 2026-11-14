@@ -103,7 +103,6 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
 ::: archivey.SpoolLimits
-::: archivey.Budget
 ::: archivey.AcceleratorMode
 ::: archivey.ProcessIsolation
 ::: archivey.RarDecompressor

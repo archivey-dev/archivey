@@ -56,7 +56,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 | Directory source to other processes | The tree between listing and reading | No-follow opens and identity checks ([directory sources](#directory-sources-changed-concurrently)) |
 | Caller to fsspec, through `archivey://` | A `str` archive location given to `ArchiveyFileSystem`, which fsspec opens with whatever protocol it names; a URL chained on `::` | Not defended: the location is trusted caller input, unlike a `str` given to `open_archive`, which is only ever a local path. A member name belongs in the path given to `open()`, never formatted into a URL, where a `::` in it would name a protocol of its own (`ArchiveyFileSystem` docstring). The tree holds only paths extraction under the file system's policy writes |
 | Remote store to archivey | Bytes of an `OpenFile` read by range, one request each, from an object that can be replaced between requests | Partly: a replacement shorter than the size taken at open raises `SourceChangedError` when a range comes back short; one the same length or longer is not detected, and only member checksums catch changed member bytes. `SOURCE_CHANGE_UNDETECTABLE` says so at open. Pinning an object version is the caller's remedy (`docs/remote.md`, fsspec-integration design D7) |
-| Caller to archivey | Recursion into nested archives the caller opens, time budgets | Not defended: the caller bounds them, and can cap their decoded bytes and members with one shared `ArchiveyConfig.budget` ([non-guarantees](#4-accepted-non-guarantees)); a format's own nesting (`open_nested`) shares one `max_metadata_bytes`, one `max_decoder_memory` and the outermost archive's `max_ratio` denominator across its levels ([nested-archive amplification](#nested-archive-amplification)) |
+| Caller to archivey | Recursion into nested archives the caller opens, time budgets | Bounded when the caller links each level with `open_archive(parent=)`: the nest is held to one `max_members` total, `max_ratio` of the outermost archive's size (each reader's one-pass high-water mark, summed) and an optional `max_nest_decoded_bytes`, and each level keeps its own limits ([nested-archive amplification](#nested-archive-amplification)); not defended for archives the caller opens unlinked, nor for time |
 
 ## 3. Defended properties
 
@@ -1472,11 +1472,22 @@ measured. Public: [where the guarantees stop](../docs/security.md#where-the-guar
 Two kinds of recursion into archives inside archives, with different answers.
 
 **The caller recurses.** A caller that opens a member stream as an archive starts a new
-reader, with its own limits. A zip quine loops only if the caller loops. The bomb
-tracker measures one archive, so a zip of zips can pass the budget one level at a time.
-The caller bounds depth and total size. Public:
-[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop)
-("Limits apply to each archive separately").
+reader, with its own limits. A zip quine loops only if the caller loops. Opened with
+`open_archive(parent=outer)`, the reader joins the outer reader's nest
+(`archivey.internal.nesting`): it keeps every limit it would have alone (its own ratio
+against its own size, its own decoder memory, metadata, key derivation and spool), and
+the nest's account adds three totals from the outermost reader's config. Members:
+each `parent=` reader draws the members it registers against `max_members`. Ratio: each
+outermost or `parent=` reader adds the growth of its one-pass high-water mark (the
+largest of its container stream guard, its member read tally and its largest single
+extraction), and the sum is held to `max_ratio` times the outermost archive's trusted
+size, so a compressed archive of compressed archives cannot compound the ratio; a lone
+reader is never judged by it, and re-reads add nothing. Decoded bytes: every byte any
+reader decodes, against `max_nest_decoded_bytes` (default off). A child's config can
+tighten the totals, never loosen them. Depth counts both kinds of nesting
+(`MAX_NESTED_DEPTH`). Unlinked opens get none of this: the caller bounds depth and total
+size. Public: [security.md §Hardening](../docs/security.md#hardening). Tests:
+`tests/test_nest_limits.py`.
 
 **A format recurses.** `ReaderContext.open_nested` lets a format reader read an archive
 stored inside its own (a `.deb`'s data tar, a `.pkg`'s payload) as members of the outer
@@ -1505,7 +1516,9 @@ so 8 levels cannot use 8 times the caps:
   own guards, which hold the total output as before.
 
 `max_members` needs no change: every inner member reaches the outermost listing, which
-counts it. Code: `archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
+counts it. These readers draw decoded bytes from the nest's account, and add nothing to
+the nest ratio: their bytes are in the outer reader's number. Code:
+`archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
 `_PluginAdapter._nested_config`, `BaseArchiveReader._trusted_source_size`.
 
 ### Reads have no output bound
@@ -1597,6 +1610,23 @@ does not execute. Accepted by the maintainer (2026-11-08): reading the payload i
 job, and judging the program is a malware scanner's. Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
+### A remote object replaced at the same length is not detected
+
+An object can be replaced while archivey reads it through an fsspec range source, such
+as an upload under the same name during a long extraction. Later fetches then return
+bytes of another file. A fetch that comes back shorter than its range raises
+`SourceChangedError`, so a shorter replacement is caught. A replacement of the same
+length, or a longer one, returns full ranges, and nothing in the requests shows it:
+`cat_file` reports no total size, and a size request per fetch would double the request
+count. Member data with a checksum is checked when it is read to the end, so a change
+there most often raises `CorruptionError`; other bytes, such as an index, a TAR member
+or a partly read member, may come from the new file with no error. archivey records the
+advisory `SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked".
+Version pinning and `If-Match` would close this per file system; they are later work
+(`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Accepted by the
+maintainer (2026-10-25, design §Decisions by the maintainer, item 3). Public: [remote.md
+§If the remote file changes](../docs/remote.md#if-the-remote-file-changes).
+
 ### A file system's own error can carry a URL's credentials
 
 archivey removes a URL's `user:password@`, and an http(s) query, from the names and
@@ -1642,8 +1672,8 @@ coverage-guided fuzzing, disclosure process) is met without it.
 
 "Index my backups", the founding use case, recurses into nested archives. A recipe exists
 ([`docs/recipes.md`](../docs/recipes.md) §"Checking uploaded archives"): a depth limit and one byte
-budget shared across levels, kept by the caller. A library helper for bounded recursive
-processing does not exist yet.
+nest shared across levels through `open_archive(parent=)`. A library helper for bounded
+recursive processing does not exist yet.
 
 ### Metadata fidelity
 

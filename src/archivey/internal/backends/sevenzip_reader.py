@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import BinaryIO, NamedTuple
 
-from archivey.config import ArchiveyConfig, Budget, ListingLimits
+from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -118,6 +118,7 @@ from archivey.internal.naming import (
     infer_member_name_from_archive,
     normalize_member_name,
 )
+from archivey.internal.nesting import NestDraws
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import (
@@ -363,7 +364,7 @@ def load_sevenzip_archive(
     max_members: int | None = _DEFAULT_MAX_MEMBERS,
     max_metadata_bytes: int | None = _DEFAULT_MAX_METADATA_BYTES,
     will_read: Callable[[int, int], None] | None = None,
-    budget: Budget | StageDraws | None = None,
+    budget: NestDraws | StageDraws | None = None,
 ) -> SevenZipArchive:
     """Two-phase header load: parse → decode encoded → re-parse → materialize.
 
@@ -439,7 +440,7 @@ def _decode_encoded_header_block(
     stream_config: StreamConfig | None,
     collector: DiagnosticCollector | None,
     max_members: int | None,
-    budget: Budget | StageDraws | None = None,
+    budget: NestDraws | StageDraws | None = None,
 ) -> PlainHeader:
     """Decode an encoded header and parse the plain header it holds.
 

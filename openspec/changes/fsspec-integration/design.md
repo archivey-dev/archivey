@@ -493,6 +493,9 @@ probing predicted names instead of listing are a later design, not started here.
 
 ### D5. Batched fetches for whole-archive passes
 
+**Dropped, not built** (maintainer, 2026-11-11). The design below is kept as the record
+of what was weighed.
+
 `extract_all()` and `stream_members()` over a non-solid ZIP or 7z know every member span
 before they start. With the spans as hints, the planner coalesces them with
 `fsspec.utils.merge_offset_ranges` (`max_gap` = `max_read_through`, `max_block` = the
