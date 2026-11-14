@@ -824,8 +824,33 @@ On a compressed tar, the stream's own checksum adds three cases:
   solid stream each time, so reading *n* members of one stream that way costs *n* decodes of the
   stream up to each. With `seekable_members=True`, a backward `seek()` on a compressed member
   costs the same: a new run from the stream start. `CostReceipt.access_cost` is `SOLID` to say so.
-- **From a pipe:** no; RAR needs a source that can seek.
+- **From a pipe:** yes, with `streaming=True` and RARLAB `unrar` 7.00 or later, for an archive in
+  one volume ([RAR from a pipe](#rar-from-a-pipe)).
 - Read only: archivey writes no RAR.
+
+### RAR from a pipe
+
+With `streaming=True`, `stream_members()` and `extract_all()` read a RAR archive from a pipe, a
+socket or any other source that can't seek. Archivey reads each header as it arrives and lists
+the member once its data is in hand. One `unrar` run decodes the whole pass. `unrar` reads only
+files, so archivey writes what arrives into RAR volumes and hands them to `unrar` one at a time
+(16 MiB each, or half of `SpoolLimits.max_bytes` when that is smaller). Only one volume is on disk
+at a time. Listing alone, with `members_report()`, writes no volume, and runs `unrar` only for a
+compressed RAR 1.5-4 comment, as from a file.
+
+The members and their bytes are the same as from a file, except where a pipe can't go back:
+
+- A RAR5 file copy (`rar -oi`) raises `UnsupportedFeatureError` when read. Its bytes are an
+  earlier member's, which the pass doesn't keep.
+- `unrar` gets one password for the pass. From several candidates, archivey picks the one a RAR5
+  member's password check accepts, and the header password of an archive with encrypted headers.
+  RAR 1.5-4 data has no password check, so an encrypted member raises `UnsupportedFeatureError`
+  when there are several candidates: pass the one password.
+- When a member fails, every member after it that has data raises too, because the output of
+  `unrar` can no longer be matched to the members. That includes a member with no size in its
+  header, and in a solid archive a member compressed with an unknown RAR version.
+- A volume set, `rar_decompressor="unar"` and a missing or older `unrar` raise
+  `StreamNotSeekableError` at open, naming the fix: a seekable source, or `unrar` 7.00.
 
 ### Running `unrar`
 

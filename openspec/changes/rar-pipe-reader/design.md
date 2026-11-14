@@ -119,15 +119,18 @@ bounded view of the forward source for its data. `start_rolling_unrar` writes th
 volume; the feeder writes the rest on `unrar`'s prompts.
 
 Each member the walk yields (with data or not) is put on a queue the pass iterator reads
-on the caller's thread, so a member is listed once its header has been read into a
-volume. The demultiplexing is the solid pass's (`plan`, `pipe_offset`, per-member
-digest and size checks), fed from that queue instead of `_listed_members()` of a full
-list. Stored members go through `unrar` too: one data path, and `unrar` already prints
-them in order.
+on the caller's thread. A member is queued once the walk has read the next header, so a
+RAR 1.5-4 `UOW` or `CMT` service header after it still reaches it, or when the volume
+holding its first part is written, whichever comes first: a member split across volumes
+must be listed before `unrar` prints it. The demultiplexing is the solid pass's (`plan`,
+`pipe_offset`, per-member digest and size checks), fed from that queue instead of
+`_listed_members()` of a full list. Stored members go through `unrar` too: one data
+path, and `unrar` already prints them in order.
 
-No deadlock: the caller waits on the queue only for a member after the one whose output
-it has drained, and `unrar` asks for the next volume as soon as it has printed what the
-current one holds.
+No deadlock: before it waits on the queue, the caller reads past `unrar`'s output of the
+members it has been given (`SolidBlockReader.skip_to`), and every member whose output
+`unrar` can print from a written volume is already queued, so `unrar` reaches its next
+prompt.
 
 **Rejected:** reading stored members natively between `unrar`'s members: the source is
 one stream, and `unrar` would still need their bytes in its volumes to keep its own
@@ -153,12 +156,15 @@ until the pass reads its first member's data.
   `UnsupportedFeatureError`, naming one password as the fix. A later member whose
   PswCheck rejects that password is refused on its own (the existing mixed-password
   rule), and its output does not line up (Decision 6).
-- RAR 1.5-4: one candidate only, for `-p` and `-hp`. Several raise
-  `UnsupportedFeatureError` at open: judging them needs trial decodes or a re-parse
-  from the start.
+- RAR 1.5-4 `-p`: no check value, so with several candidates each encrypted member is
+  refused on its first read (`UnsupportedFeatureError`, naming one password as the fix).
+- `-hp`, either version: the walk is started again for each candidate. At open it has
+  read only the first headers, which the forward source still holds (its last 4 MiB),
+  so the retry needs no re-read of the stream.
 
-**Rejected:** buffering the archive's start to retry `-hp` candidates for RAR 1.5-4.
-Bounded, but one more replay path for a rare shape.
+**Rejected:** refusing several candidates for RAR 1.5-4 at open, as first planned. The
+forward source already holds the bytes an `-hp` retry needs, and refusing an
+unencrypted archive for an unused list would be a refusal with no cause.
 
 ### 6. A member whose output does not line up ends the pass
 
@@ -189,7 +195,6 @@ On a non-seekable source with `streaming=True`, `open_archive` raises:
 | --- | --- |
 | Not RARLAB `unrar` 7.00 or later (`unar`, `NONE`, older, missing) | `StreamNotSeekableError`, naming a seekable source or `unrar` 7.00 as the fix |
 | A volume of a set (`MAIN` volume flag) | `StreamNotSeekableError` |
-| RAR 1.5-4 with several password candidates | `UnsupportedFeatureError` (Decision 5) |
 
 The access-mode rule that a pipe refusal comes before the availability check is kept:
 the refusal names the program as part of the reason, and is raised by the backend

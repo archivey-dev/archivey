@@ -3,12 +3,14 @@
 ### Requirement: Read a RAR archive forward from a non-seekable source
 
 For a non-seekable source opened with `streaming=True`, the RAR backend SHALL read a
-single-volume archive front to back: each member is listed when its header has been
-read, and every member with packed data is decoded by one RARLAB `unrar` (7.00 or
+single-volume archive front to back: each member is listed once its header and data are
+in the pass and the next header has been read, or once the volume holding its first part
+is written, and every member with packed data is decoded by one RARLAB `unrar` (7.00 or
 later) run fed rolling synthetic volumes, one on disk at a time and one charged to
 `SpoolLimits.max_bytes`. Members and bytes SHALL match the seekable reader's for the
-same archive, except for the forward-only rules in the scenario. Each refusal SHALL be
-raised before anything is decoded, at open where the archive's start decides it.
+same archive, except for the forward-only rules in the scenario. A refusal the archive's
+start decides SHALL be raised at open; a member's own refusal SHALL be raised on its
+first read.
 
 #### Scenario: forward-only matrix
 
@@ -16,9 +18,12 @@ raised before anything is decoded, at open where the archive's start decides it.
 | --- | --- |
 | RAR 1.5-4 or RAR5, solid or not, plain, `-p` or `-hp`, one password | Every member and its bytes as from a seekable source |
 | A volume of a set | `StreamNotSeekableError` at open |
-| RAR 1.5-4 with several password candidates | `UnsupportedFeatureError` at open |
-| RAR5 data encryption, several candidates, no encrypted member in the first volume | `UnsupportedFeatureError` on the first data read |
-| A member whose output fails its digest or length check | That member raises; the pass ends there |
+| `-hp`, several password candidates | The candidate that decrypts the headers |
+| RAR5 data encryption, several candidates | The candidate the first listed member's PswCheck accepts when `unrar` starts; an encrypted member it does not fit raises `UnsupportedFeatureError` on its first read |
+| RAR 1.5-4 data encryption, several candidates | Each encrypted member raises `UnsupportedFeatureError` on its first read |
+| A member that fails (digest, length, password, no size) | That member raises; every later member with data raises too |
+| `unar`, no `unrar` 7.00 or later | `StreamNotSeekableError` at open |
+| Listing only (`members_report()`) | No volume written |
 | RAR5 file copy | Its stream raises `UnsupportedFeatureError` on its first read |
 | Hard link, symlink, directory | As in the seekable pass |
 | Quick-open record | Not read |

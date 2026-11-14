@@ -561,10 +561,9 @@ def start_rolling_unrar(
     opener: Callable[..., tuple[subprocess.Popen[bytes], BinaryIO]] = open_unrar_p,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO, VolumeFeeder]:
     """Write the first volume of ``volumes``, unless the caller has written it, and
-    start ``unrar p -vp`` on it, with a :class:`VolumeFeeder` that writes the rest.
-    The other arguments are
-    :func:`~archivey.internal.backends.rar_unrar.open_unrar_p`'s; ``opener`` is
-    that function, or the caller's name for it.
+    start ``unrar p -vp`` on it, with a :class:`VolumeFeeder` that writes the rest. The
+    other arguments are :func:`~archivey.internal.backends.rar_unrar.open_unrar_p`'s;
+    ``opener`` is that function, or the caller's name for it.
 
     The caller owns the process (stop it, then :meth:`VolumeFeeder.join`) and closes
     ``volumes`` after it.

@@ -533,7 +533,8 @@ class RarForwardReader(RarReader):
             and raw.is_stored
             and 0 < found.data_size <= _LINK_TARGET_BYTES
         ):
-            # A RAR 1.5-4 symlink's target is its data: kept for ``_ensure_link_target``.
+            # A RAR 1.5-4 symlink's target is its data: kept for
+            # ``_ensure_link_target``.
             data = self._fsource.read_at(found.data_offset, found.data_size)
             if len(data) == found.data_size:
                 self._held_data[found.data_offset] = data

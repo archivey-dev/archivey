@@ -16,10 +16,11 @@ disk at a time.
 ZIP does it. The existing header walks become generators, so the seekable path keeps the
 same code. Stored members go through unrar too, so there is one data path. unrar gets
 one password per pass. For RAR five, the password check values pick from several
-candidates. For RAR one-five to four, only one candidate is allowed. A member whose
-output does not line up ends the pass, because a pipe cannot go back. A RAR five file
-copy is refused, because its source bytes were not kept. Volume sets, random access, and
-reading without unrar 7 stay refused, each with its own message.
+candidates. For RAR one-five to four, an encrypted member needs the one password, since
+its data has no check value. A member whose output does not line up ends the pass,
+because a pipe cannot go back. A RAR five file copy is refused, because its source bytes
+were not kept. Volume sets, random access, and reading without unrar 7 stay refused,
+each with its own message.
 
 **Your call later:** Whether a stored-only archive should later be read from a pipe
 without unrar.

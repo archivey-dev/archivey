@@ -177,11 +177,11 @@ cat backup.tar.gz | archivey list /dev/stdin
 ```
 
 A pipe can only be read once, from start to end, so archivey reads it in a single pass. That works
-for TAR (compressed or not), ZIP and single compressed files such as `.gz`. 7z, RAR and ISO
-archives need to jump around in the file, so from a pipe they fail with exit `1` and a message to
-copy the input to a file first. `extract --outer` and `test --outer` also need a file; for a pipe,
-use `archivey cat - --outer`. A redirect from a file, as in `archivey cat - < backup.7z`, isn't a
-pipe, so every format works that way.
+for TAR (compressed or not), ZIP, single compressed files such as `.gz`, and RAR with RARLAB `unrar`
+7.00 or later. 7z and ISO archives need to jump around in the file, so from a pipe they fail with
+exit `1` and a message to copy the input to a file first. `extract --outer` and `test --outer` also
+need a file; for a pipe, use `archivey cat - --outer`. A redirect from a file, as in
+`archivey cat - < backup.7z`, isn't a pipe, so every format works that way.
 
 ## Exit codes
 
