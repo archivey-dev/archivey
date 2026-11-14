@@ -8,7 +8,8 @@ Triage (2026-11-14): items 1 and 4 were settled by DR-9 and did not need the
 maintainer. Item 1: `max_ratio` holds every decode, so `open_stream()` is guarded
 (#1553). Item 4: the nesting depth is a structural bound with a comment and a spec
 row, so it stays fixed and keeps `UnsupportedFeatureError`. Items 2 and 3 went to the
-maintainer with a recommendation; the answers are recorded under F3 and F7.
+maintainer with a recommendation. davi chose: F3, raise on a truth test (#1559);
+F7, widen the constructors with `Literal` lists of the spellings (#1560).
 
 1. **F1:** Should `open_stream()` apply `DecoderLimits.max_ratio` like a member
    read, or should its exemption become an explicit documented contract? Applying

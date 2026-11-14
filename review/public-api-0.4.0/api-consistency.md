@@ -94,7 +94,7 @@ print(FormatPolicy(only_libraries=iter(["brotli"])).only_libraries)
 
 ## F3. Report truth tests have incompatible meanings
 
-**Status (2026-11-14):** Maintainer decision, pending. Recommendation: make `bool()` raise on `ExtractionReport` and `MemberListReport` as it does on `VerifyReport`, and give `MemberListReport` `ok` and `raise_for_failure()`. Breaking, so before 0.4.0.
+**Status (2026-11-14):** davi chose to raise on a truth test. Fixed in #1559: `bool()` raises on `ExtractionReport` and `MemberListReport`, and `MemberListReport` gains `ok` and `raise_for_failure()`. Breaking, in 0.4.0.
 
 **Compatibility: breaking to fix. Confidence: confirmed behavior; design recommendation.**
 
@@ -184,7 +184,7 @@ to work.
 
 ## F7. Documented string construction conflicts with constructor types
 
-**Status (2026-11-14):** Maintainer decision, pending. Recommendation: keep the enum-only field annotations (`config.py`'s `_convert_enum_fields` docstring and `tests/test_enum_arguments.py` record that choice), and change the docstring examples to the enum spelling.
+**Status (2026-11-14):** davi chose to widen the constructors, with `Literal` lists so a typo stays a static error. Fixed in #1560: `TYPE_CHECKING` `__init__` stubs on `ArchiveyConfig` and `ArchiveFormat`, six `*Str` aliases, fields still enum-typed. Not breaking.
 
 **Compatibility: non-breaking. Confidence: intentional discrepancy; design recommendation.**
 

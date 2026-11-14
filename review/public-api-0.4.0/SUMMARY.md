@@ -41,11 +41,11 @@ reproduced eleven findings; F9 needs rapidgzip absent, and the code path is plai
 | --- | --- | --- | --- |
 | F1 | Fixed (DR-9 settles it) | #1553 | Yes: behaviour change |
 | F2 | Fixed | #1554 | Yes |
-| F3 | Maintainer decision | pending | If changed, yes: breaking |
+| F3 | Fixed (davi: raise) | #1559 | Yes: breaking |
 | F4 | Fixed (reverses a spec sentence) | #1554 | Yes: behaviour change |
 | F5 | Fixed (docs) | #1556 | Yes |
 | F6 | Fixed | #1554 | Yes |
-| F7 | Maintainer decision | pending | Either way, non-breaking |
+| F7 | Fixed (davi: Literal string inputs) | #1560 | Non-breaking |
 | F8 | Fixed (docs) | #1556 | Yes |
 | F9 | Fixed (docs) | #1556 | Yes |
 | F10 | Fixed | #1555 | Yes |
