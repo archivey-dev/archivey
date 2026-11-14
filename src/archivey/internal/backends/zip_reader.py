@@ -1558,8 +1558,10 @@ class ZipReader(BaseArchiveReader):
 
     _MEMBER_LIST_UPFRONT = True
     _LINK_TARGETS_IN_DATA = True
-    # Where the archive starts in the source, for range hints; set at open.
-    _hint_origin = 0
+    # Where the archive starts in the source, set at open: nonzero behind a stub
+    # whose ZIP offsets count from the archive's start (``_region``). Range hints and
+    # the offsets a message names count from the source's start (``_at``).
+    _origin = 0
 
     def __init__(
         self,
@@ -1677,8 +1679,8 @@ class ZipReader(BaseArchiveReader):
         if start_offset or end_offset is not None:
             handle = self._region(handle, start_offset, end_offset)
         self._fp = handle
-        # Where the archive starts in the source, for range hints (``_will_read``).
-        self._hint_origin = start_offset
+        # Where the archive starts in the source, for range hints and messages.
+        self._origin = start_offset
         file_size = handle.seek(0, io.SEEK_END)
         # The end record, and the whole directory when it fits: one request on a
         # remote source.
@@ -1865,8 +1867,13 @@ class ZipReader(BaseArchiveReader):
 
     def _hint(self, start: int, end: int) -> None:
         """``_will_read`` with ZIP offsets, which start at the archive's own start."""
-        origin = self._hint_origin
+        origin = self._origin
         self._will_read(origin + start, origin + end)
+
+    def _at(self, offset: int) -> int:
+        """``offset``, a position in the archive, as an offset in the file, for a
+        message: behind a stub, the reader sees the archive alone (``_region``)."""
+        return self._origin + offset
 
     def _read_at(self, offset: int, n: int) -> bytes:
         """Up to ``n`` bytes at absolute ``offset``, under the reader's lock.
@@ -1924,7 +1931,7 @@ class ZipReader(BaseArchiveReader):
                 format="zip",
                 expected_marker="zip64_end_of_central_directory",
                 expected_bytes=0,
-                observed_bytes=locator_offset,
+                observed_bytes=self._at(locator_offset),
                 observed_kind="absent",
             ),
             logger=logger,
@@ -1961,7 +1968,7 @@ class ZipReader(BaseArchiveReader):
         if resources is not None:
             # The resources count from the start of the source, the archive's
             # offsets from the region's start.
-            archive_end += self._hint_origin
+            archive_end += self._origin
             if resources.explains(archive_end, archive_end + found):
                 return
         self._emit_trailing_data(found)
@@ -2280,7 +2287,7 @@ class ZipReader(BaseArchiveReader):
                 format="zip",
                 expected_marker="end_of_central_directory",
                 expected_bytes=0,
-                observed_bytes=end.eocd_offset,
+                observed_bytes=self._at(end.eocd_offset),
                 observed_kind="nonzero",
             )
         else:
@@ -3298,11 +3305,12 @@ class ZipReader(BaseArchiveReader):
             member,
             loc.index,
             field="offset",
-            local_offset=local_offset,
-            central_offset=loc.header_offset,
+            local_offset=self._at(local_offset),
+            central_offset=self._at(loc.header_offset),
             message=(
                 f"ZIP member {quoted(member.name)}: its local header is at offset "
-                f"{local_offset}, as stored, not at {loc.header_offset}, where the "
+                f"{self._at(local_offset)}, as stored, not at "
+                f"{self._at(loc.header_offset)}, where the "
                 f"central directory's position puts it: {change} between this member "
                 "and the directory. The member is read from its stored offset."
             ),
@@ -3487,7 +3495,9 @@ class ZipReader(BaseArchiveReader):
             # directory entry can state. For a ZIP with no end record the directory
             # starts where the walk stopped, at the cut member, whose read
             # ``_open_member`` has already refused with the walk's error.
-            raise CorruptionError(f"Absurd local-header offset: {loc.header_offset}")
+            raise CorruptionError(
+                f"Absurd local-header offset: {self._at(loc.header_offset)}"
+            )
         # Header, data and data descriptor, up to the next local header or the
         # directory: one request on a remote source.
         self._hint(loc.header_offset, self._data_bounds().end_for(loc))
@@ -3620,18 +3630,20 @@ class ZipReader(BaseArchiveReader):
         ``-base`` is at least every member's own shortfall and is the size of a front
         cut when the directory's own offset field is sound. A directory offset or size
         field that is too large gives the same shape with nothing missing, which is why
-        the message says "seems".
+        the message says "seems". Behind a stub the distances count back from the
+        archive's first byte, not the file's, and the message says so.
         """
         missing = max(-self._end.base, -header_offset)
+        start = "the start of the archive" if self._origin else "the start of the file"
         detail = (
             ""
             if missing == -header_offset
             else f"; this member's local header would start {-header_offset} bytes "
-            "before the start of the file"
+            f"before {start}"
         )
         return (
             f"The archive seems to be missing at least its first {missing} bytes: "
-            "its central directory puts local headers before the start of the file"
+            f"its central directory puts local headers before {start}"
             f"{detail}"
         )
 

@@ -46,6 +46,7 @@ from archivey.internal.backends import zip_parser
 from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.pe_build import pe_file
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
 from tests.test_zip_pipe_parity import _with_modes
 
@@ -451,6 +452,40 @@ def test_a_zip_missing_bytes_in_its_middle_reads_the_members_before_them(
             reader.read("a.txt")
         assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
         assert reader.read("c.txt") == b"c.txtc.txtc.txt"
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_offsets_behind_a_stub_count_from_the_start_of_the_file(forced: bool) -> None:
+    """A ZIP appended to a program with its offsets left counting from its own start:
+    detection reads it from where it starts, and every offset a report names counts
+    from the file's first byte, where a hex editor shows it. A forced ``format=`` reads
+    the whole file and finds its start from the end record, so its offsets are the
+    file's already; for the shifted member it finds another start (the seven missing
+    bytes move the end record), so only detection is asked about that one."""
+    stub = pe_file(0x1000)
+    data = _zip()
+    _a_at, b_at, _c_at = _local_headers(data)
+    cut = b_at + 30 + len("b.txt") + 4
+    gap = data[:cut] + data[cut + 7 :]
+    fmt = ArchiveFormat.ZIP if forced else None
+    with open_archive(io.BytesIO(stub + gap)) as reader:
+        reader.members()
+        reader.read("a.txt")
+        shifted = _shifts(reader)
+        assert [(c.local_offset, c.central_offset) for c in shifted] == [
+            (len(stub), len(stub) - 7)
+        ]
+        message = reader.diagnostics.retained[0].message
+        assert f"at offset {len(stub)}, as stored, not at {len(stub) - 7}," in message
+    counted = bytearray(data)
+    eocd = counted.rfind(b"PK\x05\x06")
+    counted[eocd + 10] += 1
+    with open_archive(io.BytesIO(stub + bytes(counted)), format=fmt) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+        assert diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+        assert isinstance(diagnostic.context, ArchiveEofContext)
+        assert diagnostic.context.observed_bytes == len(stub) + eocd
 
 
 def test_a_zip_missing_a_whole_member_reads_the_others(tmp_path: object) -> None:
