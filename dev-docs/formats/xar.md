@@ -97,6 +97,11 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
   extracted checksum is `member.hashes`, and the verifying stream checks it
   (`hashlib.new(..., usedforsecurity=False)`, so a FIPS OpenSSL still computes MD5 and
   SHA-1).
+- **Shared heap data.** Several files may name one heap range: `xar --coalesce-heap`
+  stores identical files once. Each is read as its own member, and each counts in the
+  archive-wide ratio, so a TOC of many files over one range stops at `max_ratio` times
+  the archive's size, on extraction and on `open()` reads. ZIP and CAB refuse
+  overlapping members as damage; XAR cannot, since a writer makes them.
 - **Unknown types.** A type the format does not define is a readable `FILE` when it has
   data and `OTHER` otherwise, with `MEMBER_TYPE_UNKNOWN` (DR-25).
 

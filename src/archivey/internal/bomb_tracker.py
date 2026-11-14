@@ -536,12 +536,14 @@ class DecodeRatioGuard(_RatioGuard):
 class ReadRatioTally:
     """The bytes a reader's member reads have decoded, for the archive-wide ratio.
 
-    Each member counts once, at the furthest offset any read of it reached, so reading
-    a member again or seeking back in it adds nothing. A member that gets no guard
-    because its data is the archive stream's own bytes (``_hold_to_ratio``) counts at
-    its recorded size instead, read or not, so the total can pass what was decoded but
-    never what one full pass decodes. Shared by every member stream of one reader,
-    from any thread.
+    Each member the caller reads counts once, at the furthest offset any read of it
+    reached, so reading a member again or seeking back in it adds nothing. A link the
+    read follows, or a file copy, counts as its own member: N members that hand out one
+    member's data count N times, as their output is N times those bytes. A member that
+    gets no guard because its data is the archive stream's own bytes
+    (``_hold_to_ratio``) counts at its recorded size instead, read or not, so the total
+    can pass what was decoded but never what reading each member once hands out.
+    Shared by every member stream of one reader, from any thread.
     """
 
     def __init__(self) -> None:
@@ -589,6 +591,7 @@ class MemberRatioGuard(_RatioGuard):
         *,
         limits: DecoderLimits,
         member: ArchiveMember,
+        tally_key: int,
         tally: ReadRatioTally,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
@@ -599,8 +602,9 @@ class MemberRatioGuard(_RatioGuard):
         self._compressed_size = member.compressed_size
         # Never decoded past: the member's recorded size bounds a seek's gap.
         self._size = member.size
-        assert member._member_id is not None, member.name
-        self._key = member._member_id
+        # The member the caller asked for, which may be a link to ``member`` or a copy
+        # of it: the tally counts each member read, not each member's data once.
+        self._key = tally_key
         self._tally = tally
         self._static_size = static_size
         self._consumed = consumed

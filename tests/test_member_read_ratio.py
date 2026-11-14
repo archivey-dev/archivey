@@ -410,6 +410,7 @@ def _guard(
         decoder,
         limits=limits or DecoderLimits(),
         member=member,
+        tally_key=1,
         tally=tally or ReadRatioTally(),
         static_size=None,
         consumed=None if consumed is None else lambda: consumed,

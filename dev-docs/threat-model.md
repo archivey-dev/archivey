@@ -1517,7 +1517,12 @@ hold reads: each member stream is held to the per-member and archive-wide ratios
 bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
 stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
 and a compressed stream is held as a whole. It counts toward the archive-wide total at its
-recorded size when its stream is handed out. The archive-wide rule divides by the
+recorded size when its stream is handed out. The total counts each member the caller
+reads, so a link `open()` follows and a RAR file copy count as themselves, not as the
+member whose data they hand out: many hard links or symlinks to one file, many XAR
+files over one heap range or many ISO records over one extent stop at the archive-wide
+ratio together. A link to stream bytes is judged at its recorded size when its stream
+is handed out. The archive-wide rule divides by the
 archive's size when it is known, and otherwise by a live count (see
 [Extraction bombs](#extraction-bombs)): the bytes taken from a pipe, or the
 furthest offset a seekable stream of unknown size has reached. The live rule waits for
@@ -1542,7 +1547,8 @@ of its size per level, not one in all. Chunk untrusted payloads. Tests:
 `::test_decoded_data_read_is_held_to_the_ratio`,
 `::test_decoded_data_of_all_members_shares_one_total`,
 `::test_decoded_data_listed_again_counts_once`,
-`tests/test_member_read_ratio.py::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`.
+`tests/test_member_read_ratio.py::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`,
+`tests/test_shared_data_total.py`.
 Public:
 [security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
 
