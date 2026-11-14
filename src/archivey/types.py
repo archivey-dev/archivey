@@ -567,23 +567,6 @@ class MissingComponent:
         return f"{text} {note}" if note else text
 
 
-def _bind_exception_hint() -> None:
-    """Bind ``MissingComponent`` where the exceptions are defined.
-
-    ``PackageNotInstalledError.missing`` is annotated with it, but that module cannot
-    import this one (this module imports the exceptions), so it names it only under
-    ``TYPE_CHECKING``. Binding it here lets ``typing.get_type_hints`` resolve the
-    error's hints.
-    """
-    from archivey import exceptions
-
-    exceptions.MissingComponent = MissingComponent
-
-
-_bind_exception_hint()
-del _bind_exception_hint
-
-
 class FormatSupport(Enum):
     """How much of a known format this installation can read."""
 

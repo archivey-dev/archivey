@@ -24,6 +24,7 @@ from archivey.types import (
     CompressionMethod,
     ContainerFormat,
     OptionalLibrary,
+    OptionalLibraryStr,
     PluginContainer,
     PluginStream,
     StreamFormat,
@@ -31,7 +32,6 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.formats import FormatHandler, IndexedFormatHandler
-    from archivey.types import OptionalLibraryStr
 
 __all__ = ["FormatPolicy"]
 

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import ClassVar, Literal, NoReturn, TypeVar
+from typing import ClassVar, Literal, NoReturn, TypeVar, overload
 
 from archivey.exceptions import ArchiveyError, _UsageTypeError, _UsageValueError
 from archivey.internal.enum_args import coerce_enum_collection
@@ -1782,7 +1782,13 @@ class ExtractionReport:
     def __len__(self) -> int:
         return len(self.results)
 
-    def __getitem__(self, index: int) -> ExtractionResult:
+    @overload
+    def __getitem__(self, index: int) -> ExtractionResult: ...
+    @overload
+    def __getitem__(self, index: slice) -> tuple[ExtractionResult, ...]: ...
+    def __getitem__(
+        self, index: int | slice
+    ) -> ExtractionResult | tuple[ExtractionResult, ...]:
         return self.results[index]
 
     @property
@@ -1841,7 +1847,13 @@ class MemberListReport:
     def __len__(self) -> int:
         return len(self.members)
 
-    def __getitem__(self, index: int) -> ArchiveMember:
+    @overload
+    def __getitem__(self, index: int) -> ArchiveMember: ...
+    @overload
+    def __getitem__(self, index: slice) -> tuple[ArchiveMember, ...]: ...
+    def __getitem__(
+        self, index: int | slice
+    ) -> ArchiveMember | tuple[ArchiveMember, ...]:
         return self.members[index]
 
 
