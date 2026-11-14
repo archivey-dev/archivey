@@ -86,7 +86,8 @@ removed.
   stored and archivey normalizes them, so `stored_name` is gone from `MemberRecord`,
   `MemberSpan` and `ReaderContext.hold()`. New: `ForwardStream.take()`,
   `ReaderContext.open_nested()` (an archive stored inside a member),
-  `ReaderContext.charge_metadata()` and `MemberData.ranges`.
+  `ReaderContext.charge_metadata()`, `MemberData.ranges` and
+  `SequentialReader.data_on_demand`.
 - Verification: `verify_all()` returns a `VerifyReport`. Its `failures` are the
   `(member, error)` pairs it returned before, `structure_error` holds damage that stopped
   the walk (a ZIP cut inside its central directory, say), and `ok` and
@@ -118,6 +119,8 @@ removed.
   backslashes or tens of thousands of characters read without a config switch. A RAR opened
   from a file object copies only the data a member needs instead of the whole archive.
   Passes over many small members read them in batches.
+- RPM packages list from their header alone, with no payload byte read. Damage in the
+  payload is found when a file's data is read, and the files before it still read.
 - ZIP: when bytes are missing from the middle of an archive, the members before the gap
   are read from their stored offsets instead of failing with the rest.
 - An ISO image whose directory padding is damaged opens with an `ARCHIVE_TRAILING_DATA`
@@ -159,6 +162,9 @@ removed.
   command line either.
 - A `.deb` whose data tar writes into `DEBIAN/` is refused, as `dpkg-deb` refuses it,
   instead of replacing the control files in the listing and in extraction.
+- Each hard link, symlink or RAR file copy that a read follows counts its bytes against
+  the archive-wide ratio limit. Before, links to one file counted its bytes once, so a
+  `.tar.gz` of one file and many hard links could be read out far past `max_ratio`.
 - PAX records and their entries count against `ListingLimits.max_metadata_bytes` by
   what they keep.
 - Errors about a `password=` value of the wrong type no longer print the value.
