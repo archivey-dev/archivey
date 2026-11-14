@@ -221,6 +221,7 @@ def check() -> None:
     assert_type(fmt.stream, StreamFormat | PluginStream)
     ArchiveyConfig(process_isolation="nonee")
     ArchiveFormat("raw_stream", "gzz")
+    ArchiveyConfig(rar_decompressor="UNAR")
 """
 
 
@@ -241,6 +242,9 @@ def test_type_checker_takes_the_documented_string_spellings(
     refused = [
         _line_of(sample, '    ArchiveyConfig(process_isolation="nonee")'),
         _line_of(sample, '    ArchiveFormat("raw_stream", "gzz")'),
+        # Valid at runtime (a member name), but no Literal lists it: the spec says it
+        # still gets a diagnostic.
+        _line_of(sample, '    ArchiveyConfig(rar_decompressor="UNAR")'),
     ]
     assert [int(d.split(":")[1]) for d in diagnostics] == refused, diagnostics
 

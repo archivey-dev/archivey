@@ -674,15 +674,16 @@ afterwards be renamed without breaking callers silently.
 Each covered enum SHALL have a `Literal` alias beside it (`OverwritePolicyStr`,
 `AcceleratorModeStr`, `ContainerFormatStr`, …) that lists every value and the dash form
 of each value holding `_`, and the parameter's declared type SHALL accept that alias as
-well as the enum, never a bare `str`. A typed caller writing a documented spelling then
-gets no type-checker diagnostic, while a misspelling still gets one. The test suite SHALL
-fail when an alias and its enum disagree, or when a coerced enum has no alias and no
-recorded reason for its absence. Where the parameter is a dataclass field
-(`ArchiveyConfig`, `ArchiveFormat`), only the constructor's input type is widened: the
-field SHALL stay annotated with the enum alone (`DetectionBudget` alone for
-`detection_budget`), since conversion means it never holds a string, and the test suite
-SHALL fail when the declared constructor and the generated one differ in anything but
-those input types.
+well as the enum, never a bare `str`. A type checker then accepts each value and its dash
+form, and still flags a misspelling. A member name, another case or surrounding
+whitespace stays valid at runtime but still gets a type-checker diagnostic, since a
+`Literal` cannot list them. The test suite SHALL fail when an alias and its enum
+disagree, or when a coerced enum has no alias and no recorded reason for its absence.
+Where the parameter is a dataclass field (`ArchiveyConfig`, `ArchiveFormat`), only the
+constructor's input type is widened: the field SHALL stay annotated with the type it
+holds after conversion (the enum, and `DetectionBudget` for `detection_budget`), since it
+never holds a string, and the test suite SHALL fail when the declared constructor and
+the generated one differ in anything but those input types.
 
 The conversion SHALL be unambiguous. No two members of a covered enum may share a
 normalized spelling, and the test suite SHALL fail if a new member introduces such a

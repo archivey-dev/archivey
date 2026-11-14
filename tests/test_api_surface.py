@@ -253,7 +253,7 @@ def _type_checking_init_classes() -> list[type]:
     src = ROOT / "src"
     classes: list[type] = []
     for path in sorted((src / "archivey").rglob("*.py")):
-        if "if TYPE_CHECKING:" not in path.read_text(encoding="utf-8"):
+        if "TYPE_CHECKING" not in path.read_text(encoding="utf-8"):
             continue
         parts = path.relative_to(src).with_suffix("").parts
         module_name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
