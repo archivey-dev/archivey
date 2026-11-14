@@ -3,7 +3,7 @@ the codec cover their data (``checked_spans``), not only when a walk reaches the
 stream's end.
 
 Spec ``compressed-streams`` §"A stream reports the verification it has reached and can
-reach" (the `.tar.bz2` rows).
+reach" (the `.tar.bz2` and `.tar.xz` rows).
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ import bz2
 import functools
 import gzip
 import io
+import lzma
 import random
+import subprocess
 import tarfile
 
 import pytest
@@ -22,7 +24,7 @@ from archivey import Verification
 from archivey.exceptions import CorruptionError
 from archivey.internal.streams import checked_spans
 from archivey.internal.streams.checked_spans import CheckedSpans
-from tests.conftest import requires
+from tests.conftest import requires, requires_binary
 from tests.streams_util import NonSeekableBytesIO
 
 
@@ -126,8 +128,54 @@ def test_a_member_is_checksum_verified_once_its_blocks_pass(compress) -> None:
     assert set(early.values()) == {Verification.CHECKSUM}, early
 
 
-def test_a_codec_without_block_checks_raises_only_at_the_end() -> None:
-    levels = _levels_while_streaming(gzip.compress(_tar()))
+def _xz_blocks(data: bytes, *options: str) -> bytes:
+    """``data`` as one xz stream of 50 KiB blocks."""
+    return subprocess.run(
+        ["xz", "-c", "-1", "--block-size=50KiB", *options],
+        input=data,
+        capture_output=True,
+        check=True,
+    ).stdout
+
+
+def _xz_streams(data: bytes) -> bytes:
+    """``data`` as xz streams of 100 kB each, one block each."""
+    step = 100_000
+    return b"".join(
+        lzma.compress(data[i : i + step], preset=1) for i in range(0, len(data), step)
+    )
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [
+        pytest.param(_xz_blocks, id="xz-blocks", marks=requires_binary("xz")),
+        pytest.param(_xz_streams, id="xz-streams"),
+    ],
+)
+def test_an_xz_member_is_checksum_verified_once_its_blocks_pass(compress) -> None:
+    levels = _levels_while_streaming(compress(_tar()))
+    names = [name for name, _ in _members()]
+    # A block is checked once the decode is past its end, so the files in the last
+    # block wait for the end of the stream.
+    early = {name: levels[name] for name in names[:-5]}
+    assert set(early.values()) == {Verification.CHECKSUM}, early
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        pytest.param(lambda: gzip.compress(_tar()), id="gzip"),
+        pytest.param(lambda: lzma.compress(_tar(), preset=1), id="xz-one-block"),
+        pytest.param(
+            lambda: _xz_blocks(_tar(), "-C", "none"),
+            id="xz-no-check",
+            marks=requires_binary("xz"),
+        ),
+    ],
+)
+def test_without_block_checks_nothing_rises_before_the_end(blob) -> None:
+    levels = _levels_while_streaming(blob())
     assert Verification.CHECKSUM not in set(levels.values())
 
 

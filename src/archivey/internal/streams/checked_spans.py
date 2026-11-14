@@ -4,15 +4,17 @@ check passes, rather than when a decode from the start reaches the stream's end.
 
 A codec whose decoder hands out only checked bytes (bzip2 one block at a time, bzip3)
 says so with ``checks_every_byte``; ``DecompressorStream`` then adds each call's output
-to its :class:`CheckedSpans`. A compressed TAR reader asks for the spans added since it
-last asked (:meth:`CheckedSpans.take_new`) and raises each listed member whose data
-lies inside the spans (``TarReader._refresh_member_levels``).
+to its :class:`CheckedSpans`. A decoder that hands out bytes before their check runs
+reports the ranges whose check has passed since instead (``DecodeOut.checked``: xz
+blocks), and the stream adds those. A compressed TAR reader asks for the spans added
+since it last asked (:meth:`CheckedSpans.take_new`) and raises each listed member whose
+data lies inside the spans (``TarReader._refresh_member_levels``).
 
-What a block check proves: every byte of the member came out of a block whose stored
-CRC matched it. It does not prove the blocks are in the order the writer put them, or
-that none is missing; the stream's whole-stream check (bzip2's combined CRC) proves
-that, at the end. The ``CHECKSUM`` level says "every byte passed a checksum stored with
-the data", which a block CRC is.
+What a block check proves: every byte of the member came out of a block whose stored CRC
+matched it. It does not prove the blocks are in the order the writer put them, or that
+none is missing; the stream's whole-stream check (bzip2's combined CRC, xz's index)
+proves that, at the end. The ``CHECKSUM`` level says "every byte passed a checksum
+stored with the data", which a block CRC is.
 """
 
 from __future__ import annotations

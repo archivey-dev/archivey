@@ -351,6 +351,9 @@ class DecodeOut:
 
     data: bytes
     points: list[SeekPoint] = field(default_factory=list)
+    # Output ranges, as ``[start, end)`` offsets in the whole output, whose block or
+    # frame check passed during this step: see ``checked_spans``.
+    checked: list[tuple[int, int]] = field(default_factory=list)
 
 
 class Decoder(Protocol):
@@ -1616,12 +1619,15 @@ class DecompressorStream(ReadOnlyIOStream):
         the window in which an error drops the index rather than sticking
         (``_fresh_index_point``, :meth:`_drop_index_at_failed_point`).
         """
+        # Offsets counted from an index point are the index's, not proved.
+        if out.checked and not self._decode_from_index:
+            for start, end in out.checked:
+                self.checked_spans.add(start, end)
         if out.data:
             self._fresh_index_point = None
             if not self._decode_from_index and getattr(
                 self._decoder, "checks_every_byte", False
             ):
-                # Offsets counted from an index point are the index's, not proved.
                 start = self._decoder_pos
                 self.checked_spans.add(start, start + len(out.data))
         self._decoder_pos += len(out.data)
