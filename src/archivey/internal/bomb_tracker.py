@@ -552,8 +552,17 @@ class DecodeRatioGuard(_RatioGuard):
         tally: ReadRatioTally | None = None,
         key: int = 0,
         nest: NestDraws | None = None,
+        holds_errors: bool = True,
+        counted: str = "the archive decoded",
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
+        # A container's decode holds the decoder's error after a whole step for the
+        # next call, so the members before the damage are not lost with the step. A
+        # stream handed to the caller raises it from the call that meets it, as a
+        # member stream does (MemberRatioGuard): a single ``read()`` must not return
+        # damaged data without an error.
+        self._holds_errors = holds_errors
+        self._counted = counted
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
@@ -574,7 +583,7 @@ class DecodeRatioGuard(_RatioGuard):
             limits=limits,
             static_size=self._static_size,
             consumed=self._consumed,
-            counted="the archive decoded",
+            counted=self._counted,
         )
         if self._nest is not None:
             self._nest.report_pass(position)

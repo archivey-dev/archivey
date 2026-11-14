@@ -6,6 +6,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import random
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,8 +14,10 @@ import pytest
 
 from archivey import (
     ArchiveyConfig,
+    CorruptionError,
     DecoderLimits,
     ResourceLimitError,
+    TruncatedError,
     open_archive,
     open_stream,
 )
@@ -49,7 +52,7 @@ def test_open_stream_refuses_a_bare_stream_past_the_default_ratio(
 def test_open_stream_refuses_a_seekable_stream_by_its_size() -> None:
     with (
         open_stream(io.BytesIO(gzip.compress(_ZEROS))) as stream,
-        pytest.raises(ResourceLimitError, match="Archive-wide"),
+        pytest.raises(ResourceLimitError, match="of the stream decoded"),
     ):
         stream.read()
 
@@ -86,3 +89,29 @@ def test_open_stream_reads_ordinary_data_under_the_default_ratio() -> None:
     data = bytes(range(256)) * 40_000
     with open_stream(io.BytesIO(gzip.compress(data))) as stream:
         assert stream.read() == data
+
+
+def _random(n: int) -> bytes:
+    return random.Random(0).randbytes(n)
+
+
+@pytest.mark.parametrize("size", [1000, 3 * _MIB])
+@pytest.mark.parametrize("compress", [gzip.compress, bz2.compress])
+def test_one_read_of_a_cut_stream_raises(
+    size: int, compress: Callable[[bytes], bytes]
+) -> None:
+    # The guard must not hold the decoder's error for a later read: a caller that
+    # reads the stream once would get cut data and no error.
+    packed = compress(_random(size))[:-20]
+    with open_stream(io.BytesIO(packed)) as stream, pytest.raises(TruncatedError):
+        stream.read()
+
+
+def test_one_read_of_a_gzip_with_a_bad_crc_raises() -> None:
+    packed = bytearray(gzip.compress(_random(3 * _MIB)))
+    packed[-8] ^= 0xFF
+    with (
+        open_stream(io.BytesIO(bytes(packed))) as stream,
+        pytest.raises(CorruptionError),
+    ):
+        stream.read()

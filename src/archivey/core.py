@@ -1516,7 +1516,12 @@ def _hold_stream_to_ratio(
             consumed = lambda: codec_input.bytes_pulled  # noqa: E731
     stream._hold_inner(
         lambda inner: DecodeRatioGuard(
-            inner, limits=limits, static_size=static_size, consumed=consumed
+            inner,
+            limits=limits,
+            static_size=static_size,
+            consumed=consumed,
+            holds_errors=False,
+            counted="the stream decoded",
         )
     )
 
