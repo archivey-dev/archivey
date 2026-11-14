@@ -476,7 +476,7 @@ sending side when the ZIP is done.
 
 ### Compression methods
 
-- A method archivey cannot read lists normally, and reading the member raises
+- A member whose method archivey cannot read is listed normally, and reading it raises
   `UnsupportedFeatureError`. So does an LZMA member with `lc + lp` over 4 (which 7-Zip writes with
   `-mm=LZMA:lc=8` and liblzma cannot decode), and a PPMd member with restore method 2. Under
   ZipCrypto both raise the password-or-damage `EncryptionError` instead, because those settings
