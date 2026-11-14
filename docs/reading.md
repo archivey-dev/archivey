@@ -98,7 +98,9 @@ Damaged compressed data can raise sooner from a pipe than from a file. From a fi
 size that meets the damage first gives you every byte before it: archivey goes back and
 decompresses that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be
 read twice, so the read that meets the damage raises, and up to 64 KiB before the damage can be
-lost (none for gzip and other deflate data). On a compressed tar the decompressor reads ahead of the members, so
+lost (none for gzip and other deflate data, or for bzip2). bzip2 checks its data in blocks of up to
+900 kB and gives you none of a block whose check fails, from a file or a pipe: the bytes you get
+end where that block starts. On a compressed tar the decompressor reads ahead of the members, so
 damage near the start of a `.tar.xz` from a pipe can make the open fail with no members listed,
 where the same bytes in a file list the members before the damage first.
 
@@ -124,7 +126,8 @@ reads bzip2 data, and large DEFLATE data, through an
 reads, and every seek resumes from the nearest marked place before its target. DEFLATE is the
 compression in gzip files and in most ZIP members. Without the extra, DEFLATE data resumes from the
 nearest place a read has passed: one of the places archivey marks about every MiB, each holding
-about 40 KiB of memory, or in gzip a member start. A zstd file made of
+about 40 KiB of memory, or in gzip a member start. bzip2 data resumes from the start of the nearest
+block a read has passed, about every 900 kB of output at the default level. A zstd file made of
 several frames, such as one in the Seekable Zstandard format, always resumes from the nearest frame
 start. For a `bgzip` file or a Seekable Zstandard file, archivey finds those starts without
 decompressing anything. A forward seek keeps the checksum check when reaching the target means
@@ -199,9 +202,9 @@ with archivey.open_archive("data.zip", config=config) as archive:
     ...
 ```
 
-The standard library then decodes everything. A backward seek in bzip2 data decompresses again from
-the start of the member, one in DEFLATE data from the nearest place a read has passed (above), and a
-large gzip file, or a large bzip2 file on disk, is read on one core.
+The standard library then decodes everything. A backward seek in bzip2 or DEFLATE data
+decompresses again from the nearest place a read has passed (above), and a large gzip file, or a
+large bzip2 file on disk, is read on one core.
 
 ## Why these aren't on by default
 

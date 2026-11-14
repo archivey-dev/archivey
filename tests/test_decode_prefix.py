@@ -33,6 +33,7 @@ from archivey.internal.streams.codecs import (
     deps,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.bzip2_blocks import Bzip2BlockDecompressor
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
 from tests.conftest import requires
@@ -69,7 +70,8 @@ def _zstd(data: bytes) -> bytes:
 CODECS: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
     "gzip": (Codec.GZIP, lambda d: gzip.compress(d, mtime=0)),
     "xz": (Codec.XZ, lambda d: lzma.compress(d, format=lzma.FORMAT_XZ)),
-    "bzip2": (Codec.BZIP2, bz2.compress),
+    # Level 1: 100 kB blocks, so damage halfway leaves whole blocks before it.
+    "bzip2": (Codec.BZIP2, lambda d: bz2.compress(d, 1)),
     "zstd": (Codec.ZSTD, _zstd),
 }
 
@@ -202,7 +204,9 @@ def test_a_pipe_loses_at_most_one_call(name: str) -> None:
 _RAW: dict[Codec, Callable[[], Any]] = {
     Codec.GZIP: lambda: zlib.decompressobj(31),
     Codec.XZ: lzma.LZMADecompressor,
-    Codec.BZIP2: bz2.BZ2Decompressor,
+    # One block at a time, as the codec decodes it: a block's bytes come out only once
+    # its CRC passed.
+    Codec.BZIP2: Bzip2BlockDecompressor,
 }
 
 
