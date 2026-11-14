@@ -1465,7 +1465,12 @@ clean one as false. `ok` and `raise_for_failure()` answer whether it succeeded.
 | Case | Expected |
 | --- | --- |
 | Caller keeps a report and reader later does more work | Result tuple/outcomes and diagnostic summary stay unchanged; referenced member may receive documented late-bound updates |
-| `bool(report)` / `if report:` | `TypeError` naming `ok` |
+
+#### Scenario: report refuses a truth test
+
+| Case | Expected |
+| --- | --- |
+| `bool(report)` / `if report:`, the report empty or not | `TypeError` naming `ok` |
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 

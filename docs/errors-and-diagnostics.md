@@ -95,8 +95,8 @@ with archivey.open_archive("damaged.tar") as archive:
 ```
 
 `report.ok` is `True` when the list is complete, and `report.raise_for_failure()` raises the
-error that stopped it. Test `ok`, not the report itself: `if report:` raises `TypeError`, since a
-list of members cut short is not empty.
+error that stopped it. Test `ok`, not the report itself: `if report:` always raises `TypeError`. As
+a sequence, its truth would only say whether it is empty, and a list of members cut short is not.
 
 ??? note "Why does `members()` raise if the archive is damaged?"
     It returns a list, and a shorter list looks just like a complete one, so code that only looks at
