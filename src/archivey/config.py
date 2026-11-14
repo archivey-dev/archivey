@@ -29,7 +29,7 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
-from archivey.exceptions import ArchiveyUsageError, _UsageTypeError, _UsageValueError
+from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
     check_callable,
@@ -1221,13 +1221,13 @@ def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
     if forced is None:
         return
     if config.process_isolation is ProcessIsolation.NONE:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"ArchiveyConfig({forced}=ON) cannot be combined with "
             "process_isolation=NONE: rapidgzip runs only in a child "
             "process. Use AUTO or OFF, or another process_isolation."
         )
     if OptionalLibrary.RAPIDGZIP in config.formats._libraries_off:
-        raise ArchiveyUsageError(
+        raise _UsageValueError(
             f"ArchiveyConfig({forced}=ON) cannot be combined with "
             "a formats=FormatPolicy that turns rapidgzip off "
             "(exclude_libraries= or only_libraries=), which turns that "

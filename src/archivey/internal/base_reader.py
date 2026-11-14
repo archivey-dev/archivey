@@ -144,6 +144,7 @@ from archivey.exceptions import (
     raw_message_of,
 )
 from archivey.internal.arg_checks import (
+    check_bool,
     check_callable,
     check_dest,
     check_extraction_limits,
@@ -5203,6 +5204,7 @@ class BaseArchiveReader(ArchiveReader):
         self._state.require_open("extract_all()")
         check_extraction_limits(limits, call="extract_all(limits=…)")
         check_callable(on_progress, call="extract_all(on_progress=…)")
+        check_bool(dry_run, call="extract_all(dry_run=…)")
         # ``filter`` is not consulted until the first member is offered, by which point
         # the extraction is under way; a non-callable there reads as
         # ``TypeError: 'int' object is not callable`` with nothing naming the argument.

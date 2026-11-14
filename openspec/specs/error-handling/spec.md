@@ -591,11 +591,15 @@ rather than several frames into a member-name decode.
 The raw exceptions the contract already permits SHALL continue to escape unchanged:
 `KeyError` for an unknown member **name**, `TypeError` for `len()` / `in`,
 `io.UnsupportedOperation` for an unsupported `seek`,
-`ValueError` for I/O on a closed stream, and `OSError`. Boolean flags read for their
-truthiness are not covered, there being no wrong type to find, except
-`ArchiveyConfig`'s guard switches (`rar_allow_glob_member_concatenation`,
-`read_link_targets`), which SHALL be a `bool`: a string such as `"false"` is truthy
-and would silently switch the guard.
+`ValueError` for I/O on a closed stream, and `OSError`. Every public boolean flag
+SHALL be a `bool`, refused otherwise with an `ArchiveyUsageError` that is also a
+`TypeError`, before anything is read: `ArchiveyConfig`'s switches
+(`rar_allow_glob_member_concatenation`, `read_link_targets` and the rest), and the
+call flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
+`open_stream(seekable=)`, `detect_format(follow_stub_volumes=)`,
+`extract_all(dry_run=)` and `ArchiveStream.verify(password_only=)`. A string such as
+`"false"` is truthy, so a flag loaded from text would silently switch a guard or a
+mode on.
 
 An empty string passed as a path SHALL raise an `ArchiveyUsageError` that is also a
 `ValueError` at the entry point, before anything is read or created. This covers the
@@ -617,6 +621,7 @@ otherwise open the current directory as a directory archive or extract into it.
 | `ArchiveyConfig(max_retained_diagnostic_references="x")` | `ArchiveyUsageError` at construction |
 | `ArchiveyConfig(on_diagnostic=0)` | `ArchiveyUsageError` at construction, not when the first diagnostic fires |
 | `ArchiveyConfig(rar_allow_glob_member_concatenation="false")` | `ArchiveyUsageError` at construction; the refusal is never switched off by a truthy string |
+| `open_archive(src, streaming="false")`, `open_stream(src, seekable=0)` | `ArchiveyUsageError` that is also a `TypeError`, naming the flag, before the source is read |
 | `ListingLimits(max_members="x")` | `ArchiveyUsageError` at construction, not `TypeError` mid-listing |
 | `DecoderLimits(max_ratio=float("nan"))` | `ArchiveyUsageError`; a NaN would leave the ratio guard switched off silently |
 | `DecoderLimits(ratio_activation_threshold=None)` or `DecoderLimits(live_ratio_activation_threshold=None)` | `ArchiveyUsageError`; the field is not optional and `None` disables nothing |

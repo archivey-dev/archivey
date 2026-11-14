@@ -150,6 +150,9 @@ def _coerce_libraries(
             f"{{OptionalLibrary.{values.name}}}."
         )
     if isinstance(values, Iterable) and not isinstance(values, (str, bytes)):
+        # Read once: a generator would be empty for the conversion below, and an
+        # exclusion read as empty silently turns the excluded code back on.
+        values = tuple(values)
         stdlib = sorted(
             v for v in values if isinstance(v, str) and v.lower() in _STDLIB_CODECS
         )

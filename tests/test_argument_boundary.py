@@ -601,6 +601,38 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                     lambda b=bad, f=field_name: _with_config(archive, out(), **{f: b}),
                 )
             )
+    # Operation flags take a real bool, as the config's switches do: "false" is
+    # truthy, so a flag loaded from text would switch a mode on.
+    for bad in ("false", 0, 1, None):
+        for flag in ("streaming", "seekable_members", "concurrent_operations"):
+            rows.append(
+                _case(
+                    "open_archive",
+                    flag,
+                    bad,
+                    lambda b=bad, f=flag: open_archive(archive, **{f: b}),
+                )
+            )
+        rows += [
+            _case(
+                "open_stream",
+                "seekable",
+                bad,
+                lambda b=bad: open_stream(archive, seekable=b),
+            ),
+            _case(
+                "detect_format",
+                "follow_stub_volumes",
+                bad,
+                lambda b=bad: detect_format(archive, follow_stub_volumes=b),
+            ),
+            _case(
+                "extract_all",
+                "dry_run",
+                bad,
+                lambda b=bad: _extract_all(archive, out(), None, dry_run=b),
+            ),
+        ]
     for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
         rows.append(
             _case(
@@ -748,15 +780,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
         "ArchiveyConfig",
         "use_indexed_bzip2",
     ): "coerced by enum_args, in __post_init__",
-    # Flags read for their truthiness. There is no wrong type to find: every value
-    # means something, and ``streaming="no"`` opening in streaming mode is Python
-    # behaving as written, not a leak.
-    ("open_archive", "streaming"): "truthiness flag",
-    ("open_archive", "seekable_members"): "truthiness flag",
-    ("open_archive", "concurrent_operations"): "truthiness flag",
-    ("open_stream", "seekable"): "truthiness flag",
-    ("detect_format", "follow_stub_volumes"): "truthiness flag",
-    ("extract_all", "dry_run"): "truthiness flag",
     # ``get`` answers an absent *name* with the default, like ``dict.get``. A value
     # that is not a name at all is swept above: ``get(b"h.txt")`` used to answer
     # "absent" for a member that exists, which is a wrong answer, not a lookup miss.

@@ -27,6 +27,7 @@ from archivey.diagnostics import (
     MemberListReport,
     VerifyReport,
 )
+from archivey.internal.arg_checks import check_bool
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
@@ -230,6 +231,7 @@ class ArchiveStream(ReadOnlyIOStream):
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        check_bool(password_only, call="verify(password_only=…)")
         level = Verification.UNLOCKED if password_only else Verification.CHECKSUM
         if not self.seekable():
             if self._verify_consumed():

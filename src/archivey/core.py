@@ -61,6 +61,7 @@ from archivey.exceptions import (
     _UsageValueError,
 )
 from archivey.internal.arg_checks import (
+    check_bool,
     check_config,
     check_encoding,
     check_instance,
@@ -586,6 +587,12 @@ def open_archive(
             f"open_archive(format=…) cannot open {format!r}, which names no format; "
             f"pass the archive's format, or None to auto-detect."
         )
+    for flag_name, flag in (
+        ("streaming", streaming),
+        ("seekable_members", seekable_members),
+        ("concurrent_operations", concurrent_operations),
+    ):
+        check_bool(flag, call=f"open_archive({flag_name}=…)")
     check_config(config, call="open_archive(config=…)")
     _check_parent(parent)
     check_encoding(encoding, call="open_archive(encoding=…)")
@@ -1333,6 +1340,7 @@ def open_stream(
             "StreamFormat or a raw-stream ArchiveFormat (e.g. ArchiveFormat.GZ), "
             "or None to auto-detect."
         )
+    check_bool(seekable, call="open_stream(seekable=…)")
     check_config(config, call="open_stream(config=…)")
 
     effective_config = config if config is not None else DEFAULT_ARCHIVEY_CONFIG

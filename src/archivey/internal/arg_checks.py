@@ -121,6 +121,15 @@ def check_instance(
     )
 
 
+def check_bool(value: object, *, call: str) -> None:
+    """Raise ``ArchiveyUsageError`` (a ``TypeError``) unless ``value`` is a ``bool``.
+
+    A string such as ``"false"`` is truthy, so a plain truth test would read it as
+    ``True``: a flag loaded from text would silently switch a mode on.
+    """
+    check_instance(value, bool, call=call, allow_none=False)
+
+
 def check_config(value: object, *, call: str) -> None:
     """Validate a ``config=`` argument.
 
