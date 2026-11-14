@@ -325,6 +325,14 @@ def test_a_type_checking_init_matches_the_generated_one(cls: type) -> None:
         assert annotation == field_type or annotation.startswith(f"{field_type} | "), (
             f"{where}: {annotation!r} does not start with the field's {field_type!r}"
         )
+        named = [getattr(module, name, None) for name in annotation.split(" | ")]
+        enums = [e for e in named if isinstance(e, type) and issubclass(e, Enum)]
+        spellings = {
+            spelling
+            for enum in enums
+            for member in enum
+            for spelling in (str(member.value), str(member.value).replace("_", "-"))
+        }
         for extra in annotation.removeprefix(field_type).split(" | ")[1:]:
             accepted = getattr(module, extra, None)
             is_literal = typing.get_origin(accepted) is typing.Literal
@@ -332,3 +340,12 @@ def test_a_type_checking_init_matches_the_generated_one(cls: type) -> None:
             assert is_literal or is_enum, (
                 f"{where}: {extra!r} is not a Literal alias or an enum"
             )
+            if is_literal:
+                # The alias must spell the parameter's own enum, not another one: a
+                # mis-paired alias would type-check a refused value and reject a
+                # documented one.
+                foreign = set(typing.get_args(accepted)) - spellings
+                assert not foreign, (
+                    f"{where}: {extra!r} has {sorted(foreign)}, which no enum in "
+                    f"{annotation!r} spells"
+                )
