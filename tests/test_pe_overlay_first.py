@@ -3,7 +3,7 @@
 The overlay start is where the PE format itself says appended data begins. A valid
 archive there is the payload, so a decoy in the program's own sections never competes
 with it, and a 7z SFX whose certificate follows it is accepted at once. Detection, the
-RAR and 7z parsers' scans and the forward ZIP walk all apply the rule, so a forced
+RAR, 7z and LHA readers' scans and the forward ZIP walk all apply the rule, so a forced
 ``format=`` opens the same payload, seekable or not.
 """
 
@@ -20,6 +20,7 @@ from archivey import detect_format, open_archive
 from archivey.config import BALANCED_BUDGET, ArchiveyConfig
 from archivey.internal.sfx import SFX_MAX
 from archivey.types import ArchiveFormat
+from tests.lha_util import Member, archive
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_sevenzip_trailing_data import _stored_7z
@@ -194,3 +195,21 @@ def test_forced_7z_finds_a_section_archive_behind_a_bad_overlay_start() -> None:
     assert detect_format(io.BytesIO(data)).payload_offset == FILE_ALIGNMENT + 512
     assert _names(data) == ["real.txt"]
     assert _names(data, ArchiveFormat.SEVEN_Z) == ["real.txt"]
+
+
+@pytest.mark.parametrize("tail", ["trailing data", "later archive"])
+def test_lha_at_the_overlay_start_beats_a_section_archive_and_a_later_one(
+    tail: str,
+) -> None:
+    # Every candidate ends short of the file but the later one, so without the rule
+    # the scan takes the section decoy (trailing data) or the later archive.
+    decoy = archive([Member(b"decoy.txt", b"decoy", method="-lh0-", level=0)])
+    real = archive([Member(b"real.txt", b"real data", method="-lh5-", level=1)])
+    later = archive([Member(b"later.txt", b"later", method="-lh0-", level=2)])
+    overlay = real + b"\x55" * 64 if tail == "trailing data" else real + later
+    data = _with_image(b"\0" * 512 + decoy, overlay)
+    info = detect_format(io.BytesIO(data))
+    assert info.format is ArchiveFormat.LHA
+    assert info.payload_offset == _OVERLAY
+    assert _names(data) == ["real.txt"]
+    assert _names(data, ArchiveFormat.LHA) == ["real.txt"]
