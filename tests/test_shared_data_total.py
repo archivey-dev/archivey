@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import shutil
+import subprocess
 import tarfile
 import zlib
 from pathlib import Path
@@ -29,10 +31,11 @@ from archivey import (
     ArchiveReader,
     ArchiveyConfig,
     DecoderLimits,
+    ResourceLimitError,
     open_archive,
 )
 from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
-from tests.conftest import requires
+from tests.conftest import binary_refusal, requires
 from tests.test_rpm import _F, _build, _Package
 from tests.xar_util import pack_xar
 
@@ -191,3 +194,68 @@ def test_a_few_members_sharing_data_read_under_the_default_limits(case: str) -> 
     raw = _BUILDERS[case](3)
     with _open(case, raw) as reader:
         assert _drain_all(reader) == 3 * len(_DATA)
+
+
+# RAR file copies (``rar a -oi``): a copy stores no data and decodes its source again.
+def _rar_with_copies(
+    tmp_path: Path, source: bytes, copies: int, *, solid: bool
+) -> Path:
+    """A RAR5 of ``a_src`` holding ``source``, then ``copies`` file references to it."""
+    if shutil.which("rar") is None:
+        pytest.skip("needs rar")
+    if (refusal := binary_refusal("unrar")) is not None:
+        pytest.skip(f"needs an unrar archivey will use: {refusal}")
+    src = tmp_path / "src"
+    src.mkdir()
+    names = ["a_src", *(f"copy{i:03}" for i in range(copies))]
+    for name in names:
+        (src / name).write_bytes(source)
+    archive = tmp_path / "copies.rar"
+    flags = ["-s"] if solid else []
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", *flags, "-oi:1000", str(archive), *names],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    return archive
+
+
+@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
+def test_a_pass_over_rar_file_copies_stops_at_the_archive_ratio(
+    tmp_path: Path, solid: bool
+) -> None:
+    """Each copy counts as itself, not once as its source."""
+    archive = _rar_with_copies(tmp_path, _DATA, _SHARERS, solid=solid)
+    with open_archive(archive, config=_TIGHT) as reader:
+        assert all(m.extra.get("is_file_copy") for m in reader.members()[1:])
+        with pytest.raises(AlwaysStopResourceLimitError, match="Archive-wide"):
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+
+
+def test_reads_of_rar_file_copies_stop_at_the_archive_ratio(tmp_path: Path) -> None:
+    archive = _rar_with_copies(tmp_path, _DATA, _SHARERS, solid=False)
+    with (
+        open_archive(archive, config=_TIGHT) as reader,
+        pytest.raises(AlwaysStopResourceLimitError, match="Archive-wide"),
+    ):
+        _drain_all(reader)
+
+
+@pytest.mark.parametrize("solid", [False, True], ids=["nonsolid", "solid"])
+def test_open_judges_a_file_copy_by_its_sources_ratio(
+    tmp_path: Path, solid: bool
+) -> None:
+    """A copy stores nothing, so its own ``compressed_size`` is 0 and bounds nothing.
+    ``open()`` judges it as its source, as a pass does, and names the copy."""
+    archive = _rar_with_copies(tmp_path, bytes(8 * 2**20), 1, solid=solid)
+    with open_archive(archive) as reader:
+        copy = reader.get("copy000")
+        assert copy is not None
+        assert copy.compressed_size == 0
+        with pytest.raises(ResourceLimitError, match="Decompression ratio") as caught:
+            reader.read(copy)
+    assert not isinstance(caught.value, AlwaysStopResourceLimitError)
+    assert caught.value.member_name == "copy000"

@@ -1532,27 +1532,26 @@ stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot 
 and a compressed stream is held as a whole. It counts toward the archive-wide total at its
 recorded size when its stream is handed out. The total counts each member the caller
 reads, so a link `open()` follows and a RAR file copy count as themselves, not as the
-member whose data they hand out: many hard links or symlinks to one file, many XAR
-files over one heap range or many ISO records over one extent stop at the archive-wide
-ratio together. A link to stream bytes is judged at its recorded size when its stream
-is handed out. The archive-wide rule divides by the
-archive's size when it is known, and otherwise by a live count (see
-[Extraction bombs](#extraction-bombs)): the bytes taken from a pipe, or the
-furthest offset a seekable stream of unknown size has reached. The live rule waits for
-`live_ratio_activation_threshold` (256 MiB), so before that only the per-member rule
-holds reads from such a source. A container inside a
-compression stream (a `.tar.gz`) holds its whole decode, listing included, to the
-archive-wide ratio (`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything.
-A sequential format handler's walk is held the same way to what it decodes by itself
+member whose data they hand out: many hard links or symlinks to one file, many XAR files
+over one heap range or many ISO records over one extent stop at the archive-wide ratio
+together. A link to stream bytes is judged at its recorded size when its stream is
+handed out. The archive-wide rule divides by the archive's size when it is known, and
+otherwise by a live count (see [Extraction bombs](#extraction-bombs)): the bytes taken
+from a pipe, or the furthest offset a seekable stream of unknown size has reached. The
+live rule waits for `live_ratio_activation_threshold` (256 MiB), so before that only the
+per-member rule holds reads from such a source. A container inside a compression stream
+(a `.tar.gz`) holds its whole decode, listing included, to the archive-wide ratio
+(`bomb_tracker.DecodeRatioGuard`), since listing it decodes everything. A sequential
+format handler's walk is held the same way to what it decodes by itself
 (`format_adapter.SequentialReaderAdapter._ratio_guarded`): the layers that
 `ForwardStream.decompress()` opens share one total, each layer counted at the furthest
 offset it decoded, so nesting a payload in another does not multiply the bound; a
-member's decoded data (`MemberSpan.data`), drained by listing too, counts toward a second
-total keyed by the member's place in the walk, so a walk started over adds nothing.
-**Residual:** each level is judged on its own, against the same denominator: the outer
-compression stream, the `decompress()` layers, the decoded member data, and member reads
-(`ReadRatioTally`). Their totals add up, so one archive can decode about one `max_ratio`
-of its size per level, not one in all. Chunk untrusted payloads. Tests:
+member's decoded data (`MemberSpan.data`), drained by listing too, counts toward a
+second total keyed by the member's place in the walk, so a walk started over adds
+nothing. **Residual:** each level is judged on its own, against the same denominator:
+the outer compression stream, the `decompress()` layers, the decoded member data, and
+member reads (`ReadRatioTally`). Their totals add up, so one archive can decode about
+one `max_ratio` of its size per level, not one in all. Chunk untrusted payloads. Tests:
 `tests/test_compressed_container_ratio.py`,
 `tests/test_format_api_sequential.py::test_decompress_part_way_listing_is_held_to_the_ratio`,
 `::test_decompress_part_way_layers_share_one_ratio_count`,
@@ -1561,9 +1560,8 @@ of its size per level, not one in all. Chunk untrusted payloads. Tests:
 `::test_decoded_data_of_all_members_shares_one_total`,
 `::test_decoded_data_listed_again_counts_once`,
 `tests/test_member_read_ratio.py::test_a_seekable_zip_of_unknown_size_is_held_to_the_live_ratio`,
-`tests/test_shared_data_total.py`.
-Public:
-[security.md §Where the guarantees stop](../docs/security.md#where-the-guarantees-stop).
+`tests/test_shared_data_total.py`. Public: [security.md §Where the guarantees
+stop](../docs/security.md#where-the-guarantees-stop).
 
 ### Volume discovery trusts the folder
 

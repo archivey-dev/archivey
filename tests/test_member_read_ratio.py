@@ -411,6 +411,7 @@ def _guard(
         limits=limits or DecoderLimits(),
         member=member,
         tally_key=1,
+        member_name="m",
         tally=tally or ReadRatioTally(),
         static_size=None,
         consumed=None if consumed is None else lambda: consumed,

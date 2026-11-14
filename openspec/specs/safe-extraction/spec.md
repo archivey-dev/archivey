@@ -982,14 +982,14 @@ rules extraction applies to what it writes:
   read or seek that crosses it SHALL raise `ResourceLimitError` for that member. It is
   not the always-stop kind, so a pass can go on to the next member.
 - **Across the reader.** The output of all the reader's member reads together, each
-  member the caller reads counted once at the furthest offset any read of it reached,
-  is judged by the
-  archive-wide rule (`archive_ratio_refusal`: the static denominator, or the live one
-  past `live_ratio_activation_threshold`). Crossing it SHALL raise the always-stop
-  `ResourceLimitError`. Where neither denominator exists (an archive read from a
-  non-seekable stream that is not inside a compression stream: no trusted size, and no
-  counter installed), this rule does not apply to reads, as it does not to extraction;
-  extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
+  member the caller reads counted once at the furthest offset any read of it reached, is
+  judged by the archive-wide rule (`archive_ratio_refusal`: the static denominator, or
+  the live one past `live_ratio_activation_threshold`). Crossing it SHALL raise the
+  always-stop `ResourceLimitError`. Where neither denominator exists (an archive read
+  from a non-seekable stream that is not inside a compression stream: no trusted size,
+  and no counter installed), this rule does not apply to reads, as it does not to
+  extraction; extraction keeps `max_extracted_bytes` there, and a read keeps only the
+  per-member rule.
 
 A member whose data is a run of the archive stream's own bytes, as every TAR member's is
 except a sparse one's (a TAR is compressed as a whole, if at all), SHALL NOT be held:
