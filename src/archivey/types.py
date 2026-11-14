@@ -567,23 +567,6 @@ class MissingComponent:
         return f"{text} {note}" if note else text
 
 
-def _bind_exception_hint() -> None:
-    """Bind ``MissingComponent`` where the exceptions are defined.
-
-    ``PackageNotInstalledError.missing`` is annotated with it, but that module cannot
-    import this one (this module imports the exceptions), so it names it only under
-    ``TYPE_CHECKING``. Binding it here lets ``typing.get_type_hints`` resolve the
-    error's hints.
-    """
-    from archivey import exceptions
-
-    exceptions.MissingComponent = MissingComponent
-
-
-_bind_exception_hint()
-del _bind_exception_hint
-
-
 class FormatSupport(Enum):
     """How much of a known format this installation can read."""
 
@@ -1894,10 +1877,14 @@ class ExtractionPolicy(Enum):
 
     The policy decides how names and permissions are written. Some checks hold under
     every policy, because the write itself would be unsafe or would differ by OS: a name
-    or link that leads outside the destination, a name with a NUL, a device node, and a
-    symlink target with a Windows drive letter or UNC root (``C:/Windows``,
+    that leads outside the destination, a symlink whose target climbs out of it with
+    ``..``, a write through a link that leads outside it, a name with a NUL, a device
+    node, and a symlink target with a Windows drive letter or UNC root (``C:/Windows``,
     ``//server/share``), which Windows refuses and so is refused on every OS. A hardlink
-    is refused when the member it takes its data from is.
+    is refused when the member it takes its data from is. The one exception is a symlink
+    whose target starts at ``/``: ``STRICT`` and ``STANDARD`` refuse it, and ``TRUSTED``
+    writes it as stored, pointing outside the destination, and writes nothing through
+    it.
     """
 
     # Design records: dev-docs/decisions/0013-cross-platform-name-safety-policies.md and

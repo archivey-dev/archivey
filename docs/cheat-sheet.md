@@ -43,8 +43,8 @@ What each call returns, and the errors you're most likely to meet. The
   `fsspec.open(url)` ([Remote archives](remote.md)). A missing file raises
   `FileNotFoundError`, and a file in no format archivey reads raises `FormatDetectionError`. A
   file object that can't seek, such as a pipe, raises `StreamNotSeekableError` unless you pass
-  `streaming=True`, which reads TAR, ZIP and single compressed files from one.
-  [Opening an archive](opening.md)
+  `streaming=True`, which reads TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files
+  from one. [Opening an archive](opening.md)
 - **`for member in archive`** and **`archive.members()`** give
   [`ArchiveMember`][archivey.ArchiveMember] objects. A directory's name ends with `/` in every
   format.

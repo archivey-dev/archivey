@@ -62,6 +62,7 @@ from archivey.internal.sfx import (
     PeekSource,
     ScanNeedle,
     ShortPeek,
+    file_offset,
     rebased_source,
     scan_miss_error,
     scan_reader_source,
@@ -225,12 +226,17 @@ class _Headers:
 
     # ── Headers ──────────────────────────────────────────────────────────────────────
 
+    def _at(self, offset: int) -> int:
+        """``offset`` as a file offset, for a message: past a self-extracting stub,
+        the source starts at the archive (``sfx.file_offset``)."""
+        return file_offset(self._source, offset)
+
     def _read(self, pos: int, length: int, what: str) -> bytes:
         try:
             return self._source.read_exact(pos, length)
         except TruncatedError:
             raise TruncatedError(
-                f"the ARJ archive ends inside {what} at offset {pos}"
+                f"the ARJ archive ends inside {what} at offset {self._at(pos)}"
             ) from None
 
     def _read_header(self, offset: int) -> _Header | None:
@@ -238,25 +244,30 @@ class _Headers:
         start = self._read(offset, 4, "a header")
         if start[:2] != _MAGIC:
             raise CorruptionError(
-                f"the ARJ archive has no header at offset {offset} (expected 60 EA)"
+                "the ARJ archive has no header at offset "
+                f"{self._at(offset)} (expected 60 EA)"
             )
         size = int.from_bytes(start[2:], "little")
         if size == 0:
             return None
         if not _FIXED_MIN <= size <= _HEADER_MAX:
             raise CorruptionError(
-                f"the ARJ header at offset {offset} has size {size}; ARJ allows "
+                "the ARJ header at offset "
+                f"{self._at(offset)} has size {size}; ARJ allows "
                 f"{_FIXED_MIN} to {_HEADER_MAX}"
             )
         raw = self._read(offset + 4, size + 4, "a header")
         body = raw[:size]
         if zlib.crc32(body) != int.from_bytes(raw[size:], "little"):
-            raise CorruptionError(f"the ARJ header at offset {offset} fails its CRC")
+            raise CorruptionError(
+                f"the ARJ header at offset {self._at(offset)} fails its CRC"
+            )
         header = _Header(offset)
         first = body[0]
         if not _FIXED_MIN <= first <= size:
             raise CorruptionError(
-                f"the ARJ header at offset {offset} has a fixed part of {first} bytes "
+                "the ARJ header at offset "
+                f"{self._at(offset)} has a fixed part of {first} bytes "
                 f"in {size}"
             )
         (
@@ -284,7 +295,7 @@ class _Headers:
         name, nul, rest = body[first:].partition(b"\0")
         if not nul:
             raise CorruptionError(
-                f"the name in the ARJ header at offset {offset} has no end"
+                f"the name in the ARJ header at offset {self._at(offset)} has no end"
             )
         header.name = name
         header.comment = rest.partition(b"\0")[0]
@@ -300,7 +311,8 @@ class _Headers:
             data = ext[:length]
             if zlib.crc32(data) != int.from_bytes(ext[length:], "little"):
                 raise CorruptionError(
-                    f"an extended header of the ARJ header at offset {offset} fails "
+                    "an extended header of the ARJ header at offset "
+                    f"{self._at(offset)} fails "
                     "its CRC"
                 )
             self._apply_extended(header, data)
@@ -321,7 +333,8 @@ class _Headers:
             )
         if cut:
             raise TruncatedError(
-                f"the ARJ archive ends inside the data of the member at offset {offset}"
+                "the ARJ archive ends inside the data of the member at offset "
+                f"{self._at(offset)}"
             )
         return header
 
@@ -377,7 +390,8 @@ class ArjReader(_Headers, IndexedReader[_Location]):
                 return
             if header.file_type == _TYPE_MAIN:
                 raise CorruptionError(
-                    f"the ARJ archive has a second main header at offset {pos}"
+                    "the ARJ archive has a second main header at offset "
+                    f"{self._at(pos)}"
                 )
             member = self._member(header)
             yield MemberRecord(

@@ -95,6 +95,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
+    ArchiveyConfig,
     DecoderLimits,
     ProcessIsolation,
 )
@@ -176,7 +177,6 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.config import ArchiveyConfig
     from archivey.internal.streams.codecs.base import CodecId
     from archivey.types import OptionalLibrary
 
