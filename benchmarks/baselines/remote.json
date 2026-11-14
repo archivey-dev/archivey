@@ -1,8 +1,8 @@
 {
   "cases": {
     "7z_solid_extract_all_default": {
-      "archive_size": 508477,
-      "bytes_fetched": 508477,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -12,8 +12,8 @@
       "range_requests": 1
     },
     "7z_solid_extract_all_nocache": {
-      "archive_size": 508477,
-      "bytes_fetched": 517163,
+      "archive_size": 508474,
+      "bytes_fetched": 517157,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -23,7 +23,7 @@
       "range_requests": 12
     },
     "7z_solid_extract_all_planner": {
-      "archive_size": 508477,
+      "archive_size": 508474,
       "bytes_fetched": 540672,
       "cache": "planner",
       "format": "7z_solid",
@@ -34,8 +34,8 @@
       "range_requests": 9
     },
     "7z_solid_file_system_default": {
-      "archive_size": 508478,
-      "bytes_fetched": 508478,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -45,8 +45,8 @@
       "range_requests": 1
     },
     "7z_solid_file_system_nocache": {
-      "archive_size": 508478,
-      "bytes_fetched": 270863,
+      "archive_size": 508474,
+      "bytes_fetched": 270859,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -56,7 +56,7 @@
       "range_requests": 7
     },
     "7z_solid_file_system_planner": {
-      "archive_size": 508478,
+      "archive_size": 508474,
       "bytes_fetched": 344064,
       "cache": "planner",
       "format": "7z_solid",
@@ -67,8 +67,8 @@
       "range_requests": 6
     },
     "7z_solid_list_default": {
-      "archive_size": 508477,
-      "bytes_fetched": 508477,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -78,8 +78,8 @@
       "range_requests": 1
     },
     "7z_solid_list_nocache": {
-      "archive_size": 508477,
-      "bytes_fetched": 8718,
+      "archive_size": 508474,
+      "bytes_fetched": 8715,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -89,7 +89,7 @@
       "range_requests": 3
     },
     "7z_solid_list_planner": {
-      "archive_size": 508477,
+      "archive_size": 508474,
       "bytes_fetched": 81920,
       "cache": "planner",
       "format": "7z_solid",
@@ -100,8 +100,8 @@
       "range_requests": 2
     },
     "7z_solid_read_first_default": {
-      "archive_size": 508477,
-      "bytes_fetched": 508477,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -111,8 +111,8 @@
       "range_requests": 1
     },
     "7z_solid_read_first_nocache": {
-      "archive_size": 508477,
-      "bytes_fetched": 74254,
+      "archive_size": 508474,
+      "bytes_fetched": 74251,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -122,7 +122,7 @@
       "range_requests": 4
     },
     "7z_solid_read_first_planner": {
-      "archive_size": 508477,
+      "archive_size": 508474,
       "bytes_fetched": 147456,
       "cache": "planner",
       "format": "7z_solid",
@@ -133,8 +133,8 @@
       "range_requests": 3
     },
     "7z_solid_read_last_default": {
-      "archive_size": 508477,
-      "bytes_fetched": 508477,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -144,8 +144,8 @@
       "range_requests": 1
     },
     "7z_solid_read_last_nocache": {
-      "archive_size": 508477,
-      "bytes_fetched": 517163,
+      "archive_size": 508474,
+      "bytes_fetched": 517157,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -155,7 +155,7 @@
       "range_requests": 12
     },
     "7z_solid_read_last_planner": {
-      "archive_size": 508477,
+      "archive_size": 508474,
       "bytes_fetched": 540672,
       "cache": "planner",
       "format": "7z_solid",
@@ -166,8 +166,8 @@
       "range_requests": 9
     },
     "7z_solid_read_middle_default": {
-      "archive_size": 508477,
-      "bytes_fetched": 508477,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -177,8 +177,8 @@
       "range_requests": 1
     },
     "7z_solid_read_middle_nocache": {
-      "archive_size": 508477,
-      "bytes_fetched": 270862,
+      "archive_size": 508474,
+      "bytes_fetched": 270859,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -188,7 +188,7 @@
       "range_requests": 7
     },
     "7z_solid_read_middle_planner": {
-      "archive_size": 508477,
+      "archive_size": 508474,
       "bytes_fetched": 344064,
       "cache": "planner",
       "format": "7z_solid",
@@ -199,8 +199,8 @@
       "range_requests": 6
     },
     "7z_solid_stream_members_default": {
-      "archive_size": 508477,
-      "bytes_fetched": 508477,
+      "archive_size": 508474,
+      "bytes_fetched": 508474,
       "cache": "default",
       "format": "7z_solid",
       "gated": false,
@@ -210,8 +210,8 @@
       "range_requests": 1
     },
     "7z_solid_stream_members_nocache": {
-      "archive_size": 508477,
-      "bytes_fetched": 517163,
+      "archive_size": 508474,
+      "bytes_fetched": 517157,
       "cache": "nocache",
       "format": "7z_solid",
       "gated": false,
@@ -221,7 +221,7 @@
       "range_requests": 12
     },
     "7z_solid_stream_members_planner": {
-      "archive_size": 508477,
+      "archive_size": 508474,
       "bytes_fetched": 540672,
       "cache": "planner",
       "format": "7z_solid",
@@ -343,24 +343,24 @@
     },
     "tar_gz_file_system_nocache": {
       "archive_size": 510096,
-      "bytes_fetched": 1282451,
+      "bytes_fetched": 837780,
       "cache": "nocache",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "file_system",
-      "overfetch": 2.514,
-      "range_requests": 18
+      "overfetch": 1.642,
+      "range_requests": 15
     },
     "tar_gz_file_system_planner": {
       "archive_size": 510096,
-      "bytes_fetched": 1282340,
+      "bytes_fetched": 854160,
       "cache": "planner",
       "format": "tar_gz",
       "gated": false,
       "metadata_requests": 1,
       "operation": "file_system",
-      "overfetch": 2.514,
+      "overfetch": 1.675,
       "range_requests": 15
     },
     "tar_gz_list_default": {
@@ -739,14 +739,14 @@
     },
     "tar_threads_nocache": {
       "archive_size": 542720,
-      "bytes_fetched": 452096,
+      "bytes_fetched": 443904,
       "cache": "nocache",
       "format": "tar",
       "gated": false,
       "metadata_requests": 1,
       "operation": "threads",
-      "overfetch": 0.833,
-      "range_requests": 55
+      "overfetch": 0.818,
+      "range_requests": 54
     },
     "tar_threads_planner": {
       "archive_size": 542720,
@@ -871,25 +871,25 @@
     },
     "zip_deflate_many_streams_nocache": {
       "archive_size": 511121,
-      "bytes_fetched": 354070,
+      "bytes_fetched": 255766,
       "cache": "nocache",
       "format": "zip_deflate",
       "gated": false,
       "metadata_requests": 1,
       "operation": "many_streams",
-      "overfetch": 0.693,
-      "range_requests": 40
+      "overfetch": 0.5,
+      "range_requests": 28
     },
     "zip_deflate_many_streams_planner": {
       "archive_size": 511121,
-      "bytes_fetched": 406384,
+      "bytes_fetched": 360448,
       "cache": "planner",
       "format": "zip_deflate",
       "gated": false,
       "metadata_requests": 1,
       "operation": "many_streams",
-      "overfetch": 0.795,
-      "range_requests": 18
+      "overfetch": 0.705,
+      "range_requests": 6
     },
     "zip_deflate_read_first_default": {
       "archive_size": 511121,
@@ -1036,25 +1036,25 @@
     },
     "zip_deflate_threads_nocache": {
       "archive_size": 511121,
-      "bytes_fetched": 206614,
+      "bytes_fetched": 149270,
       "cache": "nocache",
       "format": "zip_deflate",
       "gated": false,
       "metadata_requests": 1,
       "operation": "threads",
-      "overfetch": 0.404,
-      "range_requests": 23
+      "overfetch": 0.292,
+      "range_requests": 19
     },
     "zip_deflate_threads_planner": {
       "archive_size": 511121,
-      "bytes_fetched": 250388,
+      "bytes_fetched": 224287,
       "cache": "planner",
       "format": "zip_deflate",
       "gated": false,
       "metadata_requests": 1,
       "operation": "threads",
-      "overfetch": 0.49,
-      "range_requests": 15
+      "overfetch": 0.439,
+      "range_requests": 14
     },
     "zip_stored_extract_all_default": {
       "archive_size": 510881,
@@ -1333,25 +1333,25 @@
     },
     "zip_stored_threads_nocache": {
       "archive_size": 510881,
-      "bytes_fetched": 288534,
+      "bytes_fetched": 149270,
       "cache": "nocache",
       "format": "zip_stored",
       "gated": false,
       "metadata_requests": 1,
       "operation": "threads",
-      "overfetch": 0.565,
-      "range_requests": 38
+      "overfetch": 0.292,
+      "range_requests": 19
     },
     "zip_stored_threads_planner": {
       "archive_size": 510881,
-      "bytes_fetched": 247164,
+      "bytes_fetched": 224272,
       "cache": "planner",
       "format": "zip_stored",
       "gated": false,
       "metadata_requests": 1,
       "operation": "threads",
-      "overfetch": 0.484,
-      "range_requests": 17
+      "overfetch": 0.439,
+      "range_requests": 14
     }
   },
   "io_default_buffer_size": 8192,

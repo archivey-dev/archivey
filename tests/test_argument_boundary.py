@@ -57,7 +57,6 @@ from archivey import (
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
-    Budget,
     DecoderLimits,
     DiagnosticPolicy,
     ExtractionLimits,
@@ -444,6 +443,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: DecoderLimits(max_ppmd_held_input=b),
             ),
             _case(
+                "DecoderLimits",
+                "max_nest_decoded_bytes",
+                bad,
+                lambda b=bad: DecoderLimits(max_nest_decoded_bytes=b),
+            ),
+            _case(
                 "SpoolLimits",
                 "max_bytes",
                 bad,
@@ -541,13 +546,13 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), formats=b),
             )
         )
-    for bad in ("x", 10, Budget, frozenset()):
+    for bad in ("x", 10, ArchiveyConfig(), frozenset()):
         rows.append(
             _case(
-                "ArchiveyConfig",
-                "budget",
+                "open_archive",
+                "parent",
                 bad,
-                lambda b=bad: _with_config(archive, out(), budget=b),
+                lambda b=bad: open_archive(archive, parent=b),
             )
         )
     for bad in ("x", -1, True, 1.5, None):

@@ -2,7 +2,9 @@
 
 ## Purpose
 TBD - created by archiving change format-policy. Update Purpose after archive.
+
 ## Requirements
+
 ### Requirement: A replacement plugin declares a built-in format and no detection
 
 An `IndexedFormatHandler` named in `FormatPolicy(replace=)` SHALL NOT be registered. Its `format`
@@ -31,18 +33,27 @@ first. The next `read`, `skip`, `take` or `decompress` on the `ForwardStream` SH
 what the stream left unread; a read of the stream after that SHALL raise
 `ArchiveyUsageError`.
 
-`ReaderContext.open_nested(data, format)`, called from `SequentialReader.walk`, SHALL read
-`data` with archivey's reader for `format` (or the caller's `FormatPolicy` replacement for
-it) in one forward pass and yield one `MemberSpan` per inner member, in the inner
-archive's order, its decoded data as `MemberSpan.data`. The inner reader SHALL use the
-caller's config and `encoding`; what it reports SHALL go into the outer reader's
+`ReaderContext.open_nested(data, format)`, called from `SequentialReader.walk`, SHALL
+read `data` with archivey's reader for `format` (or the caller's `FormatPolicy`
+replacement for it) in one forward pass and yield one `MemberSpan` per inner member, in
+the inner archive's order, its decoded data as `MemberSpan.data`. The inner reader SHALL
+use the caller's config and `encoding`; what it reports SHALL go into the outer reader's
 diagnostics with `member_id` as the outer listing numbers the member, when the walk
 yields each span in order, and SHALL be attached to that member, while its data is read
-too; its errors SHALL raise from the walk. Name checks SHALL run once, on the members the
-outer listing lists. An archive nested more than 8 deep (`MAX_NESTED_DEPTH`) SHALL be
-refused with `UnsupportedFeatureError`.
+too; its errors SHALL raise from the walk. Name checks SHALL run once, on the members
+the outer listing lists. The inner reader SHALL join the outer reader's nest
+(`archive-reading`, "A reader opened inside another joins its nest"): it shares
+`max_metadata_bytes` through the outermost listing, gets the `max_decoder_memory` the
+open outer levels left, is held to `max_ratio` against the outermost archive, and counts
+toward the nest's totals ("Limits apply per nest"). A chain of more than nine archives,
+the outermost included and readers opened with `open_archive(..., parent=)` counted too
+(`MAX_NESTED_DEPTH` is 8 levels below the outermost), SHALL be refused with
+`UnsupportedFeatureError`.
 
 #### Scenario: nested reads
+
+- **WHEN** a call is made as each row says
+- **THEN** it behaves as the row's Expected column says
 
 | Case | Expected |
 | --- | --- |
@@ -55,5 +66,5 @@ refused with `UnsupportedFeatureError`.
 | A 7z inside | `UnsupportedFeatureError` |
 | `open_nested` called outside `walk()` | `ArchiveyUsageError` |
 | A format that names itself as its inner format, 9 levels deep | `UnsupportedFeatureError` |
+| An `open_nested` archive inside a reader opened with `parent=` 8 levels below the outermost | `UnsupportedFeatureError` |
 | A `take` stream read after the walk moved on, one byte read before | `ArchiveyUsageError` |
-
