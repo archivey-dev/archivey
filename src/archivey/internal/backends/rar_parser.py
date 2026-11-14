@@ -42,7 +42,7 @@ import io
 import itertools
 import struct
 import zlib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import pbkdf2_hmac
@@ -1526,6 +1526,10 @@ def _span_in_file(source: BinaryIO, data_offset: int, size: int) -> bool:
     finds the cut (:func:`_data_past_end`), so the members before it still list.
     """
     end = _packed_span_end(data_offset, size)
+    holds = getattr(source, "holds", None)
+    if holds is not None:
+        # A forward source (``rar_forward``) reads ahead to answer.
+        return bool(holds(data_offset, size))
     here = source.tell()
     file_end = source.seek(0, io.SEEK_END)
     source.seek(here)
@@ -2592,6 +2596,88 @@ class _Rar3Block(NamedTuple):
     """Where the type-specific fields start in ``hdata``."""
 
 
+class ForwardMember(NamedTuple):
+    """A FILE member a forward walk yields, with the source at its packed data."""
+
+    member: RarMemberInfo
+    data_offset: int
+    data_size: int
+
+
+class ForwardWalk(Protocol):
+    """A header walk read front to back (:func:`open_forward_walk`)."""
+
+    is_solid: bool
+    is_volume: bool
+
+    def walk(self) -> Iterator[ForwardMember]: ...
+
+    def result(self) -> RarArchive: ...
+
+
+def open_forward_walk(
+    source: BinaryIO,
+    *,
+    password: str | bytes | None,
+    kdf_cache: RarKdfCache,
+    excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+    max_members: int | None,
+    max_metadata_bytes: int | None,
+    name_encoding: str | None = None,
+) -> tuple[int, ForwardWalk]:
+    """``(version, walk)`` for an archive read front to back from ``source``.
+
+    ``source`` is at the signature (a self-extracting stub already skipped) and
+    seeks only forward, or back within what it still holds (``rar_forward``). The
+    walk yields each FILE member before its data (:meth:`_Rar5Walk.walk`) and
+    never reads a quick-open record. Its errors are the public ones.
+    """
+    start = source.tell()
+    version, sfx_offset = _find_sfx_header(source, start)
+    source.seek(start + sfx_offset)
+    walk: _Rar5Walk | _Rar3Walk
+    try:
+        if version == 5:
+            _require_exact(source, len(RAR5_ID), "RAR5 signature")
+            walk = _Rar5Walk(
+                source,
+                password=password,
+                kdf_cache=kdf_cache,
+                excluded=excluded,
+                sfx_offset=sfx_offset,
+                volume_index=0,
+                use_qo=False,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+            )
+        else:
+            _require_exact(source, len(RAR_ID), "RAR3 signature")
+            walk = _Rar3Walk(
+                source,
+                password=password,
+                kdf_cache=kdf_cache,
+                excluded=excluded,
+                sfx_offset=sfx_offset,
+                volume_index=0,
+                max_members=max_members,
+                max_metadata_bytes=max_metadata_bytes,
+                name_encoding=name_encoding,
+                password_proven=False,
+            )
+    except _PRIVATE_WALK_ERRORS as exc:
+        raise _public_walk_error(exc) from None
+    walk.yield_files = True
+    return version, walk
+
+
+def public_walk_errors(walk: Iterator[ForwardMember]) -> Iterator[ForwardMember]:
+    """``walk`` with its private errors translated, as :func:`_parse_rar_volume` does."""
+    try:
+        yield from walk
+    except _PRIVATE_WALK_ERRORS as exc:
+        raise _public_walk_error(exc) from None
+
+
 def _parse_rar3(
     source: BinaryIO,
     *,
@@ -2688,9 +2774,18 @@ class _Rar3Walk:
         self.main_seen = False
         self.end_block_damaged_at: int | None = None
         self.trailing_at: TrailingData | None = None
+        #: Yield each FILE member from :meth:`walk` before its data is skipped.
+        self.yield_files = False
+        self.pending: ForwardMember | None = None
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
+        for _ in self.walk():
+            pass
+        return self.result()
+
+    def walk(self) -> Iterator[ForwardMember]:
+        """Walk the blocks after the signature; see :meth:`_Rar5Walk.walk`."""
         source = self.source
         while True:
             block = self._read_block()
@@ -2708,9 +2803,16 @@ class _Rar3Walk:
             if block.block_type in (_RAR3_FILE, _RAR3_SUB):
                 if not self._on_file_header(block):
                     break
+                pending, self.pending = self.pending, None
+                if pending is not None:
+                    yield pending
+                    _seek_after_packed(source, pending.data_offset, pending.data_size)
                 continue
             # Unknown / skippable block
             _seek_after_packed(source, block.data_offset, block.add_size)
+
+    def result(self) -> RarArchive:
+        """What the walk found; call once :meth:`walk` is exhausted."""
         return self._result()
 
     def _read_block(self) -> _Rar3Block | None:
@@ -2905,6 +3007,9 @@ class _Rar3Walk:
                 max_metadata_bytes=self.max_metadata_bytes,
             ):
                 self.needs_next_volume = True
+            if self.yield_files:
+                self.pending = ForwardMember(member, block.data_offset, packed_size)
+                return True
         elif member.filename == RAR3_UOW_NAME and self.members:
             self._attach_owner(member)
         elif self._is_readable_comment(member, block.data_offset, packed_size):
@@ -3921,9 +4026,23 @@ class _Rar5Walk:
         # _RAR5_QO_PAYLOAD_MAX, so trying on every MAIN would let a 17-byte header buy
         # that read again.
         self.qo_tried = not use_qo
+        #: Yield each FILE member from :meth:`walk` before its data is skipped.
+        self.yield_files = False
+        self.pending: ForwardMember | None = None
 
     def run(self) -> RarArchive:
         """Walk the blocks after the signature and return what they describe."""
+        for _ in self.walk():
+            pass
+        return self.result()
+
+    def walk(self) -> Iterator[ForwardMember]:
+        """Walk the blocks after the signature.
+
+        With :attr:`yield_files` set, each FILE member is yielded before its data is
+        skipped, with the source at its data, so a forward reader can consume the
+        data first (the skip is then a no-op). Otherwise nothing is yielded.
+        """
         source = self.source
         while True:
             header_start = source.tell()
@@ -3958,11 +4077,18 @@ class _Rar5Walk:
                 break
             if block.block_type in (_RAR5_FILE, _RAR5_SERVICE):
                 self._on_file_or_service(block)
+                pending, self.pending = self.pending, None
+                if pending is not None:
+                    yield pending
+                    _seek_after_packed(source, pending.data_offset, pending.data_size)
                 continue
             # Unknown block — skip data area.
             _seek_after_packed(source, block.data_offset, block.add_size)
 
         self._report_unmatched_qo_copies()
+
+    def result(self) -> RarArchive:
+        """What the walk found; call once :meth:`walk` is exhausted."""
         return self._result()
 
     def _open_header(self, header_start: int) -> _Readable | None:
@@ -4158,6 +4284,11 @@ class _Rar5Walk:
                 ):
                     self.needs_next_volume = True
                 self.seen_file_offsets.add(member.header_offset)
+                if self.yield_files:
+                    self.pending = ForwardMember(
+                        member, block.data_offset, block.add_size
+                    )
+                    return
         else:
             if (
                 member.skipped_header_records or member.header_walk_stop_reason
