@@ -109,6 +109,15 @@ removed.
 - **Breaking:** a RAR program that cannot start for lack of system resources raises
   `ResourceUnavailableError`, and a command line that is too long raises `ReadError`,
   instead of `PackageNotInstalledError` for both.
+- **Breaking:** the boolean flags of the public functions (`open_archive(streaming=,
+  seekable_members=, concurrent_operations=)`, `open_stream(seekable=)`,
+  `detect_format(follow_stub_volumes=)`, `extract_all(dry_run=)`,
+  `ArchiveStream.verify(password_only=)` and the rest) refuse a value that is not a
+  `bool` with a `TypeError`, as `ArchiveyConfig`'s switches already did. Before, a
+  string such as `"false"` counted as true.
+- `ArchiveyConfig`'s accelerator conflicts (`ON` with `process_isolation=NONE`, or with
+  rapidgzip excluded by the format policy) raise an `ArchiveyUsageError` that is also a
+  `ValueError`.
 - An fsspec source is never searched for its other volumes, whatever `discover_volumes`
   says: pass a remote set as a list. A lone remote part that needs the others says so.
 - `ExtractionPolicy.TRUSTED` writes a symlink whose target starts at `/` as stored, as
@@ -183,6 +192,8 @@ removed.
   error or diagnostic now counts from the start of the file, stub included, as RAR's
   already did. That includes the `observed_bytes`, `local_offset` and `central_offset`
   fields of a ZIP's diagnostic context.
+- `FormatPolicy(exclude_libraries=, only_libraries=)` reads a generator once. Before,
+  validation used it up and the exclusion was lost.
 - About 40 bugs found since 0.3.0, most of them by fuzzing each reader and by comparing
   archivey with each format's official tool on real archives.
 
