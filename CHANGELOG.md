@@ -12,6 +12,191 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-14
+
+A minor release: more formats built in, archives read by range from fsspec URLs and
+browsed as an `archivey://` file system, self-extracting programs read the way their own
+tools read them, limits that hold across nested archives, and the 0.3.0 deprecations
+removed.
+
+### Added
+
+- archivey reads RPM packages, Debian packages (`.deb`, listed as the files they
+  install), Microsoft cabinets (`.cab`, with a pure-Python LZX decoder), XAR archives
+  and macOS `.pkg` files, LHA and LZH archives (`.lzh`, `.lha`), ARJ archives (`.arj`),
+  raw CD images (`.bin` with a Mode 1 or Mode 2 Form 1 data track, or a whole disc
+  through its `.cue` sheet), makeself installers (`.run`), uuencode and base64 text
+  (`.uu`, `.b64`, so a `.tar.uu` lists the tar) and Firefox `.mozlz4` files as built-in
+  formats. bzip3 files (`.bz3`, `.tar.bz3`) need the new `[bzip3]` extra.
+- ZIP members compressed with Reduce (methods 2 to 5) and PKWARE DCL Implode (method 10)
+  are supported, so archivey now reads every compression method that DOS-era ZIP writers
+  used.
+- `open_archive()`, `open_stream()` and `detect_format()` accept an fsspec `OpenFile`
+  (what `fsspec.open(url)` returns) and read it with range requests. A multi-volume set
+  is passed as a list of them. `ArchiveyConfig.max_read_through` sets how large a gap a
+  read fetches through before it starts a new request. `SourceChangedError` is raised
+  when the remote object gets shorter while it is being read. Credentials in a URL never
+  appear in names or messages.
+- `archivey.fsspec.ArchiveyFileSystem` presents an archive as a read-only fsspec file
+  system, under the `archivey://` protocol, so pandas, pyarrow, dask and other fsspec
+  users can open its members by path.
+- Self-extracting programs: detection looks first for the archive where a Windows, Linux
+  or macOS program's own image ends. It finds a ZIP far behind a Windows stub from the
+  ZIP's end record, and it stops reading a signed Windows program's archive where the
+  signature starts. LHA and ARJ archives behind a DOS or Windows stub are found too.
+  `FormatInfo.prefixed` says whether the archive comes after other bytes, and
+  `FormatInfo.payload_end` says where a signature starts.
+- `open_archive(..., parent=reader)` opens an archive found inside another as part of
+  the outer reader's nest. Every level then counts against one member total, one ratio
+  against the outermost archive's size, and the new
+  `DecoderLimits.max_nest_decoded_bytes` when you set it.
+- `ListingLimits.max_decoded_bytes` caps the bytes one listing decodes on its own (a
+  `.tar.gz` listing decodes all of it), 4 GiB by default.
+- `FormatPolicy.COMMON` is a ready-made policy for files you did not make, such as
+  uploads: ZIP, TAR, RAR, 7z and gzip, bzip2, xz and zstd files, without the ZIP methods
+  only PKZIP 1.x and earlier wrote. `FormatPolicy(exclude=)` also takes
+  `CompressionAlgorithm` values, to refuse members compressed with them.
+  `FormatPolicy(only_libraries=)` is the allowlist form of `exclude_libraries=`, and
+  `FormatPolicy.allows_library()` answers for both.
+- `ArchiveyConfig.unrar_path` and `unar_path` pin the one RAR program archivey runs,
+  with no `PATH` lookup. On Windows, archivey finds `UnRAR.exe` in WinRAR's install
+  folder when `PATH` has none.
+- `ArchiveyConfig.recover_partial_data=False` skips decoding damaged data again to
+  recover the bytes before the damage, so a read of a damaged member fails sooner.
+- A backward seek in gzip, zlib or raw DEFLATE data, ZIP members included, resumes from
+  points archivey records about every MiB, without rapidgzip. mgzip files seek by their
+  member sizes, as BGZF files do. A member read from a compressed TAR after the listing
+  resumes from the nearest recorded point instead of decoding the archive again from its
+  start, xz included even when the file has no usable index.
+- `ExtractionReport.ok` and `raise_for_failure()` answer whether every member was
+  extracted.
+- New diagnostics: `SOLID_OPEN_REDECOMPRESSES` (opening members of a solid 7z or RAR
+  archive out of order decodes data again), `DETECTION_DECODER_LIMITED` (detection
+  skipped a probe that needed more than `max_decoder_memory`), `MEMBER_LOCAL_OFFSET_SHIFTED`
+  and `MEMBER_NAME_DUPLICATE_UNEXPECTED` (both in `ARCHIVE_INTEGRITY_CODES`),
+  `SOURCE_CHANGE_UNDETECTABLE` and `MEMBER_PATH_REFUSED`.
+- `HashAlgorithm` gains `MD5`, `SHA1`, `SHA256` and `SHA512`, for the digests RPM and
+  XAR record.
+- `ArchiveyConfig` and `ArchiveFormat` are typed to take the string spellings the docs
+  show (`ArchiveyConfig(process_isolation="none")`), through new `Literal` aliases:
+  `AcceleratorModeStr`, `ProcessIsolationStr` and `RarDecompressorStr` in
+  `archivey.config`, `DetectionBudgetPresetStr` in `archivey.detection_cost`, and
+  `ContainerFormatStr` and `StreamFormatStr` in `archivey.types`.
+
+### Experimental
+
+- Plugin interface: `IndexedFormatHandler` (with `non_seekable_reason`) now holds
+  `open()`, which `FormatHandler` no longer has, and `register_format()` takes an
+  `IndexedFormatHandler` or a `SequentialFormatHandler`. Plugin readers yield names as
+  stored and archivey normalizes them, so `stored_name` is gone from `MemberRecord`,
+  `MemberSpan` and `ReaderContext.hold()`. New: `ForwardStream.take()`,
+  `ReaderContext.open_nested()` (an archive stored inside a member),
+  `ReaderContext.charge_metadata()`, `MemberData.ranges` and
+  `SequentialReader.data_on_demand`.
+- Verification: `verify_all()` returns a `VerifyReport`. Its `failures` are the
+  `(member, error)` pairs it returned before, `structure_error` holds damage that stopped
+  the walk (a ZIP cut inside its central directory, say), and `ok` and
+  `raise_for_failure()` answer for both.
+- `reader.backends_used` lists what a reader ran to read its archive: each reader, codec,
+  library and external program, with what it was used for.
+
+### Changed
+
+- **Breaking:** `extract_all()` raises `FilterRejectionError` when a safety check
+  refused a member. The other members are still extracted first, and the error carries
+  the full report in `.report`. Pass `on_blocked="skip"` (the new `OnBlocked` enum) to
+  get the report back without raising, as before.
+- **Breaking:** a RAR program that cannot start for lack of system resources raises
+  `ResourceUnavailableError`, and a command line that is too long raises `ReadError`,
+  instead of `PackageNotInstalledError` for both.
+- **Breaking:** the boolean flags of the public functions (`open_archive(streaming=,
+  seekable_members=, concurrent_operations=)`, `open_stream(seekable=)`,
+  `detect_format(follow_stub_volumes=)`, `extract_all(dry_run=)`,
+  `ArchiveStream.verify(password_only=)` and the rest) refuse a value that is not a
+  `bool` with a `TypeError`, as `ArchiveyConfig`'s switches already did. Before, a
+  string such as `"false"` counted as true.
+- `ArchiveyConfig`'s accelerator conflicts (`ON` with `process_isolation=NONE`, or with
+  rapidgzip excluded by the format policy) raise an `ArchiveyUsageError` that is also a
+  `ValueError`.
+- An fsspec source is never searched for its other volumes, whatever `discover_volumes`
+  says: pass a remote set as a list. A lone remote part that needs the others says so.
+- `ExtractionPolicy.TRUSTED` writes a symlink whose target starts at `/` as stored, as
+  GNU tar does for a root filesystem image. `STRICT` and `STANDARD` still refuse it, and
+  no policy writes anything through such a link.
+- A hard link's `link_target` is normalized in every format, so it equals the listed
+  name of the member it links to (TAR's `./b` lists as `b`). A target that ends in `/`
+  keeps it, and resolves only to a directory.
+- A file in a directory source on procfs or sysfs lists with `size=None` and reads to
+  its end. Anywhere else, a file that grew past its listed size, 0 included, is refused.
+- RAR: `unrar` reads each member through a small archive that holds only what that
+  member needs. No member name reaches `unrar` any more, so names with wildcards,
+  backslashes or tens of thousands of characters read without a config switch. A RAR opened
+  from a file object copies only the data a member needs instead of the whole archive.
+  Passes over many small members read them in batches.
+- RPM packages list from their header alone, with no payload byte read. Damage in the
+  payload is found when a file's data is read, and the files before it still read.
+- ZIP: when bytes are missing from the middle of an archive, the members before the gap
+  are read from their stored offsets instead of failing with the rest.
+- An ISO image whose directory padding is damaged opens with an `ARCHIVE_TRAILING_DATA`
+  warning instead of raising `CorruptionError`. `DiagnosticPolicy.STRICT` still refuses
+  it.
+- Detection holds its probes to `DecoderLimits.max_decoder_memory`.
+- A 7z AES password is confirmed from the padding of the last encrypted block where the
+  archive allows it, without decoding the folder.
+- A `.zz` file holding several zlib streams under one final checksum that covers all of
+  them reads differently under `use_rapidgzip=ON`. This is now a documented difference:
+  the 0.3.0 check for it cost about 45% of a decode.
+- Reading many small ZIP members takes about half the time it took in 0.3.0, and
+  extracting many hard links to one file takes linear time instead of quadratic.
+- The `[recommended]` extra asks for `pyppmd` below 2.0 until archivey supports 2.0's
+  new decoder.
+
+### Deprecated
+
+- `ArchiveyConfig.rar_allow_glob_member_concatenation` has no effect, and setting it
+  `True` warns. Removed in 0.5.0.
+
+### Removed
+
+- The ratio fields of `ExtractionLimits` (`max_ratio`, `ratio_activation_threshold`,
+  `live_ratio_activation_threshold`), deprecated in 0.3.0: set them on `DecoderLimits`.
+  `ExtractionLimits.UNLIMITED` now lifts only the byte and entry caps, and
+  `max_entries` is keyword-only. Add `DecoderLimits(max_ratio=None)` to the reader's
+  config to lift the ratio too.
+- Building `ArchiveStream` or `MemberPass` yourself, or through a subclass that leaves
+  an abstract method unimplemented (deprecated in 0.3.0), now raises `TypeError`. Get
+  one from `open()`, `stream_members()` or `open_stream()`.
+
+### Security
+
+- When an archive's path holds `*` or `?`, archivey links it under a fixed name before
+  `unrar` reads it, because `unrar` expands wildcards in the archive name. Before this,
+  a planted archive beside the real one could mix its members into the output, and a
+  matching FIFO could hang the read. The archive's directory no longer reaches `unrar`'s
+  command line either.
+- A `.deb` whose data tar writes into `DEBIAN/` is refused, as `dpkg-deb` refuses it,
+  instead of replacing the control files in the listing and in extraction.
+- `open_stream()` is held to `DecoderLimits.max_ratio`, as a member read is, so a bare
+  `.gz` or `.bz2` bomb that `open_archive()` refuses no longer decodes in full through
+  it.
+- Each hard link, symlink or RAR file copy that a read follows counts its bytes against
+  the archive-wide ratio limit. Before, links to one file counted its bytes once, so a
+  `.tar.gz` of one file and many hard links could be read out far past `max_ratio`.
+- PAX records and their entries count against `ListingLimits.max_metadata_bytes` by
+  what they keep.
+- Errors about a `password=` value of the wrong type no longer print the value.
+
+### Fixed
+
+- For an archive behind a self-extracting stub (ZIP, 7z, LHA, ARJ), every offset in an
+  error or diagnostic now counts from the start of the file, stub included, as RAR's
+  already did. That includes the `observed_bytes`, `local_offset` and `central_offset`
+  fields of a ZIP's diagnostic context.
+- `FormatPolicy(exclude_libraries=, only_libraries=)` reads a generator once. Before,
+  validation used it up and the exclusion was lost.
+- About 40 bugs found since 0.3.0, most of them by fuzzing each reader and by comparing
+  archivey with each format's official tool on real archives.
+
 ## [0.3.0] - 2026-11-04
 
 A minor release: new formats built in, a per-call format policy, the ratio limit on
@@ -265,7 +450,8 @@ What goes in this file, from 0.2.0 on:
 `scripts/release.py start` writes the compare links below this comment.
 -->
 
-[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/archivey-dev/archivey/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/archivey-dev/archivey/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/archivey-dev/archivey/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/archivey-dev/archivey/releases/tag/v0.2.0
