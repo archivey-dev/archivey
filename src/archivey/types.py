@@ -1894,13 +1894,14 @@ class ExtractionPolicy(Enum):
 
     The policy decides how names and permissions are written. Some checks hold under
     every policy, because the write itself would be unsafe or would differ by OS: a name
-    that leads outside the destination, a write through a link that leads outside it, a
-    name with a NUL, a device node, and a symlink target with a Windows drive letter or
-    UNC root (``C:/Windows``, ``//server/share``), which Windows refuses and so is
-    refused on every OS. A hardlink is refused when the member
-    it takes its data from is. A symlink whose target starts at ``/`` is refused by
-    ``STRICT`` and ``STANDARD``; ``TRUSTED`` writes it as stored, pointing outside the
-    destination, and writes nothing through it.
+    that leads outside the destination, a symlink whose target climbs out of it with
+    ``..``, a write through a link that leads outside it, a name with a NUL, a device
+    node, and a symlink target with a Windows drive letter or UNC root (``C:/Windows``,
+    ``//server/share``), which Windows refuses and so is refused on every OS. A hardlink
+    is refused when the member it takes its data from is. The one exception is a symlink
+    whose target starts at ``/``: ``STRICT`` and ``STANDARD`` refuse it, and ``TRUSTED``
+    writes it as stored, pointing outside the destination, and writes nothing through
+    it.
     """
 
     # Design records: dev-docs/decisions/0013-cross-platform-name-safety-policies.md and
