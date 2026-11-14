@@ -591,14 +591,16 @@ rather than several frames into a member-name decode.
 The raw exceptions the contract already permits SHALL continue to escape unchanged:
 `KeyError` for an unknown member **name**, `TypeError` for `len()` / `in`,
 `io.UnsupportedOperation` for an unsupported `seek`,
-`ValueError` for I/O on a closed stream, and `OSError`. Every public boolean flag
-SHALL be a `bool`, refused otherwise with an `ArchiveyUsageError` that is also a
-`TypeError`, before anything is read: `ArchiveyConfig`'s switches
-(`rar_allow_glob_member_concatenation`, `read_link_targets` and the rest), and the
-call flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
+`ValueError` for I/O on a closed stream, and `OSError`. Every public boolean flag SHALL
+be a `bool`, refused otherwise with an `ArchiveyUsageError` that is also a `TypeError`,
+before anything is read: `ArchiveyConfig`'s switches
+(`rar_allow_glob_member_concatenation`, `read_link_targets` and the rest), and the call
+flags `open_archive(streaming=, seekable_members=, concurrent_operations=)`,
 `open_stream(seekable=)`, `detect_format(follow_stub_volumes=)`,
-`extract_all(dry_run=)` and `ArchiveStream.verify(password_only=)`. A string such as
-`"false"` is truthy, so a flag loaded from text would silently switch a guard or a
+`format_availability(check_programs=)`, `extract_all(dry_run=)`,
+`stream_members(file_copy_streams=)`, `ArchiveStream.verify(password_only=)`,
+`FormatPolicy(plugins=)` and `archivey.paths.match_glob(with_contents=)`. A string such
+as `"false"` is truthy, so a flag loaded from text would silently switch a guard or a
 mode on.
 
 An empty string passed as a path SHALL raise an `ArchiveyUsageError` that is also a

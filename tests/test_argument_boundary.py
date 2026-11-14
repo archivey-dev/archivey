@@ -64,6 +64,7 @@ from archivey import (
     ListingLimits,
     SpoolLimits,
     detect_format,
+    format_availability,
     open_archive,
     open_stream,
 )
@@ -73,6 +74,7 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.paths import match_glob
 
 # An ArchiveyError is permitted only for the arguments named here; see the module
 # docstring.
@@ -632,7 +634,28 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: _extract_all(archive, out(), None, dry_run=b),
             ),
+            _case(
+                "format_availability",
+                "check_programs",
+                bad,
+                lambda b=bad: format_availability("zip", check_programs=b),
+            ),
+            _case(
+                "match_glob",
+                "with_contents",
+                bad,
+                lambda b=bad: match_glob("*", with_contents=b),
+            ),
         ]
+    for bad in ("x", ArchiveyConfig, 0, ()):
+        rows.append(
+            _case(
+                "format_availability",
+                "config",
+                bad,
+                lambda b=bad: format_availability("zip", config=b),
+            )
+        )
     for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
         rows.append(
             _case(
@@ -746,6 +769,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # argument name.)
     ("open_archive", "format"): "coerced by format_args; test_format_arguments.py",
     ("open_stream", "format"): "coerced by format_args; test_format_arguments.py",
+    ("format_availability", "fmt"): "coerced by format_args; test_format_arguments.py",
+    # Each pattern is checked by the glob itself, and an empty one is refused;
+    # tests/test_paths_match_glob.py asserts what each shape does.
+    (
+        "match_glob",
+        "patterns",
+    ): "patterns validated by the glob; test_paths_match_glob.py",
     # The enum-typed arguments, owned by ``internal/enum_args``, which **coerces**
     # them: a recognised spelling becomes the member, so a refusal here would
     # contradict it. ``tests/test_enum_arguments.py`` asserts what they do; this
@@ -790,7 +820,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
 def _public_surface() -> list[tuple[str, list[str]]]:
     """(name, argument names) for every public entry point this file is about."""
     surface: list[tuple[str, list[str]]] = []
-    for func in (open_archive, open_stream, detect_format):
+    for func in (
+        open_archive,
+        open_stream,
+        detect_format,
+        format_availability,
+        match_glob,
+    ):
         surface.append((func.__name__, list(inspect.signature(func).parameters)))
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)

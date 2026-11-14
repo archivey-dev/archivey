@@ -132,6 +132,11 @@ def match_glob(
             set is malformed, such as the reversed range ``[z-a]``. It is also a
             ``ValueError``.
     """
+    # Imported here: arg_checks imports the stream modules, which this light module
+    # does not otherwise need at import.
+    from archivey.internal.arg_checks import check_bool
+
+    check_bool(with_contents, call="match_glob(with_contents=…)")
     return _MemberGlob(patterns, with_contents=with_contents)
 
 

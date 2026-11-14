@@ -223,8 +223,11 @@ class ArchiveStream(ReadOnlyIOStream):
         stream is still put back where it was. Otherwise compare the result with
         ``verifiable``: when they are equal, nothing more can be checked. A closed
         stream raises ``ValueError``, as every ``io`` method does, also after
-        ``verify()`` consumed it. Which reads a target needs can get cheaper in a later
-        release; the result and the errors stay the same.
+        ``verify()`` consumed it. A ``password_only`` that is not a ``bool`` raises
+        :class:`~archivey.ArchiveyUsageError` (also a ``TypeError``) before anything is
+        read; on a closed stream the ``ValueError`` comes first. Which reads a target
+        needs can get cheaper in a later release; the result and the errors stay the
+        same.
 
         Experimental: any release, a patch included, may change or remove this method,
         its arguments or what it returns.
