@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 from archivey.internal.arg_checks import check_limit_fields
 from archivey.internal.sfx import SFX_MAX
@@ -29,6 +30,14 @@ class DetectionBudgetPreset(Enum):
     BALANCED = "balanced"
     FAST = "fast"
     THOROUGH = "thorough"
+
+
+# The string spellings of ``DetectionBudgetPreset``, which ``ArchiveyConfig`` takes for
+# its ``detection_budget`` argument, so a type checker flags a bad one at the call.
+# Deliberately narrower than what ``internal.enum_args`` accepts: coercion also takes the
+# member *name* and ignores case, and a literal can express neither. Keep it beside the
+# enum: ``tests/test_enum_arguments.py`` fails if the two drift.
+DetectionBudgetPresetStr = Literal["balanced", "fast", "thorough"]
 
 
 class TierSkipReason(Enum):
