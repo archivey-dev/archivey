@@ -79,8 +79,9 @@ held, archivey runs a garbage collection and tries once more before it raises. W
 format, and so does `extract_all`. Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. TAR, ZIP, cpio, ar, deb, RPM and
-makeself archives and single compressed files can come from one. 7z, RAR, ISO, SquashFS, CAB, XAR,
-LHA and ARJ archives need a file or another source that can seek.
+makeself archives and single compressed files can come from one, and so can a RAR archive when
+RARLAB `unrar` 7.00 or later is installed ([RAR from a pipe](formats.md#rar-from-a-pipe)). 7z, ISO,
+SquashFS, CAB, XAR, LHA and ARJ archives need a file or another source that can seek.
 `archivey.format_availability(format).required_source` says which a format needs.
 
 A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an
@@ -108,11 +109,10 @@ members before the damage first.
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
-    it. RAR stores a header before each member, as ZIP does, so archivey could read it from a
-    pipe, copying what it reads to a temporary file for `unrar` as it goes. It doesn't yet.
+    it. RAR stores a header before each member, as ZIP does, so archivey reads it as it arrives.
 
-If you have a 7z, RAR or ISO archive in a pipe, copying it to a file or to an `io.BytesIO` first
-lets archivey read it.
+If you have one of those archives in a pipe, copying it to a file or to an `io.BytesIO` first lets
+archivey read it.
 
 ## Seeking inside a member
 

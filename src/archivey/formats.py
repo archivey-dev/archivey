@@ -792,7 +792,8 @@ class ReaderContext:
         :class:`~archivey.CompressionAlgorithm` ``exclude`` lists. ``only`` and the
         format entries of ``exclude`` check only the file the call opens, and a method
         entry holds for the inner reader's members too. A format that needs a
-        seekable source (7z, RAR) raises ``UnsupportedFeatureError``, and so does an
+        seekable source (7z, or RAR without RARLAB ``unrar`` 7.00 or later) raises
+        ``UnsupportedFeatureError``, and so does an
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
         reaches the member the walk yielded. Call it from

@@ -271,8 +271,8 @@ The policy's `only`, `exclude` and `plugins` SHALL NOT change the answer;
 
 `list_supported_formats()` SHALL return FULL plus PARTIAL formats; with `config`, the
 formats that are FULL or PARTIAL under that config. It SHALL NOT filter by
-`config.formats.allows()`.
-`list_known_formats()` SHALL return every known format including NONE.
+`config.formats.allows()`. `list_known_formats()` SHALL return every known format
+including NONE.
 
 `format_availability()` SHALL answer only for an `ArchiveFormat`. Any other argument —
 a `StreamFormat`, `None`, or a value of an unrelated type — SHALL raise
@@ -292,8 +292,8 @@ enforces — and MUST NOT be declared separately per backend:
 
 | `SUPPORTS_STREAMING_NON_SEEKABLE` | `required_source` | Formats |
 | --- | --- | --- |
-| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, ZIP, the single-file compressors, UDIF |
-| `False` | `StreamCapability.SEEKABLE` | ISO, 7z, RAR, directory |
+| `True` | `StreamCapability.FORWARD_ONLY` | TAR and its compressed combos, ZIP, RAR, the single-file compressors, UDIF |
+| `False` | `StreamCapability.SEEKABLE` | ISO, 7z, directory |
 
 `DMG` sets the flag even though nothing reads it. `open_archive` raises
 `UnsupportedFeatureError` before the seekability check, and `SEEKABLE` would send
@@ -330,7 +330,8 @@ conservative answer.
 | `format_availability(GZ).required_source` | `FORWARD_ONLY` |
 | `format_availability(DMG).required_source` | `FORWARD_ONLY` — open refuses before the seekability check; the field keeps the spool recipe from copying the file |
 | `format_availability(ZIP).required_source` | `FORWARD_ONLY` — `streaming=True` reads a ZIP forward over its local headers |
-| `format_availability(ISO \| SEVEN_Z \| RAR \| FOLDER).required_source` | `SEEKABLE` |
+| `format_availability(RAR).required_source` | `FORWARD_ONLY` — `streaming=True` reads a single-volume RAR forward with RARLAB `unrar` 7.00 or later; without it the open raises `StreamNotSeekableError` naming the fix |
+| `format_availability(ISO \| SEVEN_Z \| FOLDER).required_source` | `SEEKABLE` |
 | ISO queried without `pycdlib` | `support=NONE` **and** `required_source=SEEKABLE` — the answer does not depend on installability |
 | `required_source <= reader.cost.stream_capability` for a format opened successfully from that source | `True` for every format/source pair the library accepts |
 
