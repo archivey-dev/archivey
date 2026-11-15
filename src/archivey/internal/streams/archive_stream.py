@@ -943,9 +943,15 @@ class ArchiveStreamImpl(ArchiveStream):
         try:
             # Only a reader's buffer over a codec stream on a source that cannot seek
             # calls this, and that codec stream's inner is a ``DecompressorStream``.
-            return cast("DecompressorStream", inner).read_ahead(need, n)
+            data = cast("DecompressorStream", inner).read_ahead(need, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
+        if not data and self._uninterrupted:
+            # The end, as ``_read`` notes it: the codec's whole-stream check ran over
+            # a decode from the start (a streaming walk over a pipe, TAR or the format
+            # adapter's, reads its tail here).
+            self._ended_from_start = True
+        return data
 
     @override
     def _verify_seek(self, pos: int) -> None:
