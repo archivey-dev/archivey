@@ -47,6 +47,13 @@ goes in it:
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
+- in a minor or major release, a **Performance** section after **Fixed**: the peer
+  wall ratios measured in §2, with the run's date and commit, and a link to
+  `benchmarks/RESULTS.md`. A patch release adds one only when a fix changes speed.
+  `release.py start` refuses an `X.Y.0` entry without it.
+
+Never list a change to something added in the same release: nobody used the earlier
+version, so the **Added** line describes the final behaviour.
 
 Internal refactors, review docs and chore work stay out.
 

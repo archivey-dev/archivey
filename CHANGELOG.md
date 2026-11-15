@@ -145,8 +145,6 @@ removed.
 - A `.zz` file holding several zlib streams under one final checksum that covers all of
   them reads differently under `use_rapidgzip=ON`. This is now a documented difference:
   the 0.3.0 check for it cost about 45% of a decode.
-- Reading many small ZIP members takes about half the time it took in 0.3.0, and
-  extracting many hard links to one file takes linear time instead of quadratic.
 - The `[recommended]` extra asks for `pyppmd` below 2.0 until archivey supports 2.0's
   new decoder.
 
@@ -189,6 +187,21 @@ removed.
   diagnostic now counts from the start of the file, stub included, as RAR's already did.
 - About 40 bugs found since 0.3.0, most of them by fuzzing each reader and by comparing
   archivey with each format's official tool on real archives.
+
+### Performance
+
+From one benchmark run on 2026-11-15 at commit `14a36e8a`, archivey takes 1.1 to 3.6
+times as long as the standard library or reference reader to read, and 1.2 to 12.6 times
+as long to list; the ratios above 4 are archives that list in under 2 ms. Against 0.3.0:
+
+- Reading many small ZIP members takes about half the time (4 000 members, measured on
+  2026-11-09), and extracting many hard links to one file takes linear time instead of
+  quadratic.
+- In the 2026-11-15 run, which timed 0.3.0 beside 0.4.0, listing a RAR archive takes 20
+  to 30% longer and listing a 7z archive 10 to 15% longer. Reading a `.Z` file of highly
+  repetitive data takes about 40% longer. The other cases are within about 10%.
+
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
 
 ## [0.3.0] - 2026-11-04
 
@@ -267,9 +280,6 @@ remove them.
   costs nothing.
 - Under `use_rapidgzip=AUTO`, rapidgzip also decodes large sequential DEFLATE reads on
   Linux and macOS, where it was measured to pay.
-- Extracting a ZIP takes about 0.8x the 0.2.1 time, and reading a single `.gz` file
-  about 0.7x (same-runner comparison against 0.2.1; the other cases are within about
-  15% of it).
 
 ### Deprecated
 
@@ -297,6 +307,15 @@ remove them.
   [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) and its
   test archives, and from the [tar-minefield](https://github.com/haampie/tar-minefield)
   corpus of TAR files that readers take differently.
+
+### Performance
+
+From one benchmark run on 2026-11-15 at the `v0.3.0` tag (`f013eec9`), measured after
+the release, archivey takes 1.0 to 3.6 times as long as the standard library or
+reference reader to read, and 1.5 to 9.4 times as long to list. Extracting a ZIP takes
+about 0.8x the 0.2.1 time, and reading a single `.gz` file about 0.7x (same-runner
+comparison against 0.2.1; the other cases are within about 15% of it).
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
 
 ## [0.2.1] - 2026-10-24
 
@@ -336,6 +355,13 @@ A patch release: no public name was added, renamed or removed.
   makes a seek fail, a rapidgzip member stream used after `fork()` raises
   `ArchiveyUsageError` instead of disturbing the parent's decoder, and a PPMd member
   refused under `NATIVE_DECODERS` isolation now names the setting that reads it.
+
+### Performance
+
+From one benchmark run on 2026-11-01 at the `v0.2.1` tag (`5f28bde7`), measured after
+the release, archivey takes 1.1 to 2.5 times as long as the standard library or
+reference reader to read, and 1.4 to 7.6 times as long to list.
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
 
 ## [0.2.0] - 2026-10-22
 
@@ -432,7 +458,7 @@ What goes in this file, from 0.2.0 on:
 - A name outside the stability policy (`EXPERIMENTAL` in scripts/checks/api_surface.py)
   gets its line under Experimental, after Added.
 - Each security fix gets its own line under Security.
-- A Performance section, after Fixed and before Security, gives the peer wall ratios
+- A Performance section, after Fixed, gives the peer wall ratios
   for the release with the run's date and commit, and links benchmarks/RESULTS.md for
   the host, method and analysis (dev-docs/release-checklist.md, section 2).
 - Other bug fixes share one line under Fixed, e.g. "Fixed N bugs in ZIP and RAR

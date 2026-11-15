@@ -46,6 +46,66 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
+## Release figures for 0.4.0, 0.3.0 and 0.2.1
+
+The figures quoted in the CHANGELOG entries for 0.4.0, 0.3.0 and 0.2.1. Each comes from
+a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs, Python
+3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
+three rounds per side. A cell is the fastest of the three rounds, for archivey and for
+its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator on are
+left out, because the default does not use one at this corpus size. The rows are the
+same cases as in [0.2.0 release figures](#020-release-figures-2026-10-21).
+
+### 0.4.0 and 0.3.0 (2026-11-15)
+
+Run 43689017345. Baseline is the `v0.3.0` tag (`f013eec9`), candidate is the 0.4.0
+release branch at `14a36e8a`.
+
+| Case | archivey 0.3.0 | ratio 0.3.0 | archivey 0.4.0 | ratio 0.4.0 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 29.5 ms | 1.01× | 32.7 ms | 1.12× |
+| `tar_read_all` | 7.3 ms | 3.63× | 7.3 ms | 3.56× |
+| `tarbz2_read_all_accel_off` | 210.2 ms | 1.07× | 210.1 ms | 1.06× |
+| `targz_read_all_accel_off` | 16.2 ms | 1.82× | 16.8 ms | 1.89× |
+| `zip_extract` | 35.1 ms | 2.72× | 34.7 ms | 2.68× |
+| `zip_read_all` | 19.1 ms | 2.49× | 19.1 ms | 2.47× |
+| `rar_many_open_list` | 19.6 ms | 1.90× | 23.3 ms | 2.19× |
+| `rar_nonsolid_open_list` | 5.5 ms | 2.05× | 6.9 ms | 2.59× |
+| `rar_open_list` | 0.8 ms | 6.37× | 1.0 ms | 10.95× |
+| `sevenzip_many_open_list` | 112.6 ms | 1.64× | 128.7 ms | 1.91× |
+| `sevenzip_nonsolid_open_list` | 15.6 ms | 1.53× | 17.1 ms | 1.17× |
+| `sevenzip_open_list` | 1.5 ms | 2.58× | 1.7 ms | 3.25× |
+| `tar_open_list` | 2.7 ms | 2.63× | 2.9 ms | 2.98× |
+| `zip_open_list` | 1.4 ms | 9.36× | 1.6 ms | 12.56× |
+
+Reading did not move beyond noise. Listing did: RAR listing is 19–27% slower and 7z
+listing 10–14% slower in archivey's own time, with the peers unchanged (the one 7z row
+whose ratio fell, `sevenzip_nonsolid_open_list`, has a peer that was slower in this
+run's candidate rounds). Outside this table, `z_zeros_read_all` (no peer, 128 MiB of
+`.Z` zeros) went from 125 to 177 ms. This round did not profile either change.
+
+### 0.2.1 (2026-11-01)
+
+Run 41262561901, baseline side: the `v0.2.1` tag (`5f28bde7`), measured a week after
+the release.
+
+| Case | archivey 0.2.1 | ratio 0.2.1 |
+| --- | ---: | ---: |
+| `gzip_read_all` | 37.1 ms | 1.10× |
+| `tar_read_all` | 3.8 ms | 2.46× |
+| `tarbz2_read_all_accel_off` | 84.0 ms | 1.19× |
+| `targz_read_all_accel_off` | 10.7 ms | 1.60× |
+| `zip_extract` | 27.2 ms | 2.46× |
+| `zip_read_all` | 11.3 ms | 1.95× |
+| `rar_many_open_list` | 13.9 ms | 1.83× |
+| `rar_nonsolid_open_list` | 3.9 ms | 1.98× |
+| `rar_open_list` | 0.6 ms | 5.57× |
+| `sevenzip_many_open_list` | 79.9 ms | 1.43× |
+| `sevenzip_nonsolid_open_list` | 10.8 ms | 1.38× |
+| `sevenzip_open_list` | 1.0 ms | 2.27× |
+| `tar_open_list` | 1.6 ms | 1.79× |
+| `zip_open_list` | 0.9 ms | 7.56× |
+
 ## Since 0.3.0 (2026-11-09)
 
 **Trees.** Before is the `v0.3.0` tag (`f013eec9`). After is `main` at `37e08c35`. Both
@@ -98,9 +158,9 @@ What the numbers show:
   row's ratio stayed inside its run-to-run range. `zip_extract` again had no stable
   `zipfile` time (10–43 ms between runs).
 
-### Large `.tar.bz2` under AUTO (open PR 1369)
+### Large `.tar.bz2` under AUTO (PR 1369)
 
-PR 1369, not merged when this was measured, sends a large sequential bzip2 read from a
+PR 1369, merged after this was measured, sends a large sequential bzip2 read from a
 local file through the parallel accelerator under the default `AUTO`. Its tree
 (`129d3347`) and `main` read a 9.1 MiB `.tar.bz2` of 32 text-like members of 1 MiB with
 `stream_members()`, against a one-pass `tarfile` (median of 7 alternating calls):
@@ -111,8 +171,7 @@ local file through the parallel accelerator under the default `AUTO`. Its tree
 | PR 1369 | 510 ms | 1 698 ms | 0.30× |
 
 The harness's own `.tar.bz2` is 23 KB on disk, far below the rule's 1 MiB threshold, so its `AUTO`
-time did not change (272 against 277 ms). If PR 1369 does not merge, drop this
-subsection.
+time did not change (272 against 277 ms).
 
 ### New formats against libarchive
 
