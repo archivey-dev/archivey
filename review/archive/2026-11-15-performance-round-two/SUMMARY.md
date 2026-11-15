@@ -12,7 +12,7 @@ error, and are implemented as separate PRs, held until after 0.4.0.
 | 1. Shared verifier proof records | Implemented, #1570 | ZIP 600,981 to 574,640 instructions/member (-4.4%); wall -1 to -2 µs/member, within noise |
 | 2. Ratio room short-circuit | Implemented, #1571 | ZIP 600,981 to 589,481 instructions/member (-1.9%); the two conditions are equal for every input |
 | 3. CAB checksum-presence summary | Implemented, #1569 | Small corpus: noise. 40,000 members over 1,283 blocks: 4.19 s to 3.33 s (-21%). The old scan was O(members × blocks), so the real gain is on large folders, not the 0.5-1 µs the report estimated |
-| Checked-read driver (architecture) | Maintainer decision, see below | Not measured; no prototype |
+| Checked-read driver (architecture) | Maintainer chose 2026-11-15: prototype after 0.4.0, kept only if traces match and it is faster; tracked internally | Not measured; no prototype |
 | "What is actually fine" items | Agreed, nothing to do | Not re-measured |
 
 The broader `proofs-experiment.patch` (shared `doubt_only()` records) was not taken: its

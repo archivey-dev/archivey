@@ -25,5 +25,5 @@ tests, corner-case costs, implementation size, risk and priorities. Supply rerun
 and experimental patches. Assess whether stream architecture is the remaining limit.
 
 This review is a measurement report, not a completed implementation or a full correctness
-audit. Follow the conventions in [the review index](../README.md). Scope and validation
+audit. Follow the conventions in [the review index](../../README.md). Scope and validation
 limits are explicit in [SUMMARY.md](SUMMARY.md).

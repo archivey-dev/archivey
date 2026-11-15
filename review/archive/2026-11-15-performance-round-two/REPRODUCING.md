@@ -20,10 +20,10 @@ not require `gcab` or a 7z executable: it uses py7zr and `tests.cab_util`.
 ```bash
 uv sync --python python3.12 --group dev --extra all
 export PYTHONHASHSEED=0
-export PYTHONPATH=.:review/performance-round-two/scripts
+export PYTHONPATH=.:review/archive/2026-11-15-performance-round-two/scripts
 export ROUND2_DIR="$PWD/work/performance-round-two"
 mkdir -p "$ROUND2_DIR"
-R=review/performance-round-two
+R=review/archive/2026-11-15-performance-round-two
 S="$R/scripts"
 ```
 
