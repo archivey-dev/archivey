@@ -614,3 +614,12 @@ def unrar_mask_route(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(RarReader, "_synthetic_entry", lambda self, *args: None)
     monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", lambda self: [])
+
+
+@pytest.fixture
+def no_rolling_volumes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read RAR as an ``unrar`` older than rolling volumes (``rar_rolling``) does:
+    a stream source's large member and solid pass are copied whole."""
+    from archivey.internal.backends.rar_reader import RarReader
+
+    monkeypatch.setattr(RarReader, "_rolling_ok", lambda self: False)
