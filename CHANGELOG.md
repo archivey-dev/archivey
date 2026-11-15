@@ -12,7 +12,7 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-11-14
+## [0.4.0] - 2026-11-15
 
 A minor release: more formats built in, archives read by range from fsspec URLs and
 browsed as an `archivey://` file system, self-extracting programs read the way their own
@@ -115,6 +115,10 @@ removed.
   `ArchiveStream.verify(password_only=)` and the rest) refuse a value that is not a
   `bool` with a `TypeError`, as `ArchiveyConfig`'s switches already did. Before, a
   string such as `"false"` counted as true.
+- **Breaking:** a truth test (`if report:`) on an `ExtractionReport` or a
+  `MemberListReport` raises `TypeError`, as on `VerifyReport`: a report's truth was its
+  length, so a failed extraction read as true. Use `report.ok`. `MemberListReport`
+  gains `ok` and `raise_for_failure()`, as the other two reports have.
 - `ArchiveyConfig`'s accelerator conflicts (`ON` with `process_isolation=NONE`, or with
   rapidgzip excluded by the format policy) raise an `ArchiveyUsageError` that is also a
   `ValueError`.
@@ -194,6 +198,8 @@ removed.
   fields of a ZIP's diagnostic context.
 - `FormatPolicy(exclude_libraries=, only_libraries=)` reads a generator once. Before,
   validation used it up and the exclusion was lost.
+- Under PyPy, reading gzip, zlib or raw DEFLATE data from a pipe in small reads no
+  longer grows memory by gigabytes: one decoder copy now serves many read steps.
 - About 40 bugs found since 0.3.0, most of them by fuzzing each reader and by comparing
   archivey with each format's official tool on real archives.
 
