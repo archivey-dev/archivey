@@ -10,7 +10,7 @@ the choice in ``ArchiveInfo.extra["iso.namespace"]``:
 
 - Rock Ridge — POSIX mode/uid/gid and symlinks
 - Joliet / plain — those fields are ``None``; plain names are upper-case 8.3 with a
-  ``;version`` suffix
+  ``;version`` suffix, and Joliet names often carry one too; both drop it
 
 How a listing is built:
 
@@ -1128,12 +1128,13 @@ def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
 def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
     """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
 
-    With ``iso9660`` (plain ISO 9660 identifiers), an empty extension's ``.`` goes too
+    With ``iso9660`` (a name a member is listed under: a plain ISO 9660 identifier, or
+    a Joliet one in the Joliet namespace), an empty extension's ``.`` goes too
     (``FOO.;1`` is ``FOO``), and a bare ``;N`` is a name, not a version: it comes back
-    unchanged with ``None``. Without it (Joliet), the suffix always goes and its version
-    is reported, so ``;1`` becomes ``""`` with version 1. Neither Joliet caller lets that
-    empty name reach a member: ``_joliet_name`` drops it in ``_ascii_runs_match``, and
-    ``_joliet_text`` only feeds extent matching.
+    unchanged with ``None``. Without it (a Joliet name compared with another tree), the
+    suffix always goes and its version is reported, so ``;1`` becomes ``""`` with
+    version 1. Neither such caller lets that empty name reach a member: ``_joliet_name``
+    drops it in ``_ascii_runs_match``, and ``_joliet_text`` only feeds extent matching.
     """
     match = _VERSION_SUFFIX.search(name)
     if match is None or (iso9660 and match.start() == 0):
@@ -1855,11 +1856,14 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         return "/" + name if dirpath == "/" else f"{dirpath}/{name}"
 
     def _split_version(self, ns_path: str) -> tuple[str, int | None]:
-        """The path to show the caller, and the plain-ISO file version if it had one.
+        """The path to show the caller, and the file version if it had one.
 
-        The leading ``/`` is stripped. In the ``iso9660`` namespace a ``;N`` suffix is the
-        file *version*: it is removed and returned, and so is the ``.`` that separates an
-        empty extension (``FOO.;1`` is ``FOO``), since the two are one rule in ISO 9660.
+        The leading ``/`` is stripped. In the ``iso9660`` and ``joliet`` namespaces a
+        ``;N`` suffix is the file *version*: it is removed and returned, and so is the
+        ``.`` that separates an empty extension (``FOO.;1`` is ``FOO``), since the two
+        are one rule in ISO 9660. Joliet inherits the version syntax, and Windows-era
+        writers put ``;1`` on Joliet names too; Windows and Linux both drop it, so a
+        Joliet name follows the plain rule. A Rock Ridge ``NM`` name has no version.
 
         ``FOO.;1`` and ``FOO;1`` both map to ``("FOO", 1)``. Level 1 requires the dotted
         spelling but writers emit both, so a directory can hold the two. Where one of them
@@ -1868,7 +1872,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         spelling (see ``_make_member``), so the two stay apart there.
         """
         rel = ns_path.lstrip("/")
-        if self._namespace != "iso9660":
+        if self._namespace == "rock_ridge":
             return rel, None
         parent, sep, base = rel.rpartition("/")
         stem, version = _strip_version(base, iso9660=True)
@@ -1878,6 +1882,23 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """Sort key putting each plain-ISO name's versions in ascending order."""
         presented, version = self._split_version(item[0])
         return presented, version or 0
+
+    def _group_versions(
+        self, files: list[tuple[str, bytes, DirectoryRecord]]
+    ) -> list[tuple[str, bytes, DirectoryRecord]]:
+        """``files`` in record order, each name's versions together in ascending order.
+
+        For Joliet. The versions of one name move to where its first record is, so the
+        highest is listed last as in the plain namespace; every other file keeps its
+        place, since a Joliet directory's record order is not the sort of its names.
+        """
+        first_at: dict[str, int] = {}
+        keys: list[tuple[int, int]] = []
+        for index, (path, _, _) in enumerate(files):
+            presented, version = self._split_version(path)
+            keys.append((first_at.setdefault(presented, index), version or 0))
+        order = sorted(range(len(files)), key=keys.__getitem__)
+        return [files[i] for i in order]
 
     def _decode_bytes_name(
         self, raw: bytes, *, rr_record: DirectoryRecord | None = None
@@ -2081,11 +2102,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         close a cycle cannot loop.
 
         Within a directory, subdirectories come first and then files, each in record
-        order, except that plain ISO 9660 files are ordered by (name, version). Records
+        order, except that plain ISO 9660 files are ordered by (name, version) and the
+        versions of one Joliet name are brought together (``_group_versions``). Records
         that share an identifier but are separate entries each list
-        (``_entries_sharing_identifier``).
-        ``superseded`` is true for a plain ISO 9660 file when the same directory holds
-        a higher version of the same name.
+        (``_entries_sharing_identifier``). ``superseded`` is true for a plain ISO 9660
+        or Joliet file when the same directory holds a higher version of the same name.
         """
         root = self._iso.get_record(**{self._path_kw: "/"})
         use_rr = self._namespace == "rock_ridge"
@@ -2117,6 +2138,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     (dirs if child.is_dir() else files).append((path, raw_path, child))
             if self._namespace == "iso9660":
                 files.sort(key=self._version_order)
+            elif self._namespace == "joliet":
+                files = self._group_versions(files)
             newest: dict[str, int] = {}
             for path, _, _ in files:
                 presented, version = self._split_version(path)
@@ -2502,7 +2525,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
     def _member_name(
         self, ns_path: str, member_type: MemberType, superseded: bool
     ) -> tuple[str, int | None]:
-        """The member name for ``ns_path``, and the plain ISO 9660 file version."""
+        """The member name for ``ns_path``, and its plain ISO 9660 or Joliet version."""
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
         # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
         # part of its name, and its children's paths keep it.

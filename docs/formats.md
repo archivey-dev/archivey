@@ -1161,11 +1161,12 @@ other members because of a member's name any more. Setting it to `True` warns.
   ([Names in other encodings](opening.md#names-in-other-encodings)).
 - Joliet names are UTF-16 and ignore `encoding=`. They can hold an
   [unpaired surrogate](#names-with-an-unpaired-surrogate).
-- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty extension), and
-  `extra["iso.version"]` keeps the number. When a directory holds several versions of one name, the
-  highest takes the bare name, and the others list under their stored identifier (`FOO.;1`) with
-  `is_current=False`, the same shape as RAR file versions. Plain directory names have no version
-  and keep any `;N`.
+- Plain ISO 9660 and Joliet file names lose their `;N` version suffix (and the `.` of an empty
+  extension), and `extra["iso.version"]` keeps the number. Many writers put `;1` on Joliet names
+  too, and Windows and Linux drop it there as well. When a directory holds several versions of one
+  name, the highest takes the bare name, and the others list under their stored identifier
+  (`FOO.;1`) with `is_current=False`, the same shape as RAR file versions. Directory names have no
+  version and keep any `;N`.
 - Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
   which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory

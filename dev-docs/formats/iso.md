@@ -269,8 +269,12 @@ What is ISO-specific in turning a record into a member:
   walk is a copy of `pycdlib` 1.22.0's and replaces any upstream change to it inside
   archivey's open; `test_iso` pins the original's source, so a `pycdlib` that changes
   it fails until the two are compared.
-- **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
-  extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
+- **Versions.** In the plain and Joliet namespaces the `;N` suffix of a file and the `.`
+  of an empty extension are removed (`FOO.;1` is `FOO`) and the number goes to
+  `extra["iso.version"]`. Joliet inherits the syntax, and Windows-era writers put `;1`
+  on Joliet names; Windows and Linux's isofs drop it, and so does archivey. A Joliet
+  directory's record order is not the sort of its names, so only the versions of one
+  name are brought together there; plain files are sorted by (name, version).
   When a directory holds several versions, the highest takes the bare name; older ones are
   listed under their stored identifier with `is_current=False`, the RAR file-history
   shape, so extraction writes only the newest. ECMA-119 gives a version only to a file

@@ -1251,6 +1251,50 @@ def test_a_directory_identifier_keeps_its_version_like_suffix() -> None:
         assert ar.read("DI;1/X.TXT") == b"x"
 
 
+def test_joliet_names_lose_their_version_like_plain_names(tmp_path: Path) -> None:
+    """Windows-era writers put ``;1`` on Joliet names too. The Joliet namespace
+    follows the plain rule: the version and an empty extension's ``.`` go, the newest
+    version takes the bare name, and a bare ``;1`` stays a name."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(joliet=3)
+    iso.add_fp(io.BytesIO(b"text"), 4, "/README.TXT;1", joliet_path="/readme.txt;1")
+    iso.add_fp(io.BytesIO(b"NEW VERSION"), 11, "/FOO.;2", joliet_path="/foo.;2")
+    iso.add_fp(io.BytesIO(b"OLD VERSION"), 11, "/FOO.;1", joliet_path="/foo.;1")
+    iso.add_fp(io.BytesIO(b"bare"), 4, "/BARE.;1", joliet_path="/;1")
+    iso.add_fp(io.BytesIO(b"plain"), 5, "/PLAIN.;1", joliet_path="/plain")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    with open_archive(io.BytesIO(out.getvalue())) as ar:
+        assert ar.info.extra["iso.namespace"] == "joliet"
+        rows = [
+            (m.name, m.raw_name, m.extra.get("iso.version"), m.is_current)
+            for m in ar.members()
+        ]
+        assert sorted(rows) == [
+            (";1", b";1", None, True),
+            ("foo", b"foo.;2", 2, True),
+            ("foo.;1", b"foo.;1", 1, False),
+            ("plain", b"plain", None, True),
+            ("readme.txt", b"readme.txt;1", 1, True),
+        ]
+        # The versions of one name list together, the newest last.
+        names = [m.name for m in ar.members()]
+        assert names.index("foo") == names.index("foo.;1") + 1
+        assert ar.read("foo") == b"NEW VERSION"
+        assert ar.read("foo.;1") == b"OLD VERSION"
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
+        ";1",
+        "foo",
+        "plain",
+        "readme.txt",
+    ]
+
+
 def test_rock_ridge_relocation_directory_is_not_listed() -> None:
     """Deep trees are parked under ``rr_moved`` and relinked; only the logical tree lists."""
 
