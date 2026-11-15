@@ -1703,8 +1703,8 @@ before. A member whose password was confirmed against its own CRC SHALL NOT emit
 
 For a non-seekable source opened with `streaming=True`, the RAR backend SHALL read a
 single-volume archive front to back: each member is listed once its header and data are
-in the pass and the next header has been read, or once the volume holding its first part
-is written, and every member with packed data is decoded by one RARLAB `unrar` (7.00 or
+in the pass and the next header has been read, or once a volume that ends inside it is
+written, and every member with packed data is decoded by one RARLAB `unrar` (7.00 or
 later) run fed rolling synthetic volumes, one on disk at a time and one charged to
 `SpoolLimits.max_bytes`. Members and bytes SHALL match the seekable reader's for the
 same archive, except for the forward-only rules in the scenario. A refusal the archive's
@@ -1723,7 +1723,8 @@ first read.
 | A member whose output does not line up (cut short, wrong password, no size, RAR 1.5-4 past 4 GiB, unknown version in a solid archive) | That member raises; every later member with data raises too |
 | A member that fails its digest | That member raises; the later members read as from a seekable source |
 | A member cut short past the 4 MiB the source reads ahead | `CorruptionError` instead of `TruncatedError` |
-| A RAR 1.5-4 `UOW` or `CMT` after a member split across two volumes | The member is listed without it, and carries `MEMBER_HEADER_RECORD_SKIPPED` once the next member is listed or the pass ends |
+| A member that fits in one rolling volume | Not split: it starts the next volume, and is listed after the walk reads the header after it |
+| A RAR 1.5-4 `UOW` or `CMT` after a member larger than a volume | The member is listed before it, with `member_state_final` false; the owner or comment is written into it once the next member is listed or the pass ends, as a seekable source lists it |
 | The caller closes while the source has stopped sending | `close()` returns within about a second; a read of the source may still be pending, so the source's own close or read waits for it; the thread removes the volumes when that read returns |
 | `unar`, no `unrar` 7.00 or later | `StreamNotSeekableError` at open |
 | Listing only (`members_report()`) | No volume written |

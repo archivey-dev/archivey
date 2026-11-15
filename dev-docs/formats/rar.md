@@ -1187,12 +1187,14 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   the listing needs a member past volume 1. From then on the feeder thread writes the
   volumes, and the walk runs on it. A member is queued to the caller once the walk has
   read the next header (a RAR 1.5-4 `UOW` or `CMT` after it then reaches it), or when
-  the volume holding its first part is written, whichever is first: a member split
-  across volumes is listed before `unrar` prints it, so the caller can drain it. Such a
-  member misses a `UOW` or `CMT` after it, and is given `MEMBER_HEADER_RECORD_SKIPPED`
-  when the next member is listed or the pass ends (`_report_late_records`). The walk can
-  attach the record on its own thread while the caller builds the member, so the
-  snapshot is taken before the build and the report checks the member itself. While
+  a volume that ends inside it is written: a member split across volumes is listed
+  before `unrar` prints it, so the caller can drain it. Only a member larger than a
+  volume is split (`RollingVolumes`), so this is rare at the default 16 MiB volume. A
+  `UOW` or `CMT` after such a member is written into it when the next member is listed
+  or the pass ends (`_add_late_records`); the member is not final until then
+  (`member_state_final`), and extraction places it after the pass. The walk waits for
+  the caller to build a member listed early before it reads the next header
+  (`_ForwardPass.listed`), so nothing changes the parsed header during the build. While
   waiting for the next member, the caller reads past `unrar`'s output of the members it
   was given, so `unrar` never blocks on a full pipe while the walk waits for its prompt.
 - **Listing without a pass** (`members_report()`) walks with the data skipped and writes
@@ -1676,10 +1678,10 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   prompts before each next volume and holds none open at the prompt, so one volume is on
   disk at a time. A non-last part carries no checksum (`MergeArchive` checks a part only
   against one its header holds), every part is at least a quarter of a volume (one
-  decoder read takes bytes from one part only), and a member too small for two parts is
-  not split. 6.x has the same `-vp` code but no 6.x binary was run, so it keeps the
-  whole copies. Decoding every RAR 1.5-4 compressed comment in one run with the same
-  writer is still tracked internally.
+  decoder read takes bytes from one part only), and a member that fits in one volume, or
+  is too small for two parts, is not split: it starts the next volume. 6.x has the same
+  `-vp` code but no 6.x binary was run, so it keeps the whole copies. Decoding every RAR
+  1.5-4 compressed comment in one run with the same writer is still tracked internally.
 
 - ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
   how the member list is read on the source, so RAR reports `REQUIRES_SCANNING` like TAR

@@ -853,10 +853,11 @@ The members and their bytes are the same as from a file, except where a pipe can
   the members after it are read as from a file.
 - A member cut short raises `TruncatedError` when the source ends within the 4 MiB archivey reads
   ahead of it. A longer member cut short raises `CorruptionError` instead.
-- A member split across two of those volumes is listed before archivey has read the header after
-  it. A RAR 1.5-4 owner (`rar -ow`) or file comment stored in that header is then missing from the
-  member. The member gets a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic saying so once the next
-  member is listed, or the pass ends, so check `member.diagnostics` after the loop.
+- A member larger than one of those volumes is split across them, and is listed before archivey
+  has read the header after it. A RAR 1.5-4 owner (`rar -ow`) or file comment stored in that
+  header is written into the member once the next member is listed, or the pass ends, so read
+  `uname`, `gname` and `comment` after the loop. Until then `member.member_state_final` is
+  `False`, and `extract_all()` sets the owner when it places the file.
 - Closing the reader doesn't wait for a source that has stopped sending, but a read of the source
   may still be pending afterwards, on the thread that writes the volumes. Closing or reading the
   source then waits for that read to return, and the thread removes the temporary volumes when it

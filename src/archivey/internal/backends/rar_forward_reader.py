@@ -11,8 +11,9 @@ single-volume RAR read from a pipe or socket. It never holds the archive:
    size, as the seekable reader's solid pass cuts it (``RarReader._drive_solid_pass``).
 3. A member is listed once its header and data are in a volume and the walk has read
    the next header, which may still add to it (a RAR 1.5-4 owner or file comment), or
-   when the volume that holds its first part is written, whichever comes first. A member
-   listed the second way misses what that next header adds, and is reported.
+   when a volume that ends inside it is written. Only a member larger than a volume is
+   split. A member listed the second way gets what that next header adds in place,
+   before the pass ends; it is not final until then.
 
 Volume 1 is written on the caller's thread; ``unrar`` starts on the first member read,
 or when the listing needs a member past volume 1. Then the thread that answers
@@ -21,11 +22,11 @@ members reach the caller's thread through a queue. While the caller waits for th
 member, it reads past ``unrar``'s output of the members it has had, so ``unrar`` is
 never stuck on a full pipe while the walk waits for its next volume prompt.
 
-What a pipe cannot do, and the pass refuses instead: read a member whose output does
-not line up (a member of unknown size, a wrong password, an unknown compression
-version in a solid archive) or any member after it, read a RAR5 file copy (its source
-bytes were not kept), and give each member its own password from several candidates.
-The design is tracked internally; ``openspec/changes/archive/2026-11-14-rar-pipe-reader`` holds it.
+What a pipe cannot do, and the pass refuses instead: read a member whose output does not
+line up (a member of unknown size, a wrong password, an unknown compression version in a
+solid archive) or any member after it, read a RAR5 file copy (its source bytes were not
+kept), and give each member its own password from several candidates. The design is
+tracked internally; ``openspec/changes/archive/2026-11-14-rar-pipe-reader`` holds it.
 """
 
 from __future__ import annotations
@@ -33,13 +34,13 @@ from __future__ import annotations
 import io
 import queue
 import subprocess
+import threading
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
 
 from archivey.config import RarDecompressor
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
-from archivey.diagnostics import DiagnosticCode, MemberHeaderRecordContext
 from archivey.exceptions import (
     ArchiveyError,
     EncryptionError,
@@ -52,7 +53,6 @@ from archivey.formats import ArchiveFormat
 from archivey.internal.backends.rar_copy_sources import FileCopySources
 from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
 from archivey.internal.backends.rar_parser import (
-    RAR3_UOW_NAME,
     ForwardMember,
     ForwardWalk,
     RarArchive,
@@ -82,7 +82,6 @@ from archivey.internal.backends.rar_synthetic import SyntheticMember, has_packed
 from archivey.internal.backends.rar_unar import uses_no_dictionary
 from archivey.internal.backends.rar_unrar import open_unrar_p
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
-from archivey.internal.logs import backends as logger
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidatesExhausted
@@ -164,7 +163,7 @@ class _ForwardVolumes(RollingVolumes):
         *,
         solid: bool,
         volume_bytes: int,
-        on_written: Callable[[], None],
+        on_written: Callable[[bool], None],
     ) -> None:
         super().__init__(version, members, solid=solid, volume_bytes=volume_bytes)
         self._on_written = on_written
@@ -172,7 +171,7 @@ class _ForwardVolumes(RollingVolumes):
     @override
     def write_next(self) -> Path:
         path = super().write_next()
-        self._on_written()
+        self._on_written(self.splitting)
         return path
 
 
@@ -222,8 +221,12 @@ class _ForwardPass:
         self.queue: queue.SimpleQueue[ForwardMember | _End] = queue.SimpleQueue()
         self._held: ForwardMember | None = None
         #: The members the walk released before it read the header after them
-        #: (``_release_held`` from a volume write), by ``id`` of the parsed member.
+        #: (``_release_early``), by ``id`` of the parsed member.
         self.early: set[int] = set()
+        #: Set once the caller has listed the member released early last: the walk
+        #: reads the header after it only then, so nothing changes the parsed
+        #: header while the member is built from it.
+        self.listed = threading.Event()
         #: Set when the reader closes: the walk stops at its next read of the source.
         self.stopping = False
         self._charge = _rolling_volume_bytes(reader._config.spool_limits)
@@ -258,16 +261,33 @@ class _ForwardPass:
         if held is not None:
             self.queue.put(held)
 
-    def _release_early(self) -> None:
-        """A volume is written: list the member the walk holds now, before the walk
-        reads the header after it, so the caller can read the output ``unrar``
-        makes before it asks for the next volume. A record in that next header (a
-        RAR 1.5-4 ``UOW`` owner or ``CMT`` comment) then reaches a member already
-        listed, which is reported (``RarForwardReader._report_late_records``)."""
+    def _release_early(self, splitting: bool) -> None:
+        """A volume is written. When it ends inside the member the walk holds, list
+        that member now, before the walk reads the header after it: ``unrar`` writes
+        the member's output from this volume before it asks for the next one, and
+        the caller must be able to read it. A member whose data starts in the next
+        volume stays held. A record in that next header (a RAR 1.5-4 ``UOW`` owner
+        or ``CMT`` comment) then reaches a member already listed, and is written
+        into it (``RarForwardReader._add_late_records``)."""
         held = self._held
-        if held is not None:
-            self.early.add(id(held.member))
+        if not splitting or held is None:
+            return
+        self.early.add(id(held.member))
+        self.listed.clear()
         self._release_held()
+
+    def _wait_listed(self) -> None:
+        """Wait until the caller has listed the member released early."""
+        while not self.listed.wait(_WAIT_SECONDS):
+            if self.stopping:
+                break
+        if self.stopping:
+            raise _Closed()
+
+    def stop(self) -> None:
+        """Stop the walk at its next read of the source or wait."""
+        self.stopping = True
+        self.listed.set()
 
     def _entries(self) -> Iterator[SyntheticMember]:
         """The synthetic members of the volumes, made as the walk reaches them."""
@@ -284,6 +304,10 @@ class _ForwardPass:
                 if entry is not None:
                     position += 1
                     yield entry
+                if id(found.member) in self.early:
+                    # Only on the thread that answers ``unrar``: volume 1, the one
+                    # the caller's thread may write, ends before the walk gets here.
+                    self._wait_listed()
                 found = reader._next_found()
         except Exception as exc:  # noqa: BLE001 - handed to the listing
             # The volume being written ends here, so the members already in it are
@@ -391,7 +415,7 @@ class _ForwardPass:
     def close(self) -> None:
         """Remove the volumes when ``unrar`` never started: its stream owns them
         otherwise."""
-        self.stopping = True
+        self.stop()
         if self.stream is None:
             try:
                 self.volumes.close()
@@ -421,7 +445,7 @@ class _ForwardUnrarStream(_RollingUnrarStream):
 
     @override
     def close(self) -> None:
-        self._fpass.stopping = True
+        self._fpass.stop()
         if not self.closed:
             # ``unrar`` may be waiting for the answer to a volume prompt that the
             # thread, blocked on the source, has not sent. It does not stop for a
@@ -694,84 +718,68 @@ class RarForwardReader(RarReader):
             yield from self._iter_members_without_data()
             return
         # The member listed last when the pass released it early, with what its
-        # parsed header held just before the member was built from it:
+        # parsed header held when the member was built from it:
         # ``(member, owner, comment, skipped records)``.
-        early: tuple[ArchiveMember, object, object, object] | None = None
+        early: (
+            tuple[
+                ArchiveMember, object, object, tuple[tuple[str, int | None, str], ...]
+            ]
+            | None
+        ) = None
         while True:
             item = fpass.next_found()
             if early is not None:
                 # The walk has read every header up to ``item``.
-                self._report_late_records(*early)
+                self._add_late_records(*early)
                 early = None
             if isinstance(item, _End):
                 self._finish_walk(item.error)
                 return
             raw = item.member
-            # Taken before the member is built: the walk may attach a record to ``raw``
-            # on its own thread while the member is being built, and the report then
-            # checks the member, not this snapshot (``_report_late_records``).
-            before = (raw.owner, raw.comment, raw.skipped_header_records)
-            member = self._list_member(item)
-            if id(raw) in fpass.early:
-                early = (member, *before)
+            if id(raw) not in fpass.early:
+                yield self._list_member(item)
+                continue
+            try:
+                member = self._list_member(item)
+            finally:
+                # The walk waits for this before it reads the next header.
+                fpass.listed.set()
+            early = (member, raw.owner, raw.comment, raw.skipped_header_records)
             yield member
 
-    def _report_late_records(
+    def _add_late_records(
         self,
         member: ArchiveMember,
         owner: object,
         comment: object,
-        skipped: object,
+        skipped: tuple[tuple[str, int | None, str], ...],
     ) -> None:
-        """Report a RAR 1.5-4 ``UOW`` or ``CMT`` header the walk read after
-        ``member`` was listed; ``owner``, ``comment`` and ``skipped`` are what its
-        parsed header held just before the member was built.
+        """Write into ``member`` what a RAR 1.5-4 ``UOW`` or ``CMT`` header read
+        after it was listed adds; ``owner``, ``comment`` and ``skipped`` are what its
+        parsed header held when the member was built.
 
-        A record that arrived while the member was being built may be in it already,
-        so a changed header is reported only when the member lacks what it adds. A
-        ``UOW`` header that named no owner adds only a skipped record, which is
-        reported whenever it changed.
+        The member is not final yet (``member_state_final``), so it gets the owner
+        and comment a seekable read lists, and a ``UOW`` header that named no owner
+        is reported as it is there (``_emit_skipped_records``).
         """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
-        late = []
         new_owner = raw.owner
-        if (
-            new_owner is not owner
-            and new_owner is not None
-            and (member.uname, member.gname, member.uid, member.gid)
-            != (new_owner.uname, new_owner.gname, new_owner.uid, new_owner.gid)
-        ) or (raw.skipped_header_records is not skipped and new_owner is None):
-            late.append((RAR3_UOW_NAME, "owner"))
-        if raw.comment is not comment and member.comment is None:
-            late.append(("CMT", "comment"))
-        for record, what in late:
-            reason = (
-                "come after a member listed before the walk reached it: read from a "
-                "non-seekable source, a member split across two of the pass's "
-                "volumes is listed once the first is written"
-            )
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"This member's RAR 1.5-4 {record} {what} header was read after "
-                    "the member was listed, because the member spans two of the "
-                    "volumes the pass writes from a non-seekable source; the member "
-                    f"is listed without its {what}. Read the archive from a file to "
-                    "get it."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    member_id=member.member_id,
-                    record=record,
-                    record_id=None,
-                    reason=reason,
-                ),
-                member=member,
-                attach_to_member=True,
-                logger=logger,
-            )
+        if new_owner is not owner and new_owner is not None:
+            member.uid = new_owner.uid
+            member.gid = new_owner.gid
+            member.uname = new_owner.uname
+            member.gname = new_owner.gname
+        if raw.comment is not comment and raw.comment is not None:
+            resolved = self._resolve_rar3_comment(raw.comment)
+            assert not isinstance(resolved, _Rar3Comment)
+            raw.comment = resolved
+            member.comment = resolved
+        records = raw.skipped_header_records
+        if records is not skipped:
+            added = tuple(r for r in records if r not in skipped)
+            if added:
+                self._emit_skipped_records(added, member.name, member, member.member_id)
 
     def _iter_members_without_data(self) -> Iterator[ArchiveMember]:
         """The listing when no pass reads data: the walk skips each member's data.
@@ -808,12 +816,9 @@ class RarForwardReader(RarReader):
     def _list_member(self, found: ForwardMember) -> ArchiveMember:
         """The member the walk found, typed and priced, as it is listed."""
         raw = found.member
-        comment = raw.comment
-        resolved = self._resolve_rar3_comment(comment)
-        if resolved is not comment:
-            # Only when it changes: the walk may set a comment that arrived late on
-            # its own thread, which an assignment here could overwrite.
-            raw.comment = resolved
+        # The walk adds nothing to ``raw`` while it is built: a member released
+        # early waits for it (``_ForwardPass.listed``), any other is behind the walk.
+        raw.comment = self._resolve_rar3_comment(raw.comment)
         if self._archive.is_solid and self._seen_encrypted:
             self._behind_encryption.add(id(raw))
         if raw.is_encrypted or raw.encryption_unknown:

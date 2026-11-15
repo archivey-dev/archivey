@@ -4969,9 +4969,23 @@ class RarReader(BaseArchiveReader):
         is ``None`` for a service header, because there is no member to name. For a
         member, ``member_id`` is its position in the walk, the id registration stamps.
         """
+        self._emit_skipped_records(info.skipped_header_records, name, member, member_id)
+        stop_reason = info.header_walk_stop_reason
+        if stop_reason is not None:
+            self._emit_header_walk_stopped(name, member, member_id, stop_reason)
+
+    def _emit_skipped_records(
+        self,
+        records: tuple[tuple[str, int | None, str], ...],
+        name: str,
+        member: ArchiveMember | None,
+        member_id: int | None = None,
+    ) -> None:
+        """One diagnostic for each of ``records``, a header's dropped records
+        (``_emit_header_record_diagnostics``)."""
         attach = member is not None
         context_name = name if member is not None else ""
-        for record, record_id, reason in info.skipped_header_records:
+        for record, record_id, reason in records:
             named = record if record_id is None else f"{record} ({record_id})"
             if record == RAR5_UNPLACED_BYTES:
                 message = (
@@ -5019,41 +5033,50 @@ class RarReader(BaseArchiveReader):
                 attach_to_member=attach,
                 logger=logger,
             )
-        stop_reason = info.header_walk_stop_reason
-        if stop_reason is not None:
-            # One diagnostic saying the header was abandoned, rather than one per
-            # record past the cap — emitting per record is the cost the cap exists
-            # to avoid. Without this a caller sees the capped list and cannot tell
-            # it is the whole story. ``list_truncated`` is what they read.
-            #
-            # The reason comes from the walk because four different faults end it
-            # and only one of them is the cap. It is also the only thing that
-            # explains why the member may be reported encrypted when nothing in
-            # its listing says so, so naming a fault that did not happen costs
-            # more here than it would on an ordinary skip.
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"This RAR5 member's header was not read to the end because "
-                    f"{stop_reason}; it is listed from what was read before that."
-                    if member is not None
-                    else f"This archive's {name} service header was not read to "
-                    f"the end because {stop_reason}, so "
-                    f"{_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} was not used."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=context_name,
-                    member_id=member_id,
-                    record="",
-                    record_id=None,
-                    reason=stop_reason,
-                    list_truncated=True,
-                ),
-                member=member,
-                attach_to_member=attach,
-                logger=logger,
-            )
+
+    def _emit_header_walk_stopped(
+        self,
+        name: str,
+        member: ArchiveMember | None,
+        member_id: int | None,
+        stop_reason: str,
+    ) -> None:
+        """Report a header whose extra-area walk stopped before its end."""
+        attach = member is not None
+        context_name = name if member is not None else ""
+        # One diagnostic saying the header was abandoned, rather than one per
+        # record past the cap — emitting per record is the cost the cap exists
+        # to avoid. Without this a caller sees the capped list and cannot tell
+        # it is the whole story. ``list_truncated`` is what they read.
+        #
+        # The reason comes from the walk because four different faults end it
+        # and only one of them is the cap. It is also the only thing that
+        # explains why the member may be reported encrypted when nothing in
+        # its listing says so, so naming a fault that did not happen costs
+        # more here than it would on an ordinary skip.
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+            message=(
+                f"This RAR5 member's header was not read to the end because "
+                f"{stop_reason}; it is listed from what was read before that."
+                if member is not None
+                else f"This archive's {name} service header was not read to "
+                f"the end because {stop_reason}, so "
+                f"{_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} was not used."
+            ),
+            context=MemberHeaderRecordContext(
+                archive_name=self._archive_name,
+                member_name=context_name,
+                member_id=member_id,
+                record="",
+                record_id=None,
+                reason=stop_reason,
+                list_truncated=True,
+            ),
+            member=member,
+            attach_to_member=attach,
+            logger=logger,
+        )
 
     def _emit_service_header_diagnostics(self) -> None:
         """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish,

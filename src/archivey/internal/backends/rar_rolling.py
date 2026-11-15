@@ -298,11 +298,18 @@ class RollingVolumes:
     member is done (or on :meth:`close`). The files live in a private temporary
     directory that :meth:`close` removes.
 
-    No volume holds more than ``volume_bytes``. Each part of a split member holds
+    No volume holds more than ``volume_bytes``. A member that fits in one volume is
+    never split: it starts the next volume when it does not fit in this one, so a
+    split member is always larger than a volume. Each part of a split member holds
     at least ``min_part_bytes`` packed bytes (by default a quarter of a volume, at
     most :data:`MIN_PART_BYTES`); a member too small for two such parts is never
-    split, and starts the next volume when it does not fit. A member that does not
-    fit an empty volume that way raises ``ResourceLimitError``. ``unrar`` needs both:
+    split either. A member that does not fit an empty volume that way raises
+    ``ResourceLimitError``.
+
+    Not splitting what fits keeps every header that follows a member (a RAR 1.5-4
+    ``UOW`` owner or ``CMT`` comment) in the walk before the member's data ends a
+    volume, which a reader of a non-seekable source relies on
+    (``rar_forward_reader``). The part rule is what ``unrar`` needs:
 
     - One read of its decoder takes bytes from one part only (``UnpRead``: it asks
       for the next volume only when a read finds the part empty). A decoder that
@@ -358,6 +365,22 @@ class RollingVolumes:
             self._next = next(self._members, None)
         return self._next
 
+    @property
+    def splitting(self) -> bool:
+        """Whether the volume last written ends inside a member, whose data goes
+        on in the next one."""
+        pending = self._pending
+        return pending is not None and pending.written > 0
+
+    def _empty_room(self, index: int) -> int:
+        """The bytes volume ``index`` (from 0) holds for member headers and data."""
+        version = self.version
+        return self.volume_bytes - (
+            len(signature(version))
+            + len(main_volume_header(version, solid=self.solid, index=index))
+            + len(end_volume_header(version, more=False))
+        )
+
     def write_next(self) -> Path:
         """Remove the volume on disk, write the next one, and return its path."""
         if self._closed:
@@ -392,6 +415,8 @@ class RollingVolumes:
                 least = self.min_part_bytes
                 if head + left <= room:
                     size = left
+                elif not empty and head + left <= self._empty_room(index + 1):
+                    break  # it fits in a volume of its own: it starts the next one
                 else:
                     # Too small to split, or too little room for a part here.
                     size = 0 if left < 2 * least else min(room - head, left - least)

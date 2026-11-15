@@ -17,7 +17,7 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import ArchiveyConfig, SpoolLimits, open_archive
+from archivey import ArchiveMember, ArchiveyConfig, SpoolLimits, open_archive
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -32,10 +32,12 @@ from archivey.internal.backends import (
     rar_rolling as rl,
 )
 from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
+from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
 from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
 from tests.conftest import requires_binary, requires_unrar_cli
 from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
 from tests.test_rar_owner import OWNER_NAMES_RAR4
+from tests.test_rar_reader import _rar3_file_block
 from tests.test_rar_synthetic import _password
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -303,11 +305,18 @@ def test_a_pipe_pass_that_reads_some_members_lists_them_all(
         assert listing(_pipe(data), every, config=config) == expected
 
 
-def _owner_archive(*sizes: int) -> bytes:
+def _owner_archive(
+    *sizes: int, uow: bytes | None = None, comment: bytes | None = None
+) -> bytes:
     """``OWNER_NAMES_RAR4`` (``a.txt``, then a ``UOW`` header naming root) with one
     such pair per size: members ``m0.bin``, ``m1.bin`` ... of that many stored random
-    bytes."""
-    main, file, uow, end = _rar3_parse(OWNER_NAMES_RAR4)
+    bytes. ``uow`` replaces the ``UOW`` header's data; ``comment`` adds a ``CMT``
+    header holding it after each ``UOW``."""
+    main, file, uow_block, end = _rar3_parse(OWNER_NAMES_RAR4)
+    if uow is not None:
+        header = uow_block["header"]
+        header[32 + struct.unpack_from("<H", header, 26)[0] :] = uow
+        struct.pack_into("<H", header, 5, len(header))
     blocks = [main]
     for index, size in enumerate(sizes):
         block = {"type": file["type"], "header": bytearray(file["header"])}
@@ -318,49 +327,91 @@ def _owner_archive(*sizes: int) -> bytes:
         struct.pack_into("<I", header, 16, zlib.crc32(data))
         header[25] = 0x30  # stored
         block["data"] = data
-        blocks += [block, {**uow, "header": bytearray(uow["header"])}]
+        blocks += [block, {**uow_block, "header": bytearray(uow_block["header"])}]
+        if comment is not None:
+            cmt = _rar3_file_block(
+                b"CMT",
+                flags=_RAR3_FILE_SOLID,
+                pack_lo=len(comment),
+                unp_lo=len(comment),
+                block_type=0x7A,
+            )
+            blocks.append({"type": 0x7A, "header": bytearray(cmt), "data": comment})
     blocks.append(end)
     return _rar3_build(blocks)
+
+
+def _piped_members(
+    data: bytes, config: ArchiveyConfig
+) -> list[tuple[ArchiveMember, bytes, bool]]:
+    """Each member a pipe pass yields, its data, and ``member_state_final`` as it
+    was yielded."""
+    got = []
+    with open_archive(_pipe(data), streaming=True, config=config) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            got.append((member, stream.read(), member.member_state_final))
+    return got
 
 
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
 @pytest.mark.parametrize("size", [5_000, 50_000], ids=["one-volume", "split"])
-def test_an_owner_after_a_split_member_is_reported_missing(size: int) -> None:
+def test_a_split_member_gets_the_owner_and_comment_read_after_it(size: int) -> None:
     """A member split across two volumes is listed when the first is written, before
-    the walk reads the ``UOW`` header after it: the pipe lists it without the owner a
-    file gives, and says so. A member that fits one volume keeps its owner."""
-    data = _owner_archive(size)
+    the walk reads the ``UOW`` and ``CMT`` headers after it: they are written into
+    the member, which is not final until the pass ends, so it ends up as a file
+    lists it."""
+    data = _owner_archive(size, comment=b"member comment")
     with open_archive(io.BytesIO(data), streaming=True) as reader:
         ((member, stream),) = [
             (m, s.read() if s is not None else None) for m, s in reader.stream_members()
         ]
-        assert (member.uname, member.gname) == ("root", "root")
-    with open_archive(_pipe(data), streaming=True, config=_config()) as reader:
-        got = []
-        for piped, piped_stream in reader.stream_members():
-            assert piped_stream is not None
-            got.append((piped, piped_stream.read()))
-    ((piped, piped_data),) = got
+    assert (member.uname, member.gname, member.comment) == (
+        "root",
+        "root",
+        "member comment",
+    )
+    ((piped, piped_data, final),) = _piped_members(data, _config())
     assert piped_data == stream
-    codes = [d.code for d in piped.diagnostics]
-    if size < 20_000:
-        assert (piped.uname, piped.gname) == ("root", "root")
-        assert DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED not in codes
-    else:
-        assert (piped.uname, piped.gname) == (None, None)
-        assert DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED in codes
+    assert not final
+    assert (piped.uname, piped.gname, piped.uid, piped.gid, piped.comment) == (
+        member.uname,
+        member.gname,
+        member.uid,
+        member.gid,
+        member.comment,
+    )
+    assert piped.diagnostics == ()
 
 
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
-def test_an_owner_arriving_while_its_member_is_built_is_kept_or_reported(
+def test_an_owner_header_read_after_a_split_member_that_names_none_is_reported() -> (
+    None
+):
+    """A ``UOW`` header with no owner in it, after a split member: reported once, as a
+    file reports it."""
+    data = _owner_archive(50_000, uow=b"root")
+    with open_archive(io.BytesIO(data)) as reader:
+        (member,) = reader.members()
+        expected = [(d.code, d.message) for d in member.diagnostics]
+    assert [code for code, _ in expected] == [
+        DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+    ]
+    ((piped, _, _),) = _piped_members(data, _config())
+    assert (piped.uname, piped.gname) == (None, None)
+    assert [(d.code, d.message) for d in piped.diagnostics] == expected
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_the_walk_waits_while_a_member_released_early_is_built(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The walk attaches a ``UOW`` on its own thread, which may be while the caller's
-    thread builds the member. Each member has its owner or the diagnostic saying it
-    is missing, never neither. A pause after each member is built widens the window
-    the walk lands in."""
+    """The walk reads the header after a split member on its own thread; it waits
+    until the caller's thread has built the member, so the owner is in the member
+    either way. A pause after each member is built is where it would land."""
     real = rar_forward_reader.RarForwardReader._list_member
 
     def slow(self: rar_forward_reader.RarForwardReader, found: object) -> object:
@@ -370,18 +421,32 @@ def test_an_owner_arriving_while_its_member_is_built_is_kept_or_reported(
 
     monkeypatch.setattr(rar_forward_reader.RarForwardReader, "_list_member", slow)
     data = _owner_archive(*(30_000,) * 5)
-    members = []
-    with open_archive(_pipe(data), streaming=True, config=_config()) as reader:
-        for member, stream in reader.stream_members():
-            assert stream is not None
-            stream.read()
-            members.append(member)
-    assert len(members) == 5
-    for member in members:
-        reported = DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED in [
-            d.code for d in member.diagnostics
-        ]
-        assert (member.uname == "root") != reported, member.name
+    members = [member for member, _, _ in _piped_members(data, _config())]
+    assert [(m.name, m.uname, m.diagnostics) for m in members] == [
+        (f"m{index}.bin", "root", ()) for index in range(5)
+    ]
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_only_a_member_split_by_a_volume_is_listed_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Members that each fit a volume are never split, and none is listed before the
+    walk reads the header after it, though most do not fit the volume the one
+    before them ends."""
+    early: list[set[int]] = []
+    real = rar_forward_reader._ForwardPass.__init__
+
+    def init(self: rar_forward_reader._ForwardPass, reader: object) -> None:
+        real(self, reader)  # type: ignore[arg-type]
+        early.append(self.early)
+
+    monkeypatch.setattr(rar_forward_reader._ForwardPass, "__init__", init)
+    data = _owner_archive(*(12_000,) * 4)
+    members = _piped_members(data, _config())
+    assert [m.uname for m, _, _ in members] == ["root"] * 4
+    assert early == [set()]
 
 
 class _StallingStream(io.RawIOBase):
@@ -433,8 +498,10 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
             _member, stream = next(it)
             assert stream is not None
             assert len(stream.read()) == 3000
-        # The thread now reads ahead into the last member, where the source stops
-        # sending, to finish the volume that ends the third.
+        # The third, listed and not read: the walk waits for that before it reads
+        # on. The thread now reads ahead into the last member, where the source
+        # stops sending, to finish the volume that ends the third.
+        next(it)
         assert source.stalled.wait(10)
         started = time.monotonic()
         it.close()

@@ -218,6 +218,29 @@ def test_a_small_member_starts_the_next_volume_whole() -> None:
         volumes.close()
 
 
+def test_a_member_that_fits_one_volume_starts_the_next_whole() -> None:
+    """Large enough for two parts, but it fits a volume of its own: not split, so
+    only a member larger than a volume ever is."""
+    first, second, third = b"a" * 300, b"b" * 300, b"c" * 900
+    members = [
+        _member(_rar5_header(len(data)), data) for data in (first, second, third)
+    ]
+    volumes = rl.RollingVolumes(
+        5, members, solid=False, volume_bytes=500, min_part_bytes=50
+    )
+    try:
+        one = volumes.write_next().read_bytes()
+        assert not volumes.splitting
+        two = volumes.write_next().read_bytes()
+        assert first in one and b"b" not in one
+        assert second in two
+        # The third does not fit a volume: it fills the rest of this one.
+        assert b"c" in two
+        assert volumes.splitting
+    finally:
+        volumes.close()
+
+
 def test_a_member_that_fits_no_volume_is_refused() -> None:
     data = b"x" * 100
     volumes = rl.RollingVolumes(
