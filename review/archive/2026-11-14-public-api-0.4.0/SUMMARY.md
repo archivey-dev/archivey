@@ -5,7 +5,7 @@ The review recommends resolving the ratio-protection discrepancy and the iterabl
 policy bug before release. Other findings cover error contracts, documentation,
 typing, and deliberate design choices that deserve an explicit decision.
 
-All findings remain proposals pending maintainer triage. Confidence in observed
+The findings were proposals when written; the triage below records each outcome. Confidence in observed
 behavior does not imply that a proposed API design is the only correct choice.
 Full evidence and compatibility qualifications are in
 [`api-consistency.md`](api-consistency.md).
@@ -51,6 +51,11 @@ reproduced eleven findings; F9 needs rapidgzip absent, and the code path is plai
 | F10 | Fixed | #1555 | Yes |
 | F11 | Fixed | #1555 | Yes |
 | F12 | Won't fix (DR-9 structural bound) | — | — |
+
+Every fix PR had merged into `main` by 2026-11-15 (#1553 #1554 #1555 #1556 #1560 on
+2026-11-14, #1559 on 2026-11-15), and the review was archived. #1559 merged after #1562, which
+fixed a PyPy memory leak in the deflate decoder (`dev-docs/known-issues.md`) that had
+killed its merge-queue PyPy runs.
 
 ## What is actually fine
 
