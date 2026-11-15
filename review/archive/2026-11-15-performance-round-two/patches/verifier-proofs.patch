@@ -1,0 +1,37 @@
+--- a/src/archivey/internal/streams/verify.py
++++ b/src/archivey/internal/streams/verify.py
+@@ -186,6 +186,19 @@
+         if is_closed_file_error(exc):
+             return b""
+         raise
++
++
++# Immutable projections of the verifier's three boolean proof fields.
++_VERIFIER_PROOFS = tuple(
++    tuple(
++        tuple(
++            VerificationProofs(ended=ended, content=content, content_possible=possible)
++            for possible in (False, True)
++        )
++        for content in (False, True)
++    )
++    for ended in (False, True)
++)
+
+
+ class MemberVerifier:
+@@ -421,11 +434,9 @@
+
+     def proofs(self) -> VerificationProofs:
+         """What this verifier has proved, for the stream's verification level."""
+-        return VerificationProofs(
+-            ended=self._ended_clean,
+-            content=self._digest_matched,
+-            content_possible=bool(self._expected),
+-        )
++        return _VERIFIER_PROOFS[self._ended_clean][self._digest_matched][
++            bool(self._expected)
++        ]
+
+     @property
+     def pos(self) -> int:

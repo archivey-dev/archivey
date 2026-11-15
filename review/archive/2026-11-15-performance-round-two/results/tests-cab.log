@@ -1,0 +1,17 @@
+Resolved 94 packages in 6ms
+Checked 49 packages in 0.58ms
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.7.0
+rootdir: /workspace/work/archivey
+configfile: pyproject.toml
+plugins: hypothesis-6.170.5, xdist-3.8.0, platformdirs-4.13.5, timeout-2.4.0, cov-7.1.0
+timeout: 60.0s
+timeout method: thread
+timeout func_only: False
+created: 2/2 workers
+2 workers [198 items]
+
+........................................................................ [ 36%]
+..................sssssssss............................................. [ 72%]
+......................................................                   [100%]
+======================= 189 passed, 9 skipped in 23.69s ========================
