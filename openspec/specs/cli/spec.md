@@ -523,12 +523,14 @@ When the archive path is a pipe (FIFO), a character device or a socket, which ca
 read only once, every verb that opens the archive (`list`, `test`, `extract`, `info`)
 SHALL open it in streaming mode, because the user has no option to choose the mode.
 `list` SHALL list the members in one pass, `test` SHALL verify them in one pass and
-`extract` SHALL extract them in one pass; TAR, ZIP and the single-file formats read
-so. When the format cannot be read in one forward pass (7z, RAR, ISO), the verb SHALL
-exit `1` with a message that names the format by its file extension (`7z`, `rar`,
-`iso`) and tells the user to copy the input to a regular file first. The message MUST
-NOT suggest `streaming=True` or a `BytesIO`, which a CLI user cannot pass. A block
-device rereads the same bytes and opens as a regular file does.
+`extract` SHALL extract them in one pass; every format whose `required_source` is
+`FORWARD_ONLY` (TAR, ZIP, cpio, ar, deb, RPM, makeself and the single-file formats)
+reads so. When the format's `required_source` is `SEEKABLE` (7z, RAR, ISO, SquashFS,
+CAB, XAR, LHA, ARJ), the verb SHALL exit `1` with a message that names the format by its
+file extension (for example `7z`, `rar`, `iso`) and tells the user to copy the input to
+a regular file first. The message MUST NOT suggest `streaming=True` or a `BytesIO`,
+which a CLI user cannot pass. A block device rereads the same bytes and opens as a
+regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
 pipe, so an archive piped on stdin is read through this requirement. The `-` token is

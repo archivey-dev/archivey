@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | gzip and zlib as one-member archives; raw DEFLATE as a ZIP or 7z coder, and inside `.tar.gz` |
 | Write | **Not shipped** |
 | Backends | The standard library's `zlib` under `DecompressorStream`, always available. `rapidgzip` from `[seekable]`, used when `use_rapidgzip` selects it (§2.3) |
-| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand or restart points, from the nearest point a forward read has passed: a member start, or a zlib snapshot taken about every MiB inside a member; every member of a BGZF (`bgzip`) file is walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
+| Seeking | Without `rapidgzip`, a backward seek decodes again from the start, or, on declared seek demand or restart points, from the nearest point a forward read has passed: a member start, or a zlib snapshot taken about every MiB inside a member (none under PyPy, §2.3); every member of a BGZF (`bgzip`) file is walked without decoding (§2.3). With `rapidgzip`, from the nearest point of the index it builds while decoding |
 | Size | `None`, for both. gzip's ISIZE is the last member's size mod 2³²; zlib has no size field |
 | Digests | None listed. Every gzip member's CRC-32 is checked on read, and a zlib stream's Adler-32 too; under `rapidgzip`, archivey checks the Adler-32 when the stream is read to its end (§2.3) |
 | Metadata | gzip only: `MTIME` → `modified`, `FNAME` → `raw_name` and `extra["gzip.original_filename"]` |
@@ -185,7 +185,10 @@ first is kept. Their memory is capped at `MAX_SNAPSHOT_BYTES` (32 MiB, about 800
 snapshots, one per MiB up to about 800 MiB of output). Past it only snapshots are thinned,
 to half of it, by doubling their spacing, silently: they are this library's own
 accelerator, not an index the file carries. A decompressor in a decoder child has no
-`copy()` and takes none.
+`copy()` and takes none. Nor does any decompressor where `native_memory.ZLIB_COPY_LEAKS`
+holds (every PyPy so far: each copy loses 7 KiB for good, `dev-docs/known-issues.md`
+§"PyPy: native decoder memory"); there a backward seek decodes again from the last
+member start, or from the start of the stream.
 
 **mgzip members.** When the first member carries an `MZ` subfield instead of `BC`, the walk
 reads mgzip: the subfield holds the size of the member's DEFLATE data (not of the whole

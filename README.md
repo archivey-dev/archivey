@@ -23,8 +23,8 @@ Python library for reading, streaming, and safely extracting archives (ZIP, TAR,
   Integrity errors come from reads, never from `close()`.
 - **Built for streaming:** `stream_members()` hands out each member as a stream, in
   archive order and in one pass, so a solid 7z or RAR is decoded once and a large member
-  is read in chunks rather than held in memory. TAR, ZIP and the single-file formats can
-  also be read straight from a pipe.
+  is read in chunks rather than held in memory. TAR, ZIP, cpio, ar, deb, RPM, makeself
+  and the single-file formats can also be read straight from a pipe.
 - **Remote archives:** an archive on S3, an HTTP server or another store reached through
   [fsspec](https://filesystem-spec.readthedocs.io/) opens without a download. Listing a ZIP or 7z
   archive there, or reading a member of a ZIP, fetches little more than the bytes it needs. The

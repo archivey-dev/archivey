@@ -73,6 +73,7 @@ from archivey.internal.sfx import (
     PeekSource,
     ScanNeedle,
     ShortPeek,
+    file_offset,
     rebased_source,
     scan_miss_error,
     scan_reader_source,
@@ -316,12 +317,17 @@ class _Headers:
 
     # ── Headers ──────────────────────────────────────────────────────────────────────
 
+    def _at(self, offset: int) -> int:
+        """``offset`` as a file offset, for a message: past a self-extracting stub,
+        the source starts at the archive (``sfx.file_offset``)."""
+        return file_offset(self._source, offset)
+
     def _read(self, pos: int, length: int, what: str) -> bytes:
         try:
             return self._source.read_exact(pos, length)
         except TruncatedError:
             raise TruncatedError(
-                f"the LHA archive ends inside {what} at offset {pos}"
+                f"the LHA archive ends inside {what} at offset {self._at(pos)}"
             ) from None
 
     def _read_header(self, offset: int) -> _Header | None:
@@ -339,7 +345,8 @@ class _Headers:
             header = self._read_level_3(offset, base)
         else:
             raise CorruptionError(
-                f"the member header at offset {offset} has level {level}; LHA has "
+                "the member header at offset "
+                f"{self._at(offset)} has level {level}; LHA has "
                 "levels 0 to 3"
             )
         end = header.end + header.stored
@@ -357,7 +364,8 @@ class _Headers:
             )
         if cut:
             raise TruncatedError(
-                f"the LHA archive ends inside the data of the member at offset {offset}"
+                "the LHA archive ends inside the data of the member at offset "
+                f"{self._at(offset)}"
             )
         if header.level == 1 and header.os_id == _OS_LHARK and header.method == "-lh7-":
             header.method = "-lk7-"
@@ -374,19 +382,21 @@ class _Headers:
         length = base[0]
         if length < (_LEVEL_0_MIN if level == 0 else _LEVEL_1_MIN):
             raise CorruptionError(
-                f"the level-{level} header at offset {offset} is {length} bytes long"
+                f"the level-{level} header at offset "
+                f"{self._at(offset)} is {length} bytes long"
             )
         raw = base + self._read(offset + _BASE, length + 2 - _BASE, "a member header")
         if sum(raw[2:]) & 0xFF != raw[1]:
             raise CorruptionError(
-                f"the member header at offset {offset} fails its checksum"
+                f"the member header at offset {self._at(offset)} fails its checksum"
             )
         header = _Header(offset, level, _method(raw[2:7]))
         header.stored, header.size, header.dos_time = struct.unpack_from("<III", raw, 7)
         name_length = raw[21]
         if (_LEVEL_0_MIN if level == 0 else _LEVEL_1_MIN) + name_length > length:
             raise CorruptionError(
-                f"the name in the member header at offset {offset} runs past the header"
+                "the name in the member header at offset "
+                f"{self._at(offset)} runs past the header"
             )
         header.name = raw[22 : 22 + name_length]
         (header.crc,) = struct.unpack_from("<H", raw, 22 + name_length)
@@ -426,12 +436,13 @@ class _Headers:
         while following:
             if following < 3:
                 raise CorruptionError(
-                    f"an extended header of the member at offset {offset} is "
+                    f"an extended header of the member at offset {self._at(offset)} is "
                     f"{following} bytes long"
                 )
             if len(chain) + following > _HEADER_MAX:
                 raise CorruptionError(
-                    f"the extended headers of the member at offset {offset} pass "
+                    "the extended headers of the member at offset "
+                    f"{self._at(offset)} pass "
                     f"{_HEADER_MAX} bytes"
                 )
             record = self._read(pos, following, "an extended header")
@@ -441,7 +452,8 @@ class _Headers:
         # Level 1 counts the extended headers in the stored size.
         if len(chain) > header.stored:
             raise CorruptionError(
-                f"the extended headers of the member at offset {offset} are longer "
+                "the extended headers of the member at offset "
+                f"{self._at(offset)} are longer "
                 "than its stored size"
             )
         header.stored -= len(chain)
@@ -455,7 +467,8 @@ class _Headers:
         (length,) = struct.unpack_from("<H", base)
         if length < _LEVEL_2_SIZE:
             raise CorruptionError(
-                f"the level-2 header at offset {offset} is {length} bytes long"
+                "the level-2 header at offset "
+                f"{self._at(offset)} is {length} bytes long"
             )
         raw = base + self._read(offset + _BASE, length - _BASE, "a member header")
         header = _Header(offset, 2, _method(raw[2:7]))
@@ -476,7 +489,8 @@ class _Headers:
     def _read_level_3(self, offset: int, base: bytes) -> _Header:
         if struct.unpack_from("<H", base)[0] != 4:
             raise CorruptionError(
-                f"the level-3 header at offset {offset} does not have 4-byte fields"
+                "the level-3 header at offset "
+                f"{self._at(offset)} does not have 4-byte fields"
             )
         raw = base + self._read(
             offset + _BASE, _LEVEL_3_SIZE - _BASE, "a member header"
@@ -484,7 +498,8 @@ class _Headers:
         (length,) = struct.unpack_from("<I", raw, 24)
         if not _LEVEL_3_SIZE <= length <= _HEADER_MAX:
             raise CorruptionError(
-                f"the level-3 header at offset {offset} is {length} bytes long"
+                "the level-3 header at offset "
+                f"{self._at(offset)} is {length} bytes long"
             )
         raw += self._read(
             offset + _LEVEL_3_SIZE, length - _LEVEL_3_SIZE, "a member header"
@@ -515,7 +530,8 @@ class _Headers:
         while length:
             if length < field + 1 or pos + length > len(raw):
                 raise CorruptionError(
-                    f"an extended header of the member at offset {header.offset} "
+                    "an extended header of the member at offset "
+                    f"{self._at(header.offset)} "
                     "runs past the header"
                 )
             record_end = pos + length
@@ -559,7 +575,7 @@ class _Headers:
         stored = int.from_bytes(raw[at : at + 2], "little")
         if crc16(raw[:at] + b"\0\0" + raw[at + 2 :]) != stored:
             raise CorruptionError(
-                f"the member header at offset {header.offset} fails its CRC"
+                f"the member header at offset {self._at(header.offset)} fails its CRC"
             )
 
 

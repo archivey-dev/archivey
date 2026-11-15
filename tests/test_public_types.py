@@ -122,7 +122,7 @@ def test_archive_format_from_strings_holds_enum_members() -> None:
     The code that decides behaviour tests ``container is ContainerFormat.RAW_STREAM``,
     and a bare ``str`` never is the member, so an unconverted pair took the other branch.
     """
-    fmt = ArchiveFormat("raw_stream", "gz")  # type: ignore[arg-type]
+    fmt = ArchiveFormat("raw_stream", "gz")
     assert fmt.container is ContainerFormat.RAW_STREAM
     assert fmt.stream is StreamFormat.GZIP
     assert fmt == ArchiveFormat.GZ
