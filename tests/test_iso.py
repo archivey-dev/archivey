@@ -1260,8 +1260,11 @@ def test_joliet_names_lose_their_version_like_plain_names(tmp_path: Path) -> Non
     iso = pycdlib.PyCdlib()
     iso.new(joliet=3)
     iso.add_fp(io.BytesIO(b"text"), 4, "/README.TXT;1", joliet_path="/readme.txt;1")
-    iso.add_fp(io.BytesIO(b"NEW VERSION"), 11, "/FOO.;2", joliet_path="/foo.;2")
     iso.add_fp(io.BytesIO(b"OLD VERSION"), 11, "/FOO.;1", joliet_path="/foo.;1")
+    # Records sort ``foo.;1``, ``foo.a``, ``foo;2`` (``.`` before ``;``), so the two
+    # versions of ``foo`` are not next to each other on disc.
+    iso.add_fp(io.BytesIO(b"other"), 5, "/FOO.A;1", joliet_path="/foo.a")
+    iso.add_fp(io.BytesIO(b"NEW VERSION"), 11, "/FOO.;2", joliet_path="/foo;2")
     iso.add_fp(io.BytesIO(b"bare"), 4, "/BARE.;1", joliet_path="/;1")
     iso.add_fp(io.BytesIO(b"plain"), 5, "/PLAIN.;1", joliet_path="/plain")
     out = io.BytesIO()
@@ -1276,23 +1279,78 @@ def test_joliet_names_lose_their_version_like_plain_names(tmp_path: Path) -> Non
         ]
         assert sorted(rows) == [
             (";1", b";1", None, True),
-            ("foo", b"foo.;2", 2, True),
+            ("foo", b"foo;2", 2, True),
             ("foo.;1", b"foo.;1", 1, False),
+            ("foo.a", b"foo.a", None, True),
             ("plain", b"plain", None, True),
             ("readme.txt", b"readme.txt;1", 1, True),
         ]
-        # The versions of one name list together, the newest last.
-        names = [m.name for m in ar.members()]
-        assert names.index("foo") == names.index("foo.;1") + 1
+        # The versions of one name list together, the newest last, and every other
+        # file keeps its record order.
+        assert [m.name for m in ar.members()] == [
+            ";1",
+            "foo.;1",
+            "foo",
+            "foo.a",
+            "plain",
+            "readme.txt",
+        ]
         assert ar.read("foo") == b"NEW VERSION"
         assert ar.read("foo.;1") == b"OLD VERSION"
         ar.extract_all(tmp_path / "out", on_blocked="skip")
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
         ";1",
         "foo",
+        "foo.a",
         "plain",
         "readme.txt",
     ]
+
+
+@pytest.mark.parametrize("joliet", [False, True])
+def test_a_version_never_leaves_a_dot_name(joliet: bool) -> None:
+    """A name of dots and a version keeps its stored spelling: removing the version
+    and the empty extension's ``.`` would make up a ``.`` or ``..`` member. Joliet
+    allows such names; a plain image needs crafting, since d-characters have no ``.``."""
+    import pycdlib
+
+    # Plain identifiers pycdlib accepts, and the dot names patched over them (same
+    # length, so every record stays the same size).
+    names = {
+        "/V;1": "/.;1",
+        "/W.;1": "/..;1",
+        "/QQ.;1": "/...;1",
+        "/SUB/PP.;1": "/SUB/...;1",
+        "/SUB/RRR.;1": "/SUB/....;1",
+    }
+    iso = pycdlib.PyCdlib()
+    iso.new(joliet=3 if joliet else None)
+    iso.add_directory("/SUB", joliet_path="/sub" if joliet else None)
+    for plain, dots in names.items():
+        joliet_path = dots.lower() if joliet else None
+        iso.add_fp(io.BytesIO(b"x"), 1, plain, joliet_path=joliet_path)
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = out.getvalue()
+    if not joliet:
+        for plain, dots in names.items():
+            old, new = plain.rsplit("/", 1)[1], dots.rsplit("/", 1)[1]
+            assert data.count(old.encode()) == 1
+            data = data.replace(old.encode(), new.encode())
+
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.info.extra["iso.namespace"] == ("joliet" if joliet else "iso9660")
+        files = sorted(
+            (m.name, m.extra.get("iso.version"))
+            for m in ar.members()
+            if m.type is MemberType.FILE
+        )
+    sub = "sub" if joliet else "SUB"
+    assert files == sorted(
+        [(".;1", None), ("..;1", None), ("...;1", None)]
+        + [(f"{sub}/...;1", None), (f"{sub}/....;1", None)]
+    )
 
 
 def test_rock_ridge_relocation_directory_is_not_listed() -> None:
@@ -3060,7 +3118,7 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "iso9660", "expected"),
+    ("name", "listed", "expected"),
     [
         ("FOO.;1", True, ("FOO", 1)),
         ("FOO.;1", False, ("FOO.", 1)),
@@ -3068,14 +3126,20 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
         ("FOO;1", False, ("FOO", 1)),
         ("A.;12", True, ("A", 12)),
         ("A.;12", False, ("A.", 12)),
-        # A bare ``;N`` is a plain ISO 9660 name; Joliet strips it to nothing.
+        # A bare ``;N`` is a member's name; compared with another tree, it strips to
+        # nothing.
         (";1", True, (";1", None)),
         (";1", False, ("", 1)),
-        # A lone dot is kept: it is the whole stem, not an empty extension.
-        (".;1", True, (".", 1)),
+        # A stem of dots alone is a member's name too: stripping would make ``.`` or
+        # ``..``, which no image stores.
+        (".;1", True, (".;1", None)),
         (".;1", False, (".", 1)),
-        ("..;3", True, (".", 3)),
+        ("..;3", True, ("..;3", None)),
         ("..;3", False, ("..", 3)),
+        ("...;1", True, ("...;1", None)),
+        ("....;1", True, ("....;1", None)),
+        # A dot that follows something else is still the empty extension's.
+        ("A..;1", True, ("A.", 1)),
         ("FOO.;", True, ("FOO.;", None)),
         ("FOO.;", False, ("FOO.;", None)),
         # A final newline is part of the name, so no version follows it.
@@ -3087,6 +3151,6 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
     ],
 )
 def test_strip_version_rules(
-    name: str, iso9660: bool, expected: tuple[str, int | None]
+    name: str, listed: bool, expected: tuple[str, int | None]
 ) -> None:
-    assert _strip_version(name, iso9660=iso9660) == expected
+    assert _strip_version(name, listed=listed) == expected

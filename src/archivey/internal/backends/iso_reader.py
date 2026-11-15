@@ -1125,23 +1125,27 @@ def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
     return (rr.dr_entries,) if ce is None else (rr.dr_entries, ce)
 
 
-def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
+def _strip_version(name: str, *, listed: bool) -> tuple[str, int | None]:
     """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
 
-    With ``iso9660`` (a name a member is listed under: a plain ISO 9660 identifier, or
-    a Joliet one in the Joliet namespace), an empty extension's ``.`` goes too
-    (``FOO.;1`` is ``FOO``), and a bare ``;N`` is a name, not a version: it comes back
-    unchanged with ``None``. Without it (a Joliet name compared with another tree), the
-    suffix always goes and its version is reported, so ``;1`` becomes ``""`` with
-    version 1. Neither such caller lets that empty name reach a member: ``_joliet_name``
-    drops it in ``_ascii_runs_match``, and ``_joliet_text`` only feeds extent matching.
+    With ``listed`` (a name a member is listed under: a plain ISO 9660 identifier, or a
+    Joliet one in the Joliet namespace), an empty extension's ``.`` goes too
+    (``FOO.;1`` is ``FOO``), and a stem with nothing but dots in it (``;1``, ``.;1``,
+    ``...;1``) is a name, not a version: it comes back unchanged with ``None``, since
+    stripping it would make up an empty, ``.`` or ``..`` name the image does not store.
+    Without it (a Joliet name compared with another tree), the suffix always goes and
+    its version is reported, so ``;1`` becomes ``""`` with version 1. Neither such
+    caller lets that empty name reach a member: ``_joliet_name`` drops it in
+    ``_ascii_runs_match``, and ``_joliet_text`` only feeds extent matching.
     """
     match = _VERSION_SUFFIX.search(name)
-    if match is None or (iso9660 and match.start() == 0):
+    if match is None:
         return name, None
     stem = name[: match.start()]
-    if iso9660 and len(stem) > 1 and stem.endswith("."):
-        stem = stem[:-1]
+    if listed:
+        if not stem.strip("."):
+            return name, None
+        stem = stem.removesuffix(".")
     return stem, int(match.group(1))
 
 
@@ -1149,7 +1153,7 @@ def _iso_ident_name(record: DirectoryRecord) -> bytes:
     """A record's ISO 9660 identifier, version and empty-extension dot removed."""
     # Latin-1 maps each byte to one character, and none of 0x80-0xff is a digit.
     ident = bytes(record.file_identifier()).decode("latin-1")
-    return _strip_version(ident, iso9660=True)[0].encode("latin-1")
+    return _strip_version(ident, listed=True)[0].encode("latin-1")
 
 
 def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
@@ -1875,7 +1879,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         if self._namespace == "rock_ridge":
             return rel, None
         parent, sep, base = rel.rpartition("/")
-        stem, version = _strip_version(base, iso9660=True)
+        stem, version = _strip_version(base, listed=True)
         return parent + sep + stem, version
 
     def _version_order(self, item: tuple[str, bytes, object]) -> tuple[str, int]:
@@ -1966,7 +1970,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # A damaged Joliet name: the Rock Ridge record escapes its own bytes
             # rather than borrow a name that ``_decode_joliet`` ends with U+FFFD.
             return None
-        name, _ = _strip_version(_decode_joliet(ident), iso9660=False)
+        name, _ = _strip_version(_decode_joliet(ident), listed=False)
         if not _ascii_runs_match(raw, name):
             return None
         self._joliet_named[id(record)] = counterpart
@@ -2040,7 +2044,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
     def _joliet_text(record: DirectoryRecord) -> str:
         """A Joliet identifier as text, without its version; never raises."""
         name = _decode_joliet(bytes(record.file_identifier()))
-        return _strip_version(name, iso9660=False)[0]
+        return _strip_version(name, listed=False)[0]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
@@ -2383,7 +2387,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
     def _plain_text(record: DirectoryRecord) -> str:
         """A plain ISO 9660 identifier as text, without its version; never raises."""
         name = bytes(record.file_identifier()).decode("latin-1")
-        return name if record.is_dir() else _strip_version(name, iso9660=True)[0]
+        return name if record.is_dir() else _strip_version(name, listed=True)[0]
 
     def _udf_tree_files(
         self,

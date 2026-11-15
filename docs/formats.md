@@ -1166,7 +1166,8 @@ other members because of a member's name any more. Setting it to `True` warns.
   too, and Windows and Linux drop it there as well. When a directory holds several versions of one
   name, the highest takes the bare name, and the others list under their stored identifier
   (`FOO.;1`) with `is_current=False`, the same shape as RAR file versions. Directory names have no
-  version and keep any `;N`.
+  version and keep any `;N`, and so does a file name that is only dots before the `;N`
+  (`...;1`), so that no member is named `.` or `..`.
 - Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
   which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory

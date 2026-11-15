@@ -274,12 +274,14 @@ What is ISO-specific in turning a record into a member:
   `extra["iso.version"]`. Joliet inherits the syntax, and Windows-era writers put `;1`
   on Joliet names; Windows and Linux's isofs drop it, and so does archivey. A Joliet
   directory's record order is not the sort of its names, so only the versions of one
-  name are brought together there; plain files are sorted by (name, version).
-  When a directory holds several versions, the highest takes the bare name; older ones are
+  name are brought together there; plain files are sorted by (name, version). When a
+  directory holds several versions, the highest takes the bare name; older ones are
   listed under their stored identifier with `is_current=False`, the RAR file-history
   shape, so extraction writes only the newest. ECMA-119 gives a version only to a file
   identifier, so a directory identifier that ends in `;N` keeps it: the directory then
-  lists under the same path its children's paths start with.
+  lists under the same path its children's paths start with. A file stem that is empty
+  or only dots (`;1`, `..;1`, `...;1`) keeps its stored spelling with no version:
+  removing the version and the empty extension's `.` would make up `.` or `..`.
 - **Rock Ridge gaps.** A record with no Rock Ridge entries in a Rock Ridge image is kept
   under its ISO 9660 name, with `MEMBER_HEADER_RECORD_SKIPPED` attached to it. The
   `rr_moved` directory is not listed: it is recognised by its contents (every child is a
