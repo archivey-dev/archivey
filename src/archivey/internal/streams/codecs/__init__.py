@@ -66,7 +66,7 @@ The package, one module per codec plus the shared pieces:
   ``lzx``, which only the CAB reader uses) and ``framed_decoder`` for the libraries
   that decode one stream at a time.
 - Framing, seek indexes and resume helpers: ``zstd_framing``, ``brotli_framing``,
-  ``lz4_legacy``, ``zstd_seek_table``, ``bgzf_index``, ``bzip2_resume``,
+  ``lz4_legacy``, ``zstd_seek_table``, ``bgzf_index``, ``bzip2_blocks``,
   ``deflate_resume``.
 - The 7z filters: ``arm64_filter``, ``riscv_filter``, ``bcj2_filter``.
 

@@ -4,7 +4,7 @@ accelerator changes speed and never the verdict.
 The accelerated open paths of gzip, zlib, raw DEFLATE (``deflate_family_codec``) and
 bzip2 (``bzip2_codec``) wrap rapidgzip's stream in :class:`_StdlibOnAcceleratorError`.
 On a data error it reopens the same source with the standard-library decoder, from a
-resume point when it has one (``deflate_resume``, ``bzip2_resume``), and carries on at
+resume point when it has one (``deflate_resume``, ``bzip2_blocks``), and carries on at
 the position already delivered. The rest of the module is what those wrappers and the
 per-codec end checks share: fresh views of the source that leave rapidgzip's position
 alone (:func:`_accelerator_backstop_source`), the end-of-output test for a seek
@@ -205,7 +205,7 @@ class _StdlibOnAcceleratorError(DelegatingStream):
     ``RuntimeError('std::exception')`` on a cut stream, where the standard library
     raises ``TruncatedError``), and ``resume_points`` gives the blocks it had indexed
     before the error (``_bzip2_resume_points``; a block needs no window, see
-    ``bzip2_resume``).
+    ``bzip2_blocks``).
 
     Once switched, a data error of the standard library leaves as the codec's typed
     error (``translate``), as it does from the codec's own translator with the
@@ -396,8 +396,9 @@ class _StdlibOnAcceleratorError(DelegatingStream):
         """Replace a standard-library decoder whose resumed decode reached the end of
         its stream (``ResumeReachedStreamEnd``) with one that decodes from the start.
 
-        For bzip2 this decode gives the verdict: the resumed decode cannot tell the
-        end-of-stream marker's combined CRC from a damaged block, and raises on both.
+        For bzip2 this decode gives the verdict when the combined CRC that the resumed
+        decode read from rapidgzip's index does not match, or could not be read
+        (``Bzip2BlockStart.from_index``).
         """
         assert self.switched, "only a standard-library decoder resumes"
         self._replace_inner(self._open_stdlib_at())

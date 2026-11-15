@@ -38,9 +38,14 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.bzip2_resume import Bzip2Resume
+from archivey.internal.streams.codecs.bzip2_blocks import (
+    Bzip2BlockDecompressor,
+    Bzip2BlockStart,
+    rotate_combined,
+)
 from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
+    StreamIndex,
     StreamStart,
     stream_magic,
 )
@@ -749,7 +754,7 @@ def _bzip2_resume_points(
     accelerator: BinaryIO, position: int, open_view: Callable[[], BinaryIO]
 ) -> list[SeekPoint]:
     """The blocks rapidgzip's bzip2 decoder had indexed before its error, at or before
-    ``position``, as points ``Bzip2ResumeDecoder`` starts from.
+    ``position``, as points ``Bzip2BlockDecompressor`` resumes at.
 
     Only the accelerator's index knows where a block's output starts. Scanning the
     source for the block magic would find where blocks are, but the decompressed offset
@@ -758,32 +763,66 @@ def _bzip2_resume_points(
     takeover starts at the origin.
 
     The index also lists each end-of-stream marker; the magic read at each offset keeps
-    only blocks. Offset 0 is left out, since the origin is already a point.
+    only blocks. Offset 0 is left out, since the origin is already a point. Each point
+    carries its stream's level digit, read from the header before the stream's first
+    indexed block, and the combined CRC of the blocks the index lists before it in its
+    stream, read from their headers, so a decode from it checks the end-of-stream CRC
+    itself. The index was not checked block by block here, so a mismatch hands back to
+    a decode from the start, which decides (``Bzip2BlockStart.from_index``). A stream
+    whose header is not right before its first indexed block resumes as level 9, which
+    accepts a block of any level, with no combined CRC: its end hands back too. Every
+    indexed block is read, one 11-byte read each, once per takeover.
     """
     offsets = getattr(accelerator, "available_block_offsets", None)
     if offsets is None:
         return []
-    candidates = sorted(
-        (
-            (decoded, bit)
-            for bit, decoded in offsets().items()
-            if 0 < decoded <= position
-        ),
-        reverse=True,
-    )
+    index = sorted(offsets().items())
     points: list[SeekPoint] = []
-    if not candidates:
+    if not any(0 < decoded <= position for _bit, decoded in index):
         return points
     with open_view() as view:
-        for decoded, bit in candidates:
-            marker = _bzip2_marker_at(view, bit)
-            if marker is None or marker[0] != _BZIP2_BLOCK_MAGIC:
-                continue
-            points.append(SeekPoint(decoded, bit // 8, Bzip2Resume(bit % 8)))
-            if len(points) == _BZIP2_RESUME_POINTS:
+        # The stream the walk is in: its level, and its blocks' combined CRC so far;
+        # ``None`` before its first block.
+        level: int | None = None
+        combined: int | None = None
+        for bit, decoded in index:
+            if decoded > position:
                 break
-    points.reverse()
-    return points
+            marker = _bzip2_marker_at(view, bit)
+            if marker is None:
+                break
+            magic, crc = marker
+            if magic == _BZIP2_EOS_MAGIC:
+                level = combined = None
+                continue
+            if magic != _BZIP2_BLOCK_MAGIC:
+                continue  # the end of the last end-of-stream marker
+            if level is None:
+                level = _bzip2_level_before(view, bit)
+                combined = 0 if level is not None else None
+            if decoded > 0:
+                state = Bzip2BlockStart(
+                    bit % 8, level=level or 9, combined=combined, from_index=True
+                )
+                points.append(SeekPoint(decoded, bit // 8, state))
+            if combined is not None:
+                combined = rotate_combined(combined, crc)
+    # Points share an output offset where a block's stream ends at it; the later one
+    # in the source is the block after the end.
+    kept: dict[int, SeekPoint] = {p.decompressed_offset: p for p in points}
+    return list(kept.values())[-_BZIP2_RESUME_POINTS:]
+
+
+def _bzip2_level_before(view: BinaryIO, bit: int) -> int | None:
+    """The level digit of the stream header right before the block at ``bit``, the
+    first of its stream; ``None`` when no header ends there."""
+    if bit % 8 or bit < 32:
+        return None
+    view.seek(bit // 8 - _BZIP2_HEADER_LEN)
+    header = view.read(_BZIP2_HEADER_LEN)
+    if BZIP2_HEADER.fullmatch(header) is None:
+        return None
+    return header[3] - 0x30
 
 
 # Bytes read per step while looking past an accelerator's end for the first byte that is
@@ -861,7 +900,27 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return config.natives.bz2_decompressor()
+        # One block at a time, each block's output held until its CRC passes
+        # (``bzip2_blocks``).
+        return Bzip2BlockDecompressor(
+            config.natives.bz2_decompressor,
+            memory_cap=config.decoder_limits.max_decoder_memory,
+        )
+
+    @override
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
+        if not config.records_restart_points:
+            return None
+        # Declared seek demand or restart points only, as bzip3: every block a decode
+        # checks is a seek point (``Bzip2BlockDecompressor.take_block_starts``). A
+        # further stream's first block is one, so the stream's own start is not kept,
+        # and nothing in the file indexes the blocks without decoding them.
+        return StreamIndex(
+            resumes_at=lambda data: False, build=lambda inner, last: ([], None)
+        )
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:

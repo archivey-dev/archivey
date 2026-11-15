@@ -16,10 +16,6 @@ from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.overrides import override
-from archivey.internal.streams.codecs.bzip2_resume import (
-    Bzip2Resume,
-    Bzip2ResumeDecoder,
-)
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -92,7 +88,7 @@ class FrameCheck:
 
 
 class BlockResumable(Protocol):
-    """A decompressor whose stream is a run of blocks it can resume at (bzip3).
+    """A decompressor whose stream is a run of blocks it can resume at (bzip3, bzip2).
 
     Internal: plugin codecs do not implement it. :class:`FramedDecoder` asks it, after
     each ``decompress``, for the blocks it began: each as the block's compressed and
@@ -250,8 +246,7 @@ class FramedDecoder(BaseDecoder):
         self._zero_padding = zero_padding
         self._decomp = new_decompressor()
         if start is not None and start.state is not None:
-            # Only a BlockResumable's points carry a state here (bzip2's takeover
-            # points go to their own decoder in ``recreate``).
+            # Only a BlockResumable's points carry a state here (bzip3, bzip2).
             cast("BlockResumable", self._decomp).resume(start.state)
         self._fed = False
         # Past a stream's end, looking for the next one.
@@ -275,10 +270,6 @@ class FramedDecoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
-        if isinstance(point.state, Bzip2Resume):
-            # Only the bzip2 takeover adds such a point (``bzip2_resume``), so
-            # ``_new`` builds a bz2 decompressor.
-            return Bzip2ResumeDecoder(point.state, self, self._new)
         return FramedDecoder(
             self._new,
             magic=self._magic,

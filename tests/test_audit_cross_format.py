@@ -8,6 +8,7 @@ so each format keeps the promised behaviour.
 from __future__ import annotations
 
 import bz2
+import gzip
 import io
 import lzma
 import os
@@ -411,16 +412,23 @@ def test_compressed_tar_stream_members_decodes_once(tmp_path: Path, codec: str) 
 # ---------------------------------------------------------------------------
 
 
-def test_tar_pax_header_costs_the_metadata_cap_not_the_header(tmp_path: Path) -> None:
+@pytest.mark.parametrize("codec", ["gz", "bz2"])
+def test_tar_pax_header_costs_the_metadata_cap_not_the_header(
+    tmp_path: Path, codec: str
+) -> None:
     value_size = 8 * 2**20
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tf:
         info = tarfile.TarInfo("m")
         info.pax_headers = {"comment": "a" * value_size}
         tf.addfile(info)
-    archive = tmp_path / "pax.tar.bz2"
-    archive.write_bytes(bz2.compress(raw.getvalue()))
-    assert archive.stat().st_size < 1024
+    archive = tmp_path / f"pax.tar.{codec}"
+    if codec == "bz2":
+        archive.write_bytes(bz2.compress(raw.getvalue()))
+        assert archive.stat().st_size < 1024
+    else:
+        archive.write_bytes(gzip.compress(raw.getvalue(), mtime=0))
+        assert archive.stat().st_size < 16 * 1024
 
     cap = 64 * 1024
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=cap))
@@ -434,8 +442,11 @@ def test_tar_pax_header_costs_the_metadata_cap_not_the_header(tmp_path: Path) ->
 
     peak = traced_peak(attempt)
     # "an over-limit tar costs the cap rather than the archive, PAX keywords and
-    # values included" (threat model O1). Generous slack: 1/4 of the value.
-    assert peak < value_size // 4, f"peak {peak} bytes for a {cap}-byte cap"
+    # values included" (threat model O1). Generous slack: 1/4 of the value. bzip2
+    # holds a whole block until its CRC passes, and the 8 MiB value is one block's
+    # output: that costs the block (at most ``MAX_BLOCK_OUTPUT``), not the archive.
+    bound = value_size // 4 if codec == "gz" else value_size + value_size // 4
+    assert peak < bound, f"peak {peak} bytes for a {cap}-byte cap"
 
 
 # ---------------------------------------------------------------------------

@@ -331,9 +331,13 @@ hand the operation to the standard library decoder, so the bytes delivered and t
 `use_indexed_bzip2=OFF`. The standard library SHALL start at the newest block from rapidgzip's
 index at or before the position delivered to the caller, among a bounded number of the newest
 such blocks it keeps as seek points; where there is none, at the start of the stream. A bzip2
-block carries no window. A decode started at a block that meets the end of its stream (the
-combined CRC, which it cannot check) or a damaged block SHALL start over from the start of the
-stream; one that runs out of input first SHALL raise the standard library's `TruncatedError`.
+block carries no window. A decode started at such a block SHALL check the stream's
+combined CRC at its end from the block CRCs read at the index's blocks. When it does not
+match, or could not be read, the decode SHALL start over from the start of the stream,
+which decides. A damaged block after the start is a verdict, as from a decode from the
+start: blocks decode on their own, so that decode gives the same bytes before it and the
+same error. One that runs out of input first SHALL raise the standard library's
+`TruncatedError`.
 
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations. For a zlib stream the system SHALL check the Adler-32 after
@@ -775,6 +779,28 @@ seek-table cap SHALL report scan `bzip3_blocks`.
 | A header whose sizes the decoder refuses (out of range, under 8 bytes, or an empty literal that declares output) | Points for the blocks before it; no size |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bzip3_blocks`, `SeekTableThinned`); exact total kept |
 | Stream opened with neither seek demand nor restart points | No walk, no points |
+
+### Requirement: bzip2 blocks are seek points, found while decoding
+
+On declared seek demand or restart points every bzip2 block that the standard library
+engine checks SHALL be a seek point, recorded when a forward read reaches it, with the
+block's bit offset into its first byte, the stream's level digit and the combined CRC of
+the stream's blocks before it as its resume state. A block carries no state from the
+blocks before it, so a decode resumed there SHALL check every block after it and the
+stream's combined CRC, and give the same bytes and errors as a decode from the start.
+bzip2 has no index: no walk finds points without decoding. A stream opened with neither
+seek demand nor restart points SHALL keep no points. The rapidgzip engine keeps its own
+index (§"rapidgzip is the only gzip and bzip2 accelerator").
+
+#### Scenario: bzip2 block matrix
+
+| Case | Expected |
+| --- | --- |
+| Read forward, then seek back into block N | Decoding resumes at block N's start; one block decoded |
+| Seek forward past the points read so far | Decodes on from the last point |
+| A resumed decode reaches the end-of-stream marker | Its combined CRC is checked from the point's state; no decode from the start |
+| Concatenated streams | Each stream's blocks are points; the combined CRC restarts with each stream |
+| Stream opened with neither seek demand nor restart points | No points |
 
 ### Requirement: gzip decodes record zlib snapshot points
 

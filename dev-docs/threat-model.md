@@ -765,8 +765,10 @@ probes also carry a fixed ceiling of their own under the cap: zstd's window at 1
 and a `.tar.bz3`'s block size at 16 MiB, about 163 MiB of libbzip3 state
 (`bzip3_codec.py` `_PROBE_BLOCK_SIZE_MAX`).
 
-**Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2,
-Brotli, LZ4 frames) are not checked against the cap, in detection or on read. The RAR
+**Residual.** Codecs whose memory their format bounds at 16 MiB or less (gzip, bzip2's
+decoder state, Brotli, LZ4 frames) are not checked against the cap, in detection or on
+read. bzip2 also holds one block's output until its CRC passes, at most 46.6 MB; that is
+counted as it grows, and a block over the cap raises (`bzip2_blocks.py`). The RAR
 counts rest on measurements of `unrar` 7.00 and `unar` 1.10.1; another version that
 allocates differently is not measured. The rapidgzip child's peak can pass the cap by
 what it allocates between two checks (about 17 MB measured on four cores; a check

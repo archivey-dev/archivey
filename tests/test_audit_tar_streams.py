@@ -896,8 +896,9 @@ def test_gzip_decode_failure_after_trailer_is_not_silent() -> None:
 def _bad_last_block_check(codec: str, raw: bytes) -> tuple[bytes, bytes]:
     """``raw`` compressed clean, and again with the last block's check flipped.
 
-    The members still decode byte for byte; only the check disagrees, and bzip2 and
-    xz report that the same way as any other decode failure.
+    The members still decode byte for byte; only the check disagrees. xz reports
+    that the same way as any other decode failure. bzip2 holds each block until its
+    CRC passes, so a block whose CRC fails gives none of its bytes.
     """
     if codec == "bz2":
         import bz2
@@ -918,15 +919,16 @@ def _bad_last_block_check(codec: str, raw: bytes) -> tuple[bytes, bytes]:
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("codec", ["bz2", "xz"])
+@pytest.mark.parametrize("codec", ["xz"])
 def test_untyped_block_check_after_trailer_is_reported(
     codec: str, streaming: bool
 ) -> None:
-    """format-tar: bzip2 and xz cannot tell a failed check from junk after the stream.
+    """format-tar: xz cannot tell a failed check from junk after the stream.
 
     The last block's check is reached in the trailing scan (64 KiB of padding), so the
     failure there must be ``DIGEST_UNVERIFIABLE``, not silence: the same damage in a
-    ``.tar.gz`` raises (the test above).
+    ``.tar.gz`` raises (the test above). A ``.tar.bz2`` raises too: its block is held
+    until its CRC passes (``test_a_failed_bzip2_block_check_gives_none_of_its_bytes``).
     """
     import random
 
@@ -956,8 +958,10 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
     """format-tar: a failed bzip2/xz check after the member is reported, never silent.
 
     With only ``tarfile``'s own record padding, the check fails after the member's
-    bytes. The member read hands back every byte before the failure, so the member
-    reads whole and the trailing scan reports ``DIGEST_UNVERIFIABLE`` at every size.
+    bytes. For xz the member read hands back every byte before the failure, so the
+    member reads whole and the trailing scan reports ``DIGEST_UNVERIFIABLE`` at every
+    size. bzip2 holds its one block until the block's CRC passes, so none of its bytes
+    come out and the open or the read raises ``CorruptionError`` at every size.
     """
     fmt = ArchiveFormat.TAR_BZ2 if codec == "bz2" else ArchiveFormat.TAR_XZ
     outcomes: set[str] = set()
@@ -975,7 +979,25 @@ def test_untyped_block_check_is_never_silent(codec: str, streaming: bool) -> Non
             continue
         assert DiagnosticCode.DIGEST_UNVERIFIABLE in counts, f"silent at {size}"
         outcomes.add("reported")
-    assert outcomes == {"reported"}
+    assert outcomes == ({"raised"} if codec == "bz2" else {"reported"})
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_failed_bzip2_block_check_gives_none_of_its_bytes(streaming: bool) -> None:
+    """compressed-streams: a ``.tar.bz2`` whose one block fails its CRC, with every
+    byte of its data intact, gives none of the block's bytes: the bytes a check
+    refuses never reach the TAR walk."""
+    payload = random.Random(1).randbytes(200_000)
+    _clean, damaged = _bad_last_block_check(
+        "bz2", _one_member_tar(payload) + b"\0" * 64 * 1024
+    )
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(
+            io.BytesIO(damaged), format=ArchiveFormat.TAR_BZ2, streaming=streaming
+        ) as ar,
+    ):
+        _drain_closing(ar)
 
 
 def _checksumless_codec(codec: str, raw: bytes) -> bytes:
