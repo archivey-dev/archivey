@@ -68,8 +68,8 @@ removed.
   member sizes, as BGZF files do. A member read from a compressed TAR after the listing
   resumes from the nearest recorded point instead of decoding the archive again from its
   start, xz included even when the file has no usable index.
-- `ExtractionReport.ok` and `raise_for_failure()` answer whether every member was
-  extracted.
+- `ExtractionReport` and `MemberListReport` gain `ok` and `raise_for_failure()`, which
+  answer whether every member was extracted or listed.
 - New diagnostics: `SOLID_OPEN_REDECOMPRESSES` (opening members of a solid 7z or RAR
   archive out of order decodes data again), `DETECTION_DECODER_LIMITED` (detection
   skipped a probe that needed more than `max_decoder_memory`), `MEMBER_LOCAL_OFFSET_SHIFTED`
@@ -116,14 +116,11 @@ removed.
   `bool` with a `TypeError`, as `ArchiveyConfig`'s switches already did. Before, a
   string such as `"false"` counted as true.
 - **Breaking:** a truth test (`if report:`) on an `ExtractionReport` or a
-  `MemberListReport` raises `TypeError`, as on `VerifyReport`: a report's truth was its
-  length, so a failed extraction read as true. Use `report.ok`. `MemberListReport`
-  gains `ok` and `raise_for_failure()`, as the other two reports have.
+  `MemberListReport` raises `TypeError`. A report's truth was its length, so a failed
+  extraction read as true. Use `report.ok`.
 - `ArchiveyConfig`'s accelerator conflicts (`ON` with `process_isolation=NONE`, or with
   rapidgzip excluded by the format policy) raise an `ArchiveyUsageError` that is also a
   `ValueError`.
-- An fsspec source is never searched for its other volumes, whatever `discover_volumes`
-  says: pass a remote set as a list. A lone remote part that needs the others says so.
 - `ExtractionPolicy.TRUSTED` writes a symlink whose target starts at `/` as stored, as
   GNU tar does for a root filesystem image. `STRICT` and `STANDARD` still refuse it, and
   no policy writes anything through such a link.
@@ -137,8 +134,6 @@ removed.
   backslashes or tens of thousands of characters read without a config switch. A RAR opened
   from a file object copies only the data a member needs instead of the whole archive.
   Passes over many small members read them in batches.
-- RPM packages list from their header alone, with no payload byte read. Damage in the
-  payload is found when a file's data is read, and the files before it still read.
 - ZIP: when bytes are missing from the middle of an archive, the members before the gap
   are read from their stored offsets instead of failing with the rest.
 - An ISO image whose directory padding is damaged opens with an `ARCHIVE_TRAILING_DATA`
@@ -178,8 +173,6 @@ removed.
   a planted archive beside the real one could mix its members into the output, and a
   matching FIFO could hang the read. The archive's directory no longer reaches `unrar`'s
   command line either.
-- A `.deb` whose data tar writes into `DEBIAN/` is refused, as `dpkg-deb` refuses it,
-  instead of replacing the control files in the listing and in extraction.
 - `open_stream()` is held to `DecoderLimits.max_ratio`, as a member read is, so a bare
   `.gz` or `.bz2` bomb that `open_archive()` refuses no longer decodes in full through
   it.
@@ -192,14 +185,8 @@ removed.
 
 ### Fixed
 
-- For an archive behind a self-extracting stub (ZIP, 7z, LHA, ARJ), every offset in an
-  error or diagnostic now counts from the start of the file, stub included, as RAR's
-  already did. That includes the `observed_bytes`, `local_offset` and `central_offset`
-  fields of a ZIP's diagnostic context.
-- `FormatPolicy(exclude_libraries=, only_libraries=)` reads a generator once. Before,
-  validation used it up and the exclusion was lost.
-- Under PyPy, reading gzip, zlib or raw DEFLATE data from a pipe in small reads no
-  longer grows memory by gigabytes: one decoder copy now serves many read steps.
+- For a ZIP or 7z archive behind a self-extracting stub, every offset in an error or
+  diagnostic now counts from the start of the file, stub included, as RAR's already did.
 - About 40 bugs found since 0.3.0, most of them by fuzzing each reader and by comparing
   archivey with each format's official tool on real archives.
 
