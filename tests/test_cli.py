@@ -919,7 +919,6 @@ def test_extract_on_a_tar_or_zip_fifo_streams_the_members_out(
 # reads anything else, so no real archive of these formats is needed.
 _SEEK_ONLY_PAYLOADS = {
     "7z": b"7z\xbc\xaf\x27\x1c\x00\x04" + bytes(1024),
-    "rar": b"Rar!\x1a\x07\x01\x00" + bytes(1024),
     "iso": bytes(0x8001) + b"CD001\x01" + bytes(4096),
 }
 

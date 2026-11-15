@@ -71,7 +71,7 @@ the `ReadBackend`; `non_seekable_reason` on an indexed handler):
 | Single compressed file (`.gz`, `.xz`, …) | Yes | One stream, decoded forward |
 | ZIP | Yes, with compromises | Each member has a local header in front of it; the index at the end arrives last |
 | 7z | No | Its index is at the end of the file |
-| RAR | No | The header walk seeks past each member's data, and `unrar` reads members from a file on disk |
+| RAR | Yes, with RARLAB `unrar` 7.00 or later, one volume | Each member has its header in front of it; what arrives is written as RAR volumes for `unrar`, one at a time ([below](#rar-an-external-program-that-wants-a-file)) |
 | ISO, SquashFS, CAB, XAR | No | Their directories point at data anywhere in the file |
 
 For the "No" rows, `open_archive` refuses *before* checking optional packages, with a
@@ -177,6 +177,12 @@ parser, so listing needs no program at all.
   the start of its solid stream. Before this, the first read from a stream copied the
   whole archive to disk: 1,350 ms to read a 1.2 KB member of a 200 MiB archive from a
   `BytesIO`, against 7 ms from a path. The copies are bounded by `SpoolLimits.max_bytes`.
+- **A non-seekable source** (a pipe, a socket) is read once by `RarForwardReader`
+  (`rar_forward_reader.py`). The header walk runs as the bytes arrive, each member's
+  header and data go into **rolling volumes** (`rar_rolling.py`) of 16 MiB or half the
+  spool limit, and one `unrar -vp` run decodes the pass, asking for each next volume as
+  it finishes one. Only one volume is on disk at a time. What a pipe cannot do is in
+  [`rar.md`](../formats/rar.md) §2.6.
 - **Seeking** in a member read from a pipe uses `RespawnStream`: a forward seek reads and
   drops, a backward seek starts `unrar` again from the start.
 
@@ -243,7 +249,7 @@ and bytes read per operation, and a PR that adds a seek to a common path fails i
 | Compromise | Where | Why it is acceptable |
 | --- | --- | --- |
 | A pipe with `streaming=False` is refused | `core.py` | The alternative is an unbounded hidden copy (ADR 0010) |
-| 7z, RAR, ISO, SquashFS, CAB, XAR cannot come from a pipe | backend declarations | Their layouts need seeks; the caller can buffer |
+| 7z, ISO, SquashFS, CAB, XAR cannot come from a pipe, nor RAR without `unrar` 7.00 | backend declarations | Their layouts need seeks (RAR's `unrar` needs files); the caller can buffer |
 | Member streams do not seek by default | ADR 0003 | Seeking backwards in compressed data can be very costly; opting in is one keyword |
 | One live member stream by default | ADR 0003 | Overlap on a solid archive thrashes the decoder |
 | `stream_members()` streams never seek | ADR 0003 amendment | A pass reads forward; that is its whole point |

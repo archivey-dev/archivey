@@ -31,7 +31,8 @@ Non-seekable sources are never given random access: with `streaming=False` the
 library fails fast at open when the format needs seek (it does not buffer the
 source into memory or a temp file). `streaming=True` is the fix for pipes and
 sockets **only where the backend reads front to back** (TAR, ZIP, the single-file
-compressors). A format that needs seek in either mode (ISO, 7z, RAR) SHALL be
+compressors, and RAR with RARLAB `unrar` 7.00 or later, whose refusal otherwise names
+that program). A format that needs seek in either mode (ISO, 7z) SHALL be
 refused with one message naming a seekable source as the fix, in both modes, rather
 than proposing a `streaming=True` retry the same call would then refuse. That refusal
 SHALL come before the format's availability check: a pipe cannot be read even with the
@@ -41,12 +42,12 @@ availability check, because there the missing package is a real step on the way.
 Eager seek-point building is not exposed.
 
 Every source `open_archive` and `open_stream` take SHALL cross one boundary, which
-returns one `ArchiveSource`; standalone `detect_format` does not cross it. Every consumer
-of the raw source SHALL receive one of three things: the `ArchiveSource`; a wrapper over
-it that preserves the four guarantees below (a view that clamps its reads and does not
-close its inner); or, for a parser that opens a path itself, the `ArchiveSource`'s path.
-The `ArchiveSource` SHALL carry every source-level guarantee itself, whatever the caller
-passed — a path, a stream, or a volume list:
+returns one `ArchiveSource`; standalone `detect_format` does not cross it. Every
+consumer of the raw source SHALL receive one of three things: the `ArchiveSource`; a
+wrapper over it that preserves the four guarantees below (a view that clamps its reads
+and does not close its inner); or, for a parser that opens a path itself, the
+`ArchiveSource`'s path. The `ArchiveSource` SHALL carry every source-level guarantee
+itself, whatever the caller passed — a path, a stream, or a volume list:
 
 | Guarantee | What `ArchiveSource` SHALL do |
 | --- | --- |

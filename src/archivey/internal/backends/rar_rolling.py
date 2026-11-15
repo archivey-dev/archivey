@@ -79,6 +79,7 @@ from archivey.internal.backends.rar_unrar import (
     open_unrar_p,
 )
 from archivey.internal.external.cli import terminate_process
+from archivey.internal.logs import backends as logger
 from archivey.internal.resource_usage import ResourceUsageRecorder
 
 # RAR5 MAIN archive flags and ENDARC flag (``headers5.hpp``).
@@ -240,6 +241,18 @@ def _part_rar3(raw: bytes, data_size: int, before: bool, after: bool) -> bytes:
     return bytes(header)
 
 
+class SourceReadError(Exception):
+    """A read of the archive's source failed while a volume was written.
+
+    Kept apart from a failure to write the volume, which is a ``ReadError`` about
+    the volume: ``cause`` is the source's own ``OSError``, raised as it is.
+    """
+
+    def __init__(self, cause: OSError) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
+
+
 class _Pending:
     """The member being written: its header and the data streams left to copy."""
 
@@ -258,7 +271,10 @@ class _Pending:
                 self._index += 1
                 self._part_left = self._parts[self._index][1]
             stream = self._parts[self._index][0]
-            chunk = stream.read(min(size, self._part_left, _COPY_CHUNK))
+            try:
+                chunk = stream.read(min(size, self._part_left, _COPY_CHUNK))
+            except OSError as exc:
+                raise SourceReadError(exc) from exc
             if not chunk:
                 raise TruncatedError(
                     f"RAR member data ends {self.left} bytes before its packed size"
@@ -282,11 +298,18 @@ class RollingVolumes:
     member is done (or on :meth:`close`). The files live in a private temporary
     directory that :meth:`close` removes.
 
-    No volume holds more than ``volume_bytes``. Each part of a split member holds
+    No volume holds more than ``volume_bytes``. A member that fits in one volume is
+    never split: it starts the next volume when it does not fit in this one, so a
+    split member is always larger than a volume. Each part of a split member holds
     at least ``min_part_bytes`` packed bytes (by default a quarter of a volume, at
     most :data:`MIN_PART_BYTES`); a member too small for two such parts is never
-    split, and starts the next volume when it does not fit. A member that does not
-    fit an empty volume that way raises ``ResourceLimitError``. ``unrar`` needs both:
+    split either. A member that does not fit an empty volume that way raises
+    ``ResourceLimitError``.
+
+    Not splitting what fits keeps every header that follows a member (a RAR 1.5-4
+    ``UOW`` owner or ``CMT`` comment) in the walk before the member's data ends a
+    volume, which a reader of a non-seekable source relies on
+    (``rar_forward_reader``). The part rule is what ``unrar`` needs:
 
     - One read of its decoder takes bytes from one part only (``UnpRead``: it asks
       for the next volume only when a read finds the part empty). A decoder that
@@ -342,6 +365,22 @@ class RollingVolumes:
             self._next = next(self._members, None)
         return self._next
 
+    @property
+    def splitting(self) -> bool:
+        """Whether the volume last written ends inside a member, whose data goes
+        on in the next one."""
+        pending = self._pending
+        return pending is not None and pending.written > 0
+
+    def _empty_room(self, index: int) -> int:
+        """The bytes volume ``index`` (from 0) holds for member headers and data."""
+        version = self.version
+        return self.volume_bytes - (
+            len(signature(version))
+            + len(main_volume_header(version, solid=self.solid, index=index))
+            + len(end_volume_header(version, more=False))
+        )
+
     def write_next(self) -> Path:
         """Remove the volume on disk, write the next one, and return its path."""
         if self._closed:
@@ -376,6 +415,8 @@ class RollingVolumes:
                 least = self.min_part_bytes
                 if head + left <= room:
                     size = left
+                elif not empty and head + left <= self._empty_room(index + 1):
+                    break  # it fits in a volume of its own: it starts the next one
                 else:
                     # Too small to split, or too little room for a part here.
                     size = 0 if left < 2 * least else min(room - head, left - least)
@@ -442,7 +483,8 @@ class VolumeFeeder:
 
     A failure while writing a volume (the source ends early, a disk error) stops
     ``unrar`` too, and is kept in :attr:`error` for the reader to raise in place of
-    the exit status. A thread is needed because Windows cannot poll a pipe.
+    the exit status: an ``OSError`` reading the source as it is, any other failure
+    as an ``ArchiveyError``. A thread is needed because Windows cannot poll a pipe.
     """
 
     def __init__(self, proc: subprocess.Popen[bytes], volumes: RollingVolumes) -> None:
@@ -450,13 +492,23 @@ class VolumeFeeder:
         self._proc = proc
         self._volumes = volumes
         #: Why the feeder stopped ``unrar``, if it did.
-        self.error: ArchiveyError | None = None
+        self.error: ArchiveyError | OSError | None = None
         #: The last bytes ``unrar`` wrote on stderr, for a diagnosis.
         self.stderr_tail = b""
+        # ``_exited`` and ``_on_exit`` under ``_lock``: the cleanup a caller left for
+        # the thread when it stopped waiting for it (``close_after``).
+        self._lock = threading.Lock()
+        self._exited = False
+        self._on_exit: Callable[[], None] | None = None
         self._thread = threading.Thread(
             target=self._run, name="archivey-unrar-volumes", daemon=True
         )
         self._thread.start()
+
+    @property
+    def running(self) -> bool:
+        """Whether the thread is still answering prompts or writing a volume."""
+        return self._thread.is_alive()
 
     def _expected(self) -> bytes:
         return volume_name(self._volumes.count + 1).encode("ascii")
@@ -496,6 +548,9 @@ class VolumeFeeder:
                 if expected in seen:
                     try:
                         self._volumes.write_next()
+                    except SourceReadError as exc:
+                        self._stop(exc.cause)
+                        return
                     except ArchiveyError as exc:
                         self._stop(exc)
                         return
@@ -537,8 +592,16 @@ class VolumeFeeder:
                 stderr.close()
             except OSError:
                 pass
+            with self._lock:
+                self._exited = True
+                cleanup, self._on_exit = self._on_exit, None
+            if cleanup is not None:
+                try:
+                    cleanup()
+                except Exception:  # noqa: BLE001 - no caller is left to raise to
+                    logger.debug("rolling volume cleanup failed", exc_info=True)
 
-    def _stop(self, error: ArchiveyError) -> None:
+    def _stop(self, error: ArchiveyError | OSError) -> None:
         self.error = error
         try:
             self._proc.kill()
@@ -547,6 +610,23 @@ class VolumeFeeder:
 
     def join(self, timeout: float | None = None) -> None:
         self._thread.join(timeout)
+
+    def close_after(
+        self, cleanup: Callable[[], None], *, timeout: float | None = None
+    ) -> None:
+        """Run ``cleanup`` once the thread has returned.
+
+        Waits up to ``timeout`` seconds (forever with ``None``). When the thread is
+        still writing a volume then, as it is while a read of a source that has
+        stopped sending blocks, the thread runs ``cleanup`` itself as it returns, and
+        this returns at once.
+        """
+        self._thread.join(timeout)
+        with self._lock:
+            if not self._exited:
+                self._on_exit = cleanup
+                return
+        cleanup()
 
 
 def start_rolling_unrar(
@@ -560,15 +640,24 @@ def start_rolling_unrar(
     usage: ResourceUsageRecorder | None = None,
     opener: Callable[..., tuple[subprocess.Popen[bytes], BinaryIO]] = open_unrar_p,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO, VolumeFeeder]:
-    """Write the first volume of ``volumes`` and start ``unrar p -vp`` on it, with a
-    :class:`VolumeFeeder` that writes the rest. The other arguments are
-    :func:`~archivey.internal.backends.rar_unrar.open_unrar_p`'s; ``opener`` is
-    that function, or the caller's name for it.
+    """Write the first volume of ``volumes``, unless the caller has written it, and
+    start ``unrar p -vp`` on it, with a :class:`VolumeFeeder` that writes the rest. The
+    other arguments are :func:`~archivey.internal.backends.rar_unrar.open_unrar_p`'s;
+    ``opener`` is that function, or the caller's name for it.
 
     The caller owns the process (stop it, then :meth:`VolumeFeeder.join`) and closes
-    ``volumes`` after it.
+    ``volumes`` after it. A failed read of the source while volume 1 is written
+    raises the source's ``OSError`` as it is.
     """
-    first = volumes.write_next()
+    if volumes.count > 1:
+        raise ValueError("unrar starts on the first volume, which has been removed")
+    if volumes.count:
+        first = volumes.path(1)
+    else:
+        try:
+            first = volumes.write_next()
+        except SourceReadError as exc:
+            raise exc.cause from None
     proc, stdout = opener(
         first,
         password=password,

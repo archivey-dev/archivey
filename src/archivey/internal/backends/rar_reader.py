@@ -442,14 +442,6 @@ AUTO_CHOSE_UNAR_NOTE = (
 # reports 901 volumes for a longer set, and the member is then short.
 _UNAR_MAX_OLD_STYLE_VOLUMES = 901
 
-# Why a RAR cannot come from a pipe. The block headers are at the front, but the header
-# walk seeks past each member's packed data (and to the RAR5 quick-open record), and
-# unrar reads members from a file on disk.
-_NON_SEEKABLE_REASON = (
-    "the header walk seeks past each member's data, and unrar reads members from a "
-    "file on disk"
-)
-
 
 def _gapped_volume_numbers(paths: list[Path]) -> list[int] | None:
     """Each volume's number in its set, when the names leave a gap; else ``None``.
@@ -1724,7 +1716,13 @@ class _RollingUnrarStream(_UnrarOwnedStream):
 
     A failure of the thread (the source ended early, a disk error, a question it
     does not answer) stopped ``unrar``, so it is raised in place of the exit status.
+
+    Closing waits for the thread for up to :attr:`_FEEDER_WAIT` seconds (forever with
+    ``None``: the thread reads a seekable source, which answers); a thread still
+    writing a volume then removes the volumes itself when it returns.
     """
+
+    _FEEDER_WAIT: float | None = None
 
     def __init__(
         self,
@@ -1740,6 +1738,11 @@ class _RollingUnrarStream(_UnrarOwnedStream):
         self._release = release
         super().__init__(stdout, proc, **kwargs)
 
+    @property
+    def feeder(self) -> VolumeFeeder:
+        """The thread that writes the volumes and answers ``unrar``'s prompts."""
+        return self._feeder
+
     @override
     def _raise_for_returncode(self, rc: int) -> None:
         error = self._feeder.error
@@ -1754,15 +1757,15 @@ class _RollingUnrarStream(_UnrarOwnedStream):
         try:
             super().close()
         finally:
-            try:
-                # unrar is gone, so its stderr ends and the thread returns; it
-                # may first finish the volume it is writing.
-                self._feeder.join()
-            finally:
-                try:
-                    self._volumes.close()
-                finally:
-                    self._release()
+            # unrar is gone, so its stderr ends and the thread returns; it may first
+            # finish the volume it is writing.
+            self._feeder.close_after(self._remove_volumes, timeout=self._FEEDER_WAIT)
+
+    def _remove_volumes(self) -> None:
+        try:
+            self._volumes.close()
+        finally:
+            self._release()
 
 
 # What one read's ``unrar`` runs use: ``mask`` and ``close()``, and ``path()`` for a
@@ -1953,10 +1956,30 @@ class RarReader(BaseArchiveReader):
         self._decompressor = _resolve_decompressor(
             self._config.rar_decompressor, self._unrar_program, self._unar_program
         )
+        self._open_archive(
+            source,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            program_resources=program_resources,
+        )
 
+    def _open_archive(
+        self,
+        source: ArchiveSource,
+        *,
+        start_offset: int,
+        end_offset: int | None,
+        program_resources: ProgramResources | None,
+    ) -> None:
+        """The open steps after the per-reader state: the parse and the member table
+        (:meth:`__init__` lists them). The forward reader replaces them
+        (``rar_forward_reader``)."""
+        archive_name = self._archive_name
         if not source.seekable():
+            # ``RarReadBackend.open_read`` routes such a source to the forward reader.
             raise StreamNotSeekableError(
-                f"RAR archives require a seekable source: {_NON_SEEKABLE_REASON}.",
+                "RarReader reads a seekable source; a non-seekable one is read by "
+                "RarForwardReader.",
                 archive_name=archive_name,
                 source_format=ArchiveFormat.RAR,
             )
@@ -3487,6 +3510,11 @@ class RarReader(BaseArchiveReader):
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
+        self._after_last_member()
+
+    def _after_last_member(self) -> None:
+        """After the last member: raise the walk's terminal damage, or report what the
+        walk found after the members."""
         if self._archive.truncated is not None:
             # Terminal damage after the prefix, so the listing keeps what the file
             # holds and reports the rest as missing (``members_report().error``).
@@ -4621,11 +4649,18 @@ class RarReader(BaseArchiveReader):
         ],
         *,
         costs: dict[int, _DictionaryCost] | None = None,
+        on_pipe: Callable[[Callable[[], SolidBlockReader]], None] | None = None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """The solid pass over one process's output, demultiplexed by offset.
 
         ``costs`` replaces :meth:`_pass_dictionary_costs` when the output comes
-        from one process per run of solid streams (:class:`_SolidPassPipe`).
+        from one process per run of solid streams (:class:`_SolidPassPipe`), and
+        is read only when a member's stream is made, so a pass that lists as it
+        goes can fill it in as each member is listed. ``on_pipe`` is given the
+        function that starts the process (or returns the running one's output), for
+        a pass whose listing has to read that output itself
+        (``rar_forward_reader``). Such a pass may start the process to list, so
+        the ``_pipe`` promise below holds only for a pass without ``on_pipe``.
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
@@ -4654,8 +4689,10 @@ class RarReader(BaseArchiveReader):
             A caller that iterates the pass without reading any member — listing a
             solid RAR through ``stream_members``, or an extraction whose selector
             matches nothing — never spawns a process and is never asked for a
-            password. The stream-source copy lives here too, so that caller also
-            writes nothing.
+            password, unless the pass was given ``on_pipe``: a pass that reads its
+            source forward starts the process when its listing needs a volume
+            ``unrar`` has to finish first. The stream-source copy lives here too, so
+            that caller also writes nothing.
             """
             nonlocal solid
             if solid is None:
@@ -4667,6 +4704,9 @@ class RarReader(BaseArchiveReader):
                         tracked if sources is None else sources.tee(tracked)
                     )
             return solid
+
+        if on_pipe is not None:
+            on_pipe(_pipe)
 
         def _open(member: ArchiveMember) -> ArchiveStreamImpl | None:
             # Read straight from the archive (RAR3/4 stores the target as plain
@@ -4929,9 +4969,23 @@ class RarReader(BaseArchiveReader):
         is ``None`` for a service header, because there is no member to name. For a
         member, ``member_id`` is its position in the walk, the id registration stamps.
         """
+        self._emit_skipped_records(info.skipped_header_records, name, member, member_id)
+        stop_reason = info.header_walk_stop_reason
+        if stop_reason is not None:
+            self._emit_header_walk_stopped(name, member, member_id, stop_reason)
+
+    def _emit_skipped_records(
+        self,
+        records: tuple[tuple[str, int | None, str], ...],
+        name: str,
+        member: ArchiveMember | None,
+        member_id: int | None = None,
+    ) -> None:
+        """One diagnostic for each of ``records``, a header's dropped records
+        (``_emit_header_record_diagnostics``)."""
         attach = member is not None
         context_name = name if member is not None else ""
-        for record, record_id, reason in info.skipped_header_records:
+        for record, record_id, reason in records:
             named = record if record_id is None else f"{record} ({record_id})"
             if record == RAR5_UNPLACED_BYTES:
                 message = (
@@ -4979,41 +5033,50 @@ class RarReader(BaseArchiveReader):
                 attach_to_member=attach,
                 logger=logger,
             )
-        stop_reason = info.header_walk_stop_reason
-        if stop_reason is not None:
-            # One diagnostic saying the header was abandoned, rather than one per
-            # record past the cap — emitting per record is the cost the cap exists
-            # to avoid. Without this a caller sees the capped list and cannot tell
-            # it is the whole story. ``list_truncated`` is what they read.
-            #
-            # The reason comes from the walk because four different faults end it
-            # and only one of them is the cap. It is also the only thing that
-            # explains why the member may be reported encrypted when nothing in
-            # its listing says so, so naming a fault that did not happen costs
-            # more here than it would on an ordinary skip.
-            self._diagnostics_collector.emit(
-                code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
-                message=(
-                    f"This RAR5 member's header was not read to the end because "
-                    f"{stop_reason}; it is listed from what was read before that."
-                    if member is not None
-                    else f"This archive's {name} service header was not read to "
-                    f"the end because {stop_reason}, so "
-                    f"{_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} was not used."
-                ),
-                context=MemberHeaderRecordContext(
-                    archive_name=self._archive_name,
-                    member_name=context_name,
-                    member_id=member_id,
-                    record="",
-                    record_id=None,
-                    reason=stop_reason,
-                    list_truncated=True,
-                ),
-                member=member,
-                attach_to_member=attach,
-                logger=logger,
-            )
+
+    def _emit_header_walk_stopped(
+        self,
+        name: str,
+        member: ArchiveMember | None,
+        member_id: int | None,
+        stop_reason: str,
+    ) -> None:
+        """Report a header whose extra-area walk stopped before its end."""
+        attach = member is not None
+        context_name = name if member is not None else ""
+        # One diagnostic saying the header was abandoned, rather than one per
+        # record past the cap — emitting per record is the cost the cap exists
+        # to avoid. Without this a caller sees the capped list and cannot tell
+        # it is the whole story. ``list_truncated`` is what they read.
+        #
+        # The reason comes from the walk because four different faults end it
+        # and only one of them is the cap. It is also the only thing that
+        # explains why the member may be reported encrypted when nothing in
+        # its listing says so, so naming a fault that did not happen costs
+        # more here than it would on an ordinary skip.
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
+            message=(
+                f"This RAR5 member's header was not read to the end because "
+                f"{stop_reason}; it is listed from what was read before that."
+                if member is not None
+                else f"This archive's {name} service header was not read to "
+                f"the end because {stop_reason}, so "
+                f"{_SERVICE_PAYLOAD_LOST.get(name, 'its payload')} was not used."
+            ),
+            context=MemberHeaderRecordContext(
+                archive_name=self._archive_name,
+                member_name=context_name,
+                member_id=member_id,
+                record="",
+                record_id=None,
+                reason=stop_reason,
+                list_truncated=True,
+            ),
+            member=member,
+            attach_to_member=attach,
+            logger=logger,
+        )
 
     def _emit_service_header_diagnostics(self) -> None:
         """Report the SERVICE headers (``CMT``, ``QO``) whose walk did not finish,
@@ -6041,15 +6104,18 @@ class RarReader(BaseArchiveReader):
             )
         except SyntheticUnsupported:
             return None
-        parts = raw.data_parts or [(raw.data_offset, raw.compress_size)]
-        shared = self._shared
         return SyntheticMember(
             header=header,
-            data=lambda: [
-                (shared.view(start, length), length) for start, length in parts
-            ],
+            data=lambda: self._entry_data(raw),
             data_size=raw.compress_size,
         )
+
+    def _entry_data(self, raw: RarMemberInfo) -> list[tuple[BinaryIO, int]]:
+        """The streams of ``raw``'s packed data for a synthetic archive, in order,
+        each with its length."""
+        parts = raw.data_parts or [(raw.data_offset, raw.compress_size)]
+        shared = self._shared
+        return [(shared.view(start, length), length) for start, length in parts]
 
     def _reserve_synthetic(
         self,
@@ -6816,8 +6882,8 @@ class RarReadBackend(ReadBackend):
     SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
     USES_ENCODING = True  # for RAR 1.5-4 names stored as 8-bit bytes
-    SUPPORTS_STREAMING_NON_SEEKABLE = False
-    NON_SEEKABLE_REASON = _NON_SEEKABLE_REASON
+    # Read front to back by ``RarForwardReader``, with RARLAB unrar 7.00 or later.
+    SUPPORTS_STREAMING_NON_SEEKABLE = True
     OPTIONAL_DEPENDENCY = None
 
     @classmethod
@@ -6846,7 +6912,16 @@ class RarReadBackend(ReadBackend):
         program_resources: ProgramResources | None = None,
     ) -> RarReader:
         del format
-        return RarReader(
+        reader_cls = RarReader
+        if not source.seekable():
+            # Only streaming=True gets here with such a source (open_archive refuses
+            # random access on one). Imported here: that module builds on this one.
+            from archivey.internal.backends.rar_forward_reader import (
+                RarForwardReader,
+            )
+
+            reader_cls = RarForwardReader
+        return reader_cls(
             source,
             streaming,
             passwords,

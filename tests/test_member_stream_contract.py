@@ -43,7 +43,7 @@ from archivey.types import (
     MemberType,
     StreamFormat,
 )
-from tests.conftest import assert_raised_again, requires
+from tests.conftest import assert_raised_again, requires, unrar_reads_from_pipes
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.sample_archives import (
     CORPUS,
@@ -819,11 +819,13 @@ def _nested_params() -> list:
     return params
 
 
-# Formats open_archive() reads from a non-seekable source (streaming=True only).
+# Formats open_archive() reads from a non-seekable source (streaming=True only); RAR
+# with RARLAB unrar 7.00 or later.
 _STREAMS_FROM_PIPE = (
     frozenset(k for k in FORMAT_KEYS if k.startswith("tar"))
     | {"zip"}
     | set(_BY_ID["single-file"].formats)
+    | ({"rar"} if unrar_reads_from_pipes() else set())
 )
 
 
@@ -836,7 +838,7 @@ def test_nested_archive_from_a_pass_handle_is_a_non_seekable_source(
     The pass handle never seeks, even under ``seekable_members=True``, so a nested
     archive read from it gets no random access: the default open raises
     ``StreamNotSeekableError``, ``streaming=True`` works only for formats that stream
-    from a non-seekable source, and the formats that need their index (7z, RAR, ISO)
+    from a non-seekable source, and the formats that need their index (7z, ISO)
     refuse in either mode. ``open()`` on the same member still gives a seekable
     source, which is the documented way to read a nested archive at random.
     """

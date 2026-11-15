@@ -2,8 +2,8 @@
 
 The refusal is one typed error (``StreamNotSeekableError``) for every format, but the
 *next step* it names depends on the backend rather than on the mode that was asked for.
-TAR, ZIP and the single-file compressors read forward-only, so ``streaming=True`` really
-is the fix; ISO, 7z and RAR need seek in either mode, so for those the only fix is a
+TAR, ZIP, RAR and the single-file compressors read forward-only, so ``streaming=True``
+really is the fix; ISO and 7z need seek in either mode, so for those the only fix is a
 seekable source. Suggesting ``streaming=True`` there sent callers into a second refusal
 that explained the retry could never have worked, which is what these tests pin shut.
 
@@ -33,7 +33,6 @@ from tests.streams_util import NonSeekableBytesIO
 _NEEDS_SEEK = (
     ArchiveFormat.ISO,
     ArchiveFormat.SEVEN_Z,
-    ArchiveFormat.RAR,
 )
 
 # Read front to back, so a pipe is fine once the caller asks for streaming. The
@@ -43,6 +42,8 @@ _NEEDS_SEEK = (
 _READS_FORWARD = (
     ArchiveFormat.TAR,
     ArchiveFormat.ZIP,
+    # With RARLAB unrar 7.00 or later; the refusal of random access comes first.
+    ArchiveFormat.RAR,
     ArchiveFormat.TAR_GZ,
     ArchiveFormat.GZ,
     ArchiveFormat.BZ2,
