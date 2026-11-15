@@ -504,6 +504,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
+        rar_reader._RollingUnrarStream,  # the unrar pipe fed rolling volumes
         respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
@@ -753,6 +754,7 @@ def test_delegating_stream_close_inventory() -> None:
     subclass_closes_inner = {
         cli.ProcessOutputStream,
         rar_reader._UnrarOwnedStream,
+        rar_reader._RollingUnrarStream,
         unar.UnarOutputStream,
     }
     found = _delegating_stream_subclasses()

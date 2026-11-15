@@ -368,8 +368,12 @@ def spawn_for_stdout(
     stdin: int | IO[bytes] = subprocess.DEVNULL,
     env: Mapping[str, str] | None = None,
     cwd: str | None = None,
+    stderr: int = subprocess.DEVNULL,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    """Start ``cmd`` with stdout on a pipe and stderr discarded; return ``(proc, stdout)``.
+    """Start ``cmd`` with stdout on a pipe; return ``(proc, stdout)``.
+
+    stderr is discarded unless ``stderr`` says otherwise (``subprocess.PIPE`` for a
+    caller that reads it).
 
     A program that cannot run raises ``PackageNotInstalledError(not_started)``; any
     other start failure raises the error :func:`_start_error` gives for it. The
@@ -386,7 +390,7 @@ def spawn_for_stdout(
             cmd,
             _SpawnFailed,
             stdin=stdin,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr,
             bufsize=1024 * 1024,
             env=env,
             cwd=cwd,

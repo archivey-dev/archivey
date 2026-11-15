@@ -58,7 +58,7 @@ import bz2
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from archivey.exceptions import CorruptionError, ResourceLimitError
 from archivey.internal.config import decoder_cap_error
@@ -464,8 +464,10 @@ class Bzip2BlockDecompressor:
         start = block[0]
         header = STREAM_HEADER + str(level).encode()
         data = header + self._bits(start, -(-(self._fed - start) // 8))
+        made: list[Decompressor] = []
         try:
             decomp = self._new_bz2()
+            made.append(decomp)
             for at in range(0, len(data), _RECOVER_SLICE):
                 try:
                     out = self._drain(decomp, data[at : at + _RECOVER_SLICE])
@@ -476,6 +478,7 @@ class Bzip2BlockDecompressor:
             else:
                 return None
             decomp = self._new_bz2()
+            made.append(decomp)
             if self._drain(decomp, data[:at]):
                 return None  # the block ended before the slice, and bz2 raised
             for i in range(at, min(at + _RECOVER_SLICE, len(data))):
@@ -486,6 +489,12 @@ class Bzip2BlockDecompressor:
             raise
         except Exception:  # noqa: BLE001 - not whole: the first error stands
             return None
+        finally:
+            # A decoder in a child process (``holds_decoder_child``) is given back
+            # now: PyPy frees a dropped one only at a later collection.
+            for made_one in made:
+                if getattr(type(made_one), "holds_decoder_child", False):
+                    cast("Any", made_one).close()
         return None
 
     def _feed_to(self, bit: int) -> bytearray:
