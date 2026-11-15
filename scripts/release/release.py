@@ -270,12 +270,13 @@ def changelog_for_release(
 
 
 def check_performance_section(text: str, version: str) -> None:
-    """Refuse an ``X.Y.0`` entry that has no ``### Performance`` section.
+    """Refuse a release entry that has no ``### Performance`` section.
 
-    A minor or major release gives its peer wall ratios (dev-docs/release-checklist.md,
-    section 2). A patch release and a pre-release can skip them, so they are not checked.
+    Every final release, patch releases included, gives its peer wall ratios
+    (dev-docs/release-checklist.md, section 2): a fix can make reading slower as well
+    as faster. A pre-release is not checked; its final release is.
     """
-    if not re.fullmatch(r"\d+\.\d+\.0", version):
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         return
     if not re.search(
         r"^### Performance$", changelog_section(text, version), re.MULTILINE
