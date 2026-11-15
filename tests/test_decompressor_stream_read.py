@@ -120,6 +120,32 @@ def test_read_n_after_partial_read_keeps_the_buffered_tail() -> None:
     assert (len(first), len(second)) == (10, 20)
 
 
+class _OvershootDecoder(_ScalingDecoder):
+    """Gives a few bytes past ``max_length`` per call, as the ``.Z`` decoder does when
+    it finishes the code it is expanding, so reads keep starting with a leftover."""
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        return super().feed(chunk, max_length + 5 if max_length >= 0 else max_length)
+
+
+@pytest.mark.parametrize("n", [3, 4096, 9000, 1 << 20])
+def test_read_n_after_a_leftover_is_full_count(n: int) -> None:
+    """Each read starts with what the last decoder call gave past its count; it still
+    returns exactly ``n`` bytes, in order, and keeps the new excess for the next read."""
+    expected = b"".join(bytes([b]) * 3 for b in _DATA[::3])
+    stream = DecompressorStream(
+        io.BytesIO(_DATA[::3]),
+        make_decoder=lambda point, inner: _OvershootDecoder(3, honour_max_length=True),
+    )
+    with stream:
+        pieces: list[bytes] = []
+        while piece := stream.read(n):
+            pieces.append(piece)
+            assert stream.tell() == sum(map(len, pieces))
+    assert b"".join(pieces) == expected
+    assert all(len(p) == n for p in pieces[:-1])
+
+
 class _TrailingAtFillDecoder(_ScalingDecoder):
     """A pass-through decoder that finds trailing data in the feed that fills a read.
 

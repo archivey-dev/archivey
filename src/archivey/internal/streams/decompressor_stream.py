@@ -2108,6 +2108,22 @@ class DecompressorStream(ReadOnlyIOStream):
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
+            elif (
+                not self._eof
+                and len(self._buffer) < need
+                and self._spent is None
+                and not self._restart_pending
+            ):
+                # A few bytes left over from the last decoder call (one that gave more
+                # than it was asked for): gather the rest behind them in a list too,
+                # instead of through ``_buffer``. A large read pays one copy at the
+                # join, where extending ``_buffer`` and slicing it out pays two.
+                parts = [bytes(self._buffer)]
+                self._buffer.clear()
+                data = self._gather(parts, need, n, pending)
+                if data is not None:
+                    self._pos += len(data)
+                    return data
             # A decoder that raised mid-read is not fed again (see _decoding): what it
             # produced before the error is handed back, and the read after that raises.
             while True:
@@ -2125,7 +2141,10 @@ class DecompressorStream(ReadOnlyIOStream):
             held = pending()
             if held is not None:
                 raise held
-        data = bytes(self._buffer[:n])
+        # One copy out of ``_buffer``: ``bytes(self._buffer[:n])`` would make two (the
+        # slice, then the bytes), on reads that can be 16 MiB each.
+        with memoryview(self._buffer) as view:
+            data = bytes(view[:n])
         del self._buffer[:n]
         self._pos += len(data)
         if not data and self._end_error() is not None:
@@ -2171,11 +2190,16 @@ class DecompressorStream(ReadOnlyIOStream):
         if not got or self._restart_pending or pending() is not None:
             self._stage(parts)
             return None
+        if got > n:
+            # Only the last part can go past ``n``: trim it before the join, so the
+            # excess costs a copy of that part, not of the whole read.
+            last = parts[-1]
+            keep = len(last) - (got - n)
+            self._buffer.extend(memoryview(last)[keep:])
+            parts[-1] = last[:keep]
+            last = b""
         data = b"".join(parts)
         parts.clear()
-        if len(data) > n:
-            self._buffer.extend(memoryview(data)[n:])
-            data = data[:n]
         return data
 
     def _returns_before_spent(self) -> bool:
