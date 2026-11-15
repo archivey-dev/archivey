@@ -1790,6 +1790,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         # bytes only.
         self._codec_stream: BinaryIO | None = None
         self._compressed = self._format.stream is not StreamFormat.UNCOMPRESSED
+        # A streaming walk over a source that can seek and is not compressed: where
+        # the walk's first byte is on the source (``_decompress_layer``).
+        self._walk_start: int | None = None
         try:
             self._open_streams(source, member_streams=self._member_streams)
         except BaseException:
@@ -1863,6 +1866,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             # On a pipe, the buffer fills from what has arrived, so a short archive
             # whose writer keeps the pipe open opens at once (TAR's rule).
             raw = source if source.seekable() else cast(BinaryIO, source.arrived_view())
+            if source.seekable():
+                self._walk_start = source.tell()
             self._owned_stream = cast(
                 BinaryIO, ensure_bufferedio(self._track_source_seeks(raw))
             )
@@ -2012,13 +2017,34 @@ class SequentialReaderAdapter(_PluginAdapter):
         )
         if self._streaming:
             # The parent is done (the ForwardStream that called this refuses reads
-            # now), so the codec reads its buffer straight on, one read of what has
-            # arrived each time: outermost, so the codec puts no full-count buffer in
-            # front of it (as _codec_input does for an outer stream).
-            raw = _ForwardInput(parent.stream)
+            # now), so the codec owns what comes after it.
+            codec_input: BinaryIO
+            if not parent.drawn and self._walk_start is not None:
+                # The parent is the archive's own bytes on a source that can seek: the
+                # codec reads a view of the source from where the stream starts, as a
+                # compressed TAR's codec reads its source. A decoder that fails can
+                # then decode again to the failing byte, so a read that meets the
+                # damage still hands back every byte before it, as random access does.
+                # The walk's buffer (``ReadAheadStream`` below) reads ahead of the
+                # member it is at, so without this the read that meets the damage
+                # would lose members that end before it.
+                assert self._source is not None
+                view = SharedSource(
+                    self._source, wrap_handle=self._seek_handle_wrapper()
+                ).view(self._walk_start + offset, None)
+                self._layer_streams.append(view)
+                codec_input = self._wrap_compressed_input(view)
+            else:
+                # A pipe, or a layer inside another: the codec reads the parent's
+                # buffer straight on, one read of what has arrived each time:
+                # outermost, so the codec puts no full-count buffer in front of it
+                # (as _codec_input does for an outer stream).
+                codec_input = OneReadEachStream(
+                    self._wrap_compressed_input(_ForwardInput(parent.stream))
+                )
             decoded = open_codec_stream(
                 codec,
-                OneReadEachStream(self._wrap_compressed_input(raw)),
+                codec_input,
                 config=config,
                 stamp=self._stamp_error_context,
                 collector=self._diagnostics_collector,
