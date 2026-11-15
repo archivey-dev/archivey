@@ -142,8 +142,15 @@ of the member a second time. If you throw a damaged member away anyway, set
 `ArchiveyConfig(recover_partial_data=False)` to skip that work: the read that meets the damage then
 raises sooner, and some of the bytes just before the damage, at most one internal step's worth, are
 lost. Formats whose decoder already returns those bytes at no extra cost (`.Z`, lzop, bzip3 and the
-old ZIP methods) still return them. The error is the same either way. A compressed tar still gives
-you every member that ends before the damage.
+old ZIP methods) still return them. The error is the same either way. A compressed tar in a file
+still gives you every member that ends before the damage, under either setting.
+
+A pipe can't be read twice, so there archivey can't decompress a second time. A `.tar.gz` and the
+formats just named still give you every member that ends before the damage. With xz, bzip2, zstd
+and the other compressions, the decoder step that meets the damage loses its output, up to 64 KiB
+of decompressed data, so a member that ends in that stretch before the damage can fail too, or the
+pass can raise before it reaches that member. The same holds for an RPM's compressed payload. Under
+PyPy, a `.tar.gz` from a pipe can lose that stretch too (see [PyPy](install.md#pypy)).
 
 A member whose data is damaged doesn't end a `stream_members()` loop. Its own read raises, and the
 loop goes on to the next member, so one pass can find every damaged member in the archive. In a
