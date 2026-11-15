@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import random
+import re
 import shutil
 import struct
 import subprocess
@@ -1070,3 +1071,26 @@ def test_lz5_copies_from_its_starting_pattern() -> None:
     pos = 13 * 65
     stream = bytes([0b10, pos & 0xFF, (pos >> 4) & 0xF0 | 2, ord("!")])
     assert _old("-lz5-", stream, 6) == b"AAAAA!"
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_an_error_behind_a_stub_names_the_offset_in_the_file(forced: bool) -> None:
+    # The reader sees the archive alone, from its first header; a person reads the
+    # file from its first byte, stub included, so the message counts from there.
+    # The first member runs past the bytes the scan's validator reads, so detection
+    # finds the archive whose second member is cut.
+    head = _STUBS["pe"]
+    big = Member(b"big.bin", random.Random(1).randbytes(140 * 1024), method="-lh0-")
+    cut = archive([big, Member(b"a.txt", b"alpha", method="-lh0-")])[:-6]
+
+    def offset(exc: pytest.ExceptionInfo[BaseException]) -> int:
+        match = re.search(r"at offset (\d+)", str(exc.value))
+        assert match is not None, str(exc.value)
+        return int(match.group(1))
+
+    with pytest.raises(archivey.TruncatedError) as plain:
+        open_archive(io.BytesIO(cut), format=ArchiveFormat.LHA).members()
+    fmt = ArchiveFormat.LHA if forced else None
+    with pytest.raises(archivey.TruncatedError) as behind:
+        open_archive(io.BytesIO(head + cut), format=fmt).members()
+    assert offset(behind) == offset(plain) + len(head)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import struct
 import zlib
 from datetime import UTC, datetime
@@ -634,3 +635,32 @@ def test_an_envelope_the_main_header_does_not_place_there_is_trailing_data() -> 
         reader.members()
         (diagnostic,) = reader.diagnostics.retained
     assert diagnostic.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+
+
+def _offset_in(exc: pytest.ExceptionInfo[BaseException]) -> int:
+    match = re.search(r"at offset (\d+)", str(exc.value))
+    assert match is not None, str(exc.value)
+    return int(match.group(1))
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_an_error_behind_a_stub_names_the_offset_in_the_file(forced: bool) -> None:
+    # The reader sees the archive alone, from its main header; a person reads the
+    # file from its first byte, stub included, so the message counts from there.
+    head = _STUBS["pe"]
+    cut = _archive((b"a.txt", b"alpha"))[:-6]
+    with pytest.raises(TruncatedError) as plain:
+        open_archive(io.BytesIO(cut)).members()
+    fmt = ArchiveFormat.ARJ if forced else None
+    with pytest.raises(TruncatedError) as behind:
+        open_archive(io.BytesIO(head + cut), format=fmt).members()
+    assert _offset_in(behind) == _offset_in(plain) + len(head)
+
+
+def test_a_damaged_header_behind_decoys_is_named_where_it_is_in_the_file() -> None:
+    # The scan falls back to the first candidate, the bare magic right after ``MZ``.
+    with pytest.raises(CorruptionError) as exc:
+        open_archive(
+            io.BytesIO(b"MZ" + _decoys() + bytes(512)), format=ArchiveFormat.ARJ
+        )
+    assert _offset_in(exc) == 2
