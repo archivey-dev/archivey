@@ -29,7 +29,7 @@ _INPUT = bytes.fromhex(
 
 
 @requires_binary("unrar")
-@requires("cryptography")  # the header is AES-encrypted
+@requires("cryptography")
 @pytest.mark.parametrize(
     "password",
     [["", "password"], "", b"", "password", ["password", ""]],
