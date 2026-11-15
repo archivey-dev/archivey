@@ -13,7 +13,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey-cli"
-version = "0.3.1.dev0"
+version = "0.4.0"
 description = "The archivey command-line tool, with archivey's recommended optional packages"
 readme = "README.md"
 license = { text = "MIT" }
@@ -36,7 +36,7 @@ classifiers = [
     "Topic :: System :: Archiving :: Compression",
 ]
 dependencies = [
-    "archivey[recommended]==0.3.1.dev0",
+    "archivey[recommended]==0.4.0",
 ]
 
 [project.urls]

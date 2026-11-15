@@ -47,6 +47,14 @@ goes in it:
 - one line per security fix (**Security**);
 - one line summarizing all other bug fixes (**Fixed**), unless a fix changes behavior
   users rely on, which then gets its own line.
+- in every release, patch releases included, a **Performance** section after
+  **Fixed**: the peer wall ratios measured in §2, with the run's date and commit, the
+  changes against the previous release, and a link to `benchmarks/RESULTS.md`. A bug
+  fix can cost speed as well as save it. `release.py start` refuses an entry without
+  the section (a pre-release is not checked).
+
+Never list a change to something added in the same release: nobody used the earlier
+version, so the **Added** line describes the final behaviour.
 
 Internal refactors, review docs and chore work stay out.
 
@@ -86,9 +94,8 @@ Goal: a short, honest table (or bullet list) of peer wall ratios **for this
 release**, plus a note vs the **previous release** when one exists. Absolute
 VISION bands stay informational; do not claim CI hard-fails on ≤1.3×.
 
-A patch release (bug fixes only) can skip this section unless one of its fixes touches
-performance. §3 is never skipped: a bug-fix release is when `dev-docs/known-issues.md`
-entries go stale and a security fix needs its public line.
+Every release runs this section, patch releases included: a bug fix can make an
+operation slower, and the comparison against the previous tag is how that shows.
 
 - [ ] **Preferred:** start `benchmark-compare.yml` (Actions, "Run workflow") on the
       release PR's branch with `baseline_ref` set to the previous tag. It runs both
@@ -222,8 +229,7 @@ Also:
 
 `scripts/release/release.py` does the mechanical steps. Run each command from a clean,
 up-to-date `main`, with your own `gh` login; `--dry-run` before a command prints what it
-would do. With §2 skipped where it allows, a patch release is §1, §3 to §5 and these
-four commands.
+would do. A patch release is §1 to §5 and these four commands.
 
 1. `uv run python scripts/release/release.py notes` lists the merged pull requests since the last
    tag. Write the entry under `## [Unreleased]` from it (§1). This can be its own small
