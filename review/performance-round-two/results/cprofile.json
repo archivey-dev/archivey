@@ -1,0 +1,3979 @@
+{
+  "7z_read": {
+    "total_s": 0.6449390290000009,
+    "functions": [
+      {
+        "file": "src/archivey/internal/backends/sevenzip_reader.py",
+        "line": 1492,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.019022969,
+        "cumulative_s": 0.047096011
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 12002,
+        "own_s": 0.01663397,
+        "cumulative_s": 0.103229207
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 12000,
+        "own_s": 0.015516307000000002,
+        "cumulative_s": 0.04717856
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 24000,
+        "own_s": 0.015474090000000001,
+        "cumulative_s": 0.024702404
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4002,
+        "own_s": 0.013759492000000002,
+        "cumulative_s": 0.046428847
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 448,
+        "function": "read",
+        "calls": 8000,
+        "own_s": 0.012430895,
+        "cumulative_s": 0.154616512
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 8003,
+        "own_s": 0.011909472,
+        "cumulative_s": 0.337530901
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/framed_decoder.py",
+        "line": 369,
+        "function": "feed",
+        "calls": 4020,
+        "own_s": 0.011558947,
+        "cumulative_s": 0.021103283
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 2072,
+        "function": "_read",
+        "calls": 4003,
+        "own_s": 0.010763714,
+        "cumulative_s": 0.064524284
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 8005,
+        "own_s": 0.010569296,
+        "cumulative_s": 0.093691408
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 124139,
+        "own_s": 0.010560677000000001,
+        "cumulative_s": 0.010560677000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4002,
+        "own_s": 0.010501205000000001,
+        "cumulative_s": 0.054348428000000004
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.010333683000000001,
+        "cumulative_s": 0.061961608
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.009196955,
+        "cumulative_s": 0.23214258100000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 76199,
+        "own_s": 0.008601275,
+        "cumulative_s": 0.00861142
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 200,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.008551555,
+        "cumulative_s": 0.015411373
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 64408,
+        "own_s": 0.008244423,
+        "cumulative_s": 0.010270698
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.min>",
+        "calls": 20120,
+        "own_s": 0.008144595000000001,
+        "cumulative_s": 0.008144595000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 422,
+        "function": "proofs",
+        "calls": 12000,
+        "own_s": 0.008026188,
+        "cumulative_s": 0.020016408000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 850,
+        "function": "read",
+        "calls": 8003,
+        "own_s": 0.007863627,
+        "cumulative_s": 0.344486644
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.max>",
+        "calls": 40083,
+        "own_s": 0.007526152,
+        "cumulative_s": 0.007542363000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1555,
+        "function": "_hold_to_ratio",
+        "calls": 4000,
+        "own_s": 0.007435917,
+        "cumulative_s": 0.018040754000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 12000,
+        "own_s": 0.007243023,
+        "cumulative_s": 0.011305939000000001
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 649,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.007042046000000001,
+        "cumulative_s": 0.020670164
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/solid.py",
+        "line": 102,
+        "function": "read",
+        "calls": 8000,
+        "own_s": 0.006946922,
+        "cumulative_s": 0.10337383800000001
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.006671669000000001,
+        "cumulative_s": 0.673228047
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 616,
+        "function": "_read_sized_all",
+        "calls": 4000,
+        "own_s": 0.006668688000000001,
+        "cumulative_s": 0.19641760600000002
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 694,
+        "function": "_room",
+        "calls": 8000,
+        "own_s": 0.0065235480000000005,
+        "cumulative_s": 0.013084272000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1671,
+        "function": "_read_decompressed_chunk",
+        "calls": 4022,
+        "own_s": 0.006517516,
+        "cumulative_s": 0.038284854
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 757,
+        "function": "_judge",
+        "calls": 4000,
+        "own_s": 0.006486356,
+        "cumulative_s": 0.017533189
+      },
+      {
+        "file": "src/archivey/internal/backends/sevenzip_reader.py",
+        "line": 1257,
+        "function": "_open",
+        "calls": 4000,
+        "own_s": 0.006380007,
+        "cumulative_s": 0.080843733
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1280,
+        "function": "_drive_pass_streams",
+        "calls": 4001,
+        "own_s": 0.0060779250000000005,
+        "cumulative_s": 0.19520483800000002
+      },
+      {
+        "file": "src/archivey/internal/backends/sevenzip_reader.py",
+        "line": 2228,
+        "function": "_member_stream_from_solid",
+        "calls": 4000,
+        "own_s": 0.0057801960000000005,
+        "cumulative_s": 0.07168221500000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1379,
+        "function": "close",
+        "calls": 8002,
+        "own_s": 0.005662838000000001,
+        "cumulative_s": 0.06352711500000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'append' of 'list' objects>",
+        "calls": 48063,
+        "own_s": 0.005426208,
+        "cumulative_s": 0.005426208
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 168,
+        "function": "_probe_past_declared",
+        "calls": 4000,
+        "own_s": 0.0014767620000000002,
+        "cumulative_s": 0.019918304
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 4.605e-06,
+        "cumulative_s": 7.71e-06
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 4,
+        "own_s": 1.4140000000000001e-06,
+        "cumulative_s": 1.754e-06
+      }
+    ]
+  },
+  "cab_read": {
+    "total_s": 0.6401549990000005,
+    "functions": [
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 12000,
+        "own_s": 0.017080023,
+        "cumulative_s": 0.107585785
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 24000,
+        "own_s": 0.016304957000000002,
+        "cumulative_s": 0.025853059
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 12000,
+        "own_s": 0.016283056,
+        "cumulative_s": 0.050162793000000004
+      },
+      {
+        "file": "src/archivey/internal/backends/cab_reader.py",
+        "line": 536,
+        "function": "open_member",
+        "calls": 4000,
+        "own_s": 0.015284087000000002,
+        "cumulative_s": 0.047555267000000005
+      },
+      {
+        "file": "src/archivey/internal/format_adapter.py",
+        "line": 1098,
+        "function": "_plugin_member_data",
+        "calls": 4000,
+        "own_s": 0.014687523000000001,
+        "cumulative_s": 0.073344873
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.01385807,
+        "cumulative_s": 0.021529532
+      },
+      {
+        "file": "src/archivey/internal/backends/cab_reader.py",
+        "line": 425,
+        "function": "_record",
+        "calls": 4000,
+        "own_s": 0.012488244,
+        "cumulative_s": 0.029432339000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 4000,
+        "own_s": 0.012328556000000001,
+        "cumulative_s": 0.196103099
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4000,
+        "own_s": 0.011536343000000001,
+        "cumulative_s": 0.06234162100000001
+      },
+      {
+        "file": "src/archivey/internal/backends/cab_reader.py",
+        "line": 902,
+        "function": "readinto",
+        "calls": 4000,
+        "own_s": 0.011495515000000001,
+        "cumulative_s": 0.028093787000000002
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.011417331000000001,
+        "cumulative_s": 0.038864581
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.010245682,
+        "cumulative_s": 0.30257347500000004
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 92957,
+        "own_s": 0.009173802,
+        "cumulative_s": 0.009173802
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 76143,
+        "own_s": 0.009097203,
+        "cumulative_s": 0.009098395
+      },
+      {
+        "file": "src/archivey/internal/format_adapter.py",
+        "line": 1061,
+        "function": "_walk_records",
+        "calls": 4001,
+        "own_s": 0.009018159000000001,
+        "cumulative_s": 0.08486431100000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.all>",
+        "calls": 4000,
+        "own_s": 0.008423644000000001,
+        "cumulative_s": 0.015334985
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 422,
+        "function": "proofs",
+        "calls": 12000,
+        "own_s": 0.008215186000000001,
+        "cumulative_s": 0.021692136
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1555,
+        "function": "_hold_to_ratio",
+        "calls": 4000,
+        "own_s": 0.007855757,
+        "cumulative_s": 0.018857863000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 56322,
+        "own_s": 0.007855603000000001,
+        "cumulative_s": 0.009954327
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 4000,
+        "own_s": 0.007769273,
+        "cumulative_s": 0.33430017
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 12000,
+        "own_s": 0.007447918,
+        "cumulative_s": 0.011131504
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 448,
+        "function": "read",
+        "calls": 4000,
+        "own_s": 0.007417848,
+        "cumulative_s": 0.069653744
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 757,
+        "function": "_judge",
+        "calls": 4000,
+        "own_s": 0.007377235,
+        "cumulative_s": 0.018273882
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 616,
+        "function": "_read_sized_all",
+        "calls": 4000,
+        "own_s": 0.007071453,
+        "cumulative_s": 0.089773053
+      },
+      {
+        "file": "src/archivey/internal/backends/cab_reader.py",
+        "line": 592,
+        "function": "<genexpr>",
+        "calls": 82952,
+        "own_s": 0.0069113410000000005,
+        "cumulative_s": 0.0069113410000000005
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.00683306,
+        "cumulative_s": 0.6742526120000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.max>",
+        "calls": 32166,
+        "own_s": 0.0066016830000000006,
+        "cumulative_s": 0.006613781
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 649,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.006433229,
+        "cumulative_s": 0.02021341
+      },
+      {
+        "file": "src/archivey/internal/backends/cab_reader.py",
+        "line": 280,
+        "function": "_check_file_layout",
+        "calls": 1,
+        "own_s": 0.006234737000000001,
+        "cumulative_s": 0.017467005
+      },
+      {
+        "file": "src/archivey/internal/format_adapter.py",
+        "line": 1149,
+        "function": "_open_member",
+        "calls": 4000,
+        "own_s": 0.006133979,
+        "cumulative_s": 0.095131768
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1379,
+        "function": "close",
+        "calls": 8000,
+        "own_s": 0.006077922,
+        "cumulative_s": 0.072105022
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1853,
+        "function": "_member_parts",
+        "calls": 4000,
+        "own_s": 0.006048,
+        "cumulative_s": 0.015112424000000001
+      },
+      {
+        "file": "src/archivey/internal/backends/cab_reader.py",
+        "line": 847,
+        "function": "read",
+        "calls": 4038,
+        "own_s": 0.005923210000000001,
+        "cumulative_s": 0.010861316000000001
+      },
+      {
+        "file": "src/archivey/internal/naming.py",
+        "line": 327,
+        "function": "normalize_member_name",
+        "calls": 8000,
+        "own_s": 0.005677255,
+        "cumulative_s": 0.009936219000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 933,
+        "function": "build_member_verifier",
+        "calls": 8000,
+        "own_s": 0.005584881000000001,
+        "cumulative_s": 0.010695233
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 694,
+        "function": "_room",
+        "calls": 4000,
+        "own_s": 0.004029153000000001,
+        "cumulative_s": 0.0075239650000000005
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 4000,
+        "own_s": 0.000508988,
+        "cumulative_s": 0.000508988
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 2,
+        "own_s": 1.232e-06,
+        "cumulative_s": 2.0830000000000002e-06
+      }
+    ]
+  },
+  "extract_only": {
+    "total_s": 2.8482499450000005,
+    "functions": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.open>",
+        "calls": 4000,
+        "own_s": 0.5650911780000001,
+        "cumulative_s": 0.5650911780000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.lstat>",
+        "calls": 21048,
+        "own_s": 0.09253014600000001,
+        "cumulative_s": 0.10280749600000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method '__exit__' of '_io._IOBase' objects>",
+        "calls": 4000,
+        "own_s": 0.078577003,
+        "cumulative_s": 0.078577003
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.mkdir>",
+        "calls": 320,
+        "own_s": 0.049580620000000006,
+        "cumulative_s": 0.049580620000000006
+      },
+      {
+        "file": "src/archivey/internal/dataclass_copy.py",
+        "line": 70,
+        "function": "copy_with",
+        "calls": 12000,
+        "own_s": 0.043778619000000005,
+        "cumulative_s": 0.057288045
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 1197,
+        "function": "_handle_member",
+        "calls": 4000,
+        "own_s": 0.041191758,
+        "cumulative_s": 2.652110388
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.link>",
+        "calls": 4000,
+        "own_s": 0.034080621000000005,
+        "cumulative_s": 0.037285701000000004
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 387,
+        "function": "_parse_path",
+        "calls": 9769,
+        "own_s": 0.028378353000000002,
+        "cumulative_s": 0.065412337
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 16000,
+        "own_s": 0.028353616,
+        "cumulative_s": 0.082894178
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 16000,
+        "own_s": 0.028068015,
+        "cumulative_s": 0.15338237700000001
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 2662,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.027932234,
+        "cumulative_s": 0.056864508
+      },
+      {
+        "file": "<frozen posixpath>",
+        "line": 100,
+        "function": "split",
+        "calls": 16961,
+        "own_s": 0.02577488,
+        "cumulative_s": 0.043987489000000005
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 3009,
+        "function": "_write_file",
+        "calls": 4000,
+        "own_s": 0.024719963,
+        "cumulative_s": 1.8571892440000002
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 437,
+        "function": "__str__",
+        "calls": 75657,
+        "own_s": 0.024052301,
+        "cumulative_s": 0.14811812300000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.unlink>",
+        "calls": 4000,
+        "own_s": 0.023640701,
+        "cumulative_s": 0.025100420000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.chmod>",
+        "calls": 4000,
+        "own_s": 0.023510628000000002,
+        "cumulative_s": 0.026286671
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.022988621,
+        "cumulative_s": 0.033861202
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 447,
+        "function": "__fspath__",
+        "calls": 62453,
+        "own_s": 0.022270787,
+        "cumulative_s": 0.16406451200000002
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 4729,
+        "function": "_speculative_small_member",
+        "calls": 4000,
+        "own_s": 0.021828482,
+        "cumulative_s": 0.081225238
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 4460,
+        "function": "_write_file_atomic",
+        "calls": 4000,
+        "own_s": 0.021643973,
+        "cumulative_s": 1.596519819
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method sys.intern>",
+        "calls": 64037,
+        "own_s": 0.021165133000000003,
+        "cumulative_s": 0.021165133000000003
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 358,
+        "function": "__init__",
+        "calls": 15451,
+        "own_s": 0.020248095,
+        "cumulative_s": 0.031645131
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.02024019,
+        "cumulative_s": 0.062703245
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 8000,
+        "own_s": 0.019995796,
+        "cumulative_s": 0.405933496
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method _io.open>",
+        "calls": 4002,
+        "own_s": 0.019772949,
+        "cumulative_s": 0.019774051
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 130709,
+        "own_s": 0.019437764,
+        "cumulative_s": 0.023843156
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 8000,
+        "own_s": 0.019102908000000002,
+        "cumulative_s": 0.5609518520000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'get' of 'dict' objects>",
+        "calls": 64988,
+        "own_s": 0.018452499,
+        "cumulative_s": 0.01880996
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 164941,
+        "own_s": 0.01785099,
+        "cumulative_s": 0.018522863
+      },
+      {
+        "file": "src/archivey/internal/filters.py",
+        "line": 218,
+        "function": "_realpath_posix",
+        "calls": 4042,
+        "own_s": 0.017273610000000002,
+        "cumulative_s": 0.055676077000000004
+      },
+      {
+        "file": "src/archivey/internal/filters.py",
+        "line": 1170,
+        "function": "collision_key",
+        "calls": 12320,
+        "own_s": 0.017268417,
+        "cumulative_s": 0.030002030000000002
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 2811,
+        "function": "_physical_rel",
+        "calls": 16640,
+        "own_s": 0.017117808,
+        "cumulative_s": 0.15811787600000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.fspath>",
+        "calls": 88830,
+        "own_s": 0.016704145,
+        "cumulative_s": 0.15916089700000002
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4000,
+        "own_s": 0.016556153,
+        "cumulative_s": 0.065755034
+      },
+      {
+        "file": "<frozen posixpath>",
+        "line": 71,
+        "function": "join",
+        "calls": 9124,
+        "own_s": 0.016406314,
+        "cumulative_s": 0.025787892000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 422,
+        "function": "proofs",
+        "calls": 16000,
+        "own_s": 0.015563092,
+        "cumulative_s": 0.036481085
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 168,
+        "function": "_probe_past_declared",
+        "calls": 4000,
+        "own_s": 0.001416968,
+        "cumulative_s": 0.002351577
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 4000,
+        "own_s": 0.0008077410000000001,
+        "cumulative_s": 0.0008077410000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 2,
+        "own_s": 1.844e-06,
+        "cumulative_s": 2.554e-06
+      }
+    ]
+  },
+  "gz_path": {
+    "total_s": 0.7912300109999998,
+    "functions": [
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 390,
+        "function": "parse_header_block",
+        "calls": 4001,
+        "own_s": 0.024364055000000003,
+        "cumulative_s": 0.056851873000000004
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 36006,
+        "own_s": 0.023763884000000002,
+        "cumulative_s": 0.06731326600000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 16001,
+        "own_s": 0.020925329000000003,
+        "cumulative_s": 0.039877494
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1558,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.019584469,
+        "cumulative_s": 0.065668356
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 12002,
+        "own_s": 0.018399429000000002,
+        "cumulative_s": 0.075907598
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1957,
+        "function": "_resolve",
+        "calls": 4000,
+        "own_s": 0.01619968,
+        "cumulative_s": 0.019964179000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4002,
+        "own_s": 0.016091649,
+        "cumulative_s": 0.024162218000000003
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1575,
+        "function": "_next_entry",
+        "calls": 4001,
+        "own_s": 0.014179524,
+        "cumulative_s": 0.165536128
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.013642485000000001,
+        "cumulative_s": 0.043694192
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4002,
+        "own_s": 0.012345935,
+        "cumulative_s": 0.048397339000000004
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.012302700000000001,
+        "cumulative_s": 0.604317779
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 4545,
+        "own_s": 0.011925341,
+        "cumulative_s": 0.099716197
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 84540,
+        "own_s": 0.011360021000000001,
+        "cumulative_s": 0.014070868
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2344,
+        "function": "_pull_members_locked",
+        "calls": 4001,
+        "own_s": 0.011237424000000001,
+        "cumulative_s": 0.414112111
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 84746,
+        "own_s": 0.011143605000000001,
+        "cumulative_s": 0.011144577000000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'decompress' of 'zlib.Decompress' objects>",
+        "calls": 561,
+        "own_s": 0.010425565000000001,
+        "cumulative_s": 0.010425565000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 4543,
+        "own_s": 0.009890316000000001,
+        "cumulative_s": 0.206451244
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 16000,
+        "own_s": 0.009791181000000001,
+        "cumulative_s": 0.015744677000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 952,
+        "function": "_walk_members",
+        "calls": 4001,
+        "own_s": 0.009625245000000001,
+        "cumulative_s": 0.263885535
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 97877,
+        "own_s": 0.009617908000000001,
+        "cumulative_s": 0.009617908000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "line": 91,
+        "function": "read",
+        "calls": 8004,
+        "own_s": 0.008621789000000001,
+        "cumulative_s": 0.056134556
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1510,
+        "function": "_verification_proofs",
+        "calls": 4001,
+        "own_s": 0.008040817,
+        "cumulative_s": 0.023795855
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1782,
+        "function": "_record_member_ambiguities",
+        "calls": 4000,
+        "own_s": 0.008039675000000001,
+        "cumulative_s": 0.013402272000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 903,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.008034448000000001,
+        "cumulative_s": 0.11122781600000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1024,
+        "function": "_open_member_in_walk",
+        "calls": 4000,
+        "own_s": 0.007862036000000001,
+        "cumulative_s": 0.042155879
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.007428429,
+        "cumulative_s": 0.8194720400000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1280,
+        "function": "_drive_pass_streams",
+        "calls": 4001,
+        "own_s": 0.007295605,
+        "cumulative_s": 0.560937023
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 2338,
+        "function": "read",
+        "calls": 4000,
+        "own_s": 0.006926547000000001,
+        "cumulative_s": 0.048537679
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2423,
+        "function": "_pull_replayable",
+        "calls": 4001,
+        "own_s": 0.006811660000000001,
+        "cumulative_s": 0.281810846
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 860,
+        "function": "_step",
+        "calls": 4001,
+        "own_s": 0.006795176,
+        "cumulative_s": 0.17950854200000002
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1379,
+        "function": "close",
+        "calls": 8002,
+        "own_s": 0.006595545,
+        "cumulative_s": 0.059215454
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2776,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.006472950000000001,
+        "cumulative_s": 0.04109479
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 72,
+        "function": "_extra_bytes",
+        "calls": 4000,
+        "own_s": 0.006374273000000001,
+        "cumulative_s": 0.011028787
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 260,
+        "function": "_cut_nul",
+        "calls": 20000,
+        "own_s": 0.006318293,
+        "cumulative_s": 0.009781544000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1853,
+        "function": "_member_parts",
+        "calls": 4000,
+        "own_s": 0.0062652310000000004,
+        "cumulative_s": 0.008730051
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 1624,
+        "own_s": 0.00038722,
+        "cumulative_s": 0.00046739300000000003
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 416,
+        "function": "_room",
+        "calls": 542,
+        "own_s": 6.6674e-05,
+        "cumulative_s": 6.6674e-05
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 3.676e-06,
+        "cumulative_s": 6.771e-06
+      }
+    ]
+  },
+  "gz_pipe": {
+    "total_s": 0.6658968690000003,
+    "functions": [
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 36005,
+        "own_s": 0.026852232,
+        "cumulative_s": 0.081883313
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 390,
+        "function": "parse_header_block",
+        "calls": 4001,
+        "own_s": 0.021514642,
+        "cumulative_s": 0.050175399
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1558,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.018079848000000003,
+        "cumulative_s": 0.060538832
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4002,
+        "own_s": 0.017046295,
+        "cumulative_s": 0.028708994
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1957,
+        "function": "_resolve",
+        "calls": 4000,
+        "own_s": 0.014432346,
+        "cumulative_s": 0.017926649000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 12001,
+        "own_s": 0.014294766,
+        "cumulative_s": 0.027114199000000002
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1956,
+        "function": "_member_stream",
+        "calls": 4000,
+        "own_s": 0.013769908,
+        "cumulative_s": 0.048852231
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1575,
+        "function": "_next_entry",
+        "calls": 4001,
+        "own_s": 0.013516978,
+        "cumulative_s": 0.158618967
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 100158,
+        "own_s": 0.013074372,
+        "cumulative_s": 0.013076674000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 8002,
+        "own_s": 0.011834332000000001,
+        "cumulative_s": 0.07249306400000001
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "line": 91,
+        "function": "read",
+        "calls": 11996,
+        "own_s": 0.011604188000000001,
+        "cumulative_s": 0.05450321
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 88564,
+        "own_s": 0.011163952000000001,
+        "cumulative_s": 0.01345373
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4002,
+        "own_s": 0.010950702000000001,
+        "cumulative_s": 0.061794015
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.010915010000000001,
+        "cumulative_s": 0.5911299560000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2344,
+        "function": "_pull_members_locked",
+        "calls": 4001,
+        "own_s": 0.010374752000000001,
+        "cumulative_s": 0.36396082500000004
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 952,
+        "function": "_walk_members",
+        "calls": 4001,
+        "own_s": 0.009607278,
+        "cumulative_s": 0.24490414000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'decompress' of 'zlib.Decompress' objects>",
+        "calls": 552,
+        "own_s": 0.009091724,
+        "cumulative_s": 0.009091724
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 93323,
+        "own_s": 0.008683692,
+        "cumulative_s": 0.008683692
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 903,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.007893341,
+        "cumulative_s": 0.09879902800000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 4001,
+        "own_s": 0.007591953,
+        "cumulative_s": 0.084372455
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1782,
+        "function": "_record_member_ambiguities",
+        "calls": 4000,
+        "own_s": 0.007369921000000001,
+        "cumulative_s": 0.012575043000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1510,
+        "function": "_verification_proofs",
+        "calls": 4001,
+        "own_s": 0.007279253,
+        "cumulative_s": 0.01914628
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 87,
+        "function": "check_read_size",
+        "calls": 15997,
+        "own_s": 0.00683026,
+        "cumulative_s": 0.008630726
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 2059,
+        "function": "_streamed_member_stream",
+        "calls": 4000,
+        "own_s": 0.006449105,
+        "cumulative_s": 0.087664063
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 2338,
+        "function": "read",
+        "calls": 4000,
+        "own_s": 0.006416639,
+        "cumulative_s": 0.033711075
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.006395512000000001,
+        "cumulative_s": 0.6956562940000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2776,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.0062144240000000005,
+        "cumulative_s": 0.035863769000000004
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1853,
+        "function": "_member_parts",
+        "calls": 4000,
+        "own_s": 0.006190206,
+        "cumulative_s": 0.008485745000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 8000,
+        "own_s": 0.005705771,
+        "cumulative_s": 0.008450722
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 608,
+        "function": "read_within_reach",
+        "calls": 8001,
+        "own_s": 0.005650652,
+        "cumulative_s": 0.048941566000000006
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 260,
+        "function": "_cut_nul",
+        "calls": 20000,
+        "own_s": 0.005543277,
+        "cumulative_s": 0.008671795000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1379,
+        "function": "close",
+        "calls": 4003,
+        "own_s": 0.0054470560000000005,
+        "cumulative_s": 0.071115958
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1555,
+        "function": "_hold_to_ratio",
+        "calls": 4000,
+        "own_s": 0.005412015,
+        "cumulative_s": 0.014304329000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1280,
+        "function": "_drive_pass_streams",
+        "calls": 4001,
+        "own_s": 0.005243659,
+        "cumulative_s": 0.48636637800000004
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1682,
+        "function": "_report_member_findings",
+        "calls": 4000,
+        "own_s": 0.005039418,
+        "cumulative_s": 0.007572969000000001
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 1657,
+        "own_s": 0.000463915,
+        "cumulative_s": 0.0005950360000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 3.417e-06,
+        "cumulative_s": 5.989000000000001e-06
+      }
+    ]
+  },
+  "gz_reverse": {
+    "total_s": 0.28852243099999975,
+    "functions": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'read' of '_io.BufferedReader' objects>",
+        "calls": 469,
+        "own_s": 0.166121961,
+        "cumulative_s": 0.166251634
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method zlib.crc32>",
+        "calls": 1105,
+        "own_s": 0.018427067000000002,
+        "cumulative_s": 0.018427067000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'flush' of '_io.BufferedWriter' objects>",
+        "calls": 297,
+        "own_s": 0.016575715,
+        "cumulative_s": 0.016575715
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/rapidgzip_child.py",
+        "line": 1131,
+        "function": "_read_into",
+        "calls": 1155,
+        "own_s": 0.004344868,
+        "cumulative_s": 0.15449975400000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 17513,
+        "own_s": 0.003352129,
+        "cumulative_s": 0.003352129
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method time.sleep>",
+        "calls": 2,
+        "own_s": 0.0033485430000000003,
+        "cumulative_s": 0.0033485430000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/stdlib_takeover.py",
+        "line": 270,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.0022352640000000003,
+        "cumulative_s": 0.163372552
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/gzip_codec.py",
+        "line": 220,
+        "function": "feed",
+        "calls": 1089,
+        "own_s": 0.002045434,
+        "cumulative_s": 0.020848085000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/counting.py",
+        "line": 180,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.001943922,
+        "cumulative_s": 0.198492301
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 448,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.0018480220000000002,
+        "cumulative_s": 0.209436496
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 1220,
+        "own_s": 0.0016800550000000002,
+        "cumulative_s": 0.21985321200000002
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 192,
+        "function": "read_blocking",
+        "calls": 4752,
+        "own_s": 0.001676163,
+        "cumulative_s": 0.2279739
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 1031,
+        "own_s": 0.001373785,
+        "cumulative_s": 0.003585486
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 850,
+        "function": "read",
+        "calls": 1220,
+        "own_s": 0.00134654,
+        "cumulative_s": 0.22218473200000002
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/gzip_codec.py",
+        "line": 343,
+        "function": "_count",
+        "calls": 1153,
+        "own_s": 0.001116797,
+        "cumulative_s": 0.023829546
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/gzip_codec.py",
+        "line": 358,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.001073142,
+        "cumulative_s": 0.188531641
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 6171,
+        "own_s": 0.0010650310000000001,
+        "cumulative_s": 0.001431933
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 581,
+        "function": "_judge",
+        "calls": 1089,
+        "own_s": 0.0010009560000000001,
+        "cumulative_s": 0.002668281
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.next>",
+        "calls": 2481,
+        "own_s": 0.0009499930000000001,
+        "cumulative_s": 0.001259582
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 3527,
+        "own_s": 0.0009468020000000001,
+        "cumulative_s": 0.0012663420000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/rapidgzip_child.py",
+        "line": 1084,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.000935658,
+        "cumulative_s": 0.156606937
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 87,
+        "function": "check_read_size",
+        "calls": 1416,
+        "own_s": 0.000910256,
+        "cumulative_s": 0.001087187
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1575,
+        "function": "_next_entry",
+        "calls": 65,
+        "own_s": 0.000894206,
+        "cumulative_s": 0.160584587
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.max>",
+        "calls": 4011,
+        "own_s": 0.0008936980000000001,
+        "cumulative_s": 0.000905836
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 613,
+        "function": "seek",
+        "calls": 64,
+        "own_s": 0.000849495,
+        "cumulative_s": 0.143604011
+      },
+      {
+        "file": "src/archivey/internal/nesting.py",
+        "line": 268,
+        "function": "_draw_bytes",
+        "calls": 1155,
+        "own_s": 0.0008481060000000001,
+        "cumulative_s": 0.001013683
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 4460,
+        "function": "open",
+        "calls": 64,
+        "own_s": 0.000831696,
+        "cumulative_s": 0.010536933
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/rapidgzip_child.py",
+        "line": 944,
+        "function": "_note_received",
+        "calls": 136,
+        "own_s": 0.000827205,
+        "cumulative_s": 0.0034596320000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 390,
+        "function": "parse_header_block",
+        "calls": 65,
+        "own_s": 0.0007938040000000001,
+        "cumulative_s": 0.001702792
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 553,
+        "function": "_draw_bytes",
+        "calls": 1155,
+        "own_s": 0.000791763,
+        "cumulative_s": 0.002790603
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/decoder_worker.py",
+        "line": 83,
+        "function": "read_exact_or_none",
+        "calls": 461,
+        "own_s": 0.000752548,
+        "cumulative_s": 0.167039297
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py",
+        "line": 104,
+        "function": "__init__",
+        "calls": 1232,
+        "own_s": 0.0007454670000000001,
+        "cumulative_s": 0.0009403600000000001
+      },
+      {
+        "file": "src/archivey/internal/nesting.py",
+        "line": 319,
+        "function": "report_pass",
+        "calls": 1153,
+        "own_s": 0.000734183,
+        "cumulative_s": 0.0008888090000000001
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py",
+        "line": 141,
+        "function": "__exit__",
+        "calls": 1232,
+        "own_s": 0.000726347,
+        "cumulative_s": 0.0014960490000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 4024,
+        "own_s": 0.000702672,
+        "cumulative_s": 0.000833836
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 416,
+        "function": "_room",
+        "calls": 1155,
+        "own_s": 0.00019084200000000001,
+        "cumulative_s": 0.00019084200000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 4.928e-06,
+        "cumulative_s": 1.0126000000000001e-05
+      }
+    ]
+  },
+  "tar_list": {
+    "total_s": 1.233021096000001,
+    "functions": [
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 390,
+        "function": "parse_header_block",
+        "calls": 20001,
+        "own_s": 0.07863534600000001,
+        "cumulative_s": 0.20045654000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1558,
+        "function": "_to_member",
+        "calls": 20000,
+        "own_s": 0.07492847500000001,
+        "cumulative_s": 0.25446849
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1957,
+        "function": "_resolve",
+        "calls": 20000,
+        "own_s": 0.058856102,
+        "cumulative_s": 0.074426084
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1575,
+        "function": "_next_entry",
+        "calls": 20001,
+        "own_s": 0.055429646000000006,
+        "cumulative_s": 0.6074350350000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 952,
+        "function": "_walk_members",
+        "calls": 20001,
+        "own_s": 0.036718127,
+        "cumulative_s": 0.969629756
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1782,
+        "function": "_record_member_ambiguities",
+        "calls": 20000,
+        "own_s": 0.029815440000000002,
+        "cumulative_s": 0.055387022
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 860,
+        "function": "_step",
+        "calls": 20001,
+        "own_s": 0.026705171000000003,
+        "cumulative_s": 0.6626119570000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2423,
+        "function": "_pull_replayable",
+        "calls": 20001,
+        "own_s": 0.025200899000000002,
+        "cumulative_s": 1.0389183450000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 260,
+        "function": "_cut_nul",
+        "calls": 100000,
+        "own_s": 0.023920024,
+        "cumulative_s": 0.037902476000000004
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2776,
+        "function": "_register_member",
+        "calls": 20000,
+        "own_s": 0.023668926,
+        "cumulative_s": 0.156743085
+      },
+      {
+        "file": "src/archivey/internal/diagnostics_collector.py",
+        "line": 369,
+        "function": "call_replaying",
+        "calls": 20001,
+        "own_s": 0.022269621,
+        "cumulative_s": 1.005944391
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'get' of 'dict' objects>",
+        "calls": 100016,
+        "own_s": 0.022055402,
+        "cumulative_s": 0.022058205
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 230240,
+        "own_s": 0.020785622,
+        "cumulative_s": 0.020785622
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2344,
+        "function": "_pull_members_locked",
+        "calls": 79,
+        "own_s": 0.020275644000000002,
+        "cumulative_s": 1.2493629990000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1682,
+        "function": "_report_member_findings",
+        "calls": 20000,
+        "own_s": 0.01991543,
+        "cumulative_s": 0.031425939
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 323,
+        "function": "_byte_sum",
+        "calls": 20000,
+        "own_s": 0.019078598000000002,
+        "cumulative_s": 0.028640914000000003
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'rstrip' of 'bytes' objects>",
+        "calls": 40000,
+        "own_s": 0.018975345,
+        "cumulative_s": 0.018975345
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "line": 91,
+        "function": "read",
+        "calls": 20004,
+        "own_s": 0.018726408,
+        "cumulative_s": 0.062829572
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1647,
+        "function": "_member_extra",
+        "calls": 20000,
+        "own_s": 0.018508666,
+        "cumulative_s": 0.029666321000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "line": 161,
+        "function": "seek",
+        "calls": 20002,
+        "own_s": 0.018463123,
+        "cumulative_s": 0.043578539
+      },
+      {
+        "file": "src/archivey/internal/naming.py",
+        "line": 327,
+        "function": "normalize_member_name",
+        "calls": 20000,
+        "own_s": 0.017250351,
+        "cumulative_s": 0.029294977000000003
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 104,
+        "function": "member_metadata_bytes",
+        "calls": 20000,
+        "own_s": 0.016817746,
+        "cumulative_s": 0.059023951000000005
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1528,
+        "function": "_decode_name",
+        "calls": 60000,
+        "own_s": 0.015961796,
+        "cumulative_s": 0.024100081000000002
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 72,
+        "function": "_extra_bytes",
+        "calls": 20000,
+        "own_s": 0.015754975,
+        "cumulative_s": 0.036288538
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 258,
+        "function": "account_member",
+        "calls": 20000,
+        "own_s": 0.015187848,
+        "cumulative_s": 0.09494192400000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 276,
+        "function": "parse_number",
+        "calls": 20000,
+        "own_s": 0.015171715,
+        "cumulative_s": 0.026858498
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1812,
+        "function": "_place_next_header",
+        "calls": 20000,
+        "own_s": 0.015131607000000002,
+        "cumulative_s": 0.035285498000000005
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 903,
+        "function": "_register_member",
+        "calls": 20000,
+        "own_s": 0.014800492,
+        "cumulative_s": 0.173434199
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 120321,
+        "own_s": 0.014438937,
+        "cumulative_s": 0.014451706000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1465,
+        "function": "_read",
+        "calls": 20001,
+        "own_s": 0.014021742,
+        "cumulative_s": 0.101926678
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'find' of 'bytes' objects>",
+        "calls": 100000,
+        "own_s": 0.013982452000000001,
+        "cumulative_s": 0.013982452000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2844,
+        "function": "_earlier_same_name",
+        "calls": 20000,
+        "own_s": 0.013030622,
+        "cumulative_s": 0.029945562000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 608,
+        "function": "read_within_reach",
+        "calls": 20002,
+        "own_s": 0.012690391,
+        "cumulative_s": 0.08211647000000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1941,
+        "function": "_owner_name",
+        "calls": 40000,
+        "own_s": 0.012436200000000001,
+        "cumulative_s": 0.027147658
+      },
+      {
+        "file": "src/archivey/internal/nesting.py",
+        "line": 304,
+        "function": "_draw_members",
+        "calls": 20000,
+        "own_s": 0.011251556000000001,
+        "cumulative_s": 0.014047271
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 5.147e-06,
+        "cumulative_s": 9.354e-06
+      }
+    ]
+  },
+  "xz_path": {
+    "total_s": 0.8801952060000002,
+    "functions": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'decompress' of '_lzma.LZMADecompressor' objects>",
+        "calls": 562,
+        "own_s": 0.037547210000000004,
+        "cumulative_s": 0.037547210000000004
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 36006,
+        "own_s": 0.025747874,
+        "cumulative_s": 0.07489388400000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 390,
+        "function": "parse_header_block",
+        "calls": 4001,
+        "own_s": 0.025567053000000003,
+        "cumulative_s": 0.060762107
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 16001,
+        "own_s": 0.022463779,
+        "cumulative_s": 0.042511638000000004
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1558,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.020910203000000002,
+        "cumulative_s": 0.069520235
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 12002,
+        "own_s": 0.019276887,
+        "cumulative_s": 0.079648761
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1957,
+        "function": "_resolve",
+        "calls": 4000,
+        "own_s": 0.017568917,
+        "cumulative_s": 0.021456922
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4002,
+        "own_s": 0.017519796,
+        "cumulative_s": 0.026210322
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1575,
+        "function": "_next_entry",
+        "calls": 4001,
+        "own_s": 0.015402134000000001,
+        "cumulative_s": 0.18916401500000002
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.013636098000000001,
+        "cumulative_s": 0.047420705
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4002,
+        "own_s": 0.013450670000000001,
+        "cumulative_s": 0.051936711
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 4545,
+        "own_s": 0.013358151,
+        "cumulative_s": 0.106613409
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2344,
+        "function": "_pull_members_locked",
+        "calls": 4001,
+        "own_s": 0.012750195,
+        "cumulative_s": 0.462451357
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 85291,
+        "own_s": 0.012585545,
+        "cumulative_s": 0.012586435
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.012462968000000001,
+        "cumulative_s": 0.909526017
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 84533,
+        "own_s": 0.012364016,
+        "cumulative_s": 0.015049774
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.012205468,
+        "cumulative_s": 0.662609388
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 4543,
+        "own_s": 0.010665999,
+        "cumulative_s": 0.24669267500000003
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 100187,
+        "own_s": 0.010618246000000001,
+        "cumulative_s": 0.010618246000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 16000,
+        "own_s": 0.010393544000000001,
+        "cumulative_s": 0.015795201000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 952,
+        "function": "_walk_members",
+        "calls": 4001,
+        "own_s": 0.009994174,
+        "cumulative_s": 0.293093647
+      },
+      {
+        "file": "src/archivey/internal/diagnostics_collector.py",
+        "line": 369,
+        "function": "call_replaying",
+        "calls": 4001,
+        "own_s": 0.009986062,
+        "cumulative_s": 0.306717736
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "line": 91,
+        "function": "read",
+        "calls": 8004,
+        "own_s": 0.009203377,
+        "cumulative_s": 0.08853726
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1782,
+        "function": "_record_member_ambiguities",
+        "calls": 4000,
+        "own_s": 0.008461794,
+        "cumulative_s": 0.013979942
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 903,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.008419942,
+        "cumulative_s": 0.11917593400000001
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1510,
+        "function": "_verification_proofs",
+        "calls": 4001,
+        "own_s": 0.008225677,
+        "cumulative_s": 0.025649845
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1024,
+        "function": "_open_member_in_walk",
+        "calls": 4000,
+        "own_s": 0.008109214,
+        "cumulative_s": 0.044514428
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1280,
+        "function": "_drive_pass_streams",
+        "calls": 4001,
+        "own_s": 0.007641862,
+        "cumulative_s": 0.620878555
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2423,
+        "function": "_pull_replayable",
+        "calls": 4001,
+        "own_s": 0.007402276,
+        "cumulative_s": 0.316053845
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2776,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.0073248390000000005,
+        "cumulative_s": 0.041899475000000005
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1379,
+        "function": "close",
+        "calls": 8002,
+        "own_s": 0.007206731,
+        "cumulative_s": 0.06370571900000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 860,
+        "function": "_step",
+        "calls": 4001,
+        "own_s": 0.007064959000000001,
+        "cumulative_s": 0.203985679
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 2338,
+        "function": "read",
+        "calls": 4000,
+        "own_s": 0.007043085,
+        "cumulative_s": 0.066458242
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1853,
+        "function": "_member_parts",
+        "calls": 4000,
+        "own_s": 0.0065824790000000005,
+        "cumulative_s": 0.009353371000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 87,
+        "function": "check_read_size",
+        "calls": 12547,
+        "own_s": 0.006567381000000001,
+        "cumulative_s": 0.008239083000000001
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 1624,
+        "own_s": 0.00043659300000000004,
+        "cumulative_s": 0.0005180580000000001
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 416,
+        "function": "_room",
+        "calls": 542,
+        "own_s": 0.000152725,
+        "cumulative_s": 0.000152725
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 3.757e-06,
+        "cumulative_s": 6.4000000000000006e-06
+      }
+    ]
+  },
+  "xz_pipe": {
+    "total_s": 0.6960633670000006,
+    "functions": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'decompress' of '_lzma.LZMADecompressor' objects>",
+        "calls": 553,
+        "own_s": 0.035042151,
+        "cumulative_s": 0.035042151
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 36005,
+        "own_s": 0.027316464000000002,
+        "cumulative_s": 0.082401929
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 390,
+        "function": "parse_header_block",
+        "calls": 4001,
+        "own_s": 0.02112947,
+        "cumulative_s": 0.049721242000000006
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1558,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.017532459,
+        "cumulative_s": 0.062144987000000006
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 12001,
+        "own_s": 0.016545046,
+        "cumulative_s": 0.029339839000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4002,
+        "own_s": 0.016331311,
+        "cumulative_s": 0.028070693
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1957,
+        "function": "_resolve",
+        "calls": 4000,
+        "own_s": 0.015094945,
+        "cumulative_s": 0.018575071000000002
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1956,
+        "function": "_member_stream",
+        "calls": 4000,
+        "own_s": 0.013692654,
+        "cumulative_s": 0.047842079
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1575,
+        "function": "_next_entry",
+        "calls": 4001,
+        "own_s": 0.013531002,
+        "cumulative_s": 0.174569642
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 100718,
+        "own_s": 0.01330823,
+        "cumulative_s": 0.013310723
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 8002,
+        "own_s": 0.011477609000000001,
+        "cumulative_s": 0.07358121100000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 88549,
+        "own_s": 0.011215371,
+        "cumulative_s": 0.013410203
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "line": 91,
+        "function": "read",
+        "calls": 11996,
+        "own_s": 0.011072188,
+        "cumulative_s": 0.08007205
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.011034594,
+        "cumulative_s": 0.6078797890000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4002,
+        "own_s": 0.010789197,
+        "cumulative_s": 0.061980334000000005
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2344,
+        "function": "_pull_members_locked",
+        "calls": 4001,
+        "own_s": 0.010264506000000001,
+        "cumulative_s": 0.38107473000000003
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 952,
+        "function": "_walk_members",
+        "calls": 4001,
+        "own_s": 0.008989042000000001,
+        "cumulative_s": 0.261538884
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 94968,
+        "own_s": 0.008930717000000001,
+        "cumulative_s": 0.008930717000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 4001,
+        "own_s": 0.007719663000000001,
+        "cumulative_s": 0.09721397700000001
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 903,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.0076870950000000006,
+        "cumulative_s": 0.099624893
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1510,
+        "function": "_verification_proofs",
+        "calls": 4001,
+        "own_s": 0.007522282000000001,
+        "cumulative_s": 0.020014176
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 1782,
+        "function": "_record_member_ambiguities",
+        "calls": 4000,
+        "own_s": 0.007306825,
+        "cumulative_s": 0.012722774000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 87,
+        "function": "check_read_size",
+        "calls": 15997,
+        "own_s": 0.006863181,
+        "cumulative_s": 0.008691264
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.006537034000000001,
+        "cumulative_s": 0.725156561
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 2059,
+        "function": "_streamed_member_stream",
+        "calls": 4000,
+        "own_s": 0.006522079,
+        "cumulative_s": 0.086194714
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 2338,
+        "function": "read",
+        "calls": 4000,
+        "own_s": 0.006345921,
+        "cumulative_s": 0.044965294
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2776,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.005960982,
+        "cumulative_s": 0.036163011
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1853,
+        "function": "_member_parts",
+        "calls": 4000,
+        "own_s": 0.005925312,
+        "cumulative_s": 0.008483655
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1379,
+        "function": "close",
+        "calls": 4003,
+        "own_s": 0.005830939,
+        "cumulative_s": 0.07166605000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 8000,
+        "own_s": 0.005636670000000001,
+        "cumulative_s": 0.00837678
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1280,
+        "function": "_drive_pass_streams",
+        "calls": 4001,
+        "own_s": 0.005625032,
+        "cumulative_s": 0.5020123510000001
+      },
+      {
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "line": 608,
+        "function": "read_within_reach",
+        "calls": 8001,
+        "own_s": 0.005620158,
+        "cumulative_s": 0.069272702
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "line": 260,
+        "function": "_cut_nul",
+        "calls": 20000,
+        "own_s": 0.005615070000000001,
+        "cumulative_s": 0.008622256
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1555,
+        "function": "_hold_to_ratio",
+        "calls": 4000,
+        "own_s": 0.005481897,
+        "cumulative_s": 0.014598115
+      },
+      {
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "line": 1941,
+        "function": "_owner_name",
+        "calls": 8000,
+        "own_s": 0.005251353,
+        "cumulative_s": 0.008523422000000001
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 1654,
+        "own_s": 0.000458709,
+        "cumulative_s": 0.000581163
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 4.104e-06,
+        "cumulative_s": 6.759e-06
+      }
+    ]
+  },
+  "xz_reverse": {
+    "total_s": 6.346859655000002,
+    "functions": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'decompress' of '_lzma.LZMADecompressor' objects>",
+        "calls": 34849,
+        "own_s": 5.4416538590000005,
+        "cumulative_s": 5.4416538590000005
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1086,
+        "function": "_process",
+        "calls": 34783,
+        "own_s": 0.17419098300000002,
+        "cumulative_s": 5.841810532
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'read' of '_io.BufferedReader' objects>",
+        "calls": 17222,
+        "own_s": 0.09594698,
+        "cumulative_s": 0.09594698
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'extend' of 'bytearray' objects>",
+        "calls": 70221,
+        "own_s": 0.09562078800000001,
+        "cumulative_s": 0.09562078800000001
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 802,
+        "function": "feed",
+        "calls": 34783,
+        "own_s": 0.08180348100000001,
+        "cumulative_s": 0.14454741100000001
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1671,
+        "function": "_read_decompressed_chunk",
+        "calls": 34784,
+        "own_s": 0.063343496,
+        "cumulative_s": 6.205522813
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1434,
+        "function": "feed",
+        "calls": 34783,
+        "own_s": 0.042720446,
+        "cumulative_s": 5.948222883000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 395419,
+        "own_s": 0.035765433,
+        "cumulative_s": 0.035765433
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 2514,
+        "function": "_skip_to",
+        "calls": 64,
+        "own_s": 0.029315518000000002,
+        "cumulative_s": 5.897418642000001
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 976,
+        "function": "feed",
+        "calls": 34783,
+        "own_s": 0.023053771,
+        "cumulative_s": 5.894096584000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.min>",
+        "calls": 109235,
+        "own_s": 0.021129311,
+        "cumulative_s": 0.021129311
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1607,
+        "function": "_ingest_decode",
+        "calls": 34784,
+        "own_s": 0.014304262000000002,
+        "cumulative_s": 0.017210446
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 857,
+        "function": "_uncompressed_chunk",
+        "calls": 16477,
+        "own_s": 0.011966203,
+        "cumulative_s": 0.016541974
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1729,
+        "function": "_decoding",
+        "calls": 34784,
+        "own_s": 0.011427886,
+        "cumulative_s": 5.9740007010000005
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1928,
+        "function": "_ended",
+        "calls": 34784,
+        "own_s": 0.010770358,
+        "cumulative_s": 0.023560941000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 2072,
+        "function": "_read",
+        "calls": 1155,
+        "own_s": 0.010696085000000001,
+        "cumulative_s": 6.277035425
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'clear' of 'bytearray' objects>",
+        "calls": 72164,
+        "own_s": 0.009900285,
+        "cumulative_s": 0.009900285
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1663,
+        "function": "_read_feed_slice",
+        "calls": 17220,
+        "own_s": 0.009543716,
+        "cumulative_s": 0.105485198
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 843,
+        "function": "_chunk",
+        "calls": 18623,
+        "own_s": 0.009306141,
+        "cumulative_s": 0.012649934000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1491,
+        "function": "trailing_bytes",
+        "calls": 34784,
+        "own_s": 0.008339552,
+        "cumulative_s": 0.012790583000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1683,
+        "function": "<lambda>",
+        "calls": 17564,
+        "own_s": 0.008006890000000001,
+        "cumulative_s": 3.4269324230000002
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1505,
+        "function": "needs_input",
+        "calls": 34784,
+        "own_s": 0.007978230000000001,
+        "cumulative_s": 0.013487299000000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 43168,
+        "own_s": 0.006536794,
+        "cumulative_s": 0.006918989
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 1720,
+        "function": "<lambda>",
+        "calls": 17219,
+        "own_s": 0.006329502000000001,
+        "cumulative_s": 2.535626852
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 825,
+        "function": "_expect",
+        "calls": 37313,
+        "own_s": 0.0058769090000000005,
+        "cumulative_s": 0.0058769090000000005
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1078,
+        "function": "needs_input",
+        "calls": 34784,
+        "own_s": 0.005509069,
+        "cumulative_s": 0.005509069
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1510,
+        "function": "_points_for_units",
+        "calls": 34784,
+        "own_s": 0.003928195000000001,
+        "cumulative_s": 0.003939682
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 862,
+        "function": "_lzma_chunk",
+        "calls": 2144,
+        "own_s": 0.0038191,
+        "cumulative_s": 0.004807459
+      },
+      {
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "line": 1454,
+        "function": "_hand_off_if_resume_done",
+        "calls": 34783,
+        "own_s": 0.0032015060000000002,
+        "cumulative_s": 0.0032015060000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 1220,
+        "own_s": 0.0031521770000000004,
+        "cumulative_s": 6.306245226000001
+      },
+      {
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "line": 2659,
+        "function": "release_decoder_children",
+        "calls": 324,
+        "own_s": 0.003071457,
+        "cumulative_s": 0.005064687
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method from_bytes>",
+        "calls": 20767,
+        "own_s": 0.0029899360000000003,
+        "cumulative_s": 0.0029899360000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/counting.py",
+        "line": 180,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.002508546,
+        "cumulative_s": 6.288487883
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 448,
+        "function": "read",
+        "calls": 1155,
+        "own_s": 0.002359767,
+        "cumulative_s": 6.29980543
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 850,
+        "function": "read",
+        "calls": 1220,
+        "own_s": 0.001653027,
+        "cumulative_s": 6.308654261
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 3527,
+        "own_s": 0.00111847,
+        "cumulative_s": 0.0014317820000000002
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 416,
+        "function": "_room",
+        "calls": 1155,
+        "own_s": 0.000109739,
+        "cumulative_s": 0.000109739
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 4,
+        "own_s": 3.5740000000000004e-06,
+        "cumulative_s": 5.8580000000000005e-06
+      }
+    ]
+  },
+  "zip_extract": {
+    "total_s": 2.433456524999999,
+    "functions": [
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.open>",
+        "calls": 4321,
+        "own_s": 0.256856619,
+        "cumulative_s": 0.256856619
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.lstat>",
+        "calls": 21049,
+        "own_s": 0.08020506200000001,
+        "cumulative_s": 0.090804824
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method '__exit__' of '_io._IOBase' objects>",
+        "calls": 4000,
+        "own_s": 0.045232212,
+        "cumulative_s": 0.045232212
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.unlink>",
+        "calls": 8000,
+        "own_s": 0.043427941000000005,
+        "cumulative_s": 0.044887752
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 1197,
+        "function": "_handle_member",
+        "calls": 4000,
+        "own_s": 0.040240475000000005,
+        "cumulative_s": 2.182411017
+      },
+      {
+        "file": "src/archivey/internal/dataclass_copy.py",
+        "line": 70,
+        "function": "copy_with",
+        "calls": 12000,
+        "own_s": 0.03841717,
+        "cumulative_s": 0.05057835
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 16000,
+        "own_s": 0.031743873,
+        "cumulative_s": 0.161321014
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 2662,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.030394676000000002,
+        "cumulative_s": 0.059140311
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 16000,
+        "own_s": 0.030393704,
+        "cumulative_s": 0.084880935
+      },
+      {
+        "file": "<frozen posixpath>",
+        "line": 100,
+        "function": "split",
+        "calls": 16961,
+        "own_s": 0.027905383000000002,
+        "cumulative_s": 0.049451704000000006
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.link>",
+        "calls": 4000,
+        "own_s": 0.027396553,
+        "cumulative_s": 0.030380599
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 387,
+        "function": "_parse_path",
+        "calls": 9769,
+        "own_s": 0.027154138,
+        "cumulative_s": 0.059345522000000005
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.026442792000000003,
+        "cumulative_s": 0.037301402000000004
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 437,
+        "function": "__str__",
+        "calls": 75659,
+        "own_s": 0.025720991000000002,
+        "cumulative_s": 0.140139636
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 447,
+        "function": "__fspath__",
+        "calls": 62455,
+        "own_s": 0.023581483,
+        "cumulative_s": 0.15786987000000002
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 3009,
+        "function": "_write_file",
+        "calls": 4000,
+        "own_s": 0.02178149,
+        "cumulative_s": 1.4102139420000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 135034,
+        "own_s": 0.02066358,
+        "cumulative_s": 0.025037685
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.020396573,
+        "cumulative_s": 0.067917852
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 8000,
+        "own_s": 0.0202739,
+        "cumulative_s": 0.549713603
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 4460,
+        "function": "_write_file_atomic",
+        "calls": 4000,
+        "own_s": 0.020228012,
+        "cumulative_s": 1.202856658
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.chmod>",
+        "calls": 4000,
+        "own_s": 0.019863251000000002,
+        "cumulative_s": 0.022323245000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method sys.intern>",
+        "calls": 64037,
+        "own_s": 0.019588599,
+        "cumulative_s": 0.019588599
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 8000,
+        "own_s": 0.018842616,
+        "cumulative_s": 0.39281481900000004
+      },
+      {
+        "file": "src/archivey/internal/filters.py",
+        "line": 218,
+        "function": "_realpath_posix",
+        "calls": 4042,
+        "own_s": 0.018837612,
+        "cumulative_s": 0.05305758
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 4729,
+        "function": "_speculative_small_member",
+        "calls": 4000,
+        "own_s": 0.018622829,
+        "cumulative_s": 0.077488575
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method posix.fspath>",
+        "calls": 93154,
+        "own_s": 0.018597950000000002,
+        "cumulative_s": 0.152929426
+      },
+      {
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py",
+        "line": 358,
+        "function": "__init__",
+        "calls": 15451,
+        "own_s": 0.018385514000000002,
+        "cumulative_s": 0.028998819000000002
+      },
+      {
+        "file": "<frozen posixpath>",
+        "line": 71,
+        "function": "join",
+        "calls": 13445,
+        "own_s": 0.017915496,
+        "cumulative_s": 0.029057287
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 2811,
+        "function": "_physical_rel",
+        "calls": 16640,
+        "own_s": 0.017793329,
+        "cumulative_s": 0.159170468
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'get' of 'dict' objects>",
+        "calls": 64989,
+        "own_s": 0.017583446000000003,
+        "cumulative_s": 0.017970680000000003
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 164942,
+        "own_s": 0.017169773000000003,
+        "cumulative_s": 0.017792531
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4000,
+        "own_s": 0.016835179000000002,
+        "cumulative_s": 0.068340803
+      },
+      {
+        "file": "src/archivey/internal/filters.py",
+        "line": 1170,
+        "function": "collision_key",
+        "calls": 12320,
+        "own_s": 0.016259363000000002,
+        "cumulative_s": 0.027688822000000002
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.max>",
+        "calls": 48009,
+        "own_s": 0.016005279,
+        "cumulative_s": 0.016017953
+      },
+      {
+        "file": "src/archivey/internal/extraction.py",
+        "line": 4838,
+        "function": "_land_on_free_name",
+        "calls": 4000,
+        "own_s": 0.01533832,
+        "cumulative_s": 0.068816165
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 422,
+        "function": "proofs",
+        "calls": 16000,
+        "own_s": 0.014056317,
+        "cumulative_s": 0.036798099
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 168,
+        "function": "_probe_past_declared",
+        "calls": 4000,
+        "own_s": 0.001426057,
+        "cumulative_s": 0.002222789
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 4000,
+        "own_s": 0.0007199880000000001,
+        "cumulative_s": 0.0007199880000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 2,
+        "own_s": 1.202e-06,
+        "cumulative_s": 1.963e-06
+      }
+    ]
+  },
+  "zip_list": {
+    "total_s": 0.1206062660000001,
+    "functions": [
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 2662,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.025543416000000003,
+        "cumulative_s": 0.053189553
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 838,
+        "function": "_entries",
+        "calls": 4001,
+        "own_s": 0.00989659,
+        "cumulative_s": 0.022838139
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2776,
+        "function": "_register_member",
+        "calls": 4000,
+        "own_s": 0.004279337,
+        "cumulative_s": 0.021880455
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2423,
+        "function": "_pull_replayable",
+        "calls": 4001,
+        "own_s": 0.004193909,
+        "cumulative_s": 0.09299644800000001
+      },
+      {
+        "file": "src/archivey/internal/diagnostics_collector.py",
+        "line": 369,
+        "function": "call_replaying",
+        "calls": 4001,
+        "own_s": 0.004049034,
+        "cumulative_s": 0.087368212
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 2033,
+        "function": "_iter_members",
+        "calls": 4001,
+        "own_s": 0.003704638,
+        "cumulative_s": 0.08187859600000001
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 1342,
+        "function": "_central_entry",
+        "calls": 4000,
+        "own_s": 0.0036829170000000004,
+        "cumulative_s": 0.005264782
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2344,
+        "function": "_pull_members_locked",
+        "calls": 16,
+        "own_s": 0.0035287070000000003,
+        "cumulative_s": 0.12114398600000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'get' of 'dict' objects>",
+        "calls": 24022,
+        "own_s": 0.003354072,
+        "cumulative_s": 0.0033601900000000003
+      },
+      {
+        "file": "src/archivey/internal/naming.py",
+        "line": 327,
+        "function": "normalize_member_name",
+        "calls": 4000,
+        "own_s": 0.00302708,
+        "cumulative_s": 0.005204435
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 104,
+        "function": "member_metadata_bytes",
+        "calls": 4000,
+        "own_s": 0.002987529,
+        "cumulative_s": 0.006100778
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 2557,
+        "function": "_decode_member_name",
+        "calls": 4000,
+        "own_s": 0.002829322,
+        "cumulative_s": 0.0048366550000000005
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 258,
+        "function": "account_member",
+        "calls": 4000,
+        "own_s": 0.00254373,
+        "cumulative_s": 0.011859602
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 28245,
+        "own_s": 0.002505961,
+        "cumulative_s": 0.002505961
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 2844,
+        "function": "_earlier_same_name",
+        "calls": 4000,
+        "own_s": 0.002446039,
+        "cumulative_s": 0.004280659
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 860,
+        "function": "ensure",
+        "calls": 11999,
+        "own_s": 0.002442451,
+        "cumulative_s": 0.00345434
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'endswith' of 'str' objects>",
+        "calls": 16229,
+        "own_s": 0.002127397,
+        "cumulative_s": 0.002127397
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 741,
+        "function": "_zip_timestamps",
+        "calls": 4000,
+        "own_s": 0.0020427310000000003,
+        "cumulative_s": 0.003028494
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 1401,
+        "function": "_stored_as_directory",
+        "calls": 4000,
+        "own_s": 0.0017351080000000002,
+        "cumulative_s": 0.003511011
+      },
+      {
+        "file": "src/archivey/internal/nesting.py",
+        "line": 304,
+        "function": "_draw_members",
+        "calls": 4000,
+        "own_s": 0.0015602860000000001,
+        "cumulative_s": 0.002027428
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 72,
+        "function": "_extra_bytes",
+        "calls": 4000,
+        "own_s": 0.0014719960000000002,
+        "cumulative_s": 0.001981238
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 279,
+        "function": "_draw_budget_members",
+        "calls": 4000,
+        "own_s": 0.001187666,
+        "cumulative_s": 0.0032150940000000004
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'startswith' of 'str' objects>",
+        "calls": 8003,
+        "own_s": 0.0011773810000000001,
+        "cumulative_s": 0.0011773810000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 3689,
+        "function": "_index_member_name",
+        "calls": 4000,
+        "own_s": 0.0011501200000000001,
+        "cumulative_s": 0.0016657010000000001
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'unpack_from' of '_struct.Struct' objects>",
+        "calls": 4000,
+        "own_s": 0.001106543,
+        "cumulative_s": 0.001106543
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 1328,
+        "function": "_unpack_central",
+        "calls": 4000,
+        "own_s": 0.001096928,
+        "cumulative_s": 0.0022034710000000002
+      },
+      {
+        "file": "src/archivey/internal/hashing/__init__.py",
+        "line": 6,
+        "function": "crc32_digest",
+        "calls": 4000,
+        "own_s": 0.001078751,
+        "cumulative_s": 0.001717645
+      },
+      {
+        "file": "src/archivey/internal/naming.py",
+        "line": 170,
+        "function": "name_controls_possible",
+        "calls": 4000,
+        "own_s": 0.001027163,
+        "cumulative_s": 0.001460857
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'append' of 'list' objects>",
+        "calls": 8010,
+        "own_s": 0.0009959390000000002,
+        "cumulative_s": 0.0009959390000000002
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 603,
+        "function": "date_time",
+        "calls": 4000,
+        "own_s": 0.000985763,
+        "cumulative_s": 0.000985763
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 1421,
+        "function": "_marked_directory",
+        "calls": 4000,
+        "own_s": 0.00098241,
+        "cumulative_s": 0.0013738070000000001
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 794,
+        "function": "__iter__",
+        "calls": 4001,
+        "own_s": 0.0009005310000000001,
+        "cumulative_s": 0.02373867
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'isascii' of 'str' objects>",
+        "calls": 8000,
+        "own_s": 0.000846355,
+        "cumulative_s": 0.000846355
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.max>",
+        "calls": 4009,
+        "own_s": 0.000834189,
+        "cumulative_s": 0.000845514
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'find' of 'bytes' objects>",
+        "calls": 4000,
+        "own_s": 0.000809124,
+        "cumulative_s": 0.000809124
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 2,
+        "own_s": 2.1340000000000002e-06,
+        "cumulative_s": 2.8450000000000003e-06
+      }
+    ]
+  },
+  "zip_stream": {
+    "total_s": 0.6893797099999996,
+    "functions": [
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 2662,
+        "function": "_to_member",
+        "calls": 4000,
+        "own_s": 0.025737597,
+        "cumulative_s": 0.053043743000000004
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1174,
+        "function": "_sync_member_level",
+        "calls": 12000,
+        "own_s": 0.016523718,
+        "cumulative_s": 0.10294162600000001
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1093,
+        "function": "_proofs_over",
+        "calls": 12000,
+        "own_s": 0.015771487,
+        "cumulative_s": 0.04718671
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 85,
+        "function": "ask_verification_proofs",
+        "calls": 24000,
+        "own_s": 0.015500727,
+        "cumulative_s": 0.025203245000000003
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 390,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.013040271,
+        "cumulative_s": 0.019976326000000003
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 4729,
+        "function": "_speculative_small_member",
+        "calls": 4000,
+        "own_s": 0.012606540000000001,
+        "cumulative_s": 0.048314108
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 572,
+        "function": "_ensure_open",
+        "calls": 4000,
+        "own_s": 0.012366497,
+        "cumulative_s": 0.287171493
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 448,
+        "function": "read",
+        "calls": 8000,
+        "own_s": 0.012011571,
+        "cumulative_s": 0.05081265
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.max>",
+        "calls": 64009,
+        "own_s": 0.011716614,
+        "cumulative_s": 0.011728961000000001
+      },
+      {
+        "file": "src/archivey/internal/source.py",
+        "line": 779,
+        "function": "read",
+        "calls": 12005,
+        "own_s": 0.011113282,
+        "cumulative_s": 0.02281642
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.len>",
+        "calls": 116244,
+        "own_s": 0.010897953,
+        "cumulative_s": 0.010897953
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 1394,
+        "function": "_close",
+        "calls": 4000,
+        "own_s": 0.010808737,
+        "cumulative_s": 0.053705384
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 838,
+        "function": "_entries",
+        "calls": 4001,
+        "own_s": 0.009984940000000001,
+        "cumulative_s": 0.022751586
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1777,
+        "function": "_wrap_member_stream",
+        "calls": 4000,
+        "own_s": 0.009884617,
+        "cumulative_s": 0.035149578
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.getattr>",
+        "calls": 80053,
+        "own_s": 0.009581167,
+        "cumulative_s": 0.009582027
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 5035,
+        "function": "_iter_stream_members",
+        "calls": 4001,
+        "own_s": 0.009474164,
+        "cumulative_s": 0.281860281
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 3488,
+        "function": "_listed_local_header",
+        "calls": 4000,
+        "own_s": 0.009162629,
+        "cumulative_s": 0.099586407
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 200,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.008656632000000001,
+        "cumulative_s": 0.015782954000000002
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 422,
+        "function": "proofs",
+        "calls": 12000,
+        "own_s": 0.00801456,
+        "cumulative_s": 0.019873924
+      },
+      {
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "line": 862,
+        "function": "_read",
+        "calls": 4000,
+        "own_s": 0.0077101800000000005,
+        "cumulative_s": 0.42202969100000004
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 649,
+        "function": "__init__",
+        "calls": 4000,
+        "own_s": 0.007625858,
+        "cumulative_s": 0.029103139
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1555,
+        "function": "_hold_to_ratio",
+        "calls": 4000,
+        "own_s": 0.007472523000000001,
+        "cumulative_s": 0.017934451
+      },
+      {
+        "file": "src/archivey/internal/source.py",
+        "line": 1032,
+        "function": "seek",
+        "calls": 8007,
+        "own_s": 0.007368182,
+        "cumulative_s": 0.011636264
+      },
+      {
+        "file": "src/archivey/internal/streams/verification.py",
+        "line": 145,
+        "function": "raise_member_level",
+        "calls": 12000,
+        "own_s": 0.007229684,
+        "cumulative_s": 0.010839997
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "line": 1488,
+        "function": "read_local_header",
+        "calls": 4000,
+        "own_s": 0.007154845000000001,
+        "cumulative_s": 0.061893074000000006
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.isinstance>",
+        "calls": 48315,
+        "own_s": 0.00682208,
+        "cumulative_s": 0.008780880000000001
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 1879,
+        "function": "_read_at",
+        "calls": 8004,
+        "own_s": 0.006793976,
+        "cumulative_s": 0.037852549
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<built-in method builtins.min>",
+        "calls": 36011,
+        "own_s": 0.006781878000000001,
+        "cumulative_s": 0.006781878000000001
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 616,
+        "function": "_read_sized_all",
+        "calls": 4000,
+        "own_s": 0.006737384000000001,
+        "cumulative_s": 0.087771019
+      },
+      {
+        "file": "src/archivey/internal/dataclass_copy.py",
+        "line": 70,
+        "function": "copy_with",
+        "calls": 4000,
+        "own_s": 0.006724064,
+        "cumulative_s": 0.008287133
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 694,
+        "function": "_room",
+        "calls": 8000,
+        "own_s": 0.0066048700000000005,
+        "cumulative_s": 0.012918115
+      },
+      {
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "line": 1339,
+        "function": "end_after",
+        "calls": 8000,
+        "own_s": 0.006553412000000001,
+        "cumulative_s": 0.017694442
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'get' of 'dict' objects>",
+        "calls": 48023,
+        "own_s": 0.0065064450000000005,
+        "cumulative_s": 0.0065129540000000005
+      },
+      {
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "line": 757,
+        "function": "_judge",
+        "calls": 4000,
+        "own_s": 0.006491114,
+        "cumulative_s": 0.016864443
+      },
+      {
+        "file": "round2.py",
+        "line": 35,
+        "function": "run",
+        "calls": 1,
+        "own_s": 0.0063561450000000005,
+        "cumulative_s": 0.722768626
+      },
+      {
+        "file": "src/archivey/internal/streams/verify.py",
+        "line": 168,
+        "function": "_probe_past_declared",
+        "calls": 4000,
+        "own_s": 0.001383219,
+        "cumulative_s": 0.017179258000000003
+      },
+      {
+        "file": "src/archivey/internal/listing_limits.py",
+        "line": 479,
+        "function": "_active",
+        "calls": 4000,
+        "own_s": 0.0005650610000000001,
+        "cumulative_s": 0.0005650610000000001
+      },
+      {
+        "file": "src/archivey/internal/base_reader.py",
+        "line": 1697,
+        "function": "_listing_work",
+        "calls": 2,
+        "own_s": 1.3630000000000001e-06,
+        "cumulative_s": 2.2030000000000003e-06
+      }
+    ]
+  }
+}
