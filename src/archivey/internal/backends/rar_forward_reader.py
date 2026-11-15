@@ -741,10 +741,12 @@ class RarForwardReader(RarReader):
                 continue
             try:
                 member = self._list_member(item)
+                # Before the walk is let go: after it, the next header may already
+                # be in ``raw``, and the snapshot would hide what it adds.
+                early = (member, raw.owner, raw.comment, raw.skipped_header_records)
             finally:
                 # The walk waits for this before it reads the next header.
                 fpass.listed.set()
-            early = (member, raw.owner, raw.comment, raw.skipped_header_records)
             yield member
 
     def _add_late_records(

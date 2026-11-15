@@ -427,6 +427,36 @@ def test_the_walk_waits_while_a_member_released_early_is_built(
     ]
 
 
+class _SlowListed(threading.Event):
+    """An event whose ``set`` returns late: the walk it lets go runs first."""
+
+    def set(self) -> None:
+        super().set()
+        if threading.current_thread() is threading.main_thread():
+            time.sleep(0.3)
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_a_member_released_early_keeps_what_the_walk_reads_once_let_go(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The walk reads the header after a member listed early once the caller lets it
+    go. What it adds then still reaches the member, however soon it comes."""
+    real = rar_forward_reader._ForwardPass.__init__
+
+    def init(self: rar_forward_reader._ForwardPass, reader: object) -> None:
+        real(self, reader)  # type: ignore[arg-type]
+        self.listed = _SlowListed()
+
+    monkeypatch.setattr(rar_forward_reader._ForwardPass, "__init__", init)
+    data = _owner_archive(*(30_000,) * 5, comment=b"c")
+    members = [member for member, _, _ in _piped_members(data, _config())]
+    assert [(m.name, m.uname, m.comment, m.diagnostics) for m in members] == [
+        (f"m{index}.bin", "root", "c", ()) for index in range(5)
+    ]
+
+
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
 def test_only_a_member_split_by_a_volume_is_listed_early(
