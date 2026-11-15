@@ -159,6 +159,54 @@ def test_stream_from_a_pipe(compressor: str) -> None:
     }
 
 
+def _damaged_xz_payload() -> bytes:
+    """``payload-xz.rpm`` with one byte of its payload changed, inside the data of
+    ``usr/share/at/dir/sub/text.txt``, the file after ``blocks.bin``."""
+    data = bytearray((DATA / "payload-xz.rpm").read_bytes())
+    data[18020] ^= 0xA4
+    return bytes(data)
+
+
+def _reads_by_name(
+    data: bytes, *, streaming: bool
+) -> dict[str, bytes | type[Exception] | None]:
+    """What each member reads: its bytes, the error type, or ``None`` with no data."""
+    seen: dict[str, bytes | type[Exception] | None] = {}
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        if streaming:
+            for member, stream in reader.stream_members():
+                try:
+                    seen[member.name] = None if stream is None else stream.read()
+                except CorruptionError as error:
+                    seen[member.name] = type(error)
+        else:
+            for member in reader:
+                if member.type is not MemberType.FILE:
+                    seen[member.name] = None
+                    continue
+                try:
+                    seen[member.name] = reader.read(member)
+                except CorruptionError as error:
+                    seen[member.name] = type(error)
+    return seen
+
+
+def test_a_streaming_pass_reads_the_file_before_the_damage() -> None:
+    # A streaming pass over a file reads ahead of the member it is at. When the read
+    # ahead meets the damage, the codec decodes again to the failing byte, as random
+    # access does, so the file that ends before it still reads (found by the diff
+    # modes fuzz oracle).
+    data = _damaged_xz_payload()
+    random_access = _reads_by_name(data, streaming=False)
+    streaming = _reads_by_name(data, streaming=True)
+    blocks = "usr/share/at/dir/blocks.bin"
+    assert random_access[blocks] == CONTENT[blocks]
+    assert streaming[blocks] == CONTENT[blocks]
+    for name in ("usr/share/at/dir/sub/text.txt", "usr/share/at/dir/hard.txt"):
+        assert random_access[name] is CorruptionError
+        assert streaming[name] is CorruptionError
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_extract(tmp_path: Path, pipe: bool) -> None:
     path = DATA / "payload-xz.rpm"
