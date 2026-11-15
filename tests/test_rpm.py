@@ -159,6 +159,60 @@ def test_stream_from_a_pipe(compressor: str) -> None:
     }
 
 
+def _damaged_payload(compressor: str, offset: int) -> bytes:
+    """``payload-<compressor>.rpm`` with the payload byte at ``offset`` changed."""
+    data = bytearray((DATA / f"payload-{compressor}.rpm").read_bytes())
+    data[offset] ^= 0xA4
+    return bytes(data)
+
+
+def _reads_by_name(
+    data: bytes, *, streaming: bool
+) -> dict[str, bytes | type[Exception] | None]:
+    """What each member reads: its bytes, the error type, or ``None`` with no data."""
+    seen: dict[str, bytes | type[Exception] | None] = {}
+    with open_archive(io.BytesIO(data), streaming=streaming) as reader:
+        if streaming:
+            for member, stream in reader.stream_members():
+                try:
+                    seen[member.name] = None if stream is None else stream.read()
+                except CorruptionError as error:
+                    seen[member.name] = type(error)
+        else:
+            for member in reader:
+                if member.type is not MemberType.FILE:
+                    seen[member.name] = None
+                    continue
+                try:
+                    seen[member.name] = reader.read(member)
+                except CorruptionError as error:
+                    seen[member.name] = type(error)
+    return seen
+
+
+# Each offset is inside the data of ``usr/share/at/dir/sub/text.txt``, the file after
+# ``blocks.bin``, and lost ``blocks.bin`` to a streaming pass before the fix.
+@pytest.mark.parametrize(
+    ("compressor", "offset"), [("xz", 18020), ("lzma", 18934)], ids=["xz", "lzma"]
+)
+def test_a_streaming_pass_reads_the_file_before_the_damage(
+    compressor: str, offset: int
+) -> None:
+    # A streaming pass over a file reads ahead of the member it is at. When the read
+    # ahead meets the damage, the codec decodes again to the failing byte, as random
+    # access does, so the file that ends before it still reads (found by the diff
+    # modes fuzz oracle).
+    data = _damaged_payload(compressor, offset)
+    random_access = _reads_by_name(data, streaming=False)
+    streaming = _reads_by_name(data, streaming=True)
+    blocks = "usr/share/at/dir/blocks.bin"
+    assert random_access[blocks] == CONTENT[blocks]
+    assert streaming[blocks] == CONTENT[blocks]
+    for name in ("usr/share/at/dir/sub/text.txt", "usr/share/at/dir/hard.txt"):
+        assert random_access[name] is CorruptionError
+        assert streaming[name] is CorruptionError
+
+
 @pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
 def test_extract(tmp_path: Path, pipe: bool) -> None:
     path = DATA / "payload-xz.rpm"
