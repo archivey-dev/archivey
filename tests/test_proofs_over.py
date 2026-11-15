@@ -3,6 +3,10 @@ the layers' below in one record, for speed. It must equal the plain form,
 ``own.combine(verifier).combine(below)``, for every field of
 :class:`VerificationProofs`: a field added to the class and to ``combine`` but not to
 ``_proofs_over`` would be dropped at the member level, and these tests catch that.
+
+The file also checks ``MemberVerifier.proofs``, which returns shared records from a
+table indexed by its three fields: each must equal the record the constructor builds,
+so a wrong index order in ``_VERIFIER_PROOFS`` fails here.
 """
 
 from __future__ import annotations
