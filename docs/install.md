@@ -153,6 +153,15 @@ installed:
 - The accelerator behind `[seekable]` is off, so seeking backwards in gzip, zlib or bzip2 data, or
   in a DEFLATE member of a ZIP or 7z archive, decompresses more of it again.
 
+PyPy's zlib leaks memory each time a decompressor's state is copied, so under PyPy archivey never
+copies one. That has two effects:
+
+- Archivey keeps no restart points inside gzip, zlib or raw DEFLATE data. A backward seek there
+  decompresses again from the start of the stream, and so does reading a `.tar.gz` member by name
+  after listing the archive.
+- A damaged gzip or deflate stream read from a pipe can lose up to 64 KiB before the damage, as
+  other formats can.
+
 If you read data that needs lz4, pyppmd or inflate64, the error says why archivey doesn't use the
 package, in place of an install hint, and so do `format_availability()` and
 `archivey --version -v`. rapidgzip only speeds things up, so neither lists it, and you see its

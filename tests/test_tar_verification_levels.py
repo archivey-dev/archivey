@@ -18,6 +18,7 @@ import pytest
 
 from archivey import ArchiveyConfig, Verification, open_archive
 from archivey.types import ArchiveMember
+from tests.streams_util import NonSeekableBytesIO
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse, _member
 
 _FILES = {"a": b"first " * 500, "b": b"second " * 3}
@@ -83,6 +84,20 @@ def test_a_symlink_stays_unlocked_when_the_trailer_raises_the_files(
         "link": (Verification.UNLOCKED, Verification.UNLOCKED),
         "a": _CHECKED,
     }
+
+
+@pytest.mark.parametrize("mode", ["w:gz", "w:bz2"])
+def test_an_intact_archive_from_a_pipe_reaches_the_checksum(mode: str) -> None:
+    """A streaming walk over a source that cannot seek reads the codec's tail through
+    the walk buffer's read-ahead; that end counts as reached, so the trailer raises
+    every file and verify_all() fails nothing."""
+    with open_archive(NonSeekableBytesIO(_tar(mode)), streaming=True) as reader:
+        report = reader.verify_all()
+        assert report.failures == ()
+        assert report.structure_error is None
+        levels = _levels(list(reader.members_report().members))
+    assert levels["a"] == _CHECKED
+    assert levels["b"] == _CHECKED
 
 
 @pytest.mark.parametrize("streaming", [False, True])
