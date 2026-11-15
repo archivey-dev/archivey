@@ -1,0 +1,618 @@
+{
+  "zip-sampling": {
+    "sample_count": 5318,
+    "run_weight": 9.917999999999981,
+    "leaf": [
+      {
+        "function": "__create_fn__.<locals>.__init__",
+        "file": "<string>",
+        "percent": 7.3401895543456535
+      },
+      {
+        "function": "ZipReader._to_member",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 5.061504335551535
+      },
+      {
+        "function": "ZipReader._speculative_small_member",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 3.0852994555353983
+      },
+      {
+        "function": "BaseArchiveReader._wrap_member_stream",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 2.8836458963500777
+      },
+      {
+        "function": "ArchiveStreamImpl._proofs_over",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 2.8433151845130142
+      },
+      {
+        "function": "ArchiveStreamImpl._ensure_open",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 2.4400080661423735
+      },
+      {
+        "function": "ArchiveStreamImpl.__init__",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 2.258519862875586
+      },
+      {
+        "function": "MemberRatioGuard.__init__",
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "percent": 1.9560395240976052
+      },
+      {
+        "function": "MemberRatioGuard._room",
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "percent": 1.9157088122605415
+      },
+      {
+        "function": "CentralDirectoryWalk._entries",
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "percent": 1.9157088122605415
+      },
+      {
+        "function": "ask_verification_proofs",
+        "file": "src/archivey/internal/streams/verification.py",
+        "percent": 1.8955434563420095
+      },
+      {
+        "function": "run",
+        "file": "round2.py",
+        "percent": 1.7745513208308172
+      },
+      {
+        "function": "ArchiveStreamImpl._close",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 1.7745513208308172
+      },
+      {
+        "function": "raise_member_level",
+        "file": "src/archivey/internal/streams/verification.py",
+        "percent": 1.714055253075221
+      },
+      {
+        "function": "ArchiveSource.seek",
+        "file": "src/archivey/internal/source.py",
+        "percent": 1.532567049808433
+      },
+      {
+        "function": "local_header_from",
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "percent": 1.512401693889901
+      },
+      {
+        "function": "ArchiveSource.read",
+        "file": "src/archivey/internal/source.py",
+        "percent": 1.492236337971369
+      },
+      {
+        "function": "copy_with",
+        "file": "src/archivey/internal/dataclass_copy.py",
+        "percent": 1.492236337971369
+      },
+      {
+        "function": "MemberVerifier.__init__",
+        "file": "src/archivey/internal/streams/verify.py",
+        "percent": 1.492236337971369
+      },
+      {
+        "function": "read_blocking",
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "percent": 1.472070982052837
+      },
+      {
+        "function": "ArchiveStreamImpl._sync_member_level",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 1.391409558378709
+      },
+      {
+        "function": "MemberVerifier.proofs",
+        "file": "src/archivey/internal/streams/verify.py",
+        "percent": 1.2905827787860489
+      },
+      {
+        "function": "_RatioGuard.read",
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "percent": 1.270417422867517
+      },
+      {
+        "function": "ZipReader._listed_local_header",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 1.189755999193389
+      },
+      {
+        "function": "BaseArchiveReader._iter_stream_members",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 1.189755999193389
+      },
+      {
+        "function": "BaseArchiveReader._hold_to_ratio",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 1.1695906432748568
+      },
+      {
+        "function": "_DataBounds.end_after",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 1.129259931437793
+      },
+      {
+        "function": "MemberRatioGuard._judge",
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "percent": 1.129259931437793
+      },
+      {
+        "function": "ZipReader._open_member",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 1.0889292196007287
+      },
+      {
+        "function": "ArchiveStreamImpl._read",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 0.9881024400080688
+      }
+    ],
+    "inclusive": [
+      {
+        "function": "<module>",
+        "file": "round2.py",
+        "percent": 100.0
+      },
+      {
+        "function": "run",
+        "file": "round2.py",
+        "percent": 100.0
+      },
+      {
+        "function": "ArchiveStreamImpl.read",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 57.713248638834465
+      },
+      {
+        "function": "ArchiveStreamImpl._read",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 57.148618673115635
+      },
+      {
+        "function": "MemberPassImpl.__next__",
+        "file": "src/archivey/internal/member_pass.py",
+        "percent": 40.149223633795025
+      },
+      {
+        "function": "BaseArchiveReader._iter_stream_members",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 40.028231498283844
+      },
+      {
+        "function": "ArchiveStreamImpl._ensure_open",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 38.89897156684618
+      },
+      {
+        "function": "ZipReader._iter_with_data",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 35.00705787456993
+      },
+      {
+        "function": "BaseArchiveReader._iter_with_data",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 34.96672716273287
+      },
+      {
+        "function": "BaseArchiveReader._lazy_member_stream.<locals>._open",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 22.746521476103826
+      },
+      {
+        "function": "ZipReader._open_member",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 21.879411171607046
+      },
+      {
+        "function": "BaseArchiveReader._drive_pass_streams",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 17.443032869530192
+      },
+      {
+        "function": "BaseArchiveReader._materialize_members",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 17.42286751361166
+      },
+      {
+        "function": "BaseArchiveReader._pull_members_locked",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 17.180883242589275
+      },
+      {
+        "function": "BaseArchiveReader._drain_walk",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 17.180883242589275
+      },
+      {
+        "function": "BaseArchiveReader._pull_replayable",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 14.680379108691307
+      },
+      {
+        "function": "ZipReader._with_local_method",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 14.156079854809473
+      },
+      {
+        "function": "ArchiveStreamImpl._sync_member_level",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 14.156079854809473
+      },
+      {
+        "function": "DiagnosticCollector.call_replaying",
+        "file": "src/archivey/internal/diagnostics_collector.py",
+        "percent": 13.934260939705622
+      },
+      {
+        "function": "ZipReader._iter_members",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 13.611615245009109
+      },
+      {
+        "function": "ZipReader._checked_local_header",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 12.200040330711868
+      },
+      {
+        "function": "ZipReader._listed_local_header",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 11.99838677152655
+      },
+      {
+        "function": "MemberVerifier.read",
+        "file": "src/archivey/internal/streams/verify.py",
+        "percent": 11.373260738052057
+      },
+      {
+        "function": "MemberVerifier._read_sized_all",
+        "file": "src/archivey/internal/streams/verify.py",
+        "percent": 11.131276467029672
+      },
+      {
+        "function": "ArchiveStreamImpl._proofs_over",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 8.832425892317023
+      },
+      {
+        "function": "read_local_header",
+        "file": "src/archivey/internal/backends/zip_parser.py",
+        "percent": 8.247630570679595
+      },
+      {
+        "function": "ZipReader._to_member",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 7.985480943738678
+      },
+      {
+        "function": "ArchiveStreamImpl.close",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 7.985480943738678
+      },
+      {
+        "function": "BaseArchiveReader._iter_with_data.<locals>._open",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 7.763662028634825
+      },
+      {
+        "function": "BaseArchiveReader._lazy_member_stream",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 7.360354910264186
+      }
+    ]
+  },
+  "all-sampling": {
+    "sample_count": 10309,
+    "run_weight": 33.880000000001665,
+    "leaf": [
+      {
+        "function": "_XzState._process",
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "percent": 57.15269578906075
+      },
+      {
+        "function": "_open_new_file",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 4.417552144824677
+      },
+      {
+        "function": "DecompressorStream._read_feed_slice",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 1.6725698543879557
+      },
+      {
+        "function": "__create_fn__.<locals>.__init__",
+        "file": "<string>",
+        "percent": 1.6430539157811095
+      },
+      {
+        "function": "parse_header_block",
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "percent": 0.9543486816213624
+      },
+      {
+        "function": "ArchiveStreamImpl.__init__",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 0.8362849271939766
+      },
+      {
+        "function": "read_exact_or_none",
+        "file": "src/archivey/internal/streams/codecs/decoder_worker.py",
+        "percent": 0.7772530499802838
+      },
+      {
+        "function": "TarWalker._resolve",
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "percent": 0.708382526564309
+      },
+      {
+        "function": "ArchiveStreamImpl._proofs_over",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 0.6690279417551808
+      },
+      {
+        "function": "ExtractionCoordinator._land_on_free_name",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 0.6099960645414884
+      },
+      {
+        "function": "_XzBlockWalker.feed",
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "percent": 0.5706414797323601
+      },
+      {
+        "function": "TarReader._to_member",
+        "file": "src/archivey/internal/backends/tar_reader.py",
+        "percent": 0.5411255411255139
+      },
+      {
+        "function": "fdopen",
+        "file": "<frozen os>",
+        "percent": 0.5411255411255139
+      },
+      {
+        "function": "ExtractionCoordinator._write_file_atomic",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 0.5116096025186677
+      },
+      {
+        "function": "BaseArchiveReader._wrap_member_stream",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 0.5017709563163857
+      },
+      {
+        "function": "_rmtree_safe_fd",
+        "file": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/shutil.py",
+        "percent": 0.5017709563163857
+      },
+      {
+        "function": "ask_verification_proofs",
+        "file": "src/archivey/internal/streams/verification.py",
+        "percent": 0.4722550177095395
+      },
+      {
+        "function": "lexists",
+        "file": "<frozen posixpath>",
+        "percent": 0.4427390791026933
+      },
+      {
+        "function": "_realpath_posix",
+        "file": "src/archivey/internal/filters.py",
+        "percent": 0.43290043290041125
+      },
+      {
+        "function": "ArchiveStreamImpl._close",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 0.42306178669812916
+      },
+      {
+        "function": "TarWalker._record_member_ambiguities",
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "percent": 0.42306178669812916
+      },
+      {
+        "function": "ExtractionCoordinator._apply_metadata",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 0.40338449429356504
+      },
+      {
+        "function": "TarWalker._next_entry",
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "percent": 0.38370720188900087
+      },
+      {
+        "function": "raise_member_level",
+        "file": "src/archivey/internal/streams/verification.py",
+        "percent": 0.37386855568671884
+      },
+      {
+        "function": "ZipReader._to_member",
+        "file": "src/archivey/internal/backends/zip_reader.py",
+        "percent": 0.36402990948443675
+      },
+      {
+        "function": "DecompressorStream._read_decompressed_chunk",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 0.36402990948443675
+      },
+      {
+        "function": "make_dirs",
+        "file": "src/archivey/internal/long_paths.py",
+        "percent": 0.36402990948443675
+      },
+      {
+        "function": "ArchiveStreamImpl._ensure_open",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 0.35419126328215467
+      },
+      {
+        "function": "ArchiveStreamImpl._sync_member_level",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 0.3443526170798726
+      },
+      {
+        "function": "parse_number",
+        "file": "src/archivey/internal/backends/tar_parser.py",
+        "percent": 0.29515938606846226
+      }
+    ],
+    "inclusive": [
+      {
+        "function": "<module>",
+        "file": "round2.py",
+        "percent": 100.0
+      },
+      {
+        "function": "run",
+        "file": "round2.py",
+        "percent": 100.0
+      },
+      {
+        "function": "ArchiveStreamImpl.read",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 69.75600157418606
+      },
+      {
+        "function": "ArchiveStreamImpl._read",
+        "file": "src/archivey/internal/streams/archive_stream.py",
+        "percent": 69.59858323494953
+      },
+      {
+        "function": "ReadAheadStream.read",
+        "file": "src/archivey/internal/streams/streamtools/readahead.py",
+        "percent": 63.52813852814054
+      },
+      {
+        "function": "read_blocking",
+        "file": "src/archivey/internal/streams/streamtools/binaryio.py",
+        "percent": 62.996851633217226
+      },
+      {
+        "function": "_RatioGuard.read",
+        "file": "src/archivey/internal/bomb_tracker.py",
+        "percent": 62.93781975600352
+      },
+      {
+        "function": "SlicingStream.read",
+        "file": "src/archivey/internal/streams/streamtools/slice.py",
+        "percent": 62.54427390791218
+      },
+      {
+        "function": "BudgetDrawStream.read",
+        "file": "src/archivey/internal/streams/counting.py",
+        "percent": 62.101534828809406
+      },
+      {
+        "function": "DecompressorStream._read",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 61.609602518695226
+      },
+      {
+        "function": "DecompressorStream.read",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 61.05863833136735
+      },
+      {
+        "function": "DecompressorStream._read_decompressed_chunk",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 61.048799685165065
+      },
+      {
+        "function": "DecompressorStream._decoding",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 58.69736324281927
+      },
+      {
+        "function": "DecompressorStream._read_decompressed_chunk.<locals>.<lambda>",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 58.677685950414705
+      },
+      {
+        "function": "MemberDataView.read",
+        "file": "src/archivey/internal/walk_handoff.py",
+        "percent": 58.549783549785026
+      },
+      {
+        "function": "XzDecoder.feed",
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "percent": 58.34317197953707
+      },
+      {
+        "function": "_XzState.feed",
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "percent": 58.08736717827769
+      },
+      {
+        "function": "_XzState._process",
+        "file": "src/archivey/internal/streams/codecs/xz_decoder.py",
+        "percent": 57.97914207005257
+      },
+      {
+        "function": "DecompressorStream._settle",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 56.69027941755342
+      },
+      {
+        "function": "DecompressorStream._seek_to",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 56.69027941755342
+      },
+      {
+        "function": "DecompressorStream._skip_to",
+        "file": "src/archivey/internal/streams/decompressor_stream.py",
+        "percent": 56.65092483274428
+      },
+      {
+        "function": "BaseArchiveReader.extract_all",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 15.289256198346164
+      },
+      {
+        "function": "ExtractionCoordinator.run",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 15.269578905941602
+      },
+      {
+        "function": "ExtractionCoordinator._run",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 15.269578905941602
+      },
+      {
+        "function": "ExtractionCoordinator._run_pass",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 14.787485242029833
+      },
+      {
+        "function": "BaseArchiveReader._pull_members_locked",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 14.689098780007024
+      },
+      {
+        "function": "ExtractionCoordinator._handle_member",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 14.069264069263319
+      },
+      {
+        "function": "ExtractionCoordinator._write_member",
+        "file": "src/archivey/internal/extraction.py",
+        "percent": 12.377016922470988
+      },
+      {
+        "function": "BaseArchiveReader._iter_stream_members",
+        "file": "src/archivey/internal/base_reader.py",
+        "percent": 12.131050767413964
+      },
+      {
+        "function": "MemberPassImpl.__next__",
+        "file": "src/archivey/internal/member_pass.py",
+        "percent": 11.540731995277069
+      }
+    ]
+  }
+}
