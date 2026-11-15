@@ -155,6 +155,8 @@ class _BlockTable(NamedTuple):
     """Why the block header after the last one in the table is damage. As in libmspack,
     which reads each header only when the decoder needs that block, the refusal is
     raised when a read reaches the block, not when the table is read."""
+    first_unchecked: int | None = None
+    """First block without a stored checksum, or None when every block has one."""
 
 
 class _Record(NamedTuple):
@@ -477,6 +479,7 @@ class CabReader(IndexedReader[_Location]):
         size = self._source.size
         complete = True
         refused: str | None = None
+        first_unchecked: int | None = None
         max_meta = self._max_meta
         for number in range(folder.blocks):
             if max_meta is not None and (
@@ -509,10 +512,14 @@ class CabReader(IndexedReader[_Location]):
             if refused is not None:
                 complete = False
                 break
+            if not checksum and first_unchecked is None:
+                first_unchecked = number
             blocks.append(_Block(pos + header, stored, decoded, checksum))
             output.append(output[-1] + decoded)
             pos += header + stored
-        table = _BlockTable(tuple(blocks), tuple(output), complete, refused)
+        table = _BlockTable(
+            tuple(blocks), tuple(output), complete, refused, first_unchecked
+        )
         with self._lock:
             kept = self._tables.get(index)
             if kept is not None:  # another thread read it meanwhile
@@ -589,7 +596,7 @@ class CabReader(IndexedReader[_Location]):
         checked = (
             self._extents is not None
             and last is not None
-            and all(block.checksum for block in table.blocks[: last + 1])
+            and (table.first_unchecked is None or last < table.first_unchecked)
         )
         stream = self._folder_stream(locator.folder, folder, table, locator.offset)
         return MemberData(
