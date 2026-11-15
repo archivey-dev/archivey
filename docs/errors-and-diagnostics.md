@@ -260,6 +260,15 @@ stream carries no checksum (an `.xz` written with no check), the files' `verifia
 archive is cut or damaged before it, the files stay below `CHECKSUM` and `verify_all()` returns
 them.
 
+A `.tar.bz2` or `.tar.bz3` archive also has a checksum for each block it is compressed in.
+A TAR file reaches `CHECKSUM` as soon as every block its data lies in has passed its check, without
+waiting for the end of the archive. When the bzip2 accelerator decompresses the archive
+(`use_indexed_bzip2`; under `AUTO`, a `.tar.bz2` file on disk of 1 MiB or more), no file reaches
+`CHECKSUM` before the end of the archive, as above. If a later block is damaged, the files in the
+earlier blocks keep `CHECKSUM`, but `verify_all()` still returns them: only the check at the end of
+the archive shows that no block is missing, and a file that spans a block cut out whole has passed
+every block check with the wrong bytes.
+
 To check a member without keeping its bytes, call `stream.verify()`. It runs every check a read
 to the end runs, throws the bytes away, and returns `stream.verified`. What it does to the
 stream depends on whether the stream can seek. A member stream can seek only when the archive

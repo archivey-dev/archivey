@@ -2627,6 +2627,12 @@ class BaseArchiveReader(ArchiveReader):
                 return listed
         return None
 
+    def _refresh_member_levels(self) -> None:
+        """Raise listed members whose data a codec's block or frame checks have
+        covered since the last call (``checked_spans``). A member stream runs it
+        before it syncs its member's level. Default: nothing; the compressed TAR
+        reader overrides it."""
+
     def _level_member(self, member: ArchiveMember) -> ArchiveMember:
         """The member whose verification level a stream of ``member`` raises.
 
@@ -4533,6 +4539,7 @@ class BaseArchiveReader(ArchiveReader):
                     judged.clear()
                 self._hold_to_ratio(stream, _data_owner(opened[0]), counted_as=member)
                 stream._level_member = self._level_member(opened[0])
+                stream._level_refresh = self._refresh_member_levels
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
                 registered = self._register_public_stream(stream, token=reservation)
@@ -4863,11 +4870,16 @@ class BaseArchiveReader(ArchiveReader):
             spanning.append(error)
             retry_next.update(id(c) for c in error.covers)
         self._unraised_spanning.clear()
+        unproven = self._unproven_checksum_ids()
         for error in self._spanning_unreachable.values():
             # Only the members still short of what the check would prove: one that
-            # reached CHECKSUM another way since has nothing left to fail.
+            # reached CHECKSUM another way since has nothing left to fail, unless only
+            # checks the spanning one would confirm raised it
+            # (``_unproven_checksum_ids``).
             pending = tuple(
-                c for c in error.covers if c.verified is not Verification.CHECKSUM
+                c
+                for c in error.covers
+                if c.verified is not Verification.CHECKSUM or id(c) in unproven
             )
             if pending:
                 spanning.append(SpanningCheckError(error.raw_message, covers=pending))
@@ -4884,6 +4896,19 @@ class BaseArchiveReader(ArchiveReader):
         ``verify_all()`` reads each of them again, at its ceiling or not, as it reads
         the members of a failed one (``_spanning_retry``). A backend with such checks
         overrides this; the default has none.
+        """
+        return set()
+
+    def _unproven_checksum_ids(self) -> set[int]:
+        """The ids of the members at ``CHECKSUM`` that a check over several members
+        has still to confirm.
+
+        A compressed TAR raises a file from the codec's block checks before the
+        stream's whole check runs (``TarReader._refresh_member_levels``). Each block
+        passed its CRC, but only the whole check shows that no block is missing or out
+        of order. When damage keeps that check from running, such a file is a failure
+        of ``verify_all()`` like the ones below their ceiling
+        (``_note_spanning_unreachable``). The default has none.
         """
         return set()
 
@@ -4909,16 +4934,19 @@ class BaseArchiveReader(ArchiveReader):
         ``verifiable`` is what a read could reach if nothing were damaged, so damage
         does not lower it. The members the check alone would have proved
         (``ArchiveMember._spanning_checksum``) and that have not reached ``CHECKSUM``
-        another way are returned as failures instead, so ``verify_all()`` leaves no
+        another way (or reached it only through checks this one would confirm,
+        ``_unproven_checksum_ids``) are returned as failures instead, so ``verify_all()`` leaves no
         member below its ceiling unexplained. ``cause`` is the error that stopped the
         read, or ``None`` when the read ended without reaching the check, which
         damage is the likely reason for. ``key`` names the check; a later note for
         the same check replaces this one.
         """
+        unproven = self._unproven_checksum_ids()
         covers = tuple(
             m
             for m in members
-            if m._spanning_checksum and m.verified is not Verification.CHECKSUM
+            if m._spanning_checksum
+            and (m.verified is not Verification.CHECKSUM or id(m) in unproven)
         )
         if not covers:
             return
@@ -5105,6 +5133,7 @@ class BaseArchiveReader(ArchiveReader):
                         # come to rely on. seekable_members=True is for open().
                         stream._make_forward_only()
                         stream._level_member = m
+                        stream._level_refresh = self._refresh_member_levels
                         if hold_to_ratio:
                             self._hold_to_ratio(stream, _data_owner(m), counted_as=m)
                     current = stream

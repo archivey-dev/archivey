@@ -133,6 +133,9 @@ class Bzip3Decompressor:
     # A failed block raises only once the blocks before it are handed out
     # (``_raise_after``): see ``Decoder.holds_back_errors``.
     holds_back_errors = True
+    # libbzip3 checks a block's CRC-32 before it returns the block, so every byte
+    # handed out passed it (``checked_spans``).
+    checks_output = True
 
     def __init__(
         self,
