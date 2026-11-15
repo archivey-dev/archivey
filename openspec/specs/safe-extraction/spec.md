@@ -952,8 +952,11 @@ The system SHALL apply `max_extracted_bytes` and `max_entries` only during
 `ArchiveReader.extract_all()`. The system SHALL apply `max_ratio` to every member
 stream a caller reads as well: `ArchiveReader.open()`, `ArchiveReader.read()` and the
 streams `stream_members()` yields (Requirement: A member read is held to the ratio),
-and to every decode of a container inside a compression stream, listing included
-(Requirement: A compressed container's decode is held to the archive-wide ratio).
+to every decode of a container inside a compression stream, listing included
+(Requirement: A compressed container's decode is held to the archive-wide ratio), and
+to the stream `open_stream()` returns, by the archive-wide rule against the compressed
+source (its trusted size, or the compressed bytes it has consumed when the size is not
+known), as a member read of the same bytes through `open_archive()` is held.
 Extraction's own passes are held by its tracker, to the limits the `extract_all` call
 was given. Listing materialization caps are separate (`ListingLimits` in
 `archive-reading`).
@@ -967,6 +970,8 @@ was given. Listing materialization caps are separate (`ListingLimits` in
 | `reader.read(member)` on a large member under the ratio | All bytes returned; no byte cap applies to a read |
 | `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
 | `reader.members()` on a container inside a compression stream past `max_ratio` | `ResourceLimitError` from the archive-wide ratio |
+| `open_stream(p)` read past `max_ratio` of the compressed file, `p` a bare `.gz` or `.bz2` | The read or seek that crosses it raises `ResourceLimitError`, as `open_archive(p)` then `read()` of its member does |
+| `open_stream(pipe)` read past `max_ratio` of the bytes taken from the pipe | `ResourceLimitError` once the output passes `live_ratio_activation_threshold` |
 
 ### Requirement: A member read is held to the ratio
 
@@ -1455,11 +1460,22 @@ Immutability is structural, not deep: `ExtractionResult.member` is the original
 mutable, caller-read-only `ArchiveMember`, whose documented late-bound metadata
 and diagnostics may still change; `error` may be an ordinary exception object.
 
+The report iterates, indexes and sizes as `results`. Testing its truth SHALL raise
+`TypeError`, as for `VerifyReport` and `MemberListReport`: a sequence's truth is
+whether it is empty, so a failed extraction would read as true and an empty archive's
+clean one as false. `ok` and `raise_for_failure()` answer whether it succeeded.
+
 #### Scenario: report immutability matrix
 
 | Case | Expected |
 | --- | --- |
 | Caller keeps a report and reader later does more work | Result tuple/outcomes and diagnostic summary stay unchanged; referenced member may receive documented late-bound updates |
+
+#### Scenario: report refuses a truth test
+
+| Case | Expected |
+| --- | --- |
+| `bool(report)` / `if report:`, the report empty or not | `TypeError` naming `ok` |
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 
@@ -1892,8 +1908,8 @@ The CLI passes `OnBlocked.SKIP`: it reports refused members itself.
 
 ### Requirement: Dry-run extraction
 
-`extract_all()` SHALL accept `dry_run: bool = False`, read for its
-truthiness like the other boolean flags.
+`extract_all()` SHALL accept `dry_run: bool = False`, refusing a value that is not a
+`bool` as the other boolean flags do (`error-handling`).
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into
 a private scratch directory, and SHALL NOT create or change anything under `dest`.

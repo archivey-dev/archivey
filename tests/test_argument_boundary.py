@@ -46,6 +46,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import io
+import stat
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -54,6 +55,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from archivey import (
+    AcceleratorMode,
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
@@ -64,6 +66,7 @@ from archivey import (
     ListingLimits,
     SpoolLimits,
     detect_format,
+    format_availability,
     open_archive,
     open_stream,
 )
@@ -73,6 +76,8 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.formats import unix_member_type
+from archivey.paths import match_glob, numbered_name
 
 # An ArchiveyError is permitted only for the arguments named here; see the module
 # docstring.
@@ -601,6 +606,87 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                     lambda b=bad, f=field_name: _with_config(archive, out(), **{f: b}),
                 )
             )
+    # Operation flags take a real bool, as the config's switches do: "false" is
+    # truthy, so a flag loaded from text would switch a mode on.
+    for bad in ("false", 0, 1, None):
+        for flag in ("streaming", "seekable_members", "concurrent_operations"):
+            rows.append(
+                _case(
+                    "open_archive",
+                    flag,
+                    bad,
+                    lambda b=bad, f=flag: open_archive(archive, **{f: b}),
+                )
+            )
+        rows += [
+            _case(
+                "open_stream",
+                "seekable",
+                bad,
+                lambda b=bad: open_stream(archive, seekable=b),
+            ),
+            _case(
+                "detect_format",
+                "follow_stub_volumes",
+                bad,
+                lambda b=bad: detect_format(archive, follow_stub_volumes=b),
+            ),
+            _case(
+                "extract_all",
+                "dry_run",
+                bad,
+                lambda b=bad: _extract_all(archive, out(), None, dry_run=b),
+            ),
+            _case(
+                "format_availability",
+                "check_programs",
+                bad,
+                lambda b=bad: format_availability("zip", check_programs=b),
+            ),
+            _case(
+                "match_glob",
+                "with_contents",
+                bad,
+                lambda b=bad: match_glob("*", with_contents=b),
+            ),
+            _case(
+                "numbered_name",
+                "is_dir",
+                bad,
+                lambda b=bad: numbered_name("photo.jpg", 1, is_dir=b),
+            ),
+            _case(
+                "unix_member_type",
+                "has_data",
+                bad,
+                lambda b=bad: unix_member_type(stat.S_IFIFO, has_data=b),
+            ),
+            _case(
+                "AcceleratorMode.enabled_for",
+                "seekable",
+                bad,
+                lambda b=bad: AcceleratorMode.AUTO.enabled_for(
+                    seekable=b, available=True
+                ),
+            ),
+            _case(
+                "AcceleratorMode.enabled_for",
+                "available",
+                bad,
+                lambda b=bad: AcceleratorMode.AUTO.enabled_for(
+                    seekable=True, available=b
+                ),
+            ),
+        ]
+    for bad in ("x", ArchiveyConfig, 0, ()):
+        rows.append(
+            _case(
+                "format_availability",
+                "config",
+                bad,
+                lambda b=bad: format_availability("zip", config=b),
+            )
+        )
     for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
         rows.append(
             _case(
@@ -714,6 +800,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # argument name.)
     ("open_archive", "format"): "coerced by format_args; test_format_arguments.py",
     ("open_stream", "format"): "coerced by format_args; test_format_arguments.py",
+    ("format_availability", "fmt"): "coerced by format_args; test_format_arguments.py",
+    # Each pattern is checked by the glob itself, and an empty one is refused;
+    # tests/test_paths_match_glob.py asserts what each shape does.
+    (
+        "match_glob",
+        "patterns",
+    ): "patterns validated by the glob; test_paths_match_glob.py",
     # The enum-typed arguments, owned by ``internal/enum_args``, which **coerces**
     # them: a recognised spelling becomes the member, so a refusal here would
     # contradict it. ``tests/test_enum_arguments.py`` asserts what they do; this
@@ -748,15 +841,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
         "ArchiveyConfig",
         "use_indexed_bzip2",
     ): "coerced by enum_args, in __post_init__",
-    # Flags read for their truthiness. There is no wrong type to find: every value
-    # means something, and ``streaming="no"`` opening in streaming mode is Python
-    # behaving as written, not a leak.
-    ("open_archive", "streaming"): "truthiness flag",
-    ("open_archive", "seekable_members"): "truthiness flag",
-    ("open_archive", "concurrent_operations"): "truthiness flag",
-    ("open_stream", "seekable"): "truthiness flag",
-    ("detect_format", "follow_stub_volumes"): "truthiness flag",
-    ("extract_all", "dry_run"): "truthiness flag",
     # ``get`` answers an absent *name* with the default, like ``dict.get``. A value
     # that is not a name at all is swept above: ``get(b"h.txt")`` used to answer
     # "absent" for a member that exists, which is a wrong answer, not a lookup miss.
@@ -767,7 +851,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
 def _public_surface() -> list[tuple[str, list[str]]]:
     """(name, argument names) for every public entry point this file is about."""
     surface: list[tuple[str, list[str]]] = []
-    for func in (open_archive, open_stream, detect_format):
+    for func in (
+        open_archive,
+        open_stream,
+        detect_format,
+        format_availability,
+        match_glob,
+    ):
         surface.append((func.__name__, list(inspect.signature(func).parameters)))
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
@@ -1268,3 +1358,13 @@ def test_max_ppmd_in_process_input_kwarg_is_gone() -> None:
     """
     with pytest.raises(TypeError, match="max_ppmd_in_process_input"):
         DecoderLimits(max_ppmd_in_process_input=1)  # type: ignore[call-arg]
+
+
+def test_dry_run_is_checked_before_the_closed_reader(
+    archive: Path, tmp_path: Path
+) -> None:
+    # The flag's own error names it, as the enum arguments' do, even on a closed reader.
+    with open_archive(archive) as reader:
+        pass
+    with pytest.raises(TypeError, match="dry_run"):
+        reader.extract_all(tmp_path / "out", dry_run="false")  # type: ignore[arg-type]

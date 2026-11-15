@@ -25,8 +25,10 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import enum
+import functools
 import importlib
 import inspect
 import sys
@@ -182,7 +184,52 @@ def _init_signature(cls: type) -> inspect.Signature | None:
             sig = init.replace(parameters=list(init.parameters.values())[1:])
     except (TypeError, ValueError):
         return None
+    stub = type_checking_inits(cls.__module__).get(cls.__qualname__)
+    if stub is not None:
+        # The constructor's input types, which the runtime ``__init__`` does not carry.
+        declared = {
+            arg.arg: ast.unparse(arg.annotation)
+            for arg in stub.args.args + stub.args.kwonlyargs
+            if arg.annotation is not None
+        }
+        sig = sig.replace(
+            parameters=[
+                param.replace(annotation=declared.get(param.name, param.annotation))
+                for param in sig.parameters.values()
+            ]
+        )
     return sig
+
+
+@functools.cache
+def type_checking_inits(module_name: str) -> dict[str, ast.FunctionDef]:
+    """The ``__init__`` each top-level class of a module declares under ``TYPE_CHECKING``.
+
+    A dataclass whose constructor takes wider input types than its fields hold (a string
+    spelling that ``__post_init__`` converts to the member) declares that ``__init__``
+    inside ``if TYPE_CHECKING:``, for type checkers only. The runtime keeps the
+    ``__init__`` the dataclass generates, so ``inspect`` cannot see the input types:
+    they are read from the source. Keyed by class name.
+    """
+    module = sys.modules.get(module_name)
+    path = getattr(module, "__file__", None)
+    if path is None or not path.endswith(".py"):
+        return {}
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    found: dict[str, ast.FunctionDef] = {}
+    for class_def in tree.body:
+        if not isinstance(class_def, ast.ClassDef):
+            continue
+        for node in class_def.body:
+            if not (
+                isinstance(node, ast.If)
+                and ast.unparse(node.test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
+            ):
+                continue
+            for inner in node.body:
+                if isinstance(inner, ast.FunctionDef) and inner.name == "__init__":
+                    found[class_def.name] = inner
+    return found
 
 
 def _fmt_signature(func: object) -> str:
