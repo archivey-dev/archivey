@@ -19,6 +19,7 @@ import archivey
 from archivey.internal.config import StreamConfig
 from archivey.internal.streams import codecs
 from archivey.internal.streams.codecs.deflate_decoder import SNAPSHOT_SPACING
+from archivey.internal.streams.native_memory import ZLIB_COPY_LEAKS
 from tests.conftest import zstd_backend
 from tests.streams_util import (
     CountingBytesIO,
@@ -75,7 +76,19 @@ def _tar_zst() -> bytes:
 
 @pytest.mark.parametrize(
     "build",
-    [_tar_gz, _tar_lz, _tar_xz, _tar_zst],
+    [
+        # Where ``copy()`` leaks (PyPy) gzip records no snapshot, so it decodes again
+        # from the start of the member.
+        pytest.param(
+            _tar_gz,
+            marks=pytest.mark.skipif(
+                ZLIB_COPY_LEAKS, reason="no zlib snapshots where copy() leaks (PyPy)"
+            ),
+        ),
+        _tar_lz,
+        _tar_xz,
+        _tar_zst,
+    ],
     ids=["gzip", "lzip", "xz", "zstd"],
 )
 def test_member_read_after_listing_resumes_near_the_member(

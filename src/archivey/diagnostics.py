@@ -1740,6 +1740,10 @@ class ExtractionReport:
     working while ``report.diagnostics`` exposes the call's diagnostic summary. It covers
     that :meth:`ForwardArchiveReader.extract_all` call only; detection and open
     diagnostics stay on ``reader.diagnostics``.
+
+    Testing its truth raises ``TypeError``, as for :class:`VerifyReport`: a report of a
+    failed extraction is not empty, and one of an empty archive is. Test ``ok``, or
+    ``len(report)`` for the number of members processed.
     """
 
     results: tuple[ExtractionResult, ...]
@@ -1792,6 +1796,12 @@ class ExtractionReport:
     ) -> ExtractionResult | tuple[ExtractionResult, ...]:
         return self.results[index]
 
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "test ExtractionReport.ok, not the report itself: a report is not empty "
+            "or true when every member was extracted"
+        )
+
     @property
     def ok(self) -> bool:
         """``True`` when no member was refused (``BLOCKED``) or failed (``FAILED``).
@@ -1830,7 +1840,9 @@ class MemberListReport:
     archive-level damage that stopped listing.
 
     Like :class:`ExtractionReport`, the report iterates, indexes, and sizes as its
-    primary sequence so common ``for member in report`` / ``len(report)`` idioms work.
+    primary sequence so common ``for member in report`` / ``len(report)`` idioms work,
+    and testing its truth raises ``TypeError``: test ``ok``, or ``len(report)`` for the
+    number of members listed.
     """
 
     members: tuple[ArchiveMember, ...]
@@ -1856,6 +1868,24 @@ class MemberListReport:
         self, index: int | slice
     ) -> ArchiveMember | tuple[ArchiveMember, ...]:
         return self.members[index]
+
+    def __bool__(self) -> NoReturn:
+        raise TypeError(
+            "test MemberListReport.ok, not the report itself: a report is not empty "
+            "or true when the listing completed"
+        )
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when the listing reached the end of the archive (``error`` is
+        ``None``), so ``members`` is the complete listing."""
+        return self.error is None
+
+    def raise_for_failure(self) -> None:
+        """Raise ``error``, the damage that stopped the listing. Does nothing when
+        ``ok`` is ``True``."""
+        if self.error is not None:
+            raise self.error
 
 
 @dataclass(frozen=True)

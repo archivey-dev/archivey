@@ -539,8 +539,8 @@ class ForwardArchiveReader(ABC):
     def members_report(self) -> MemberListReport:
         """Materialize the member listing and return a report.
 
-        ``report.error is None`` means ``report.members`` is complete. A non-``None``
-        error is terminal archive damage found while listing (a
+        ``report.ok`` (``report.error is None``) means ``report.members`` is complete.
+        A non-``None`` error is terminal archive damage found while listing (a
         :class:`~archivey.exceptions.CorruptionError`, including
         :class:`~archivey.exceptions.TruncatedError`): the tuple is the recovered
         prefix. Only that damage is returned instead of raised. Every other failure
@@ -563,8 +563,7 @@ class ForwardArchiveReader(ABC):
         For a complete-or-raise list on a streaming reader::
 
             report = reader.members_report()
-            if report.error is not None:
-                raise report.error
+            report.raise_for_failure()
         """
         ...
 

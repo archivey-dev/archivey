@@ -1099,11 +1099,13 @@ call that raised. Each call SHALL be fed compressed input up to the next multipl
 as it is) and SHALL ask for what the read asks, at most 64 KiB.
 
 Unless the caller set `recover_partial_data=False`, a gzip, zlib or raw deflate decoder
-on such a source SHALL lose nothing: it copies its
-zlib state (`decompressobj.copy()`) before each call, and when a call raises, the copy
-decodes the same input again one output byte per call up to the error. The decoder
-returns those bytes and raises the error from its next call. A decoder in a decoder
-child, which has no `copy()`, keeps the bound above.
+on such a source SHALL lose nothing: it keeps a copy of its zlib state
+(`decompressobj.copy()`) taken before the call or up to 256 calls, 1 MiB of compressed
+input or 8 MiB of output earlier, and when a call raises, the copy decodes the calls
+since it again and then the failing call's input one output byte per call up to the
+error. The decoder returns those bytes and raises the error from its next call. A
+decoder in a decoder child, which has no `copy()`, keeps the bound above, and so does
+every such decoder under a PyPy whose `copy()` leaks memory (every release so far).
 
 #### Scenario: read sizes on a pipe
 
@@ -1118,7 +1120,8 @@ child, which has no `copy()`, keeps the bound above.
 - **GIVEN** a `.gz`, a zlib stream or raw deflate of 1 MB of text with 64 bytes of `0xff`
   in the middle, or a `.gz` whose second member is damaged, from a pipe
 - **WHEN** it is read in loops of `read(512)` and `read(1 MiB)`
-- **THEN** each loop gets the bytes a file gets, then the error
+- **THEN** each loop gets the bytes a file gets, then the error; under a PyPy whose
+  `copy()` leaks, each loop gets at most the failing call's bytes fewer (64 KiB at most)
 
 #### Scenario: a small read
 

@@ -383,7 +383,11 @@ SHALL still raise (limits are not the damage story).
 `error is None` SHALL mean the listing is complete. Callers MUST treat a
 non-`None` `error` as an incomplete listing even when `members` is non-empty.
 The report SHALL iterate, index, and size as its `members` sequence (same
-ergonomics as `ExtractionReport` vs its results).
+ergonomics as `ExtractionReport` vs its results). Testing its truth SHALL raise
+`TypeError`, as for `ExtractionReport` and `VerifyReport`: a sequence's truth is
+whether it is empty, and an incomplete listing with members would read as success.
+`ok` SHALL be `error is None`, and `raise_for_failure()` SHALL raise `error` when it
+is set and do nothing otherwise.
 
 Members in the report SHALL be identity-stamped for this reader (`member in
 reader`) so `open(member)` works for recovered `FILE` members. An incomplete
@@ -424,6 +428,7 @@ earlier, an I/O error).
 | `members_report_if_available()` with no materialization and no upfront index | `None` |
 | `ListingLimits.max_members` exceeded during `members_report` | `ResourceLimitError` raised (not soft-returned on `error`) |
 | Streaming `members_report` after recoverable prefix + terminal error | Report with prefix + error; pass consumed |
+| `bool(report)` / `if report:` | `TypeError` naming `ok`; `report.ok` is `error is None`; `report.raise_for_failure()` raises `error` |
 
 ### Requirement: Sequential in-order iteration
 

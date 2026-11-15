@@ -89,11 +89,11 @@ reaches offset N by decoding everything before it, unless the stream has places 
 decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
 index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib, raw), the
 standard library engine also keeps its own on declared seek demand or restart points: a
-copy of zlib's decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3).
-Where there are none, and for most files there are none (default `xz` writes one block,
-`lzip` one member, and `plzip` one member for a small file), a backward seek
-decodes again from byte zero. The decode engine (§2.3) keeps the points it finds and
-reports a backward seek that costs more than a megabyte.
+copy of zlib's decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3;
+none under PyPy). Where there are none, and for most files there are none (default `xz`
+writes one block, `lzip` one member, and `plzip` one member for a small file), a
+backward seek decodes again from byte zero. The decode engine (§2.3) keeps the points it
+finds and reports a backward seek that costs more than a megabyte.
 
 ## 2. The pipeline here
 
@@ -281,8 +281,8 @@ Where resume points come from, per codec:
 | xz | Every block, and every stream in a multi-stream file. Default `xz` writes one block; `xz -T0` and `--block-size` write many |
 | lzip | Every member from the trailer walk; every member with output from a forward read (an empty member's output offset is the next member's, or the end of the output). Default `lzip` writes one; `plzip` one per data block, many with a small `-B` |
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
-| gzip | On declared seek demand or restart points: every member after the first, recorded as a forward read reaches it, and a zlib snapshot about every MiB inside a member; on declared seek demand only, every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
-| zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand or restart points, zlib snapshots a read has passed (`gzip.md` §2.3) |
+| gzip | On declared seek demand or restart points: every member after the first, recorded as a forward read reaches it, and a zlib snapshot about every MiB inside a member (none under PyPy); on declared seek demand only, every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
+| zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand or restart points, zlib snapshots a read has passed (`gzip.md` §2.3; none under PyPy) |
 | bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
 | zstd | On declared seek demand or restart points: every regular frame after the first, recorded as a forward read reaches it; on declared seek demand only, every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
 | bzip3 | On declared seek demand or restart points: every block after the first, recorded as a forward read reaches it; on declared seek demand only, every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
