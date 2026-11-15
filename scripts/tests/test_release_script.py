@@ -110,6 +110,13 @@ Example links:
 """
 
 
+# The fixture with the Performance section that `release.py start` asks for.
+WITH_NUMBERS = CHANGELOG.replace(
+    "- Fixed 3 bugs in ZIP reading.\n",
+    "- Fixed 3 bugs in ZIP reading.\n\n### Performance\n\nRatios.\n",
+)
+
+
 def test_changelog_moves_unreleased_under_the_new_heading() -> None:
     out = release.changelog_for_release(CHANGELOG, "0.2.1", "v0.2.0", "2026-11-20")
     assert "## [Unreleased]\n\n## [0.2.1] - 2026-11-20\n\n### Fixed\n\n- Fixed 3" in out
@@ -148,6 +155,21 @@ def test_changelog_dates_a_prewritten_entry() -> None:
     out = release.changelog_for_release(text, "0.3.0", "v0.2.0", "2026-12-01")
     assert "## [0.3.0] - 2026-12-01\n\nWritten ahead." in out
     assert f"[0.3.0]: {URL}/compare/v0.2.0...v0.3.0\n" in out
+
+
+@pytest.mark.parametrize("version", ["0.2.1", "0.3.0", "1.0.0"])
+def test_a_release_needs_a_performance_section(version: str) -> None:
+    out = release.changelog_for_release(CHANGELOG, version, "v0.2.0", "2026-12-01")
+    with pytest.raises(release.ReleaseError, match="### Performance"):
+        release.check_performance_section(out, version)
+    out = release.changelog_for_release(WITH_NUMBERS, version, "v0.2.0", "2026-12-01")
+    release.check_performance_section(out, version)
+
+
+@pytest.mark.parametrize("version", ["0.3.0rc1", "1.0.0b2"])
+def test_a_pre_release_can_skip_the_performance_section(version: str) -> None:
+    out = release.changelog_for_release(CHANGELOG, version, "v0.2.0", "2026-12-01")
+    release.check_performance_section(out, version)
 
 
 def test_changelog_refuses_two_places_for_one_entry() -> None:
@@ -270,7 +292,7 @@ def fake_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (tmp_path / name).write_text(
             (ROOT / name).read_text(encoding="utf-8"), encoding="utf-8"
         )
-    (tmp_path / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
+    (tmp_path / "CHANGELOG.md").write_text(WITH_NUMBERS, encoding="utf-8")
     monkeypatch.setattr(release, "ROOT", tmp_path)
     monkeypatch.setattr(release, "ROOT_PYPROJECT", tmp_path / "pyproject.toml")
     monkeypatch.setattr(

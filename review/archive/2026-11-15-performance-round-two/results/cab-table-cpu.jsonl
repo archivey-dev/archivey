@@ -1,0 +1,2 @@
+{"checksum": 0, "blocks": 65535, "median_ms": {"old": 39.46404200000009, "new": 38.91874499999992}, "table_size": 80, "index_size": 16}
+{"checksum": 1, "blocks": 65535, "median_ms": {"old": 37.36483300000026, "new": 37.28993100000011}, "table_size": 80, "index_size": 16}

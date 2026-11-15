@@ -269,6 +269,24 @@ def changelog_for_release(
     return _set_links(text, version, previous_tag)
 
 
+def check_performance_section(text: str, version: str) -> None:
+    """Refuse a release entry that has no ``### Performance`` section.
+
+    Every final release, patch releases included, gives its peer wall ratios
+    (dev-docs/release-checklist.md, section 2): a fix can make reading slower as well
+    as faster. A pre-release is not checked; its final release is.
+    """
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        return
+    if not re.search(
+        r"^### Performance$", changelog_section(text, version), re.MULTILINE
+    ):
+        raise ReleaseError(
+            f"the CHANGELOG entry for {version} has no '### Performance' section;"
+            " measure and write it first (dev-docs/release-checklist.md, section 2)"
+        )
+
+
 def _set_links(text: str, version: str, previous_tag: str | None) -> str:
     tag = f"v{version}"
     unreleased_link = f"[Unreleased]: {REPO_URL}/compare/{tag}...HEAD"
@@ -545,6 +563,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         _previous_tag(),
         str(dt.date.today()),
     )
+    check_performance_section(changelog, version)
     branch = f"release/v{version}"
     runner.run("git", "switch", "-c", branch)
     _write_versions(runner, pyprojects)

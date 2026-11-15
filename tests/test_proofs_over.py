@@ -3,6 +3,10 @@ the layers' below in one record, for speed. It must equal the plain form,
 ``own.combine(verifier).combine(below)``, for every field of
 :class:`VerificationProofs`: a field added to the class and to ``combine`` but not to
 ``_proofs_over`` would be dropped at the member level, and these tests catch that.
+
+The file also checks ``MemberVerifier.proofs``, which returns shared records from a
+table indexed by its three fields: each must equal the record the constructor builds,
+so a wrong index order in ``_VERIFIER_PROOFS`` fails here.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import pytest
 
 from archivey.internal.streams.archive_stream import ArchiveStreamImpl
 from archivey.internal.streams.verification import NO_PROOFS, VerificationProofs
+from archivey.internal.streams.verify import MemberVerifier
 
 FIELDS = [f.name for f in fields(VerificationProofs)]
 NO_VERIFIER = "no verifier"
@@ -68,3 +73,20 @@ def test_proofs_over_matches_combine(
     below = _one(below_field)
     got = ArchiveStreamImpl._proofs_over(stream, below, frames=frames)  # type: ignore[arg-type]
     assert got == _plain(stream, below, frames)
+
+
+@pytest.mark.parametrize("ended", [True, False])
+@pytest.mark.parametrize("content", [True, False])
+@pytest.mark.parametrize("expected", [{}, {"crc32": b"\0\0\0\0"}])
+def test_verifier_proofs_match_constructor(
+    ended: bool, content: bool, expected: dict[str, bytes]
+) -> None:
+    """``MemberVerifier.proofs`` returns a shared record per state; each must equal the
+    record built from that state, with every other field left at its default."""
+    verifier = object.__new__(MemberVerifier)
+    verifier._ended_clean = ended
+    verifier._digest_matched = content
+    verifier._expected = expected
+    assert verifier.proofs() == VerificationProofs(
+        ended=ended, content=content, content_possible=bool(expected)
+    )

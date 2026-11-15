@@ -952,7 +952,8 @@ class ArchiveStreamImpl(ArchiveStream):
             self._fail_unless_closed(e)
         if not data and self._uninterrupted:
             # The end, as ``_read`` notes it: the codec's whole-stream check ran over
-            # a decode from the start (a TAR walk over a pipe reads its tail here).
+            # a decode from the start (a streaming walk over a pipe, TAR or the format
+            # adapter's, reads its tail here).
             self._ended_from_start = True
         return data
 
