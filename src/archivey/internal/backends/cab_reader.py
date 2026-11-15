@@ -151,12 +151,14 @@ class _BlockTable(NamedTuple):
     complete: bool
     """``False`` when the table stops before the folder's last block header: the
     cabinet ends there, or that header is refused (``refused``)."""
+    first_unchecked: int | None
+    """The first block without a stored checksum, or ``None`` when every block has one.
+    No default: ``None`` lets a member be reported checksum-verified, so every table
+    must state it."""
     refused: str | None = None
     """Why the block header after the last one in the table is damage. As in libmspack,
     which reads each header only when the decoder needs that block, the refusal is
     raised when a read reaches the block, not when the table is read."""
-    first_unchecked: int | None = None
-    """First block without a stored checksum, or None when every block has one."""
 
 
 class _Record(NamedTuple):
@@ -518,7 +520,7 @@ class CabReader(IndexedReader[_Location]):
             output.append(output[-1] + decoded)
             pos += header + stored
         table = _BlockTable(
-            tuple(blocks), tuple(output), complete, refused, first_unchecked
+            tuple(blocks), tuple(output), complete, first_unchecked, refused
         )
         with self._lock:
             kept = self._tables.get(index)
