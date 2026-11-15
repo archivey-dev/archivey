@@ -457,7 +457,8 @@ class _RatioGuard(DelegatingStream):
     @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_held()
-        if n is not None and 0 <= n <= max(_GUARD_STEP, self._room()):
+        # The bound is at least a step, so a read of at most a step needs no ``_room``.
+        if n is not None and 0 <= n and (n <= _GUARD_STEP or n <= self._room()):
             data = read_blocking(self._inner, n)
             self._pos += len(data)
             self._check(self._pos)
