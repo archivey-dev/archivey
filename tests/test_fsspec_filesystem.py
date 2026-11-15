@@ -27,6 +27,7 @@ import pytest
 
 fsspec = pytest.importorskip("fsspec")
 
+import archivey.fsspec as fsspec_module  # noqa: E402
 from archivey import (  # noqa: E402
     ArchiveyConfig,
     ArchiveyUsageError,
@@ -569,11 +570,27 @@ def test_a_target_of_4096_bytes_resolves() -> None:
 
 
 @pytest.mark.parametrize("end", ["nope", "f"], ids=["missing", "file"])
-def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(end: str) -> None:
+def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
+    end: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A walk that ends on a missing name or on a file, or is refused, is held until
     a member makes a name it found missing. Here 2000 names and 2000 links go
     through a chain of 20 links, each 2400 components long (``d/..`` cannot be
-    skipped unwalked: ``d`` could be a link), which ends on ``end``."""
+    skipped unwalked: ``d`` could be a link), which ends on ``end``.
+
+    Counted, not timed: a walk of a link's target is one ``_Tree._walk`` call with
+    ``from_link``. The held walks take about 2100 of them; walking every link's
+    target again for each of the 2000 links through the chain takes over 40 000.
+    A wall-time bound (2 s against 0.3 s measured) failed on a slow Windows runner."""
+    walks = 0
+    real_walk = fsspec_module._Tree._walk
+
+    def counting_walk(self: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal walks
+        if kwargs.get("from_link"):
+            walks += 1
+        return real_walk(self, *args, **kwargs)
+
     entries: list[tuple[str, str, bytes | str]] = [
         ("dir", "d", ""),
         ("file", "f", b"F"),
@@ -585,12 +602,12 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(end: str) -> None
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
-        start = time.perf_counter()
+        monkeypatch.setattr(fsspec_module._Tree, "_walk", counting_walk)
         assert fs.info("x1999")["type"] == ("file" if end == "f" else "other")
-        elapsed = time.perf_counter() - start
+        monkeypatch.undo()
         assert not fs.exists("l0/0")
-    # Measured: under 0.3 s, and 4.4 s to 12.7 s with every walk done again.
-    assert elapsed < 2.0
+    # Measured: 2250 (missing) and 2060 (file).
+    assert walks < 5000
 
 
 @pytest.mark.parametrize(

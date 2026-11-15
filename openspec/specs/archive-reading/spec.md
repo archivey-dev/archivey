@@ -383,7 +383,11 @@ SHALL still raise (limits are not the damage story).
 `error is None` SHALL mean the listing is complete. Callers MUST treat a
 non-`None` `error` as an incomplete listing even when `members` is non-empty.
 The report SHALL iterate, index, and size as its `members` sequence (same
-ergonomics as `ExtractionReport` vs its results).
+ergonomics as `ExtractionReport` vs its results). Testing its truth SHALL raise
+`TypeError`, as for `ExtractionReport` and `VerifyReport`: a sequence's truth is
+whether it is empty, and an incomplete listing with members would read as success.
+`ok` SHALL be `error is None`, and `raise_for_failure()` SHALL raise `error` when it
+is set and do nothing otherwise.
 
 Members in the report SHALL be identity-stamped for this reader (`member in
 reader`) so `open(member)` works for recovered `FILE` members. An incomplete
@@ -424,6 +428,7 @@ earlier, an I/O error).
 | `members_report_if_available()` with no materialization and no upfront index | `None` |
 | `ListingLimits.max_members` exceeded during `members_report` | `ResourceLimitError` raised (not soft-returned on `error`) |
 | Streaming `members_report` after recoverable prefix + terminal error | Report with prefix + error; pass consumed |
+| `bool(report)` / `if report:` | `TypeError` naming `ok`; `report.ok` is `error is None`; `report.raise_for_failure()` raises `error` |
 
 ### Requirement: Sequential in-order iteration
 
@@ -1369,15 +1374,15 @@ whose size is known only once it has been read (a ZIP member with bit 3 set, rea
 non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
 whose size is known. `process_isolation` SHALL be converted from the member or its name
 at construction, as the accelerator fields are. `process_isolation=NONE` together with
-`use_rapidgzip=ON` or `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at
-construction: rapidgzip runs only in a child process. Per-call `limits` still beat
-`config.extraction_limits`, then reader/library default. Other per-call operational args
-stay outside `ArchiveyConfig`. `detection_budget` SHALL bound what format detection
-spends, for `detect_format` and for every detection `open_archive` and `open_stream` run
-(see `detection-cost`): the auto-detection itself, and under `format=` the stub-volume
-check and the rescan that confirms an empty listing. It is annotated as a
-`DetectionBudget`, like the accelerator fields beside it: a preset member or its name is
-converted at construction, so the field always holds a budget. `always_probe_content`
+`use_rapidgzip=ON` or `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` (also a
+`ValueError`) at construction: rapidgzip runs only in a child process. Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other per-call
+operational args stay outside `ArchiveyConfig`. `detection_budget` SHALL bound what
+format detection spends, for `detect_format` and for every detection `open_archive` and
+`open_stream` run (see `detection-cost`): the auto-detection itself, and under `format=`
+the stub-volume check and the rescan that confirms an empty listing. It is annotated as
+a `DetectionBudget`, like the accelerator fields beside it: a preset member or its name
+is converted at construction, so the field always holds a budget. `always_probe_content`
 SHALL decide whether `detect_format` and `open_archive` run every content probe or only
 the probe of the format the source's extension names (`format-detection`); `open_stream`
 SHALL run every probe whatever it holds. Like the other switches it SHALL be a real

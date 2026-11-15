@@ -714,7 +714,8 @@ def read_signature_and_next_header(
 
     if fields.next_header_offset > _MAX_SEEK_OFFSET:
         raise CorruptionError(
-            f"7z next-header offset {fields.next_header_offset} exceeds the seekable range"
+            f"7z next-header distance {fields.next_header_offset} past the start "
+            "header exceeds the seekable range"
         )
     if fields.next_header_size > MAX_NEXT_HEADER_SIZE:
         raise CorruptionError(
@@ -742,7 +743,8 @@ def read_signature_and_next_header(
         fp.seek(SIGNATURE_HEADER_SIZE + fields.next_header_offset)
     except (OSError, OverflowError) as exc:
         raise CorruptionError(
-            f"7z next-header seek failed at offset {fields.next_header_offset}"
+            f"7z next-header seek failed: the start header puts it "
+            f"{fields.next_header_offset} bytes past its own end"
         ) from exc
     header_data = _read_stream_exact(fp, fields.next_header_size, "7z next header")
     if crc32(header_data) != fields.next_header_crc:

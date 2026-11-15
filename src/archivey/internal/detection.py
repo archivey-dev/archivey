@@ -95,6 +95,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, cast
 
 from archivey.config import (
     DEFAULT_ARCHIVEY_CONFIG,
+    ArchiveyConfig,
     DecoderLimits,
     ProcessIsolation,
 )
@@ -113,6 +114,7 @@ from archivey.exceptions import (
 )
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
+    check_bool,
     check_config,
     check_path_not_empty,
     require_source,
@@ -176,7 +178,6 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
-    from archivey.config import ArchiveyConfig
     from archivey.internal.streams.codecs.base import CodecId
     from archivey.types import OptionalLibrary
 
@@ -1710,6 +1711,7 @@ def detect_format(
             also a ``TypeError`` or ``ValueError``).
         FileNotFoundError: The path does not exist.
     """
+    check_bool(follow_stub_volumes, call="detect_format(follow_stub_volumes=…)")
     return detect_format_into(
         source, config=config, collector=None, follow_stub_volumes=follow_stub_volumes
     )

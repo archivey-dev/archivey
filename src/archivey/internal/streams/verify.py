@@ -188,6 +188,21 @@ def _probe_past_declared(inner: BinaryIO) -> bytes:
         raise
 
 
+# Every record MemberVerifier.proofs can return, indexed by its three fields:
+# ``[ended][content][content_possible]``. The records are frozen, so one per state is
+# shared instead of building a new one on each of a member's several level checks.
+_VERIFIER_PROOFS = tuple(
+    tuple(
+        tuple(
+            VerificationProofs(ended=ended, content=content, content_possible=possible)
+            for possible in (False, True)
+        )
+        for content in (False, True)
+    )
+    for ended in (False, True)
+)
+
+
 class MemberVerifier:
     """Incremental digest/length checker over bytes read from an inner stream.
 
@@ -421,11 +436,9 @@ class MemberVerifier:
 
     def proofs(self) -> VerificationProofs:
         """What this verifier has proved, for the stream's verification level."""
-        return VerificationProofs(
-            ended=self._ended_clean,
-            content=self._digest_matched,
-            content_possible=bool(self._expected),
-        )
+        return _VERIFIER_PROOFS[self._ended_clean][self._digest_matched][
+            bool(self._expected)
+        ]
 
     @property
     def pos(self) -> int:

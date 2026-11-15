@@ -90,9 +90,13 @@ with archivey.open_archive("damaged.tar") as archive:
     report = archive.members_report()
     for member in report:
         print(member.name)
-    if report.error is not None:
+    if not report.ok:
         print("The list stops early:", report.error)
 ```
+
+`report.ok` is `True` when the list is complete, and `report.raise_for_failure()` raises the
+error that stopped it. Test `ok`, not the report itself: `if report:` always raises `TypeError`. As
+a sequence, its truth would only say whether it is empty, and a list of members cut short is not.
 
 ??? note "Why does `members()` raise if the archive is damaged?"
     It returns a list, and a shorter list looks just like a complete one, so code that only looks at
@@ -138,8 +142,18 @@ of the member a second time. If you throw a damaged member away anyway, set
 `ArchiveyConfig(recover_partial_data=False)` to skip that work: the read that meets the damage then
 raises sooner, and some of the bytes just before the damage, at most one internal step's worth, are
 lost. Formats whose decoder already returns those bytes at no extra cost (`.Z`, lzop, bzip3 and the
-old ZIP methods) still return them. The error is the same either way. A compressed tar still gives
-you every member that ends before the damage.
+old ZIP methods) still return them. The error is the same either way. A compressed tar in a file
+still gives you every member that ends before the damage, under either setting. bzip2 is the
+exception: it decompresses whole blocks of up to 900 kB, so one damaged byte fails every member
+with data in that block, and a small `.tar.bz2` is often a single block.
+
+A pipe can't be read twice, so there archivey can't decompress a second time. A `.tar.gz` and the
+formats just named still give you every member that ends before the damage. With xz, zstd and the
+other compressions, the decoder step that meets the damage loses its output, up to 64 KiB of
+decompressed data, so a member that ends in that stretch before the damage can fail too, or the
+pass can raise before it reaches that member. bzip2 loses its whole block, as in a file. The same
+holds for an RPM's compressed payload. Under PyPy, a `.tar.gz` from a pipe can lose that stretch
+too (see [PyPy](install.md#pypy)).
 
 A member whose data is damaged doesn't end a `stream_members()` loop. Its own read raises, and the
 loop goes on to the next member, so one pass can find every damaged member in the archive. In a

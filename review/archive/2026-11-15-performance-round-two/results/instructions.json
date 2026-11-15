@@ -1,0 +1,32 @@
+{
+  "zip_none": {
+    "one": 6038567484,
+    "three": 10731618214,
+    "members_per_run": 4000,
+    "instructions_per_member": 586631.34125
+  },
+  "zip_ratio": {
+    "one": 5912559909,
+    "three": 10527435849,
+    "members_per_run": 4000,
+    "instructions_per_member": 576859.4925
+  },
+  "zip_proof8": {
+    "one": 5838638872,
+    "three": 10282141434,
+    "members_per_run": 4000,
+    "instructions_per_member": 555437.82025
+  },
+  "cab_old": {
+    "one": 5665311077,
+    "three": 9945020150,
+    "members_per_run": 4000,
+    "instructions_per_member": 534963.634125
+  },
+  "cab_new": {
+    "one": 5568672696,
+    "three": 9720196336,
+    "members_per_run": 4000,
+    "instructions_per_member": 518940.455
+  }
+}

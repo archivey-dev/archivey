@@ -1485,10 +1485,15 @@ def missing_end_record_error(
     *,
     whole: bool,
     file_size: int,
+    origin: int = 0,
 ) -> ArchiveyError | None:
     """Why no end record follows the members, from the first four bytes after them
     (at stream offset ``members_end``, ``after`` the walk's last member) and those
     where the step over the directory stopped (``stopped``, ``step_over_directory``).
+
+    ``origin`` is where ``read_at``'s offset 0 sits in the file: nonzero for the
+    seekable reader's region behind a stub. The message names file offsets, as every
+    message does; the forward walk's offsets count from the stream's start already.
 
     The stream ends inside the directory (only when ``whole``: every byte after the
     members was seen), a ZIP64 end record declares a size the stream does not hold,
@@ -1510,12 +1515,13 @@ def missing_end_record_error(
                 if declared > room:
                     return TruncatedError(
                         "ZIP64 end of central directory record at stream offset "
-                        f"{stopped} declares {declared} bytes after its first twelve, "
+                        f"{origin + stopped} declares {declared} bytes after its first twelve, "
                         "and the stream ends inside that record"
                     )
         if len(rest) == 4 and rest not in _STEPPED_OVER:
             return CorruptionError(
-                f"bytes at stream offset {stopped} after the central directory are "
+                f"bytes at stream offset {origin + stopped} after the central "
+                "directory are "
                 "not a ZIP record, and no end of central directory record follows "
                 "them"
             )
@@ -1528,7 +1534,8 @@ def missing_end_record_error(
         return UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
     if head not in _DIRECTORY_STARTS:
         return CorruptionError(
-            f"bytes at stream offset {members_end} {after} are not a ZIP header, and "
+            f"bytes at stream offset {origin + members_end} {after} are not a ZIP "
+            "header, and "
             "no end of central directory record follows them"
         )
     return None

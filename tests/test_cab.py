@@ -311,6 +311,29 @@ def _data_start(raw: bytes) -> int:
     return start
 
 
+def test_members_before_the_first_unchecksummed_block_stay_verified() -> None:
+    # One block per file; block 3 carries no checksum. A member is checked only when
+    # every block up to its end has one, so f0-f2 are, and f3-f5 are not.
+    files = [CabFile(f"f{i}", bytes([65 + i]) * FRAME) for i in range(6)]
+    raw = bytearray(_cab(CabFolder("none"), files))
+    pos = _data_start(raw)
+    for block in range(6):
+        _, stored, _ = struct.unpack_from("<IHH", raw, pos)
+        if block == 3:
+            struct.pack_into("<I", raw, pos, 0)
+        pos += 8 + stored
+    with open_archive(io.BytesIO(bytes(raw))) as reader:
+        levels = {}
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+            levels[member.name] = member.verified
+    assert levels == {
+        f"f{i}": Verification.CHECKSUM if i < 3 else Verification.LENGTH
+        for i in range(6)
+    }
+
+
 def test_a_bad_checksum_fails_the_read() -> None:
     raw = bytearray(_cab(CabFolder("mszip")))
     raw[_data_start(raw) + 8 + 10] ^= 0xFF

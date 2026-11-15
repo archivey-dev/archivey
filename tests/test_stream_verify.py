@@ -278,3 +278,13 @@ def test_verify_twice_on_a_forward_only_stream(second_password_only: bool) -> No
         assert (
             stream.verify(password_only=second_password_only) is Verification.CHECKSUM
         )
+
+
+@pytest.mark.parametrize("bad", ["false", 0, None])
+def test_verify_refuses_a_password_only_that_is_not_a_bool(
+    tmp_path: Path, bad: object
+) -> None:
+    with open_archive(_zip(tmp_path)) as reader, reader.open("a.txt") as stream:
+        with pytest.raises(TypeError, match="password_only"):
+            stream.verify(password_only=bad)  # type: ignore[arg-type]
+        assert stream.read() == _DATA

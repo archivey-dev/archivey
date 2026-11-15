@@ -1,0 +1,11 @@
+--- a/src/archivey/internal/bomb_tracker.py
++++ b/src/archivey/internal/bomb_tracker.py
+@@ -448,7 +448,7 @@
+     @override
+     def read(self, n: int = -1, /) -> bytes:
+         self._raise_held()
+-        if n is not None and 0 <= n <= max(_GUARD_STEP, self._room()):
++        if n is not None and 0 <= n and (n <= _GUARD_STEP or n <= self._room()):
+             data = read_blocking(self._inner, n)
+             self._pos += len(data)
+             self._check(self._pos)

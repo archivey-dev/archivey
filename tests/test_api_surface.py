@@ -7,8 +7,14 @@ patch (``docs/how-it-is-built.md`` §Versioning and stability).
 
 from __future__ import annotations
 
+import ast
+import dataclasses
+import importlib
 import importlib.util
+import inspect
 import sys
+import typing
+from enum import Enum
 from pathlib import Path
 
 import pytest
@@ -232,3 +238,114 @@ def test_modules_from_reports_a_newly_public_module(
     assert "+ module archivey.terminal" in minor
     assert any(line.startswith("+ function archivey.terminal.") for line in minor)
     assert patch == []
+
+
+# --- constructors declared for type checkers ---------------------------------------
+
+
+def _unparse(node: ast.AST | None) -> str:
+    assert node is not None
+    return ast.unparse(node)
+
+
+def _type_checking_init_classes() -> list[type]:
+    """Every class under ``src/archivey`` with an ``__init__`` under ``TYPE_CHECKING``."""
+    src = ROOT / "src"
+    classes: list[type] = []
+    for path in sorted((src / "archivey").rglob("*.py")):
+        if "TYPE_CHECKING" not in path.read_text(encoding="utf-8"):
+            continue
+        parts = path.relative_to(src).with_suffix("").parts
+        module_name = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:  # an optional dependency this environment lacks
+            continue
+        for class_name in api_surface.type_checking_inits(module_name):
+            classes.append(getattr(module, class_name))
+    return classes
+
+
+def test_the_scan_finds_the_known_typed_constructors() -> None:
+    from archivey import ArchiveFormat, ArchiveyConfig
+
+    assert {ArchiveFormat, ArchiveyConfig} <= set(_type_checking_init_classes())
+
+
+@pytest.mark.parametrize(
+    "cls", _type_checking_init_classes(), ids=lambda cls: cls.__qualname__
+)
+def test_a_type_checking_init_matches_the_generated_one(cls: type) -> None:
+    """The declared ``__init__`` may widen an annotation, and change nothing else.
+
+    A dataclass that converts a string spelling in ``__post_init__`` declares its
+    constructor's wider input types in ``if TYPE_CHECKING: def __init__``, which
+    ``@dataclass`` leaves alone at runtime, so the generated ``__init__`` still runs.
+    The declaration is a second copy of the parameter list, and nothing else checks it:
+    a field added, renamed, reordered or given a default without it would type-check
+    one call and run another. Each parameter must match the generated one in name,
+    kind and whether it has a default (the declaration writes every default as
+    ``...``), and its annotation must be the field's own, optionally followed by
+    ``| X`` for further accepted input types. Those must be a ``Literal`` alias or an
+    enum, never a bare ``str``, so a misspelling stays a type error.
+    """
+    assert dataclasses.is_dataclass(cls)
+    stub = api_surface.type_checking_inits(cls.__module__)[cls.__qualname__]
+    module = sys.modules[cls.__module__]
+    assert _unparse(stub.returns) == "None"
+    assert not (stub.args.posonlyargs or stub.args.vararg or stub.args.kwarg)
+
+    declared = [
+        (arg, inspect.Parameter.POSITIONAL_OR_KEYWORD, default)
+        for arg, default in zip(
+            stub.args.args,
+            [None] * (len(stub.args.args) - len(stub.args.defaults))
+            + list(stub.args.defaults),
+            strict=True,
+        )
+    ] + [
+        (arg, inspect.Parameter.KEYWORD_ONLY, default)
+        for arg, default in zip(
+            stub.args.kwonlyargs, stub.args.kw_defaults, strict=True
+        )
+    ]
+    generated = list(inspect.signature(cls.__init__).parameters.values())
+    assert [arg.arg for arg, _, _ in declared] == [p.name for p in generated]
+
+    for (arg, kind, default), param in zip(declared[1:], generated[1:], strict=True):
+        where = f"{cls.__qualname__}.__init__({param.name}=)"
+        assert kind is param.kind, f"{where}: {kind} here, {param.kind} generated"
+        has_default = param.default is not inspect.Parameter.empty
+        assert (default is not None) == has_default, f"{where}: default differs"
+        if default is not None:
+            assert _unparse(default) == "...", f"{where}: write the default as ..."
+        assert arg.annotation is not None, f"{where}: no annotation"
+        annotation = _unparse(arg.annotation)
+        field_type = str(param.annotation)
+        assert annotation == field_type or annotation.startswith(f"{field_type} | "), (
+            f"{where}: {annotation!r} does not start with the field's {field_type!r}"
+        )
+        named = [getattr(module, name, None) for name in annotation.split(" | ")]
+        enums = [e for e in named if isinstance(e, type) and issubclass(e, Enum)]
+        spellings = {
+            spelling
+            for enum in enums
+            for member in enum
+            for spelling in (str(member.value), str(member.value).replace("_", "-"))
+        }
+        for extra in annotation.removeprefix(field_type).split(" | ")[1:]:
+            accepted = getattr(module, extra, None)
+            is_literal = typing.get_origin(accepted) is typing.Literal
+            is_enum = isinstance(accepted, type) and issubclass(accepted, Enum)
+            assert is_literal or is_enum, (
+                f"{where}: {extra!r} is not a Literal alias or an enum"
+            )
+            if is_literal:
+                # The alias must spell the parameter's own enum, not another one: a
+                # mis-paired alias would type-check a refused value and reject a
+                # documented one.
+                foreign = set(typing.get_args(accepted)) - spellings
+                assert not foreign, (
+                    f"{where}: {extra!r} has {sorted(foreign)}, which no enum in "
+                    f"{annotation!r} spells"
+                )

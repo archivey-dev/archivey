@@ -143,6 +143,36 @@ class ContainerFormat(StrEnum):
     :class:`~archivey.ArchiveyUsageError`."""
 
 
+# The string spellings of ``ContainerFormat``, which ``ArchiveFormat`` takes for its
+# ``container`` argument, so a type checker flags a bad one at the call. Deliberately
+# narrower than what ``internal.enum_args`` accepts: coercion also takes the member
+# *name* and ignores case, and a literal can express neither. A plugin's container has
+# no spelling here: it is passed as its member. Keep it beside the enum:
+# ``tests/test_enum_arguments.py`` fails if the two drift.
+ContainerFormatStr = Literal[
+    "zip",
+    "tar",
+    "rar",
+    "7z",
+    "iso",
+    "ar",
+    "deb",
+    "cpio",
+    "rpm",
+    "makeself",
+    "squashfs",
+    "xar",
+    "cab",
+    "lha",
+    "arj",
+    "dmg",
+    "directory",
+    "raw_stream",
+    "raw-stream",
+    "unknown",
+]
+
+
 class PluginContainer(StrEnum):
     """Base class for a container enum that a format plugin defines.
 
@@ -222,6 +252,29 @@ class StreamFormat(StrEnum):
     magic."""
 
 
+# The string spellings of ``StreamFormat``, which ``ArchiveFormat`` takes for its
+# ``stream`` argument; see ``ContainerFormatStr``. A plugin's stream has no spelling
+# here: it is passed as its member.
+StreamFormatStr = Literal[
+    "uncompressed",
+    "gz",
+    "bz2",
+    "xz",
+    "zst",
+    "lz4",
+    "lz",
+    "lzma",
+    "zz",
+    "br",
+    "Z",
+    "lzo",
+    "bz3",
+    "mozlz4",
+    "uu",
+    "b64",
+]
+
+
 @dataclass(frozen=True)
 class ArchiveFormat:
     """A ``(container, stream)`` pair identifying how an archive is packaged.
@@ -246,6 +299,19 @@ class ArchiveFormat:
     """The compression around the archive, such as ``GZIP`` for a ``.tar.gz``, or
     ``UNCOMPRESSED``, or a member of a :class:`~archivey.PluginStream` subclass for a
     compression format a plugin adds."""
+
+    if TYPE_CHECKING:
+        # The constructor's input types, wider than the fields: a string spelling is
+        # converted to the member in ``__post_init__``, so the fields hold members only.
+        # ``@dataclass`` does not replace an ``__init__`` the class body defines, and
+        # this one exists only for type checkers, so the runtime keeps the generated
+        # one. ``tests/test_api_surface.py`` fails if the two differ in anything but
+        # these annotations.
+        def __init__(
+            self,
+            container: ContainerFormat | PluginContainer | ContainerFormatStr,
+            stream: StreamFormat | PluginStream | StreamFormatStr,
+        ) -> None: ...
 
     def __post_init__(self) -> None:
         # Converted, not only checked: both enums are ``StrEnum``, so a member is a
@@ -565,23 +631,6 @@ class MissingComponent:
                 f"The {name!r} package is required for {purpose} ({self.install_hint})."
             )
         return f"{text} {note}" if note else text
-
-
-def _bind_exception_hint() -> None:
-    """Bind ``MissingComponent`` where the exceptions are defined.
-
-    ``PackageNotInstalledError.missing`` is annotated with it, but that module cannot
-    import this one (this module imports the exceptions), so it names it only under
-    ``TYPE_CHECKING``. Binding it here lets ``typing.get_type_hints`` resolve the
-    error's hints.
-    """
-    from archivey import exceptions
-
-    exceptions.MissingComponent = MissingComponent
-
-
-_bind_exception_hint()
-del _bind_exception_hint
 
 
 class FormatSupport(Enum):
@@ -1894,10 +1943,14 @@ class ExtractionPolicy(Enum):
 
     The policy decides how names and permissions are written. Some checks hold under
     every policy, because the write itself would be unsafe or would differ by OS: a name
-    or link that leads outside the destination, a name with a NUL, a device node, and a
-    symlink target with a Windows drive letter or UNC root (``C:/Windows``,
+    that leads outside the destination, a symlink whose target climbs out of it with
+    ``..``, a write through a link that leads outside it, a name with a NUL, a device
+    node, and a symlink target with a Windows drive letter or UNC root (``C:/Windows``,
     ``//server/share``), which Windows refuses and so is refused on every OS. A hardlink
-    is refused when the member it takes its data from is.
+    is refused when the member it takes its data from is. The one exception is a symlink
+    whose target starts at ``/``: ``STRICT`` and ``STANDARD`` refuse it, and ``TRUSTED``
+    writes it as stored, pointing outside the destination, and writes nothing through
+    it.
     """
 
     # Design records: dev-docs/decisions/0013-cross-platform-name-safety-policies.md and

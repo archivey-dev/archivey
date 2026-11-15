@@ -174,6 +174,19 @@ def test_extract(tmp_path: Path, name: str, pipe: bool) -> None:
     assert (dest / "empty").is_dir()
 
 
+def test_a_compressed_archive_from_a_pipe_reaches_the_checksum() -> None:
+    """The format adapter's walk over a pipe reads the codec's tail through the walk
+    buffer's read-ahead; that end counts as reached, so the gzip trailer raises every
+    file and verify_all() fails nothing."""
+    data = gzip.compress((DATA / "gnu-newc.cpio").read_bytes())
+    with open_archive(_Pipe(data), streaming=True) as reader:
+        report = reader.verify_all()
+        files = [m for m in reader.members_report().members if m.is_file]
+    assert report.failures == ()
+    assert files
+    assert {m.verified for m in files} == {_V.CHECKSUM}
+
+
 def test_an_os_pipe(tmp_path: Path) -> None:
     data = (DATA / "gnu-newc.cpio").read_bytes()
     read_fd, write_fd = os.pipe()

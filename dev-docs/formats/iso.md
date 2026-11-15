@@ -533,8 +533,10 @@ ISO-specific only. General extraction and name hazards are §2.4.
   `KeyError` and `ValueError` from its parsers. All of them are `CorruptionError` at the
   boundary; an `OSError` from the handle is not, and propagates unchanged.
 - **Records that share an extent multiply output.** N records naming one extent extract
-  N copies, and the per-member ratio stays 1 because each is `STORED`. The bound is
-  `ExtractionLimits.max_extracted_bytes`, not the ratio guard.
+  N copies, and the per-member ratio stays 1 because each is `STORED`. Each record still
+  counts in the archive-wide ratio, on extraction and on `open()` reads, so the copies
+  together stop at `max_ratio` times the image's size; extraction also has
+  `ExtractionLimits.max_extracted_bytes`.
 - **Nothing authenticates the data; truncation shows only where the data runs out.**
   With no checksum there is no way to tell a damaged file from an intact one. A cut image
   opens as long as its directories survive, lists the sizes its records declare, and

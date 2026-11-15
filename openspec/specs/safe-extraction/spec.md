@@ -952,8 +952,11 @@ The system SHALL apply `max_extracted_bytes` and `max_entries` only during
 `ArchiveReader.extract_all()`. The system SHALL apply `max_ratio` to every member
 stream a caller reads as well: `ArchiveReader.open()`, `ArchiveReader.read()` and the
 streams `stream_members()` yields (Requirement: A member read is held to the ratio),
-and to every decode of a container inside a compression stream, listing included
-(Requirement: A compressed container's decode is held to the archive-wide ratio).
+to every decode of a container inside a compression stream, listing included
+(Requirement: A compressed container's decode is held to the archive-wide ratio), and
+to the stream `open_stream()` returns, by the archive-wide rule against the compressed
+source (its trusted size, or the compressed bytes it has consumed when the size is not
+known), as a member read of the same bytes through `open_archive()` is held.
 Extraction's own passes are held by its tracker, to the limits the `extract_all` call
 was given. Listing materialization caps are separate (`ListingLimits` in
 `archive-reading`).
@@ -967,6 +970,8 @@ was given. Listing materialization caps are separate (`ListingLimits` in
 | `reader.read(member)` on a large member under the ratio | All bytes returned; no byte cap applies to a read |
 | `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
 | `reader.members()` on a container inside a compression stream past `max_ratio` | `ResourceLimitError` from the archive-wide ratio |
+| `open_stream(p)` read past `max_ratio` of the compressed file, `p` a bare `.gz` or `.bz2` | The read or seek that crosses it raises `ResourceLimitError`, as `open_archive(p)` then `read()` of its member does |
+| `open_stream(pipe)` read past `max_ratio` of the bytes taken from the pipe | `ResourceLimitError` once the output passes `live_ratio_activation_threshold` |
 
 ### Requirement: A member read is held to the ratio
 
@@ -982,13 +987,14 @@ rules extraction applies to what it writes:
   read or seek that crosses it SHALL raise `ResourceLimitError` for that member. It is
   not the always-stop kind, so a pass can go on to the next member.
 - **Across the reader.** The output of all the reader's member reads together, each
-  member counted once at the furthest offset any read of it reached, is judged by the
-  archive-wide rule (`archive_ratio_refusal`: the static denominator, or the live one
-  past `live_ratio_activation_threshold`). Crossing it SHALL raise the always-stop
-  `ResourceLimitError`. Where neither denominator exists (an archive read from a
-  non-seekable stream that is not inside a compression stream: no trusted size, and no
-  counter installed), this rule does not apply to reads, as it does not to extraction;
-  extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
+  member the caller reads counted once at the furthest offset any read of it reached, is
+  judged by the archive-wide rule (`archive_ratio_refusal`: the static denominator, or
+  the live one past `live_ratio_activation_threshold`). Crossing it SHALL raise the
+  always-stop `ResourceLimitError`. Where neither denominator exists (an archive read
+  from a non-seekable stream that is not inside a compression stream: no trusted size,
+  and no counter installed), this rule does not apply to reads, as it does not to
+  extraction; extraction keeps `max_extracted_bytes` there, and a read keeps only the
+  per-member rule.
 
 A member whose data is a run of the archive stream's own bytes, as every TAR member's is
 except a sparse one's (a TAR is compressed as a whole, if at all), SHALL NOT be held:
@@ -997,7 +1003,13 @@ archive-wide ratio. It SHALL be counted toward the archive-wide total at its rec
 size when its stream is handed out, read or not, so a member that is held (a sparse
 one) is judged with it. Counting more than was read can only refuse sooner.
 
-A RAR file copy is held, and counted, as the member whose data it repeats. The read
+A link that `open()` follows (a hard link or symlink) and a RAR file copy hand out
+another member's data. The per-member rule SHALL judge them as that member, against its
+`compressed_size`. The archive-wide total SHALL count them as the member the caller
+asked for, so N members that hand out one member's data count N times: their output is
+N times those bytes, and each costs the archive only a small record. Where that data is
+the archive stream's own bytes, the read SHALL be judged at its recorded size when the
+stream is handed out, since no guard sees those bytes again. The read
 that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
 reach the decoder in steps of at most 1 MiB, so a `read()` of a whole member stops
 within a step of the limit instead of first holding all of it in memory. A decoder
@@ -1013,6 +1025,8 @@ turns it off.
 | `stream_members()` over an archive whose second member is over the ratio | The second member's read raises; the pass yields the third |
 | Archive of many members under 5 MiB each, together past the ratio of the archive's size | The read that crosses the archive-wide ratio raises the always-stop error |
 | The same member read twice | Counted once toward the archive-wide total |
+| Many hard links or symlinks to one TAR or RPM file, each read with `read()`, together past the ratio of the archive's size | The `open()` that crosses the archive-wide ratio raises the always-stop error |
+| Many XAR files naming one heap range, or ISO records naming one extent, each read | The read that crosses the archive-wide ratio raises the always-stop error |
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
 
 ### Requirement: Progress Reporting via on_progress Callback
@@ -1446,11 +1460,22 @@ Immutability is structural, not deep: `ExtractionResult.member` is the original
 mutable, caller-read-only `ArchiveMember`, whose documented late-bound metadata
 and diagnostics may still change; `error` may be an ordinary exception object.
 
+The report iterates, indexes and sizes as `results`. Testing its truth SHALL raise
+`TypeError`, as for `VerifyReport` and `MemberListReport`: a sequence's truth is
+whether it is empty, so a failed extraction would read as true and an empty archive's
+clean one as false. `ok` and `raise_for_failure()` answer whether it succeeded.
+
 #### Scenario: report immutability matrix
 
 | Case | Expected |
 | --- | --- |
 | Caller keeps a report and reader later does more work | Result tuple/outcomes and diagnostic summary stay unchanged; referenced member may receive documented late-bound updates |
+
+#### Scenario: report refuses a truth test
+
+| Case | Expected |
+| --- | --- |
+| `bool(report)` / `if report:`, the report empty or not | `TypeError` naming `ok` |
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 
@@ -1883,8 +1908,8 @@ The CLI passes `OnBlocked.SKIP`: it reports refused members itself.
 
 ### Requirement: Dry-run extraction
 
-`extract_all()` SHALL accept `dry_run: bool = False`, read for its
-truthiness like the other boolean flags.
+`extract_all()` SHALL accept `dry_run: bool = False`, refusing a value that is not a
+`bool` as the other boolean flags do (`error-handling`).
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into
 a private scratch directory, and SHALL NOT create or change anything under `dest`.
