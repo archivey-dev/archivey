@@ -159,11 +159,10 @@ def test_stream_from_a_pipe(compressor: str) -> None:
     }
 
 
-def _damaged_xz_payload() -> bytes:
-    """``payload-xz.rpm`` with one byte of its payload changed, inside the data of
-    ``usr/share/at/dir/sub/text.txt``, the file after ``blocks.bin``."""
-    data = bytearray((DATA / "payload-xz.rpm").read_bytes())
-    data[18020] ^= 0xA4
+def _damaged_payload(compressor: str, offset: int) -> bytes:
+    """``payload-<compressor>.rpm`` with the payload byte at ``offset`` changed."""
+    data = bytearray((DATA / f"payload-{compressor}.rpm").read_bytes())
+    data[offset] ^= 0xA4
     return bytes(data)
 
 
@@ -191,12 +190,19 @@ def _reads_by_name(
     return seen
 
 
-def test_a_streaming_pass_reads_the_file_before_the_damage() -> None:
+# Each offset is inside the data of ``usr/share/at/dir/sub/text.txt``, the file after
+# ``blocks.bin``, and lost ``blocks.bin`` to a streaming pass before the fix.
+@pytest.mark.parametrize(
+    ("compressor", "offset"), [("xz", 18020), ("lzma", 18934)], ids=["xz", "lzma"]
+)
+def test_a_streaming_pass_reads_the_file_before_the_damage(
+    compressor: str, offset: int
+) -> None:
     # A streaming pass over a file reads ahead of the member it is at. When the read
     # ahead meets the damage, the codec decodes again to the failing byte, as random
     # access does, so the file that ends before it still reads (found by the diff
     # modes fuzz oracle).
-    data = _damaged_xz_payload()
+    data = _damaged_payload(compressor, offset)
     random_access = _reads_by_name(data, streaming=False)
     streaming = _reads_by_name(data, streaming=True)
     blocks = "usr/share/at/dir/blocks.bin"

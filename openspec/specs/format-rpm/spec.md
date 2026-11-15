@@ -102,8 +102,8 @@ index past the file list, or a newc size that disagrees with the header. Nothing
 the last file's data SHALL be read. A header larger than
 `ListingLimits.max_metadata_bytes` SHALL raise `ResourceLimitError` before it is read. A
 cut package SHALL raise `TruncatedError`. When the compressed payload is damaged inside
-a file's data, every file whose data ends before the damage SHALL read whole, with
-`streaming=True` from a file as with random access. A lead version other than 3 or 4, a
+a file's data, a file that reads whole with random access SHALL read whole with
+`streaming=True` from a file too. A lead version other than 3 or 4, a
 delta RPM and a payload compressor archivey has no codec for SHALL raise
 `UnsupportedFeatureError`.
 
@@ -115,7 +115,7 @@ delta RPM and a payload compressor archivey has no codec for SHALL raise
 | `PAYLOADCOMPRESSOR` `lzip` | `UnsupportedFeatureError` |
 | Payload missing one non-ghost file | Listed; `CorruptionError` when its data is read; the other files read |
 | A symlink whose payload entry stores another target than `FILELINKTOS`, passed by a later file's read | The header's target kept; `MEMBER_HEADER_AMBIGUOUS` (`ambiguity="copies_differ"`) reported once per reader, raised under `STRICT` |
-| One byte of an xz payload changed inside a file's data, read with `streaming=True` from a file | The file before it reads whole, as with random access; the damaged file raises `CorruptionError` |
+| One byte of an xz or lzma payload changed inside a file's data, read with `streaming=True` from a file | The file before it reads whole, as with random access; the damaged file raises `CorruptionError` |
 | Bytes after the payload's trailer | Not read, not reported |
 | A header with more than 65 535 entries or more than 256 MiB of data (rpm's own bounds) | `CorruptionError` before the index is read |
 | A payload entry name longer than 4096 bytes (the longest rpm reads, `lib/cpio.c`) | `CorruptionError` |
