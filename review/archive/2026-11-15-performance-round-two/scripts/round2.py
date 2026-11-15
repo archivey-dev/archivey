@@ -2,7 +2,11 @@ import argparse, cProfile, gc, gzip, io, json, lzma, os, random, statistics, sys
 from pathlib import Path
 from archivey import open_archive
 
-ROOT = Path(os.environ.get("ROUND2_DIR", "work/performance-round-two")).resolve()
+ROOT = Path(
+    os.environ.get(
+        "ROUND2_DIR", Path(tempfile.gettempdir()) / "archivey-performance-round-two"
+    )
+).resolve()
 ROOT.mkdir(parents=True, exist_ok=True)
 
 

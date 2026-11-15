@@ -21,7 +21,7 @@ not require `gcab` or a 7z executable: it uses py7zr and `tests.cab_util`.
 uv sync --python python3.12 --group dev --extra all
 export PYTHONHASHSEED=0
 export PYTHONPATH=.:review/archive/2026-11-15-performance-round-two/scripts
-export ROUND2_DIR="$PWD/work/performance-round-two"
+export ROUND2_DIR="${TMPDIR:-/tmp}/archivey-performance-round-two"  # outside the checkout
 mkdir -p "$ROUND2_DIR"
 R=review/archive/2026-11-15-performance-round-two
 S="$R/scripts"

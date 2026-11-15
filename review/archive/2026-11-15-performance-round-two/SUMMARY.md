@@ -105,9 +105,11 @@ three. None removes a check, synchronization event, lock, diagnostic or recovery
 | 2 | Short-circuit ratio allowance calculation | ZIP 66.00 to 65.32 | ZIP 586,631 to 576,859 |
 | 3 | Summarize CAB checksum presence | CAB 49.64 to 48.83 | CAB 534,964 to 518,940 |
 
-The instruction reductions in that pass were 5.3%, 1.7% and 3.0%, respectively. Instruction
-counts also varied across repetitions: the ZIP control shifted by about 2%. Trust the
-removed work and repeated comparisons rather than the decimal precision of these counts.
+The instruction reductions in that pass were 5.3%, 1.7% and 3.0%, respectively. The ZIP
+control was not repeated, so nothing here measures run-to-run variation; the 1.7% ratio
+figure in particular is not separated from it. Trust the removed work rather than the
+decimal precision of these counts. (The evaluation's own counts, in the Outcome table, were
+a separate run.)
 The savings are independent measurements and must not be added into a combined prediction.
 
 The proof change won 14/15 ZIP pairs and 12/15 7z pairs. The ratio change won 10/15 pairs;
@@ -246,7 +248,9 @@ The memory delta follows the additional tuple slot and retained integer.
 
 The patch adds nine lines and removes two in one file. Risk is low-to-moderate: a wrong
 prefix boundary could misreport verification capability. Publication remains under the
-existing lock, with each immutable table carrying its own summary.
+existing lock, with each immutable table carrying its own summary. The implementation
+(#1569) makes `first_unchecked` a required field: `None` means every block is checked, so a
+table built without the field must fail rather than claim full coverage.
 
 I checked all 256 eight-block checksum-presence vectors at every endpoint. I also compared
 42 public-operation traces across 21 clean, checksum-absent, checksum-damaged and truncated
