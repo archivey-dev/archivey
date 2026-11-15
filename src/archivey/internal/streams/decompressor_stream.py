@@ -669,6 +669,11 @@ _LARGE_READ_STEP = 1 << 20
 # Output budget when skipping forward during seek (unbounded skip would reintroduce
 # the per-read amplification bomb on highly compressible spans).
 _SEEK_OUTPUT_CHUNK = 65536
+# From this size up, ``_read`` gathers a read behind buffered bytes in a list and copies
+# out of ``_buffer`` through a ``memoryview``: one copy instead of two, which pays on a
+# large read. Below it, the plain ``bytearray`` extend and slice cost less per call than
+# the list, the join and the view, so small reads keep them.
+_GATHER_FROM = 1 << 16
 # Calls in a row with no output after which a re-decode gives up
 # (``DecompressorStream._redecode_to_error``): far more than the empty calls a decoder
 # makes between outputs (a header, a block's input), and still a bounded loop over a
@@ -2109,15 +2114,19 @@ class DecompressorStream(ReadOnlyIOStream):
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
             elif (
-                not self._eof
+                need >= _GATHER_FROM
+                and not self._eof
                 and len(self._buffer) < need
                 and self._spent is None
                 and not self._restart_pending
             ):
-                # A few bytes left over from the last decoder call (one that gave more
-                # than it was asked for): gather the rest behind them in a list too,
-                # instead of through ``_buffer``. A large read pays one copy at the
-                # join, where extending ``_buffer`` and slicing it out pays two.
+                # Some bytes are buffered, but fewer than ``need``: for example what a
+                # decoder call gave past its count, which the ``.Z`` decoder does on
+                # almost every call. On a read of at least ``_GATHER_FROM``, gather the
+                # rest behind them in a list, as for a short first chunk above: the
+                # join is one copy, where extending ``_buffer`` and slicing it out
+                # makes two. The buffered bytes are copied once more here, and that
+                # can be a whole decoded chunk (a decoder that ignores ``max_length``).
                 parts = [bytes(self._buffer)]
                 self._buffer.clear()
                 data = self._gather(parts, need, n, pending)
@@ -2141,10 +2150,13 @@ class DecompressorStream(ReadOnlyIOStream):
             held = pending()
             if held is not None:
                 raise held
-        # One copy out of ``_buffer``: ``bytes(self._buffer[:n])`` would make two (the
-        # slice, then the bytes), on reads that can be 16 MiB each.
-        with memoryview(self._buffer) as view:
-            data = bytes(view[:n])
+        if n >= _GATHER_FROM:
+            # One copy out of ``_buffer``: ``bytes(self._buffer[:n])`` makes two (the
+            # slice, then the bytes), on reads that can be 16 MiB each.
+            with memoryview(self._buffer) as view:
+                data = bytes(view[:n])
+        else:
+            data = bytes(self._buffer[:n])
         del self._buffer[:n]
         self._pos += len(data)
         if not data and self._end_error() is not None:

@@ -23,6 +23,7 @@ from archivey.diagnostics import DiagnosticPolicy
 from archivey.exceptions import DiagnosticRaisedError
 from archivey.internal.config import StreamConfig
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.streams import decompressor_stream
 from archivey.internal.streams.codecs.base import CodecParams
 from archivey.internal.streams.codecs.bzip2_codec import Bzip2Codec
 from archivey.internal.streams.codecs.deflate_decoder import ZlibDecoder
@@ -128,20 +129,26 @@ class _OvershootDecoder(_ScalingDecoder):
         return super().feed(chunk, max_length + 5 if max_length >= 0 else max_length)
 
 
-@pytest.mark.parametrize("n", [3, 4096, 9000, 1 << 20])
+@pytest.mark.parametrize("n", [7, 4096, 9000, 1 << 16, (1 << 17) + 7])
 def test_read_n_after_a_leftover_is_full_count(n: int) -> None:
     """Each read starts with what the last decoder call gave past its count; it still
-    returns exactly ``n`` bytes, in order, and keeps the new excess for the next read."""
-    expected = b"".join(bytes([b]) * 3 for b in _DATA[::3])
+    returns exactly ``n`` bytes, in order, and keeps the new excess for the next read.
+
+    Reads from ``_GATHER_FROM`` up take the gathering path, the others the buffered
+    loop; the source is long enough for several large reads."""
+    source = _DATA[::3] * 40
+    expected = b"".join(bytes([b]) * 3 for b in source)
     stream = DecompressorStream(
-        io.BytesIO(_DATA[::3]),
+        io.BytesIO(source),
         make_decoder=lambda point, inner: _OvershootDecoder(3, honour_max_length=True),
     )
     with stream:
         pieces: list[bytes] = []
+        delivered = 0
         while piece := stream.read(n):
             pieces.append(piece)
-            assert stream.tell() == sum(map(len, pieces))
+            delivered += len(piece)
+            assert stream.tell() == delivered
     assert b"".join(pieces) == expected
     assert all(len(p) == n for p in pieces[:-1])
 
@@ -286,6 +293,47 @@ class _BigThenFails(_FailsOnFeed):
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         out = super().feed(chunk, max_length)
         return DecodeOut(bytes(1 << 20)) if self._feeds == 1 else out
+
+
+class _OvershootThenFails(_FailsOnFeed):
+    """Feed 1 gives 5 bytes past its count, feed 2 gives 1000 bytes, feed 3 raises.
+
+    The output counts up through a 251-byte pattern, so a byte out of order shows.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(3)
+        self._made = 0
+
+    def recreate(self, point: SeekPoint, inner: BinaryIO) -> _OvershootThenFails:
+        del point, inner
+        return _OvershootThenFails()
+
+    def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
+        super().feed(chunk, max_length)
+        size = max_length + 5 if self._feeds == 1 else 1000
+        out = bytes((self._made + i) % 251 for i in range(size))
+        self._made += size
+        return DecodeOut(out)
+
+
+def test_a_decoder_error_while_gathering_behind_a_leftover_keeps_the_order() -> None:
+    """A large read that starts with buffered bytes and hits a decoder error hands
+    back the buffered bytes, then the ones it gathered, in order; the next read
+    raises the error."""
+    n = decompressor_stream._GATHER_FROM
+    stream = DecompressorStream(
+        io.BytesIO(bytes(1 << 20)),
+        make_decoder=lambda point, inner: _OvershootThenFails(),
+    )
+    with stream:
+        first = stream.read(n)
+        second = stream.read(n)
+        with pytest.raises(OSError, match="Invalid data stream"):
+            stream.read(n)
+    assert len(first) == n
+    assert len(second) == 5 + 1000
+    assert first + second == bytes(i % 251 for i in range(n + 5 + 1000))
 
 
 def test_a_decoder_error_after_a_short_chunk_does_not_keep_the_chunk_alive() -> None:
