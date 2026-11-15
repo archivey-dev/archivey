@@ -2152,9 +2152,11 @@ class DecompressorStream(ReadOnlyIOStream):
                 raise held
         if n >= _GATHER_FROM:
             # One copy out of ``_buffer``: ``bytes(self._buffer[:n])`` makes two (the
-            # slice, then the bytes), on reads that can be 16 MiB each.
-            with memoryview(self._buffer) as view:
-                data = bytes(view[:n])
+            # slice, then the bytes), on reads that can be 16 MiB each. Both views are
+            # released before ``del`` resizes ``_buffer``: the slice is a view too, and
+            # under PyPy an unreleased one still holds the export until a collection.
+            with memoryview(self._buffer) as view, view[:n] as head:
+                data = bytes(head)
         else:
             data = bytes(self._buffer[:n])
         del self._buffer[:n]
