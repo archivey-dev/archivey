@@ -35,6 +35,8 @@ permissions:
   issues: write
   # Read the run's jobs, to name the ones that failed.
   actions: read
+  # Check out scripts/ci, where the step's script lives.
+  contents: read
 
 concurrency:
   group: scheduled-failure-alert-${{ github.event.workflow_run.workflow_id }}

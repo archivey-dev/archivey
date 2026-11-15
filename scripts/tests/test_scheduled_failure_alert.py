@@ -140,6 +140,8 @@ def test_the_workflow_calls_this_script_with_its_environment() -> None:
     }
     assert used == set(step["env"])
     assert data["permissions"]["actions"] == "read"
+    # The checkout of scripts/ci needs it; a permissions block sets the rest to none.
+    assert data["permissions"]["contents"] == "read"
 
 
 STUB = """#!/usr/bin/env python3
