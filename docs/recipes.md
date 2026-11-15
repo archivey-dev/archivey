@@ -91,9 +91,10 @@ with urllib.request.urlopen(URL) as response:
         archive.extract_all("data/", overwrite="replace")
 ```
 
-This works for TAR and ZIP archives and single compressed files. 7z, RAR and ISO archives need a
-source that can seek, so for them `open_archive` raises `StreamNotSeekableError`, and the download
-needs to be saved first, as in the previous recipe.
+This works for TAR, ZIP, cpio, ar, deb, RPM and makeself archives and single compressed files. 7z,
+RAR, ISO, SquashFS, CAB, XAR, LHA and ARJ archives need a source that can seek, so for them
+`open_archive` raises `StreamNotSeekableError`, and the download needs to be saved first, as in the
+previous recipe.
 
 If the download stops partway, the call raises `TruncatedError` or another `CorruptionError`. From
 a TAR, the members written before then stay in `data/`. A ZIP keeps its index at the end, so its

@@ -44,7 +44,7 @@ from archivey.exceptions import (
     PackageNotInstalledError,
     UnsupportedFeatureError,
 )
-from archivey.internal.arg_checks import check_config
+from archivey.internal.arg_checks import check_bool, check_config
 from archivey.internal.base_reader import ReadBackend
 from archivey.internal.excluded_libraries import (
     NO_EXCLUSIONS,
@@ -824,6 +824,7 @@ def format_availability(
         fmt, call="format_availability()", allow_none=False
     )
     check_config(config, call="format_availability(config=…)")
+    check_bool(check_programs, call="format_availability(check_programs=…)")
     if config is None:
         return _registry.format_availability(resolved, check_programs=check_programs)
     policy = config.formats

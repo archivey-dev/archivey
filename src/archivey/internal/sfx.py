@@ -1352,13 +1352,32 @@ def scan_miss_error(format_name: str, scan: MagicScan) -> CorruptionError:
 
 
 def rebased_source(source: ReaderSource, origin: int) -> ReaderSource:
-    """``source`` from byte ``origin`` on, as the reader's whole source."""
+    """``source`` from byte ``origin`` on, as the reader's whole source. Its offsets
+    count from ``origin``; :func:`file_offset` turns one back into a file offset."""
     from archivey.formats import ReaderSource
 
     size = source.size
-    return ReaderSource(
+    rebased = ReaderSource(
         lambda start, length: source.view(origin + start, length),
         None if size is None else size - origin,
         source.path,
         lambda offset, n: source.read_at(origin + offset, n),
     )
+    rebased._origin = source._origin + origin
+    return rebased
+
+
+def file_offset(source: object, offset: int) -> int:
+    """``offset`` in ``source`` as an offset in the file, for an error message.
+
+    A reader behind a self-extracting stub sees the archive alone, so its offsets
+    count from the archive's first byte; a person reads the file from its first byte,
+    stub included. Every offset a message names counts from the file's start, as the
+    RAR reader's always have. ``source`` is a :class:`~archivey.formats.ReaderSource`
+    or anything else a reader's header code reads (the scan's :class:`PeekSource`,
+    whose errors never reach a message), which counts from 0."""
+    from archivey.formats import ReaderSource
+
+    if isinstance(source, ReaderSource):
+        return source._origin + offset
+    return offset

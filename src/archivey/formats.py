@@ -69,6 +69,7 @@ from archivey.diagnostics import (
     MemberTimestampContext,
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, TruncatedError
+from archivey.internal.arg_checks import check_bool
 from archivey.internal.naming import normalize_member_name
 from archivey.internal.overrides import override
 from archivey.internal.streams.blocks import BlockStream
@@ -310,6 +311,12 @@ class ReaderSource:
     open at the same time do not move each other.
     """
 
+    # Where this source's byte 0 sits in the file: nonzero only for a built-in format
+    # read behind a self-extracting stub, whose reader sees the archive alone. Errors
+    # name file offsets (``sfx.file_offset``), so they point where a hex editor shows
+    # the bytes. Set by archivey only; a plugin's source always starts the file.
+    _origin: int = 0
+
     def __init__(
         self,
         view: Callable[[int, int | None], BinaryIO],
@@ -351,7 +358,7 @@ class ReaderSource:
         if len(data) < n:
             raise TruncatedError(
                 f"the archive ends {len(data)} bytes into the {n} bytes at offset "
-                f"{offset}"
+                f"{self._origin + offset}"
             )
         return data
 
@@ -1346,6 +1353,7 @@ def unix_member_type(
     ``"unknown"`` included, as every built-in format does, and report
     ``"unknown"`` as ``MEMBER_TYPE_UNKNOWN`` too.
     """
+    check_bool(has_data, call="unix_member_type(has_data=…)")
     member_type = _UNIX_TYPES.get(mode & 0o170000)
     if member_type is not None:
         return member_type, None

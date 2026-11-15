@@ -12,11 +12,11 @@ A ZIP compresses each member on its own, so archivey can jump straight to any of
 `.tar.gz` compresses the whole archive as one stream, so reaching a member in the middle means
 decompressing everything before it. Listing does that once. While it lists a `.tar.gz`, archivey
 keeps a restart point about every MiB of decompressed data, so a member read afterwards starts at
-most about 1 MiB before the member. Past about 800 MiB the points are spaced further apart, to keep
-their memory bounded. Other compressed TARs restart only where the stream itself starts a new part
-(a new xz block, lzip member, zstd frame or bzip3 block). Multi-threaded `xz` (`-T0`) writes
-a block about every 24 MiB at its default level, but most tools write just one part, so there
-a read usually starts again from the beginning.
+most about 1 MiB before the member ([not under PyPy](install.md#pypy)). Past about 800 MiB the
+points are spaced further apart, to keep their memory bounded. Other compressed TARs restart only
+where the stream itself starts a new part (a new xz block, lzip member, zstd frame or bzip3 block).
+Multi-threaded `xz` (`-T0`) writes a block about every 24 MiB at its default level, but most tools
+write just one part, so there a read usually starts again from the beginning.
 
 An archive whose members are compressed together like this is called *solid*. Every
 compressed TAR is solid, and so are most 7z archives, since 7-Zip creates solid archives by
@@ -78,9 +78,10 @@ held, archivey runs a garbage collection and tries once more before it raises. W
 [`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every
 format, and so does `extract_all`. Streams from the pass never seek.
 
-A pipe, a socket or an HTTP response can only be read this way. TAR and ZIP archives and single
-compressed files can come from one. 7z, RAR and ISO archives need a file or another source that
-can seek.
+A pipe, a socket or an HTTP response can only be read this way. TAR, ZIP, cpio, ar, deb, RPM and
+makeself archives and single compressed files can come from one. 7z, RAR, ISO, SquashFS, CAB, XAR,
+LHA and ARJ archives need a file or another source that can seek.
+`archivey.format_availability(format).required_source` says which a format needs.
 
 A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an
 index at its end. From a pipe, archivey finds each member by the short header in front of it, and
@@ -98,9 +99,10 @@ Damaged compressed data can raise sooner from a pipe than from a file. From a fi
 size that meets the damage first gives you every byte before it: archivey goes back and
 decompresses that part again. (`read()` with no size raises and gives you nothing.) A pipe can't be
 read twice, so the read that meets the damage raises, and up to 64 KiB before the damage can be
-lost (none for gzip and other deflate data). On a compressed tar the decompressor reads ahead of the members, so
-damage near the start of a `.tar.xz` from a pipe can make the open fail with no members listed,
-where the same bytes in a file list the members before the damage first.
+lost (none for gzip and other deflate data, [except under PyPy](install.md#pypy)). On a compressed
+tar the decompressor reads ahead of the members, so damage near the start of a `.tar.xz` from a pipe
+can make the open fail with no members listed, where the same bytes in a file list the members
+before the damage first.
 
 ??? note "Why can't the others come from a pipe?"
     7z keeps its index at the end of the file, and reading an ISO means jumping between places in
@@ -220,7 +222,7 @@ format, and the mistake shows up during development.
 |---|---|---|
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
-| Read from a pipe | `streaming=True` | [TAR, ZIP and single compressed files only](#reading-once) |
+| Read from a pipe | `streaming=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-once) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
 | Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |
