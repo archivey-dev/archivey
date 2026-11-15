@@ -249,6 +249,9 @@ _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",
 }
 _CLOSE_STATE_FIRST = {
+    "archivey.internal.backends.rar_forward_reader._ForwardMemberStream": (
+        "assigns its callback before DelegatingStream.__init__; close uses only the base state"
+    ),
     "archivey.internal.streams.streamtools.base.DelegatingStream": (
         "assigns _inner and _subclass_closes_inner before is_seekable()"
     ),

@@ -92,7 +92,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.crypto import note_crypto_use
-from archivey.internal.streams.streamtools import SolidBlockReader
+from archivey.internal.streams.streamtools import DelegatingStream, SolidBlockReader
 from archivey.internal.streams.streamtools.shared import SharedSource, SharedView
 from archivey.terminal import quoted
 from archivey.types import ArchiveInfo, ArchiveInfoExtra, ArchiveMember, MemberType
@@ -211,6 +211,25 @@ class _PaddedSpan:
 
     def close(self) -> None:
         self._span.close()
+
+
+class _ForwardMemberStream(DelegatingStream):
+    """Check the real source after each read, before padding can pass verification."""
+
+    readinto_passthrough = False
+
+    def __init__(self, inner: BinaryIO, check_cut: Callable[[], None]) -> None:
+        self._check_cut = check_cut
+        super().__init__(inner)
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        if n != 0:
+            # Writing a later volume can discover a cut after the member was
+            # listed. Its synthetic zero padding may still match the digest.
+            self._check_cut()
+        return data
 
 
 class _ForwardPass:
@@ -941,7 +960,22 @@ class RarForwardReader(RarReader):
         assert size is not None  # a member of unknown size stops the volumes
         offset = self._pipe_end
         self._pipe_end = offset + size
-        return offset
+
+        def check_cut() -> None:
+            if id(raw) in self._cut:
+                self._pipe_end = None
+                raise self._cut_error(member)
+
+        def open_member() -> BinaryIO:
+            self._check_dictionary_memory(member, self._pass_costs[id(member)])
+            fpass = self._fpass
+            assert fpass is not None and fpass.pipe is not None
+            stream = fpass.pipe().open_member(offset, size, lazy=True)
+            return self._watch_unverified(
+                _ForwardMemberStream(stream, check_cut), member
+            )
+
+        return open_member
 
     def _password_refusal(
         self, member: ArchiveMember, raw: RarMemberInfo

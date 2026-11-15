@@ -1,6 +1,6 @@
 """Correctness regressions from the outside RAR sweep of 2026-11-15.
 
-Each strict xfail asserts the expected result on the unmodified main branch.
+R1 is fixed. R2 remains a strict xfail until its separate fix lands.
 """
 
 from __future__ import annotations
@@ -30,10 +30,6 @@ pytestmark = pytest.mark.skipif(
 
 @requires_binary("rar")
 @requires_unrar_cli()
-@pytest.mark.xfail(
-    strict=True,
-    reason="R1: A truncated pipe member returns invented zero bytes and passes its digest",
-)
 def test_a_truncated_pipe_member_never_verifies_zero_padding(tmp_path: Path) -> None:
     payload = bytes(6 << 20)
     (tmp_path / "zeros").write_bytes(payload)
