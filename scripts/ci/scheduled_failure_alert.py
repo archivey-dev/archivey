@@ -29,9 +29,26 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-#: The hidden line that carries a report's failed jobs, tab-separated.
+#: The hidden line that carries a report's failed jobs, as a JSON list. JSON escapes a
+#: tab or newline in a name, and `encode_jobs` escapes ``>`` so no name can end the
+#: HTML comment.
 MARKER = "<!-- failed-jobs: {} -->"
 _MARKER_RE = re.compile(r"^<!-- failed-jobs: (.*) -->$", re.MULTILINE)
+
+
+def encode_jobs(jobs: list[str]) -> str:
+    return json.dumps(jobs).replace(">", "\\u003e")
+
+
+def decode_jobs(text: str) -> list[str] | None:
+    try:
+        jobs = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(jobs, list) or not all(isinstance(j, str) for j in jobs):
+        return None
+    return jobs
+
 
 #: Logins ``gh`` reports for text the workflow's token posted (comments, issue author).
 BOT_LOGINS = frozenset({"github-actions", "app/github-actions", "github-actions[bot]"})
@@ -69,7 +86,7 @@ def previous_jobs(issue: dict) -> list[str] | None:
     for text in reversed(texts):
         found = _MARKER_RE.findall(text)
         if found:
-            return [name for name in found[-1].split("\t") if name]
+            return decode_jobs(found[-1])
     return None
 
 
@@ -88,7 +105,7 @@ def jobs_block(jobs: list[str], previous: list[str] | None) -> tuple[str, int]:
             new += 1
         else:
             lines.append(f"- `{job}`")
-    marker = MARKER.format("\t".join(jobs))
+    marker = MARKER.format(encode_jobs(jobs))
     return "\n\nFailed jobs:\n" + "\n".join(lines) + "\n\n" + marker, new
 
 
@@ -111,7 +128,8 @@ def decide(
     previous = previous_jobs(issue) if issue is not None else None
     block, new = jobs_block(jobs, previous)
     if issue is not None:
-        lead = f"New failure in {new} job(s)" if new else "Still failing"
+        noun = "job" if new == 1 else "jobs"
+        lead = f"New failure in {new} {noun}" if new else "Still failing"
         return Action("comment", f"{lead}, {line}{block}")
     return Action(
         "create",

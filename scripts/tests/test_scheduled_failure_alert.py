@@ -55,7 +55,7 @@ def issue_with(*comments: tuple[dict, str], body: str = "", author=BOT) -> dict:
 
 
 def marker(*jobs: str) -> str:
-    return alert.MARKER.format("\t".join(jobs))
+    return alert.MARKER.format(alert.encode_jobs(list(jobs)))
 
 
 def test_failed_jobs_keeps_failures_and_timeouts_only() -> None:
@@ -89,7 +89,7 @@ def test_an_issue_with_no_earlier_list_marks_nothing_new() -> None:
 def test_a_job_the_previous_list_did_not_name_is_new() -> None:
     issue = issue_with((BOT, "Still failing\n\n" + marker(LOWEST)))
     action = report(issue=issue)
-    assert action.body.startswith("New failure in 1 job(s), ")
+    assert action.body.startswith("New failure in 1 job, ")
     assert f"- **new:** `{PYPY}`" in action.body
     assert f"- `{LOWEST}`" in action.body
 
@@ -180,3 +180,17 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert calls[-1][:3] == ["issue", "comment", "7"]
     assert "- **new:** `pypy3.11`" in calls[-1][-1]
+
+
+@pytest.mark.parametrize("odd", ["name\twith\ttab", "line\nbreak", "ends --> here"])
+def test_any_job_name_round_trips_through_the_marker(odd: str) -> None:
+    created = report(jobs=(odd, PYPY))
+    assert alert.previous_jobs(issue_with(body=created.body)) == [odd, PYPY]
+    assert report(issue=issue_with(body=created.body), jobs=(odd,)).body.startswith(
+        "Still failing, "
+    )
+
+
+def test_two_new_jobs_say_jobs() -> None:
+    action = report(issue=issue_with((BOT, marker("other"))))
+    assert action.body.startswith("New failure in 2 jobs, ")
