@@ -66,8 +66,7 @@ uv run python scripts/investigations/codec_libraries/metadata.py \
 Use Linux for the resource and RSS measurements. Keep `CRAMJAM_BACKEND` unset or set to
 `c`; the separately distributed pure-Rust variant is not the measured wheel. The scripts
 need the development dependencies for producers and archivey's existing optional
-backends. They make no filesystem extraction decisions. They never give native code an
-immutable Python `bytes` object as writable output. Differential exit zero means the
+backends. They make no filesystem extraction decisions. Differential exit zero means the
 experiment completed, not that the candidate passed parity. Replay exit zero means the
 saved outcomes repeated.
 
@@ -76,11 +75,13 @@ saved outcomes repeated.
 **Read:** `internal/streams/codecs/registry.py` owns the `StreamCodec` instances.
 `resolve_codec` chooses the implementation and translator. `open_codec_stream` wraps
 reads and translates failures. `FramedDecoder` owns per-stream EOF, truncation, further
-members, padding, and trailing-data behavior. Container readers compose these streams;
-they do not bypass the layer to call a codec package directly.
+members, padding, and trailing-data behavior. Third-party codec packages are reached
+through the codec layer. Some stdlib calls are format-local: CAB MSZIP uses zlib
+directly, 7z builds raw lzma filter chains, and XAR uses zlib for its table of contents.
+Replacing a StreamCodec alone would not accelerate those direct calls.
 
-The public extension API is `archivey.formats.CodecHandler`, `CodecCall`, and
-`register_codec`. `decompressor(call)` returns an object with
+The experimental public extension API is `archivey.formats.CodecHandler`, `CodecCall`,
+and `register_codec`. `decompressor(call)` returns an object with
 `decompress(data, max_length)`, `eof`, `needs_input`, and `unused_data`. The optional
 `end_input()` supports a final drain after input ends. Output held by `max_length` must
 keep EOF false. A decoder must distinguish waiting for input from buffered output.
@@ -92,7 +93,9 @@ Formats use `IndexedFormatHandler.open(ReaderSource, ReaderContext)` returning a
 `SequentialReader`. The former implements `iter_members` and `open_member`, returning
 `MemberRecord` and `MemberData`. The latter implements `walk`, yielding `MemberSpan`.
 `ReaderContext` owns name decoding, normalization, metadata charges, diagnostics and
-nested decompression. A replacement format handler uses `FormatPolicy(replace=...)`.
+nested decompression. `FormatPolicy(replace=...)` accepts indexed handlers only; it
+cannot replace the sequential RPM/CPIO/Debian readers. The plugin API is outside the
+stability policy and can change in a patch release.
 An interface that can be adapted mechanically is not automatically a policy-compliant
 backend.
 
@@ -510,7 +513,15 @@ hash does not prove matching metadata or exception type.
 The 161 two-sided byte differences are 91 RPM, 67 newc and three Debian cases. They
 include valid inputs: the minimal adapters do not reconstruct hardlink data, and newc
 also has a different native entry order. They are **wrapper/format-model differences**,
-not 161 independent codec corruptions. Conversely, candidate-only acceptance on damaged
+not 161 independent codec corruptions. A member-by-member replay of the 67 newc
+cases found one difference: hardlink `a.txt` is six bytes in archivey and empty in
+unpackio. In 64 of those cases, flips changed other payload bytes identically in
+both libraries; newc has no data checksum. For all 91 RPM cases, each side's hash
+remained equal to that side's own valid-input hash. These measured controls are in
+[`results/member-triage.json`](../../scripts/investigations/codec_libraries/results/member-triage.json).
+The normal differential adapter still compares concatenated output, so that hash
+alone cannot separate a model difference from another defect in the same family.
+Conversely, candidate-only acceptance on damaged
 Debian/Zstandard includes changed file content and is an integrity defect for the
 proposed backend. The categories must not be combined into a generic “corruption rate”.
 Snappy has no archivey baseline; roundtrip and checksum probes are kept separate.

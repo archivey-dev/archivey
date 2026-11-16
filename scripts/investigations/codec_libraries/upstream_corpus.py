@@ -30,7 +30,7 @@ from unittest.mock import patch
 import cramjam
 import unpackio
 import unpackio._native as native
-from common import CONFIG, archivey, baseline, candidate
+from common import baseline, candidate
 from differential import observe
 
 
@@ -63,39 +63,6 @@ def download_sources(target: Path):
         archive_path.write_bytes(data)
         with tarfile.open(archive_path) as archive:
             archive.extractall(target, filter="data")
-
-
-def read_candidate(kind: str, data: bytes, password):
-    if kind in ("lz4", "zstd", "unix_compress"):
-        return candidate("unpackio", kind, data)
-    opener = (
-        unpackio.open_bytes if kind == "7z" else getattr(unpackio, f"open_{kind}_bytes")
-    )
-    kwargs = {} if password is None else {"password": password}
-    archive = opener(data, **kwargs)
-    output = io.BytesIO()
-    for entry in archive.entries():
-        if kind == "zip":
-            is_file = not entry.is_directory and not entry.is_symlink
-        else:
-            is_file = entry.kind in ("file", "binary", "text")
-        if is_file:
-            archive.extract_entry_to(entry.index, output)
-    return output.getvalue()
-
-
-def read_archivey(kind: str, data: bytes, password):
-    if kind in ("lz4", "zstd", "unix_compress"):
-        return baseline(kind, data)
-    with archivey.open_archive(
-        io.BytesIO(data), format=kind, password=password, config=CONFIG
-    ) as reader:
-        pieces = []
-        for entry in reader.members():
-            if entry.type in (archivey.MemberType.FILE, archivey.MemberType.HARDLINK):
-                with reader.open(entry) as stream:
-                    pieces.append(stream.read())
-        return b"".join(pieces)
 
 
 def main():
@@ -198,8 +165,10 @@ def main():
             item.stop()
     for index, item in enumerate(captured.values()):
         kind, data, password = item["kind"], item["data"], item["password"]
-        ours = observe(lambda k=kind, b=data, p=password: read_archivey(k, b, p))
-        theirs = observe(lambda k=kind, b=data, p=password: read_candidate(k, b, p))
+        ours = observe(lambda k=kind, b=data, p=password: baseline(k, b, password=p))
+        theirs = observe(
+            lambda k=kind, b=data, p=password: candidate("unpackio", k, b, password=p)
+        )
         outcome = (
             (
                 "same_bytes"
@@ -310,8 +279,8 @@ def main():
                 "kind": "arj",
                 "input": name,
                 "origin": "crates/unpackio/tests/arj_reference.rs",
-                "archivey": observe(lambda b=data: read_archivey("arj", b, None)),
-                "unpackio": observe(lambda b=data: read_candidate("arj", b, None)),
+                "archivey": observe(lambda b=data: baseline("arj", b)),
+                "unpackio": observe(lambda b=data: candidate("unpackio", "arj", b)),
             }
         )
     triage = {}
@@ -325,8 +294,8 @@ def main():
     (args.output / "rpm-identity-control.bin").write_bytes(identity_rpm)
     triage["identity_rpm"] = {
         "input": "rpm-identity-control.bin",
-        "archivey": observe(lambda: read_archivey("rpm", identity_rpm, None)),
-        "unpackio": observe(lambda: read_candidate("rpm", identity_rpm, None)),
+        "archivey": observe(lambda: baseline("rpm", identity_rpm)),
+        "unpackio": observe(lambda: candidate("unpackio", "rpm", identity_rpm)),
     }
     if args.cpio:
         mixed = module.cpio_archive()
@@ -358,8 +327,10 @@ def main():
                     "exit": process.returncode,
                     "stdout": process.stdout.decode(errors="replace"),
                     "stderr": process.stderr.decode(errors="replace"),
-                    "archivey": observe(lambda b=data: read_archivey("cpio", b, None)),
-                    "unpackio": observe(lambda b=data: read_candidate("cpio", b, None)),
+                    "archivey": observe(lambda b=data: baseline("cpio", b)),
+                    "unpackio": observe(
+                        lambda b=data: candidate("unpackio", "cpio", b)
+                    ),
                 }
             )
     report = {"binding_suite": suite_result, "cases": rows, "support_triage": triage}

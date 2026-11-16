@@ -4,7 +4,6 @@ uv run --with cramjam==2.14.0 --with unpackio==0.1.1 python \
     scripts/investigations/codec_libraries/probes.py --output work/codec-probes
 
 Saved .bin files are crafted or derived from archivey's existing fixture corpus.
-No native function receives mutable or immutable output aliasing in these probes.
 """
 
 from __future__ import annotations

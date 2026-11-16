@@ -162,7 +162,12 @@ def fixture_cases() -> dict[str, tuple[str, bytes]]:
 
 
 def baseline(
-    kind: str, data: bytes, streaming: bool = False, *, include_hardlinks: bool = True
+    kind: str,
+    data: bytes,
+    streaming: bool = False,
+    *,
+    include_hardlinks: bool = True,
+    password: str | bytes | None = None,
 ) -> bytes:
     if kind in ("snappy", "snappy_raw"):
         raise NotImplementedError("archivey has no Snappy backend")
@@ -179,7 +184,9 @@ def baseline(
     fmt = (
         "zip" if kind.startswith("zip_") else ("7z" if kind.startswith("7z") else kind)
     )
-    with archivey.open_archive(io.BytesIO(data), format=fmt, config=CONFIG) as reader:
+    with archivey.open_archive(
+        io.BytesIO(data), format=fmt, config=CONFIG, password=password
+    ) as reader:
         outputs = []
         for member in reader.members():
             if member.type == archivey.MemberType.FILE or (
@@ -199,7 +206,14 @@ def drain(stream, streaming: bool) -> bytes:
     return b"".join(pieces)
 
 
-def candidate(library: str, kind: str, data: bytes, streaming: bool = False) -> bytes:
+def candidate(
+    library: str,
+    kind: str,
+    data: bytes,
+    streaming: bool = False,
+    *,
+    password: str | bytes | None = None,
+) -> bytes:
     if library == "cramjam":
         import cramjam
 
@@ -251,7 +265,8 @@ def candidate(library: str, kind: str, data: bytes, streaming: bool = False) -> 
             if fmt == "7z"
             else getattr(unpackio, f"open_{fmt}_bytes")
         )
-        archive = opener(data, limits=limits)
+        kwargs = {} if password is None else {"password": password}
+        archive = opener(data, limits=limits, **kwargs)
         for entry in archive.entries():
             is_file = (
                 not entry.is_directory and not entry.is_symlink

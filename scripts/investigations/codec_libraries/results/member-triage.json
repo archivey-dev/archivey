@@ -1,0 +1,16 @@
+{
+  "rpm": {
+    "cases": 91,
+    "all_sides_match_own_valid_hash": true
+  },
+  "cpio_newc": {
+    "cases": 67,
+    "both_changed_from_valid": 64,
+    "only_member_difference": {
+      "name": "a.txt",
+      "archivey_bytes": 6,
+      "unpackio_bytes": 0
+    }
+  },
+  "source": "Per-member replay of results/differences.zip; RPM controls from the saved valid-input summaries."
+}
