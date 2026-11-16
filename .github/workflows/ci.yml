@@ -127,7 +127,17 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
-    runs-on: ${{ matrix.os }}
+    # `ubuntu-latest` runs on ubuntu-24.04 in the four matrix jobs (`test`, `test-queue`,
+    # `test-lowest`, `test-daily`), and `pypy` is pinned for its own reason (see there);
+    # the label stays in the matrix, so check names stay
+    # `ubuntu-latest / pyX / install`. On ubuntu-26.04 the unar source build fails at
+    # two points. The runner stops at the first: Makefile.linux looks for
+    # Foundation/Foundation.h under /usr/include/GNUstep, and 26.04 installs it under
+    # /usr/include/<multiarch>/GNUstep. The second was seen only in an ubuntu:26.04
+    # container with that header path added: GCC 15 makes -Wint-conversion and
+    # -Wincompatible-pointer-types errors in unar's own source. Lift the pin once
+    # install-unar-from-source.sh gets past both on 26.04.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     timeout-minutes: 20
@@ -543,7 +553,8 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-24.04 pin: see `test`.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
@@ -583,7 +594,8 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.lowest != 'false' }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-24.04 pin: see `test`.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     env: *test-env
     strategy:
@@ -603,7 +615,8 @@ jobs:
   test-daily:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-24.04 pin: see `test`.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     env: *test-env
     strategy:
@@ -797,7 +810,11 @@ jobs:
     name: ${{ matrix.python }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
-    runs-on: ubuntu-latest
+    # ubuntu-24.04 pin, as in `test`. On ubuntu-26.04 lz4 4.4.5 does not build for PyPy
+    # (GCC 15 makes -Wincompatible-pointer-types an error in lz4/frame/_frame.c), and the
+    # "with what installed" suite fails test_benchmark_peers (libarchive: "Unrecognized
+    # archive format"); neither happens on 24.04. Lift it with the `test` pin.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       UV_PYTHON: ${{ matrix.python }}
