@@ -64,7 +64,9 @@ run_candidates python scripts/investigations/snappy_compress_utils/corpus.py \
 ```
 
 Each corpus decode has a 10-CPU-second budget and 15-second parent watchdog. A worker
-termination is recorded separately from accepting or refusing data. The full upstream
+termination is recorded separately from accepting or refusing data.
+Rows use `outcome: match`, `differs`, `timeout` or `worker_exit`. Only a completed
+`differs` outcome sets `differs: true` and writes a parity repro. The full upstream
 py-snappy pytest run was also attempted with 160 CPU seconds and did not complete.
 Its focused error-parity failure is recorded in `results/py-snappy-error-test.log`.
 Do not change an upstream test to make a candidate pass.

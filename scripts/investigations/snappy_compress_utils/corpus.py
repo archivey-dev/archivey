@@ -12,10 +12,23 @@ import json
 import resource
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 from common import SNAPPY_PACKAGES, decode, reference
 from differential import observe
+
+
+def classify(reference, candidate):
+    """Compare completed observations; preserve incomplete workers as separate outcomes."""
+    if "timeout" in candidate:
+        return "timeout"
+    if "worker_exit" in candidate:
+        return "worker_exit"
+    differs = candidate["accepted"] != reference["accepted"] or (
+        candidate["accepted"] and candidate["sha256"] != reference["sha256"]
+    )
+    return "differs" if differs else "match"
 
 
 def main():
@@ -58,9 +71,8 @@ def main():
                 )
             except subprocess.TimeoutExpired:
                 got = {"timeout": True}
-            differs = got.get("accepted") != expected["accepted"] or (
-                got.get("accepted") and got["sha256"] != expected["sha256"]
-            )
+            outcome = classify(expected, got)
+            differs = outcome == "differs"
             rows.append(
                 {
                     "fixture": path.name,
@@ -69,6 +81,7 @@ def main():
                     "input_size": len(data),
                     "reference": expected,
                     "candidate": got,
+                    "outcome": outcome,
                     "differs": differs,
                 }
             )
@@ -81,7 +94,7 @@ def main():
     (args.output / "corpus.json").write_text(
         json.dumps(rows, indent=2), encoding="utf-8"
     )
-    print(len(rows), "cross-reads;", sum(r["differs"] for r in rows), "differences")
+    print(len(rows), "cross-reads;", dict(Counter(r["outcome"] for r in rows)))
 
 
 if __name__ == "__main__":

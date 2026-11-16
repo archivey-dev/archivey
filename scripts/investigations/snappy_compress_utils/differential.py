@@ -1,9 +1,7 @@
 """Compare every runnable package on identical bytes; save all differing observations.
 
-uv run --with compress-utils==0.12.1 --with python-snappy==0.7.3 \
-  --with py-snappy==0.1.0a1 --with python-snappy-pure==0.2.0 --with pysnappy==0.8.2 \
-  python scripts/investigations/snappy_compress_utils/differential.py --output
-  work/snappy-diff
+Use README.md's run_candidates function and differential.py command for the pinned
+packages, --output and --sources arguments.
 
 Use a development checkout. Each package/codec runs in a watched child with a 1 GiB
 address-space limit and 45 CPU seconds. Snappy has no archivey baseline: the reference

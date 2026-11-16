@@ -9,6 +9,27 @@ import io
 
 from common import ALGORITHMS, CONFIG, Codec, CodecParams, stream_codecs
 
+# Values from compress-utils 0.12.1, include/compress_utils.h: cu_algorithm_t,
+# cu_status_t and CU_DSTREAM_SINGLE. Pin that release when running this prototype.
+CU_ALGO_ZSTD = 0
+CU_ALGO_BROTLI = 1
+CU_ALGO_ZLIB = 2
+CU_ALGO_BZ2 = 3
+CU_ALGO_LZ4 = 4
+CU_ALGO_XZ = 5
+CU_ALGO_LZMA = 6
+CU_ALGO_SNAPPY = 7
+CU_ALGO_GZIP = 8
+CU_ALGO_DEFLATE = 9
+CU_ALGO_LZ4_RAW = 10
+CU_ALGO_LZO = 11
+
+CU_OK = 0
+# Stream writes/finishes retain input on this status; drain with empty input.
+CU_ERR_BUF_TOO_SMALL = 3
+CU_ERR_TRUNCATED = 8
+CU_DSTREAM_SINGLE = 0x1
+
 
 class CoreError(Exception):
     def __init__(self, status, message):
@@ -45,25 +66,27 @@ class BoundedDecoder:
         ]
         self.lib.cu_last_error.restype = C.c_char_p
         algorithms = {
-            "zstd": 0,
-            "brotli": 1,
-            "zlib": 2,
-            "bz2": 3,
-            "lz4": 4,
-            "xz": 5,
-            "lzma": 6,
-            "snappy": 7,
-            "gzip": 8,
-            "deflate": 9,
-            "lz4_raw": 10,
-            "lzo": 11,
+            "zstd": CU_ALGO_ZSTD,
+            "brotli": CU_ALGO_BROTLI,
+            "zlib": CU_ALGO_ZLIB,
+            "bz2": CU_ALGO_BZ2,
+            "lz4": CU_ALGO_LZ4,
+            "xz": CU_ALGO_XZ,
+            "lzma": CU_ALGO_LZMA,
+            "snappy": CU_ALGO_SNAPPY,
+            "gzip": CU_ALGO_GZIP,
+            "deflate": CU_ALGO_DEFLATE,
+            "lz4_raw": CU_ALGO_LZ4_RAW,
+            "lzo": CU_ALGO_LZO,
         }
         self.ptr = ptr()
-        self.status = 0
+        self.status = CU_OK
         self.finishing = False
         self.kind = kind
         s = self.lib.cu_decompress_stream_create_ex(
-            algorithms[ALGORITHMS[kind]], int(single), C.byref(self.ptr)
+            algorithms[ALGORITHMS[kind]],
+            CU_DSTREAM_SINGLE if single else 0,
+            C.byref(self.ptr),
         )
         self.check(s)
         if total_limit is not None:
@@ -72,9 +95,9 @@ class BoundedDecoder:
             )
 
     def check(self, status):
-        if status not in (0, 3):
+        if status not in (CU_OK, CU_ERR_BUF_TOO_SMALL):
             error = self.lib.cu_last_error()
-            if status == 8:
+            if status == CU_ERR_TRUNCATED:
                 raise EOFError(error.decode(errors="replace") if error else "truncated")
             raise CoreError(status, error.decode(errors="replace") if error else "")
 
@@ -112,7 +135,7 @@ class BoundedDecoder:
 
     @property
     def needs_input(self):
-        return self.status != 3 and not self.finishing
+        return self.status != CU_ERR_BUF_TOO_SMALL and not self.finishing
 
     @property
     def unused_data(self):
@@ -158,7 +181,7 @@ def bounded_raw(kind, data, size=65536, first_only=False, total_limit=None):
         decoder.end_input()
         while True:
             output.append(decoder.decompress(b"", size))
-            if decoder.status == 0:
+            if decoder.status == CU_OK:
                 break
         return b"".join(output)
     finally:

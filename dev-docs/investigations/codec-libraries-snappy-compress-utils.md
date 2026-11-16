@@ -78,7 +78,7 @@ retain the whole decoded block. Details differ below.
 ## archivey's current implementations and constraints
 
 **Read:** `StreamCodec` and the registry in `internal/streams/codecs/`,
-`FramedDecoder` in `decompressor_stream.py`, the public `CodecHandler`,
+`FramedDecoder` in `decompressor_stream.py`, the experimental public `CodecHandler`,
 `CodecCall`, `register_codec` and format APIs in `formats.py`, `OptionalLibrary`,
 `DecoderLimits`, and the accelerator/isolated-decoder machinery.
 
@@ -153,7 +153,9 @@ A format plugin implements `IndexedFormatHandler` / `SequentialFormatHandler` an
 returns an indexed reader (`iter_members`, `open_member`) or a sequential reader
 (`walk`). `ReaderContext` owns name normalization, metadata charges, diagnostics
 and nested decompression. No candidate supplies such a reader. Snappy belongs in
-`CodecHandler`, not a replacement container handler.
+`CodecHandler`, not a replacement container handler. This plugin API is outside
+archivey's stability policy and can change in a patch release; pin the archivey
+version for a separately distributed plugin.
 
 ## Snappy implementations, variants and fit
 
@@ -391,6 +393,7 @@ The experimental `c_api.py` supplied 17-byte output buffers, drained all eight
 framed codecs, observed EOF and recovered the exact `TAIL` as unused data.
 It also kept archivey's `FramedDecoder` around the candidate decoder.
 
+The pinned-header comment and named constants in `c_api.py` identify the C ABI.
 C status codes are OK 0, argument 1, level 2, buffer-small 3, unknown-size 4,
 unsupported 5, compression 6, decompression 7, truncated 8, size-limit 9,
 finished 10, state 11, OOM 12 and internal 13. Error details are thread-local.

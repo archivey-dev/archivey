@@ -1,8 +1,9 @@
 """Matched valid-input throughput, import latency, and fresh-process output/RSS probes.
 
-Run with the same --with packages as differential.py. Timings validate complete bytes.
-The pure Python implementations receive the same 4 KiB/1 MiB Snappy payloads. A watched
-worker prevents a slow decoder or a hostile declared size from taking over the run.
+Use the README's pinned run_candidates invocation. Timings validate complete bytes.
+The pure Python implementations receive the same 4 KiB/1 MiB Snappy payloads. Raw and
+common-codec timings and memory probes use resource-limited, watched workers.
+Framed/Hadoop throughput runs in the parent process on valid, self-encoded input only.
 """
 
 from __future__ import annotations
