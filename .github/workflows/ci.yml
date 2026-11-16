@@ -127,7 +127,13 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
-    runs-on: ${{ matrix.os }}
+    # `ubuntu-latest` runs on ubuntu-24.04 in the four matrix jobs (`test`, `test-queue`,
+    # `test-lowest`, `test-daily`); the label stays in the matrix, so check names stay
+    # `ubuntu-latest / pyX / install`. On ubuntu-26.04 the unar source build fails: the
+    # GNUstep headers are under /usr/include/<multiarch>/GNUstep, and GCC 15 makes
+    # -Wint-conversion and -Wincompatible-pointer-types errors in unar's own source.
+    # Lift the pin once install-unar-from-source.sh builds there.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     timeout-minutes: 20
@@ -543,7 +549,8 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-24.04 pin: see `test`.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
@@ -583,7 +590,8 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.lowest != 'false' }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-24.04 pin: see `test`.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     env: *test-env
     strategy:
@@ -603,7 +611,8 @@ jobs:
   test-daily:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-24.04 pin: see `test`.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     timeout-minutes: 20
     env: *test-env
     strategy:
