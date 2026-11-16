@@ -47,7 +47,6 @@ _SINGLE = sorted(
     for p in _FIXTURES.glob("*.rar")
     if ".part" not in p.name and p.name != "tinyvol_rnn.rar"
 )
-_PASSWORD = "password"
 # The same, with the archives whose listing needs the header key (AES, the
 # cryptography package) skipped when it is missing, as in the core-only CI leg.
 _SINGLE_PARAMS = [
@@ -107,15 +106,14 @@ def test_a_forward_walk_lists_what_the_seekable_walk_lists(
     data = path.read_bytes()
     if cut is not None:
         data = data[: int(len(data) * cut)]
+    password = None
     try:
         expected = _parse(data, None)
-        password = None
-    except Exception:  # noqa: BLE001 - a header password, or not a walkable RAR
-        password = _password(path) or _PASSWORD
-        try:
-            expected = _parse(data, password)
-        except Exception:  # noqa: BLE001
-            pytest.skip("the seekable walk does not list this archive either")
+    except Exception:  # a fixture with no known password re-raises
+        password = _password(path)
+        if password is None:
+            raise
+        expected = _parse(data, password)
     source = ForwardSource(_Pipe(data))
     _version, walk = rp.open_forward_walk(
         source,
