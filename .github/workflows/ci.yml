@@ -129,10 +129,13 @@ jobs:
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     # `ubuntu-latest` runs on ubuntu-24.04 in the four matrix jobs (`test`, `test-queue`,
     # `test-lowest`, `test-daily`); the label stays in the matrix, so check names stay
-    # `ubuntu-latest / pyX / install`. On ubuntu-26.04 the unar source build fails: the
-    # GNUstep headers are under /usr/include/<multiarch>/GNUstep, and GCC 15 makes
-    # -Wint-conversion and -Wincompatible-pointer-types errors in unar's own source.
-    # Lift the pin once install-unar-from-source.sh builds there.
+    # `ubuntu-latest / pyX / install`. On ubuntu-26.04 the unar source build fails at
+    # two points. The runner stops at the first: Makefile.linux looks for
+    # Foundation/Foundation.h under /usr/include/GNUstep, and 26.04 installs it under
+    # /usr/include/<multiarch>/GNUstep. The second was seen only in an ubuntu:26.04
+    # container with that header path added: GCC 15 makes -Wint-conversion and
+    # -Wincompatible-pointer-types errors in unar's own source. Lift the pin once
+    # install-unar-from-source.sh gets past both on 26.04.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
