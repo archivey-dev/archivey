@@ -111,11 +111,11 @@ def test_a_forward_walk_lists_what_the_seekable_walk_lists(
         expected = _parse(data, None)
         password = None
     except Exception:  # noqa: BLE001 - a header password, or not a walkable RAR
+        password = _password(path) or _PASSWORD
         try:
-            expected = _parse(data, _PASSWORD)
+            expected = _parse(data, password)
         except Exception:  # noqa: BLE001
             pytest.skip("the seekable walk does not list this archive either")
-        password = _PASSWORD
     source = ForwardSource(_Pipe(data))
     _version, walk = rp.open_forward_walk(
         source,
