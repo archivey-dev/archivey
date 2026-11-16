@@ -665,12 +665,13 @@ function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
 module archivey.detection_cost
 constant archivey.detection_cost.BALANCED_BUDGET = DetectionBudget(...)
 class archivey.detection_cost.DetectionBudget()
-init archivey.detection_cost.DetectionBudget(max_prefix_bytes: int, max_far_bytes: int, max_scan_bytes: int, max_decode_input: int, max_decode_output: int, completion_window_bytes: int) -> None
+init archivey.detection_cost.DetectionBudget(max_prefix_bytes: int, max_far_bytes: int, max_scan_bytes: int, max_decode_input: int, max_decode_output: int, completion_window_bytes: int, max_probe_forward_bytes: int = 0) -> None
 field archivey.detection_cost.DetectionBudget.completion_window_bytes: int
 field archivey.detection_cost.DetectionBudget.max_decode_input: int
 field archivey.detection_cost.DetectionBudget.max_decode_output: int
 field archivey.detection_cost.DetectionBudget.max_far_bytes: int
 field archivey.detection_cost.DetectionBudget.max_prefix_bytes: int
+field archivey.detection_cost.DetectionBudget.max_probe_forward_bytes: int = 0
 field archivey.detection_cost.DetectionBudget.max_scan_bytes: int
 classmethod archivey.detection_cost.DetectionBudget.for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget
 class archivey.detection_cost.DetectionBudgetPreset(Enum)

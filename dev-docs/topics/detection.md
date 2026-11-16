@@ -433,23 +433,34 @@ smaller of `VALIDATOR_PEEK_MAX` (132 KiB, the largest header any validator reads
 header that does not fit is rejected, and the clamped view records `sfx_scan` as *budget
 exhausted*, so the tier never reads more than twice `max_scan_bytes`.
 
-**Probe reads at an offset are the one path whose cap is not tied to a budget field.** A
-content probe can ask for a few bytes deep in the source through `PrefixWorkspace.read_at`,
-which is how the Brotli chain walk checks later meta-block headers. On a path or a plain
-seekable stream, `read_at` seeks to the offset, reads, and seeks back, without growing the
-prefix. It is charged to `unique_bytes_read`. It is bounded by the walk's `CHAIN_MAX_LINKS`
-(8 links of 24 bytes), not by a budget field. On a pipe, or on an `ArchiveStream` whose
-rewind would re-decode, `read_at` grows the prefix instead, up to the smaller of
-`PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE` (1 MiB) and the workspace's read ceiling (the
-largest of the prefix, far and scan limits). Past that it returns nothing and records
-`content_probe_read_at` as `BUDGET_EXHAUSTED`.
+**Probe reads use the source's cost of reaching an offset.** The Brotli chain walk
+uses `PrefixWorkspace.probe_read_at` for at most eight 24-byte headers and one
+2-byte end check. A cheap seekable source skips the literal bodies at any offset,
+reads a header, and restores its cursor; the bytes count in `unique_bytes_read`.
+An expensive-seek source keeps its existing buffering limit: 1 MiB or the budget's
+read ceiling, whichever is smaller. On a forward-only source,
+`max_probe_forward_bytes` permits that growth under `THOROUGH` (1 MiB), and
+forbids additional growth under `FAST` and `BALANCED` (0). Already-buffered bytes
+remain available. Custom budgets use their numeric allowance. Completion checks
+still use `completion_window_bytes` independently.
 
-When the walk stops at a compressed block past the window, the Brotli probe reads and
-decodes `[0, end)`, to 4 KiB past that block's header, through the same `read_at` (a seek
-read takes the part the prefix already holds from the prefix). That decode is charged to
-`max_decode_input` and runs only when `end` is within the read ceiling and 1 MiB;
-otherwise `content_probe_decode` is recorded as `BUDGET_EXHAUSTED` and the probe keeps its
-verdict.
+Unknown source length does not disable the walk: a range read can prove a missing
+successor or trailing bytes. A declined read is no such evidence. A short arrival
+on a pipe is not EOF: optional end checks observe buffered bytes without waiting
+for closure. Disabled pipe growth records `content_probe_read_at` as
+`NOT_ENABLED_BY_POLICY`; an exhausted positive allowance or buffer-growth limit
+records `BUDGET_EXHAUSTED`.
+
+When the walk reaches a compressed block past the window, the probe can decode
+`[0, end)` to 4 KiB past that header. The forward-read policy is checked before
+charging `max_decode_input`; the read ceiling and 1 MiB reach also apply. If a read
+is refused, the earlier verdict stands. This expensive decode is separate from
+skipping literal bytes to inspect a few headers.
+
+An enabled pipe trial feeds arrived chunks incrementally. It stops on a decode
+error, a finished decoder, or the input/output bound; a short arrival alone does
+not stop it. The target input ceiling is charged before fetching bytes. Finishing
+early does not refund that ceiling, and does not fetch optional following bytes.
 
 **The receipt says what was spent and what did not run.** `FormatInfo.cost_receipt` counts
 unique bytes read, far and scanned bytes, decode input and output, and passes.

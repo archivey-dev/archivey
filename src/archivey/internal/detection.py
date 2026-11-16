@@ -2340,6 +2340,8 @@ def _content_probes(
     name. ``stopped_by`` describes the evidence of a non-archive file that keeps every
     probe from running, or is ``None``.
     """
+    from archivey.internal.streams.codecs.base import ProbeReadAccess
+
     workspace = detection.workspace
     data = detection.data
     length = detection.length
@@ -2354,13 +2356,17 @@ def _content_probes(
     if stopped_by is not None:
         return None
 
-    def read_at(offset: int, n: int) -> bytes | None:
-        return workspace.read_at(offset, n)
+    read_at = ProbeReadAccess(
+        workspace.probe_read_at,
+        workspace.probe_read_available_at if workspace.forward_only else None,
+    )
 
     def charge_decode(n: int) -> bool:
         # Brotli's chain decode reads and decodes the total [0, n): it draws on
-        # the decode allowance, and reads no further than any buffered tier
-        # may, nor past the 1 MiB reach of a probe read.
+        # the decode allowance and buffers its entire input. Unlike cheap header
+        # seeks, this decode must stay within the 1 MiB input cap and read ceiling.
+        if not workspace.probe_read_allowed(n):
+            return False
         if n > min(workspace.read_ceiling, PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE):
             workspace.record_skip(
                 "content_probe_decode", TierSkipReason.BUDGET_EXHAUSTED
@@ -2420,9 +2426,10 @@ def _content_probes(
                 probe_fmt,
                 confidence,
                 "content_probe",
-                detection.peek_more,
+                workspace.candidate_view(0, arrived=workspace.forward_only),
                 ext_match=ext_match,
                 workspace=workspace,
+                view_arrived=workspace.forward_only,
                 always_probe=detection.always_probe,
                 formats=detection.formats,
             )

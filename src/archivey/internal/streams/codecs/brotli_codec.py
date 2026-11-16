@@ -9,6 +9,8 @@ free-threaded build (``deps.LazyOptional``).
 
 from __future__ import annotations
 
+import io
+from collections.abc import Callable
 from typing import BinaryIO
 
 from archivey.config import DecoderLimits, ProcessIsolation
@@ -29,10 +31,15 @@ from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
     ProbeChargeDecode,
+    ProbeReadAccess,
     ProbeReadAt,
+    ProbeReadAvailable,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.brotli_decoder import BrotliDecompressorStream
+from archivey.internal.streams.codecs.brotli_decoder import (
+    BrotliDecoder,
+    BrotliDecompressorStream,
+)
 from archivey.internal.streams.codecs.brotli_framing import (
     CHAIN_DECODE_MARGIN,
     first_block_overruns_source,
@@ -40,6 +47,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
     walk_chain,
 )
 from archivey.internal.streams.codecs.isolated import BrotliChildError
+from archivey.internal.streams.decompressor_stream import DecompressorStream, SeekPoint
 from archivey.types import (
     MissingComponent,
     OptionalLibrary,
@@ -52,6 +60,67 @@ from archivey.types import (
 # detection the caller's ``charge_decode`` applies this bound with the budget's (and
 # records the skip); the probe applies it itself only when it is not metered.
 CHAIN_DECODE_MAX_END = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
+
+
+class _ForwardProbeSample(io.BufferedIOBase, BinaryIO):
+    """A bounded, replayable view that fetches arrived bytes only as decoding needs them.
+
+    The workspace retains every fetched byte, so decoder replay can seek inside this
+    view. BufferedIOBase keeps the codec from adding a fill-count buffering layer:
+    each arrived chunk must reach the decoder before another source read. A completed
+    decoder makes the view end without an optional pipe read.
+    """
+
+    def __init__(self, read_available: ProbeReadAvailable, end: int) -> None:
+        super().__init__()
+        self._read_available = read_available
+        self._end = end
+        self._position = 0
+        self.finished: Callable[[], bool] = lambda: False
+
+    @override
+    def close(self) -> None:
+        # The decoder retains this view for replay; do not keep the decoder alive
+        # through the finished callback after the trial closes.
+        self.finished = lambda: False
+        super().close()
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def seekable(self) -> bool:
+        return True
+
+    @override
+    def tell(self) -> int:
+        return self._position
+
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        if whence == io.SEEK_CUR:
+            offset += self._position
+        elif whence != io.SEEK_SET:
+            raise io.UnsupportedOperation("The probe source length is unknown")
+        if offset < 0:
+            raise ValueError("negative probe seek")
+        self._position = offset
+        return offset
+
+    @override
+    def read(self, size: int | None = -1, /) -> bytes:
+        if self._position >= self._end or self.finished() or size == 0:
+            return b""
+        if size is None or size < 0:
+            size = DETECTION_LIMIT
+        wanted = min(size, DETECTION_LIMIT, self._end - self._position)
+        observed = self._read_available(self._position, wanted)
+        if observed is None:
+            return b""
+        data, _ended = observed
+        self._position += len(data)
+        return data
 
 
 class BrotliCodec(StreamCodec):
@@ -75,6 +144,16 @@ class BrotliCodec(StreamCodec):
         natives = config.natives
         if self.excluded_by(excluded) or not natives.package_available(deps.brotli):
             raise self._missing("Brotli streams", excluded=excluded)
+        if isinstance(source, _ForwardProbeSample):
+
+            def make_decoder(_point: SeekPoint, inner: BinaryIO) -> BrotliDecoder:
+                decoder = BrotliDecoder(inner, natives)
+                source.finished = lambda: decoder.finished
+                return decoder
+
+            return DecompressorStream(
+                source, make_decoder=make_decoder, codec_name="brotli"
+            )
         # Brotli has no random-access index; a backward seek re-decodes from the start (the
         # outer ArchiveStream warns; the default rewind_warning names this codec).
         return BrotliDecompressorStream(
@@ -113,21 +192,26 @@ class BrotliCodec(StreamCodec):
         """Recognize a raw Brotli stream — which has no magic — by decoding a bounded prefix.
 
         When ``source_length`` is known, reject a first meta-block that *declares* more
-        bytes than the source can hold (uncompressed / metadata), then follow the
-        self-describing block chain when a ``read_at`` facility (or the prefix alone)
+        bytes than the source can hold (uncompressed / metadata). With or without a
+        known length, follow the block chain when ``read_at`` (or the prefix alone)
         can reach successor offsets. Completeness — whole source visible and decode
         wants more input — is applied inside ``_decodes_sample``. When the chain stops at
         a compressed block the window decode did not reach, the source is decoded from
         offset 0 to just past that block's header (:meth:`_decodes_through`).
         """
-        compressed_at: int | None = None
-        if source_length is not None:
-            if first_block_overruns_source(prefix, source_length):
-                return False
-            walk = walk_chain(prefix, source_length, read_at=read_at)
-            if walk.proves_invalid:
-                return False
-            compressed_at = walk.compressed_at
+        if source_length is not None and first_block_overruns_source(
+            prefix, source_length
+        ):
+            return False
+        read_available = (
+            read_at.available if isinstance(read_at, ProbeReadAccess) else None
+        )
+        walk = walk_chain(
+            prefix, source_length, read_at=read_at, read_available=read_available
+        )
+        if walk.proves_invalid:
+            return False
+        compressed_at = walk.compressed_at
         if not self._decodes_sample(
             prefix,
             source_length=source_length,
@@ -135,7 +219,7 @@ class BrotliCodec(StreamCodec):
             decoder_limits=decoder_limits,
         ):
             return False
-        if compressed_at is None or source_length is None:
+        if compressed_at is None:
             return True
         return self._decodes_through(
             prefix,
@@ -143,6 +227,7 @@ class BrotliCodec(StreamCodec):
             compressed_at,
             read_at=read_at,
             charge_decode=charge_decode,
+            read_available=read_available,
             isolation=isolation,
             decoder_limits=decoder_limits,
         )
@@ -150,13 +235,14 @@ class BrotliCodec(StreamCodec):
     def _decodes_through(
         self,
         prefix: bytes,
-        source_length: int,
+        source_length: int | None,
         compressed_at: int,
         *,
         read_at: ProbeReadAt | None,
         charge_decode: ProbeChargeDecode | None,
         isolation: ProcessIsolation,
         decoder_limits: DecoderLimits,
+        read_available: ProbeReadAvailable | None = None,
     ) -> bool:
         """Whether the source decodes to ``CHAIN_DECODE_MARGIN`` past ``compressed_at``.
 
@@ -172,22 +258,40 @@ class BrotliCodec(StreamCodec):
         ``CHAIN_DECODE_MAX_END``), or when ``read_at`` declines the bytes. A real stream
         either keeps decoding or runs out of input, and both are accepted.
 
-        The charge comes before the read because the read is what the budget bounds: on
-        a seekable source ``read_at`` has no ceiling of its own. The detector's
-        ``read_at`` serves any ``[0, end)`` its ``charge_decode`` accepted, so a granted
-        charge is always spent on a decode.
+        The target input is charged before fetching it. A pipe feeds arrived chunks
+        to one decoder and stops fetching once it finishes or fails. This preserves
+        the bounded trial without waiting for optional bytes after a valid stream.
         """
-        if source_length <= len(prefix):
+        if source_length is not None and source_length <= len(prefix):
             return True  # the window decode had the whole source
-        end = min(compressed_at + CHAIN_DECODE_MARGIN, source_length)
+        end = compressed_at + CHAIN_DECODE_MARGIN
+        if source_length is not None:
+            end = min(end, source_length)
         if end <= min(len(prefix), DETECTION_LIMIT):
             return True
-        if charge_decode is None:
+        if read_available is not None and source_length is None:
             if end > CHAIN_DECODE_MAX_END:
+                if charge_decode is not None:
+                    charge_decode(end)  # record why the target is out of reach
                 return True
-        elif not charge_decode(end):
-            return True
-        data = probe_bytes_at(prefix, source_length, 0, end, read_at)
+            if charge_decode is not None and not charge_decode(end):
+                return True
+            # Reserve the target input before fetching it. The decoder requests
+            # arrived bytes until it fails, finishes, or exhausts the bounded sample.
+            with _ForwardProbeSample(read_available, end) as sample:
+                return self._decodes_probe_stream(
+                    sample,
+                    out_budget=end,
+                    isolation=isolation,
+                    decoder_limits=decoder_limits,
+                )
+        else:
+            if charge_decode is None:
+                if end > CHAIN_DECODE_MAX_END:
+                    return True
+            elif not charge_decode(end):
+                return True
+            data = probe_bytes_at(prefix, source_length, 0, end, read_at)
         if data is None:
             return True
         # ``source_length`` is left out on purpose: a sample that ends at EOF would
