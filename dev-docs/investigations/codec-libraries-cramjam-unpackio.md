@@ -513,20 +513,19 @@ hash does not prove matching metadata or exception type.
 The 161 two-sided byte differences are 91 RPM, 67 newc and three Debian cases. They
 include valid inputs: the minimal adapters do not reconstruct hardlink data, and newc
 also has a different native entry order. They are **wrapper/format-model differences**,
-not 161 independent codec corruptions. A member-by-member replay of the 67 newc
-cases found one difference: hardlink `a.txt` is six bytes in archivey and empty in
-unpackio. In 64 of those cases, flips changed other payload bytes identically in
-both libraries; newc has no data checksum. For all 91 RPM cases, each side's hash
-remained equal to that side's own valid-input hash. These measured controls are in
+not 161 independent codec corruptions. A member-by-member replay of the 67 newc cases
+found one difference: hardlink `a.txt` is six bytes in archivey and empty in unpackio.
+In 64 of those cases, flips changed other payload bytes identically in both libraries;
+newc has no data checksum. For all 91 RPM cases, each side's hash remained equal to that
+side's own valid-input hash. These measured controls are in
 [`results/member-triage.json`](../../scripts/investigations/codec_libraries/results/member-triage.json).
-The normal differential adapter still compares concatenated output, so that hash
-alone cannot separate a model difference from another defect in the same family.
-Conversely, candidate-only acceptance on damaged
-Debian/Zstandard includes changed file content and is an integrity defect for the
-proposed backend. The categories must not be combined into a generic “corruption rate”.
-Snappy has no archivey baseline; roundtrip and checksum probes are kept separate.
-The raw-LZ4 comparison uses the `lz4.block` primitive used by mozlz4, without its outer
-header/length checks, and is identified as such.
+The normal differential adapter still compares concatenated output, so that hash alone
+cannot separate a model difference from another defect in the same family. Conversely,
+candidate-only acceptance on damaged Debian/Zstandard includes changed file content and
+is an integrity defect for the proposed backend. The categories must not be combined
+into a generic “corruption rate”. Snappy has no archivey baseline; roundtrip and
+checksum probes are kept separate. The raw-LZ4 comparison uses the `lz4.block` primitive
+used by mozlz4, without its outer header/length checks, and is identified as such.
 
 ### Every difference is saved
 
