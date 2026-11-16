@@ -34,8 +34,7 @@ import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, suppress
 from dataclasses import dataclass
-from datetime import datetime
-from typing import BinaryIO, NamedTuple
+from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -506,56 +505,6 @@ def _decode_encoded_header_block(
         if exc.message.startswith("Password required"):
             raise EncryptionError("Password required to decrypt the 7z header") from exc
         raise EncryptionError(HEADER_PASSWORD_REJECTED) from exc
-
-
-class _RecordTimes(NamedTuple):
-    modified: datetime | None
-    accessed: datetime | None
-    created: datetime | None
-    ctime: datetime | None
-    issues: list[TimestampIssue]
-
-
-def _record_times(
-    record: SevenZipFileRecord, presented_name: str, *, written_on_unix: bool
-) -> _RecordTimes:
-    """A member's timestamps from a record's FILETIMEs.
-
-    A Unix writer (7-Zip, p7zip, libarchive on Linux and macOS) fills "Created" from
-    ``st_ctime``, so on a record ``written_on_unix`` that slot is ``ctime`` and
-    ``created`` stays None. A stamp that does not convert is None, and its issue is
-    in ``issues`` for the caller to report once the member exists.
-    """
-    issues: list[TimestampIssue] = []
-    modified = accessed = created = ctime = None
-    # Hot-path shortcut only: filetime_to_datetime also treats 0/None as unset.
-    # Keep these guards equivalent to that helper so ZIP (unconditional call)
-    # and 7z cannot diverge if the shared 0-handling rule ever changes.
-    if record.last_write_time:
-        modified, issue = filetime_to_datetime(
-            record.last_write_time, presented_name, field="modified"
-        )
-        if issue is not None:
-            issues.append(issue)
-    if record.last_access_time:
-        accessed, issue = filetime_to_datetime(
-            record.last_access_time, presented_name, field="accessed"
-        )
-        if issue is not None:
-            issues.append(issue)
-    if record.creation_time:
-        stamp, issue = filetime_to_datetime(
-            record.creation_time,
-            presented_name,
-            field="ctime" if written_on_unix else "created",
-        )
-        if issue is not None:
-            issues.append(issue)
-        if written_on_unix:
-            ctime = stamp
-        else:
-            created = stamp
-    return _RecordTimes(modified, accessed, created, ctime, issues)
 
 
 def _infer_nameless_member_name(archive_name: str | None) -> str:
@@ -1521,9 +1470,37 @@ class SevenZipReader(BaseArchiveReader):
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         reparse_fallback = self._reparse_fallback_type(record)
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
-        times = _record_times(
-            record, presented_name, written_on_unix=unix_mode is not None
-        )
+        # Unix writers fill the creation slot from st_ctime, so it maps to ctime.
+        written_on_unix = unix_mode is not None
+        ts_issues: list[TimestampIssue] = []
+        modified = accessed = created = ctime = None
+        # Hot-path shortcut only: filetime_to_datetime also treats 0/None as unset.
+        # Keep these guards equivalent to that helper so ZIP (unconditional call)
+        # and 7z cannot diverge if the shared 0-handling rule ever changes.
+        if record.last_write_time:
+            modified, issue = filetime_to_datetime(
+                record.last_write_time, presented_name, field="modified"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        if record.last_access_time:
+            accessed, issue = filetime_to_datetime(
+                record.last_access_time, presented_name, field="accessed"
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+        if record.creation_time:
+            stamp, issue = filetime_to_datetime(
+                record.creation_time,
+                presented_name,
+                field="ctime" if written_on_unix else "created",
+            )
+            if issue is not None:
+                ts_issues.append(issue)
+            if written_on_unix:
+                ctime = stamp
+            else:
+                created = stamp
         # Folder/substream indices live on ``_raw``; skip the unused public extra
         # bag so listing-limit accounting does not walk a per-member dict.
         extra = (
@@ -1536,15 +1513,15 @@ class SevenZipReader(BaseArchiveReader):
             # a reparse point that settles or re-types to FILE keeps it (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         member = ArchiveMember(
-            type=member_type,
-            name=name,
-            raw_name=raw_name,
-            size=record.uncompressed_size,
-            compressed_size=record.compressed_size,
-            modified=times.modified,
-            accessed=times.accessed,
-            created=times.created,
-            ctime=times.ctime,
+            member_type,
+            name,
+            raw_name,
+            record.uncompressed_size,
+            record.compressed_size,
+            modified=modified,
+            accessed=accessed,
+            created=created,
+            ctime=ctime,
             mode=mode,
             compression=compression,
             is_encrypted=record.is_encrypted,
@@ -1574,7 +1551,7 @@ class SevenZipReader(BaseArchiveReader):
             # data turns out not to be a link buffer is re-typed later, when the
             # target is resolved, and `_apply_reparse_data` emits for it then.
             self._emit_special_file_has_data(member, index)
-        for issue in times.issues:
+        for issue in ts_issues:
             self._emit_timestamp_invalid(member, index, issue)
         self._report_unauthenticated_decryption(record, member, index)
         return member
