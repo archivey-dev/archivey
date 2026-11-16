@@ -1,0 +1,693 @@
+{
+  "base_commit": "205bed416e359ab96b3c17eb9b2067b7389f3211",
+  "check_script": {
+    "command": "./scripts/check.sh --fix",
+    "failed_gates": [
+      "openspec validate"
+    ],
+    "script_tests_passed": 524,
+    "script_tests_skipped": 1,
+    "openspec_cli": "1.4.1",
+    "openspec_failed_items": 21,
+    "openspec_issues_identical_on_clean_base": true,
+    "openspec_details": [
+      {
+        "id": "access-mode-and-cost",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.2.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.7.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 4
+      },
+      {
+        "id": "archive-reading",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.5.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.11.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.20.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.21.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.26.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.27.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.30.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 3
+      },
+      {
+        "id": "backend-registry",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.9.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "cli",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.7.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "compressed-streams",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.2.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.14.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.18.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.19.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.22.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.24.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 3
+      },
+      {
+        "id": "diagnostics",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.5.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.6.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.9.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.10.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.12.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "error-handling",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.4.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.9.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.10.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.11.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.15.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "format-7z",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.13.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.15.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "format-ar",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.1.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.2.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 0
+      },
+      {
+        "id": "format-detection",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.4.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.6.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.14.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.15.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.16.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.17.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.18.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.19.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.20.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.23.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 2
+      },
+      {
+        "id": "format-iso",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.2.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.9.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.11.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "format-rar",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.19.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.20.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.21.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.22.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.23.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.24.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.25.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.27.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.29.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.32.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.35.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 3
+      },
+      {
+        "id": "format-rpm",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.2.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 0
+      },
+      {
+        "id": "format-single-file-compressors",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.10.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "format-tar",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.4.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.5.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 0
+      },
+      {
+        "id": "format-zip",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.6.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.7.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.10.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.12.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.13.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.14.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.15.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.17.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.19.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 2
+      },
+      {
+        "id": "makeself-format",
+        "type": "change",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "format-makeself/spec.md",
+            "message": "ADDED \"Name makeself when another forced format fails on one\" must contain SHALL or MUST"
+          }
+        ],
+        "durationMs": 40
+      },
+      {
+        "id": "plugin-api",
+        "type": "change",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "format-plugins/spec.md",
+            "message": "ADDED \"A sequential plugin may list from a header and read data on demand\" must contain SHALL or MUST"
+          }
+        ],
+        "durationMs": 42
+      },
+      {
+        "id": "reader-concurrency",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.0.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.4.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.7.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 1
+      },
+      {
+        "id": "safe-extraction",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.3.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.4.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.14.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.16.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.20.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.21.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.24.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.32.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 2
+      },
+      {
+        "id": "seekable-decompressor-streams",
+        "type": "spec",
+        "valid": false,
+        "issues": [
+          {
+            "level": "ERROR",
+            "path": "requirements.7.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.8.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.9.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.10.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.11.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.13.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.14.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          },
+          {
+            "level": "ERROR",
+            "path": "requirements.15.text",
+            "message": "Requirement must contain SHALL or MUST keyword"
+          }
+        ],
+        "durationMs": 5
+      }
+    ]
+  },
+  "full_test_script": {
+    "command": "./scripts/test.sh -n 4",
+    "passed": 23307,
+    "skipped": 2650,
+    "failed": 11,
+    "seconds": 1221.55,
+    "note": "Ten failures repeated on a detached clean base; one native PPMd pytest worker crash did not repeat in the focused base run."
+  },
+  "clean_base_focused_run": {
+    "command": "./scripts/test.sh --no-cov -n 4 <the 11 failed node ids>",
+    "passed": 1,
+    "failed": 10,
+    "seconds": 10.95
+  },
+  "replay": {
+    "cases": 381,
+    "changed": 0
+  },
+  "upstream_python_suite": {
+    "tests": 23,
+    "failed": 0,
+    "skipped": 0
+  },
+  "all_dependency_configurations": "Not run: changes are investigation scripts/docs/artifacts, with no shipped code, imports or dependency changes."
+}

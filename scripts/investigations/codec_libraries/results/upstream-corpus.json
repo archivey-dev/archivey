@@ -1,0 +1,1330 @@
+{
+  "binding_suite": {
+    "tests": 23,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "cases": [
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-000-arj.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_arj_metadata_crc_password_limits_and_callbacks",
+        "unpackio_release_binding_tests.BindingTests.test_cpio_debian_and_arj_path_opening"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 9,
+        "sha256": "e7f9a01ea56a9761c5e80521ae90ea55b28cca0f10574b2b4f439c15770cf3d7"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 9,
+        "sha256": "e7f9a01ea56a9761c5e80521ae90ea55b28cca0f10574b2b4f439c15770cf3d7"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-001-arj.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_arj_metadata_crc_password_limits_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Digest mismatch for 'crc32': stored value does not match the decompressed content. (member='hello.txt', format=ARJ)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 0"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-002-arj.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_arj_metadata_crc_password_limits_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "UnsupportedFeatureError",
+        "message": "'hello.txt' is garbled (password-protected); archivey does not decrypt ARJ members (member='hello.txt', format=ARJ)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "PasswordRequiredError",
+        "message": "archive password required"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-003-7z.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_batch_crc_callback_and_cancellation_failures_stop_boundaries"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Digest mismatch for 'crc32': stored value does not match the decompressed content. (member='second.bin', format=SEVEN_Z)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 1"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-004-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_batch_crc_callback_and_cancellation_failures_stop_boundaries"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-005-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_batch_output_limit_and_shared_work_budget"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 18000,
+        "sha256": "ca5745279b1d0adbf3a70ad16ce0d8b951cacb2a17722a2701ba126d55a59eb9"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 18000,
+        "sha256": "ca5745279b1d0adbf3a70ad16ce0d8b951cacb2a17722a2701ba126d55a59eb9"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-006-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_batch_sink_preserves_natural_entry_boundaries"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 18000,
+        "sha256": "ca5745279b1d0adbf3a70ad16ce0d8b951cacb2a17722a2701ba126d55a59eb9"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 18000,
+        "sha256": "ca5745279b1d0adbf3a70ad16ce0d8b951cacb2a17722a2701ba126d55a59eb9"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-007-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_callback_exception_and_cancellation_are_preserved"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 8,
+        "sha256": "f2579d976934c7888785842d8e5a48a140453222e5dbca50d5a1226cd63a8dc7"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 8,
+        "sha256": "f2579d976934c7888785842d8e5a48a140453222e5dbca50d5a1226cd63a8dc7"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-008-7z.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_corrupt_member_never_reports_success"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Digest mismatch for 'crc32': stored value does not match the decompressed content. (member='member.bin', format=SEVEN_Z)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 0"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "cpio",
+      "input": "unpackio-009-cpio.bin",
+      "outcome": "candidate_only_accepts",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_cpio_debian_and_arj_path_opening",
+        "unpackio_release_binding_tests.BindingTests.test_cpio_layout_metadata_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "CPIO header at offset 132 is newc, in a crc archive (format=CPIO)"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "deb",
+      "input": "unpackio-010-deb.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_cpio_debian_and_arj_path_opening",
+        "unpackio_release_binding_tests.BindingTests.test_debian_outer_inner_metadata_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 24,
+        "sha256": "bb95cb0086729acdac359d86bdb3f2bbd2c76f090beec33e1b9128087500fb8a"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 24,
+        "sha256": "bb95cb0086729acdac359d86bdb3f2bbd2c76f090beec33e1b9128087500fb8a"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "cpio",
+      "input": "unpackio-011-cpio.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_cpio_layout_metadata_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "CPIO header at offset 132 is newc, in a crc archive (format=CPIO)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 0"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "deb",
+      "input": "unpackio-012-deb.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_debian_outer_inner_metadata_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Not a TAR archive, or a damaged one: the header at offset 0 does not parse (bad header checksum) (format=TAR)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "package header checksum mismatch"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-013-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_every_limit_is_exposed_and_password_is_archive_scoped"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 12,
+        "sha256": "062cdd85edc4ff270b83f56681e8f7d1362041ec06c2dd02da42bb10cf544095"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 12,
+        "sha256": "062cdd85edc4ff270b83f56681e8f7d1362041ec06c2dd02da42bb10cf544095"
+      },
+      "password": "temporary"
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-014-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_open_list_raw_metadata_and_resources"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 14,
+        "sha256": "399336293ca82d30c2dc8446c2c84ab6ddd85d5371ded9127cefa44061209cc1"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 14,
+        "sha256": "399336293ca82d30c2dc8446c2c84ab6ddd85d5371ded9127cefa44061209cc1"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-015-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_path_and_python_volume_provider"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 7,
+        "sha256": "5d2d96b881a94aa3768cb66421aa5f3095a4a7c090a765693db5545070eb482a"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 7,
+        "sha256": "5d2d96b881a94aa3768cb66421aa5f3095a4a7c090a765693db5545070eb482a"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-016-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_raw_utf16_and_unsafe_path_are_preserved"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-017-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_raw_utf16_and_unsafe_path_are_preserved"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-018-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_raw_utf16_and_unsafe_path_are_preserved"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-019-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_raw_utf16_and_unsafe_path_are_preserved"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "rpm",
+      "input": "unpackio-020-rpm.bin",
+      "outcome": "candidate_only_accepts",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_rpm_data_contract",
+        "unpackio_release_binding_tests.BindingTests.test_rpm_headers_metadata_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "UnsupportedFeatureError",
+        "message": "RPM payload compressor 'none' is not supported (format=RPM)"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "rpm",
+      "input": "unpackio-021-rpm.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_rpm_headers_metadata_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "UnsupportedFeatureError",
+        "message": "RPM payload compressor 'none' is not supported (format=RPM)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 0"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-022-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_rust_only_verification_releases_the_gil"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 8388608,
+        "sha256": "107f35976c5e7ff40959d32d1501c2a1f0ba4728eb936956673a0fdb8aac49c2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 8388608,
+        "sha256": "107f35976c5e7ff40959d32d1501c2a1f0ba4728eb936956673a0fdb8aac49c2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zstd",
+      "input": "unpackio-023-zstd.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_explicit_formats_paths_and_failures"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "9b17dd3c6cdb525ad804a02bf03b66dbf71f95e6a9b6a59a3ff61c8d052ce037"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "9b17dd3c6cdb525ad804a02bf03b66dbf71f95e6a9b6a59a3ff61c8d052ce037"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "unix_compress",
+      "input": "unpackio-024-unix_compress.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_explicit_formats_paths_and_failures",
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_info_and_bounded_extraction"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 20,
+        "sha256": "d4d893bf9ca2a6efb601cc7fcfb2d749ab74100af5894de8834043589c7acea4"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 20,
+        "sha256": "d4d893bf9ca2a6efb601cc7fcfb2d749ab74100af5894de8834043589c7acea4"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "lz4",
+      "input": "unpackio-025-lz4.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_explicit_formats_paths_and_failures"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Error reading lz4 stream: LZ4F_decompress failed with code: ERROR_frameType_unknown"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "FormatError",
+        "message": "invalid lz4 stream: unexpected frame magic"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "lz4",
+      "input": "unpackio-026-lz4.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_explicit_formats_paths_and_failures"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 8,
+        "sha256": "f2579d976934c7888785842d8e5a48a140453222e5dbca50d5a1226cd63a8dc7"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 8,
+        "sha256": "f2579d976934c7888785842d8e5a48a140453222e5dbca50d5a1226cd63a8dc7"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "lz4",
+      "input": "unpackio-027-lz4.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_info_and_bounded_extraction"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 30000,
+        "sha256": "7732a4077512f07decc8a07e471716cefd03f823bc09297a06e88e9902e0550a"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 30000,
+        "sha256": "7732a4077512f07decc8a07e471716cefd03f823bc09297a06e88e9902e0550a"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zstd",
+      "input": "unpackio-028-zstd.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_standalone_stream_info_and_bounded_extraction"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 20,
+        "sha256": "f0c1772c6c463bb6a493ecd0f86c0eff79ce5d2575b8fd81d4b54a5af94aa525"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 20,
+        "sha256": "f0c1772c6c463bb6a493ecd0f86c0eff79ce5d2575b8fd81d4b54a5af94aa525"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-029-7z.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_structured_format_limit_work_and_cancellation_errors"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Not a 7z archive: bad magic bytes (and no signature within the 2097152-byte self-extracting scan window) (format=SEVEN_Z)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "FormatError",
+        "message": "invalid 7z format: 7z signature was not found"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-030-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_structured_format_limit_work_and_cancellation_errors"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "7z",
+      "input": "unpackio-031-7z.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_writer_and_callback_finish_before_success"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 46000,
+        "sha256": "255d5b90cb63c0064dad43d5cab324d6e8861608ffbb5b25e90822da7bf56370"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 46000,
+        "sha256": "255d5b90cb63c0064dad43d5cab324d6e8861608ffbb5b25e90822da7bf56370"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-032-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-033-zip.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "EncryptionError",
+        "message": "Password required to read this encrypted member (member='secret.txt', format=ZIP)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "PasswordRequiredError",
+        "message": "archive password required"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-034-zip.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "EncryptionError",
+        "message": "Wrong password for this ZIP member (member='secret.txt', format=ZIP)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "WrongPasswordOrCorruptError",
+        "message": "wrong password or corrupt encrypted data"
+      },
+      "password": {
+        "base64": "d3Jvbmc="
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-035-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 12,
+        "sha256": "cdd702062b9213be3d8c96f27928ac70c549a2bf7e5e1a130aa514fc3a0ff30e"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 12,
+        "sha256": "cdd702062b9213be3d8c96f27928ac70c549a2bf7e5e1a130aa514fc3a0ff30e"
+      },
+      "password": {
+        "base64": "aW5mZWN0ZWQ="
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-036-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 21,
+        "sha256": "d2f75693596e4fea04f110826bed8e76b2514463ca783f9a5150f7901c2bf92a"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 21,
+        "sha256": "d2f75693596e4fea04f110826bed8e76b2514463ca783f9a5150f7901c2bf92a"
+      },
+      "password": {
+        "base64": "Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZQ=="
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-037-zip.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "EncryptionError",
+        "message": "Wrong password for this ZIP member (member='aes.txt', format=ZIP)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "WrongPasswordOrCorruptError",
+        "message": "wrong password or corrupt encrypted data"
+      },
+      "password": {
+        "base64": "d3Jvbmc="
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-038-zip.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_data_contract"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Digest mismatch for 'crc32': stored value does not match the decompressed content. (member='bad.txt', format=ZIP)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 0"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-039-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-040-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-041-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-042-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-043-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-044-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 13,
+        "sha256": "7e2c15f5508e0b90ab078098ab05bd49e2013aa3ef8390534becc68490888ded"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 13,
+        "sha256": "7e2c15f5508e0b90ab078098ab05bd49e2013aa3ef8390534becc68490888ded"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-045-zip.bin",
+      "outcome": "both_refuse",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Digest mismatch for 'crc32': stored value does not match the decompressed content. (member='integrity', format=ZIP)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 0"
+      },
+      "password": null
+    },
+    {
+      "library": "unpackio",
+      "kind": "zip",
+      "input": "unpackio-046-zip.bin",
+      "outcome": "same_bytes",
+      "tests": [
+        "unpackio_release_binding_tests.BindingTests.test_zip_metadata_codecs_batch_integrity_and_callbacks"
+      ],
+      "archivey": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "8b5b9db0c13db24256c829aa364aa90c6d2eba318b9232a4ab9313b954d3555f"
+      },
+      "password": null
+    },
+    {
+      "library": "cramjam",
+      "kind": "gzip",
+      "input": "cramjam-integration-gz.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "bzip2",
+      "input": "cramjam-integration-bz2.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "xz",
+      "input": "cramjam-integration-lzma.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "brotli",
+      "input": "cramjam-integration-br.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "zstd",
+      "input": "cramjam-integration-zst.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "lz4",
+      "input": "cramjam-integration-lz4.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "snappy",
+      "input": "cramjam-integration-snappy.bin",
+      "origin": "tests/test_integration.py::test_variant",
+      "archivey": {
+        "accepted": false,
+        "error": "NotImplementedError",
+        "message": "archivey has no Snappy backend"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 857,
+        "sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+      },
+      "expected_sha256": "b0a4de293503af7f9127cce50fbb3f8117e5c2ec8a0ec3cd4897e3995bacf0fd"
+    },
+    {
+      "library": "cramjam",
+      "kind": "gzip",
+      "input": "cramjam-flush-gzip.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "cramjam",
+      "kind": "zlib",
+      "input": "cramjam-flush-zlib.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "cramjam",
+      "kind": "deflate",
+      "input": "cramjam-flush-deflate.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "cramjam",
+      "kind": "bzip2",
+      "input": "cramjam-flush-bzip2.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "cramjam",
+      "kind": "xz",
+      "input": "cramjam-flush-xz.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "cramjam",
+      "kind": "lz4",
+      "input": "cramjam-flush-lz4.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "cramjam",
+      "kind": "zstd",
+      "input": "cramjam-flush-zstd.bin",
+      "origin": "tests/test_streaming_semantics.py::test_compressor_flush_makes_data_available",
+      "archivey": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 350000,
+        "sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+      },
+      "expected_sha256": "b49cbaf180481f331d4fb9edb72a44b9a8cd5c15ecb3c155349d73548abb72c4"
+    },
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-rust-method1.arj.bin",
+      "origin": "crates/unpackio/tests/arj_reference.rs",
+      "archivey": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-rust-method2.arj.bin",
+      "origin": "crates/unpackio/tests/arj_reference.rs",
+      "archivey": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-rust-method3.arj.bin",
+      "origin": "crates/unpackio/tests/arj_reference.rs",
+      "archivey": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    },
+    {
+      "library": "unpackio",
+      "kind": "arj",
+      "input": "unpackio-rust-method4.arj.bin",
+      "origin": "crates/unpackio/tests/arj_reference.rs",
+      "archivey": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 11357,
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+      }
+    }
+  ],
+  "support_triage": {
+    "identity_rpm": {
+      "input": "rpm-identity-control.bin",
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "RPM header lists 0 files and 3 values of tag 1030 (format=RPM)"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "UnsupportedFeatureError",
+        "message": "unsupported rpm feature: rpm-payload-compression-identity"
+      }
+    },
+    "gnu_cpio": [
+      {
+        "input": "cpio-oracle-mixed.bin",
+        "exit": 2,
+        "stdout": "./same.txt\n",
+        "stderr": "/workspace/work/tools/cpio/usr/bin/cpio: premature end of file\n",
+        "archivey": {
+          "accepted": false,
+          "error": "CorruptionError",
+          "message": "CPIO header at offset 132 is newc, in a crc archive (format=CPIO)"
+        },
+        "unpackio": {
+          "accepted": true,
+          "size": 11,
+          "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+        }
+      },
+      {
+        "input": "cpio-oracle-mixed_padded.bin",
+        "exit": 2,
+        "stdout": "./same.txt\n",
+        "stderr": "/workspace/work/tools/cpio/usr/bin/cpio: premature end of file\n",
+        "archivey": {
+          "accepted": false,
+          "error": "CorruptionError",
+          "message": "CPIO header at offset 132 is newc, in a crc archive (format=CPIO)"
+        },
+        "unpackio": {
+          "accepted": true,
+          "size": 11,
+          "sha256": "da83f63e1a473003712c18f5afc5a79044221943d1083c7c5a7ac7236d85e8d2"
+        }
+      },
+      {
+        "input": "cpio-oracle-uniform_newc.bin",
+        "exit": 0,
+        "stdout": "a\nb\n",
+        "stderr": "",
+        "archivey": {
+          "accepted": true,
+          "size": 10,
+          "sha256": "936a185caaa266bb9cbe981e9e05cb78cd732b0b3280eb944412bb6f8f8f07af"
+        },
+        "unpackio": {
+          "accepted": true,
+          "size": 10,
+          "sha256": "936a185caaa266bb9cbe981e9e05cb78cd732b0b3280eb944412bb6f8f8f07af"
+        }
+      }
+    ]
+  }
+}
