@@ -97,7 +97,7 @@ def _parse(data: bytes, password: str | None) -> rp.RarArchive:
 
 
 @pytest.mark.parametrize("cut", [None, 0.5, 0.9])
-@pytest.mark.parametrize("path", _SINGLE, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _SINGLE_PARAMS, ids=lambda p: p.name)
 def test_a_forward_walk_lists_what_the_seekable_walk_lists(
     path: Path, cut: float | None
 ) -> None:

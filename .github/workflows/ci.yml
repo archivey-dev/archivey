@@ -140,7 +140,9 @@ jobs:
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
-    timeout-minutes: 20
+    # Windows gets 30: its [all] test step alone took 15m34s (3.15, here) and 18m47s
+    # (3.11, `test-daily`) on 2026-11-16, and the 3.11 job hit a 20-minute limit.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
     # with coverage, 1m52s with -n 4 and --no-cov, same results. The distro-unar probe and
@@ -617,8 +619,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     # ubuntu-24.04 pin: see `test`.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
-    # Windows 3.11 [all] is the slowest leg: its test step alone took 18m47s on
-    # 2026-11-16, and the job hit the 20-minute backstop in its last step.
+    # Windows timeout: see `test`.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     env: *test-env
     strategy:
