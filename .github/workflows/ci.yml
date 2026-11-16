@@ -140,8 +140,9 @@ jobs:
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
-    # Windows gets 30: its [all] test step alone took 15m34s (3.15, here) and 18m47s
-    # (3.11, `test-daily`) on 2026-11-16, and the 3.11 job hit a 20-minute limit.
+    # Windows gets 30: on 2026-11-16 the 3.15 [all] job here took 15m34s in all, and
+    # the 3.11 [all] test step in `test-daily` alone took 18m47s, so that job hit a
+    # 20-minute limit.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     # The full-suite pytest steps below run on all cores (`-n auto`, pytest-xdist): 4 vCPUs
     # on Linux and Windows, 3 on macOS. Measured 2026-10-02 on 4 cores, 3.11: 13m15s serial
