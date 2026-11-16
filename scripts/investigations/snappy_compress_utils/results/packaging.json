@@ -1,0 +1,812 @@
+{
+  "aff4-snappy": {
+    "version": "0.5.1",
+    "info": {
+      "author": "Andres Moreira",
+      "author_email": "andres@andresmoreira.com",
+      "license": "BSD",
+      "license_expression": null,
+      "requires_python": "",
+      "requires_dist": null,
+      "project_urls": {
+        "Homepage": "http://github.com/andrix/python-snappy"
+      }
+    },
+    "release_dates": {
+      "0.5": "2016-02-08T22:45:52.541727Z",
+      "0.5.1": "2017-11-06T05:58:19.890949Z"
+    },
+    "artifacts": [
+      {
+        "filename": "aff4-snappy-0.5.1.zip",
+        "size": 64034,
+        "digests": {
+          "blake2b_256": "792aaded58cebeb7f1ae11fbef99d0fb30a16454a54dabff3d87a7e1f81ecd82",
+          "md5": "5fe3a708626e796ec88ff2406607e476",
+          "sha256": "f4b37b606eac55bd378467b12f7ad8e41fd0ae075e71c83ec55b2a642d0539f6"
+        },
+        "url": "https://files.pythonhosted.org/packages/79/2a/aded58cebeb7f1ae11fbef99d0fb30a16454a54dabff3d87a7e1f81ecd82/aff4-snappy-0.5.1.zip",
+        "requires_python": null,
+        "upload_time_iso_8601": "2017-11-06T05:58:19.890949Z"
+      }
+    ]
+  },
+  "py-snappy": {
+    "version": "0.1.0a1",
+    "info": {
+      "author": "Jason Carver",
+      "author_email": "ethcalibur+pip@gmail.com",
+      "license": "MIT",
+      "license_expression": null,
+      "requires_python": ">=3.6, <4",
+      "requires_dist": [
+        "bumpversion (<1,>=0.5.3); extra == 'dev'",
+        "pytest-watch (<5,>=4.1.0); extra == 'dev'",
+        "wheel; extra == 'dev'",
+        "twine; extra == 'dev'",
+        "ipython; extra == 'dev'",
+        "pytest (>=3.6.0); extra == 'dev'",
+        "pytest-xdist; extra == 'dev'",
+        "tox (<3,>=2.9.1); extra == 'dev'",
+        "hypothesis (==3.74.3); extra == 'dev'",
+        "python-snappy (<1,>=0.5.3); extra == 'dev'",
+        "flake8 (==3.4.1); extra == 'dev'",
+        "black (==18.9b0); extra == 'dev'",
+        "mypy (==0.630); extra == 'dev'",
+        "Sphinx (<2,>=1.6.5); extra == 'dev'",
+        "sphinx-rtd-theme (>=0.1.9); extra == 'dev'",
+        "Sphinx (<2,>=1.6.5); extra == 'doc'",
+        "sphinx-rtd-theme (>=0.1.9); extra == 'doc'",
+        "flake8 (==3.4.1); extra == 'lint'",
+        "black (==18.9b0); extra == 'lint'",
+        "mypy (==0.630); extra == 'lint'",
+        "pytest (>=3.6.0); extra == 'test'",
+        "pytest-xdist; extra == 'test'",
+        "tox (<3,>=2.9.1); extra == 'test'",
+        "hypothesis (==3.74.3); extra == 'test'",
+        "python-snappy (<1,>=0.5.3); extra == 'test'"
+      ],
+      "project_urls": {
+        "Homepage": "https://github.com/ethereum/py-snappy"
+      }
+    },
+    "release_dates": {
+      "0.1.0a1": "2019-03-13T15:41:35.730844Z"
+    },
+    "artifacts": [
+      {
+        "filename": "py_snappy-0.1.0a1-py3-none-any.whl",
+        "size": 8193,
+        "digests": {
+          "blake2b_256": "3ad7bed3c54978eb956aea73ce1e25c9d88d945364115ecd3288b949032e2e5a",
+          "md5": "d9149468b2a9a70d12919275da1b6d8d",
+          "sha256": "db94fa5ae96b740f886c0a3209fb8b02f51879f3b75cecefa21d838c745b9138"
+        },
+        "url": "https://files.pythonhosted.org/packages/3a/d7/bed3c54978eb956aea73ce1e25c9d88d945364115ecd3288b949032e2e5a/py_snappy-0.1.0a1-py3-none-any.whl",
+        "requires_python": ">=3.6, <4",
+        "upload_time_iso_8601": "2019-03-13T15:41:35.730844Z"
+      },
+      {
+        "filename": "py-snappy-0.1.0a1.tar.gz",
+        "size": 7361,
+        "digests": {
+          "blake2b_256": "9a6ea3ed4065556c03e42923d713b06c27319b6fa5cb3d8730ce3fa0ab877e6f",
+          "md5": "0c7f562478fb94eb2574aaba55b6a3ed",
+          "sha256": "92e58cd07736f0ba109228b0db1fba2568ab40fc1b03bffb0580fdb535bdbcde"
+        },
+        "url": "https://files.pythonhosted.org/packages/9a/6e/a3ed4065556c03e42923d713b06c27319b6fa5cb3d8730ce3fa0ab877e6f/py-snappy-0.1.0a1.tar.gz",
+        "requires_python": ">=3.6, <4",
+        "upload_time_iso_8601": "2019-03-13T15:41:38.391109Z"
+      }
+    ]
+  },
+  "python-snappy": {
+    "version": "0.7.3",
+    "info": {
+      "author": "Andres Moreira",
+      "author_email": "andres@andresmoreira.com",
+      "license": "BSD",
+      "license_expression": null,
+      "requires_python": null,
+      "requires_dist": [
+        "cramjam"
+      ],
+      "project_urls": {
+        "Homepage": "http://github.com/intake/python-snappy"
+      }
+    },
+    "release_dates": {
+      "0.2": "2011-03-29T20:10:12.753083Z",
+      "0.2.1": "2011-03-30T15:53:20.170342Z",
+      "0.2.2": "2011-03-30T22:33:19.937950Z",
+      "0.3": "2011-04-13T21:36:01.539113Z",
+      "0.3.1": "2011-05-26T04:27:53.922375Z",
+      "0.3.2": "2011-08-22T20:38:51.225205Z",
+      "0.4": "2012-03-17T13:36:06.146375Z",
+      "0.5": "2013-02-20T00:46:56.383624Z",
+      "0.5.1": "2017-05-04T18:17:58.540862Z",
+      "0.5.2": "2018-01-29T04:42:53.169780Z",
+      "0.5.3": "2018-07-03T22:14:39.865181Z",
+      "0.5.4": "2019-03-21T13:23:19.286121Z",
+      "0.6.0": "2021-01-06T21:33:28.511100Z",
+      "0.6.1": "2022-02-22T15:52:59.150256Z",
+      "0.7.0": "2024-02-27T20:33:56.878655Z",
+      "0.7.0.dev1": "2024-02-23T18:05:38.254113Z",
+      "0.7.1": "2024-02-28T18:32:18.686201Z",
+      "0.7.2": "2024-06-20T13:53:07.774858Z",
+      "0.7.3": "2024-08-29T13:16:04.773231Z"
+    },
+    "artifacts": [
+      {
+        "filename": "python_snappy-0.7.3-py3-none-any.whl",
+        "size": 9155,
+        "digests": {
+          "blake2b_256": "86c10ee413ddd639aebf22c85d6db39f136ccc10e6a4b4dd275a92b5c839de8d",
+          "md5": "6a3783947a73ab0b9be4672a8e447e60",
+          "sha256": "074c0636cfcd97e7251330f428064050ac81a52c62ed884fc2ddebbb60ed7f50"
+        },
+        "url": "https://files.pythonhosted.org/packages/86/c1/0ee413ddd639aebf22c85d6db39f136ccc10e6a4b4dd275a92b5c839de8d/python_snappy-0.7.3-py3-none-any.whl",
+        "requires_python": null,
+        "upload_time_iso_8601": "2024-08-29T13:16:04.773231Z"
+      },
+      {
+        "filename": "python_snappy-0.7.3.tar.gz",
+        "size": 9337,
+        "digests": {
+          "blake2b_256": "39669185fbb6605ba92716d9f77fbb13c97eb671cd13c3ad56bd154016fbf08b",
+          "md5": "78b6ad51849e18546f340ef0e1e49b33",
+          "sha256": "40216c1badfb2d38ac781ecb162a1d0ec40f8ee9747e610bcfefdfa79486cee3"
+        },
+        "url": "https://files.pythonhosted.org/packages/39/66/9185fbb6605ba92716d9f77fbb13c97eb671cd13c3ad56bd154016fbf08b/python_snappy-0.7.3.tar.gz",
+        "requires_python": null,
+        "upload_time_iso_8601": "2024-08-29T13:16:05.705403Z"
+      }
+    ]
+  },
+  "python-snappy-pure": {
+    "version": "0.2.0",
+    "info": {
+      "author": null,
+      "author_email": null,
+      "license": null,
+      "license_expression": "MIT",
+      "requires_python": ">=3.10",
+      "requires_dist": [
+        "pytest>=7.0; extra == \"test\"",
+        "python-snappy>=0.6; extra == \"test\""
+      ],
+      "project_urls": {
+        "Homepage": "https://github.com/Valmarelox/python-snappy",
+        "Repository": "https://github.com/Valmarelox/python-snappy"
+      }
+    },
+    "release_dates": {
+      "0.2.0": "2026-01-15T20:42:29.176213Z"
+    },
+    "artifacts": [
+      {
+        "filename": "python_snappy_pure-0.2.0-py3-none-any.whl",
+        "size": 6096,
+        "digests": {
+          "blake2b_256": "e17760ac75312ba065f783ef3990bc49dc016b4dc0c7af70383a7ca107b00e87",
+          "md5": "5e34e2a4183bf2b29c22bc7bfd466fda",
+          "sha256": "2fac98f2af5371b211a50f26537d3ba6d5503d58883d6a684b6f5cd34314ea44"
+        },
+        "url": "https://files.pythonhosted.org/packages/e1/77/60ac75312ba065f783ef3990bc49dc016b4dc0c7af70383a7ca107b00e87/python_snappy_pure-0.2.0-py3-none-any.whl",
+        "requires_python": ">=3.10",
+        "upload_time_iso_8601": "2026-01-15T20:42:30.497675Z"
+      },
+      {
+        "filename": "python_snappy_pure-0.2.0.tar.gz",
+        "size": 25222,
+        "digests": {
+          "blake2b_256": "427153adad322c3e66b3f6811964b4b85e938288015032fbf7b5699a92064cd3",
+          "md5": "dff0101d51b7790a6b62e0c638767b72",
+          "sha256": "f14a66ea83b5db2fcabdfab7e2a5b22d700e78232e72589b92521f8255f0659c"
+        },
+        "url": "https://files.pythonhosted.org/packages/42/71/53adad322c3e66b3f6811964b4b85e938288015032fbf7b5699a92064cd3/python_snappy_pure-0.2.0.tar.gz",
+        "requires_python": ">=3.10",
+        "upload_time_iso_8601": "2026-01-15T20:42:29.176213Z"
+      }
+    ]
+  },
+  "pysnappy": {
+    "version": "0.8.2",
+    "info": {
+      "author": null,
+      "author_email": "Evan McClain <aeroevan@gmail.com>",
+      "license": null,
+      "license_expression": null,
+      "requires_python": ">=3.11",
+      "requires_dist": null,
+      "project_urls": null
+    },
+    "release_dates": {
+      "0.5.0": "2016-02-07T01:30:35.417644Z",
+      "0.5.1": "2016-02-17T01:43:58.755214Z",
+      "0.6.0": "2016-03-12T01:08:51.162290Z",
+      "0.6.1": "2018-08-02T03:46:07.724712Z",
+      "0.7.0": "2026-05-15T03:35:52.308529Z",
+      "0.7.2": "2026-05-15T03:51:30.463276Z",
+      "0.8.0": "2026-05-15T06:19:25.615273Z",
+      "0.8.2": "2026-05-15T21:31:33.230894Z"
+    },
+    "artifacts": [
+      {
+        "filename": "pysnappy-0.8.2-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 129130,
+        "digests": {
+          "blake2b_256": "f67662818e2ee99bd6b47f9a3f7786f3d1e1e8ca4a6cf4106c20c23317cd6c88",
+          "md5": "b3ad4673ff8854d496c748a391030495",
+          "sha256": "b5af97934e468e71e662896b53e942a60fe090038b5242c81979ac650b333e6c"
+        },
+        "url": "https://files.pythonhosted.org/packages/f6/76/62818e2ee99bd6b47f9a3f7786f3d1e1e8ca4a6cf4106c20c23317cd6c88/pysnappy-0.8.2-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:33.230894Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 136865,
+        "digests": {
+          "blake2b_256": "40f01b17c4c44e7e3cd0ff87d24e75c3622db97c6294843f463523c8e5ee8a18",
+          "md5": "0d4a21a333a1c723cf8d15ac321aa663",
+          "sha256": "8c189bff9fcad9ff0d2278927948f3125f061f32bcec73dca240a0193185e855"
+        },
+        "url": "https://files.pythonhosted.org/packages/40/f0/1b17c4c44e7e3cd0ff87d24e75c3622db97c6294843f463523c8e5ee8a18/pysnappy-0.8.2-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:34.859415Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "size": 1078294,
+        "digests": {
+          "blake2b_256": "fe57ee01965d2db51da10d51a7308551665a9b7009e40239c2d67745d4815467",
+          "md5": "5278285fc7fac98668e856de03508a90",
+          "sha256": "966b9f0ce1437dd61649a01e68bad9b1be1aff9e7c6853ccde214872ec02732f"
+        },
+        "url": "https://files.pythonhosted.org/packages/fe/57/ee01965d2db51da10d51a7308551665a9b7009e40239c2d67745d4815467/pysnappy-0.8.2-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:36.680939Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "size": 1128993,
+        "digests": {
+          "blake2b_256": "f25df13de05b4aca15d27e0a4f1efb5fc2ad35014ef9a3c352e4dc2130c3699a",
+          "md5": "5d6da2e18c36366afe60320982fab6ee",
+          "sha256": "87ee11280d3225630b90935ff3b854d0c48f718a31cc83e51e825c0e1729de58"
+        },
+        "url": "https://files.pythonhosted.org/packages/f2/5d/f13de05b4aca15d27e0a4f1efb5fc2ad35014ef9a3c352e4dc2130c3699a/pysnappy-0.8.2-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:38.367432Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 124746,
+        "digests": {
+          "blake2b_256": "7c71b99739bbc2c053a132baec11d4570d4d0ac15cbbd9566eb44cc54ca29d5e",
+          "md5": "2a3d51c136a546478d7c22c232a9d226",
+          "sha256": "45c4790818616147c6a99b87b06ff48731b931a3cf7ce157d6a3bada12c32b6e"
+        },
+        "url": "https://files.pythonhosted.org/packages/7c/71/b99739bbc2c053a132baec11d4570d4d0ac15cbbd9566eb44cc54ca29d5e/pysnappy-0.8.2-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:40.036619Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 133681,
+        "digests": {
+          "blake2b_256": "20cbbe7f4c7df07cc1e7ee3f210fc97e089c965905962320ec800e71ca38001a",
+          "md5": "38461b40387278ae8c400be3fca4f5a5",
+          "sha256": "66e671655c581ac85394ef81a69519e88b112a031d73587dd8c99913b33e3a55"
+        },
+        "url": "https://files.pythonhosted.org/packages/20/cb/be7f4c7df07cc1e7ee3f210fc97e089c965905962320ec800e71ca38001a/pysnappy-0.8.2-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:41.734988Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "size": 1073990,
+        "digests": {
+          "blake2b_256": "73b1d75594f369912e562748e151207b221c5d5ae5944c17fef78ff5ed6f0114",
+          "md5": "4dda8d1cf2a089c0fd69d55da3ea1bdf",
+          "sha256": "9a41593a20192804727976d798ddbdd6de392fd8fa8f656fc263f4ebc738598c"
+        },
+        "url": "https://files.pythonhosted.org/packages/73/b1/d75594f369912e562748e151207b221c5d5ae5944c17fef78ff5ed6f0114/pysnappy-0.8.2-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:43.451002Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "size": 1126060,
+        "digests": {
+          "blake2b_256": "ede201461230beecd42e31e2232c13d590b328a67497ac47f6621cba0945e3c8",
+          "md5": "007385bc4b1a4d15bf7eccda38d84bd9",
+          "sha256": "991e141f817742669575fe872f57e9903594fcc7d900077871517947e34c3846"
+        },
+        "url": "https://files.pythonhosted.org/packages/ed/e2/01461230beecd42e31e2232c13d590b328a67497ac47f6621cba0945e3c8/pysnappy-0.8.2-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:45.218249Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 124533,
+        "digests": {
+          "blake2b_256": "ad1f2f11a0b7151bb9dc9df012d3d0db4d1e544993d58c64ed2b606ab9223622",
+          "md5": "b122fd02421b240c45dd74f9430ba3e9",
+          "sha256": "7171b1f154ffd7177dc53654c9b86531bd782432961261994dca9a47158b242c"
+        },
+        "url": "https://files.pythonhosted.org/packages/ad/1f/2f11a0b7151bb9dc9df012d3d0db4d1e544993d58c64ed2b606ab9223622/pysnappy-0.8.2-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:46.522199Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 133672,
+        "digests": {
+          "blake2b_256": "e417b2f9185da83ed6bda61fd60d61d1cb2460588bd06febfbc92babb956c419",
+          "md5": "32e38d43055e7176e61490cdadabe71b",
+          "sha256": "69ef4c2c9a5da1b8bb543a4291d3e8bf9ada51cbb1537be900f58a267cb698dc"
+        },
+        "url": "https://files.pythonhosted.org/packages/e4/17/b2f9185da83ed6bda61fd60d61d1cb2460588bd06febfbc92babb956c419/pysnappy-0.8.2-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:47.671793Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "size": 1073870,
+        "digests": {
+          "blake2b_256": "070c797b0f1cb95a3370438277a5e1bdabf1da6a49c8bda34ad0e4d6e593fd89",
+          "md5": "15e8beecf48e4f82e141c79b2f2eb373",
+          "sha256": "98d5afd56bc54cf0cb5a17a7bcb8c81773f5e391a55a44645a97fb5f1e14a43c"
+        },
+        "url": "https://files.pythonhosted.org/packages/07/0c/797b0f1cb95a3370438277a5e1bdabf1da6a49c8bda34ad0e4d6e593fd89/pysnappy-0.8.2-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:48.949421Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "size": 1125864,
+        "digests": {
+          "blake2b_256": "bed844657e97093863be228424ec91cf1a87211b04d6f1705370587d6c3d0cbd",
+          "md5": "6b3c8bfd08e4274a7e123dddb73e597f",
+          "sha256": "bdfe13d7dcb6bb960778d326060648006e8bc9c506f000d7de6ac883388fbd6c"
+        },
+        "url": "https://files.pythonhosted.org/packages/be/d8/44657e97093863be228424ec91cf1a87211b04d6f1705370587d6c3d0cbd/pysnappy-0.8.2-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:50.316469Z"
+      },
+      {
+        "filename": "pysnappy-0.8.2.tar.gz",
+        "size": 24803,
+        "digests": {
+          "blake2b_256": "f783ca20993d6c07901d4375a8bb6d168fcb7e9f73dc65d51fb9f2a5ee898402",
+          "md5": "5cf38e7cf0f44ed57378cc2de0850bac",
+          "sha256": "ce58803a1c47b8fa7d258cb08149117aab492cbf12f152923da7bf19d05aab1c"
+        },
+        "url": "https://files.pythonhosted.org/packages/f7/83/ca20993d6c07901d4375a8bb6d168fcb7e9f73dc65d51fb9f2a5ee898402/pysnappy-0.8.2.tar.gz",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-05-15T21:31:51.824492Z"
+      }
+    ]
+  },
+  "compress-utils": {
+    "version": "0.12.1",
+    "info": {
+      "author": "Nicolas Dupont",
+      "author_email": null,
+      "license": "MIT",
+      "license_expression": null,
+      "requires_python": ">=3.11",
+      "requires_dist": [
+        "pytest; extra == \"test\"",
+        "zstandard; extra == \"test\"",
+        "brotli; extra == \"test\"",
+        "lz4; extra == \"test\"",
+        "python-snappy; extra == \"test\""
+      ],
+      "project_urls": {
+        "Bug Tracker": "https://github.com/dupontcyborg/compress-utils/issues",
+        "Documentation": "https://github.com/dupontcyborg/compress-utils#readme",
+        "Homepage": "https://github.com/dupontcyborg/compress-utils",
+        "Repository": "https://github.com/dupontcyborg/compress-utils"
+      }
+    },
+    "release_dates": {
+      "0.10.1": "2026-10-16T22:33:53.608156Z",
+      "0.11.1": "2026-10-21T20:42:02.065662Z",
+      "0.11.2": "2026-10-25T23:25:31.054624Z",
+      "0.12.0": "2026-10-30T22:25:25.650541Z",
+      "0.12.1": "2026-11-13T16:41:32.176443Z",
+      "0.4.1": "2025-03-08T21:28:11.100445Z",
+      "0.4.2": "2025-03-10T02:44:52.546773Z",
+      "0.4.2.post0": "2025-03-08T21:49:34.310710Z",
+      "0.4.3": "2025-03-11T02:23:27.777486Z",
+      "0.4.4": "2025-03-27T16:57:25.268434Z",
+      "0.5.0": "2025-12-04T15:29:16.153088Z",
+      "0.6.0": "2025-12-06T18:11:29.329680Z",
+      "0.7.0": "2026-05-16T16:01:38.166510Z",
+      "0.7.1": "2026-05-17T20:58:58.344149Z",
+      "0.8.0": "2026-07-16T22:10:25.322999Z",
+      "0.9.0": "2026-10-12T16:32:35.147303Z"
+    },
+    "artifacts": [
+      {
+        "filename": "compress_utils-0.12.1-cp311-cp311-macosx_11_0_arm64.whl",
+        "size": 944678,
+        "digests": {
+          "blake2b_256": "659efda516219481106f53434f3069f10239924ed39094fc0bce654f001889e3",
+          "md5": "6433fbfc4a1b12a9aae04447a1171524",
+          "sha256": "5ddd878de2e95a3cc7f6a869f7ea70f859fb0742bdf849338efd9c47db6d234d"
+        },
+        "url": "https://files.pythonhosted.org/packages/65/9e/fda516219481106f53434f3069f10239924ed39094fc0bce654f001889e3/compress_utils-0.12.1-cp311-cp311-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:32.176443Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1201584,
+        "digests": {
+          "blake2b_256": "7178dc3e4a579c3646ad4cf5fec1b7f0778a51146ab97b83c50b69a81b028d14",
+          "md5": "9b2b536b3ad4be77b2042fad5276175a",
+          "sha256": "bdecbb88bdac65b60d7d4dca77ba6b992765c516c91d436011376ae008331faf"
+        },
+        "url": "https://files.pythonhosted.org/packages/71/78/dc3e4a579c3646ad4cf5fec1b7f0778a51146ab97b83c50b69a81b028d14/compress_utils-0.12.1-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:33.953807Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1267421,
+        "digests": {
+          "blake2b_256": "d5bddad04fc4ec488b6c38ee23b58d2ddb93bf64fe935f63d90c20a847e193d6",
+          "md5": "0369fd4abd4bd09d69a6159a74e97749",
+          "sha256": "23584046612126dbb6b629a9fcf05c59e4c56ce89af353ac2477799af1c7b946"
+        },
+        "url": "https://files.pythonhosted.org/packages/d5/bd/dad04fc4ec488b6c38ee23b58d2ddb93bf64fe935f63d90c20a847e193d6/compress_utils-0.12.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:35.399313Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp311-cp311-win_amd64.whl",
+        "size": 1971792,
+        "digests": {
+          "blake2b_256": "c08058579bd4ce991fe679ef5e71fbb98086a18c7a8a61cae4c988028bd7ea10",
+          "md5": "976aade3fbe533741b5f91e29312db9d",
+          "sha256": "1d5bdce6acfa3240a90159bc0cf6994bd4593ee2a9b0ef7d162bedde0d4d6e2f"
+        },
+        "url": "https://files.pythonhosted.org/packages/c0/80/58579bd4ce991fe679ef5e71fbb98086a18c7a8a61cae4c988028bd7ea10/compress_utils-0.12.1-cp311-cp311-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:36.988175Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp312-cp312-macosx_11_0_arm64.whl",
+        "size": 946993,
+        "digests": {
+          "blake2b_256": "d1a8f4f9ba974371f1d96fa6acc32efa00ba08ad6ebc400cb74e75f96b7f4622",
+          "md5": "45ca59ff37d93d60b1ddc8c652854752",
+          "sha256": "d0d5c24cef9d77ad1f3d5b1b4885dbf1998e326c668feed79d78eff3278db745"
+        },
+        "url": "https://files.pythonhosted.org/packages/d1/a8/f4f9ba974371f1d96fa6acc32efa00ba08ad6ebc400cb74e75f96b7f4622/compress_utils-0.12.1-cp312-cp312-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:38.622783Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1205159,
+        "digests": {
+          "blake2b_256": "d3f1497139814c7755f008073c2fa1ecfb6f24b78daad29ccd98fe14bdf8f35f",
+          "md5": "8a76a534d488f624d8e2df5eb106bfae",
+          "sha256": "866f205f349ab8eb901a4fe2cf1b55b6fbd8962cae0b6ca1ccac4c9ca57fbffc"
+        },
+        "url": "https://files.pythonhosted.org/packages/d3/f1/497139814c7755f008073c2fa1ecfb6f24b78daad29ccd98fe14bdf8f35f/compress_utils-0.12.1-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:40.026560Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1271856,
+        "digests": {
+          "blake2b_256": "e5f5583cfbb6bf73e2509b86029a16543519469410662882edf7ff5683e6453b",
+          "md5": "c2378e519aaf988f741fa26480219960",
+          "sha256": "6916beb0ce7da0b12600d96f201cc1e8de25c40c5c83625086e2a0a7fdcd08db"
+        },
+        "url": "https://files.pythonhosted.org/packages/e5/f5/583cfbb6bf73e2509b86029a16543519469410662882edf7ff5683e6453b/compress_utils-0.12.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:41.361201Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp312-cp312-win_amd64.whl",
+        "size": 1977737,
+        "digests": {
+          "blake2b_256": "6e13e15e469392145698015589ac3085052c3cca67e87dc96828fa4e3a8406fd",
+          "md5": "7ae9e97179b9acc69b59c8ffff187394",
+          "sha256": "027204bd7f368d6bdae88c206d6659e9a992a820e492fd200f219554d94b19ab"
+        },
+        "url": "https://files.pythonhosted.org/packages/6e/13/e15e469392145698015589ac3085052c3cca67e87dc96828fa4e3a8406fd/compress_utils-0.12.1-cp312-cp312-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:42.674372Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp313-cp313-macosx_11_0_arm64.whl",
+        "size": 947046,
+        "digests": {
+          "blake2b_256": "ac1c21e531c6391eb9e5b2f10076a3d2649d29e05ca6de7690df4db9c92dba53",
+          "md5": "82bb21a236106622f4edc8fee748639f",
+          "sha256": "3425f6ffe41efcb632088677d73b875dd339b37f242299c303e293c3672ade40"
+        },
+        "url": "https://files.pythonhosted.org/packages/ac/1c/21e531c6391eb9e5b2f10076a3d2649d29e05ca6de7690df4db9c92dba53/compress_utils-0.12.1-cp313-cp313-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:44.145868Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1205143,
+        "digests": {
+          "blake2b_256": "6af355e185faa28021069aec5aa99eb3a75ae646a84e0901d2ce2abf85611396",
+          "md5": "3942205358fb244cd24451f554402b13",
+          "sha256": "0d4c6b4e055965690b60bbd042ac6bedc5000417601cb66942d4a994fe233c61"
+        },
+        "url": "https://files.pythonhosted.org/packages/6a/f3/55e185faa28021069aec5aa99eb3a75ae646a84e0901d2ce2abf85611396/compress_utils-0.12.1-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:45.548754Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1272566,
+        "digests": {
+          "blake2b_256": "57208c754c97655efb7e39d50d6af51617d19d6c0700d80a1fee1a4ab64f47ea",
+          "md5": "13af54ef897378c87d9c3653cd48d17e",
+          "sha256": "1946d7b41b215601cc719dcf5964316a0f700e0e1496e0a67157d268d18fede9"
+        },
+        "url": "https://files.pythonhosted.org/packages/57/20/8c754c97655efb7e39d50d6af51617d19d6c0700d80a1fee1a4ab64f47ea/compress_utils-0.12.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:47.023801Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp313-cp313-win_amd64.whl",
+        "size": 1977898,
+        "digests": {
+          "blake2b_256": "0c4d12d283e9507081599407ad2fc52516e7d15453d5dd912554b14daf37a399",
+          "md5": "73a4e4bb95012b339a605f575051a404",
+          "sha256": "65b54445647f7e53706ef3ee1b2bb9353c2f4ab89c1aa591e4a5f0bc67e65de9"
+        },
+        "url": "https://files.pythonhosted.org/packages/0c/4d/12d283e9507081599407ad2fc52516e7d15453d5dd912554b14daf37a399/compress_utils-0.12.1-cp313-cp313-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:48.407526Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314-macosx_11_0_arm64.whl",
+        "size": 947600,
+        "digests": {
+          "blake2b_256": "0e28c9314927d820e75ec2286de71bceb3805654e181be691ec405c110ddb930",
+          "md5": "42f8c717b9c6de7c79a73142a9f237b3",
+          "sha256": "f1ad6ec8b17f8827d611638219f8a8c6c88e066daf32b819fb77504df27b8c26"
+        },
+        "url": "https://files.pythonhosted.org/packages/0e/28/c9314927d820e75ec2286de71bceb3805654e181be691ec405c110ddb930/compress_utils-0.12.1-cp314-cp314-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:49.861940Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1206053,
+        "digests": {
+          "blake2b_256": "65936472ae20adac898592b5b6b2ccc6591fe06409fe277c8e5aa9cd400af9dd",
+          "md5": "0bfb366206cf4c7e526ff250bb3963e9",
+          "sha256": "9cec4fa52adda055fd32a0f221f8f0986755b9d92b68e77539db204655aa20fc"
+        },
+        "url": "https://files.pythonhosted.org/packages/65/93/6472ae20adac898592b5b6b2ccc6591fe06409fe277c8e5aa9cd400af9dd/compress_utils-0.12.1-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:51.782786Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1273191,
+        "digests": {
+          "blake2b_256": "a138f151a01688b9ca5d65df469ab867d8c34eae44c128c6e4871fb531bb9842",
+          "md5": "e157ba3648e6a1b080ea5aaf1dff7092",
+          "sha256": "b9cb27d3545b932ad8afde6080186bd06fb31809f1c7b7d8aa118a3c5d893b5a"
+        },
+        "url": "https://files.pythonhosted.org/packages/a1/38/f151a01688b9ca5d65df469ab867d8c34eae44c128c6e4871fb531bb9842/compress_utils-0.12.1-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:53.201331Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314t-macosx_11_0_arm64.whl",
+        "size": 956170,
+        "digests": {
+          "blake2b_256": "f4356757a881bbd89ba333e104bc28381ca35313683b62d66d7a567c3e1b483b",
+          "md5": "8d7cda564e05a3d699e2f7aa9fd909e2",
+          "sha256": "acbe712072464c43758173bb0072ba9da64a0f2fd8e71655827965ffdb674f22"
+        },
+        "url": "https://files.pythonhosted.org/packages/f4/35/6757a881bbd89ba333e104bc28381ca35313683b62d66d7a567c3e1b483b/compress_utils-0.12.1-cp314-cp314t-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:56.878935Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1201157,
+        "digests": {
+          "blake2b_256": "5f9a7bb9df4c68de0589c9680648161270bbbc6ad8ad4ad2be90890a8822a5d9",
+          "md5": "0713c820136e788d636b2b0dd60c3bae",
+          "sha256": "64705cf5a6d474eda3dbea6a950ced16a384949d7a2c4ff4ea9ed49bf927b2de"
+        },
+        "url": "https://files.pythonhosted.org/packages/5f/9a/7bb9df4c68de0589c9680648161270bbbc6ad8ad4ad2be90890a8822a5d9/compress_utils-0.12.1-cp314-cp314t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:58.193797Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1260877,
+        "digests": {
+          "blake2b_256": "c0d3329b6354fb097fb6a19ed929af15b35ca3003e8323f501ebdea38255e86e",
+          "md5": "3c767a70761d9df19b9b13956c02892e",
+          "sha256": "9622e13ca8f6acfaeb3cf400c258321f47d089d88cadf9a07ff99cc578931e90"
+        },
+        "url": "https://files.pythonhosted.org/packages/c0/d3/329b6354fb097fb6a19ed929af15b35ca3003e8323f501ebdea38255e86e/compress_utils-0.12.1-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:59.823721Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314t-win_amd64.whl",
+        "size": 2040166,
+        "digests": {
+          "blake2b_256": "fa51f52a4462edfbad72bfb7d05eb862893b6cb8af3633c0e4644383083c9339",
+          "md5": "f16920f952e52ec9855e34d53162f4ee",
+          "sha256": "e052bf90bf9aad1b1df292f5a8af78f0a6aa76f6a0c219ac5e6ad9d5ff972c63"
+        },
+        "url": "https://files.pythonhosted.org/packages/fa/51/f52a4462edfbad72bfb7d05eb862893b6cb8af3633c0e4644383083c9339/compress_utils-0.12.1-cp314-cp314t-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:01.617720Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp314-cp314-win_amd64.whl",
+        "size": 2028628,
+        "digests": {
+          "blake2b_256": "f6bbc92af0beb444f5e6ea1bcbff029852e36b95d62289924e092a3231783b12",
+          "md5": "97c44beb089fe036ddd1b993a87efb59",
+          "sha256": "0d3e0d482235a9fa4eb1ef1fbe2f69e31ca0bd1803823d65075beb0cd853245d"
+        },
+        "url": "https://files.pythonhosted.org/packages/f6/bb/c92af0beb444f5e6ea1bcbff029852e36b95d62289924e092a3231783b12/compress_utils-0.12.1-cp314-cp314-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:41:54.982621Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315-macosx_11_0_arm64.whl",
+        "size": 947613,
+        "digests": {
+          "blake2b_256": "37f6bc9c8ce7d45ce9f50f9ce34d2a420b0c745d2736d0ef730c23fdb3578e79",
+          "md5": "dede7f2762d32d2ab73c95745c293fdf",
+          "sha256": "c631982154bdb47eff2ecad1185da0e91fca22b52f3a70332f51ba8c21a347c0"
+        },
+        "url": "https://files.pythonhosted.org/packages/37/f6/bc9c8ce7d45ce9f50f9ce34d2a420b0c745d2736d0ef730c23fdb3578e79/compress_utils-0.12.1-cp315-cp315-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:02.957532Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1206054,
+        "digests": {
+          "blake2b_256": "d6c700006473b0d40f299339e209e3c779d21a1a216bd2c5f1c1b06b6321c7e5",
+          "md5": "d3ec1fa4c3272279f11f5b71db487d75",
+          "sha256": "6910377d8bf3aef6546c73b20700c2d43f43a954e0b63357fa011bc09109c083"
+        },
+        "url": "https://files.pythonhosted.org/packages/d6/c7/00006473b0d40f299339e209e3c779d21a1a216bd2c5f1c1b06b6321c7e5/compress_utils-0.12.1-cp315-cp315-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:04.318457Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1273190,
+        "digests": {
+          "blake2b_256": "73ffb304ee123fa30c5c2366cf63770bfb74ff100d7b2ec73c71dec7229e456e",
+          "md5": "95b5c44deb505b0eb7082ea350e44e18",
+          "sha256": "7b5679cdaf929dda69e9d9d11e28e0af7bcb73a55e633877d6b16adb031035d1"
+        },
+        "url": "https://files.pythonhosted.org/packages/73/ff/b304ee123fa30c5c2366cf63770bfb74ff100d7b2ec73c71dec7229e456e/compress_utils-0.12.1-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:05.996605Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315t-macosx_11_0_arm64.whl",
+        "size": 956128,
+        "digests": {
+          "blake2b_256": "9c6f679aeed81d35deebec6ccfead7ad7aec40c7cc15f847712a54f9ec31f8be",
+          "md5": "dd9783c71d9742c1dcf6befc4b206e1e",
+          "sha256": "4c3314187861335ebbb92a1530f97c260b9a3742b42a00415aa05cf9c298e204"
+        },
+        "url": "https://files.pythonhosted.org/packages/9c/6f/679aeed81d35deebec6ccfead7ad7aec40c7cc15f847712a54f9ec31f8be/compress_utils-0.12.1-cp315-cp315t-macosx_11_0_arm64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:09.485779Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "size": 1199899,
+        "digests": {
+          "blake2b_256": "31c6cf003f9d7b6a32cf3b189cadeb279fa020cfb3cb204b7c34105673aed500",
+          "md5": "680216fc8106ec567b159c754f6ef495",
+          "sha256": "1fd1e1f56fa4f397f7570b703147c6ad99f87b58f3d45f64c1610e9fcacfbe7b"
+        },
+        "url": "https://files.pythonhosted.org/packages/31/c6/cf003f9d7b6a32cf3b189cadeb279fa020cfb3cb204b7c34105673aed500/compress_utils-0.12.1-cp315-cp315t-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:11.168622Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "size": 1261533,
+        "digests": {
+          "blake2b_256": "d53476cad0107150ce4693769b4c558bdc788af045df3809e2cdc26c55da33bc",
+          "md5": "a106c45e86da9d3e5628b9e08e29926a",
+          "sha256": "de5aa807a959ab407f5e4062ceeede4865e98189d6a2107068406b6850282927"
+        },
+        "url": "https://files.pythonhosted.org/packages/d5/34/76cad0107150ce4693769b4c558bdc788af045df3809e2cdc26c55da33bc/compress_utils-0.12.1-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:12.518093Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315t-win_amd64.whl",
+        "size": 2039850,
+        "digests": {
+          "blake2b_256": "9d45b9452cdbe9e93668655918f7fdb7775d6eba8e09bc5e4c6b43150a329531",
+          "md5": "fff94ca3e2eadb8fd8dd87fa90747279",
+          "sha256": "c4bc94d3ddbbcb9ed0d08c38b8bc0ae3f0977058340f896952125a081df33632"
+        },
+        "url": "https://files.pythonhosted.org/packages/9d/45/b9452cdbe9e93668655918f7fdb7775d6eba8e09bc5e4c6b43150a329531/compress_utils-0.12.1-cp315-cp315t-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:13.984877Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1-cp315-cp315-win_amd64.whl",
+        "size": 2028610,
+        "digests": {
+          "blake2b_256": "fb33076a01e68c53c105ca219d55b472b28a19a3376dddf13dd769bfe3bc7a38",
+          "md5": "da826421912daf7534f411e61ec50b30",
+          "sha256": "ffd58528b5e89582be921532c3d4894af8f1d6894a6a0d0408f868959a2f8587"
+        },
+        "url": "https://files.pythonhosted.org/packages/fb/33/076a01e68c53c105ca219d55b472b28a19a3376dddf13dd769bfe3bc7a38/compress_utils-0.12.1-cp315-cp315-win_amd64.whl",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:07.355816Z"
+      },
+      {
+        "filename": "compress_utils-0.12.1.tar.gz",
+        "size": 6848623,
+        "digests": {
+          "blake2b_256": "7890659b9c02586d6140ede51f3896366c4b34157cb3453d940bb84bec053a1b",
+          "md5": "feb361e814c4f7b11c9d38c38d760548",
+          "sha256": "7523577be6b1988090e4dd1833559bb00343c586523075789f0569ddc3f0f5c5"
+        },
+        "url": "https://files.pythonhosted.org/packages/78/90/659b9c02586d6140ede51f3896366c4b34157cb3453d940bb84bec053a1b/compress_utils-0.12.1.tar.gz",
+        "requires_python": ">=3.11",
+        "upload_time_iso_8601": "2026-11-13T16:42:15.509744Z"
+      }
+    ],
+    "codec_versions": {
+      "_comment": "Single source of truth for upstream codec sources. Read by CMake (cmake/CodecVersions.cmake) and by tools/sync-codecs.py. snappy is first-party (src/algorithms/snappy/core) \u2014 there is no upstream to pin, so it is not a codec entry here. google/snappy (C++) is snapshotted at third_party/snappy-oracle (from tag 1.2.2) as a TEST-ONLY differential oracle \u2014 it never ships, so it is intentionally not a codec entry either.",
+      "zstd": {
+        "url": "https://github.com/facebook/zstd.git",
+        "tag": "v1.5.7"
+      },
+      "brotli": {
+        "url": "https://github.com/google/brotli.git",
+        "tag": "v1.2.1"
+      },
+      "zlib": {
+        "url": "https://github.com/zlib-ng/zlib-ng.git",
+        "tag": "2.3.3",
+        "tag_regex": "\\d+\\.\\d+\\.\\d+"
+      },
+      "bz2": {
+        "url": "https://gitlab.com/bzip2/bzip2.git",
+        "tag": "bzip2-1.0.8"
+      },
+      "lz4": {
+        "url": "https://github.com/lz4/lz4.git",
+        "tag": "v1.11.0"
+      },
+      "xz": {
+        "url": "https://github.com/tukaani-project/xz.git",
+        "tag": "v5.8.4"
+      }
+    }
+  }
+}
