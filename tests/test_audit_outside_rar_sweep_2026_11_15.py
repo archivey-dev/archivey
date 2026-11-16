@@ -1,6 +1,7 @@
 """Correctness regressions from the outside RAR sweep of 2026-11-15.
 
-R1 is fixed. R2 remains a strict xfail until its separate fix lands.
+Each test asserts the expected reading behavior. Unresolved findings carry strict
+xfail markers whose reasons identify the defects.
 """
 
 from __future__ import annotations

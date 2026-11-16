@@ -226,8 +226,8 @@ class _ForwardMemberStream(DelegatingStream):
     def read(self, n: int = -1, /) -> bytes:
         data = super().read(n)
         if n != 0:
-            # Writing a later volume can discover a cut after the member was
-            # listed. Its synthetic zero padding may still match the digest.
+            # _PaddedSpan marks the cut before returning any padding, so this
+            # check sees the mark before padded bytes can reach the verifier.
             self._check_cut()
         return data
 
@@ -915,6 +915,7 @@ class RarForwardReader(RarReader):
                 self._plan,
                 costs=self._pass_costs,
                 on_pipe=_on_pipe,
+                wrap_member=self._wrap_forward_member,
             )
         finally:
             fpass.close()
@@ -961,21 +962,19 @@ class RarForwardReader(RarReader):
         offset = self._pipe_end
         self._pipe_end = offset + size
 
+        return offset
+
+    def _wrap_forward_member(self, member: ArchiveMember, stream: BinaryIO) -> BinaryIO:
+        """Keep a late source cut from verifying through a synthetic member slice."""
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+
         def check_cut() -> None:
             if id(raw) in self._cut:
                 self._pipe_end = None
                 raise self._cut_error(member)
 
-        def open_member() -> BinaryIO:
-            self._check_dictionary_memory(member, self._pass_costs[id(member)])
-            fpass = self._fpass
-            assert fpass is not None and fpass.pipe is not None
-            stream = fpass.pipe().open_member(offset, size, lazy=True)
-            return self._watch_unverified(
-                _ForwardMemberStream(stream, check_cut), member
-            )
-
-        return open_member
+        return _ForwardMemberStream(stream, check_cut)
 
     def _password_refusal(
         self, member: ArchiveMember, raw: RarMemberInfo

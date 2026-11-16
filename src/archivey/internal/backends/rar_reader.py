@@ -4650,6 +4650,7 @@ class RarReader(BaseArchiveReader):
         *,
         costs: dict[int, _DictionaryCost] | None = None,
         on_pipe: Callable[[Callable[[], SolidBlockReader]], None] | None = None,
+        wrap_member: Callable[[ArchiveMember, BinaryIO], BinaryIO] | None = None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """The solid pass over one process's output, demultiplexed by offset.
 
@@ -4661,6 +4662,9 @@ class RarReader(BaseArchiveReader):
         a pass whose listing has to read that output itself
         (``rar_forward_reader``). Such a pass may start the process to list, so
         the ``_pipe`` promise below holds only for a pass without ``on_pipe``.
+
+        ``wrap_member`` wraps the slice of a member placed by offset, before the
+        password watch and outer verifier, for checks on the source as it is read.
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
@@ -4767,9 +4771,10 @@ class RarReader(BaseArchiveReader):
                     # outer ArchiveStream, so a never-opened handle skips verify on
                     # close (no solid positioning, and no process, for unread members).
                     self._check_dictionary_memory(member, cost)
-                    return self._watch_unverified(
-                        _pipe().open_member(offset, size, lazy=True), member
-                    )
+                    stream = _pipe().open_member(offset, size, lazy=True)
+                    if wrap_member is not None:
+                        stream = wrap_member(member, stream)
+                    return self._watch_unverified(stream, member)
 
             else:
                 open_fn = slot

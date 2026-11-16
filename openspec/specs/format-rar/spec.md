@@ -1722,7 +1722,7 @@ first read.
 | RAR 1.5-4 data encryption, several candidates | Each encrypted member raises `UnsupportedFeatureError` on its first read |
 | A member whose output does not line up (cut short, wrong password, no size, RAR 1.5-4 past 4 GiB, unknown version in a solid archive) | That member raises; every later member with data raises too |
 | A member that fails its digest | That member raises; the later members read as from a seekable source |
-| A member cut short past the 4 MiB the source reads ahead | `TruncatedError` on read, even when synthetic zero padding would match its digest |
+| A member cut short past the 4 MiB the source reads ahead | `TruncatedError` once the source cut is known; earlier reads may return the member's real leading bytes |
 | A member that fits in one rolling volume | Not split: it starts the next volume, and is listed after the walk reads the header after it |
 | A RAR 1.5-4 `UOW` or `CMT` after a member larger than a volume | The member is listed before it, with `member_state_final` false; the owner or comment is written into it once the next member is listed or the pass ends, as a seekable source lists it |
 | The caller closes while the source has stopped sending | `close()` returns within about a second; a read of the source may still be pending, so the source's own close or read waits for it; the thread removes the volumes when that read returns |
