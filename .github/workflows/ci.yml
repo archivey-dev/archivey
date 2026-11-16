@@ -128,7 +128,8 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
     # `ubuntu-latest` runs on ubuntu-24.04 in the four matrix jobs (`test`, `test-queue`,
-    # `test-lowest`, `test-daily`); the label stays in the matrix, so check names stay
+    # `test-lowest`, `test-daily`), and `pypy` is pinned for its own reason (see there);
+    # the label stays in the matrix, so check names stay
     # `ubuntu-latest / pyX / install`. On ubuntu-26.04 the unar source build fails at
     # two points. The runner stops at the first: Makefile.linux looks for
     # Foundation/Foundation.h under /usr/include/GNUstep, and 26.04 installs it under
@@ -809,7 +810,11 @@ jobs:
     name: ${{ matrix.python }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
-    runs-on: ubuntu-latest
+    # ubuntu-24.04 pin, as in `test`. On ubuntu-26.04 lz4 4.4.5 does not build for PyPy
+    # (GCC 15 makes -Wincompatible-pointer-types an error in lz4/frame/_frame.c), and the
+    # "with what installed" suite fails test_benchmark_peers (libarchive: "Unrecognized
+    # archive format"); neither happens on 24.04. Lift it with the `test` pin.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       UV_PYTHON: ${{ matrix.python }}
