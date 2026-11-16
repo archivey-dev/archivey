@@ -88,6 +88,7 @@ from typing import (
     Self,
     cast,
 )
+from weakref import ref
 
 from archivey.internal.overrides import override
 from archivey.internal.pe_resources import ProgramResources
@@ -847,16 +848,28 @@ class BaseArchiveReader(ArchiveReader):
         up = self._nest_outer if self._nest_outer is not None else self._nest_parent
         # How many archives sit above this one in its nest, both kinds counted.
         self._nest_level: int = 0 if up is None else up._nest_level + 1
-        # The nest's outermost reader, whose config sets the nest's totals.
-        self._nest_root: BaseArchiveReader = self if up is None else up._nest_root
-        account = (
-            NestAccount(self._trusted_source_size) if up is None else up._nest.account
+        # Only descendants retain the root. A root retaining itself would keep
+        # its whole listing alive until cyclic garbage collection.
+        self._nest_root: BaseArchiveReader | None = (
+            None if up is None else up._nest_root if up._nest_root is not None else up
         )
+        if up is None:
+            # Descendants retain this reader through _nest_root; the account alone
+            # must not keep a closed reader's listing alive.
+            reader_ref = ref(self)
+
+            def root_size() -> int | None:
+                reader = reader_ref()
+                return None if reader is None else reader._trusted_source_size()
+
+            account = NestAccount(root_size)
+        else:
+            account = up._nest.account
         # This reader's draws on the nest's totals, under the stricter of the
         # outermost reader's config and its own.
         self._nest: NestDraws = NestDraws(
             account,
-            root=self._nest_root._config,
+            root=(self if self._nest_root is None else self._nest_root)._config,
             own=self._config,
             judges_ratio=self._nest_outer is None,
         )
