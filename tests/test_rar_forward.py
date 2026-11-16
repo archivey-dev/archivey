@@ -34,7 +34,7 @@ from archivey.internal.backends import (
 from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
 from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
 from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
-from tests.conftest import requires_binary, requires_unrar_cli
+from tests.conftest import requires, requires_binary, requires_unrar_cli
 from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
 from tests.test_rar_owner import OWNER_NAMES_RAR4
 from tests.test_rar_reader import _rar3_file_block
@@ -48,6 +48,14 @@ _SINGLE = sorted(
     if ".part" not in p.name and p.name != "tinyvol_rnn.rar"
 )
 _PASSWORD = "password"
+# The same, with the archives whose listing needs the header key (AES, the
+# cryptography package) skipped when it is missing, as in the core-only CI leg.
+_SINGLE_PARAMS = [
+    pytest.param(p, marks=requires("cryptography"))
+    if _password(p) == "header_password"
+    else p
+    for p in _SINGLE
+]
 
 
 class _Pipe(io.RawIOBase):
@@ -242,7 +250,7 @@ def _file_copies(path: Path, password: str | None) -> set[str]:
 # volumes runs the walk and lists the members.
 @pytest.mark.parametrize("limit", [None, 4000], ids=["one-volume", "many-volumes"])
 @pytest.mark.parametrize("cut", [None, 0.5, 0.9])
-@pytest.mark.parametrize("path", _SINGLE, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _SINGLE_PARAMS, ids=lambda p: p.name)
 def test_a_pipe_pass_gives_what_the_seekable_pass_gives(
     path: Path, cut: float | None, limit: int | None
 ) -> None:
@@ -267,7 +275,7 @@ def test_a_pipe_pass_gives_what_the_seekable_pass_gives(
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
 @pytest.mark.parametrize("limit", [None, 4000], ids=["one-volume", "many-volumes"])
-@pytest.mark.parametrize("path", _SINGLE, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _SINGLE_PARAMS, ids=lambda p: p.name)
 def test_a_pipe_pass_that_reads_some_members_lists_them_all(
     path: Path, limit: int | None
 ) -> None:
@@ -766,6 +774,7 @@ def test_several_passwords_on_rar4_data_encryption_are_refused() -> None:
 
 
 @requires_unrar_cli()
+@requires("cryptography")
 @pytest.mark.usefixtures("rolling_unrar")
 @pytest.mark.parametrize("password", ["header_password", ["wrong", "header_password"]])
 def test_a_header_password_is_found(password: str | list[str]) -> None:

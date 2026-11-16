@@ -617,7 +617,9 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     # ubuntu-24.04 pin: see `test`.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
-    timeout-minutes: 20
+    # Windows 3.11 [all] is the slowest leg: its test step alone took 18m47s on
+    # 2026-11-16, and the job hit the 20-minute backstop in its last step.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     env: *test-env
     strategy:
       fail-fast: false
