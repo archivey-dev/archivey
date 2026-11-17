@@ -755,7 +755,9 @@ members inside an explicit DIRECTORY entry that `ERROR` or `SKIP` left out. The 
 not a collision event, so `collided_with` stays `None`. A symlink of the caller's that
 resolves to a directory is a directory here and is followed, subject to the parent
 resolution check. A parent that is a non-directory this run wrote is not covered: the
-member fails as the `OnError` matrix states.
+member fails as the `OnError` matrix states. That holds however the archive spelled the
+earlier member: `s/f` written through the archive's own symlink `s -> e` is the run's
+file at `e/f`, so a later `e/f/x` fails against it under every policy.
 
 Replacing an existing directory with any member type removes the directory first, and
 only an **empty** one: a directory that holds entries SHALL NOT be removed, and the

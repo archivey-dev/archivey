@@ -5318,6 +5318,36 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "s/X", "src"),
         ("file", "s", b"later"),
     ],
+    # A link spelled through a symlink holds its name where it physically is: a
+    # later member spelled without the symlink meets it there, as it would the made
+    # link, and does not make a directory at its name.
+    "under-a-symlink-then-a-link-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+    ],
+    "under-a-symlink-then-a-link-and-a-file-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+        ("file", "e/d", b"later"),
+    ],
+    "dir-then-a-link-over-it-under-a-symlink-then-a-link-under-it": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("dir", "e/d", None),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+        ("file", "e/d", b"later"),
+    ],
     # The same with no symlink: the held link's parent is there before the later
     # file under it, as the made link's is.
     "file-under-a-parent": [
@@ -5326,6 +5356,32 @@ _HELD_BACK_LINK_SHAPES = {
         ("file", "d", b"later"),
     ],
 }
+
+
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_a_file_written_through_a_symlink_is_the_runs_own(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    # `s/f` written through the archive's own `s -> e` is the file at `e/f`: a later
+    # `e/f/x` fails against it as it would against `e/f` written by that name, under
+    # every policy, rather than meeting it as the caller's file.
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("sym", "s", "e"),
+            ("file", "s/f", b"mine"),
+            ("file", "e/f/x", b"later"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, overwrite=overwrite, on_error=OnError.CONTINUE
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["s/f"] is ExtractionStatus.EXTRACTED
+    assert statuses["e/f/x"] is ExtractionStatus.FAILED
+    assert (dest / "e" / "f").read_bytes() == b"mine"
 
 
 def _extracted(dest: Path) -> dict[str, bytes | None]:

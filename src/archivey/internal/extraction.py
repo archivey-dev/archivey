@@ -538,6 +538,10 @@ class _Orphan:
     # first pass. If a later member replaced that link (``cancelled``), the made
     # run had failed this one at its place, as the name was a file then.
     parent_holder: _Orphan | None = None
+    # Where the link's name physically was when the first pass reserved it
+    # (``_reserve_orphan``): a directory probe reaches the link only there, however
+    # the archive spells either path (``_reservation_at``).
+    reserved_at: Path | None = None
 
 
 @dataclass
@@ -3559,6 +3563,7 @@ class ExtractionCoordinator:
         state = self._state
         key = self._collision_key(orphan.dest_path)
         orphan.key = key
+        orphan.reserved_at = orphan.pinned_dest or self._physical_path(orphan.dest_path)
         previous = state.reservations.get(key)
         if previous is not None:
             if self._overwrite is not OverwritePolicy.REPLACE:
@@ -3671,10 +3676,10 @@ class ExtractionCoordinator:
         """The held-back link whose name ``path`` reaches (``_reserve_orphan``), or
         ``None``. A non-directory reaches it by collision key, as it would reach the
         made link's claim. A directory, or a parent a member implies, reaches it only
-        where an ``lstat`` would find the made link: at its own path, or under
-        another case on a filesystem that folds case (``_folds_case``). On a
-        case-sensitive filesystem ``H/`` beside the link ``h`` is another entry, as it
-        is beside a made one.
+        where an ``lstat`` would find the made link: where its name physically is,
+        however the archive spells either path, or under another case on a filesystem
+        that folds case (``_folds_case``). On a case-sensitive filesystem ``H/`` beside
+        the link ``h`` is another entry, as it is beside a made one.
 
         In the second pass, a link later in archive order than the held-back link of
         result index ``seen_by`` (by default the one attempted now,
@@ -3691,7 +3696,7 @@ class ExtractionCoordinator:
             seen_by = state.attempting
         if seen_by is not None and orphan.result_index > seen_by:
             return None
-        if not directory or orphan.dest_path == path:
+        if not directory or orphan.reserved_at == self._physical_path(path):
             return orphan
         return orphan if self._folds_case() else None
 
@@ -4670,9 +4675,27 @@ class ExtractionCoordinator:
         """Whether the entry at ``path`` (``st`` its ``lstat``) was there before this
         run, rather than written or created by it."""
         state = self._state
-        if path in state.written_paths or path in state.created_dirs:
+        if self._run_wrote(path) or path in state.created_dirs:
             return False
         return not (stat.S_ISDIR(st.st_mode) and self._is_run_directory(path, st))
+
+    def _run_wrote(self, path: Path) -> bool:
+        """Whether this run wrote the entry at ``path``, however the archive spelled
+        it: ``s/d`` written through the archive's own ``s -> e`` is the entry at
+        ``e/d``. The collision map finds the claim where it physically is, and the
+        claim counts only at that exact physical path, not under another case."""
+        state = self._state
+        written_paths = state.written_paths
+        if path in written_paths:
+            return True
+        if not state.collision_map or not path.is_relative_to(state.dest):
+            return False
+        claim = state.collision_map.get(self._collision_key(path))
+        return (
+            claim is not None
+            and claim.path in written_paths
+            and self._physical_path(claim.path) == self._physical_path(path)
+        )
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a parked superseded copy."""
@@ -4767,7 +4790,7 @@ class ExtractionCoordinator:
             # as a missing path. Nearest the root first, because that component is the
             # one that stops the rest.
             for component in (*reversed(path.parents), path):
-                if component in self._state.written_paths and not os.path.isdir(
+                if self._run_wrote(component) and not os.path.isdir(
                     long_path(component)
                 ):
                     raise ExtractionError(
