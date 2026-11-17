@@ -894,11 +894,60 @@ def test_symlink_rechecks_count_against_max_members(
     with (
         pytest.raises(
             ResourceLimitError,
-            match=f"Symlink recheck limit reached: max_members={limits.max_members}",
+            match=f"Symlink resolution limit reached: max_members={limits.max_members}",
         ),
         open_archive(io.BytesIO(raw), config=config) as reader,
     ):
         reader.members()
+
+
+def _long_routes(width: int, links: int) -> list[tuple[str, bytes | None]]:
+    """40 symlinks ``r{i} -> d/.../d/../.../../r{i+1}``, each ``width`` deep and
+    back, added last first so nothing is rechecked, then ``links`` symlinks
+    ``l{j} -> r0/x`` that each follow all 40. A few kilobytes of xz cost
+    ``links`` x 40 x ``width`` steps."""
+    hops = 40
+    route = [
+        (
+            f"./r{i}@symlink",
+            ("d/" * width + "../" * width + f"r{i + 1}").encode(),
+        )
+        for i in reversed(range(hops))
+    ]
+    return route + [(f"./l{j}@symlink", b"r0/x") for j in range(links)]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_steps_inside_followed_targets_count_against_max_members(pipe: bool) -> None:
+    """Without the charge, the first resolution of each symlink was free, and an
+    11 KB package listed for 49 s."""
+    limits = archivey.ListingLimits(max_members=2_000)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match="Symlink resolution limit reached: max_members=2000",
+        ),
+        open_archive(
+            _source(_deb(data=_long_routes(20, 20)), pipe),
+            streaming=pipe,
+            config=config,
+        ) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+
+
+def test_symlinks_that_follow_short_ones_stay_within_max_members() -> None:
+    """A usrmerge-style package: 10,000 symlinks that each follow ``lib ->
+    usr/lib`` list at the default limits."""
+    data = [("./usr/", None), ("./usr/lib/", None), ("./lib@symlink", b"usr/lib")]
+    data += [
+        (f"./usr/share/l{i}@symlink", f"../../lib/l{i}.so".encode())
+        for i in range(10_000)
+    ]
+    with open_archive(io.BytesIO(_deb(data=data, data_kind=""))) as reader:
+        assert len(reader.members()) > 10_000
 
 
 def test_symlink_rechecks_within_max_members_list_the_package() -> None:

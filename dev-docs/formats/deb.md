@@ -131,9 +131,20 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   600 x 600 stops in 0.98 s (21.9 s with no limit), 1,000 x 1,000 in 2.9 s. 20,000
   ordinary `usr/lib` symlinks list in 0.26 s with no recheck. No real package comes
   near the limit: a recheck happens only when a later symlink sits on an earlier
-  target's path. The first resolution of each symlink is not charged, and its index
-  entries cost memory per path step: 50,000 symlinks through a 40-symlink route take
-  4.9 s and 293 MiB before the cap stops the rechecks.
+  target's path.
+
+  Any resolution, not only a recheck, is charged for the steps it takes inside a target
+  it follows (review K5 on #1607). Each of 40 follows pushes the whole target it
+  follows, and every symlink routed through it walks it again, so N short symlinks
+  through 40 long ones cost N x 40 x K steps from a tar of N + 40 K segments, which xz
+  shrinks to almost nothing: an 11 KB package listed for 49 s. The walk over a path's
+  own segments stays free, so `libfoo.so -> libfoo.so.1` costs nothing and a symlink
+  that follows `lib -> usr/lib` costs 2. Measured (2026-11-17, `reader.members()`,
+  default limits): that 11 KB package is refused in 0.25 s; 100,000 symlinks that each
+  follow `lib -> usr/lib` list in 11.8 s, most of it tar parsing, using 200,000 of the
+  262,144 steps. The index still costs memory per recorded path step, which is linear in
+  the stored target text: 50,000 symlinks through a 40-symlink route take 4.9 s and 293
+  MiB before the cap stops the rechecks.
 
   This is stricter than `dpkg-deb -R`, which unpacks the data tar first, so there such a
   symlink points at nothing and `DEBIAN` is made after it only if nothing is there. The

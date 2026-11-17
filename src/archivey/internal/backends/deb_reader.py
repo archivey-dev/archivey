@@ -60,6 +60,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -163,22 +164,31 @@ class _DataTree:
     symlink's target resolution looked up, and ``add_symlink`` resolves again the
     targets of the symlinks that looked up the new symlink's path, and only those.
 
-    Each later symlink can redirect every earlier one, so the rechecks can cost
-    links x links resolutions. Their segment steps count against ``budget``
-    (``ListingLimits.max_members``), and ``ResourceLimitError`` is raised when it is
-    spent. The unit is a step, not a resolution as in ``LinkWatch``: one resolution
-    here can follow 40 symlinks, so a count of resolutions would allow 40 times the
+    Two kinds of work grow faster than the tar, and both count against ``budget``
+    (``ListingLimits.max_members``), one per path step, with ``ResourceLimitError``
+    once it is spent:
+
+    - Every step taken inside a target the walk follows, in any resolution. Each
+      of 40 follows can push a long target again, and every symlink that routes
+      through it walks it again, so N short symlinks through 40 long ones cost
+      N x 40 x their length. A walk over the resolved path's own segments is free,
+      so an ordinary ``libfoo.so -> libfoo.so.1`` costs nothing.
+    - Every step of a recheck. Each later symlink can redirect every earlier one,
+      so the rechecks can cost links x links resolutions.
+
+    The unit is a step, not a resolution as in ``LinkWatch``: one resolution here
+    can follow 40 symlinks, so a count of resolutions would allow 40 times the
     work.
     """
 
     def __init__(self, budget: int | None) -> None:
         self._root = _Node()
         self._index: DependencyIndex[_Link] = DependencyIndex()
-        # Recheck steps left (None: no bound), and the limit they came from.
+        # Steps left (None: no bound), and the limit they came from.
         self._budget = budget
         self._limit = budget
-        # Segment steps taken by every resolution so far, to charge rechecks.
-        self._steps = 0
+        # Steps over the resolved paths' own segments, which only a recheck pays.
+        self._own_steps = 0
 
     def resolve(
         self, path: str, *, follow_last: bool, base: list[str] | None = None
@@ -209,8 +219,15 @@ class _DataTree:
         starts = [indexed[-1]] if indexed else []
         visited: list[IndexNode[_Link]] = []
         follows = 0
+        # The pending segments that are the path's own: the bottom of the stack,
+        # under every target a follow pushed.
+        own = len(pending)
         while pending:
-            self._steps += 1
+            if len(pending) <= own:
+                own -= 1
+                self._own_steps += 1
+            else:
+                self._spend(1)
             segment = pending.pop()
             if segment == "..":
                 if out:
@@ -373,22 +390,29 @@ class _DataTree:
         if where:
             self._parent(where)
 
+    def _spend(self, steps: int) -> None:
+        """Charge ``steps`` path steps to the budget."""
+        if self._budget is None:
+            return
+        self._budget -= steps
+        if self._budget < 0:
+            raise ResourceLimitError(
+                f"Symlink resolution limit reached: max_members={self._limit} (the "
+                "symlinks of the Debian package data tar follow each other, or later "
+                "ones redirect earlier ones, and resolving them took more path steps "
+                "than that)"
+            )
+
     def _recheck(self, affected: list[_Link]) -> bool:
         """Resolve ``affected`` again, the symlinks whose targets looked up a path
-        that changed, and say whether one of them lands in ``DEBIAN`` now. The steps
-        count against the budget."""
+        that changed, and say whether one of them lands in ``DEBIAN`` now. Every
+        step counts against the budget: the followed ones as they are taken, the
+        target's own ones here, at least one per recheck."""
         for earlier in affected:
-            if self._budget is not None and self._budget <= 0:
-                raise ResourceLimitError(
-                    f"Symlink recheck limit reached: max_members={self._limit} (later "
-                    "symlinks of the Debian package data tar redirect earlier ones, "
-                    "and rechecking those took more path steps than that)"
-                )
-            before = self._steps
+            before = self._own_steps
             if self._lands_in_control(earlier):
                 return True
-            if self._budget is not None:
-                self._budget -= max(1, self._steps - before)
+            self._spend(max(1, self._own_steps - before))
         return False
 
 
@@ -680,7 +704,7 @@ class DebReader(SequentialReader):
                         + (
                             ""
                             if member.type is MemberType.SYMLINK
-                            else f" (a hard link to a symlink, extracted as -> {text})"
+                            else f" (a hard link to a symlink, extracted as -> {quoted(text)})"
                         ),
                         member_name=member.name,
                         link_target=member.link_target,

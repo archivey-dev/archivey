@@ -79,9 +79,10 @@ data-tar symlink, and for a data-tar directory member at a symlink's path. A fil
 hard link at a symlink's path SHALL leave that symlink in the check. A data-tar hard
 link whose target is a data-tar symlink, through any number of hard links, SHALL be
 checked as a symlink with that symlink's target text at the hard link's own path, as
-extraction writes it. The path steps of resolving earlier targets again SHALL count
-against `ListingLimits.max_members`, and `ResourceLimitError` naming `max_members` SHALL
-be raised when they cross it. It SHALL raise `CorruptionError` in the same way for a
+extraction writes it. The path steps taken inside a symlink target that a resolution
+follows, and every path step of resolving earlier targets again, SHALL count against
+`ListingLimits.max_members`, and `ResourceLimitError` naming `max_members` SHALL be
+raised when they cross it. It SHALL raise `CorruptionError` in the same way for a
 control-tar member, or hard link target, whose `DEBIAN/`-prefixed path, read the same
 way but not folded, does not have exactly `DEBIAN` as its first segment. `dpkg-deb -R`
 refuses these packages: it will not unpack the control tar into a `DEBIAN` path that the
@@ -113,6 +114,7 @@ the control file and `md5sums`, held whole, SHALL together count against
 | A data symlink `s -> .`, a hard link `h` to it, then `h/DEBIAN/postinst` | `CorruptionError` naming `h/DEBIAN/postinst` |
 | A data symlink `y -> a/b`, then a directory `y/` or a symlink `y` (or a directory `y/`, or `y/f`, then a symlink `y`) | `CorruptionError` naming the later of the two |
 | 600 data symlinks through `a0/a1/.../a599`, then `a0 -> .`, ..., `a599 -> .` | `ResourceLimitError` naming `max_members` at the default limits |
+| 40 data symlinks each 2,000 segments deep and back, then 200 short symlinks that follow all 40 | `ResourceLimitError` naming `max_members` at the default limits |
 | A data tar holding `usr\..\DEBIAN/postinst`, `C:/DEBIAN/control`, `DEBIAN./postinst`, `DEBIAN /postinst` or `debian/postinst` | `CorruptionError`, stricter than `dpkg-deb -R` |
 | A control tar holding `../usr/x` | `CorruptionError` naming `DEBIAN/../usr/x` |
 | A control hard link to `../usr/a` | `CorruptionError` naming the link and its target |
