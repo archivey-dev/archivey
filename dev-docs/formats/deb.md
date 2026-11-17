@@ -111,12 +111,33 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   or from the root when the target is rooted), and at most 40 targets are followed, as
   Linux does. A data symlink whose target lands in `DEBIAN` is refused
   (`member_name` and `link_target`), and so is a member or a hard link target that lands
-  there through an earlier symlink (`d -> .`, then `d/DEBIAN/control`). This is
-  stricter than `dpkg-deb -R`, which unpacks the data tar first, so there such a symlink
-  points at nothing and `DEBIAN` is made after it only if nothing is there. The other
-  option, leaving symlinks alone and narrowing "the two tars stay apart" to names and
-  hard links, was rejected: the bypass writes a control file on disk. Reopen if a real
-  package ships a data symlink into `DEBIAN`.
+  there through an earlier symlink (`d -> .`, then `d/DEBIAN/control`).
+
+  A later symlink can move an earlier one's target: `x -> y/DEBIAN/control` names a
+  data path until `y -> .` arrives. As extraction's `LinkWatch` does, the tree keeps a
+  dependency index (`internal/dependency_index.py`, shared with `LinkWatch`) of the
+  paths each target's resolution looked up, and a new symlink resolves again only the
+  targets that looked up its path. The new symlink, the one that completes the crossing,
+  is refused: re-checking at the end of the data tar would be too late, because
+  extraction has already written `x`. Each later symlink can move every earlier one, so
+  a crafted tar makes this links x links resolutions; the path steps count against
+  `ListingLimits.max_members` and the walk raises `ResourceLimitError` when they cross
+  it (maintainer's call on #1607: a re-check with a work cap, following `LinkWatch`,
+  which bounds its rechecks by `ExtractionLimits.max_entries`). The unit is a path step,
+  not a resolution as in `LinkWatch`: one resolution here can follow 40 symlinks, so
+  counting resolutions would allow 40 times the work. Measured on the tree alone at the
+  default limit (2026-11-17): 1,000 symlinks through `p`, then `p` replaced 1,000 times,
+  stops in 0.36 s, and 50,000 x 50,000 in 1.1 s; 1,000 links behind a 40-link chain
+  whose tail is replaced 1,000 times stops in 0.32 s. With no limit, 1,000 x 1,000 takes
+  6.5 s. 20,000 ordinary `usr/lib` symlinks list in 0.23 s with no recheck. No real
+  package comes near the limit: a recheck happens only when a later symlink sits on an
+  earlier target's path.
+
+  This is stricter than `dpkg-deb -R`, which unpacks the data tar first, so there such a
+  symlink points at nothing and `DEBIAN` is made after it only if nothing is there. The
+  other option, leaving symlinks alone and narrowing "the two tars stay apart" to names
+  and hard links, was rejected: the bypass writes a control file on disk. Reopen if a
+  real package ships a data symlink into `DEBIAN`.
 
   Some data names are refused that `dpkg-deb -R` unpacks, because GNU tar on Linux
   writes them byte for byte, under a literal directory:

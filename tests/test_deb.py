@@ -554,6 +554,107 @@ def test_a_data_symlink_into_debian_is_refused(
     assert seen[-2:] == ["usr/a", "up"]
 
 
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("data", "culprit"),
+    [
+        pytest.param(
+            [("./x@symlink", b"y/DEBIAN/control"), ("./y@symlink", b".")],
+            ("y", "."),
+            id="root",
+        ),
+        pytest.param(
+            [
+                ("./usr/", None),
+                ("./x@symlink", b"usr/y/DEBIAN/control"),
+                ("./usr/y@symlink", b".."),
+            ],
+            ("usr/y", ".."),
+            id="nested",
+        ),
+        pytest.param(
+            [
+                ("./x@symlink", b"a/DEBIAN"),
+                ("./a@symlink", b"b/c"),
+                ("./b@symlink", b"."),
+                ("./c@symlink", b"."),
+            ],
+            ("c", "."),
+            id="chain",
+        ),
+        pytest.param(
+            [
+                ("./y@symlink", b"usr"),
+                ("./x@symlink", b"y/DEBIAN"),
+                ("./y@symlink", b"."),
+            ],
+            ("y", "."),
+            id="replaced",
+        ),
+    ],
+)
+def test_a_later_data_symlink_that_sends_an_earlier_one_into_debian_is_refused(
+    data: list[tuple[str, bytes | None]], culprit: tuple[str, str], pipe: bool
+) -> None:
+    """``x -> y/DEBIAN/control`` names a data path until ``y -> .`` arrives; then
+    extraction would leave a data symlink to the control file. The symlink that
+    completes the crossing is refused, before it is listed or extracted."""
+    seen = []
+    with (
+        pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
+    assert (caught.value.member_name, caught.value.link_target) == culprit
+    assert "x" in seen
+    earlier = [n.removeprefix("./").removesuffix("@symlink") for n, _ in data[:-1]]
+    assert seen.count(culprit[0]) == earlier.count(culprit[0])
+
+
+def _redirected(links: int, redirects: int) -> list[tuple[str, bytes | None]]:
+    """``links`` symlinks through ``p``, then ``p`` replaced ``redirects`` times: each
+    replacement moves every one of them, so each is rechecked."""
+    return [(f"./x{i}@symlink", f"p/q/{i}".encode()) for i in range(links)] + [
+        ("./p@symlink", f"s{j}".encode()) for j in range(redirects)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("max_members", "links"),
+    [pytest.param(300, 40, id="small-limit"), pytest.param(None, 600, id="default")],
+)
+def test_symlink_rechecks_count_against_max_members(
+    max_members: int | None, links: int
+) -> None:
+    """Rechecking costs up to links x redirects resolutions; their path steps count
+    against max_members, so a crafted data tar stops at the limit, in about a second
+    at the default, rather than running for minutes."""
+    raw = _deb(data=_redirected(links, links))
+    limits = archivey.ListingLimits()
+    if max_members is not None:
+        limits = archivey.ListingLimits(max_members=max_members)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match=f"Symlink recheck limit reached: max_members={limits.max_members}",
+        ),
+        open_archive(io.BytesIO(raw), config=config) as reader,
+    ):
+        reader.members()
+
+
+def test_symlink_rechecks_within_max_members_list_the_package() -> None:
+    raw = _deb(data=_redirected(4, 4))
+    limits = archivey.ListingLimits(max_members=300)
+    with open_archive(
+        io.BytesIO(raw), config=archivey.ArchiveyConfig(listing_limits=limits)
+    ) as reader:
+        names = [member.name for member in reader.members()]
+    assert names.count("p") == 4
+
+
 @pytest.mark.parametrize(
     "data",
     [

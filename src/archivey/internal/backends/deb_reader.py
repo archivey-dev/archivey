@@ -15,15 +15,15 @@ are read through :meth:`ReaderContext.open_nested`, in the one forward pass, so 
 As ``dpkg-deb`` does, the walk refuses a version other than ``2.x``, skips members
 whose name starts with ``_`` before the data tar, refuses any other member there, and
 stops after the data tar. It also keeps the two tars apart, as ``dpkg-deb -R`` does: a
-data-tar member that can extract to ``DEBIAN`` or under it, in any spelling or through
-a data-tar symlink, is refused, and so is a control-tar member that extracts outside
+data-tar member that can extract to ``DEBIAN`` or under it, in any spelling or through a
+data-tar symlink, is refused, and so is a control-tar member that extracts outside
 ``DEBIAN/``, a hard link in either tar whose target crosses to the other, and a data-tar
-symlink whose target lands in ``DEBIAN``. ``dpkg-deb -R`` unpacks the data tar
-first, then fails on a ``DEBIAN`` path the data tar made, and GNU tar refuses a ``..``
-name. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
-holds it (it is part of the control tar, so it arrives first) and gives each data file
-its digest in ``ArchiveMember.hashes``, which a read then checks. A line that is not an
-MD5 and a name is skipped, as ``dpkg --verify`` skips it.
+symlink whose target lands in ``DEBIAN``, at once or once a later symlink moves it.
+``dpkg-deb -R`` unpacks the data tar first, then fails on a ``DEBIAN`` path the data tar
+made, and GNU tar refuses a ``..`` name. ``DEBIAN/md5sums`` lists an MD5 per installed
+file: the walk holds it (it is part of the control tar, so it arrives first) and gives
+each data file its digest in ``ArchiveMember.hashes``, which a read then checks. A line
+that is not an MD5 and a name is skipped, as ``dpkg --verify`` skips it.
 
 Handbook page: ``dev-docs/formats/deb.md``.
 """
@@ -37,6 +37,7 @@ from typing import BinaryIO
 
 from archivey.exceptions import (
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -49,6 +50,7 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.dependency_index import DependencyIndex, IndexNode
 from archivey.internal.filters import (
     collision_key,
     extracted_top_key,
@@ -101,17 +103,28 @@ def _segments(path: str) -> list[str]:
     ]
 
 
+class _Link:
+    """A recorded symlink: what resolving its target needs."""
+
+    __slots__ = ("directory", "rooted", "target")
+
+    def __init__(self, directory: list[str], target: list[str], rooted: bool) -> None:
+        # The folded segments of the symlink's directory, its target's segments, and
+        # whether the target is rooted.
+        self.directory = directory
+        self.target = target
+        self.rooted = rooted
+
+
 class _Node:
     """A directory of the data tree, in a trie of the data tar's symlinks: the
-    children by folded name, and the target when this path is a symlink."""
+    children by folded name, and the symlink when this path is one."""
 
     __slots__ = ("children", "link")
 
     def __init__(self) -> None:
         self.children: dict[str, _Node] = {}
-        # (the folded segments of the symlink's directory, its target's segments,
-        # whether the target is rooted)
-        self.link: tuple[list[str], list[str], bool] | None = None
+        self.link: _Link | None = None
 
 
 class _DataTree:
@@ -125,10 +138,28 @@ class _DataTree:
     Names are compared folded, as a case-insensitive filesystem would. The walk of
     a path costs one dictionary step per segment, and at most
     ``_MAX_SYMLINK_STEPS`` targets are followed.
+
+    A symlink stays on disk, so a later symlink can change where an earlier one's
+    target lands: ``x -> y/DEBIAN/control``, then ``y -> .``. As extraction's
+    ``LinkWatch`` does, the tree keeps a :class:`DependencyIndex` of the paths each
+    symlink's target resolution looked up, and ``add_symlink`` resolves again the
+    targets of the symlinks that looked up the new symlink's path, and only those.
+    Each later symlink can redirect every earlier one, so the rechecks can cost
+    links x links resolutions. Their segment steps count against ``budget``
+    (``ListingLimits.max_members``), and ``ResourceLimitError`` is raised when it is
+    spent. The unit is a step, not a resolution as in ``LinkWatch``: one resolution
+    here can follow 40 symlinks, so a count of resolutions would allow 40 times the
+    work.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, budget: int | None) -> None:
         self._root = _Node()
+        self._index: DependencyIndex[_Link] = DependencyIndex()
+        # Recheck steps left (None: no bound), and the limit they came from.
+        self._budget = budget
+        self._limit = budget
+        # Segment steps taken by every resolution so far, to charge rechecks.
+        self._steps = 0
 
     def resolve(
         self, path: str, *, follow_last: bool, base: list[str] | None = None
@@ -138,39 +169,70 @@ class _DataTree:
 
         With ``follow_last`` false, the last segment is not followed: the member
         at ``path`` replaces a symlink there, as extraction does."""
-        pending = _segments(path)
-        pending.reverse()  # popped from the end
+        return self._resolve(_segments(path), follow_last, base, None)
+
+    def _resolve(
+        self,
+        segments: list[str],
+        follow_last: bool,
+        base: list[str] | None,
+        link: _Link | None,
+    ) -> list[str]:
+        """``resolve`` of ``segments``. With ``link``, the paths the walk looked up
+        are recorded in the dependency index as ``link``'s."""
+        index = self._index
+        pending = list(reversed(segments))  # popped from the end
         out = list(base) if base else []
         nodes = self._walk(out)
-        steps = 0
+        # The index nodes along ``out``, while recording, and those the walk started
+        # from, which ``record`` does not keep unless the walk looked them up.
+        indexed = index.path(out) if link is not None else []
+        starts = [indexed[-1]] if indexed else []
+        visited: list[IndexNode[_Link]] = []
+        follows = 0
         while pending:
+            self._steps += 1
             segment = pending.pop()
             if segment == "..":
                 if out:
                     out.pop()
                     nodes.pop()
+                    if indexed:
+                        indexed.pop()
                 continue
             key = _fold(segment)
             parent = nodes[-1]
             node = parent.children.get(key) if parent is not None else None
+            if indexed:
+                visited.append(indexed[-1].child(key))
             if (
                 node is not None
                 and node.link is not None
                 and (pending or follow_last)
-                and steps < _MAX_SYMLINK_STEPS
+                and follows < _MAX_SYMLINK_STEPS
             ):
-                steps += 1
-                directory, target, rooted = node.link
-                pending.extend(reversed(target))
-                if rooted:
+                follows += 1
+                followed = node.link
+                pending.extend(reversed(followed.target))
+                if followed.rooted:
                     out = []
-                    nodes = self._walk(out)
-                elif out != directory:
-                    out = list(directory)
-                    nodes = self._walk(out)
+                elif out != followed.directory:
+                    out = list(followed.directory)
+                else:
+                    continue
+                nodes = self._walk(out)
+                if indexed:
+                    indexed = index.path(out)
+                    starts.append(indexed[-1])
                 continue
             out.append(key)
             nodes.append(node)
+            if indexed:
+                indexed.append(visited[-1])
+        if link is not None:
+            index.record(link, visited)
+            for start in starts:
+                index.prune(start)
         return out
 
     def _walk(self, folded: list[str]) -> list[_Node | None]:
@@ -181,21 +243,43 @@ class _DataTree:
             nodes.append(parent.children.get(key) if parent is not None else None)
         return nodes
 
-    def add_symlink(self, name: str, target: str) -> list[str]:
-        """Record the symlink ``name`` and return the folded segments of where its
-        target lands."""
+    def _lands_in_control(self, link: _Link) -> bool:
+        """Whether ``link``'s target lands in ``DEBIAN`` now, the paths it looks up
+        recorded afresh."""
+        base = None if link.rooted else link.directory
+        return self._resolve(link.target, True, base, link)[:1] == [_CONTROL_KEY]
+
+    def add_symlink(self, name: str, target: str) -> bool:
+        """Record the symlink ``name`` and say whether a symlink's target lands in
+        ``DEBIAN``: this one's, or an earlier one's that this one redirects."""
         where = self.resolve(name, follow_last=False)
         if not where:
-            return self.resolve(target, follow_last=True)
-        directory = where[:-1]
+            return self.resolve(target, follow_last=True)[:1] == [_CONTROL_KEY]
         node = self._root
         for key in where:
             node = node.children.setdefault(key, _Node())
-        rooted = is_rooted(target)
-        node.link = (directory, _segments(target), rooted)
-        return self.resolve(
-            target, follow_last=True, base=None if rooted else directory
-        )
+        if node.link is not None:
+            # The new symlink replaces this one, whose target no longer matters.
+            self._index.forget(node.link)
+        # The symlinks whose targets looked up this path: a symlink here moves them.
+        affected = self._index.dependents(where)
+        link = _Link(where[:-1], _segments(target), is_rooted(target))
+        node.link = link
+        if self._lands_in_control(link):
+            return True
+        for earlier in affected:
+            if self._budget is not None and self._budget <= 0:
+                raise ResourceLimitError(
+                    f"Symlink recheck limit reached: max_members={self._limit} (later "
+                    "symlinks of the Debian package data tar redirect earlier ones, "
+                    "and rechecking those took more path steps than that)"
+                )
+            before = self._steps
+            if self._lands_in_control(earlier):
+                return True
+            if self._budget is not None:
+                self._budget -= max(1, self._steps - before)
+        return False
 
 
 # dpkg-deb accepts these compressions for each tar.
@@ -417,13 +501,15 @@ class DebReader(SequentialReader):
         whose target lands in ``DEBIAN`` is refused (``foo -> DEBIAN``,
         ``usr/l -> ../DEBIAN``, ``x -> /DEBIAN/control``), and so is a member or a
         hard-link target that lands there through an earlier symlink (``d -> .``,
-        then ``d/DEBIAN/control``). Otherwise extraction writes through the symlink
+        then ``d/DEBIAN/control``). A later symlink that sends an earlier one's
+        target there is refused too (``x -> y/DEBIAN/control``, then ``y -> .``
+        refuses ``y``). Otherwise extraction writes through the symlink
         into a control file, and a read of the symlink returns one. ``dpkg-deb -R``
         unpacks the data tar first, so there such a symlink names nothing; refusing
         it is stricter, as the spellings above are.
         """
         context = self._context
-        tree = _DataTree()
+        tree = _DataTree(context.config.listing_limits.max_members)
         for span in context.open_nested(data, fmt):
             member = span.member
             if extracted_top_key(member.name) == _CONTROL_KEY or tree.resolve(
@@ -452,8 +538,7 @@ class DebReader(SequentialReader):
             if (
                 member.type is MemberType.SYMLINK
                 and member.link_target is not None
-                and tree.add_symlink(member.name, member.link_target)[:1]
-                == [_CONTROL_KEY]
+                and tree.add_symlink(member.name, member.link_target)
             ):
                 raise CorruptionError(
                     "Debian package data tar has a symlink to a path in DEBIAN/, the "
