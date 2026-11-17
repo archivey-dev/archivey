@@ -792,6 +792,80 @@ def test_a_data_member_under_a_data_symlink_is_refused_whatever_is_selected(
     assert not (tmp_path / "y" / "z").is_symlink()
 
 
+_HARD_LINKS_TO_SYMLINKS = [
+    pytest.param(
+        [("./s@symlink", b"."), ("./h@link", b"./s"), ("./h/DEBIAN/postinst", b"x")],
+        "h/DEBIAN/postinst",
+        id="dot",
+    ),
+    pytest.param(
+        [
+            ("./a/", None),
+            ("./a/b/", None),
+            ("./a/b/x@symlink", b"../DEBIAN"),
+            ("./q/", None),
+            ("./q/h@link", b"./a/b/x"),
+        ],
+        "q/h",
+        id="shallower",
+    ),
+    pytest.param(
+        [
+            ("./a/", None),
+            ("./a/b/", None),
+            ("./a/b/x@symlink", b"../DEBIAN"),
+            ("./a/b/g@link", b"./a/b/x"),
+            ("./q/", None),
+            ("./q/h@link", b"./a/b/g"),
+        ],
+        "q/h",
+        id="chain",
+    ),
+]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(("data", "culprit"), _HARD_LINKS_TO_SYMLINKS)
+def test_a_hard_link_to_a_data_symlink_is_checked_as_a_symlink(
+    data: list[tuple[str, bytes | None]], culprit: str, pipe: bool
+) -> None:
+    """Extraction writes a hard link to a symlink, through any number of hard
+    links, as a symlink with the same target text, read from the hard link's own
+    directory: ``q/h -> ../DEBIAN`` names ``DEBIAN`` where ``a/b/x`` did not, and
+    ``h/DEBIAN/postinst`` lands in ``DEBIAN`` through ``h -> .``."""
+    with (
+        pytest.raises(CorruptionError, match="DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    assert caught.value.member_name == culprit
+
+
+@pytest.mark.parametrize("overwrite", ["error", "replace"])
+@pytest.mark.parametrize(("data", "culprit"), _HARD_LINKS_TO_SYMLINKS)
+def test_extraction_of_a_hard_link_to_a_symlink_leaves_debian_alone(
+    data: list[tuple[str, bytes | None]],
+    culprit: str,
+    overwrite: str,
+    tmp_path: Path,
+) -> None:
+    with (
+        pytest.raises(CorruptionError) as caught,
+        open_archive(io.BytesIO(_deb(data=[("./", None), *data]))) as reader,
+    ):
+        reader.extract_all(tmp_path, overwrite=overwrite)
+    assert caught.value.member_name == culprit
+    assert sorted(p.name for p in (tmp_path / "DEBIAN").iterdir()) == [
+        "control",
+        "md5sums",
+    ]
+    debian = (tmp_path / "DEBIAN").resolve()
+    for path in tmp_path.rglob("*"):
+        if path.is_symlink():
+            assert path.resolve() != debian, path
+
+
 def _redirected(links: int, redirects: int) -> list[tuple[str, bytes | None]]:
     """``links`` symlinks through ``a1/a2/.../aN``, then ``a1 -> .``, ``a2 -> .``
     and so on, ``redirects`` of them: each new symlink moves every one of the

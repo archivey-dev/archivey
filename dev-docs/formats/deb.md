@@ -167,6 +167,13 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   resolves it (`resolve_link_target_name`). `y -> a/b`, then `x -> y/../DEBIAN/control`
   is refused on the second: the read returned the control file.
 
+  A hard link whose target is a symlink, through any number of hard links, extracts as
+  a symlink with the same target text, read from the hard link's own directory
+  (`extraction.py` `_as_written`, as GNU tar does). The tree records it as that
+  symlink, through the same `add_symlink` and recheck path (review K4 on #1607: `q/h`
+  linked to `a/b/x -> ../DEBIAN` left `q/h -> ../DEBIAN`, and `s -> .`, `h` linked to
+  `s`, then `h/DEBIAN/postinst` wrote a maintainer script under the default policy).
+
   The other option was to track each view in its own tree and refuse when any lands
   in `DEBIAN`. A caller's selection is any subset, so the views multiply, and nothing
   real needs them. To see a symlink over a directory that only a member's parent made

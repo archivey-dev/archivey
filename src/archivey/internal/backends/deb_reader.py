@@ -106,14 +106,16 @@ def _segments(path: str) -> list[str]:
 class _Link:
     """A recorded symlink: what resolving its target needs."""
 
-    __slots__ = ("directory", "rooted", "target")
+    __slots__ = ("directory", "rooted", "target", "text")
 
-    def __init__(self, directory: list[str], target: list[str], rooted: bool) -> None:
-        # The folded segments of the symlink's directory, its target's segments, and
-        # whether the target is rooted.
+    def __init__(self, directory: list[str], text: str) -> None:
+        # The folded segments of the symlink's directory, its target's segments,
+        # whether the target is rooted, and the target as stored: a hard link to the
+        # symlink extracts as a symlink with this text.
         self.directory = directory
-        self.target = target
-        self.rooted = rooted
+        self.target = _segments(text)
+        self.rooted = is_rooted(text)
+        self.text = text
 
 
 class _Node:
@@ -142,16 +144,18 @@ class _DataTree:
     a path costs one dictionary step per segment, and at most
     ``_MAX_SYMLINK_STEPS`` targets are followed.
 
-    The check has to hold for every selection of members a caller extracts, not
-    only for the whole tar, so the caller keeps every path's meaning independent of
-    the selection: a member under a symlink of the tar is refused (``locate``),
-    and so is a symlink at the path of a directory or of another symlink, and a
-    directory at a symlink's path. Then a symlink left out of a selection leaves
-    nothing at its path, and a path through it fails on disk instead of landing
-    elsewhere. A file at a symlink's path replaces the symlink only when both are
-    extracted, so the tree keeps the symlink: a path through a file fails too. To
-    see a directory that only a member's parent makes, the trie holds a node for
-    every directory, not only for the symlinks.
+    The check has to hold for every selection of members a caller extracts, not only for
+    the whole tar, so the caller keeps every path's meaning independent of the
+    selection: a member under a symlink of the tar is refused (``locate``), and so is a
+    symlink at the path of a directory or of another symlink, and a directory at a
+    symlink's path. Then a symlink left out of a selection leaves nothing at its path,
+    and a path through it fails on disk instead of landing elsewhere. A file at a
+    symlink's path replaces the symlink only when both are extracted, so the tree keeps
+    the symlink: a path through a file fails too. A hard link to a symlink, through any
+    number of hard links, extracts as a symlink with the same target text, read from the
+    hard link's directory, so the tree records it as one. To see a directory that only a
+    member's parent makes, the trie holds a node for every directory, not only for the
+    symlinks.
 
     A symlink stays on disk, so a later symlink can change where an earlier one's
     target lands: ``x -> y/DEBIAN/control``, then ``y -> .``. As extraction's
@@ -310,8 +314,13 @@ class _DataTree:
 
     def has_symlink(self, where: list[str]) -> bool:
         """Whether the tree holds a symlink at ``where``."""
+        return self.symlink_text(where) is not None
+
+    def symlink_text(self, where: list[str]) -> str | None:
+        """The stored target of the symlink at ``where``, or ``None`` when the tree
+        holds none there."""
         node = self._find(where)
-        return node is not None and node.link is not None
+        return None if node is None or node.link is None else node.link.text
 
     def is_directory(self, where: list[str]) -> bool:
         """Whether a directory member, or a parent of a member, landed at ``where``."""
@@ -337,7 +346,7 @@ class _DataTree:
         node = self._parent(where).children.setdefault(where[-1], _Node())
         # The symlinks whose targets looked up this path: a symlink here moves them.
         affected = self._index.dependents(where)
-        link = _Link(where[:-1], _segments(target), is_rooted(target))
+        link = _Link(where[:-1], target)
         node.link = link
         return self._lands_in_control(link) or self._recheck(affected)
 
@@ -597,20 +606,21 @@ class DebReader(SequentialReader):
         ``DEBIAN/control`` would replace the real control file in the listing and in
         extraction, and a hard link would read a control file's bytes.
 
-        The same holds through the data tar's symlinks (``_DataTree``): a symlink
-        whose target lands in ``DEBIAN`` is refused (``foo -> DEBIAN``,
+        The same holds through the data tar's symlinks (``_DataTree``): a symlink whose
+        target lands in ``DEBIAN`` is refused (``foo -> DEBIAN``,
         ``usr/l -> ../DEBIAN``, ``x -> /DEBIAN/control``), and so is a member or a
-        hard-link target that lands there through an earlier symlink (``d -> .``,
-        then ``d/DEBIAN/control``). A later symlink that sends an earlier one's
-        target there is refused too (``x -> y/DEBIAN/control``, then ``y -> .``
-        refuses ``y``), and so is one whose target lands there lexically, as a
-        read of the symlink resolves it (``x -> y/../DEBIAN/control``). So that
-        this holds for every selection of members, a member under a data symlink is
-        refused, and so is a symlink at the path of a directory or another symlink
-        (``_DataTree``). Otherwise extraction writes through the symlink
-        into a control file, and a read of the symlink returns one. ``dpkg-deb -R``
-        unpacks the data tar first, so there such a symlink names nothing; refusing
-        it is stricter, as the spellings above are.
+        hard-link target that lands there through an earlier symlink (``d -> .``, then
+        ``d/DEBIAN/control``). A later symlink that sends an earlier one's target there
+        is refused too (``x -> y/DEBIAN/control``, then ``y -> .`` refuses ``y``), and
+        so is one whose target lands there lexically, as a read of the symlink resolves
+        it (``x -> y/../DEBIAN/control``). So that this holds for every selection of
+        members, a member under a data symlink is refused, and so is a symlink at the
+        path of a directory or another symlink (``_DataTree``). A hard link to a symlink
+        is checked as the symlink extraction makes of it (``q/h`` linked to
+        ``a/b/x -> ../DEBIAN`` names ``DEBIAN``). Otherwise extraction writes through
+        the symlink into a control file, and a read of the symlink returns one.
+        ``dpkg-deb -R`` unpacks the data tar first, so there such a symlink names
+        nothing; refusing it is stricter, as the spellings above are.
         """
         context = self._context
         tree = _DataTree(context.config.listing_limits.max_members)
@@ -648,15 +658,29 @@ class DebReader(SequentialReader):
                     member_name=member.name,
                     link_target=member.link_target,
                 )
-            if member.type is MemberType.SYMLINK and member.link_target is not None:
+            # Extraction makes a hard link to a symlink a symlink with the same
+            # target text, read from the hard link's own directory.
+            text = (
+                member.link_target
+                if member.type is MemberType.SYMLINK
+                else tree.symlink_text(tree.locate(member.link_target)[0])
+                if member.type is MemberType.HARDLINK and member.link_target
+                else None
+            )
+            if text is not None:
                 if tree.is_directory(where) or tree.has_symlink(where):
                     raise self._shared_path(member.name)
-                if tree.lands_in_control_lexically(
-                    where, member.link_target
-                ) or tree.add_symlink(where, member.link_target):
+                if tree.lands_in_control_lexically(where, text) or tree.add_symlink(
+                    where, text
+                ):
                     raise CorruptionError(
                         "Debian package data tar has a symlink to a path in DEBIAN/, "
-                        "the directory of the control files",
+                        "the directory of the control files"
+                        + (
+                            ""
+                            if member.type is MemberType.SYMLINK
+                            else f" (a hard link to a symlink, extracted as -> {text})"
+                        ),
                         member_name=member.name,
                         link_target=member.link_target,
                     )
