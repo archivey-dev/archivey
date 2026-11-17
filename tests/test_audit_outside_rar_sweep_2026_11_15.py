@@ -20,7 +20,7 @@ from archivey import (
     TruncatedError,
     open_archive,
 )
-from tests.conftest import requires_binary, requires_unrar_cli, unrar_reads_from_pipes
+from tests.conftest import requires_unrar_cli, unrar_reads_from_pipes
 from tests.test_rar_forward import _pipe
 
 pytestmark = pytest.mark.skipif(
@@ -28,7 +28,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@requires_binary("rar")
 @requires_unrar_cli()
 @pytest.mark.xfail(
     strict=True,
@@ -36,14 +35,8 @@ pytestmark = pytest.mark.skipif(
 )
 def test_a_truncated_pipe_member_never_verifies_zero_padding(tmp_path: Path) -> None:
     payload = bytes(6 << 20)
-    (tmp_path / "zeros").write_bytes(payload)
-    subprocess.run(
-        ["rar", "a", "-cfg-", "-idq", "-ma5", "-m0", "a.rar", "zeros"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-    )
-    cut = (tmp_path / "a.rar").read_bytes()[: 5 << 20]
+    # Built by hand, as ``rar a -ma5 -m0`` stores it: CI never installs the RAR writer.
+    cut = _rar5(payload)[: 5 << 20]
     path = tmp_path / "cut.rar"
     path.write_bytes(cut)
     oracle = subprocess.run(
@@ -83,9 +76,13 @@ def _block(body: bytes) -> bytes:
     return struct.pack("<I", zlib.crc32(framed)) + framed
 
 
-def _padded_rar5(payload: bytes) -> bytes:
-    # FILE with data and an extra area holding one padding byte. The native walk
-    # permits this byte, and RARLAB unrar tests the complete member successfully.
+def _rar5(payload: bytes, *, padded: bool = False) -> bytes:
+    """A stored RAR5 archive with one member ``a`` and a CRC32.
+
+    With ``padded``, the FILE header has an extra area holding one padding byte. The
+    native walk permits this byte, and RARLAB unrar tests the complete member
+    successfully.
+    """
     fields = (
         _vint(4)  # file flags: CRC32
         + _vint(len(payload))
@@ -99,7 +96,12 @@ def _padded_rar5(payload: bytes) -> bytes:
     return (
         b"Rar!\x1a\x07\x01\x00"
         + _block(b"\x01\x00\x00")  # MAIN
-        + _block(b"\x02\x03\x01" + _vint(len(payload)) + fields + b"\x00")
+        + _block(
+            (b"\x02\x03\x01" if padded else b"\x02\x02")  # type, flags, extra size
+            + _vint(len(payload))
+            + fields
+            + (b"\x00" if padded else b"")
+        )
         + payload
         + _block(b"\x05\x00\x00")  # ENDARC
     )
@@ -108,11 +110,12 @@ def _padded_rar5(payload: bytes) -> bytes:
 @requires_unrar_cli()
 @pytest.mark.xfail(
     strict=True,
+    raises=CorruptionError,
     reason="R2: Splitting a RAR5 member rejects extra-area padding that unrar accepts",
 )
 def test_extra_area_padding_survives_a_rolling_volume_split(tmp_path: Path) -> None:
     payload = bytes(range(251)) * 40
-    raw = _padded_rar5(payload)
+    raw = _rar5(payload, padded=True)
     path = tmp_path / "padded.rar"
     path.write_bytes(raw)
     subprocess.run(

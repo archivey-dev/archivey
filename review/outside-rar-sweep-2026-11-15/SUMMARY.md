@@ -20,7 +20,7 @@ less than one second here. The scripts below run from the repository root, with 
 - Severity: high
 - Status: RAN (on main at 6476c96cb6dee34a37ffd277e331eaf630e67acf)
 - Where: `src/archivey/internal/backends/rar_forward_reader.py:_PaddedSpan.read`,
-  `_ForwardPass._release_early`, `RarForwardReader._plan` (lines 196, 292, 903).
+  `_ForwardPass._release_early`, `RarForwardReader._plan` (lines 196, 264, 903).
 - Input: `rar a -cfg- -ma5 -m0 a.rar zeros`, where `zeros` holds 6 MiB of zeros.
   Cut the archive to 5 MiB. Open as a non-seekable source with `streaming=True` and
   `SpoolLimits(max_bytes=2 << 20)`. Read the first member, then close the pass.
