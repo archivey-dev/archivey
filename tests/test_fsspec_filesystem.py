@@ -214,15 +214,16 @@ LINKS_AND_COLLISIONS = [
     ("sym", "dl", "d"),  # a symlink to a directory
     ("file", "p", b"file p"),
     ("file", "p/q", b"under a file"),
-    # Paths through the archive's own symlinks, written where the link leads.
-    ("file", "dl/y", b"through dl"),  # written as d/y
-    ("dir", "dl/sub", ""),  # d/sub
-    ("file", "dl/new/z", b"new dir"),  # d/new/z: a directory made through the link
+    # Paths through the archive's own symlinks: extraction refuses each of them, and
+    # the tree leaves each out.
+    ("file", "dl/y", b"through dl"),
+    ("dir", "dl/sub", ""),
+    ("file", "dl/new/z", b"new dir"),  # a new directory under the link
     ("sym", "chain", "dl"),
-    ("file", "chain/w", b"two links"),  # d/w
+    ("file", "chain/w", b"two links"),
     ("dir", "s2", ""),
     ("sym", "s2/up", "../d"),
-    ("file", "s2/up/v", b"up and over"),  # d/v
+    ("file", "s2/up/v", b"up and over"),
     ("file", "d/y", b"collides"),  # d/y was written through dl
     ("sym", "dead", "nothere"),
     ("file", "dead/u", b"dangling"),  # refused: the link leads to no directory
@@ -467,8 +468,8 @@ def test_tree_matches_extraction_on_links_and_collisions(
 ) -> None:
     """Red with any of these rules removed: the collision key (the plain name in its
     place), the hard-link source check, the symlink target check, the refusal of a
-    path under a file, or following the archive's own links (a link treated as a
-    file, or its loop and way-out checks)."""
+    path under a file or under one of the archive's own links, or following a
+    symlink's target through the archive's links (its loop and way-out checks)."""
     data = _tar_entries(LINKS_AND_COLLISIONS)
     memfs.pipe("/d/lc.tar", data)
     dest = tmp_path / "out"

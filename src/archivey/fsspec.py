@@ -71,9 +71,11 @@ _LOOP = _Refusal("it resolves through a symlink loop")
 # Every symlink in the tree is one the archive made, and extraction never writes a
 # member through a symlink the same run created.
 _THROUGH_RUN_LINK = _Refusal("a parent of it is a symlink this extraction created")
-# A walk through a symlink whose target starts at ``/`` (kept as stored under
-# TRUSTED). The tree has no destination path, so it cannot tell a target that leads
-# back into the destination, which extraction follows, from one that leads out.
+# A symlink's target that runs through a symlink whose target starts at ``/`` (kept
+# as stored under TRUSTED). The tree has no destination path, so it cannot tell
+# whether that leads back into the destination, where extraction writes the first
+# symlink, or out, where extraction refuses it. (A member's own path under such a
+# link is ``_THROUGH_RUN_LINK``, as under any link of the archive.)
 _ROOTED = _Refusal(
     "it resolves through a symlink whose target starts at /, which the tree does not "
     "follow; extraction writes it only if that target leads back into the destination",
