@@ -4682,8 +4682,10 @@ class ExtractionCoordinator:
     def _run_wrote(self, path: Path) -> bool:
         """Whether this run wrote the entry at ``path``, however the archive spelled
         it: ``s/d`` written through the archive's own ``s -> e`` is the entry at
-        ``e/d``. The collision map finds the claim where it physically is, and the
-        claim counts only at that exact physical path, not under another case."""
+        ``e/d``. The collision map finds the claim where its file was written, and
+        the claim counts only at that exact physical path (``_Claim.physical``), not
+        under another case, and not where ``s/d`` resolves after ``s`` is
+        re-pointed."""
         state = self._state
         written_paths = state.written_paths
         if path in written_paths:
@@ -4694,7 +4696,7 @@ class ExtractionCoordinator:
         return (
             claim is not None
             and claim.path in written_paths
-            and self._physical_path(claim.path) == self._physical_path(path)
+            and claim.physical == self._physical_path(path)
         )
 
     def _occupied(self, path: Path) -> bool:

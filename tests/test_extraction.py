@@ -5329,6 +5329,16 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "s/d", "src1"),
         ("hard", "e/d/x", "src2"),
     ],
+    "under-a-symlink-then-the-symlink-re-pointed-then-a-link-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("sym", "s", "f"),
+        ("hard", "e/d/x", "src2"),
+    ],
     "under-a-symlink-then-a-link-and-a-file-under-its-name": [
         ("file", "src1", b"1"),
         ("file", "src2", b"2"),
@@ -5358,18 +5368,22 @@ _HELD_BACK_LINK_SHAPES = {
 }
 
 
+@pytest.mark.parametrize("re_point", [False, True])
 @pytest.mark.parametrize("overwrite", list(OverwritePolicy))
 def test_a_file_written_through_a_symlink_is_the_runs_own(
-    tmp_path: Path, overwrite: OverwritePolicy
+    tmp_path: Path, overwrite: OverwritePolicy, re_point: bool
 ) -> None:
     # `s/f` written through the archive's own `s -> e` is the file at `e/f`: a later
     # `e/f/x` fails against it as it would against `e/f` written by that name, under
-    # every policy, rather than meeting it as the caller's file.
+    # every policy, rather than meeting it as the caller's file. It still does after
+    # `s` is re-pointed, when `s/f` no longer leads there.
     archive = _tar_bytes(
         [
             ("dir", "e", None),
+            ("dir", "f", None),
             ("sym", "s", "e"),
             ("file", "s/f", b"mine"),
+            *([("sym", "s", "f")] if re_point else []),
             ("file", "e/f/x", b"later"),
         ]
     )
