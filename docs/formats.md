@@ -1322,9 +1322,9 @@ what `makecab` and `gcab` write.
 - **Member order:** the order of the cabinet's file table, which writers keep in the order
   the files' bytes are stored. When reading the files in table order would decode part of a
   folder twice (a table that is crafted or edited, for example reversed), the files are
-  listed by folder and by position in the folder instead, so each folder is decoded once,
-  unless a name is listed twice: then the table's order is kept, because the entry listed
-  last is the one that counts, and reading can be much slower.
+  listed by folder and by position in the folder instead, so each folder is decoded once.
+  When a name is listed twice, the entries that a later entry replaces come first, so each
+  folder is decoded at most twice and the entry listed last is still the one that counts.
 - **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
   `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
   name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last

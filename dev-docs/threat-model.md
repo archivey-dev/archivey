@@ -1324,12 +1324,7 @@ commands and full tables does the same, at about 2 µs an input byte
 chunks costs about 360 ns an input byte where a forward read walks its blocks for block
 points (restart points, random access), one Python step per chunk header, against
 liblzma's near-instant decode; a walk kept only to raise members from block checks gives
-up on such a stream (`_XzBlockWalker._chunk`). A cabinet whose file table is out of
-data order is listed in data order, so each folder decodes once, unless a name is listed
-twice: then table order is kept, and each member can decode its folder again from the
-start (150 members of 32 KiB in one LZX folder, reversed: 58 s against under 1 s;
-`STRICT` refuses such a cabinet at listing with `MEMBER_NAME_DUPLICATE_UNEXPECTED`)
-([CAB §6](formats/cab.md#6-decisions)). On declared seek demand,
+up on such a stream (`_XzBlockWalker._chunk`). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one
