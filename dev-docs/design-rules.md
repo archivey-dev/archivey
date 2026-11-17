@@ -173,9 +173,8 @@ excuse.
    crafted archives hit it (DR-5a).
 6. **Follow the official tool's behaviour** (DR-6), for every well-intentioned, correct
    input; a shape only crafted archives make may be refused (DR-6 scope). When this and
-   principle 5 conflict,
-   that needs a real decision. The factors below settle the clear cases; the rest go to
-   the maintainer.
+   principle 5 conflict, that needs a real decision. The factors below settle the clear
+   cases; the rest go to the maintainer.
 7. **Generalise fixes and approaches across all formats** (DR-0).
 
 The numbered rules below work the same way as the strong defaults: a rule settles a
@@ -523,10 +522,14 @@ stay silent for every codec, although `zstd`, `lz4` and `xz --format=lzma` refus
 one cross-codec rule, after the tape and block padding GNU `gzip` and `bzip2` accept
 (`formats/single-file.md` §6). Under the scope above, a member written through a symlink
 the same extraction created (`s -> e`, then `s/x`) is refused under every policy from
-the next minor release, though
-GNU `tar` and Python's `tarfile` write through it: tar-minefield's scans found the shape
-in none of 82,635 release tarballs, bsdtar refuses it, and a link that a later member
-re-points can no longer move where earlier members went (2026-11-17).
+0.5.0 (pull request #1622); until then archivey writes through it, as GNU `tar` and
+Python's `tarfile` do. Each condition was checked. No real archive has it: tar-minefield's
+scans found it in none of 82,635 release tarballs, and its case S19
+(`x/l -> ../d`, then `x/l/f`) has the verdict `reject`. It is simpler: the `archivey://`
+tree no longer follows links on a member's own path, and no write depends on where a link
+the archive made, and may later re-point, leads. bsdtar refuses it. It is safer: a member's
+path is fixed by its name and the caller's destination, so staying inside the destination
+no longer depends on resolving every archive link correctly at every write (2026-11-17).
 
 **Limits.** When this rule and DR-5 disagree, that is a
 [real decision](#when-consistency-and-the-official-tool-disagree): weigh the factors,
