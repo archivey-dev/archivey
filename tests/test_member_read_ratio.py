@@ -631,6 +631,15 @@ def test_a_read_to_an_unknown_end_asks_the_decoder_for_bounded_pieces() -> None:
     assert max(asked) <= bomb_tracker._READ_TO_END_STEP
 
 
+def test_a_read_to_an_unknown_end_asks_for_one_decoder_call_at_a_time() -> None:
+    """A step larger than one decoder call makes ``DecompressorStream`` join its calls
+    into each step before the guard joins the steps: two copies of the whole output,
+    which made reading a large ``.gz`` to the end about 25% slower than in 0.3.0."""
+    from archivey.internal.streams import decompressor_stream
+
+    assert bomb_tracker._READ_TO_END_STEP <= decompressor_stream._SEEKABLE_FEED_OUTPUT
+
+
 def test_a_relative_seek_in_steps_lands_where_it_was_asked() -> None:
     # The archive-wide room is one step, so the seek goes to the decoder in steps;
     # the offset left after them is applied once.
