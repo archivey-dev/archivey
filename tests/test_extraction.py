@@ -5381,6 +5381,31 @@ _HELD_BACK_LINK_SHAPES = {
         ("dir", "d", None),
         ("hard", "d/x", "src2"),
     ],
+    # A held link over a directory that holds an earlier held link: the made link
+    # meets a directory that is not empty, so it never gets the name, and a later
+    # directory and a file under it are written.
+    "over-a-directory-holding-a-held-link-then-the-directory-again": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "d", None),
+        ("hard", "d/y", "src1"),
+        ("hard", "d", "src2"),
+        ("dir", "d", None),
+        ("hard", "d/x", "src1"),
+        ("file", "d/z", b"z"),
+    ],
+    # A held link over one of the archive's symlinks to a directory: under REPLACE
+    # the made link replaces the symlink at its place, so a later file under it is
+    # not written through the symlink.
+    "over-a-symlink-to-a-directory-then-a-file-under-it": [
+        ("file", "src1", b"1"),
+        ("dir", "e", None),
+        ("dir", "b", None),
+        ("sym", "b/d", "../e"),
+        ("sym", "a", "b"),
+        ("hard", "a/d", "src1"),
+        ("file", "a/d/x", b"x"),
+    ],
     # The same with no symlink: the held link's parent is there before the later
     # file under it, as the made link's is.
     "file-under-a-parent": [
@@ -5419,6 +5444,36 @@ def test_a_file_written_through_a_symlink_is_the_runs_own(
     assert statuses["s/f"] is ExtractionStatus.EXTRACTED
     assert statuses["e/f/x"] is ExtractionStatus.FAILED
     assert (dest / "e" / "f").read_bytes() == b"mine"
+
+
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_a_held_link_over_a_callers_symlink_meets_it_at_its_place(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    # The caller's `d -> e` is at the held link's name. The made link meets it at
+    # its place, so a later `d/x` is not written through it into `e/`.
+    archive = _tar_bytes(
+        [("file", "src1", b"1"), ("hard", "d", "src1"), ("file", "d/x", b"x")]
+    )
+    runs = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        (dest / "e").mkdir(parents=True)
+        (dest / "d").symlink_to("e")
+        with open_archive(io.BytesIO(archive)) as reader:
+            report = reader.extract_all(
+                dest,
+                overwrite=overwrite,
+                on_error=OnError.CONTINUE,
+                members=(lambda m: not m.name.startswith("src")) if held else None,
+            )
+        statuses = [
+            (r.member.name, r.status.name)
+            for r in report.results
+            if not r.member.name.startswith("src")
+        ]
+        runs[held] = (statuses, sorted(os.listdir(dest / "e")))
+    assert runs[True] == runs[False]
 
 
 def test_a_copy_superseded_after_a_re_point_is_taken_back(tmp_path: Path) -> None:

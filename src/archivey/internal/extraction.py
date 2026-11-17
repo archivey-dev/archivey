@@ -3530,23 +3530,32 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
-        if (
-            self._reservation_at(dest_path, directory=False) is None
-            and self._is_real_directory(dest_path)
-            and not self._holds_held_link(dest_path)
-            and not self._prepare_destination(transformed, dest_path, atomic=True)
-        ):
-            # A directory at the link's name meets the policy here, as the made
-            # link meets it, before any member under that name comes: ERROR fails
-            # the link, SKIP leaves the directory, and REPLACE removes it, or fails
-            # the link if it is not empty. A directory that holds held-back links
-            # is left to the second pass, which makes them first and then fails
-            # this link against it, so OnError.STOP stops with them on disk as the
-            # made run does. Other entries the second pass meets as it makes the
-            # link: no member can be under them.
-            return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
+        # An entry at the link's name that a later member can reach under it meets
+        # the policy here, as the made link meets it, before any such member comes:
+        # ERROR fails the link, SKIP leaves the entry, and REPLACE removes it, or
+        # fails the link at a directory that is not empty. A directory that holds
+        # held-back links is not empty in the made run, so the link cannot get the
+        # name: it holds none, and the second pass makes those links first and
+        # then meets the directory, so OnError.STOP stops with them on disk as the
+        # made run does. Other entries (a file, a symlink to one) have nothing
+        # under them, and the second pass meets them as it makes the link.
+        holds_name = True
+        if self._reservation_at(dest_path, directory=False) is None:
+            if self._is_real_directory(dest_path):
+                if self._holds_held_link(dest_path):
+                    holds_name = False
+                elif not self._prepare_destination(transformed, dest_path, atomic=True):
+                    return ExtractionResult(
+                        original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                    )
+            elif (
+                os.path.islink(long_path(dest_path))
+                and os.path.isdir(long_path(dest_path))
+                and not self._prepare_destination(transformed, dest_path)
+            ):
+                return ExtractionResult(
+                    original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+                )
         requested = self._current.requested_path
         orphan = _Orphan(
             result_index,
@@ -3568,10 +3577,10 @@ class ExtractionCoordinator:
             orphan.parent_holder = self._reservation_at(component, directory=True)
         self._state.orphans.append(orphan)
         self._state.orphan_at[result_index] = orphan
-        self._reserve_orphan(orphan)
+        self._reserve_orphan(orphan, holds_name=holds_name)
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
 
-    def _reserve_orphan(self, orphan: _Orphan) -> None:
+    def _reserve_orphan(self, orphan: _Orphan, *, holds_name: bool = True) -> None:
         """Hold ``orphan``'s name from its place in archive order until the second
         pass makes it. First in archive order wins a name, so a later member that
         collides with it meets the overwrite policy as it would meet the link already
@@ -3583,6 +3592,10 @@ class ExtractionCoordinator:
         key = self._collision_key(orphan.dest_path)
         orphan.key = key
         orphan.reserved_at = orphan.pinned_dest or self._physical_path(orphan.dest_path)
+        if not holds_name:
+            # The made link would not get the name (``_write_hardlink``): later
+            # members do not meet it, and the second pass meets what is there.
+            return
         previous = state.reservations.get(key)
         if previous is not None:
             if self._overwrite is not OverwritePolicy.REPLACE:

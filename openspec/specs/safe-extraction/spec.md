@@ -546,14 +546,19 @@ find the made link: at its own path, or under another case on a filesystem that 
 case. A directory there meets the overwrite policy, and a member under the link's name
 fails, as a non-directory already extracted is in the way. The held-back link's parent
 directories SHALL be created at its place in archive order, as the made link's are, and
-the link SHALL be made where they physically were then. A directory at the link's name
-meets the overwrite policy at its place too, unless held-back links are under it. A
-later member at one of those parents meets a directory: a symlink there, or one of the
+the link SHALL be made where they physically were then. A later member at one of the
+link's parents meets a directory: a symlink there, or one of the
 archive's symlinks on the way that a later member re-points or replaces, does not move
 the link, and under `REPLACE` a directory that holds only held-back links counts as not
 empty. A held-back link under the name of an earlier held-back link that a later member
-replaced fails, as the made link did at its place. If the second pass cannot make the
-link, no other member gets the name, as with any refused member.
+replaced fails, as the made link did at its place. A directory, or a symlink to one,
+already at the held-back link's name meets the overwrite policy at the link's place in
+archive order, as the made link meets it, so a later member under that name is not
+written into it. A directory that holds held-back links is not empty in the made run:
+the held-back link does not hold its name, and the second pass makes those links first
+and then fails it (`ERROR`, `REPLACE`) or leaves it `NOT_OVERWRITTEN` (`SKIP`). If the
+second pass cannot make the link, no other member gets the name, as with any refused
+member.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
