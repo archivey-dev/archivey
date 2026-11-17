@@ -369,7 +369,7 @@ class ListingLimits:
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``
-    the path steps of resolving again the data tar's symlinks that a later symlink
+    the path steps of resolving again the data tar's symlinks that a later member
     moves, one per step, and refuses the package when they cross it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
     paths it finds, and the symlink targets it keeps for later, against

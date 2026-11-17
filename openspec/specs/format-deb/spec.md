@@ -69,9 +69,14 @@ when rooted, at most 40 per path) to a data-tar member's path and a hard link's 
 and to the target of every data-tar symlink made so far, which SHALL raise with
 `member_name` and `link_target`. When a later symlink moves an earlier symlink's target
 into `DEBIAN`, the error SHALL name the later symlink, which completes the crossing,
-before that symlink is listed. The path steps of resolving earlier targets again SHALL
-count against `ListingLimits.max_members`, and `ResourceLimitError` naming
-`max_members` SHALL be raised when they cross it. It
+before that symlink is listed. A later file, hard link or other non-directory member at
+a symlink's path replaces that symlink, and when that moves an earlier symlink's target
+into `DEBIAN` the error SHALL name that member. A data-tar directory member at a
+symlink's path, and a data-tar symlink at the path of a directory member or of a
+member's parent, SHALL raise `CorruptionError` naming the later of the two: which one
+extraction keeps depends on the overwrite policy. The path steps of resolving earlier
+targets again SHALL count against `ListingLimits.max_members`, and
+`ResourceLimitError` naming `max_members` SHALL be raised when they cross it. It
 SHALL raise `CorruptionError` in the same way for a control-tar member, or hard link
 target, whose `DEBIAN/`-prefixed path, read the same way but not folded, does not have
 exactly `DEBIAN` as its first segment. `dpkg-deb -R` refuses these packages: it will not
@@ -97,6 +102,8 @@ size before it is read.
 | A data symlink to `DEBIAN`, `../DEBIAN`, `/DEBIAN/control` or `debian` | `CorruptionError` naming the symlink and its target, stricter than `dpkg-deb -R` |
 | A data symlink `d -> .`, then `d/DEBIAN/control` | `CorruptionError` naming `d/DEBIAN/control` |
 | A data symlink `x -> y/DEBIAN/control`, then `y -> .` (or `x -> usr/y/DEBIAN/control`, then `usr/y -> ..`) | `CorruptionError` naming `y` (`usr/y`) and its target |
+| A data symlink `y -> a/b`, then `x -> y/../DEBIAN/control`, then a file or hard link `y` | `CorruptionError` naming `y` |
+| A data symlink `y -> a/b`, then a directory `y/` (or a directory `y/`, or `y/f`, then a symlink `y`) | `CorruptionError` naming the later of the two |
 | 600 data symlinks through `p`, then `p` replaced 600 times | `ResourceLimitError` naming `max_members` at the default limits |
 | A data tar holding `usr\..\DEBIAN/postinst`, `C:/DEBIAN/control`, `DEBIAN./postinst`, `DEBIAN /postinst` or `debian/postinst` | `CorruptionError`, stricter than `dpkg-deb -R` |
 | A control tar holding `../usr/x` | `CorruptionError` naming `DEBIAN/../usr/x` |

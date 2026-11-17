@@ -612,6 +612,152 @@ def test_a_later_data_symlink_that_sends_an_earlier_one_into_debian_is_refused(
     assert seen.count(culprit[0]) == earlier.count(culprit[0])
 
 
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./x@symlink", b"y/../DEBIAN/control"),
+                ("./y", b"f"),
+            ],
+            id="file",
+        ),
+        pytest.param(
+            [
+                ("./t", b"f"),
+                ("./y@symlink", b"a/b"),
+                ("./x@symlink", b"y/../DEBIAN/control"),
+                ("./y@link", b"t"),
+            ],
+            id="hard-link",
+        ),
+    ],
+)
+def test_a_member_that_replaces_a_data_symlink_rechecks_earlier_ones(
+    data: list[tuple[str, bytes | None]], pipe: bool
+) -> None:
+    """``x -> y/../DEBIAN/control`` lands in ``a/`` while ``y -> a/b``. A file or a
+    hard link named ``y`` replaces that symlink in extraction, under every overwrite
+    policy, and ``x`` then names the control file: ``y`` is refused."""
+    seen = []
+    with (
+        pytest.raises(CorruptionError, match="replaces a symlink") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
+    assert caught.value.member_name == "y"
+    assert seen.count("y") == 1 and "x" in seen
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("data", "culprit", "message"),
+    [
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./y/", None),
+                ("./y/z@symlink", b"../DEBIAN"),
+                ("./y/z/control", b"EVIL\n"),
+            ],
+            "y/",
+            "a directory and a symlink at one path",
+            id="directory-replaces-symlink",
+        ),
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./y", b"f"),
+                ("./y/", None),
+                ("./y/z@symlink", b"../DEBIAN"),
+                ("./y/z/control", b"EVIL\n"),
+            ],
+            "y/z",
+            "symlink to a path in DEBIAN/",
+            id="file-then-directory",
+        ),
+        pytest.param(
+            [("./y@symlink", b"."), ("./y/", None), ("./y/c@symlink", b"DEBIAN")],
+            "y/",
+            "a directory and a symlink at one path",
+            id="directory-over-dot",
+        ),
+        pytest.param(
+            [("./y/", None), ("./y@symlink", b"a/b"), ("./y/z@symlink", b"../DEBIAN")],
+            "y",
+            "a directory and a symlink at one path",
+            id="symlink-over-directory",
+        ),
+        pytest.param(
+            [("./y/f", b"f"), ("./y@symlink", b"a/b"), ("./y/z@symlink", b"../DEBIAN")],
+            "y",
+            "a directory and a symlink at one path",
+            id="symlink-over-parent",
+        ),
+    ],
+)
+def test_a_data_symlink_and_directory_at_one_path_are_refused(
+    data: list[tuple[str, bytes | None]], culprit: str, message: str, pipe: bool
+) -> None:
+    """Which of a symlink and a directory at one path extraction keeps depends on
+    the overwrite policy: ``replace`` keeps the second, ``skip`` and ``rename`` the
+    first. The later members land through whichever is kept, so ``y/z -> ../DEBIAN``
+    reaches ``DEBIAN`` under one policy or the other. The second of the two is
+    refused. A file between them replaces the symlink under every policy, so there
+    the directory is listed, and the symlink it sends into ``DEBIAN`` is refused."""
+    with (
+        pytest.raises(CorruptionError, match=message) as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    assert caught.value.member_name == culprit
+
+
+@pytest.mark.parametrize("overwrite", ["replace", "skip", "rename"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./y/", None),
+                ("./y/z@symlink", b"../DEBIAN"),
+                ("./y/z/control", b"EVIL\n"),
+            ],
+            id="directory-replaces-symlink",
+        ),
+        pytest.param(
+            [("./y@symlink", b"."), ("./y/", None), ("./y/c@symlink", b"DEBIAN")],
+            id="directory-over-dot",
+        ),
+        pytest.param(
+            [("./y/", None), ("./y@symlink", b"a/b"), ("./y/z@symlink", b"../DEBIAN")],
+            id="symlink-over-directory",
+        ),
+    ],
+)
+def test_extraction_leaves_nothing_into_debian_under_any_overwrite_policy(
+    data: list[tuple[str, bytes | None]], overwrite: str, tmp_path: Path
+) -> None:
+    """The extraction side of the cases above: the package is refused, the control
+    file keeps its bytes, and no data symlink leads into ``DEBIAN``."""
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(io.BytesIO(_deb(data=[("./", None), *data]))) as reader,
+    ):
+        reader.extract_all(tmp_path, overwrite=overwrite)
+    assert (tmp_path / "DEBIAN" / "control").read_bytes() == CONTROL
+    debian = (tmp_path / "DEBIAN").resolve()
+    for path in tmp_path.rglob("*"):
+        if path.is_symlink():
+            resolved = path.resolve()
+            assert resolved != debian and debian not in resolved.parents, path
+
+
 def _redirected(links: int, redirects: int) -> list[tuple[str, bytes | None]]:
     """``links`` symlinks through ``p``, then ``p`` replaced ``redirects`` times: each
     replacement moves every one of them, so each is rechecked."""

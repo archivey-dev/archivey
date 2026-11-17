@@ -1502,8 +1502,10 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
 - A file of the data tar that would land in `DEBIAN/`, whatever its spelling, raises
   `CorruptionError`, and so does a symlink or hard link of the data tar that points there, or a
   file that reaches `DEBIAN/` through such a symlink. A later symlink that makes an earlier one
-  point there (`x -> y/DEBIAN/control`, then `y -> .`) raises it too. The control files are
-  always the control tar's.
+  point there (`x -> y/DEBIAN/control`, then `y -> .`) raises it too, and so does a later file
+  that replaces a symlink and so makes an earlier one point there. A directory and a symlink at
+  one path of the data tar raise `CorruptionError`, because which one extraction keeps depends
+  on `overwrite`. The control files are always the control tar's.
 - Checking earlier symlinks again when a later symlink moves them counts against
   `ListingLimits.max_members`, one per path step, and raises `ResourceLimitError` past it.
 - The control file and `md5sums` are held whole while the package is read, and together may be

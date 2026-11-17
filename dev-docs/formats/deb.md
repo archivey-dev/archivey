@@ -139,6 +139,25 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   and hard links, was rejected: the bypass writes a control file on disk. Reopen if a
   real package ships a data symlink into `DEBIAN`.
 
+  **A member at a symlink's path.** The tree has to follow what extraction does with the
+  second of two members at one path, or it checks one path while extraction writes
+  another (review K2 on #1607: `y -> a/b`, then `y/`, then `y/z -> ../DEBIAN` was
+  listed, and `y/z/control` overwrote `DEBIAN/control` under `overwrite="replace"`). A
+  file, hard link or other non-directory replaces an earlier symlink under every
+  overwrite policy (random access never writes the shadowed copy; a streaming pass
+  supersedes it), so the tree forgets the symlink and rechecks the targets that looked
+  up its path, against the same budget: `y -> a/b`, `x -> y/../DEBIAN/control`, then a
+  file `y` refuses `y`. A directory and a symlink at one path are different:
+  `overwrite="replace"` keeps the second, `skip` and `rename` keep the first (measured
+  2026-11-17). Whichever one the tree assumed, the other policy writes later members
+  through another path, so `y -> .`, `y/`, `y/c -> DEBIAN` leaves `c -> DEBIAN` under
+  `skip` if the tree forgets `y`, and `y/`, `y -> a/b`, `y/z -> ../DEBIAN` leaves
+  `y/z -> DEBIAN` under `skip` if it keeps it. The reader refuses the second of the two
+  instead; no real package has both. To see a symlink landing on an implied directory
+  (`y/f`, then `y -> a/b`), the tree keeps a node for every directory and member parent,
+  not only for symlinks: on 10,000 directories of 10 files each that costs 1.9 MiB and
+  0.49 s against 0.35 s for the walk alone (the tree only, 2026-11-17).
+
   Some data names are refused that `dpkg-deb -R` unpacks, because GNU tar on Linux
   writes them byte for byte, under a literal directory:
   - `usr\..\DEBIAN/x`: `sanitize_names`, and Windows, read the backslashes as
