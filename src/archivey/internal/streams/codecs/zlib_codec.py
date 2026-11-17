@@ -51,6 +51,7 @@ from archivey.internal.streams.decompressor_stream import (
 from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools.binaryio import decode_to
 from archivey.types import StreamFormat
 
 
@@ -519,6 +520,13 @@ class _DeflateEndCheckStream(DelegatingStream):
             # The standard library decodes now: it seeks to the caller's place, or
             # raises as it does with the accelerator off.
             return super().seek(offset, whence)
+        return result
+
+    def decode_to(self, target: int) -> int:
+        # As ``seek``: a move that stops short of ``target`` met the end, and checks it.
+        result = decode_to(self._inner, target)
+        if result < target and self._hands_over_at_end():
+            return decode_to(self._inner, target)
         return result
 
     def nearest_resume_offset(self, target: int) -> int | None:
