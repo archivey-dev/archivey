@@ -39,6 +39,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     StreamStart,
     stream_magic,
 )
+from archivey.internal.streams.codecs.script_payload import check_zstd
 from archivey.internal.streams.codecs.zstd_framing import (
     FRAME_MAGIC as ZSTD_FRAME_MAGIC,
     MAX_FRAME_HEADER_SIZE,
@@ -152,6 +153,7 @@ class ZstdCodec(StreamCodec):
     checks_frames = True
     stream_format = StreamFormat.ZSTD
     magic = (MagicSignature(0, ZSTD_FRAME_MAGIC, ArchiveFormat.ZST),)
+    script_payload_check = staticmethod(check_zstd)
     requirement = MissingComponent(
         OptionalLibrary.BACKPORTS_ZSTD, "pip install archivey[recommended]", ("zstd",)
     )
@@ -207,9 +209,12 @@ class ZstdCodec(StreamCodec):
         # (``seekable-decompressor-streams``): each regular frame starts a seek point,
         # and the seekable format's table lists them all without decoding.
         collector = config.collector
+        origin = config.source_origin
         return StreamIndex(
             resumes_at=lambda data: data.startswith(ZSTD_FRAME_MAGIC),
-            build=lambda inner, last: build_seek_table_index(inner, last, collector),
+            build=lambda inner, last: build_seek_table_index(
+                inner, last, collector, origin
+            ),
         )
 
     @override

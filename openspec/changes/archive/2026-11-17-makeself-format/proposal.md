@@ -41,6 +41,7 @@ compressor-needle block of the archived `prefixed-archive-detection` change.
   `dev-docs/formats/makeself.md`.
 - Changed: `types.py` (format, extra keys), `formats.py` and `format_adapter.py`
   (the internal spanning-check hook), `core.py` (the forced-format hint), user docs.
-- Non-goals here: openssl decryption (next change, with password plumbing for readers
-  written against `archivey.formats`), and the generic `#!` compressor-needle scan for
-  other script launchers such as CPack STGZ and conda installers (the change after).
+- Follow-up PRs on this change: openssl decryption (password plumbing for readers
+  written against `archivey.formats`), then the generic `#!` compressor-needle scan for
+  other script launchers such as CPack STGZ (`specs/format-detection`), with start
+  offsets in the TAR and single-file readers.
