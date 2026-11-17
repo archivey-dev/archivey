@@ -3088,20 +3088,23 @@ def test_orphan_link_failing_after_the_content_was_placed_fails_alone(
     src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
     dest = tmp_path / "out"
     calls: list[str] = []
-    resolve = ExtractionCoordinator._resolve_collision
+    place = ExtractionCoordinator._place_link
 
     def fail_in_second_pass(
-        self: ExtractionCoordinator, original: ArchiveMember, *args: object
+        self: ExtractionCoordinator,
+        source_id: int,
+        path: Path,
+        *args: object,
+        **kw: object,
     ) -> object:
-        # L2's destination is resolved once in each pass.
-        calls.append(original.name)
-        if original.name == "L2.txt" and calls.count("L2.txt") == 2:
+        # L2 is linked to the placeholder at L1 in the first pass, and to the
+        # filled file in the second.
+        calls.append(path.name)
+        if path.name == "L2.txt" and calls.count("L2.txt") == 2:
             raise OSError(errno.EIO, "injected")
-        return resolve(self, original, *args)
+        return place(self, source_id, path, *args, **kw)
 
-    monkeypatch.setattr(
-        ExtractionCoordinator, "_resolve_collision", fail_in_second_pass
-    )
+    monkeypatch.setattr(ExtractionCoordinator, "_place_link", fail_in_second_pass)
     with open_archive(src) as r:
         results = r.extract_all(
             dest,
@@ -5358,6 +5361,71 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "e/d/x", "src2"),
         ("file", "e/d", b"later"),
     ],
+    # A held link superseded by a later copy of its name after the symlink on its
+    # way was re-pointed: the earlier copy, made where the symlink first led, is
+    # taken back as the made one is.
+    "under-a-symlink-superseded-after-a-re-point": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src1"),
+        ("sym", "s", "f"),
+        ("hard", "s/X", "src2"),
+    ],
+    # A held link over an empty directory, then the same directory again, then a
+    # link under it.
+    "over-a-directory-then-the-directory-again-then-a-link-under-it": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "d", None),
+        ("hard", "d", "src1"),
+        ("dir", "d", None),
+        ("hard", "d/x", "src2"),
+    ],
+    # A held link over a directory that holds an earlier held link: the made link
+    # meets a directory that is not empty, so it never gets the name, and a later
+    # directory and a file under it are written.
+    "over-a-directory-holding-a-held-link-then-the-directory-again": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "d", None),
+        ("hard", "d/y", "src1"),
+        ("hard", "d", "src2"),
+        ("dir", "d", None),
+        ("hard", "d/x", "src1"),
+        ("file", "d/z", b"z"),
+    ],
+    # A held link over one of the archive's symlinks to a directory: under REPLACE
+    # the made link replaces the symlink at its place, so a later file under it is
+    # not written through the symlink.
+    "over-a-symlink-to-a-directory-then-a-file-under-it": [
+        ("file", "src1", b"1"),
+        ("dir", "e", None),
+        ("dir", "b", None),
+        ("sym", "b/d", "../e"),
+        ("sym", "a", "b"),
+        ("hard", "a/d", "src1"),
+        ("file", "a/d/x", b"x"),
+    ],
+    # A link under a directory reached through one of the archive's symlinks, then
+    # a directory at the symlink's name: under REPLACE the directory replaces the
+    # symlink, and the placeholder stays where the symlink led (`b/x/y`).
+    "under-a-symlink-then-a-directory-at-the-symlink": [
+        ("file", "src1", b"1"),
+        ("dir", "b", None),
+        ("sym", "a", "b"),
+        ("hard", "a/x/y", "src1"),
+        ("dir", "a", None),
+    ],
+    # A directory under another case of a held link's name: it meets the link's
+    # name as it meets the made link, whether or not the filesystem folds case.
+    "a-directory-under-another-case": [
+        ("file", "src", b"d"),
+        ("hard", "h", "src"),
+        ("dir", "H", None),
+    ],
     # The same with no symlink: the held link's parent is there before the later
     # file under it, as the made link's is.
     "file-under-a-parent": [
@@ -5396,6 +5464,145 @@ def test_a_file_written_through_a_symlink_is_the_runs_own(
     assert statuses["s/f"] is ExtractionStatus.EXTRACTED
     assert statuses["e/f/x"] is ExtractionStatus.FAILED
     assert (dest / "e" / "f").read_bytes() == b"mine"
+
+
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_a_held_link_over_a_callers_symlink_meets_it_at_its_place(
+    tmp_path: Path, overwrite: OverwritePolicy
+) -> None:
+    # The caller's `d -> e` is at the held link's name. The made link meets it at
+    # its place, so a later `d/x` is not written through it into `e/`.
+    archive = _tar_bytes(
+        [("file", "src1", b"1"), ("hard", "d", "src1"), ("file", "d/x", b"x")]
+    )
+    runs = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        (dest / "e").mkdir(parents=True)
+        (dest / "d").symlink_to("e")
+        with open_archive(io.BytesIO(archive)) as reader:
+            report = reader.extract_all(
+                dest,
+                overwrite=overwrite,
+                on_error=OnError.CONTINUE,
+                members=(lambda m: not m.name.startswith("src")) if held else None,
+            )
+        statuses = [
+            (r.member.name, r.status.name)
+            for r in report.results
+            if not r.member.name.startswith("src")
+        ]
+        runs[held] = (statuses, sorted(os.listdir(dest / "e")))
+    assert runs[True] == runs[False]
+
+
+def test_a_copy_superseded_after_a_re_point_is_taken_back(tmp_path: Path) -> None:
+    # A later copy of `s/X` supersedes the earlier one, which was written through
+    # `s -> e`. `s` now leads to `f`, so the later copy lands at `f/X`; the earlier
+    # copy is still removed from `e/X`, as it is when nothing is re-pointed.
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("dir", "f", None),
+            ("sym", "s", "e"),
+            ("file", "s/X", b"first"),
+            ("sym", "s", "f"),
+            ("file", "s/X", b"second"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE)
+    statuses = [(r.member.name, r.status) for r in report.results]
+    assert ("s/X", ExtractionStatus.SUPERSEDED) in statuses
+    assert not (dest / "e" / "X").exists()
+    assert (dest / "f" / "X").read_bytes() == b"second"
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        [("dir", "b", None), ("file", "b", b"f"), ("hard", "b", "b")],
+        [("sym", "a", "c"), ("file", "A", b"f"), ("hard", "A", "A")],
+    ],
+    ids=["over-a-directory", "over-another-case"],
+)
+def test_a_streamed_link_with_no_source_is_skipped_where_random_access_skips_it(
+    tmp_path: Path, shape: list[tuple[str, str, object]]
+) -> None:
+    # The link's source was never written, so a forward-only stream cannot make it.
+    # The name is taken, so SKIP skips the link in random access, and it does here
+    # too rather than failing it for its source.
+    archive = _tar_bytes(shape)
+    runs = {}
+    for streaming in (False, True):
+        dest = tmp_path / ("stream" if streaming else "random")
+        with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+            report = reader.extract_all(
+                dest, overwrite=OverwritePolicy.SKIP, on_error=OnError.CONTINUE
+            )
+        runs[streaming] = [(r.member.name, r.status.name) for r in report.results]
+    assert runs[True] == runs[False]
+    assert runs[True][-1][1] == "NOT_OVERWRITTEN"
+
+
+def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
+    tmp_path: Path,
+) -> None:
+    # The placeholder for `s/X` is made at `e/X`. `s` is then re-pointed to `f`,
+    # where the caller has an empty `X` of their own: the second pass fills `e/X`
+    # and leaves the caller's file alone, though both are empty files at `s/X`.
+    archive = _tar_bytes(
+        [
+            ("file", "src", b"data"),
+            ("dir", "e", None),
+            ("dir", "f", None),
+            ("sym", "s", "e"),
+            ("hard", "s/X", "src"),
+            ("sym", "s", "f"),
+        ]
+    )
+    dest = tmp_path / "out"
+    (dest / "f").mkdir(parents=True)
+    (dest / "f" / "X").write_bytes(b"")
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            members=lambda m: m.name != "src",
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["s/X"] is ExtractionStatus.EXTRACTED
+    assert (dest / "e" / "X").read_bytes() == b"data"
+    assert (dest / "f" / "X").read_bytes() == b""
+
+
+def test_a_held_link_over_a_callers_symlink_is_filled_when_the_run_stops(
+    tmp_path: Path,
+) -> None:
+    # Under REPLACE the held link `d` replaces the caller's `d -> e` at its place. A
+    # later failure stops the run, and the placeholder is still filled at `d`, not
+    # written through a symlink into `e/`.
+    archive = _tar_bytes(
+        [("file", "src", b"data"), ("hard", "d", "src"), ("hard", "z", "missing")]
+    )
+    dest = tmp_path / "out"
+    (dest / "e").mkdir(parents=True)
+    (dest / "d").symlink_to("e")
+    with (
+        open_archive(io.BytesIO(archive)) as reader,
+        pytest.raises(LinkTargetNotFoundError),
+    ):
+        reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.STOP,
+            members=lambda m: m.name != "src",
+        )
+    assert not (dest / "d").is_symlink()
+    assert (dest / "d").read_bytes() == b"data"
+    assert list((dest / "e").iterdir()) == []
 
 
 def _extracted(dest: Path) -> dict[str, bytes | None]:
@@ -5562,29 +5769,6 @@ def test_a_held_back_link_that_fails_gives_its_name_back(tmp_path: Path) -> None
         tmp_path, entries, on_error=OnError.CONTINUE, existing={"Readme": b"mine"}
     )
     assert runs[True] == runs[False]
-
-
-def test_a_directory_reaches_a_held_back_link_under_another_case_where_case_folds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # On a filesystem that folds case, `H/` is the entry the made link `h` would be,
-    # so it meets the link's name. Faked here, as the suite runs on either kind.
-    monkeypatch.setattr(
-        extraction_module.ExtractionCoordinator, "_folds_case", lambda self: True
-    )
-    archive = _tar_bytes(
-        [("file", "src", b"d"), ("hard", "h", "src"), ("dir", "H", None)]
-    )
-    dest = tmp_path / "out"
-    with open_archive(io.BytesIO(archive)) as reader:
-        report = reader.extract_all(
-            dest, on_error=OnError.CONTINUE, members=lambda m: m.name != "src"
-        )
-    assert [(r.member.name, r.status.name) for r in report.results] == [
-        ("h", "EXTRACTED"),
-        ("H/", "FAILED"),
-    ]
-    assert sorted(p.name for p in dest.iterdir()) == ["h"]
 
 
 def test_o2_orphan_hardlink_collision_split_under_trusted(tmp_path: Path) -> None:
