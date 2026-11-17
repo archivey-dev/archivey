@@ -33,6 +33,7 @@ from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
+    decode_to,
     read_blocking,
     source_byte_size,
 )
@@ -385,8 +386,8 @@ class _RatioCheck:
     steps of at most 1 MiB, a seek to the end included, so a refusal comes within a step
     of the limit, from the call that crosses it, whose bytes are withheld. Further from
     it, a read toward an end the check cannot see asks for at most 16 MiB per call
-    (``_READ_TO_END_STEP``). A member's seek to the end moves a room at a time and
-    reads one byte (``MemberRatioCheck._seek_end_target``).
+    (``_READ_TO_END_STEP``). A member's seek to the end moves a room at a time until a
+    move stops at the end (``MemberRatioCheck._seek_end_target``).
     """
 
     # Whether the decoder's error after a whole step is held for the next call.
@@ -777,11 +778,11 @@ class MemberRatioCheck(_RatioCheck):
 
         The decoder serves that seek by decoding to its real end in one call, which a
         member can put far past its recorded size. Where a rule could refuse on the
-        way, the end is found from the decoder's cheap size, else a room at a time: a
-        seek forward and a one-byte read make the decoder decode the gap its own way,
-        then the offset reached is judged. Once a read finds nothing, the end is
-        inside the last room and ``SEEK_END`` costs the decoder nothing more. ``None``
-        leaves the seek to the decoder whole.
+        way, the end is found from the decoder's cheap size, else a room at a time
+        (``decode_to``): the decoder decodes the gap its own way, then the offset
+        reached is judged. Once a move stops short, it stopped at the end, and
+        ``SEEK_END`` costs the decoder nothing more. ``None`` leaves the seek to the
+        decoder whole.
         """
         if self._room() == math.inf:
             return None  # nothing on the way could be refused
@@ -793,14 +794,10 @@ class MemberRatioCheck(_RatioCheck):
             raise io.UnsupportedOperation("seek")
         while True:
             step_to = self._pos + int(self._room())
-            self._inner.seek(step_to)
-            if not read_blocking(self._inner, 1):
-                break
-            self._pos = step_to + 1
+            self._pos = decode_to(self._inner, step_to)
             self._check(self._pos)
-        self._pos = self._inner.seek(0, io.SEEK_END)
-        self._check(self._pos)
-        return self._pos + offset
+            if self._pos < step_to:
+                return self._pos + offset
 
     @override
     def _judge(self, position: int) -> None:

@@ -42,6 +42,7 @@ from archivey.internal.streams.streamtools import (
     DelegatingStream,
     is_seekable,
 )
+from archivey.internal.streams.streamtools.binaryio import decode_to
 from archivey.internal.streams.streamtools.shared import SharedSource
 from archivey.internal.streams.streamtools.slice import SharedView
 
@@ -344,6 +345,23 @@ class _StdlibOnAcceleratorError(DelegatingStream):
                     raise
                 self._switch(resume=True)
                 self._position = self._restarting(inner_seek)
+        return self._position
+
+    def decode_to(self, target: int) -> int:
+        """As ``seek(target)``, through the ``decode_to`` of the stream below: a data
+        error there switches to the standard library the same way."""
+
+        def inner_decode() -> int:
+            return decode_to(self._inner, target)  # the inner a switch put in place
+
+        with self._typed_after_switch():
+            try:
+                self._position = self._restarting(inner_decode)
+            except Exception as exc:
+                if not self._takes_over(exc):
+                    raise
+                self._switch(resume=True)
+                self._position = self._restarting(inner_decode)
         return self._position
 
     def nearest_resume_offset(self, target: int) -> int | None:
