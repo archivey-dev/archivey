@@ -52,7 +52,9 @@ _CALL = "FormatPolicy()"
 
 # The method each whole-file compression decodes with, so a method in ``exclude``
 # refuses a file compressed with it as a whole too. ``.Z`` and bzip3 have no
-# CompressionAlgorithm member: only their StreamFormat refuses them.
+# CompressionAlgorithm member: only their StreamFormat refuses them. The single-file
+# reader lists the same method in its member's ``compression``, so ``exclude=`` and
+# the listing agree.
 _STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
     StreamFormat.GZIP: CompressionAlgorithm.DEFLATE,
     StreamFormat.ZLIB: CompressionAlgorithm.DEFLATE,

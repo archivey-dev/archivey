@@ -1243,7 +1243,8 @@ other members because of a member's name any more. Setting it to `True` warns.
   when they disagree, the address is searched for. A `FILE` that is not a plain name beside the
   sheet (a path, `..`) or not a regular file (a FIFO, a device) is refused; a symlink is followed.
   A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
-  for `disc.bin`), and a missing one is `TruncatedError`. Without a `.cue`, a
+  for `disc.bin`), and a missing one is `TruncatedError`. A sheet with a `FILE` that holds no
+  `TRACK`, or with track numbers that do not go up, is `CorruptionError`. Without a `.cue`, a
   `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
   an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
   is recognised by its name, and only from a path, since its tracks are files beside it.
