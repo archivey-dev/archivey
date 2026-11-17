@@ -740,10 +740,10 @@ class MemberRatioCheck(_RatioCheck):
             target: int | None = offset
         elif whence == io.SEEK_CUR:
             target = self._pos + offset
-        elif self._size is not None:
-            target = self._size + offset
         else:
-            target = self._seek_end_unsized(offset)
+            # Not from the recorded size: a member can decode past it, and the decoder
+            # serves this seek by decoding to its real end in one call.
+            target = self._seek_end_target(offset)
         if target is not None and self._size is not None:
             # Past the member's end there is nothing to decode.
             target = min(target, self._size)
@@ -759,16 +759,24 @@ class MemberRatioCheck(_RatioCheck):
             # The steps moved the decoder; what is left of the offset is from there.
             offset -= self._pos - start
         self._pos = self._inner.seek(offset, whence)
-        self._check(self._pos)
+        position = self._pos
+        if self._size is not None and whence != io.SEEK_END:
+            # A seek past the recorded end decodes nothing there: the decoder only
+            # notes the position. A ``SEEK_END`` lands where the decoder's data ends.
+            position = min(position, self._size)
+        self._check(position)
         return self._pos
 
-    def _seek_end_unsized(self, offset: int) -> int | None:
-        """The target of ``seek(offset, SEEK_END)`` on a member of unrecorded size.
+    def _seek_end_target(self, offset: int) -> int | None:
+        """The target of ``seek(offset, SEEK_END)``, whatever size the member records.
 
-        The decoder serves that seek by decoding to its end in one call. Where a rule
-        could refuse on the way, the end is found the way ``_RatioCheck.seek`` finds
-        it: from the decoder's cheap size, else by reading to it a step at a time.
-        ``None`` leaves the seek to the decoder whole.
+        The decoder serves that seek by decoding to its real end in one call, which a
+        member can put far past its recorded size. Where a rule could refuse on the
+        way, the end is found from the decoder's cheap size, else a room at a time: a
+        seek forward and a one-byte read make the decoder decode the gap its own way,
+        then the offset reached is judged. Once a read finds nothing, the end is
+        inside the last room and ``SEEK_END`` costs the decoder nothing more. ``None``
+        leaves the seek to the decoder whole.
         """
         if self._room() == math.inf:
             return None  # nothing on the way could be refused
@@ -778,11 +786,15 @@ class MemberRatioCheck(_RatioCheck):
         if not self._inner.seekable():
             # Refused before the drain, not after decoding it all.
             raise io.UnsupportedOperation("seek")
-        while data := read_blocking(
-            self._inner, min(int(self._room()), _READ_TO_END_STEP)
-        ):
-            self._pos += len(data)
+        while True:
+            step_to = self._pos + int(self._room())
+            self._inner.seek(step_to)
+            if not read_blocking(self._inner, 1):
+                break
+            self._pos = step_to + 1
             self._check(self._pos)
+        self._pos = self._inner.seek(0, io.SEEK_END)
+        self._check(self._pos)
         return self._pos + offset
 
     @override
@@ -791,9 +803,6 @@ class MemberRatioCheck(_RatioCheck):
         max_ratio = limits.max_ratio
         assert max_ratio is not None  # _check returns first otherwise
         compressed_size = self._compressed_size
-        if self._size is not None:
-            # A seek past the end decodes nothing there.
-            position = min(position, self._size)
         if (
             position > limits.ratio_activation_threshold
             and compressed_size

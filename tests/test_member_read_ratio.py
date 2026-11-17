@@ -8,6 +8,7 @@ import functools
 import gzip
 import io
 import os
+import struct
 import tarfile
 import zipfile
 from pathlib import Path
@@ -429,6 +430,38 @@ def test_a_seek_to_the_end_of_an_unsized_member_stops_within_a_step() -> None:
         guard.seek(0, io.SEEK_END)
     floor = DecoderLimits().ratio_activation_threshold
     assert decoder.furthest <= floor + 16 * _MIB
+
+
+def test_a_seek_to_the_end_past_a_small_recorded_size_stops_within_a_step() -> None:
+    # The recorded size is under the ratio line, but the body decodes far past it. The
+    # decoder serves SEEK_END by decoding to its real end, so the check reads to it a
+    # step at a time and judges what was decoded, not the recorded size.
+    decoder = _Decoder(bytes(64 * _MIB))
+    guard = _guard(decoder, size=1000, compressed_size=100)
+    with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
+        guard.seek(0, io.SEEK_END)
+    floor = DecoderLimits().ratio_activation_threshold
+    assert decoder.furthest <= floor + 16 * _MIB
+
+
+def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "lying.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("z.bin", bytes(24 * _MIB))
+    data = bytearray(path.read_bytes())
+    # The uncompressed size, in the local header and in the central directory.
+    struct.pack_into("<I", data, 22, 1000)
+    central = data.find(b"PK\x01\x02")
+    struct.pack_into("<I", data, central + 24, 1000)
+    path.write_bytes(data)
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("z.bin") as stream,
+        pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
+    ):
+        stream.seek(0, io.SEEK_END)
 
 
 def test_a_seek_to_the_end_under_the_ratio_lands_there() -> None:
