@@ -1470,7 +1470,9 @@ class SevenZipReader(BaseArchiveReader):
             hashes[HashAlgorithm.CRC32] = crc32_digest(record.crc32)
         reparse_fallback = self._reparse_fallback_type(record)
         mode = stat.S_IMODE(unix_mode) if unix_mode is not None else None
-        # Unix writers fill the creation slot from st_ctime, so it maps to ctime.
+        # Unix writers (7-Zip, p7zip, libarchive) fill the creation slot from
+        # st_ctime, so it maps to ctime and created stays None. A stamp that does
+        # not convert is None; its issue is reported once the member exists, below.
         written_on_unix = unix_mode is not None
         ts_issues: list[TimestampIssue] = []
         modified = accessed = created = ctime = None
@@ -1513,11 +1515,11 @@ class SevenZipReader(BaseArchiveReader):
             # a reparse point that settles or re-types to FILE keeps it (DR-25).
             extra[EXTRA_SPECIAL_FILE_TYPE] = special
         member = ArchiveMember(
-            member_type,
-            name,
-            raw_name,
-            record.uncompressed_size,
-            record.compressed_size,
+            type=member_type,
+            name=name,
+            raw_name=raw_name,
+            size=record.uncompressed_size,
+            compressed_size=record.compressed_size,
             modified=modified,
             accessed=accessed,
             created=created,
