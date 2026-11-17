@@ -142,8 +142,9 @@ class ProcessIsolation(Enum):
     to the standard library."""
     NATIVE_DECODERS = "native_decoders"
     """Every native decoder runs in a child process: zlib, bz2, lzma, zstd, lz4, brotli,
-    inflate64, pyppmd, libbzip3, rapidgzip and python-lzo, including the trial decodes format
-    detection runs. LZO without python-lzo decodes in Python, in the caller's process.
+    inflate64, pyppmd, libbzip3, rapidgzip and compress-utils, including the trial
+    decodes format detection runs. LZO without compress-utils decodes in Python, in the
+    caller's process.
 
     Each open decoder has a process of its own, and processes are reused for later
     decoders. Measured on one Linux machine

@@ -86,6 +86,12 @@ recommended = [
     "cryptography>=45.0.0",
     "pycdlib>=1.22.0",
     "tqdm>=4.67.0",
+    # LZO1X decoding (.lzo files, SquashFS images); archivey decodes it in Python without
+    # it, 20 to 30 times slower. MIT. 0.12.1 publishes wheels for CPython 3.11 to 3.15
+    # (3.14t and 3.15t too) on Linux x86-64/aarch64 (glibc), macOS arm64 and Windows
+    # x86-64; the marker keeps it off PyPy and Intel macOS, where it would build from
+    # source. dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md.
+    "compress-utils>=0.12.1; platform_python_implementation == 'CPython' and (sys_platform != 'darwin' or platform_machine == 'arm64')",
 ]
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
@@ -126,6 +132,8 @@ free-threaded = [
     "tqdm>=4.67.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "cryptography>=45.0.0; python_version >= '3.14'",
+    # No 3.13t wheel; 0.12.1 keeps the GIL disabled on 3.14t (measured 2026-11-17).
+    "compress-utils>=0.12.1; python_version >= '3.14' and (sys_platform != 'darwin' or platform_machine == 'arm64')",
 ]
 # The conventional "everything" name. Unlike before, it is now a strict superset of
 # [recommended] rather than an alias for it. After the compression-library evaluation

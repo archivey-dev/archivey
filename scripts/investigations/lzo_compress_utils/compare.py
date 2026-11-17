@@ -1,7 +1,7 @@
 """Compare three raw LZO1X block decoders: archivey's Python one, python-lzo
 (liblzo2) and compress-utils (lzokay-derived C). Differential fuzz plus speed.
 
-Usage: python compare.py fuzz N   |   python compare.py bench
+Usage, from anywhere: python compare.py fuzz N   |   python compare.py bench
 """
 
 from __future__ import annotations
@@ -36,9 +36,18 @@ def dec_cu(d, n):
 DECODERS = {"py": dec_py, "lzo": dec_lzo, "cu": dec_cu}
 
 
+_SRC = Path(__file__).resolve().parents[3] / "src" / "archivey"
+# Cases are split into this many seeded shards whatever the core count, so a run of N
+# cases is the same cases on any machine.
+_SHARDS = 32
+
+
 def _source() -> bytes:
     """archivey's own Python source, as compressible text."""
-    return b"".join(p.read_bytes() for p in sorted(Path("src/archivey").rglob("*.py")))
+    files = sorted(_SRC.rglob("*.py"))
+    if not files:
+        raise SystemExit(f"no Python source under {_SRC}")
+    return b"".join(p.read_bytes() for p in files)
 
 
 def corpus() -> list[bytes]:
@@ -156,16 +165,15 @@ def work(args):
 
 
 def fuzz(total: int) -> None:
-    jobs = os.cpu_count() or 4
-    per = total // (jobs * 8)
+    per = total // _SHARDS
     stats: Counter = Counter()
     examples: dict = {}
-    with ProcessPoolExecutor(jobs) as ex:
-        for s, e in ex.map(work, [(i, per) for i in range(jobs * 8)]):
+    with ProcessPoolExecutor(os.cpu_count() or 4) as ex:
+        for s, e in ex.map(work, [(i, per) for i in range(_SHARDS)]):
             stats.update(s)
             for k, v in e.items():
                 examples.setdefault(k, []).extend(v)
-    print(f"cases: {per * jobs * 8}")
+    print(f"cases: {per * _SHARDS}")
     for k, v in stats.most_common():
         print(v, k)
         for x in examples.get(k, [])[:6]:
@@ -207,7 +215,9 @@ def bench() -> None:
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "fuzz":
+    if len(sys.argv) == 3 and sys.argv[1] == "fuzz":
         fuzz(int(sys.argv[2]))
-    else:
+    elif sys.argv[1:] == ["bench"]:
         bench()
+    else:
+        raise SystemExit(__doc__)

@@ -570,7 +570,7 @@ value archivey.OptionalLibrary.COMPRESSION_ZSTD = 'compression.zstd'
 value archivey.OptionalLibrary.RAPIDGZIP = 'rapidgzip'
 value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
 value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
-value archivey.OptionalLibrary.LZO = 'lzo'
+value archivey.OptionalLibrary.COMPRESS_UTILS = 'compress_utils'
 value archivey.OptionalLibrary.BZIP3 = 'bz3'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy

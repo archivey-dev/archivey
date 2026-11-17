@@ -1364,8 +1364,8 @@ archivey in a worker they can kill. Public:
 ### A native decoder crash or MemoryError
 
 Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
-brotli, inflate64 and python-lzo run in-process (`NATIVE_DECODERS` isolates them too;
-under `NONE` pyppmd decodes in-process as well and rapidgzip is not used). A crash
+brotli, inflate64 and compress-utils run in-process (`NATIVE_DECODERS` isolates them
+too; under `NONE` pyppmd decodes in-process as well and rapidgzip is not used). A crash
 nobody has found yet would abort the process. pyppmd runs in a child by default because
 of a known pyppmd issue ([`known-issues.md`](known-issues.md) §`pyppmd` crashes on
 damaged or crafted PPMd data). libbzip3 runs in a child by default too, as a precaution:

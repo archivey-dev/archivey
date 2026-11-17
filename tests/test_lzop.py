@@ -1,6 +1,6 @@
 """LZO: the ``.lzo`` files ``lzop`` 1.04 writes (``tests/fixtures/external/lzop``), and
-raw LZO1X through ``ReaderContext.decompress``, with liblzo2 and with the decoder in
-Python."""
+raw LZO1X through ``ReaderContext.decompress``, with compress-utils and with the decoder
+in Python."""
 
 from __future__ import annotations
 
@@ -52,22 +52,24 @@ _RANDOM = random.Random(5).randbytes(20000)
 _MTIME = datetime.datetime(2024, 3, 1, 12, 0, tzinfo=datetime.UTC)
 TAR_LZOP = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZOP)
 
-_has_python_lzo = lzo_decoder._python_lzo(frozenset()) is not None
+_has_compress_utils = lzo_decoder._compress_utils(frozenset()) is not None
 
 
 @pytest.fixture(
     params=[
         "python",
         pytest.param(
-            "python-lzo",
-            marks=pytest.mark.skipif(not _has_python_lzo, reason="needs python-lzo"),
+            "compress-utils",
+            marks=pytest.mark.skipif(
+                not _has_compress_utils, reason="needs compress-utils"
+            ),
         ),
     ]
 )
 def decoder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Each LZO1X decoder in turn: archivey's own, and liblzo2 through python-lzo."""
+    """Each LZO1X decoder in turn: archivey's own, and compress-utils'."""
     if request.param == "python":
-        monkeypatch.setattr(lzo_decoder, "_python_lzo", lambda *_: None)
+        monkeypatch.setattr(lzo_decoder, "_compress_utils", lambda *_: None)
     return request.param
 
 
@@ -119,34 +121,36 @@ def test_a_tar_inside_is_found(decoder: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("exclude", [False, True])
-def test_python_lzo_can_be_excluded(
+def test_compress_utils_can_be_excluded(
     exclude: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With python-lzo installed, ``exclude_libraries={"lzo"}`` makes the read use the
-    Python decoder and never python-lzo; without it, python-lzo decodes every block."""
-    lzo = pytest.importorskip("lzo")
+    """With compress-utils installed, ``exclude_libraries={"compress_utils"}`` makes
+    the read use the Python decoder and never compress-utils; without it,
+    compress-utils decodes every block."""
+    compress_utils = pytest.importorskip("compress_utils")
     used: list[str] = []
-    real_lzo, real_python = lzo.decompress, lzo_decoder.lzo1x_decompress_python
+    real_cu = compress_utils.decompress
+    real_python = lzo_decoder.lzo1x_decompress_python
 
-    def spy_lzo(*args: Any) -> bytes:
-        used.append("python-lzo")
-        return real_lzo(*args)
+    def spy_cu(*args: Any, **kwargs: Any) -> bytes:
+        used.append("compress-utils")
+        return real_cu(*args, **kwargs)
 
     def spy_python(data: bytes, limit: int) -> bytes:
         used.append("python")
         return real_python(data, limit)
 
-    monkeypatch.setattr(lzo, "decompress", spy_lzo)
+    monkeypatch.setattr(compress_utils, "decompress", spy_cu)
     monkeypatch.setattr(lzo_decoder, "lzo1x_decompress_python", spy_python)
-    excluded = {"lzo"} if exclude else set()
+    excluded = {"compress_utils"} if exclude else set()
     config = ArchiveyConfig(formats=FormatPolicy(exclude_libraries=excluded))
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
         assert stream.read() == _TEXT
-    assert used and set(used) == {"python" if exclude else "python-lzo"}
+    assert used and set(used) == {"python" if exclude else "compress-utils"}
 
 
-def test_python_lzo_runs_in_a_child_under_native_decoders() -> None:
-    pytest.importorskip("lzo")
+def test_compress_utils_runs_in_a_child_under_native_decoders() -> None:
+    pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     POOL.close_idle()
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
@@ -155,7 +159,7 @@ def test_python_lzo_runs_in_a_child_under_native_decoders() -> None:
 
 
 def test_a_damaged_block_in_a_child_is_corruption() -> None:
-    pytest.importorskip("lzo")
+    pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     data = bytearray((_DATA / "text-9-crc32.txt.lzo").read_bytes())
     data[_blocks_start(bytes(data)) + 40] ^= 0x55
@@ -166,62 +170,99 @@ def test_a_damaged_block_in_a_child_is_corruption() -> None:
         stream.read()
 
 
-_NO_PYTHON_LZO = pytest.mark.skipif(
-    importlib.util.find_spec("lzo") is not None,
-    reason="a child must not find a real python-lzo",
+def _one_block_lzop(packed: bytes, data: bytes) -> bytes:
+    """An lzop file of one LZO1X block, ``packed``, that decodes to ``data``."""
+    header = make_lzop(b"")[:-4]  # without the end of the file
+    block = struct.pack(">III", len(data), len(packed), zlib.adler32(data)) + packed
+    return header + block + b"\x00\x00\x00\x00"
+
+
+# One literal "a", then a match 1 byte back of 99 bytes.
+_A100 = b"\x12a\x20\x42\x00\x00"
+
+
+@pytest.mark.parametrize(
+    ("end", "ok"),
+    [(b"\x11\x00\x00", True), (b"\x11\x03\x00", True), (b"\x12\x00\x00", False)],
+)
+def test_only_an_end_marker_of_length_3_ends_a_block(
+    decoder: str, end: bytes, ok: bool
+) -> None:
+    """Every LZO1X writer ends a block with 17, 0, 0. Another length is refused by
+    either decoder, as the kernel refuses it; ``lzop`` (liblzo2) accepts it."""
+    data = _one_block_lzop(_A100 + end, b"a" * 100)
+    with open_stream(io.BytesIO(data)) as stream:
+        if ok:
+            assert stream.read() == b"a" * 100
+        else:
+            # The message is the decoder's own; tests/test_lzo.py checks the Python one.
+            with pytest.raises(CorruptionError):
+                stream.read()
+
+
+_NO_COMPRESS_UTILS = pytest.mark.skipif(
+    importlib.util.find_spec("compress_utils") is not None,
+    reason="a child must not find a real compress-utils",
 )
 _BLOCK = b"\x17hello\n\x11\x00\x00"
 
 
-@_NO_PYTHON_LZO
-def test_a_python_lzo_that_does_not_import_falls_back_under_native_decoders(
+@_NO_COMPRESS_UTILS
+def test_a_compress_utils_that_does_not_import_falls_back_under_native_decoders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In this process a found package that fails to import is treated as absent.
     Under NATIVE_DECODERS it is only looked up, so the child's import failed and the
     read raised ResourceUnavailableError instead of using the Python decoder."""
-    broken = deps.LazyOptional(OptionalLibrary.LZO, present=True)
-    monkeypatch.setattr(deps, "lzo", broken)
+    broken = deps.LazyOptional(OptionalLibrary.COMPRESS_UTILS, present=True)
+    monkeypatch.setattr(deps, "compress_utils", broken)
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
     with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
         assert stream.read() == _TEXT
     assert broken.child_import_failed
 
 
-@_NO_PYTHON_LZO
-def test_a_child_import_failure_leaves_this_process_its_python_lzo(
+@_NO_COMPRESS_UTILS
+def test_a_child_import_failure_leaves_this_process_its_compress_utils(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A child is a fresh interpreter: it does not see what this process added to
-    ``sys.path``. Its failure turned python-lzo off for in-process reads too."""
-    (tmp_path / "lzo.py").write_text(
-        "class error(Exception):\n    pass\n\n"
-        "def decompress(data, header, limit):\n    return b'FAKE-LIBLZO'\n"
+    ``sys.path``. Its failure turned the package off for in-process reads too."""
+    (tmp_path / "compress_utils.py").write_text(
+        "class CompressError(Exception):\n    pass\n\n"
+        "def decompress(data, algorithm, expected_size=None):\n"
+        "    return b'FAKE-COMPRESS-UTILS'\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.delitem(sys.modules, "lzo", raising=False)
-    monkeypatch.setattr(deps, "lzo", deps.LazyOptional(OptionalLibrary.LZO))
+    monkeypatch.delitem(sys.modules, "compress_utils", raising=False)
+    monkeypatch.setattr(
+        deps,
+        "compress_utils",
+        deps.LazyOptional(OptionalLibrary.COMPRESS_UTILS),
+    )
     isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED)
     assert isolated(_BLOCK, 6) == b"hello\n"
     assert lzo_decoder.lzo1x_decompressor(natives=IN_PROCESS)(_BLOCK, 6) == (
-        b"FAKE-LIBLZO"
+        b"FAKE-COMPRESS-UTILS"
     )
-    sys.modules.pop("lzo", None)
+    sys.modules.pop("compress_utils", None)
 
 
-@_NO_PYTHON_LZO
+@_NO_COMPRESS_UTILS
 def test_a_child_import_that_raises_os_error_falls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A broken shared library can raise something other than ImportError. In this
     process any exception from the import counts as absent; in a child only an
     ImportError did, and the read raised ResourceUnavailableError."""
-    (tmp_path / "lzo.py").write_text(
-        "raise OSError('liblzo2.so.2: cannot open shared object file')\n"
+    (tmp_path / "compress_utils.py").write_text(
+        "raise OSError('libstdc++.so.6: cannot open shared object file')\n"
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     monkeypatch.setattr(
-        deps, "lzo", deps.LazyOptional(OptionalLibrary.LZO, present=True)
+        deps,
+        "compress_utils",
+        deps.LazyOptional(OptionalLibrary.COMPRESS_UTILS, present=True),
     )
     POOL.close_idle()  # children inherit the environment when they start
     try:

@@ -1,17 +1,19 @@
 """LZO1X, and the ``.lzo`` file format ``lzop`` writes around it.
 
 LZO1X has no stream framing of its own: a block is decoded whole, to a size the
-container stores (a SquashFS block, an lzop block). ``python-lzo`` binds liblzo2 and is
-used when it is installed. It is GPL and has no Linux wheels, so archivey does not
-depend on it and carries the decoder in Python too (:func:`lzo1x_decompress_python`). It
+container stores (a SquashFS block, an lzop block). ``compress-utils`` (its LZO1X
+decoder is derived from lzokay) decodes a block when it is installed; archivey also
+carries the decoder in Python (:func:`lzo1x_decompress_python`). It
 follows ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
 without the LZO-RLE extension, which neither lzop nor SquashFS writes.
 
 Every read is checked: a run of literals or a match that would pass the end of the
 input, write past the limit or copy from before the start of the output raises
-:class:`LzoError`, and so does input left after the end marker. The end marker is the
-one place it follows liblzo2 rather than the kernel: any match of distance 0 ends the
-block, whatever its length, so the two decoders agree on every block.
+:class:`LzoError`, and so do input left after the end marker and an end marker of a
+length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts any
+length there; the kernel and compress-utils refuse it, and the two decoders archivey
+uses agree on every block measured
+(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``).
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
 with the method, flags, mode, mtime and stored name, closed by a checksum, then blocks.
@@ -51,19 +53,22 @@ class LzoError(ValueError):
     """The data is not a valid LZO1X stream, or decodes to more than the limit."""
 
 
-def _python_lzo(
+def _compress_utils(
     excluded: frozenset[OptionalLibrary], natives: Natives = IN_PROCESS
 ) -> Callable[[bytes, int], bytes] | None:
-    """``python-lzo``'s decoder, in this process or a child as ``natives`` says, or
-    ``None`` when it is absent or ``excluded``."""
-    if OptionalLibrary.LZO in excluded or not natives.package_available(deps.lzo):
+    """compress-utils' LZO1X decoder, in this process or a child as ``natives`` says,
+    or ``None`` when it is absent or ``excluded``."""
+    package = deps.compress_utils
+    if OptionalLibrary.COMPRESS_UTILS in excluded or not natives.package_available(
+        package
+    ):
         return None
-    if natives.isolated and deps.lzo.child_import_failed:
+    if natives.isolated and package.child_import_failed:
         return None
     errors = natives.lzo_errors()
 
     def decompress(data: bytes, limit: int) -> bytes:
-        if natives.isolated and deps.lzo.child_import_failed:
+        if natives.isolated and package.child_import_failed:
             # A child could not import it for an earlier block.
             return lzo1x_decompress_python(data, limit)
         try:
@@ -73,12 +78,13 @@ def _python_lzo(
         except ResourceUnavailableError as exc:
             # Isolated, the package is only looked up here, not imported, so one
             # that is found but does not import fails in the child. Fall back as
-            # ``deps.lzo.load()`` does in this process: the Python decoder needs no
-            # child (DR-11). Any other reason no child starts still raises. Only
-            # isolated decoders take note: this process may import it all the same.
+            # ``deps.compress_utils.load()`` does in this process: the Python decoder
+            # needs no child (DR-11). Any other reason no child starts still raises.
+            # Only isolated decoders take note: this process may import it all the
+            # same.
             if not isinstance(exc.__cause__, DecoderChildImportError):
                 raise
-            deps.lzo.failed_in_child(exc.__cause__)
+            package.failed_in_child(exc.__cause__)
             return lzo1x_decompress_python(data, limit)
 
     return decompress
@@ -89,14 +95,14 @@ def lzo1x_decompressor(
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
-    """The LZO1X block decoder to use: ``python-lzo`` when present and allowed, else
+    """The LZO1X block decoder to use: compress-utils when present and allowed, else
     :func:`lzo1x_decompress_python`, which is Python and so runs in this process
-    whatever ``natives`` says. ``usage`` records ``python-lzo`` when it is chosen."""
-    package = _python_lzo(excluded, natives)
+    whatever ``natives`` says. ``usage`` records ``compress_utils`` when it is chosen."""
+    package = _compress_utils(excluded, natives)
     if package is None:
         return lzo1x_decompress_python
     if usage is not None:
-        usage.note_backend("library", OptionalLibrary.LZO.value, "lzo")
+        usage.note_backend("library", OptionalLibrary.COMPRESS_UTILS.value, "lzo")
     return package
 
 
@@ -188,10 +194,14 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
             else:
                 distance = ((t & 8) << 11) + (field >> 2)
                 if distance == 0:
-                    # The end marker. Writers put 17, 0, 0, a length of 3; liblzo2
-                    # (``lzo1x_decompress_safe``), which lzop and squashfs-tools decode
-                    # with, takes any length and ignores the low 2 bits, and so does
-                    # this. The kernel's decoder refuses a length other than 3.
+                    # The end marker: every writer puts 17, 0, 0, a length of 3. The
+                    # kernel's decoder, which reads SquashFS images, and compress-utils
+                    # refuse any other length, and so does this; liblzo2 takes any.
+                    # All of them ignore the low 2 bits.
+                    if length != 3:
+                        raise LzoError(
+                            f"the end marker has a length of {length}, not 3"
+                        )
                     if ip != end:
                         raise LzoError(f"{end - ip} bytes follow the end marker")
                     return bytes(out)
