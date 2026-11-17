@@ -527,6 +527,17 @@ class _Orphan:
     key: str | None = None
     previous_claim: _Claim | None = None
     cancelled: bool = False
+    # Where ``dest_path`` and ``requested`` physically were at the link's place in
+    # archive order, its parent resolved (``_physical_path``), once the first pass
+    # created that parent: the second pass makes the link there, so a later member
+    # that re-points or replaces one of the archive's symlinks on the way does not
+    # move it. ``None`` when the first pass left the parent to the second pass.
+    pinned_dest: Path | None = None
+    pinned_requested: Path | None = None
+    # The earlier held-back link whose name a parent of this link reached in the
+    # first pass. If a later member replaced that link (``cancelled``), the made
+    # run had failed this one at its place, as the name was a file then.
+    parent_holder: _Orphan | None = None
 
 
 @dataclass
@@ -669,13 +680,15 @@ class _RunState:
     # key (``_reserve_orphan``): a later member meets the name as taken, as it would
     # had the link been made at its place in archive order.
     reservations: dict[str, _Orphan] = field(default_factory=dict)
-    # The held-back links that hold a name, by the collision key of each of their
-    # parent directories, in archive order (``_index_held_parents``). The first pass
-    # creates those directories, as the made links would; a directory that holds
-    # only held-back links is empty on disk, but not in the made run
-    # (``_holds_held_link``). Entries whose link no longer holds its name are
-    # dropped when met.
-    held_under: dict[str, collections.deque[_Orphan]] = field(default_factory=dict)
+    # The held-back links that hold a name, with each of their parent directories,
+    # by that directory's ``_physical_key``, in archive order
+    # (``_index_held_parents``). The first pass creates those directories, as the
+    # made links would; a directory that holds only held-back links is empty on disk,
+    # but not in the made run (``_holds_held_link``). Entries whose link no longer
+    # holds its name are dropped when met.
+    held_under: dict[str, collections.deque[tuple[_Orphan, Path]]] = field(
+        default_factory=dict
+    )
     # In the second pass, the result index of the held-back link it attempts now, or
     # attempted last (``_begin_orphan_attempt``): a name that a later link holds is not
     # seen (``_reservation_at``), as that link would not be made yet. ``None`` outside
@@ -3475,18 +3488,18 @@ class ExtractionCoordinator:
             )
         # Re-readable: resolve in the second pass. The made link would create its
         # parent directories here, at its place in archive order, so the held one does
-        # too: a later member at a parent (a symlink, a file) then meets a directory,
-        # as it would meet the made link's, instead of redirecting the link when the
-        # second pass makes it. A parent that reaches an earlier held link's name is
-        # left to the second pass, which fails the link there as the made run does
-        # (``_orphan_blocker``, ``_makedirs``).
+        # too, and is pinned to where they physically are: a later member at a parent
+        # (a symlink, a file) then meets a directory, as it would meet the made
+        # link's, and a later member that re-points a symlink on the way does not move
+        # the link. A parent that reaches an earlier held link's name is left to the
+        # second pass, which waits for that link (``_orphan_blocker``) and fails this
+        # one against it (``_makedirs``), or against its name if a later member
+        # replaced it (``parent_holder``).
         if not self._make_room_for_parents(transformed, dest_path):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
-        parent = self._parent(dest_path)
-        if self._reserved_component(parent) is None:
-            self._makedirs(parent, transformed)
+        requested = self._current.requested_path
         orphan = _Orphan(
             result_index,
             original,
@@ -3494,8 +3507,17 @@ class ExtractionCoordinator:
             dest_path,
             source,
             spelled_from=self._current.spelled_from,
-            requested=self._current.requested_path,
+            requested=requested,
         )
+        parent = self._parent(dest_path)
+        component = self._reserved_component(parent)
+        if component is None:
+            self._makedirs(parent, transformed)
+            orphan.pinned_dest = self._physical_path(dest_path)
+            if requested is not None:
+                orphan.pinned_requested = self._physical_path(requested)
+        else:
+            orphan.parent_holder = self._reservation_at(component, directory=True)
         self._state.orphans.append(orphan)
         self._reserve_orphan(orphan)
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
@@ -3534,31 +3556,46 @@ class ExtractionCoordinator:
         self._index_held_parents(orphan)
 
     def _index_held_parents(self, orphan: _Orphan) -> None:
-        """Record ``orphan`` under the collision key of each of its parent
-        directories (``held_under``)."""
+        """Record ``orphan`` under each of its parent directories (``held_under``),
+        where they physically are: the pinned path when the first pass created them.
+        By ``_physical_key``, which folds case under every policy, so a member that
+        names the directory under another case finds it on a filesystem that folds
+        case; ``_holds_held_link`` tells two directories apart on disk."""
         held_under = self._state.held_under
-        for parent in self._parents_in_dest(orphan.dest_path):
+        for parent in self._parents_in_dest(orphan.pinned_dest or orphan.dest_path):
             held_under.setdefault(
-                self._collision_key(parent), collections.deque()
-            ).append(orphan)
+                self._physical_key(parent), collections.deque()
+            ).append((orphan, parent))
 
     def _holds_held_link(self, path: Path) -> bool:
         """Whether a held-back link that still holds its name lies under the
         directory ``path`` and would be on disk in the made run: in the second pass,
         only a link earlier than the one attempted now (``_reservation_at``)."""
         state = self._state
-        links = state.held_under.get(self._collision_key(path))
+        links = state.held_under.get(self._physical_key(path))
         if not links:
             return False
         reservations = state.reservations
-        while links and (
-            links[0].key is None or reservations.get(links[0].key) is not links[0]
-        ):
+
+        def holds(orphan: _Orphan) -> bool:
+            return orphan.key is not None and reservations.get(orphan.key) is orphan
+
+        while links and not holds(links[0][0]):
             links.popleft()
-        if not links:
-            return False
-        # In archive order, so the first link that holds its name is the earliest.
-        return state.attempting is None or links[0].result_index <= state.attempting
+        for orphan, parent in links:
+            if state.attempting is not None and orphan.result_index > state.attempting:
+                # In archive order: this link and every later one are not made yet.
+                return False
+            if not holds(orphan):
+                continue
+            # The folded key can cover two directories (``X/`` beside ``x/`` on a
+            # case-sensitive filesystem): only the one on disk counts.
+            with contextlib.suppress(OSError, ValueError):
+                if parent == path or os.path.samefile(
+                    long_path(parent), long_path(path)
+                ):
+                    return True
+        return False
 
     def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
         """Apply the overwrite policy to a held-back link's name that ``member`` lands
@@ -3833,8 +3870,23 @@ class ExtractionCoordinator:
             OverwritePolicy.ERROR,
             OverwritePolicy.SKIP,
         ):
-            return orphan.dest_path
-        return orphan.requested
+            return orphan.pinned_dest or orphan.dest_path
+        return orphan.pinned_requested or orphan.requested
+
+    def _fail_under_a_replaced_holder(self, orphan: _Orphan) -> None:
+        """Raise for ``orphan`` when a parent of it reached an earlier held-back
+        link's name in the first pass and a later member has replaced that link
+        since (``parent_holder``): the made link failed at its place, as that name
+        was a file there. A holder the second pass attempted and could not make
+        does not fail it, as the made holder failed at its place too."""
+        holder = orphan.parent_holder
+        if holder is not None and holder.cancelled:
+            raise ExtractionError(
+                f"Cannot create {quoted(orphan.transformed.name)}: "
+                f"{quoted(self._rel_name(holder.dest_path))} is a "
+                "non-directory already extracted from this archive",
+                member_name=orphan.transformed.name,
+            )
 
     def _orphan_blocker(self, second: _SecondPass, orphan: _Orphan) -> _Orphan | None:
         """The earlier held-back link that ``orphan`` has to wait for, or ``None``.
@@ -4161,6 +4213,7 @@ class ExtractionCoordinator:
 
         placed = False
         with self._handling(orphan.original, kind="hardlink", record=record):
+            self._fail_under_a_replaced_holder(orphan)
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original, orphan.transformed, self._orphan_request(orphan)
             )
@@ -4247,6 +4300,7 @@ class ExtractionCoordinator:
             return False
 
         with self._handling(orphan.original, kind="hardlink", record=record):
+            self._fail_under_a_replaced_holder(orphan)
             resolved, prior, collided_with = self._resolve_collision(
                 orphan.original, orphan.transformed, self._orphan_request(orphan)
             )

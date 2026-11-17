@@ -5254,6 +5254,51 @@ _HELD_BACK_LINK_SHAPES = {
         ("sym", "d", "e"),
         ("hard", "e/x", "src1"),
     ],
+    # A held link under an earlier held link's name, then a directory that replaces
+    # that link under REPLACE: the made link `d/x` failed at its place, as `d` was a
+    # file there.
+    "dir-replaces-a-held-parent": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("dir", "d", None),
+    ],
+    # A held link under one of the archive's symlinks lands where the symlink led
+    # at its place in archive order: a later file at the real directory meets it as
+    # not empty, and a later symlink or file at the symlink's name does not move it.
+    "under-a-symlink-then-a-file-at-its-directory": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("file", "e", b"later"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("sym", "s", "f"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed-and-a-link-there": [
+        ("file", "src", b"d"),
+        ("file", "src2", b"t"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("sym", "s", "f"),
+        ("hard", "f/X", "src2"),
+    ],
+    "under-a-symlink-then-a-file-at-the-symlink": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("file", "s", b"later"),
+    ],
     # The same with no symlink: the held link's parent is there before the later
     # file under it, as the made link's is.
     "file-under-a-parent": [

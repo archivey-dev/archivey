@@ -543,11 +543,14 @@ that a later member implies, meets the held-back link only where the filesystem 
 find the made link: at its own path, or under another case on a filesystem that folds
 case. A directory there meets the overwrite policy, and a member under the link's name
 fails, as a non-directory already extracted is in the way. The held-back link's parent
-directories SHALL be created at its place in archive order, as the made link's are, so
-a later member at one of them meets a directory: a symlink there does not redirect the
-link, and under `REPLACE` a directory that holds only held-back links counts as not
-empty. If the second pass cannot make the link, no other member gets the name, as with
-any refused member.
+directories SHALL be created at its place in archive order, as the made link's are, and
+the link SHALL be made where they physically were then, so a later member at one of them
+meets a directory: a symlink there, or one of the archive's symlinks on the way that a
+later member re-points or replaces, does not move the link, and under `REPLACE` a
+directory that holds only held-back links counts as not empty. A held-back link under
+the name of an earlier held-back link that a later member replaced fails, as the made
+link did at its place. If the second pass cannot make the link, no other member gets the
+name, as with any refused member.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
