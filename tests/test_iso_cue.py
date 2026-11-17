@@ -187,9 +187,11 @@ def test_a_sheet_of_file_lines_opens_no_file(
     # otherwise a 64 KiB sheet could hold about 5 000 descriptors.
     (tmp_path / "x.bin").write_bytes(b"\0" * 2352)
     cue = tmp_path / "a.cue"
-    cue.write_text(
-        "FILE x.bin B\n" * 5000 + "  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
-    )
+    # Bytes, not text: Windows text mode would write CRLF and take the sheet over the
+    # 64 KiB cap, which refuses it before the FILE lines are read.
+    sheet = b"FILE x.bin B\n" * 5000 + b"  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+    assert len(sheet) <= cue_sheet.MAX_CUE_SIZE
+    cue.write_bytes(sheet)
     opened = _count_track_files(monkeypatch)
     with pytest.raises(CorruptionError, match="no TRACK"):
         open_archive(cue)
