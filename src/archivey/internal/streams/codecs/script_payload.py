@@ -51,15 +51,22 @@ def check_gzip(peek_more: Callable[[int], bytes], remaining: int | None) -> HitO
 
 
 def check_bzip2(peek_more: Callable[[int], bytes], remaining: int | None) -> HitOutcome:
-    """``BZh`` and a block size digit, then a block's magic or the end of an empty
-    stream."""
+    """``BZh`` and a block size digit, then the end of an empty stream, or a block's
+    magic and the byte after its CRC.
+
+    Every byte up to the block magic can be text (``BZh91AY&SY``), so a script that
+    holds the header as a literal would pass on those alone. The byte after the
+    block's CRC holds the randomised flag, which no bzip2 since 0.9.5 sets, and the top
+    of the 24-bit ``origPtr``, which is below 900 000 and so below 2**20: its top five
+    bits are clear in every real stream, and in no printable character."""
     del remaining
-    head = peek_more(10)
+    head = peek_more(15)
+    if len(head) < 10 or head[:3] != b"BZh" or not 0x31 <= head[3] <= 0x39:
+        return HitOutcome.NOT_THIS_FORMAT
+    if head[4:10] == _BZIP2_END:
+        return HitOutcome.VALID
     return _valid(
-        len(head) == 10
-        and head[:3] == b"BZh"
-        and 0x31 <= head[3] <= 0x39
-        and head[4:] in (_BZIP2_BLOCK, _BZIP2_END)
+        head[4:10] == _BZIP2_BLOCK and len(head) == 15 and not head[14] & 0xF8
     )
 
 

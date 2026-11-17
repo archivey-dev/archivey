@@ -18,7 +18,9 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    ContainerFormat,
     DiagnosticCode,
+    StreamFormat,
     detect_format,
     open_archive,
 )
@@ -84,6 +86,7 @@ COMPRESSORS = [
     (lambda d: gzip.compress(d, mtime=0), ArchiveFormat.TAR_GZ),
     (bz2.compress, ArchiveFormat.TAR_BZ2),
     (lzma.compress, ArchiveFormat.TAR_XZ),
+    (make_lzip_member, ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZIP)),
     pytest.param(_zstd, ArchiveFormat.TAR_ZST, marks=requires_zstd()),
     pytest.param(
         _lz4,
@@ -138,6 +141,7 @@ def test_the_inner_probe_draws_on_the_decode_budget(tmp_path: Path) -> None:
     [
         b"\x1f\x8b\x08\xff" + bytes(60),  # reserved gzip flag bits
         b"BZh9" + bytes(60),  # no block magic after the header
+        b"BZh91AY&SY more text\n",  # a block header written as text
         b"\xfd7zXZ\x00\x00\x01" + bytes(60),  # stream flags CRC does not match
         b"text after the script\n",
     ],
@@ -183,7 +187,11 @@ def _view(data: bytes):
             gzip.compress(b"x", mtime=0),
             [(3, 0x20), (8, 0x01), (9, 0x20)],
         ),
-        (script_payload.check_bzip2, bz2.compress(b"x"), [(3, 0x09), (4, 0x01)]),
+        (
+            script_payload.check_bzip2,
+            bz2.compress(b"x"),
+            [(3, 0x09), (4, 0x01), (14, 0x40)],
+        ),
         (script_payload.check_bzip2, bz2.compress(b""), [(9, 0x01)]),
         (
             script_payload.check_xz,

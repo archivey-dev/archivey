@@ -214,14 +214,17 @@ searched under the `#!` cue only, because a script plus a bare compressed stream
 real shape and an executable plus one is not. Each codec that sets
 `StreamCodec.script_payload_check` (`streams/codecs/script_payload.py`: gzip, bzip2, xz,
 zstd, LZ4 frame, lzip) adds its magic with a check of the header fields after it, so
-script text passes by chance less often than once in 2**32; the registry collects them
-(`script_payload_entries`). A stream hit is then probed for an inner container from its
-offset (`detection._script_stream_payload`), charged to `max_decode_input` like a stream
-at byte 0, and answers `TAR_GZ` or the bare `GZ`. The TAR and single-file backends open
-at that offset (`base_reader.open_at_script_payload`): a seekable source becomes the
-stream from there and drops its path (`ArchiveSource.start_at`), a pipe reads past the
-script. makeself is not this path: its header names the payloads, and it is its own
-format at byte 0 ([`formats/makeself.md`](../formats/makeself.md)).
+script text passes by chance less often than once in 2**32. bzip2's block magic is
+printable (`BZh91AY&SY` is text), so its check reads on to the byte after the block's
+CRC, whose top five bits no real stream sets and every printable byte does. The registry
+collects the checks (`script_payload_entries`). A stream hit is then probed for an inner
+container from its offset (`detection._script_stream_payload`), charged to
+`max_decode_input` like a stream at byte 0, and answers `TAR_GZ` or the bare `GZ`. The
+TAR and single-file backends open at that offset (`base_reader.open_at_script_payload`):
+a seekable source becomes the stream from there and drops its path
+(`ArchiveSource.start_at`), a pipe reads past the script. makeself is not this path: its
+header names the payloads, and it is its own format at byte 0
+([`formats/makeself.md`](../formats/makeself.md)).
 
 ## 6. Sharp edges
 
