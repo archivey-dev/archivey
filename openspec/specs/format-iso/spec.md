@@ -168,8 +168,9 @@ opened; a missing file SHALL raise `TruncatedError`. A sheet over 64 KiB, a shee
 data track, or a track mode it does not know SHALL raise `UnsupportedFeatureError`, and a
 malformed `TRACK`, `INDEX` or time, a track without `INDEX 01`, a `FILE` with no `TRACK`
 after it, track numbers that do not increase, or more than 99 tracks `CorruptionError`,
-before any file is opened. `FILE` lines that name the same file SHALL share one handle.
-Member data hints SHALL be empty, since the opened file is the sheet.
+before any file is opened. `FILE` lines that name the same file, by device and inode,
+SHALL share one handle. Member data hints SHALL be empty, since the opened file is the
+sheet.
 
 #### Scenario: cue matrix
 

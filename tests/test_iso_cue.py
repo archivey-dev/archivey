@@ -183,8 +183,8 @@ def _count_track_files(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 def test_a_sheet_of_file_lines_opens_no_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Each FILE line used to open its own handle, so this 64 KiB sheet held about
-    # 5 000 descriptors and failed with a raw OSError under a low limit.
+    # A sheet of bare FILE lines is refused before any track file is opened;
+    # otherwise a 64 KiB sheet could hold about 5 000 descriptors.
     (tmp_path / "x.bin").write_bytes(b"\0" * 2352)
     cue = tmp_path / "a.cue"
     cue.write_text(
@@ -206,6 +206,31 @@ def test_a_file_named_twice_is_opened_once(
     cue.write_text(
         'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
         'FILE "DISC.BIN" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+    )
+    opened = _count_track_files(monkeypatch)
+    assert _contents(cue)["big.dat"] == _PAYLOAD
+    # One handle, whichever spelling opened it: on a case-folding volume the exact
+    # name "DISC.BIN" exists too.
+    assert len(opened) == 1
+
+
+@requires("pycdlib")
+@pytest.mark.parametrize("link", ["symlink", "hard link"])
+def test_a_file_named_through_a_link_is_opened_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, link: str
+) -> None:
+    (tmp_path / "disc.bin").write_bytes(to_raw(_plain_iso()))
+    try:
+        if link == "symlink":
+            (tmp_path / "alias.bin").symlink_to(tmp_path / "disc.bin")
+        else:
+            os.link(tmp_path / "disc.bin", tmp_path / "alias.bin")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot make a {link} here: {exc}")
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        'FILE "alias.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
     )
     opened = _count_track_files(monkeypatch)
     assert _contents(cue)["big.dat"] == _PAYLOAD

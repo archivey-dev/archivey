@@ -403,9 +403,11 @@ def read_cue_text(path: Path, archive_name: str | None = None) -> str:
 
 def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
     """One track file for each ``FILE`` of the sheet. ``FILE`` lines that name the
-    same file share one handle."""
+    same file share one handle: the file is known by its device and inode, so a
+    symlink, a hard link or another case of the name on a case-folding volume finds
+    it too."""
     opened: list[_TrackFile] = []
-    by_path: dict[Path, _TrackFile] = {}
+    by_identity: dict[tuple[int, int], _TrackFile] = {}
     try:
         for cue_file in files:
             if not _plain_name(cue_file.name):
@@ -418,9 +420,11 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
             try:
                 if path is None:
                     raise FileNotFoundError(cue_file.name)
-                track_file = by_path.get(path)
+                st = os.stat(path)
+                identity = (st.st_dev, st.st_ino)
+                track_file = by_identity.get(identity)
                 if track_file is None:
-                    track_file = by_path[path] = _TrackFile(path)
+                    track_file = by_identity[identity] = _TrackFile(path)
                 opened.append(track_file)
             except FileNotFoundError:
                 # Not there, or a symlink to nothing. Other OSErrors (a permission
