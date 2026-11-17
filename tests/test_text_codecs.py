@@ -246,6 +246,8 @@ def test_no_line_over_the_cap_reaches_the_header_regex(
         (b"begin 644 a \t ", b"a"),
         (b"begin 644 a\r", b"a"),
         (b"begin 644 a \t\r", b"a"),
+        # A CR inside the trailing whitespace is dropped too.
+        (b"begin 644 a \r ", b"a"),
         (b"begin-base64 600   x.bin", b"x.bin"),
         (
             b"begin 644 a" + b" " * (_MAX_LINE - 20) + b"b",

@@ -75,9 +75,12 @@ if TYPE_CHECKING:
 # How much text may come before a ``begin`` line: a mail or news post's headers and
 # body. Past this the source is refused rather than read to its end in search of one.
 MAX_LEADING_TEXT = 64 * 1024
-# The longest line a uuencode reader buffers. A uuencoded line is at most 62 bytes (a
-# length, 60 data characters and the checksum character some old encoders add); base64
-# lines in ``begin-base64`` are 76 at most. This is generous.
+# The longest line a uuencode reader buffers, in the text before ``begin`` as well as
+# after it. A uuencoded line is at most 62 bytes (a length, 60 data characters and the
+# checksum character some old encoders add); base64 lines in ``begin-base64`` are 76 at
+# most. The text before ``begin`` is a mail or news post, whose lines RFC 5322 limits to
+# 998 characters. So a longer line is not one either writes, and refusing it bounds the
+# work of the begin-line regex.
 _MAX_LINE = 4096
 # Matched after _header_match strips trailing whitespace, so the name needs no lazy
 # group: a lazy name followed by a whitespace class backtracks over a run of spaces
