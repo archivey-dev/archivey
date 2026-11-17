@@ -251,6 +251,7 @@ class SingleFileReader(BaseArchiveReader):
                 usage=self._usage,
             ),
             report_trailing_data=True,
+            source_origin=source.payload_origin,
         )
 
         # Metadata probes answer a different question than member streams, so they get
@@ -261,13 +262,16 @@ class SingleFileReader(BaseArchiveReader):
         # plain open and its real size with the flag: a capability flag must not change
         # metadata. Accelerators stay OFF: a probe reads no member data, so an
         # accelerator's startup cost buys nothing the native index does not already have.
-        self._metadata_config = without_accelerators(
-            stream_config_from_archivey(
-                self._config,
-                streaming=False,
-                seekable=self._seekable,
-                usage=self._usage,
-            )
+        self._metadata_config = replace(
+            without_accelerators(
+                stream_config_from_archivey(
+                    self._config,
+                    streaming=False,
+                    seekable=self._seekable,
+                    usage=self._usage,
+                )
+            ),
+            source_origin=source.payload_origin,
         )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata

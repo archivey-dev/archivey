@@ -323,6 +323,10 @@ class ArchiveSource(ReadOnlyIOStream):
     _remote: tuple[RangeSource, ...] = ()
     _owned_beneath: BinaryIO | None = None
     _fsspec_decompressed: FsspecDecompressed | None = None
+    # Where the reader's first byte sits in the file: the offset of a compressed stream
+    # behind a ``#!`` script (``open_at_script_payload``), else 0. A codec adds it to
+    # the offsets its messages name (``StreamConfig.source_origin``).
+    payload_origin: int = 0
 
     def __init__(
         self,

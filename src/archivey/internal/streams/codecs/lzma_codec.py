@@ -150,6 +150,7 @@ class XzCodec(_SizedLzmaCodec):
             initial_index=config.seek_index,
             natives=config.natives,
             usage=config.usage,
+            source_origin=config.source_origin,
         )
 
 
@@ -175,6 +176,7 @@ class LzipCodec(_SizedLzmaCodec):
             probe_read_bound=config.probe_read_bound,
             natives=config.natives,
             usage=config.usage,
+            source_origin=config.source_origin,
         )
 
     @override

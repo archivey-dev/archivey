@@ -483,6 +483,7 @@ class StreamCodec:
             # The file's own index (a zstd seek table, a bzip3 header walk) only on
             # declared seek demand; restart points alone keep the points a decode finds.
             file_index=config.seekable,
+            source_origin=config.source_origin,
         )
 
     def frame_check(self) -> FrameCheck | None:

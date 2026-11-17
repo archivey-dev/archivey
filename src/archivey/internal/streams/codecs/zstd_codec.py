@@ -209,9 +209,12 @@ class ZstdCodec(StreamCodec):
         # (``seekable-decompressor-streams``): each regular frame starts a seek point,
         # and the seekable format's table lists them all without decoding.
         collector = config.collector
+        origin = config.source_origin
         return StreamIndex(
             resumes_at=lambda data: data.startswith(ZSTD_FRAME_MAGIC),
-            build=lambda inner, last: build_seek_table_index(inner, last, collector),
+            build=lambda inner, last: build_seek_table_index(
+                inner, last, collector, origin
+            ),
         )
 
     @override

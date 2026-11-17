@@ -531,7 +531,8 @@ def open_at_script_payload(
     format without a stub, and so is any offset for an uncompressed TAR, which the
     scan never claims there. On a seekable source the offset becomes the source's
     offset 0 (:meth:`ArchiveSource.start_at`); on a pipe the script's bytes are read
-    and dropped.
+    and dropped. Either way :attr:`ArchiveSource.payload_origin` keeps the offset, which
+    the reader's codec adds to the offsets its messages name.
     """
     # Detection claims only a compressed stream behind a script. An uncompressed TAR
     # would also name its header offsets from the payload, not the file.
@@ -545,6 +546,7 @@ def open_at_script_payload(
     )
     if not start_offset:
         return
+    source.payload_origin = start_offset
     if source.seekable():
         source.start_at(start_offset)
         return
@@ -4290,6 +4292,7 @@ class BaseArchiveReader(ArchiveReader):
                 # bytes would take whole members before the damage with it. So it
                 # recovers them whatever the caller set.
                 recover_partial_data=True,
+                source_origin=source.payload_origin,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,

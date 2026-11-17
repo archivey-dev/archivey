@@ -15,13 +15,19 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyConfig, detect_format, open_archive
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    DiagnosticCode,
+    detect_format,
+    open_archive,
+)
 from archivey.detection_cost import BALANCED_BUDGET
-from archivey.exceptions import FormatDetectionError
+from archivey.exceptions import CorruptionError, FormatDetectionError
 from archivey.internal.sfx import HitOutcome
 from archivey.internal.streams.codecs import script_payload
 from tests.conftest import requires_zstd
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, make_lzip_member
 
 DATA = Path(__file__).parent / "fixtures" / "script-installers"
 FILES = {"a.txt": b"hello\n", "sub/b.txt": b"second file\n"}
@@ -210,3 +216,84 @@ def test_each_check_takes_a_real_header_and_refuses_a_changed_field(
             index,
             value,
         )
+
+
+# Bytes appended after the stream that start no further stream.
+_APPENDED = b"appended: not part of the stream\n"
+
+
+@pytest.mark.parametrize(("compress", "expected"), COMPRESSORS)
+def test_trailing_data_behind_a_script_is_named_from_the_file_start(
+    compress: object, expected: ArchiveFormat, tmp_path: Path
+) -> None:
+    """The stream is decoded from a source that starts at its first byte, and the
+    report of the bytes after it still counts from the file's first byte."""
+    assert callable(compress)
+    stream = compress(_tar())
+    path = tmp_path / "install.sh"
+    path.write_bytes(SCRIPT + stream + _APPENDED)
+    with open_archive(path) as reader:
+        assert reader.format == expected
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == FILES
+        reports = [
+            d
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.ARCHIVE_TRAILING_DATA
+        ]
+    (report,) = reports
+    end = len(SCRIPT) + len(stream)
+    assert f"compressed offset {end}." in report.message
+    assert getattr(report.context, "observed_bytes", None) == end
+
+
+def _damaged_second_stream(first: bytes, second: bytes) -> bytes:
+    damaged = bytearray(second)
+    damaged[1] ^= 0xFF  # One byte of the magic: still a stream, damaged.
+    return SCRIPT + first + bytes(damaged)
+
+
+@pytest.mark.parametrize(
+    "compress",
+    [lzma.compress, make_lzip_member],
+    ids=["xz", "lzip"],
+)
+def test_a_damaged_stream_behind_a_script_is_named_from_the_file_start(
+    compress: object, tmp_path: Path
+) -> None:
+    assert callable(compress)
+    first = compress(b"first stream\n")
+    path = tmp_path / "notes.sh"
+    path.write_bytes(_damaged_second_stream(first, compress(b"second\n")))
+    with open_archive(path) as reader:
+        (member,) = reader.members()
+        with pytest.raises(CorruptionError) as caught:
+            reader.read(member)
+    assert f"at offset {len(SCRIPT) + len(first)}:" in str(caught.value)
+
+
+def test_an_xz_index_scan_behind_a_script_names_offsets_from_the_file_start(
+    tmp_path: Path,
+) -> None:
+    """The backward scan for the last stream's footer, which a declared seek runs,
+    names the stream it finds without a valid footer from the file's first byte."""
+    first = lzma.compress(b"a" * 50)
+    second = bytearray(lzma.compress(b"b" * 50))
+    second[-12] ^= 0xFF  # The footer's CRC32.
+    path = tmp_path / "notes.sh"
+    path.write_bytes(SCRIPT + first + bytes(second))
+    with open_archive(path, seekable_members=True) as reader:
+        (member,) = reader.members()
+        # The scan fails and is reported; the decode that takes over then meets the
+        # damaged footer itself.
+        with reader.open(member) as stream, pytest.raises(CorruptionError):
+            stream.seek(0, io.SEEK_END)
+        messages = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.SEEK_INDEX_DEGRADED
+        ]
+    assert messages
+    assert (
+        f"starting at offset {len(SCRIPT) + len(first)} has no valid footer"
+        in (messages[0])
+    )

@@ -484,7 +484,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             takeover.switch_to_stdlib()
             return True
         if self._config.report_trailing_data:
-            report_trailing_data(self._config.collector, "bzip2", offset)
+            report_trailing_data(
+                self._config.collector, "bzip2", self._config.source_origin + offset
+            )
         return False
 
     def _first_trailing_byte(self, end: int) -> tuple[int, bool] | None:
