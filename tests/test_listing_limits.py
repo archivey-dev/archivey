@@ -690,6 +690,26 @@ def test_members_report_after_an_interrupted_pass_past_the_caps_raises(
             reader.members_report()
 
 
+def test_link_target_refused_for_max_metadata_bytes_stays_refused() -> None:
+    """A ZIP symlink target that crosses ``max_metadata_bytes`` is refused on every
+    ``members()`` call: the refused target is not kept on the member, so a retry
+    weighs it again and does not publish a listing over the cap."""
+    import stat
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for i in range(3):
+            info = zipfile.ZipInfo(f"l{i}")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            z.writestr(info, "t" * 1000 + str(i))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2500))
+    with open_archive(io.BytesIO(buf.getvalue()), config=cfg) as reader:
+        for _ in range(3):
+            with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+                reader.members()
+
+
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
 def test_unlimited_lifts_the_caps_for_a_pass(tmp_path: Path, streaming: bool) -> None:
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)

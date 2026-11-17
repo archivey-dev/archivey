@@ -2215,13 +2215,26 @@ class BaseArchiveReader(ArchiveReader):
                 if unread:
                     self._prepare_link_target_reads(unread)
                 for member in unread:
+                    was_unread = member._link_target_unread
                     try:
                         self._resolve_link_target(member)
                     except UNREADABLE_LINK_TARGET_ERRORS as exc:
                         self._report_unreadable_link_target(member, exc)
                         continue
                     if member.link_target is not None:
-                        self._listing_tracker.account_link_target(member.link_target)
+                        try:
+                            self._listing_tracker.account_link_target(
+                                member.link_target
+                            )
+                        except ResourceLimitError:
+                            # Not counted, so not kept: a member left holding the
+                            # target would drop out of `unread` on the next call and
+                            # publish the listing over the cap. Put it back as it
+                            # was, so a retry reads and refuses it again.
+                            member.link_target = None
+                            member._link_target_resolved = False
+                            member._link_target_unread = was_unread
+                            raise
             # One memo per finalize: every link on a walked chain shares its terminal,
             # so a chain of N links costs O(N) rather than a fresh walk per member.
             terminals: dict[int, ArchiveMember | None] = {}
