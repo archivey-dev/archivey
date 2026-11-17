@@ -7404,6 +7404,7 @@ def test_a_run_link_made_where_a_taken_back_directory_was_is_refused(
     assert not (dest / "e" / "y").exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
 def test_a_run_link_made_where_a_parent_was_looked_up_before_is_refused(
     tmp_path: Path,
 ) -> None:
