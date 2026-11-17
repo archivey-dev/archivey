@@ -166,8 +166,10 @@ A `FILE` name that is not a plain name in the sheet's directory (a path separato
 an absolute or drive name) SHALL raise `UnsupportedFeatureError`, before any file is
 opened; a missing file SHALL raise `TruncatedError`. A sheet over 64 KiB, a sheet with no
 data track, or a track mode it does not know SHALL raise `UnsupportedFeatureError`, and a
-malformed `TRACK`, `INDEX` or time, a track without `INDEX 01`, or more than 99 tracks
-`CorruptionError`. Member data hints SHALL be empty, since the opened file is the sheet.
+malformed `TRACK`, `INDEX` or time, a track without `INDEX 01`, a `FILE` with no `TRACK`
+after it, track numbers that do not increase, or more than 99 tracks `CorruptionError`,
+before any file is opened. `FILE` lines that name the same file SHALL share one handle.
+Member data hints SHALL be empty, since the opened file is the sheet.
 
 #### Scenario: cue matrix
 
@@ -180,6 +182,7 @@ malformed `TRACK`, `INDEX` or time, a track without `INDEX 01`, or more than 99 
 | Audio session, then data session (Enhanced CD) | The data session |
 | `FILE "../x.bin"`, `"/etc/passwd"`, `"sub/x.bin"` | `UnsupportedFeatureError` |
 | Missing track file | `TruncatedError` |
+| A `FILE` with no `TRACK` after it; a track number not above the one before | `CorruptionError`; no track file opened |
 | Audio only | `UnsupportedFeatureError` |
 | `detect_format` on a `.cue` | `ISO`, `GUESS`, `detected_by="extension"` |
 

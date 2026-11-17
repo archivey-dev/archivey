@@ -130,12 +130,25 @@ def _file_name(rest: str, line: int) -> str:
     return parts[0] if len(parts) == 2 else rest
 
 
+def _check_has_tracks(files: list[CueFile]) -> None:
+    """Refuse a sheet whose last ``FILE`` has no ``TRACK``. Every file then holds a
+    track, so a sheet names at most 99 files."""
+    if files and not files[-1].tracks:
+        raise CorruptionError(
+            f"the .cue sheet names {quoted(files[-1].name)} with no TRACK after it"
+        )
+
+
 def parse_cue(text: str) -> list[CueFile]:
     """The files and tracks a ``.cue`` sheet lists. Commands it does not use (``TITLE``,
-    ``PERFORMER``, ``FLAGS``, other ``REM`` lines) are skipped."""
+    ``PERFORMER``, ``FLAGS``, other ``REM`` lines) are skipped.
+
+    Each ``FILE`` must hold a ``TRACK``, and track numbers must increase: tracks are
+    found by number, and a file that holds no track is not part of the disc."""
     files: list[CueFile] = []
     session = 1
     track: CueTrack | None = None
+    track_number: int | None = None
     for number, raw_line in enumerate(text.splitlines(), 1):
         words = raw_line.strip().split(None, 1)
         if not words:
@@ -152,6 +165,7 @@ def parse_cue(text: str) -> list[CueFile]:
                 session = int(parts[1])
             continue
         if command == "FILE":
+            _check_has_tracks(files)
             files.append(CueFile(_file_name(rest, number)))
             track = None
         elif command == "TRACK":
@@ -165,7 +179,14 @@ def parse_cue(text: str) -> list[CueFile]:
                     "does not know",
                     source_format=ArchiveFormat.ISO,
                 )
-            track = CueTrack(int(parts[0]), mode, session)
+            previous = track_number
+            track_number = int(parts[0])
+            if previous is not None and track_number <= previous:
+                raise CorruptionError(
+                    f"line {number} of the .cue sheet has track {track_number} after "
+                    f"track {previous}; track numbers must increase"
+                )
+            track = CueTrack(track_number, mode, session)
             files[-1].tracks.append(track)
             if sum(len(f.tracks) for f in files) > 99:
                 raise CorruptionError("the .cue sheet lists more than 99 tracks")
@@ -179,6 +200,7 @@ def parse_cue(text: str) -> list[CueFile]:
                 track.index1 = _frames(parts[1], number)
         elif command == "PREGAP" and track is not None:
             track.pregap = _frames(rest.strip(), number)
+    _check_has_tracks(files)
     for cue_file in files:
         for cue_track in cue_file.tracks:
             if cue_track.index1 is None:
@@ -336,8 +358,7 @@ class DiscSource(ReaderSource):
         return start, end
 
     def close(self) -> None:
-        for track_file in self._files:
-            track_file.close()
+        _close_all(self._files)
 
 
 def _plain_name(name: str) -> bool:
@@ -381,7 +402,10 @@ def read_cue_text(path: Path, archive_name: str | None = None) -> str:
 
 
 def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
+    """One track file for each ``FILE`` of the sheet. ``FILE`` lines that name the
+    same file share one handle."""
     opened: list[_TrackFile] = []
+    by_path: dict[Path, _TrackFile] = {}
     try:
         for cue_file in files:
             if not _plain_name(cue_file.name):
@@ -394,7 +418,10 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
             try:
                 if path is None:
                     raise FileNotFoundError(cue_file.name)
-                opened.append(_TrackFile(path))
+                track_file = by_path.get(path)
+                if track_file is None:
+                    track_file = by_path[path] = _TrackFile(path)
+                opened.append(track_file)
             except FileNotFoundError:
                 # Not there, or a symlink to nothing. Other OSErrors (a permission
                 # error) propagate as they do for the archive's own path.
@@ -403,10 +430,15 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
                     source_format=ArchiveFormat.ISO,
                 ) from None
     except BaseException:
-        for track_file in opened:
-            track_file.close()
+        _close_all(opened)
         raise
     return opened
+
+
+def _close_all(files: list[_TrackFile]) -> None:
+    """Close each track file once; two ``FILE`` lines can share one."""
+    for track_file in dict.fromkeys(files):
+        track_file.close()
 
 
 def _layout_extents(
@@ -519,8 +551,7 @@ def disc_source(cue_path: Path, archive_name: str | None) -> DiscSource:
         chosen = next(e for e in extents if e.track == chosen.track)
         return DiscSource(opened, extents, chosen, archive_name)
     except BaseException:
-        for track_file in opened:
-            track_file.close()
+        _close_all(opened)
         raise
 
 

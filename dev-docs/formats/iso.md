@@ -116,9 +116,14 @@ chosen track's start, and fails a read of a sector in no data track. The chosen 
 is the first data track of the last session with one, as a mount picks it. The session
 gap is checked against the root directory's `.` record (it names its own sector) and
 searched for in the track's first 4096 sectors when it disagrees. `FILE` names must be
-plain names beside the sheet. The trailing-data scan covers only the rest of the chosen
-track, and member hints are empty (the opened file is the sheet). A non-seekable source is also refused ahead of that
-check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
+plain names beside the sheet. `parse_cue` refuses a `FILE` with no `TRACK` after it, so
+a sheet names at most 99 files and opens at most 99 handles (a 64 KiB sheet of bare
+`FILE` lines held about 5 000 open at once), and `FILE` lines naming one file share its
+handle. It also refuses track numbers that do not increase: the chosen track is found by
+number, so a repeated number picked the first session's track. The trailing-data scan
+covers only the rest of the chosen track, and member hints are empty (the opened file is
+the sheet). A non-seekable source is also refused ahead of that check, with
+`StreamNotSeekableError`, because `pycdlib` could not read it either. The
 extension is `.iso`.
 
 Neither magic is validated past the match; there is no SFX scan and no validator, because
