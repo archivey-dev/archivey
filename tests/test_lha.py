@@ -453,7 +453,8 @@ def test_the_macbinary_probe_decodes_only_the_header(
     with open_archive(io.BytesIO(archive(members))) as reader:
         assert len(reader.members()) == 3
     assert len(decoded) == 3
-    # A command writes at most 256 bytes, so the probe can pass 128 by that much.
+    # In -lh5- and -lhx- a command writes at most 256 bytes, so the probe can pass 128
+    # by that much (-lk7-'s commands write up to 514).
     assert max(decoded) <= 128 + 256
 
 
