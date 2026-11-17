@@ -149,6 +149,29 @@ def test_compress_utils_can_be_excluded(
     assert used and set(used) == {"python" if exclude else "compress-utils"}
 
 
+def test_a_host_output_cap_below_a_block_is_not_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compress-utils' output cap is process-wide and the host's to set. One below an
+    lzop block refused the block as damaged; the Python decoder reads it instead."""
+    compress_utils = pytest.importorskip("compress_utils")
+    used: list[str] = []
+    real_python = lzo_decoder.lzo1x_decompress_python
+
+    def spy_python(data: bytes, limit: int) -> bytes:
+        used.append("python")
+        return real_python(data, limit)
+
+    monkeypatch.setattr(lzo_decoder, "lzo1x_decompress_python", spy_python)
+    compress_utils.set_max_decompressed_size(4096)
+    try:
+        with open_stream(_DATA / "text-9-crc32.txt.lzo") as stream:
+            assert stream.read() == _TEXT
+    finally:
+        compress_utils.set_max_decompressed_size(1 << 30)
+    assert used
+
+
 def test_compress_utils_runs_in_a_child_under_native_decoders() -> None:
     pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)

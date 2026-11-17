@@ -1370,7 +1370,12 @@ nobody has found yet would abort the process. pyppmd runs in a child by default 
 of a known pyppmd issue ([`known-issues.md`](known-issues.md) §`pyppmd` crashes on
 damaged or crafted PPMd data). libbzip3 runs in a child by default too, as a precaution:
 no crash is known, but it had seven memory-safety CVEs in 2023 (under `NONE` it decodes
-in-process). Both rapidgzip decoders run in a child process;
+in-process). compress-utils' LZO1X decoder stays in-process like python-lzo before it:
+it is about 100 lines of C (`third_party/lzokay/lzokay.c` in 0.12.1) that checks every
+read and write against the input and output ends, upstream fuzzes it under ASan and
+UBSan on every pull request and nightly, and 700,000 fuzzed blocks found no crash
+([`investigations/lzo-compress-utils-vs-python-lzo.md`](investigations/lzo-compress-utils-vs-python-lzo.md)).
+Both rapidgzip decoders run in a child process;
 `scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
 `MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:

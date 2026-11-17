@@ -53,6 +53,11 @@ class LzoError(ValueError):
     """The data is not a valid LZO1X stream, or decodes to more than the limit."""
 
 
+# What compress-utils says when its process-wide output cap, not the data, stops a
+# decode (``CU_ERR_SIZE_LIMIT`` in 0.12.1).
+_SIZE_LIMIT = "decompressed size exceeds configured limit"
+
+
 def _compress_utils(
     excluded: frozenset[OptionalLibrary], natives: Natives = IN_PROCESS
 ) -> Callable[[bytes, int], bytes] | None:
@@ -74,6 +79,11 @@ def _compress_utils(
         try:
             return natives.lzo_decompress(data, limit)
         except errors as exc:
+            if _SIZE_LIMIT in str(exc):
+                # compress-utils' process-wide output cap
+                # (``set_max_decompressed_size``) is the host's setting, not a
+                # verdict on the data: decode the block here, under ``limit``.
+                return lzo1x_decompress_python(data, limit)
             raise LzoError(str(exc)) from None
         except ResourceUnavailableError as exc:
             # Isolated, the package is only looked up here, not imported, so one

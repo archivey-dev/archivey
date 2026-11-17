@@ -152,7 +152,14 @@ package would serve both codecs.
   the existing tests, which read every LZO fixture (`tests/test_lzop.py`,
   `tests/test_squashfs.py`) with each decoder; there is no separate corpus sweep.
 - No speed measured on Windows, macOS or aarch64, and no fuzz there.
-- No sanitizer build of compress-utils; only its release wheels were fuzzed.
+- This investigation ran no sanitizer build; it fuzzed the release wheels. Upstream
+  does run one: its `fuzz.yml` workflow runs libFuzzer over every decoder, LZO
+  included (`tests/fuzz/fuzz_algos.h`), under ASan and UBSan on every pull request and
+  nightly. That, the size of the decoder (`third_party/lzokay/lzokay.c`, about 100
+  lines, every read and write behind `NEED_INPUT` / `NEED_OUTPUT`, a match refused when
+  its distance passes the output start, length growth checked against `SIZE_MAX`) and
+  the fuzz here are why it runs in-process by default, as python-lzo did, while
+  libbzip3 runs in a child.
 
 ## What the replacement does
 
@@ -160,7 +167,11 @@ package would serve both codecs.
    and `lzo1x_decompressor()` picks compress-utils when it is installed and not
    excluded, recording it in `usage`.
 2. A `CompressError` becomes `LzoError`, so `CorruptionError` to callers; there is no
-   Python retry, since the two decoders agree. The message is the decoder's own.
+   Python retry, since the two decoders agree. The message is the decoder's own. The
+   one exception is compress-utils' process-wide output cap
+   (`set_max_decompressed_size`, 1 GiB by default), which belongs to the host
+   program: when it, not the data, stops a block, the Python decoder decodes that
+   block.
 3. compress-utils is in `[recommended]` on CPython except Intel macOS (no wheel), and
    in `[free-threaded]` from 3.14 (no 3.13t wheel).
 4. It runs in-process by default and in a child under `NATIVE_DECODERS`, as python-lzo
