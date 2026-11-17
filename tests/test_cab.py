@@ -1191,6 +1191,49 @@ def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
     )
 
 
+def test_a_name_listed_three_times_keeps_the_last_current() -> None:
+    # Three copies of "dup" after four LZX spans, by data: one, two, three. The table
+    # lists two, then one, then three, so three is current. The superseded copies
+    # come in data order among themselves, so the generic code (walk order) and the
+    # CAB code (table order) land on different superseded copies.
+    files = [
+        *_spans(1, 4),
+        CabFile("dup", b"one"),
+        CabFile("dup", b"two"),
+        CabFile("dup", b"three"),
+    ]
+    raw = _with_table_order(write_cab(files, [CabFolder("lzx")]), [3, 2, 1, 0, 5, 4, 6])
+    with open_archive(io.BytesIO(raw)) as reader:
+        members = reader.members()
+        data = [reader.read(m) if m.name == "dup" else None for m in members]
+        current = reader.read("dup")
+    assert [m.name for m in members] == [
+        "dup",
+        "dup",
+        "f0-0",
+        "f0-1",
+        "f0-2",
+        "f0-3",
+        "dup",
+    ]
+    assert [data[i] for i in (0, 1, 6)] == [b"one", b"two", b"three"]
+    assert [m.is_current for m in members] == [False, False, *[True] * 5]
+    assert current == b"three"
+    codes = [sorted(d.code for d in m.diagnostics) for m in members]
+    assert codes == [
+        [DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED],  # one: listed second
+        [DiagnosticCode.MEMBER_NAME_DUPLICATE],  # two: listed first, walked second
+        [],
+        [],
+        [],
+        [],
+        [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE,
+            DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
+        ],
+    ]
+
+
 def test_a_name_listed_twice_after_normalization_is_reported() -> None:
     # Names are compared as the listing presents them: "a\\b" and "a/b" are one.
     raw = write_cab(

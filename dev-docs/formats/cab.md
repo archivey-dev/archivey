@@ -208,17 +208,21 @@ are added.)
   the entry the table lists last is the current one. Until 2026-11-17 the reader kept
   table order for such a cabinet to honour it, and paid for that: a crafted table that
   repeats one name and is out of data order decoded its folder again for each member
-  (1 200 MSZIP members of 32 KiB, reversed, 95 KB: 18.2 s; found in a sweep of
+  (1200 MSZIP members of 32 KiB, reversed, 95 KB: 18.2 s; found in a sweep of
   `cab_reader.py`). Now the table is sorted in two groups: first the entries that a
-  later record supersedes, in data order, then the others, in data order. Each entry
-  still comes after every entry of its name that the table lists before it, so the
-  generic last-entry-wins rule picks the entry listed last, and each block decodes at
-  most twice (the same cabinet: 0.16 s). The listing order of such a cabinet changes;
-  no writer makes one (next decision). Rejected: keeping table order (the cost above),
-  plain data order (another entry becomes current), and marking the superseded entries
-  not current in the reader (the generic `MEMBER_NAME_DUPLICATE` then stops, since it
-  compares only current members). Reopen if a real writer is found that repeats names
-  in a cabinet.
+  later record supersedes, in data order, then the others, in data order. The entry the
+  table lists last comes after every entry it supersedes, so the generic last-entry-wins
+  rule picks it, and each block decodes at most twice (the same cabinet: 0.16 s). With
+  three or more copies of a name, the superseded copies come in data order among
+  themselves, not table order, so the generic `MEMBER_NAME_DUPLICATE` (walk order) can
+  land on another superseded copy than `MEMBER_NAME_DUPLICATE_UNEXPECTED` (table order);
+  the current copy carries both. Ordering the first group by table position was
+  rejected: one name repeated many times would bring back a decode per member. The
+  listing order of such a cabinet changes; no writer makes one (next decision).
+  Rejected: keeping table order (the cost above), plain data order (another entry
+  becomes current), and marking the superseded entries not current in the reader (the
+  generic `MEMBER_NAME_DUPLICATE` then stops, since it compares only current members).
+  Reopen if a real writer is found that repeats names in a cabinet.
 
 - **A name listed twice is reported as unexpected, and `STRICT` refuses it.** The
   maintainer's call (davi, 2026-11-11). A cabinet has no append, update or file
@@ -227,8 +231,7 @@ are added.)
   reader compares each name, normalized as the listing presents it, with the earlier
   ones (`CabReader._repeated_names`) and reports `MEMBER_NAME_DUPLICATE_UNEXPECTED` on
   each later entry. That code is in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses the
-  cabinet at listing;
-  the default policy lists it. The same member also reports
+  cabinet at listing; the default policy lists it. The same member also reports
   `MEMBER_NAME_DUPLICATE`, from the check every format runs: accepted, since that code
   carries the earlier member's id and a caller who already raises on it keeps working.
   The code is not CAB's own: another format with no way to repeat a name, such as XAR,

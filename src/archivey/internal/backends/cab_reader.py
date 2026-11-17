@@ -340,8 +340,9 @@ class CabReader(IndexedReader[_Location]):
 
     @override
     def iter_members(self) -> Iterator[MemberRecord[_Location]]:
-        """One member per file record, in table order, or in data order where table
-        order would decode a block twice.
+        """One member per file record, in table order, or, where table order would
+        decode a block twice, in data order (the entries a later record supersedes
+        first).
 
         A member stream goes on from the folder decoder the last one left behind
         (``_folder_stream``) only when it is in the same folder, at or after where
