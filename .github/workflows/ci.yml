@@ -127,10 +127,10 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
-    # Linux runs on ubuntu-latest (26.04), except the two 3.11 [all] legs, `test` here and
-    # `test-lowest`, which run on ubuntu-24.04: the min Python and the dependency floor
-    # also keep the older LTS image (GCC 13, libarchive 3.7, rpm 4) covered. Their check
-    # names say ubuntu-24.04.
+    # Linux runs on ubuntu-latest (26.04 as of 2026-11), except the 3.11 [all] leg here
+    # and the 3.11 [all-lowest] leg in `test-lowest`, which run on ubuntu-24.04: the min
+    # Python and the dependency floor also keep the older LTS image (GCC 13, libarchive
+    # 3.7, rpm 4) covered. Their check names say ubuntu-24.04.
     runs-on: ${{ matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
