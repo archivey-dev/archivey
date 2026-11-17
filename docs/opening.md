@@ -58,8 +58,10 @@ not the grade.
 ## Single compressed files
 
 A file that's compressed but not an archive, such as `notes.txt.gz`, opens as an archive of one
-member, named after the file without its extension (`notes.txt`). If you only want its contents,
-`open_stream` returns them as a file object:
+member, named after the file without its extension (`notes.txt`). The member's `compression` names
+the file's method, as a ZIP member compressed the same way does: `DEFLATE` for a `.gz`, `XZ` for a
+`.xz`. A `.tar.gz` is different: there the gzip belongs to the archive, and each member is `STORED`.
+If you only want the contents, `open_stream` returns them as a file object:
 
 ```python
 with archivey.open_stream("notes.txt.gz") as stream:
