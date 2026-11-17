@@ -167,7 +167,7 @@ three. It does four jobs in the same `read()`:
    `close()` never produces the first verdict. Seeks keep the check where they can: see
    [DR-4a](../design-rules.md#dr-4a-the-integrity-guarantee-is-for-a-start-to-end-read).
 3. **Counting and limits.** Decoded bytes are counted for the cost receipt and for the
-   ratio guard (`MemberRatioGuard` in `bomb_tracker.py`), which stops a member that
+   ratio guard (`MemberRatioCheck` in `bomb_tracker.py`), which stops a member that
    expands far beyond its compressed size.
 4. **The verification level** (`verified`, `verifiable`), asked of each layer through
    `streams/verification.py`. Each layer reports what *it* proved: the member's CRC, a

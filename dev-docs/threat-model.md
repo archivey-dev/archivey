@@ -1334,7 +1334,25 @@ commands and full tables does the same, at about 2 µs an input byte
 chunks costs about 360 ns an input byte where a forward read walks its blocks for block
 points (restart points, random access), one Python step per chunk header, against
 liblzma's near-instant decode; a walk kept only to raise members from block checks gives
-up on such a stream (`_XzBlockWalker._chunk`). On declared seek demand,
+up on such a stream (`_XzBlockWalker._chunk`). A file cut into many tiny units costs
+calls, not bytes, under `ProcessIsolation.NATIVE_DECODERS`, where each decoder call is a
+round trip to the child. A plain decode makes about one call per 64 KiB of input. A
+concatenated stream (gzip members, bzip2 or xz streams, zstd or lz4 frames) opens a new
+decoder in the child for each unit and makes about three round trips a unit, and the
+child is replaced after `MAX_DECODERS_PER_CHILD` (64) decoders
+(`decoder_child.py`), so every 64 units also start a process. 30 000 one-byte units,
+CPython 3.13: gzip (630 KB) 13.0 s isolated against 0.06 s in the parent, about 20 s a
+MB; zstd (300 KB) 15.9 s against 0.9 s, about 50 s a MB; xz (1.8 MB) 14.8 s; lz4
+(720 KB) 14.4 s; bzip2 streams (1.1 MB) 13.4 s. Empty gzip members cost the same. With
+the replacement turned off, the gzip case takes 3.8 s, so process starts are about 70% of
+it. A normal 30 MB gzip member decodes isolated in 0.11 s. Inside one bzip2 stream,
+one-byte blocks cost at least two `bz2` calls a block in the standard library engine
+(the feed up to the block marker, which returns the block, and one empty drain call;
+[bzip2 §2.3](formats/bzip2.md#23-member-data)), so 30 000 of them (671 KB) decode
+isolated in 2.6 s, about 4 s a MB, against 0.15 s in the parent; a match of the block
+magic inside block data costs the same feed and drain. All of these are linear in the
+input and need the caller to opt into `NATIVE_DECODERS`. Keeping the child across unit
+boundaries for one stream is tracked internally for a later release. On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one
@@ -1541,7 +1559,7 @@ the nest ratio: their bytes are in the outer reader's number. Code:
 `read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
 `extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
 hold reads: each member stream is held to the per-member and archive-wide ratios
-(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
+(`bomb_tracker.MemberRatioCheck`, one `ReadRatioTally` per reader), so a scan or hash of a
 bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
 stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
 and a compressed stream is held as a whole. It counts toward the archive-wide total at its

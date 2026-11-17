@@ -83,7 +83,7 @@ paid. The limits live in `config.py`, grouped by when they apply:
 | `ListingLimits` (`max_members` 262,144; `max_metadata_bytes` 64 MiB) | A hostile index or a header walk that never ends | `_register_member` in `base_reader.py`, `internal/listing_limits.py`, and the parsers while they read counts |
 | `DecoderLimits.max_decoder_memory` (2 GiB) | A codec told to allocate a huge window (LZMA dictionary, zstd window, RAR dictionary, PPMd model) | Checked from the stream's header before the decoder is built; detection probes are held to it too |
 | `DecoderLimits.max_key_derivation_rounds` (2^25) | An encrypted archive that chooses how much work each password attempt costs | The 7z and RAR key derivation |
-| `DecoderLimits.max_ratio` (800:1) and its thresholds | A small member that decodes to an enormous one | `MemberRatioGuard`, `DecodeRatioGuard` in `bomb_tracker.py`, on every decode, not only extraction |
+| `DecoderLimits.max_ratio` (800:1) and its thresholds | A small member that decodes to an enormous one | `MemberRatioCheck`, `DecodeRatioGuard` in `bomb_tracker.py`, on every decode, not only extraction |
 | `ExtractionLimits` (`max_extracted_bytes` 2 GiB, `max_entries`) | Filling the disk | `BombTracker` in `bomb_tracker.py`, as bytes are written |
 | `SpoolLimits.max_bytes` (1 GiB) | A temp-file copy for `unrar` | `SpoolBudget` in `internal/spool.py` |
 | `DetectionBudget` | Detection reading too much of a file that is not an archive | `internal/detection.py` |

@@ -1948,16 +1948,16 @@ def test_a_decoded_member_keeps_its_ratio_guard(
     """A member the plugin decodes itself (``MemberSpan.data``) can expand past its
     stored bytes, so it is held to the ratio, unlike a ``data_length`` member. Fails
     if the adapter answers ``_member_data_is_stream_bytes`` for every span."""
-    from archivey.internal.bomb_tracker import MemberRatioGuard
+    from archivey.internal.bomb_tracker import MemberRatioCheck
 
     built: list[str] = []
-    init = MemberRatioGuard.__init__
+    init = MemberRatioCheck.__init__
 
-    def counting(self: MemberRatioGuard, *args: object, **kwargs: object) -> None:
+    def counting(self: MemberRatioCheck, *args: object, **kwargs: object) -> None:
         built.append(kwargs["member"].name)  # type: ignore[union-attr]
         init(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(MemberRatioGuard, "__init__", counting)
+    monkeypatch.setattr(MemberRatioCheck, "__init__", counting)
     fmt, _ = decoded
     path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
     with open_archive(path, format=fmt) as reader:

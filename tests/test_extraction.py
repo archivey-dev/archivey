@@ -5243,7 +5243,159 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "d/x", "src2"),
         ("hard", "d", "src1"),
     ],
+    # A later symlink at a held link's parent: the made link creates the directory
+    # `d` at its place, so the symlink `d` meets a directory, and the held link must
+    # not be sent through the symlink into `e/` (it would replace `e/x`).
+    "symlink-at-a-parent": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("dir", "e", None),
+        ("hard", "d/X", "src2"),
+        ("sym", "d", "e"),
+        ("hard", "e/x", "src1"),
+    ],
+    # A held link under an earlier held link's name, then a directory that replaces
+    # that link under REPLACE: the made link `d/x` failed at its place, as `d` was a
+    # file there.
+    "dir-replaces-a-held-parent": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("dir", "d", None),
+    ],
+    # The same when a later copy of the held link's name supersedes it.
+    "held-parent-superseded-by-a-later-copy": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("file", "src3", b"three"),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("hard", "d", "src3"),
+    ],
+    # A held link over an empty directory replaces it at its place under REPLACE, as
+    # the made link does, so the link under it then fails against its name.
+    "held-link-over-a-directory-then-a-link-under-it": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("dir", "d", None),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("file", "d", b"later"),
+    ],
+    # A held link under one of the archive's symlinks lands where the symlink led
+    # at its place in archive order: a later file at the real directory meets it as
+    # not empty, and a later symlink or file at the symlink's name does not move it.
+    "under-a-symlink-then-a-file-at-its-directory": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("file", "e", b"later"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("sym", "s", "f"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed-and-a-link-there": [
+        ("file", "src", b"d"),
+        ("file", "src2", b"t"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("sym", "s", "f"),
+        ("hard", "f/X", "src2"),
+    ],
+    "under-a-symlink-then-a-file-at-the-symlink": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("file", "s", b"later"),
+    ],
+    # A link spelled through a symlink holds its name where it physically is: a
+    # later member spelled without the symlink meets it there, as it would the made
+    # link, and does not make a directory at its name.
+    "under-a-symlink-then-a-link-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed-then-a-link-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("sym", "s", "f"),
+        ("hard", "e/d/x", "src2"),
+    ],
+    "under-a-symlink-then-a-link-and-a-file-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+        ("file", "e/d", b"later"),
+    ],
+    "dir-then-a-link-over-it-under-a-symlink-then-a-link-under-it": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("dir", "e/d", None),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+        ("file", "e/d", b"later"),
+    ],
+    # The same with no symlink: the held link's parent is there before the later
+    # file under it, as the made link's is.
+    "file-under-a-parent": [
+        ("file", "src", b"d"),
+        ("hard", "d/h", "src"),
+        ("file", "d", b"later"),
+    ],
 }
+
+
+@pytest.mark.parametrize("re_point", [False, True])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_a_file_written_through_a_symlink_is_the_runs_own(
+    tmp_path: Path, overwrite: OverwritePolicy, re_point: bool
+) -> None:
+    # `s/f` written through the archive's own `s -> e` is the file at `e/f`: a later
+    # `e/f/x` fails against it as it would against `e/f` written by that name, under
+    # every policy, rather than meeting it as the caller's file. It still does after
+    # `s` is re-pointed, when `s/f` no longer leads there.
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("dir", "f", None),
+            ("sym", "s", "e"),
+            ("file", "s/f", b"mine"),
+            *([("sym", "s", "f")] if re_point else []),
+            ("file", "e/f/x", b"later"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, overwrite=overwrite, on_error=OnError.CONTINUE
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["s/f"] is ExtractionStatus.EXTRACTED
+    assert statuses["e/f/x"] is ExtractionStatus.FAILED
+    assert (dest / "e" / "f").read_bytes() == b"mine"
 
 
 def _extracted(dest: Path) -> dict[str, bytes | None]:
@@ -5273,7 +5425,11 @@ def test_a_held_back_link_extracts_as_a_made_one(
                 members=(lambda m: not m.name.startswith("src")) if held else None,
             )
         statuses = [
-            (r.member.name, r.status.name)
+            (
+                r.member.name,
+                r.status.name,
+                None if r.path is None else r.path.relative_to(dest).as_posix(),
+            )
             for r in report.results
             if not r.member.name.startswith("src")
         ]
