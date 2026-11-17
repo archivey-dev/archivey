@@ -1048,9 +1048,11 @@ def _extract_removing_a_directory(
 def _callers_symlink(dest: Path, name: str, target: str) -> None:
     """Make ``dest`` with the caller's symlink ``name -> target`` in it. A member is
     never written through a symlink the same run created, so a test that needs a
-    second spelling of one path uses a symlink that was there before the run."""
+    second spelling of one path uses a symlink that was there before the run.
+    ``target`` names a directory, which may not exist yet: Windows makes a file
+    symlink by default, which a path cannot go through."""
     dest.mkdir(parents=True, exist_ok=True)
-    os.symlink(target, dest / name)
+    os.symlink(target.replace("/", os.sep), dest / name, target_is_directory=True)
 
 
 def _assert_plain_parent(directory: Path) -> None:
