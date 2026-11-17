@@ -961,7 +961,6 @@ class RarForwardReader(RarReader):
         assert size is not None  # a member of unknown size stops the volumes
         offset = self._pipe_end
         self._pipe_end = offset + size
-
         return offset
 
     def _wrap_forward_member(self, member: ArchiveMember, stream: BinaryIO) -> BinaryIO:

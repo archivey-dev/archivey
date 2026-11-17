@@ -2,37 +2,32 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from archivey import ArchiveyConfig, SpoolLimits, TruncatedError, open_archive
-from tests.conftest import requires_binary, requires_unrar_cli
-from tests.test_rar_forward import _pipe, _rar, rolling_unrar  # noqa: F401
+from tests.conftest import requires_unrar_cli
+from tests.test_audit_outside_rar_sweep_2026_11_15 import _rar5, _rar5_file
+from tests.test_rar_forward import _pipe, rolling_unrar  # noqa: F401
 
 
-@requires_binary("rar")
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
-@pytest.mark.parametrize("hash_switch", ["-htc", "-htb"], ids=["crc32", "blake2sp"])
+@pytest.mark.parametrize("blake2sp", [False, True], ids=["crc32", "blake2sp"])
 @pytest.mark.parametrize(
     "limit", [2 << 20, None], ids=["small-volumes", "default-volumes"]
 )
 @pytest.mark.parametrize("read", ["all", "exact", "chunks", "readinto"])
 def test_a_late_source_cut_fails_the_member_read(
-    tmp_path: Path, hash_switch: str, limit: int | None, read: str
+    blake2sp: bool, limit: int | None, read: str
 ) -> None:
     # More than the 4 MiB source lookahead and one synthetic volume. The member is
     # listed before the feeder discovers its missing tail. That tail would be all
     # zeros, so a digest over synthetic padding alone cannot detect its absence.
     size, cut_at = (6, 5) if limit is not None else (24, 20)
-    raw = _rar(
-        tmp_path,
-        {"before": b"intact prefix", "zeros": bytes(size << 20)},
-        "-cfg-",
-        "-m0",
-        "-ds",
-        hash_switch,
+    # Built by hand, as ``rar a -m0`` stores it: CI never installs the RAR writer.
+    raw = _rar5(
+        _rar5_file("before", b"intact prefix", blake2sp=blake2sp),
+        _rar5_file("zeros", bytes(size << 20), blake2sp=blake2sp),
     )[: cut_at << 20]
     config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=limit))
     with (
