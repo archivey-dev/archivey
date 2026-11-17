@@ -495,7 +495,9 @@ class MakeselfReader(SequentialReader):
             )
         crcs = [_number(t, "CRCsum") for t in _required(variables, b"CRCsum").split()]
         md5s = [_hex(t, "MD5", 32) for t in _required(variables, b"MD5").split()]
-        shas = [_hex(t, "SHA", 64) for t in sha.split()]
+        # A SHA list whose length is not the payload count holds only zeros (checked
+        # above), which state no digest, so it is not split: it may be long.
+        shas = [_hex(t, "SHA", 64) for t in sha.split()] if listed == payloads else []
         header = _Header(
             version=version,
             sizes=sizes,

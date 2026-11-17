@@ -604,12 +604,18 @@ def test_the_payload_count_is_checked_before_the_lists_are_built(
     # check on its length could run.
     parsed: list[str] = []
     real = makeself_reader._number
+    real_hex = makeself_reader._hex
 
     def number(raw: bytes, what: str) -> int:
         parsed.append(what)
         return real(raw, what)
 
+    def hex_digest(raw: bytes, what: str, length: int) -> bytes:
+        parsed.append(what)
+        return real_hex(raw, what, length)
+
     monkeypatch.setattr(makeself_reader, "_number", number)
+    monkeypatch.setattr(makeself_reader, "_hex", hex_digest)
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
     with pytest.raises(ResourceLimitError, match="max_members=10"):
         open_archive(io.BytesIO(_with_payloads([_empty_tar_gz()] * 11)), config=config)
@@ -620,6 +626,15 @@ def test_the_payload_count_is_checked_before_the_lists_are_built(
     with pytest.raises(CorruptionError, match="CRCsum lists 3 values for 2 payloads"):
         open_archive(io.BytesIO(data))
     assert "CRCsum" not in parsed
+    # A SHA list of zeros may be any length (2.4.0's --append leaves it short), and
+    # zeros state no digest, so a long one is accepted without being parsed.
+    parsed.clear()
+    data = _with_payloads([_empty_tar_gz()] * 2)
+    zeros = b" ".join([b"0" * 64] * 5)
+    data = re.sub(rb'^SHA=""$', b'SHA="%s"' % zeros, data, flags=re.MULTILINE)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert reader.members() == []
+    assert "SHA" not in parsed
 
 
 def test_payloads_count_against_max_members() -> None:
