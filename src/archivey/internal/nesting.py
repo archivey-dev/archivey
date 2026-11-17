@@ -183,9 +183,12 @@ class NestDraws:
     more than the cap. Across levels the bound is looser: to fill an inner reader's
     read, its decoder reads through the outer reader's member stream, which draws on
     the same account after the inner read sized itself. So the crossing read can go
-    past the cap by the bytes the outer levels decode to fill it. Readers on other
-    threads size their reads against the same room, so each can overshoot by one
-    read.
+    past the cap by the bytes the outer levels decode to fill it. Every read is sized
+    against the room when it starts, and the first draw past the cap raises, so on
+    one thread the total stays at or under about twice the cap at any depth. That
+    cap is the outermost one that counts: an outer reader sizes its reads against
+    its own cap, not a stricter one a child sets. Readers on other threads size
+    their reads against the same room, so each can overshoot by one read.
     """
 
     __slots__ = (

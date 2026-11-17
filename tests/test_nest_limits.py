@@ -275,6 +275,31 @@ def test_a_nested_crossing_read_passes_the_cap_by_its_own_bytes() -> None:
     assert cap < budget.decoded_bytes <= cap + step + 1
 
 
+def test_a_nest_three_levels_deep_decodes_at_most_twice_its_cap() -> None:
+    """Every read is sized against what is left when it starts, and the first draw past
+    the cap raises, so one ``read()`` at the bottom of three levels counts at most
+    twice the cap, plus the crossing byte: a level does not add its own overshoot."""
+    middle = _stored_zip({"bottom.zip": _stored_zip({"p.bin": bytes(8_000_000)})})
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("middle.zip", middle)
+    cap = 500_000
+    budget = _Nest(max_decoded_bytes=cap)
+    with (
+        _open(buf.getvalue(), budget) as top,
+        top.open("middle.zip") as middle_stream,
+        budget.open(middle_stream, streaming=True) as middle_reader,
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes=500000"),
+    ):
+        for _, bottom_stream in middle_reader.stream_members():
+            assert bottom_stream is not None
+            with budget.open(bottom_stream, streaming=True) as bottom:
+                for _, stream in bottom.stream_members():
+                    assert stream is not None
+                    stream.read()
+    assert cap < budget.decoded_bytes <= 2 * cap + 1
+
+
 def test_threads_share_one_count() -> None:
     data = _zip(4, size=50_000)
     budget = _Nest()

@@ -734,7 +734,10 @@ class DecoderLimits:
     extraction. In an archive opened alone, that read decodes one byte past the cap.
     In a nested archive it can go further: to fill an inner reader's read, the outer
     reader decodes bytes that count too, after the inner read has sized itself
-    against what is left. The crossing read can pass the cap by those bytes.
+    against what is left. Each read is sized against what is left when it starts, so
+    on one thread a nest decodes at most about twice the cap, at any depth. A child
+    whose cap is stricter than its outer readers' stops its own reads at its cap,
+    but the bytes the outer readers decode for it are held only by their cap.
 
     The count never refills while the nest lives, so on a reader kept open for long
     (an :class:`~archivey.fsspec.ArchiveyFileSystem`, a reader a server shares) this
