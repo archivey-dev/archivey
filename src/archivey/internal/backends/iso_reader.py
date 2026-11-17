@@ -102,6 +102,7 @@ from archivey.diagnostics import (
     MemberTimestampContext,
     NameEncodingContext,
     ReaderDisagreementContext,
+    UnreadSessionContext,
     raw_name_to_base64,
 )
 from archivey.exceptions import (
@@ -1796,6 +1797,40 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
             )
 
+    def _report_unread_session(self, start: int, stop: int) -> bool:
+        """Report another ISO 9660 volume in the data sectors from ``start`` to
+        ``stop`` of a raw image read without its ``.cue`` sheet; True when one is
+        there.
+
+        ``ARCHIVE_UNREAD_SESSION``: a disc with a later data session holds it there,
+        and its sheet would choose that session, so a read of the same file by its
+        path beside the sheet lists other files. The listing stays the first
+        track's. A primary volume descriptor starts a sector with ``1``, ``CD001``
+        and version ``1``, which is all that is checked. It stands for the trailing
+        data those sectors are, which is not reported as well.
+        """
+        sector = -(-start // USER_DATA_SIZE)
+        while sector * USER_DATA_SIZE + 7 <= stop:
+            self._iso_fp.seek(sector * USER_DATA_SIZE)
+            if self._iso_fp.read(7) == b"\x01CD001\x01":
+                break
+            sector += 1
+        else:
+            return False
+        self._context.report(
+            DiagnosticCode.ARCHIVE_UNREAD_SESSION,
+            (
+                "Raw CD image holds another ISO 9660 volume, at sector "
+                f"{sector}, after the one listed: a later session of the disc, which "
+                "is not read without the image's .cue sheet. Read with its sheet, "
+                "the image lists its last session."
+            ),
+            UnreadSessionContext(
+                archive_name=self._archive_name, format="iso", sector=sector
+            ),
+        )
+        return True
+
     def _report_trailing_data(self) -> None:
         """Report a non-zero byte after the end of the image, as DR-3 asks.
 
@@ -1823,6 +1858,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # What follows the data track (audio, or another track's pregap) is the
             # disc's own; only data sectors that continue the track are scanned.
             image_length = self._source.data_end(end, MAX_TRAILING_SCAN)
+            if self._report_unread_session(end, image_length):
+                return
         if end >= image_length:
             return
         self._iso_fp.seek(end)

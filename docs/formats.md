@@ -1245,8 +1245,12 @@ other members because of a member's name any more. Setting it to `True` warns.
   A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
   for `disc.bin`), and a missing one is `TruncatedError`. Without a `.cue`, a
   `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
-  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
-  is recognised by its name, and only from a path, since its tracks are files beside it.
+  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). The `.cue` is used only
+  when you open the `.bin` by its path, so the same multisession `.bin` passed as a file object
+  lists its first session, not its last. When archivey finds another session's filesystem after the
+  first one, it reports `ARCHIVE_UNREAD_SESSION`, which `DiagnosticPolicy.STRICT` refuses. A `.cue`
+  has no magic: it is recognised by its name, and only from a path, since its tracks are files
+  beside it.
 
 ## SquashFS
 

@@ -5,6 +5,7 @@ constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_TRAILING_DATA
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNLISTED_DATA
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNREAD_SESSION
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.DIGEST_UNVERIFIABLE
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
@@ -340,6 +341,7 @@ value archivey.DiagnosticCode.SCAN_ENTRY_VANISHED = 'scan_entry_vanished'
 value archivey.DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING = 'archive_eof_marker_missing'
 value archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA = 'archive_trailing_data'
 value archivey.DiagnosticCode.ARCHIVE_UNLISTED_DATA = 'archive_unlisted_data'
+value archivey.DiagnosticCode.ARCHIVE_UNREAD_SESSION = 'archive_unread_session'
 value archivey.DiagnosticCode.MEMBER_TIMESTAMP_INVALID = 'member_timestamp_invalid'
 value archivey.DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED = 'member_header_record_skipped'
 value archivey.DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE = 'symlink_target_unavailable'
@@ -365,7 +367,7 @@ value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED = 'member_name_du
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -755,6 +757,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_trailing_data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-trailing-data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unlisted_data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unlisted-data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unread_session'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unread-session'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_timestamp_invalid'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-timestamp-invalid'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_record_skipped'
@@ -1090,6 +1094,13 @@ field archivey.diagnostics.UnlistedDataContext.member_id: int | None = None
 field archivey.diagnostics.UnlistedDataContext.member_name: str = ''
 field archivey.diagnostics.UnlistedDataContext.offset: int = 0
 method archivey.diagnostics.UnlistedDataContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnreadSessionContext(_JsonSafeContext)
+init archivey.diagnostics.UnreadSessionContext(kind: Literal['unread_session'] = 'unread_session', archive_name: str | None = None, format: str = '', sector: int = 0) -> None
+field archivey.diagnostics.UnreadSessionContext.archive_name: str | None = None
+field archivey.diagnostics.UnreadSessionContext.format: str = ''
+field archivey.diagnostics.UnreadSessionContext.kind: Literal['unread_session'] = 'unread_session'
+field archivey.diagnostics.UnreadSessionContext.sector: int = 0
+method archivey.diagnostics.UnreadSessionContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.UnusedArgumentContext(_JsonSafeContext)
 init archivey.diagnostics.UnusedArgumentContext(kind: Literal['unused_argument'] = 'unused_argument', archive_name: str | None = None, argument: Literal['encoding', 'password'] = 'encoding', format: str = '', reason: str = '') -> None
 field archivey.diagnostics.UnusedArgumentContext.archive_name: str | None = None

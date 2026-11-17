@@ -123,7 +123,11 @@ reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and
 are not checked, and documentation SHALL say so. Without a `.cue` sheet beside it (next
 requirement) only the first track is read. The trailing-data check SHALL scan only the data sectors that
 continue the track after the volume space, so a mixed-mode disc's audio is not reported.
-Read hints SHALL name the raw sectors that hold a member's extents.
+When those sectors hold another ISO 9660 volume (a sector that starts with a primary
+volume descriptor), as a later session of the disc does, the backend SHALL report
+`ARCHIVE_UNREAD_SESSION` naming that sector instead of `ARCHIVE_TRAILING_DATA`, and the
+listing SHALL stay the first track's. Read hints SHALL name the raw sectors that hold a
+member's extents.
 
 Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
 with `UnsupportedFeatureError` naming the layout, before the availability check, so the
@@ -137,6 +141,7 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | Lists and reads as the plain `.iso` does, with no diagnostic |
 | Data track followed by audio sectors | Reads; no `ARCHIVE_TRAILING_DATA` |
 | Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
+| A second ISO 9660 volume in the data sectors past the volume space, no `.cue` used | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
 | A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
 | A Mode 2 Form 2 sector inside a file | Reading that file raises `UnsupportedFeatureError` |
 | Image cut inside a file | Reading that file raises `TruncatedError` |
