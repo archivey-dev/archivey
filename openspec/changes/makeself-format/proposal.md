@@ -19,7 +19,8 @@ compressor-needle block of the archived `prefixed-archive-detection` change.
   lines of the script after it. makeself 2.2.0 and later.
 - Every payload's TAR is listed, in order, through `ReaderContext.open_nested`. Every
   compressor archivey has a codec for, and base64, are read. gpg and openssl payloads
-  are refused by name; openssl decryption follows in its own change.
+  are refused by name; openssl payloads, at first refused, are now decrypted with
+  `password=` (a follow-up PR on this change).
 - The header's CRC (POSIX `cksum`), MD5 and SHA-256 of each payload are all checked. A
   match raises every file of the payload to `Verification.CHECKSUM`; a mismatch makes
   them failures of `verify_all()`. This needs an internal hook for a check over several
