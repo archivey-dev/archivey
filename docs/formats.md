@@ -1905,7 +1905,13 @@ they open at once. Close the sending side when the file is done.
   Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR, LHA, ARJ) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA, ARJ) are searched for, and so are gzip, bzip2, xz, zstd, LZ4 and lzip
+  streams whose header fields pass their checks: a CPack `.sh` installer, or another shell
+  installer, is a script followed by a compressed TAR. That stream is reported as the TAR inside
+  it (`TAR_GZ`), or as the bare stream (`GZ`) when it holds nothing archivey recognizes, and is
+  read from where it starts, from a pipe too. An uncompressed TAR behind a script is not found,
+  and `format=TAR_GZ` on such a script fails, as on any file that does not start with the
+  stream. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
