@@ -82,9 +82,11 @@ The members come in table order, unless reading them in that order would decode 
 twice (§2.3); then they come sorted by folder and offset, the order of their bytes. To
 decide, `iter_members` reads the whole table before the first member comes (at most
 65 535 records, each read once from the table: about 6 MiB more at the peak for 65 535
-files) and replays the kept decoder over it (`_decodes_twice`). A cabinet that lists one
-name twice keeps table order, since the entry listed last is the current one, and then
-pays a folder decode per member if that order needs it; each later entry of the name
+files) and replays the kept decoder over it (`_decodes_twice`). In a cabinet that lists
+one name twice, the entry the table lists last is the current one. When such a table is
+sorted, the entries a later record supersedes come first, in data order, and then the
+others, in data order: the current entry still comes after the entries it supersedes,
+and each block decodes at most twice. Each later entry of the name, by table position,
 reports `MEMBER_NAME_DUPLICATE_UNEXPECTED`, which `STRICT` refuses (§6). A damaged
 table yields the members before the damage, sorted by the same rule, then the error: one
 bad record at the end of a crafted table does not turn the sort off.
@@ -110,8 +112,8 @@ When a member stream closes, the reader keeps its folder decoder; the next membe
 same folder, at or after where that one stopped, continues from it. Any other member of a
 compressed folder decodes the folder again from its first block. Writers list files in
 data order, so `stream_members()` and `extract_all` decode each folder once; a table in
-an order that would decode a block twice is sorted into data order first, unless a name
-is listed twice (§2.2, §6).
+an order that would decode a block twice is sorted into data order first (§2.2, §6). A
+table that lists a name twice is sorted in two groups, so a block decodes at most twice.
 Members whose bytes overlap still decode their folder again in any order. Only one
 decoder is kept: memory stays at one LZX window (at most 2 MiB), and the window is
 checked against `max_decoder_memory` before a member of the folder opens. A member of
@@ -192,7 +194,7 @@ are added.)
   whose writer lists files in data order, and any table whose members of each folder
   are in order, whatever the order of the folders. Like SquashFS, the order changes for
   `members()` too: there is one member order, and it is the one the stream pass reads.
-  A cabinet that lists a name twice keeps table order: see the next decision. Rejected:
+  A cabinet that lists a name twice is sorted too: see the next decision. Rejected:
   keeping more than one
   decoder (a crafted table interleaves one folder more), and sorting every table (it
   changes the order of cabinets that read well as they are). 7z needs no such rule:
@@ -201,13 +203,25 @@ are added.)
   overlapping members, which decode their folder again in any order, turn up outside
   crafted input.
 
-- **A name listed twice keeps table order, and the cost stays.** The maintainer's call
-  (2026-11-08), on round 1 of the review of this order. The entry listed last is the
-  current one, so sorting would change which of the two a reader and extraction take.
-  The price is a residual: a crafted table that repeats one name and is out of data
-  order decodes its folder again for each member (150 members of 32 KiB in one LZX
-  folder, reversed: 58 s against under 1 s), as the threat model's "No CPU or
-  wall-clock bound" records. Rejected: sorting anyway (another entry becomes current).
+- **A name listed twice: the entry listed last stays current, and the sort stays on.**
+  The maintainer's call (2026-11-08), on round 1 of the review of this order, is that
+  the entry the table lists last is the current one. Until 2026-11-17 the reader kept
+  table order for such a cabinet to honour it, and paid for that: a crafted table that
+  repeats one name and is out of data order decoded its folder again for each member
+  (1200 MSZIP members of 32 KiB, reversed, 95 KB: 18.2 s; found in a sweep of
+  `cab_reader.py`). Now the table is sorted in two groups: first the entries that a
+  later record supersedes, in data order, then the others, in data order. The entry the
+  table lists last comes after every entry it supersedes, so the generic last-entry-wins
+  rule picks it, and each block decodes at most twice (the same cabinet: 0.16 s). With
+  three or more copies of a name, the superseded copies come in data order among
+  themselves, not table order, so the generic `MEMBER_NAME_DUPLICATE` (walk order) can
+  land on another superseded copy than `MEMBER_NAME_DUPLICATE_UNEXPECTED` (table order);
+  the current copy carries both. Ordering the first group by table position was
+  rejected: one name repeated many times would bring back a decode per member. The
+  listing order of such a cabinet changes; no writer makes one (next decision).
+  Rejected: keeping table order (the cost above), plain data order (another entry
+  becomes current), and marking the superseded entries not current in the reader (the
+  generic `MEMBER_NAME_DUPLICATE` then stops, since it compares only current members).
   Reopen if a real writer is found that repeats names in a cabinet.
 
 - **A name listed twice is reported as unexpected, and `STRICT` refuses it.** The
@@ -217,8 +231,7 @@ are added.)
   reader compares each name, normalized as the listing presents it, with the earlier
   ones (`CabReader._repeated_names`) and reports `MEMBER_NAME_DUPLICATE_UNEXPECTED` on
   each later entry. That code is in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses the
-  cabinet at listing, before the slow table-order read of the decision above starts;
-  the default policy lists it in table order. The same member also reports
+  cabinet at listing; the default policy lists it. The same member also reports
   `MEMBER_NAME_DUPLICATE`, from the check every format runs: accepted, since that code
   carries the earlier member's id and a caller who already raises on it keeps working.
   The code is not CAB's own: another format with no way to repeat a name, such as XAR,
