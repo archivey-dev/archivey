@@ -497,8 +497,11 @@ through it, since it has no destination path. Tests:
 A member whose parent path runs through a symlink that a member of this extraction
 created SHALL be refused, under every policy (`TRUSTED` included), in both access modes
 and in a dry run: `BLOCKED`, with a `FilterRejectionError` whose message is "Path goes
-through a symlink this extraction created". A symlink is the run's while the entry where
-the run made it is still that link (the same device and inode). A symlink the caller had in
+through a symlink this extraction created", unless the path already resolves outside
+`dest`, which is refused as an escape first. A symlink is the run's while the entry the
+member's path meets is still that link (the same device and inode, or where the
+filesystem reports inode 0 the same place, with case folded), however the member spells
+it: a case variant or a name Windows trims reaches the link too. A symlink the caller had in
 `dest` before the run is followed, subject to the parent resolution check, until a member
 replaces it; and a member that replaces the run's link with a directory makes a
 directory, which later members are written into. Only a member's own path is checked: a

@@ -7309,3 +7309,51 @@ def test_a_deep_name_after_a_run_link_is_checked_without_recursion(
         # pytest removes its temp directories recursively, which a tree this deep
         # would break.
         remove_scratch(tmp_path / "out")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_a_case_variant_of_a_run_link_is_refused_too(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    # `S/x` reaches the run's `s -> e` on a filesystem that folds case: the link is
+    # found by what is on disk, not by how the member spells it.
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if case_sensitive(dest):
+        pytest.skip("needs a case-insensitive filesystem, where S and s are one entry")
+    archive = _tar_bytes([("dir", "e", None), ("sym", "s", "e"), ("file", "S/x", b"x")])
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, policy=policy, on_error=OnError.CONTINUE, on_blocked="skip"
+        )
+    assert [r.status for r in report.results][-1] is ExtractionStatus.BLOCKED
+    assert list((dest / "e").iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_a_run_link_is_refused_where_the_filesystem_reports_inode_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no inode to go by, the link is found by its folded physical key.
+    lstat = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("sym", "s", "e"),
+            ("file", "s/x", b"x"),
+            ("file", "e/y", b"y"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, on_blocked="skip")
+    monkeypatch.undo()
+    assert [r.status.name for r in report.results] == [
+        "EXTRACTED",
+        "EXTRACTED",
+        "BLOCKED",
+        "EXTRACTED",
+    ]
+    assert sorted(os.listdir(dest / "e")) == ["y"]
