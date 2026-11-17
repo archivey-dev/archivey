@@ -557,7 +557,10 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     collapses ``..`` before following links), where a symlink whose target starts at
     ``/`` leads (the tree has no destination path, so it follows no such link and leaves
     out a member whose path or target runs through one, even when extraction would
-    follow it back into the destination), a link that a later member makes lead out, and
+    follow it back into the destination), a link that a later member makes lead out,
+    the earlier copy of a duplicate name (extraction writes it until the later copy
+    replaces it, so a member between the two copies can meet it on disk, while the
+    tree places that member as if the earlier copy were not there), and
     ``filter=``. A hard link to a symlink is that
     symlink, with its target read from the hard link's own directory, as
     extraction (and GNU tar) write it.
