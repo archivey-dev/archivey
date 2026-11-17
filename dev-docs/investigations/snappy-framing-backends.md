@@ -10,10 +10,11 @@ writes them. The real speed question is CRC-32C, not the backend: with the Pytho
 read runs at about 20 MB/s, with `google-crc32c` at 480 to 930 MB/s.
 
 **Ruling (maintainer, 2026-11-17): keep both, selectable.** `snappy_handler()` defaults
-to `"auto"`: compress-utils when it is installed, since it matched Google Snappy on every
-input, else cramjam, which has wheels for more interpreters. A caller can still name one.
-Consequence: a cramjam-only install refuses the three unusual encodings below that a
-compress-utils install reads. The facts behind the choice are under [Choosing](#choosing).
+to `"auto"`: compress-utils when it is installed, since it matched Google Snappy on
+every input, else cramjam, which has wheels for more interpreters. A caller can still
+name one. Consequence: a cramjam-only install refuses the three unusual encodings below
+that a compress-utils install reads. The facts behind the choice are under
+[Choosing](#choosing).
 
 ## What was built
 
@@ -99,6 +100,23 @@ would give up the checks this module owns.
 | Extra peak RSS reading 64 MiB of zeros in 1 MiB reads | 5.2 MiB | 6.2 MiB |
 | RSS growth over 200,000 refused raw blocks and 200 refused streams | 0 KiB | 20 KiB |
 | Mismatches, 4 threads x 30 decodes of a 300 KiB stream | 0 | 0 |
+
+### CRC-32C implementations
+
+Measured 2026-11-17 on the same host, 16 MiB of random data.
+
+| Implementation | License | 64 KiB calls | Wheels |
+| --- | --- | ---: | --- |
+| `crc32c` 2.9.post0 (ICRAR) | LGPL-2.1-or-later | 19,279 MB/s | 113: CPython 3.9 to 3.15 incl. 3.14t/3.15t, PyPy 3.11, glibc and musl x86-64/aarch64/riscv64, macOS x86-64/ARM64, Windows x86/AMD64/ARM64 |
+| `google-crc32c` 1.9.0 | Apache-2.0 | 7,878 MB/s | 30: CPython 3.10 to 3.15, no free-threaded, no PyPy, no musl; glibc x86-64/aarch64, macOS, Windows AMD64 |
+| Python, four 16-bit tables (built lazily, 1 MiB, ~25 ms) | in archivey | 21 to 22 MB/s | none needed |
+| Python, slicing by 8 with byte tables (first version) | in archivey | 14 to 16 MB/s | none needed |
+
+Both packages agree with each other and with the Python CRC. Either is far faster than
+the raw Snappy decode (about 1 GB/s), so the read speed barely depends on which one.
+`crc32c` reaches every interpreter archivey tests on; its LGPL license is the cost.
+The 16-bit-table Python CRC (proposed by Codex on the PR, checked here on CPython 3.11,
+3.12 and 3.13) replaced the first version.
 
 ## Choosing
 

@@ -38,7 +38,7 @@ def snappy_handler(backend: str = "auto", crc: str = "auto") -> type[CodecHandle
     decodes: a key of ``BACKENDS``, or ``"auto"`` for the first installed one in
     ``AUTO_ORDER`` (chosen when this is called). ``crc`` picks the CRC-32C
     implementation
-    (``"auto"``, ``"python"`` or ``"google-crc32c"``)."""
+    (``"auto"``, ``"python"``, ``"google-crc32c"`` or ``"crc32c"``)."""
     chosen = resolve_backend(backend)
     auto = backend == "auto"
 

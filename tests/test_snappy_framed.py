@@ -129,9 +129,11 @@ def test_python_crc32c_matches_google_crc32c() -> None:
     google = crc32c_function("google-crc32c") if _has("google_crc32c") else None
     if google is None:
         pytest.skip("google-crc32c is not installed")
-    for size in (0, 1, 7, 8, 9, 63, 4096, 65536):
-        data = os.urandom(size)
-        assert crc32c_python(data) == google(data)
+    for size in [*range(40), 4095, 4096, 65535, 65536, 65537]:
+        for data in (os.urandom(size), bytes(size), b"\xff" * size):
+            assert crc32c_python(data) == google(data)
+            # A memoryview that does not start at offset 0 of its buffer.
+            assert crc32c_python(memoryview(b"x" + data)[1:]) == google(data)
 
 
 def _has(module: str) -> bool:
@@ -460,3 +462,12 @@ def test_auto_reads_with_whichever_backend_is_installed() -> None:
             io.BytesIO(bytes(cramjam.snappy.compress(data))), format="sz"
         ) as stream:
             assert stream.read() == data
+
+
+@pytest.mark.parametrize("name", ["google-crc32c", "crc32c"])
+def test_each_native_crc32c_matches_python(name: str) -> None:
+    importorskip(name.replace("-", "_"))
+    native = crc32c_function(name)
+    for size in (0, 1, 9, 4096, 65536):
+        data = os.urandom(size)
+        assert native(data) == crc32c_python(data)

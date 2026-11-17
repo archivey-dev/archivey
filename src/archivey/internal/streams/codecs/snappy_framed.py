@@ -31,15 +31,17 @@ differ only in which raw blocks it accepts and what bytes it returns. The decode
 must equal the length the block declares.
 
 **CRC-32C.** The standard library has no CRC-32C (``zlib.crc32`` is a different
-polynomial). ``google-crc32c`` is used when installed; otherwise a table-driven Python
-CRC runs at about 17 MB/s, which then bounds the whole decode.
+polynomial). ``google-crc32c`` or ``crc32c`` is used when installed; otherwise a
+table-driven Python CRC runs at about 21 MB/s, which then bounds the whole decode.
 """
 
 from __future__ import annotations
 
+import functools
 import importlib
 import importlib.util
 import struct
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import ModuleType
@@ -85,44 +87,66 @@ def _tables() -> list[list[int]]:
 
 
 _T = _tables()
-_EIGHT = struct.Struct("<II")
+_FOUR_HALVES = struct.Struct("<4H")
+
+
+@functools.cache
+def _halfword_tables() -> tuple[array[int], ...]:
+    """Four 65,536-entry tables, one per 16-bit half-word of an 8-byte step: each
+    combines two of the byte tables. 1 MiB and about 25 ms to build, so built on the
+    first Python CRC rather than at import: a process with a native CRC package never
+    needs
+    them. Kept for the process, shared by every decoder."""
+    return tuple(
+        array("I", (_T[2 * i + 1][x & 0xFF] ^ _T[2 * i][x >> 8] for x in range(65536)))
+        for i in range(4)
+    )
 
 
 def crc32c_python(data: bytes | memoryview) -> int:
-    """CRC-32C (Castagnoli) of ``data``, slicing by 8 in Python."""
-    t0, t1, t2, t3, t4, t5, t6, t7 = _T
+    """CRC-32C (Castagnoli) of ``data`` in Python: 8 bytes per step, as four 16-bit
+    table lookups (about 1.5 times slicing by 8 with byte tables, measured on CPython
+    3.11 to 3.13)."""
+    t0, t1, t2, t3 = _halfword_tables()
+    byte_table = _T[0]
     crc = 0xFFFFFFFF
     view = memoryview(data)
     whole = len(view) // 8 * 8
-    for a, b in _EIGHT.iter_unpack(view[:whole]):
-        a ^= crc
-        crc = (
-            t7[a & 0xFF]
-            ^ t6[(a >> 8) & 0xFF]
-            ^ t5[(a >> 16) & 0xFF]
-            ^ t4[a >> 24]
-            ^ t3[b & 0xFF]
-            ^ t2[(b >> 8) & 0xFF]
-            ^ t1[(b >> 16) & 0xFF]
-            ^ t0[b >> 24]
-        )
+    for a, b, c, d in _FOUR_HALVES.iter_unpack(view[:whole]):
+        a ^= crc & 0xFFFF
+        b ^= crc >> 16
+        crc = t3[a] ^ t2[b] ^ t1[c] ^ t0[d]
     for byte in view[whole:]:
-        crc = t0[(crc ^ byte) & 0xFF] ^ (crc >> 8)
+        crc = byte_table[(crc ^ byte) & 0xFF] ^ (crc >> 8)
     return crc ^ 0xFFFFFFFF
+
+
+# The native CRC-32C packages ``"auto"`` tries, in order: (name, module, function).
+_NATIVE_CRC = (
+    ("google-crc32c", "google_crc32c", "value"),
+    ("crc32c", "crc32c", "crc32c"),
+)
 
 
 def crc32c_function(name: str = "auto") -> Callable[[bytes], int]:
     """The CRC-32C implementation called ``name``: ``"python"``, ``"google-crc32c"``,
-    or ``"auto"`` for google-crc32c when it imports and Python otherwise."""
+    ``"crc32c"``, or ``"auto"`` for the first of those two packages that imports and
+    Python otherwise."""
     if name == "python":
         return crc32c_python
-    try:
-        module = importlib.import_module("google_crc32c")
-    except ImportError:
-        if name == "auto":
-            return crc32c_python
-        raise
-    return module.value
+    for package, module_name, function in _NATIVE_CRC:
+        if name not in ("auto", package):
+            continue
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            if name == "auto":
+                continue
+            raise
+        return getattr(module, function)
+    if name != "auto":
+        raise ValueError(f"unknown CRC-32C implementation {name!r}")
+    return crc32c_python
 
 
 def masked_crc(crc: int) -> int:

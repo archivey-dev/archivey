@@ -3570,7 +3570,8 @@ _NOT_OPTIONAL_LIBRARIES = {
     # would make the chosen one an OptionalLibrary instead.
     "cramjam": "a raw Snappy backend of the opt-in experimental Snappy plugin",
     "compress_utils": "a raw Snappy backend of the opt-in experimental Snappy plugin",
-    "google_crc32c": "the CRC-32C of the opt-in experimental Snappy plugin",
+    "google_crc32c": "a CRC-32C of the opt-in experimental Snappy plugin",
+    "crc32c": "a CRC-32C of the opt-in experimental Snappy plugin",
 }
 
 
