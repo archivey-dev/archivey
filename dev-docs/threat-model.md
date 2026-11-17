@@ -230,8 +230,11 @@ end-of-run sweep and not a refusal of `a/../x` targets.
 `resolve()` already costs, so a `node_modules`-shaped tree stays linear in link count.
 Measured on that shape at 2,000 and 4,000 links: 94,013 and 188,013 `lstat` calls for
 the whole extraction, against 73,013 and 146,013 with the index disabled, so about 29%
-more, and exactly linear. Memory is one index node per distinct path visited plus one
-entry per path per link, so it is proportional to the walk work already done. A hostile
+more, and exactly linear. Memory is one index node per distinct path that a live link's
+last walk visited plus one entry per path per link, so it is proportional to the walk
+work already done. The index (`internal/dependency_index.py`, shared with the Debian
+reader's data tree) drops the nodes a recheck leaves behind, so a path changed many
+times does not keep the nodes of every abandoned route. A hostile
 archive can still make work quadratic: many links through one path, then many members
 changing that path (a streaming pass does that with repeated copies of one name, under
 the default policy). Rechecks are therefore bounded by `ExtractionLimits.max_entries`,

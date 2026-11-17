@@ -1500,6 +1500,19 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
 - As `dpkg-deb` does, a package whose format version is not 2.x raises `UnsupportedFeatureError`,
   members whose names start with `_` (a signature, for example) are skipped, any other member
   before the data tar raises `CorruptionError`, and nothing after the data tar is read.
+- A file of the data tar that would land in `DEBIAN/`, whatever its spelling, raises
+  `CorruptionError`, and so does a symlink or hard link of the data tar that points there, or a
+  file that reaches `DEBIAN/` through such a symlink. A later symlink that makes an earlier one
+  point there (`x -> y/DEBIAN/control`, then `y -> .`) raises it too, and so does a symlink whose
+  target reaches `DEBIAN/` once its `..` are taken literally (`x -> y/../DEBIAN/control`). The
+  control files are always the control tar's.
+- So that this holds whichever members you extract and whatever `overwrite` says, a data file
+  under a data symlink (`y -> a/b`, then `y/z`) raises `CorruptionError`, and so does a data
+  symlink at the path of a directory or of another symlink. Packages built by `dpkg-deb` have
+  neither. A hard link to a data symlink is checked as the symlink extraction writes for it.
+- Following one data symlink through another, and checking earlier symlinks again when a later
+  symlink moves them, count against `ListingLimits.max_members`, one per path step, and raise
+  `ResourceLimitError` past it. A symlink that follows no other costs nothing.
 - The control file and `md5sums` are held whole while the package is read, and together may be
   no larger than `ListingLimits.max_metadata_bytes`.
 
