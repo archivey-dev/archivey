@@ -412,7 +412,11 @@ _DELTA = [{"id": lzma.FILTER_DELTA, "dist": 4}, {"id": lzma.FILTER_LZMA2}]
 
 
 def _xz(data: bytes, filters: list[dict[str, int]] | None = None) -> bytes:
-    return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
+    # An explicit check: PyPy's lzma raises "Internal error" for a filter chain with the
+    # default check. CRC64 is the default, so CPython writes the same bytes either way.
+    return lzma.compress(
+        data, format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC64, filters=filters
+    )
 
 
 def _vli(value: int) -> bytes:
