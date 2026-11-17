@@ -510,9 +510,9 @@ refused before its placeholder is made.
 
 GNU tar and Python's `tarfile` write through such a link; bsdtar refuses. The shape was
 found in none of 82,635 release tarballs (tar-minefield's `tree.through-symlink` scan),
-so it is refused under the scope of design rule DR-6. With it refused, a link that a
-later member re-points can no longer move where an earlier member of the same run went.
-The `archivey://` tree leaves such a member out. Tests:
+so it is refused (maintainer decision, 2026-11-17, under the scope of design rule DR-6).
+A member's path is then fixed by its name and the caller's destination, never by a link
+the archive made. The `archivey://` tree leaves such a member out. Tests:
 `tests/test_extraction.py::test_no_member_is_written_through_a_symlink_the_run_created`.
 
 #### Scenario: write-through matrix
