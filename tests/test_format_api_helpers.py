@@ -33,6 +33,26 @@ def _context() -> tuple[ReaderContext, list[tuple[Any, ...]]]:
     return context, reports
 
 
+def test_the_context_keeps_the_usage_recorder_it_is_given() -> None:
+    # A built-in reader records the packages it calls and checks decoder memory
+    # through it; a context that dropped it would do neither, and say nothing.
+    from archivey.internal.resource_usage import ResourceUsageRecorder
+
+    usage = ResourceUsageRecorder()
+    context = ReaderContext(
+        encoding=None,
+        archive_name="t",
+        config=ArchiveyConfig(),
+        decompress=_unused,
+        report=_unused,
+        link_target_unavailable=_unused,
+        hold=_unused,
+        charge_metadata=_unused,
+        usage=usage,
+    )
+    assert context._usage is usage
+
+
 def _member() -> ArchiveMember:
     return ArchiveMember(type=MemberType.FILE, name="a")
 
