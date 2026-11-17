@@ -547,23 +547,24 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     another link, and a symlink whose target is over 4096 bytes, which ``symlink()``
     refuses on Linux and readers refuse when the target is stored as member data. Each
     is a ``MEMBER_PATH_REFUSED`` diagnostic on ``fs.reader.diagnostics``. A duplicate
-    name shows its current entry. A member under one of the archive's own symlinks is
-    listed where extraction writes it, through the link: ``l/y`` under ``l -> d`` is
-    ``d/y``, and a path under a link that leads to no directory is refused. Paths are
-    compared as on a case-sensitive disk; only files and links collide by the policy's
-    key. Not modelled: what a non-empty destination decides (``overwrite=``, existing
-    files), what the destination's file system cannot hold (a reserved name under
-    ``TRUSTED`` on Windows, case folded by the disk, a link Windows keeps because it
-    collapses ``..`` before following links), where a symlink whose target starts at
-    ``/`` leads (the tree has no destination path, so it follows no such link and leaves
-    out a member whose path or target runs through one, even when extraction would
-    follow it back into the destination), a link that a later member makes lead out,
-    the earlier copy of a duplicate name (extraction writes it until the later copy
-    replaces it, so a member between the two copies can meet it on disk, while the
-    tree places that member as if the earlier copy were not there), and
-    ``filter=``. A hard link to a symlink is that
-    symlink, with its target read from the hard link's own directory, as
-    extraction (and GNU tar) write it.
+    name shows its current entry, unless a member between the two copies took the name
+    first (see the earlier copy under "Not modelled" below). A member under one of the
+    archive's own symlinks is listed where extraction writes it, through the link:
+    ``l/y`` under ``l -> d`` is ``d/y``, and a path under a link that leads to no
+    directory is refused. Paths are compared as on a case-sensitive disk; only files and
+    links collide by the policy's key. Not modelled: what a non-empty destination
+    decides (``overwrite=``, existing files), what the destination's file system cannot
+    hold (a reserved name under ``TRUSTED`` on Windows, case folded by the disk, a link
+    Windows keeps because it collapses ``..`` before following links), where a symlink
+    whose target starts at ``/`` leads (the tree has no destination path, so it follows
+    no such link and leaves out a member whose path or target runs through one, even
+    when extraction would follow it back into the destination), a link that a later
+    member makes lead out, the earlier copy of a duplicate name (extraction writes it
+    until the later copy replaces it, and a member between the two copies can meet it on
+    disk; the tree places that member as if the earlier copy were not there, so it can
+    list that member where extraction refuses it, and leave out the later copy), and
+    ``filter=``. A hard link to a symlink is that symlink, with its target read from the
+    hard link's own directory, as extraction (and GNU tar) write it.
 
     A symlink's target text is resolved among the written paths, as the destination
     resolves it once every member is written: the symlink is listed as what it
