@@ -860,6 +860,14 @@ class BaseArchiveReader(ArchiveReader):
 
             def root_size() -> int | None:
                 reader = reader_ref()
+                # None makes NestDraws.report_pass skip the nest ratio, so it must
+                # be unreachable while anything still draws on this account. It
+                # is: every member stream and guard that draws keeps its reader,
+                # and every descendant keeps the root through _nest_root. A dead
+                # reference therefore means no reader of the nest is left.
+                # test_streams_keep_the_nest_ratio_after_readers_are_dropped holds
+                # this; a change that lets a stream or guard outlive its reader
+                # must keep the root alive some other way.
                 return None if reader is None else reader._trusted_source_size()
 
             account = NestAccount(root_size)
