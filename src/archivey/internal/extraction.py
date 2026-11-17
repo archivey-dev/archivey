@@ -54,6 +54,7 @@ import contextlib
 import errno
 import heapq
 import io
+import itertools
 import os
 import posixpath
 import stat
@@ -533,7 +534,8 @@ class _SecondPass:
     """What the second pass (``_resolve_orphans``) knows about the held-back links
     while it makes them. ``by_index``, ``by_key`` and ``by_source``: the links that
     are not cancelled, in archive order, by result index, by first-pass collision
-    key and by source. ``done``: the result indexes attempted. ``waiting_on``: the
+    key and by source. ``under``: by the first-pass collision key of each of their
+    parent directories. ``done``: the result indexes attempted. ``waiting_on``: the
     links that wait for the link of a result index. ``ready``: a heap of the result
     indexes whose wait ended. ``stash``: a source's content kept in the staging
     directory for links that wait."""
@@ -541,6 +543,7 @@ class _SecondPass:
     by_index: dict[int, _Orphan] = field(default_factory=dict)
     by_key: dict[str | None, collections.deque[_Orphan]] = field(default_factory=dict)
     by_source: dict[int, list[_Orphan]] = field(default_factory=dict)
+    under: dict[str | None, collections.deque[_Orphan]] = field(default_factory=dict)
     done: set[int] = field(default_factory=set)
     waiting_on: dict[int, list[_Orphan]] = field(default_factory=dict)
     ready: list[int] = field(default_factory=list)
@@ -664,6 +667,11 @@ class _RunState:
     # key (``_reserve_orphan``): a later member meets the name as taken, as it would
     # had the link been made at its place in archive order.
     reservations: dict[str, _Orphan] = field(default_factory=dict)
+    # In the second pass, the result index of the held-back link it attempts now, or
+    # attempted last (``_begin_orphan_attempt``): a name that a later link holds is not
+    # seen (``_reservation_at``), as that link would not be made yet. ``None`` outside
+    # the second pass.
+    attempting: int | None = None
     # Whether the destination's filesystem folds case, probed the first time a
     # directory lands on a held-back link's key under another spelling
     # (``_folds_case``); ``None`` until then.
@@ -3530,19 +3538,33 @@ class ExtractionCoordinator:
                 self._revise_to_overwritten(orphan.previous_claim.result_index)
         return True
 
-    def _reservation_at(self, path: Path, *, directory: bool) -> _Orphan | None:
+    def _reservation_at(
+        self, path: Path, *, directory: bool, seen_by: int | None = None
+    ) -> _Orphan | None:
         """The held-back link whose name ``path`` reaches (``_reserve_orphan``), or
         ``None``. A non-directory reaches it by collision key, as it would reach the
         made link's claim. A directory, or a parent a member implies, reaches it only
         where an ``lstat`` would find the made link: at its own path, or under
         another case on a filesystem that folds case (``_folds_case``). On a
         case-sensitive filesystem ``H/`` beside the link ``h`` is another entry, as it
-        is beside a made one."""
-        reservations = self._state.reservations
+        is beside a made one.
+
+        In the second pass, a link later in archive order than the held-back link of
+        result index ``seen_by`` (by default the one attempted now,
+        ``state.attempting``) is not reached: made in archive order, it would not be
+        on disk yet."""
+        state = self._state
+        reservations = state.reservations
         if not reservations:
             return None
         orphan = reservations.get(self._collision_key(path))
-        if orphan is None or not directory or orphan.dest_path == path:
+        if orphan is None:
+            return None
+        if seen_by is None:
+            seen_by = state.attempting
+        if seen_by is not None and orphan.result_index > seen_by:
+            return None
+        if not directory or orphan.dest_path == path:
             return orphan
         return orphan if self._folds_case() else None
 
@@ -3604,15 +3626,16 @@ class ExtractionCoordinator:
             self._give_back_name(key, orphan)
         state.reservations.clear()
 
-    def _release_own_reservation(self, orphan: _Orphan) -> None:
-        """Give ``orphan``'s name back to the claim it took it from, just before the
-        second pass makes it, so the link is resolved as the first pass would have
-        resolved it. The names of the links not made yet stay held: a later link of
-        the same name that the second pass reaches first (its source comes first in
-        the archive) meets the earlier one's name as it would meet the made link
-        (``_meet_reservation``), so the earlier link keeps the name, as in archive
-        order."""
+    def _begin_orphan_attempt(self, orphan: _Orphan) -> None:
+        """Start the second pass's attempt of ``orphan``: give its name back to the
+        claim it took it from, so the link is resolved as the first pass would have
+        resolved it, and record it as the link attempted (``state.attempting``).
+        The names of the links not made yet stay held. An earlier link's name is
+        met as the made link would be (``_meet_reservation``, ``_makedirs``); a
+        later link's name is not seen, as that link would not be made yet
+        (``_reservation_at``)."""
         state = self._state
+        state.attempting = orphan.result_index
         key = orphan.key
         if key is not None and state.reservations.get(key) is orphan:
             del state.reservations[key]
@@ -3625,10 +3648,14 @@ class ExtractionCoordinator:
         and revise its placeholder result.
 
         Each link is attempted with the outcome a link made at its place in archive
-        order gives. Two links interact when the later one's name or one of its
-        parents meets the earlier one's name (``_orphan_blocker``): the later one
-        waits until the earlier one has been attempted, whatever order their sources
-        come in. Links that do not interact are attempted as their sources arrive.
+        order gives. Two links interact when they have the same name, or when the
+        name of one is a parent of the other's path (``_orphan_blocker``): the later
+        one waits until the earlier one has been attempted, whatever order their
+        sources come in, and it does not see a name that a later link holds
+        (``_reservation_at``). Links that do not interact are attempted as their
+        sources arrive. So under ``OnError.STOP`` the run stops at the member where
+        the made run stops, but a later link that does not interact with that
+        member can already be made.
 
         The links of a source the first pass wrote after them are linked against it.
         For each other source, one more pass over the archive writes its content at
@@ -3645,13 +3672,14 @@ class ExtractionCoordinator:
             for stashed in second.stash.values():
                 with contextlib.suppress(OSError):
                     os.unlink(long_path(stashed))
+            self._state.attempting = None
             self._release_reservations()
 
     def _resolve_orphans_in_order(
         self, reader: BaseArchiveReader, second: _SecondPass
     ) -> None:
         """:meth:`_resolve_orphans`, while the links not made yet hold their names
-        (``_release_own_reservation``)."""
+        (``_begin_orphan_attempt``)."""
         state = self._state
         for orphan in state.orphans:
             if orphan.cancelled:
@@ -3659,6 +3687,10 @@ class ExtractionCoordinator:
             second.by_index[orphan.result_index] = orphan
             second.by_key.setdefault(orphan.key, collections.deque()).append(orphan)
             second.by_source.setdefault(orphan.source.member_id, []).append(orphan)
+            for parent in self._parents_in_dest(orphan.dest_path):
+                second.under.setdefault(
+                    self._collision_key(parent), collections.deque()
+                ).append(orphan)
         if not second.by_index:
             return
 
@@ -3755,28 +3787,40 @@ class ExtractionCoordinator:
 
     def _orphan_blocker(self, second: _SecondPass, orphan: _Orphan) -> _Orphan | None:
         """The earlier held-back link that ``orphan`` has to wait for, or ``None``.
+        Made in archive order, that link would be on disk when ``orphan`` is made.
 
-        That is the earliest link of the same name not attempted yet, or one that
-        holds the name of a parent of ``orphan`` (``_reservation_at``, as
-        ``_makedirs`` meets it). Either way, made in archive order the other link
-        would be on disk when ``orphan`` is made."""
-        queue = second.by_key[orphan.key]
-        while queue and queue[0].result_index in second.done:
-            queue.popleft()
-        if queue and queue[0] is not orphan:
-            return queue[0]
+        It is the earliest link not attempted yet of one of these:
+        - the links of the same name;
+        - the links whose path has a parent of that name (``under``), as ``orphan``
+          made first would be in the way of their parent directory;
+        - a link that holds the name of a parent of ``orphan``
+          (``_reservation_at``, as ``_makedirs`` meets it).
+        A link later in archive order never blocks ``orphan``, so no link waits on
+        itself through another."""
+        for queue in (second.by_key[orphan.key], second.under.get(orphan.key)):
+            if not queue:
+                continue
+            while queue and queue[0].result_index in second.done:
+                queue.popleft()
+            if queue and queue[0].result_index < orphan.result_index:
+                return queue[0]
         if not self._state.reservations:
             return None
-        dest = self._state.dest
-        if not orphan.dest_path.is_relative_to(dest):
-            return None
-        for parent in orphan.dest_path.parents:
-            if parent == dest:
-                break
-            holder = self._reservation_at(parent, directory=True)
+        for parent in self._parents_in_dest(orphan.dest_path):
+            holder = self._reservation_at(
+                parent, directory=True, seen_by=orphan.result_index
+            )
             if holder is not None and holder is not orphan:
                 return holder
         return None
+
+    def _parents_in_dest(self, path: Path) -> list[Path]:
+        """The parents of ``path`` below the destination root, nearest first; none
+        for a path outside it."""
+        dest = self._state.dest
+        if not path.is_relative_to(dest):
+            return []
+        return list(itertools.takewhile(lambda p: p != dest, path.parents))
 
     def _try_orphan(self, second: _SecondPass, orphan: _Orphan) -> None:
         """Attempt ``orphan`` if no earlier link holds it back and its source's
@@ -4036,7 +4080,7 @@ class ExtractionCoordinator:
         failure (collision resolution, ``_make_room``, creating the temp file) is
         this link's own, as for any other link (``_link_orphan``)."""
         orphan = group[index]
-        self._release_own_reservation(orphan)
+        self._begin_orphan_attempt(orphan)
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )
@@ -4139,7 +4183,7 @@ class ExtractionCoordinator:
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
         """One link of ``_link_orphan_group``."""
-        self._release_own_reservation(orphan)
+        self._begin_orphan_attempt(orphan)
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )

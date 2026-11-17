@@ -5227,6 +5227,22 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "X", "src2"),
         ("hard", "x", "src1"),
     ],
+    # A link under the name of a later link, whose source comes second: the later
+    # link's held name does not stop the earlier link's parent directory.
+    "under-a-later-name": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d/x", "src1"),
+        ("hard", "d", "src2"),
+    ],
+    # The same, with the sources in the other order: the later link `d` waits
+    # until the earlier `d/x` has been attempted.
+    "under-a-later-name-sources-in-the-other-order": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d/x", "src2"),
+        ("hard", "d", "src1"),
+    ],
 }
 
 
@@ -5321,14 +5337,23 @@ def _held_and_made(
             ("hard", "d", "src2"),
             ("hard", "d/x", "src1"),
         ],
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("hard", "d/x", "src1"),
+            ("hard", "d", "src2"),
+        ],
     ],
-    ids=["same-key", "under-the-name"],
+    ids=["same-key", "under-the-name", "under-a-later-name"],
 )
 def test_a_held_back_link_stops_where_a_made_one_does(
     tmp_path: Path, entries: list
 ) -> None:
-    # Under OnError.STOP the earlier link is made before the later one stops the
-    # run, as in archive order, though the later link's source comes first.
+    # Under OnError.STOP the run stops at the same member as the made run, and the
+    # links that interact with it are made as in archive order, whatever order
+    # their sources come in. A later link that does not interact with that member
+    # can already be made when the run stops, so each shape here holds only links
+    # that interact.
     runs = _held_and_made(tmp_path, entries, on_error=OnError.STOP)
     assert runs[True] == runs[False]
     assert runs[True][0][0] == "raised"
