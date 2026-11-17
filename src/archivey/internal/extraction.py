@@ -3553,13 +3553,26 @@ class ExtractionCoordinator:
                 collision_map[key] = orphan.previous_claim
 
     def _release_reservations(self) -> None:
-        """Give each held-back link's name back to the claim it took it from, so the
-        second pass resolves the link as the first pass would have."""
+        """Give each held-back link's name back to the claim it took it from: the
+        second pass has ended, and the links it did not make hold no name."""
         state = self._state
         for key, orphan in state.reservations.items():
             self._give_back_name(key, orphan)
         state.reservations.clear()
-        state.rename_next.clear()
+
+    def _release_own_reservation(self, orphan: _Orphan) -> None:
+        """Give ``orphan``'s name back to the claim it took it from, just before the
+        second pass makes it, so the link is resolved as the first pass would have
+        resolved it. The names of the links not made yet stay held: a later link of
+        the same name that the second pass reaches first (its source comes first in
+        the archive) meets the earlier one's name as it would meet the made link
+        (``_meet_reservation``), so the earlier link keeps the name, as in archive
+        order."""
+        state = self._state
+        key = self._collision_key(orphan.dest_path)
+        if state.reservations.get(key) is orphan:
+            del state.reservations[key]
+            self._give_back_name(key, orphan)
 
     # --- orphan (second pass) ------------------------------------------------------
 
@@ -3572,7 +3585,15 @@ class ExtractionCoordinator:
         first of its links that takes it (``_materialize_orphan_source``), and the rest
         are linked against that.
         """
-        self._release_reservations()
+        self._state.rename_next.clear()
+        try:
+            self._resolve_orphans_in_order(reader)
+        finally:
+            self._release_reservations()
+
+    def _resolve_orphans_in_order(self, reader: BaseArchiveReader) -> None:
+        """:meth:`_resolve_orphans`, while the links not made yet hold their names
+        (``_release_own_reservation``)."""
         orphans_by_source: dict[int, list[_Orphan]] = {}
         for orphan in self._state.orphans:
             if orphan.cancelled:
@@ -3786,6 +3807,7 @@ class ExtractionCoordinator:
         failure (collision resolution, ``_make_room``, creating the temp file) is
         this link's own, as for any other link (``_link_orphan``)."""
         orphan = group[index]
+        self._release_own_reservation(orphan)
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )
@@ -3888,6 +3910,7 @@ class ExtractionCoordinator:
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
         """One link of ``_link_orphan_group``."""
+        self._release_own_reservation(orphan)
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )

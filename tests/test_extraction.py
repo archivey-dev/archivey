@@ -5219,6 +5219,14 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "h", "src"),
         ("file", "H", b"later-H"),
     ],
+    # Two links of one key whose sources come in the other order: the second pass
+    # reaches the later link first, and the earlier one still keeps the name.
+    "sources-in-the-other-order": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "X", "src2"),
+        ("hard", "x", "src1"),
+    ],
 }
 
 
@@ -5226,7 +5234,7 @@ def _extracted(dest: Path) -> dict[str, bytes | None]:
     return {
         p.relative_to(dest).as_posix(): None if p.is_dir() else p.read_bytes()
         for p in sorted(dest.rglob("*"))
-        if p.name != "src"
+        if not p.name.startswith("src")
     }
 
 
@@ -5246,12 +5254,12 @@ def test_a_held_back_link_extracts_as_a_made_one(
                 dest,
                 overwrite=overwrite,
                 on_error=OnError.CONTINUE,
-                members=(lambda m: m.name != "src") if held else None,
+                members=(lambda m: not m.name.startswith("src")) if held else None,
             )
         statuses = [
             (r.member.name, r.status.name)
             for r in report.results
-            if r.member.name != "src"
+            if not r.member.name.startswith("src")
         ]
         runs[held] = (statuses, _extracted(dest))
     assert runs[True] == runs[False]
