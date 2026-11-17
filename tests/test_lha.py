@@ -412,6 +412,52 @@ def test_the_crc_covers_the_whole_wrapper(method: str) -> None:
             reader.read(member)
 
 
+def _one_literal_block(method: str) -> bytes:
+    """One block of 65 535 commands that each write ``A``, with every table a single
+    symbol coded with no bits: a few bytes that decode to 64 KiB, then end."""
+    bits = BitWriter()
+    bits.write(0xFFFF, 16)
+    bits.write(0, 5)
+    bits.write(0, 5)
+    bits.write(0, 9)
+    bits.write(ord("A"), 9)
+    offset_bits = 4 if method == "-lh5-" else 5
+    bits.write(0, offset_bits)
+    bits.write(0, offset_bits)
+    return bits.getvalue() + bytes(8)
+
+
+@pytest.mark.parametrize("method", ["-lh5-", "-lhx-"])
+def test_the_macbinary_probe_decodes_only_the_header(
+    method: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The listing reads each MacLHA member's first 128 bytes to look for a wrapper.
+    # Each member here decodes to 64 KiB, so the probe must stop near 128 bytes and
+    # not decode a whole output chunk per member.
+    decoded: list[int] = []
+    real = LzhDecoder._decode
+
+    def counting(self: LzhDecoder, want: int) -> None:
+        before = len(self._out) - self._start
+        try:
+            real(self, want)
+        finally:
+            decoded.append(len(self._out) - self._start - before)
+
+    monkeypatch.setattr(LzhDecoder, "_decode", counting)
+    stream = _one_literal_block(method)
+    members = [
+        Member(b"f%d" % i, method=method, os_id=b"m", stored=stream, size=1 << 30)
+        for i in range(3)
+    ]
+    with open_archive(io.BytesIO(archive(members))) as reader:
+        assert len(reader.members()) == 3
+    assert len(decoded) == 3
+    # In -lh5- and -lhx- a command writes at most 256 bytes, so the probe can pass 128
+    # by that much (-lk7-'s commands write up to 514).
+    assert max(decoded) <= 128 + 256
+
+
 def _cut_stream(cut: int) -> io.RawIOBase:
     wrapped = _macbinary()
     locator = lha_reader._Location(

@@ -1322,9 +1322,9 @@ what `makecab` and `gcab` write.
 - **Member order:** the order of the cabinet's file table, which writers keep in the order
   the files' bytes are stored. When reading the files in table order would decode part of a
   folder twice (a table that is crafted or edited, for example reversed), the files are
-  listed by folder and by position in the folder instead, so each folder is decoded once,
-  unless a name is listed twice: then the table's order is kept, because the entry listed
-  last is the one that counts, and reading can be much slower.
+  listed by folder and by position in the folder instead, so each folder is decoded once.
+  When a name is listed twice, the entries that a later entry replaces come first, so each
+  folder is decoded at most twice and the entry listed last is still the one that counts.
 - **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
   `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
   name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
@@ -1553,7 +1553,8 @@ NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are ship
 Archivey reads the TARs and never runs the script.
 
 - **Needs:** nothing for gzip, bzip2, xz and uncompressed payloads; a Zstandard, LZ4, lzop or
-  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs.
+  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs;
+  an `--ssl-encrypt` payload needs `cryptography`.
 - **Listing:** needs decompression. The members are the TAR's, named as makeself extracts them
   into its target folder.
 - **Reading members:** solid.
@@ -1566,8 +1567,11 @@ Archivey reads the TARs and never runs the script.
   payload. Archivey checks each one it finds when it reads to the end of the payload. They cover
   every file of the payload, so a match raises each to `Verification.CHECKSUM`, and a mismatch
   raises `CorruptionError` and makes `verify_all()` return each file of the payload.
-- **Encryption.** A payload written with `--base64` is read. One encrypted with
-  `--ssl-encrypt` or `--gpg-encrypt` raises `UnsupportedFeatureError`.
+- **Encryption.** A payload written with `--base64` is read. One written with `--ssl-encrypt`
+  is read with `password=` and needs `cryptography`, as AES in a ZIP does. Without a password,
+  opening the archive raises `EncryptionError`, and with a wrong one it raises `EncryptionError`
+  saying the password is wrong. One written with `--gpg-encrypt` raises
+  `UnsupportedFeatureError`.
 - `ArchiveInfo.format_version` is the makeself version the header names (`"2.4.5"`).
   `ArchiveInfo.extra` holds `makeself.label`, `makeself.script` (the command run after
   extraction), `makeself.target_dir`, `makeself.compression` (`"gzip"`, `"xz"`, `"none"`, …),
@@ -1639,8 +1643,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
     `begin-base64` variant (`uuencode -m`) ends at `====`. A file is recognised by its `begin`
     line at the start, whatever its name. With a `.uu` or `.uue` name, text before `begin` (a
-    mail or news post) is skipped, up to 64 KiB. Only the first file is read, and text after its
-    end line is reported as `ARCHIVE_TRAILING_DATA`. The stored name is
+    mail or news post) is skipped, up to 64 KiB. A line over 4 096 bytes, before `begin` or
+    after it, is an error. Only the first file is read, and text after its end line is
+    reported as `ARCHIVE_TRAILING_DATA`. The stored name is
     `extra["uu.original_filename"]` and `raw_name`, and the stored mode is `mode`; the member
     keeps the name it gets from the file's own name, so the stored name never picks a path.
   - **base64** (`.b64`, `.base64`): bare base64 text, in lines of one length or one long line,

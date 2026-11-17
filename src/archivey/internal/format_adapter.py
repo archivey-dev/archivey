@@ -229,6 +229,7 @@ class _PluginAdapter(BaseArchiveReader):
         collector: DiagnosticCollector | None = None,
         member_streams: MemberStreams = MemberStreams(0),
         open_site: OpenSite | None = None,
+        passwords: _PasswordCandidates | None = None,
     ) -> None:
         # Until ``plugin.open()`` returns there is no reader, and only the plugin
         # translates errors (``_translate_exception``).
@@ -301,9 +302,9 @@ class _PluginAdapter(BaseArchiveReader):
             open_nested=self._open_nested,
             usage=self._usage,
         )
-        context._usage = self._usage
         context._nest = self._nest
         context._spanning_check = self._new_spanning_check
+        context._passwords = passwords
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -2952,6 +2953,7 @@ class _PluginBackend(ReadBackend):
             "collector": collector,
             "member_streams": member_streams,
             "open_site": open_site,
+            "passwords": passwords,
         }
         reader: _PluginAdapter
         if issubclass(self.PLUGIN, SequentialFormatHandler):

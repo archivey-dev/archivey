@@ -49,7 +49,13 @@ for compressor in bzip2 xz zstd lz4 lzo nocomp base64; do
     make 2.7.1 "$compressor-2.7.1.run" "--$compressor"
 done
 make 2.7.1 sha256-2.7.1.run --sha256
+# openssl, password "secret": PBKDF2 (2.6.0 and later); EVP_BytesToKey with -md sha256,
+# and with openssl's default digest (--ssl-no-md), after gzip (2.4.2 to 2.5.0); and
+# in place of a compressor, base64-armored (2.2.0 to 2.4.0).
 make 2.7.1 openssl-2.7.1.run --ssl-encrypt --ssl-passwd secret
+make 2.4.5 openssl-2.4.5.run --ssl-encrypt --ssl-passwd secret
+make 2.4.5 openssl-nomd-2.4.5.run --ssl-encrypt --ssl-passwd secret --ssl-no-md
+make 2.4.0 openssl-2.4.0.run --ssl-encrypt --ssl-passwd secret
 make 2.4.0 base64-2.4.0.run --base64
 # Two payloads: makeself 2.2.0 to 2.4.0 append one for each --append.
 make 2.4.0 append-2.4.0.run
