@@ -1580,8 +1580,9 @@ Archivey reads the TARs and never runs the script.
   checked).
 - `format=TAR_GZ` (or any other format) on a makeself archive fails as on any file that is not
   one, and the error says the file is a makeself archive.
-- A header archivey cannot parse raises `CorruptionError`. The header counts against
-  `max_metadata_bytes`: a longer one raises `ResourceLimitError`.
+- A header archivey cannot parse raises `CorruptionError`. Archivey weighs the header against
+  `max_metadata_bytes` as it reads it, at open, and refuses a header that lists more payloads
+  than `max_members`: either raises `ResourceLimitError`.
 
 ## Disk images
 
