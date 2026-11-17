@@ -429,7 +429,7 @@ def test_a_seek_to_the_end_of_an_unsized_member_stops_within_a_step() -> None:
     with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
         guard.seek(0, io.SEEK_END)
     floor = DecoderLimits().ratio_activation_threshold
-    assert decoder.furthest <= floor + 16 * _MIB
+    assert decoder.furthest <= floor + bomb_tracker._GUARD_STEP
 
 
 def test_a_seek_to_the_end_past_a_small_recorded_size_stops_within_a_step() -> None:
@@ -441,7 +441,7 @@ def test_a_seek_to_the_end_past_a_small_recorded_size_stops_within_a_step() -> N
     with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
         guard.seek(0, io.SEEK_END)
     floor = DecoderLimits().ratio_activation_threshold
-    assert decoder.furthest <= floor + 16 * _MIB
+    assert decoder.furthest <= floor + bomb_tracker._GUARD_STEP
 
 
 def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(

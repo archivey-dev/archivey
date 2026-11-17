@@ -384,8 +384,9 @@ class _RatioCheck:
     costs nothing here. Near the limit, reads and seeks forward go to the decoder in
     steps of at most 1 MiB, a seek to the end included, so a refusal comes within a step
     of the limit, from the call that crosses it, whose bytes are withheld. Further from
-    it, a read or a seek toward an end the guard cannot see asks for at most 16 MiB per
-    call (``_READ_TO_END_STEP``).
+    it, a read toward an end the check cannot see asks for at most 16 MiB per call
+    (``_READ_TO_END_STEP``). A member's seek to the end moves a room at a time and
+    reads one byte (``MemberRatioCheck._seek_end_target``).
     """
 
     # Whether the decoder's error after a whole step is held for the next call.
@@ -688,7 +689,9 @@ class MemberRatioCheck(_RatioCheck):
         # The member the caller asked for, which errors name.
         self._member_name = member_name
         self._compressed_size = member.compressed_size
-        # Never decoded past: the member's recorded size bounds a seek's gap.
+        # Bounds a ``SEEK_SET`` or ``SEEK_CUR`` target: past it the decoder only notes
+        # the position. A ``SEEK_END`` is found from the decoder (``_seek_end_target``),
+        # since a member can decode past its recorded size.
         self._size = member.size
         # The member the caller asked for, which may be a link to ``member`` or a copy
         # of it: the tally counts each member read, not each member's data once.
@@ -732,8 +735,10 @@ class MemberRatioCheck(_RatioCheck):
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
-        # The decoder answers the seek itself, with its own clamping and end rules;
-        # only a forward gap is decoded first, in steps, to the target the seek names.
+        # The decoder answers a ``SEEK_SET`` or ``SEEK_CUR`` itself, with its own
+        # clamping and end rules; only a forward gap is decoded first, in steps, to the
+        # target the seek names. A ``SEEK_END`` under a finite room is found first
+        # (``_seek_end_target``).
         self._held = None
         start = self._pos
         if whence == io.SEEK_SET:
