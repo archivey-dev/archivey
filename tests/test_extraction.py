@@ -5264,6 +5264,15 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "d/x", "src2"),
         ("dir", "d", None),
     ],
+    # The same when a later copy of the held link's name supersedes it.
+    "held-parent-superseded-by-a-later-copy": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("file", "src3", b"three"),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("hard", "d", "src3"),
+    ],
     # A held link under one of the archive's symlinks lands where the symlink led
     # at its place in archive order: a later file at the real directory meets it as
     # not empty, and a later symlink or file at the symlink's name does not move it.
@@ -5336,7 +5345,11 @@ def test_a_held_back_link_extracts_as_a_made_one(
                 members=(lambda m: not m.name.startswith("src")) if held else None,
             )
         statuses = [
-            (r.member.name, r.status.name)
+            (
+                r.member.name,
+                r.status.name,
+                None if r.path is None else r.path.relative_to(dest).as_posix(),
+            )
             for r in report.results
             if not r.member.name.startswith("src")
         ]

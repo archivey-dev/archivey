@@ -676,19 +676,23 @@ class _RunState:
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
     # Hardlinks whose source was not on disk yet, for the second pass.
     orphans: list[_Orphan] = field(default_factory=list)
+    # The same links by result index, so a later copy that supersedes one finds it
+    # without a scan (``_take_back_written``).
+    orphan_at: dict[int, _Orphan] = field(default_factory=dict)
     # The names those hardlinks hold until the second pass makes them, by collision
     # key (``_reserve_orphan``): a later member meets the name as taken, as it would
     # had the link been made at its place in archive order.
     reservations: dict[str, _Orphan] = field(default_factory=dict)
-    # The held-back links that hold a name, with each of their parent directories,
-    # by that directory's ``_physical_key``, in archive order
+    # The held-back links that hold a name, by where each of their parent
+    # directories physically is (``_held_dir_key``), in archive order
     # (``_index_held_parents``). The first pass creates those directories, as the
     # made links would; a directory that holds only held-back links is empty on disk,
     # but not in the made run (``_holds_held_link``). Entries whose link no longer
     # holds its name are dropped when met.
-    held_under: dict[str, collections.deque[tuple[_Orphan, Path]]] = field(
-        default_factory=dict
-    )
+    held_under: dict[str, collections.deque[_Orphan]] = field(default_factory=dict)
+    # The keys of ``held_under`` by ``_physical_key``, which folds case under every
+    # policy: on a filesystem that folds case, ``D`` names the directory ``d``.
+    held_under_folded: dict[str, set[str]] = field(default_factory=dict)
     # In the second pass, the result index of the held-back link it attempts now, or
     # attempted last (``_begin_orphan_attempt``): a name that a later link holds is not
     # seen (``_reservation_at``), as that link would not be made yet. ``None`` outside
@@ -1873,8 +1877,12 @@ class ExtractionCoordinator:
         if index in state.counted:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
-        state.orphans[:] = [o for o in state.orphans if o.result_index != index]
-        self._release_reservation_of(index)
+        orphan = state.orphan_at.pop(index, None)
+        if orphan is not None:
+            # Superseded by a later copy: the second pass leaves it out, and a link
+            # under its name meets it as replaced (``_fail_under_a_replaced_holder``).
+            orphan.cancelled = True
+            self._release_reservation_of(orphan)
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -3519,6 +3527,7 @@ class ExtractionCoordinator:
         else:
             orphan.parent_holder = self._reservation_at(component, directory=True)
         self._state.orphans.append(orphan)
+        self._state.orphan_at[result_index] = orphan
         self._reserve_orphan(orphan)
         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
 
@@ -3555,46 +3564,59 @@ class ExtractionCoordinator:
         state.reservations[key] = orphan
         self._index_held_parents(orphan)
 
+    def _held_dir_key(self, path: Path) -> str:
+        """Where the directory ``path`` physically is, relative to the destination
+        and not folded: the key of ``held_under``."""
+        rel = self._physical_rel(path)
+        return self._rel_name(path) if rel is None else rel
+
     def _index_held_parents(self, orphan: _Orphan) -> None:
         """Record ``orphan`` under each of its parent directories (``held_under``),
-        where they physically are: the pinned path when the first pass created them.
-        By ``_physical_key``, which folds case under every policy, so a member that
-        names the directory under another case finds it on a filesystem that folds
-        case; ``_holds_held_link`` tells two directories apart on disk."""
-        held_under = self._state.held_under
+        where they physically are: the pinned path when the first pass created
+        them."""
+        state = self._state
         for parent in self._parents_in_dest(orphan.pinned_dest or orphan.dest_path):
-            held_under.setdefault(
-                self._physical_key(parent), collections.deque()
-            ).append((orphan, parent))
+            key = self._held_dir_key(parent)
+            links = state.held_under.get(key)
+            if links is None:
+                links = state.held_under[key] = collections.deque()
+                state.held_under_folded.setdefault(
+                    self._physical_key(parent), set()
+                ).add(key)
+            links.append(orphan)
 
     def _holds_held_link(self, path: Path) -> bool:
         """Whether a held-back link that still holds its name lies under the
         directory ``path`` and would be on disk in the made run: in the second pass,
         only a link earlier than the one attempted now (``_reservation_at``)."""
         state = self._state
-        links = state.held_under.get(self._physical_key(path))
-        if not links:
+        if not state.held_under:
             return False
+        key = self._held_dir_key(path)
+        keys = [key]
+        spellings = state.held_under_folded.get(self._physical_key(path))
+        if (
+            spellings
+            and (len(spellings) > 1 or key not in spellings)
+            and self._folds_case()
+        ):
+            # On a filesystem that folds case, another case names this directory.
+            keys.extend(each for each in spellings if each != key)
         reservations = state.reservations
-
-        def holds(orphan: _Orphan) -> bool:
-            return orphan.key is not None and reservations.get(orphan.key) is orphan
-
-        while links and not holds(links[0][0]):
-            links.popleft()
-        for orphan, parent in links:
-            if state.attempting is not None and orphan.result_index > state.attempting:
-                # In archive order: this link and every later one are not made yet.
-                return False
-            if not holds(orphan):
+        for each in keys:
+            links = state.held_under.get(each)
+            if not links:
                 continue
-            # The folded key can cover two directories (``X/`` beside ``x/`` on a
-            # case-sensitive filesystem): only the one on disk counts.
-            with contextlib.suppress(OSError, ValueError):
-                if parent == path or os.path.samefile(
-                    long_path(parent), long_path(path)
-                ):
-                    return True
+            while links and (
+                links[0].key is None or reservations.get(links[0].key) is not links[0]
+            ):
+                links.popleft()
+            # In archive order, so the first link that holds its name is the
+            # earliest; in the second pass a later link is not made yet.
+            if links and (
+                state.attempting is None or links[0].result_index <= state.attempting
+            ):
+                return True
         return False
 
     def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
@@ -3679,18 +3701,16 @@ class ExtractionCoordinator:
             state.folds_case = folds
         return state.folds_case
 
-    def _release_reservation_of(self, index: int) -> None:
-        """Drop the name the held-back link of result ``index`` holds, if any, for a
-        link taken back (``_take_back_written``): the claim it took the name from
-        gets it back, so a later copy of the same name meets what the link would
-        have replaced, not the link."""
+    def _release_reservation_of(self, orphan: _Orphan) -> None:
+        """Drop the name ``orphan`` holds, if any, for a link taken back
+        (``_take_back_written``): the claim it took the name from gets it back, so a
+        later copy of the same name meets what the link would have replaced, not the
+        link."""
         state = self._state
-        for key, orphan in state.reservations.items():
-            if orphan.result_index != index:
-                continue
+        key = orphan.key
+        if key is not None and state.reservations.get(key) is orphan:
             del state.reservations[key]
             self._give_back_name(key, orphan)
-            return
 
     def _give_back_name(self, key: str, orphan: _Orphan) -> None:
         """Put back the claim ``orphan``'s reservation took ``key`` from, unless a
@@ -3872,6 +3892,19 @@ class ExtractionCoordinator:
         ):
             return orphan.pinned_dest or orphan.dest_path
         return orphan.pinned_requested or orphan.requested
+
+    def _spelled_result(
+        self, orphan: _Orphan, result: ExtractionResult
+    ) -> ExtractionResult:
+        """``result`` with the path the archive spelled, as the made link reports
+        it: the second pass makes a pinned link under its physical parent
+        (``pinned_dest``), which can be another spelling of the same directory."""
+        pinned = orphan.pinned_dest
+        path = result.path
+        if pinned is None or path is None or path.parent != pinned.parent:
+            return result
+        spelled = orphan.dest_path.parent / path.name
+        return result if spelled == path else copy_with(result, path=spelled)
 
     def _fail_under_a_replaced_holder(self, orphan: _Orphan) -> None:
         """Raise for ``orphan`` when a parent of it reached an earlier held-back
@@ -4263,7 +4296,10 @@ class ExtractionCoordinator:
                 transformed=orphan.transformed,
                 result_index=orphan.result_index,
             )
-            self._revise_result(orphan.result_index, result)
+            # Reported as spelled; recorded above where it physically is.
+            self._revise_result(
+                orphan.result_index, self._spelled_result(orphan, result)
+            )
             placed = result.status is ExtractionStatus.EXTRACTED
         if source_error is not None:
             self._stop_or_log(
@@ -4337,7 +4373,10 @@ class ExtractionCoordinator:
                 transformed=orphan.transformed,
                 result_index=orphan.result_index,
             )
-            self._revise_result(orphan.result_index, result)
+            # Reported as spelled; recorded above where it physically is.
+            self._revise_result(
+                orphan.result_index, self._spelled_result(orphan, result)
+            )
 
     # --- removals, link rechecks and result revisions ------------------------------
 
