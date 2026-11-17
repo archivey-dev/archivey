@@ -1324,7 +1324,14 @@ commands and full tables does the same, at about 2 µs an input byte
 chunks costs about 360 ns an input byte where a forward read walks its blocks for block
 points (restart points, random access), one Python step per chunk header, against
 liblzma's near-instant decode; a walk kept only to raise members from block checks gives
-up on such a stream (`_XzBlockWalker._chunk`). A cabinet whose file table is out of
+up on such a stream (`_XzBlockWalker._chunk`). A bzip2 stream made of many one-byte
+blocks costs at least three `bz2` calls a block in the standard library engine: the feed
+up to the block marker, the drain call that returns the block, and one more drain call
+that returns nothing ([bzip2 §2.3](formats/bzip2.md#23-member-data)). A plain decode
+makes about one call per 64 KiB of input. Under `ProcessIsolation.NATIVE_DECODERS` each
+call is a round trip to the child, so 30 000 such blocks (671 KB) decode in 2.6 s, about
+4 s a MB, against 0.15 s in the parent and 0.02 s for `bz2.decompress`. A match of the
+block magic inside block data costs the same feed and drain. A cabinet whose file table is out of
 data order is listed in data order, so each folder decodes once, unless a name is listed
 twice: then table order is kept, and each member can decode its folder again from the
 start (150 members of 32 KiB in one LZX folder, reversed: 58 s against under 1 s;
