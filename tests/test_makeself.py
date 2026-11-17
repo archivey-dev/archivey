@@ -680,3 +680,51 @@ def test_pbkdf2_is_charged_to_the_key_derivation_budget() -> None:
         DATA / "openssl-2.7.1.run", password="secret", config=config
     ) as r:
         assert _contents(r) == FILES
+
+
+@pytest.mark.parametrize("name", ["openssl-2.7.1.run", "openssl-2.4.5.run"])
+def test_ciphertext_cut_mid_block_is_truncated(name: str) -> None:
+    """Sizes and digests match the cut payload; the cut must still be seen even
+    though the gzip reader above takes the first raise past the TAR's end."""
+    _, payload = _split((DATA / name).read_bytes())
+    data = _with_payload(name, payload[:-5])
+    with (
+        open_archive(io.BytesIO(data), password="secret") as reader,
+        pytest.raises(TruncatedError, match="part-way through a block"),
+    ):
+        reader.members()
+
+
+def test_base64_cut_mid_group_is_corruption() -> None:
+    _, payload = _split((DATA / "base64-2.7.1.run").read_bytes())
+    data = _with_payload("base64-2.7.1.run", payload.rstrip(b"\n")[:-2] + b"\n")
+    with (
+        open_archive(io.BytesIO(data)) as reader,
+        pytest.raises(CorruptionError, match="group of four"),
+    ):
+        reader.members()
+
+
+def test_a_provider_that_gives_nothing_asks_for_a_password() -> None:
+    with pytest.raises(EncryptionError, match="pass password= to read it"):
+        open_archive(DATA / "openssl-2.7.1.run", password=lambda _member: None)
+
+
+@pytest.mark.parametrize(
+    ("flags", "taken"),
+    [
+        (0x90, True),
+        (0x09, True),
+        (0x10, True),
+        (0x8C, True),
+        (0x00, False),
+        (0x1F, False),
+        (0x11, False),
+        (0x9F, False),
+    ],
+)
+def test_the_compress_check_takes_only_the_flags_compress_writes(
+    flags: int, taken: bool
+) -> None:
+    start = b"\x1f\x9d" + bytes([flags]) + bytes(13)
+    assert makeself_reader._starts_payload(start, StreamFormat.UNIX_COMPRESS) is taken

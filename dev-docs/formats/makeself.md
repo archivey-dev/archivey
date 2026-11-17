@@ -114,7 +114,7 @@ walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 | An old archive lists `.` as a directory member | **format** | makeself before 2.4.2 tars `.` itself |
 | gpg payloads are refused | **archivey** | Decided 2026-11-08: no OpenPGP implementation here |
 | A wrong password is told from the first decrypted bytes; damaged padding only at the payload's end | **format** | §1 "Encryption" |
-| The first password whose first block passes is taken, with no later check among candidates; a wrong one passes about once in 2^24 and then fails as damage | **archivey** | The magic check is the only one before the walk |
+| The first password whose first block passes is taken, with no later check among candidates; a wrong one passes about once in 2^24 (2^19 for a Unix compress payload) and then fails as damage | **archivey** | The magic check is the only one before the walk |
 | A member is `CHECKSUM` only after the walk reaches its payload's end | **format** | The digest is over the whole payload |
 
 ## 5. Decisions

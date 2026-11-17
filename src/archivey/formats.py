@@ -90,6 +90,7 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.internal.nesting import NestDraws
+    from archivey.internal.password import _PasswordCandidates
     from archivey.internal.resource_usage import ResourceUsageRecorder
 
 __all__ = [
@@ -587,7 +588,7 @@ class ReaderContext:
     # The caller's ``password=`` (``internal.password._PasswordCandidates``), for a
     # built-in reader that decrypts (makeself's openssl payloads). Internal, set by
     # the adapter; not for plugins.
-    _passwords: Any = None
+    _passwords: _PasswordCandidates | None = None
     # ``_decompress_coder(data, stream_format, size)`` decodes ``data``, a container
     # coder's whole data in ``stream_format``, as ``decompress`` does, except that a
     # byte after the end raises ``CorruptionError`` (as for a ZIP member) instead of

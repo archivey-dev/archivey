@@ -261,10 +261,10 @@ class MakeselfReader(SequentialReader):
                 if check is not None:
                     check.cover(span.member)
                 yield span
-            if header.cipher is not None:
-                # To the end of the decrypted bytes, so their padding is checked.
-                while data.read(_READ_SIZE):
-                    pass
+            # To the end of every layer, so a base64 or openssl end is checked
+            # whatever the TAR reader above read.
+            while data.read(_READ_SIZE):
+                pass
             payload.drain()
             if check is not None:
                 failure = _mismatch(header, index, digests)
@@ -282,7 +282,8 @@ class MakeselfReader(SequentialReader):
         A password is taken once the first bytes it decrypts start what the payload
         must hold: the compressor's magic, or for a TAR that is not compressed, a TAR
         header whose checksum matches. A wrong password passes that by chance about
-        once in 2**24 tries or less often; PKCS#7 padding is checked again at the end.
+        once in 2**24 tries or less often (2**19 for Unix compress: 16 flag values and
+        two digests); PKCS#7 padding is checked again at the end.
         """
         head = _read_up_to(data, 16)
         if len(head) < 16 or not head.startswith(_SALTED):
@@ -328,7 +329,7 @@ class MakeselfReader(SequentialReader):
             params = passwords.attempt(None, unlock)
         except _PasswordCandidatesExhausted as exc:
             # Keep "required" apart from "rejected", naming the payload in both.
-            if exc.message.startswith("Password required"):
+            if exc.last_error is None:  # no candidate was tried
                 raise required from exc
             raise wrong_password_error(
                 f"Wrong password for makeself payload {index + 1}"
@@ -935,7 +936,8 @@ def _derive(
 
 
 # The first bytes each compressor writes, enough that a wrong key matches by chance
-# about once in 2**24 or less often.
+# about once in 2**24 or less often; Unix compress only 2**20 (its flag byte: maxbits
+# 9 to 16, block mode or not).
 _STARTS: dict[StreamFormat, re.Pattern[bytes]] = {
     StreamFormat.GZIP: re.compile(rb"\x1f\x8b\x08[\x00-\x1f]", re.DOTALL),
     StreamFormat.BZIP2: re.compile(rb"BZh[1-9]"),
@@ -945,7 +947,7 @@ _STARTS: dict[StreamFormat, re.Pattern[bytes]] = {
     StreamFormat.LZOP: re.compile(rb"\x89LZO\x00\r\n\x1a\n"),
     StreamFormat.BZIP3: re.compile(rb"BZ3v1"),
     # compress: the magic, then a flags byte whose two reserved bits are clear.
-    StreamFormat.UNIX_COMPRESS: re.compile(rb"\x1f\x9d[\x00-\x1f\x80-\x9f]"),
+    StreamFormat.UNIX_COMPRESS: re.compile(rb"\x1f\x9d[\x09-\x10\x89-\x90]"),
 }
 _TAR_HEADER = 512
 
@@ -978,7 +980,32 @@ def _read_up_to(data: BinaryIO, size: int) -> bytes:
     return b"".join(chunks)
 
 
-class _OpenSSLReader(io.RawIOBase):
+class _DecodeLayer(io.RawIOBase):
+    """A layer under a payload's TAR whose damage is raised again on every later
+    read: a reader above may take the first raise as a diagnostic (gzip past the TAR's
+    end-of-archive marker), and the walk's drain must still see it."""
+
+    _damage: CorruptionError | None = None
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        if self._damage is not None:
+            raise self._damage
+        try:
+            return self._fill(buffer)
+        except CorruptionError as e:
+            self._damage = e
+            raise
+
+    def _fill(self, buffer: Any) -> int:
+        raise NotImplementedError
+
+
+class _OpenSSLReader(_DecodeLayer):
     """A payload's ``openssl enc`` output decrypted: AES-256-CBC, then the PKCS#7
     padding taken off the last block."""
 
@@ -993,18 +1020,9 @@ class _OpenSSLReader(io.RawIOBase):
         self._held = b""
         self._out = b""
         self._ended = False
-        # Raised again on every later read: a reader above may take the first raise
-        # as a diagnostic, and the walk's drain must still see it.
-        self._damage: CorruptionError | None = None
 
     @override
-    def readable(self) -> bool:
-        return True
-
-    @override
-    def readinto(self, buffer: Any) -> int:
-        if self._damage is not None:
-            raise self._damage
+    def _fill(self, buffer: Any) -> int:
         while not self._out and not self._ended:
             if self._first is not None:
                 chunk, self._first = self._first, None
@@ -1016,14 +1034,19 @@ class _OpenSSLReader(io.RawIOBase):
                 self._out, self._held = plain[:cut], plain[cut:]
                 continue
             self._ended = True
-            last = self._held + self._stage.finalize()
+            try:
+                last = self._held + self._stage.finalize()
+            except TruncatedError as e:
+                raise TruncatedError(
+                    f"makeself payload {self._index + 1}: its openssl data ends "
+                    "part-way through a block"
+                ) from e
             pad = last[-1] if last else 0
             if not 1 <= pad <= AES_BLOCK_SIZE or last[-pad:] != bytes([pad]) * pad:
-                self._damage = CorruptionError(
+                raise CorruptionError(
                     f"makeself payload {self._index + 1}: its openssl padding is "
                     "damaged"
                 )
-                raise self._damage
             self._out = last[:-pad]
         data = self._out[: len(buffer)]
         self._out = self._out[len(data) :]
@@ -1031,7 +1054,7 @@ class _OpenSSLReader(io.RawIOBase):
         return len(data)
 
 
-class _Base64Reader(io.RawIOBase):
+class _Base64Reader(_DecodeLayer):
     """A base64 payload decoded as ``base64 -d -i`` decodes it: bytes outside the
     alphabet (line breaks) are skipped, and text after a padded group of four is
     decoded on, as the start of more base64."""
@@ -1042,18 +1065,9 @@ class _Base64Reader(io.RawIOBase):
         self._carry = b""
         self._out = b""
         self._ended = False
-        # Raised again on every later read: a reader above may take the first raise
-        # as a diagnostic, and the walk's drain must still see it.
-        self._damage: CorruptionError | None = None
 
     @override
-    def readable(self) -> bool:
-        return True
-
-    @override
-    def readinto(self, buffer: Any) -> int:
-        if self._damage is not None:
-            raise self._damage
+    def _fill(self, buffer: Any) -> int:
         while not self._out and not self._ended:
             chunk = self._raw.read(_READ_SIZE)
             if not chunk:
