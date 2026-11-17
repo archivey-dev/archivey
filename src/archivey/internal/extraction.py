@@ -3667,7 +3667,9 @@ class ExtractionCoordinator:
             return True  # stopped on or logged below, under the source's name
 
         try:
-            self._state.tracker.start_member(source)
+            # The links were counted as entries when their placeholders were placed;
+            # the source itself is not an entry on disk.
+            self._state.tracker.start_member(source, entry=False)
             with self._handling(first.original, kind="hardlink", record=record):
                 for link in live:
                     self._forget_source_path(link.path)

@@ -185,15 +185,19 @@ class BombTracker:
     def member_bytes(self) -> int:
         return self._member_bytes
 
-    def start_member(self, member: ArchiveMember) -> None:
+    def start_member(self, member: ArchiveMember, *, entry: bool = True) -> None:
         """Start counting ``member``'s output, and count it toward the entry limit.
 
         The caller passes the original member, not a filter copy, so
         ``compressed_size`` and any late-bound fields are accurate. The entry-count
         guard, like the cumulative byte guard, halts even under ``OnError.CONTINUE``.
+        ``entry=False`` counts the output only: the hard-link fill reads an excluded
+        source into names whose links were counted as entries when they were placed.
         """
         self._member = member
         self._member_bytes = 0
+        if not entry:
+            return
         self._entry_count += 1
         if self._max_entries is not None and self._entry_count > self._max_entries:
             raise AlwaysStopResourceLimitError(

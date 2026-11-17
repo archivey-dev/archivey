@@ -5604,6 +5604,24 @@ def test_a_fill_that_meets_an_always_stop_limit_leaves_no_empty_link(
     assert sorted(p.name for p in dest.iterdir()) == ["a"]
 
 
+def test_a_held_link_counts_as_one_entry(tmp_path: Path) -> None:
+    # The link is counted as an entry when its placeholder is placed. The fill
+    # that reads its excluded source writes no entry of its own, so one selected
+    # link finishes under max_entries=1, as one selected file does.
+    archive = _tar_bytes([("file", "src", b"hello-entries"), ("hard", "lnk", "src")])
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            members=lambda m: m.name != "src",
+            limits=ExtractionLimits(max_entries=1),
+        )
+    assert [(r.member.name, r.status) for r in report.results] == [
+        ("lnk", ExtractionStatus.EXTRACTED)
+    ]
+    assert (dest / "lnk").read_bytes() == b"hello-entries"
+
+
 def test_a_placeholder_whose_stat_fails_fails_its_link_and_is_removed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
