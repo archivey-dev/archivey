@@ -512,11 +512,10 @@ class _HeldLink:
     ``path`` is the name it landed on, as the run records it (``source_paths``),
     ``physical`` where that is, its parents resolved, and ``identity`` the file's
     ``(st_dev, st_ino)``. ``live`` turns False once anything else goes to ``path``
-    (``_forget_source_path``). The second pass fills the name only while it is live
-    and still holds that file (``_holds_placeholder``), so a later member that
-    replaced it, or replaced a caller's symlink on its way, keeps what
-    it put there. ``spelled_from`` is
-    ``transformed`` before its disk spelling, when that differs, so an error names it
+    (``_forget_source_path``). The second pass fills the name only while it is live and
+    still holds that file (``_holds_placeholder``), so a later member that replaced it,
+    or replaced a caller's symlink on its way, keeps what it put there. ``spelled_from``
+    is ``transformed`` before its disk spelling, when that differs, so an error names it
     as the first pass would (``_MemberState.spelled_from``).
     """
 
@@ -1859,6 +1858,8 @@ class ExtractionCoordinator:
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(on_disk)
                     state.written_paths.discard(path)
+                    # A later link may take the name (``_record_run_symlink``).
+                    self._resolutions_changed()
             else:
                 state.written_paths.discard(path)
                 if physical != path and physical != self._physical_path(path):
@@ -2460,8 +2461,8 @@ class ExtractionCoordinator:
         ERROR/SKIP/REPLACE to the prior path so the existing OverwritePolicy machinery
         handles it uniformly, or derive a fresh ``name (N)`` under RENAME. TRUSTED keys
         on the exact name and defers to the local OS (no collision *event*, but RENAME
-        still uses the map to avoid re-deriving names). Hardlinks held for the second pass
-        claim their name here too, at their place in archive order.
+        still uses the map to avoid re-deriving names). Hardlinks held for the second
+        pass claim their name here too, at their place in archive order.
 
         Under RENAME, a parent of ``requested`` that the caller holds as a file or a
         symlink first moves ``requested`` under a derived name for that parent
@@ -2881,7 +2882,10 @@ class ExtractionCoordinator:
             self._state.run_symlink_keys.add(self._physical_key(path))
         # No cached answer changes: only a name that is on disk is cached
         # (``_goes_through_run_link``), and a new link's name held nothing, or what
-        # it held was removed first, which clears the cache (``_note_link_change``).
+        # it held was removed first. A file's name has no cached answer, and every
+        # other removal this run makes clears the cache: a link it replaces or
+        # removes (``_note_link_change``), and a directory it replaces, takes back or
+        # removes for an anti-item (``_note_link_change``, ``_resolutions_changed``).
 
     def _refuse_through_run_link(self, member: ArchiveMember, path: Path) -> None:
         """Refuse ``member`` when its path goes through a symlink this run created:
@@ -3128,6 +3132,8 @@ class ExtractionCoordinator:
                 os.rmdir(long_path(dest_path))
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
+                # A later link may take the name (``_record_run_symlink``).
+                self._resolutions_changed()
             else:
                 os.unlink(long_path(dest_path))
             if stat.S_ISLNK(st.st_mode):
@@ -4532,8 +4538,8 @@ class ExtractionCoordinator:
         link or rename that refuses a taken name) — atomic, so a mid-stream failure
         never truncates or removes an existing destination (only the temp is discarded),
         and the target name never appears half-written. The temp lives in the destination
-        directory so the rename stays on one filesystem. When the second pass fills a held
-        hardlink's placeholder, ``member`` is the *link's* transformed copy, so the
+        directory so the rename stays on one filesystem. When the second pass fills a
+        held hardlink's placeholder, ``member`` is the *link's* transformed copy, so the
         file carrying the content gets the link's (policy-capped) mode, not the source's.
 
         Under TRUSTED, a member with no stored mode gets the mode an ordinary file

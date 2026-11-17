@@ -501,12 +501,13 @@ through a symlink this extraction created", unless the path already resolves out
 `dest`, which is refused as an escape first. A symlink is the run's while the entry the
 member's path meets is still that link (the same device and inode, or where the
 filesystem reports inode 0 the same place, with case folded), however the member spells
-it: a case variant or a name Windows trims reaches the link too. A symlink the caller had in
-`dest` before the run is followed, subject to the parent resolution check, until a member
-replaces it; and a member that replaces the run's link with a directory makes a
-directory, which later members are written into. Only a member's own path is checked: a
-symlink's target may run through another symlink of the run. A held-back hard link is
-refused before its placeholder is made.
+it: a case variant or a name Windows trims reaches the link too (in a dry run, only
+where the temp directory's filesystem folds case as `dest`'s does; see the dry-run
+requirement). A symlink the caller had in `dest` before the run is followed, subject to
+the parent resolution check, until a member replaces it; and a member that replaces the
+run's link with a directory makes a directory, which later members are written into.
+Only a member's own path is checked: a symlink's target may run through another symlink
+of the run. A held-back hard link is refused before its placeholder is made.
 
 GNU tar and Python's `tarfile` write through such a link; bsdtar refuses. The shape was
 found in none of 82,635 release tarballs (tar-minefield's `tree.through-symlink` scan),
@@ -574,7 +575,7 @@ empty placeholder file, which the second pass fills with the source's bytes, so 
 outcome is the one a link made there would give. The placeholder is a regular file at
 the link's name, made as any file is: the overwrite policy and the parent directories
 apply to it there, and every later member meets it on disk as it would meet the made
-link, under every policy, through the run's symlinks and on a filesystem that folds case
+link, under every policy, through a caller's symlink and on a filesystem that folds case
 or not. A later link to the same source is made to the placeholder, so it shares the
 filled file. A placeholder that a later member replaces or supersedes is not filled, and
 its link's result is the one that member gives it. The second pass fills a placeholder
@@ -1717,15 +1718,14 @@ from each segment that has other characters (Win32 trims it, so `foo.` and `foo`
 file there), and treat a second member resolving to the same key as an existing
 destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
-directory symlink of the caller's (`s/f` with `s -> d`) collides with `d/f`. A
-member whose destination holds an entry that no member of this run claimed by key, but that
-is the same file (`st_dev`, `st_ino`) as a file this run claimed, collides with that member
+directory symlink of the caller's (`s/f` with `s -> d`) collides with `d/f`. A member
+whose destination holds an entry that no member of this run claimed by key, but that is
+the same file (`st_dev`, `st_ino`) as a file this run claimed, collides with that member
 as a case variant does: on Windows this is an 8.3 short name (`LONGFI~1.TXT` after
-`longfilename.txt`) on a volume that makes them. This does not apply under `TRUSTED`, and
-not on a filesystem that reports inode 0. The key
-and the location are fixed when the earlier member is written, and a collision SHALL be
-resolved at that location, so a member that later replaces `s` with a link of its own
-does not move it. Such a collision
+`longfilename.txt`) on a volume that makes them. This does not apply under `TRUSTED`,
+and not on a filesystem that reports inode 0. The key and the location are fixed when
+the earlier member is written, and a collision SHALL be resolved at that location, so a
+member that later replaces `s` with a link of its own does not move it. Such a collision
 SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
 `ExtractionResult`. DIRECTORY members are not claimed in the map, as a directory merges
 into one already there. The coordinator looks a DIRECTORY member up in the map when its

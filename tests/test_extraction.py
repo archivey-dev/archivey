@@ -70,7 +70,7 @@ from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
-from tests.streams_util import SizedNonSeekable
+from tests.streams_util import NonSeekableBytesIO, SizedNonSeekable
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -7364,6 +7364,46 @@ def test_a_run_link_is_refused_where_the_filesystem_reports_inode_0(
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_run_link_made_where_a_taken_back_directory_was_is_refused(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `d/x` looks `d` up while `d` is the run's directory. The second `d/` is
+    # filtered out, which takes the first one back and removes it; the link made at
+    # `d` next is still found: removing the directory forgot the answer about `d`.
+    specs = [
+        ("dir", "e", None),
+        ("sym", "q", "e"),
+        ("dir", "d", None),
+        ("hard", "d/x", "nope"),
+        ("dir", "d", None),
+        ("sym", "d", "e"),
+        ("file", "d/y", b"y"),
+    ]
+    seen_dirs: list[str] = []
+
+    def drop_second_d(m: ArchiveMember) -> ArchiveMember | None:
+        if m.name.rstrip("/") == "d" and m.type is MemberType.DIRECTORY:
+            seen_dirs.append(m.name)
+            if len(seen_dirs) == 2:
+                return None
+        return m
+
+    dest = tmp_path / "out"
+    raw = _tar_bytes(specs)
+    source = NonSeekableBytesIO(raw) if streaming else io.BytesIO(raw)
+    with open_archive(source, streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            filter=drop_second_d,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["d/y"] is ExtractionStatus.BLOCKED
+    assert not (dest / "e" / "y").exists()
+
+
 def test_a_run_link_made_where_a_parent_was_looked_up_before_is_refused(
     tmp_path: Path,
 ) -> None:
