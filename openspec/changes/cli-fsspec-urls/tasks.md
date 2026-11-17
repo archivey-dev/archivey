@@ -17,9 +17,11 @@
 - [ ] 2.2 Implement a CLI-local copy of the remote URL display policy, with parity
   tests against the internal helper, as for `outer_layer_format`. Add no public
   name. Sanitize chain links and replace exact original-URL occurrences in
-  third-party errors and CLI logging before escaping.
+  third-party errors and CLI logging before escaping. Build the
+  `aiohttp.ClientResponseError` message from `status`, `message` and the
+  sanitized label instead of printing the exception text.
 - [ ] 2.3 Translate setup dependency `ImportError`, existing archivey/OS errors,
-  and HTTP `aiohttp.ClientError` / `requests.exceptions.RequestException` into CLI
+  and HTTP `aiohttp.ClientError` into CLI
   failures during setup and iteration. Leave unlisted exceptions unhandled and
   preserve partial results.
 
@@ -27,8 +29,8 @@
 
 - [ ] 3.1 Add CLI behavior tests for all verbs, aliases, default listing and
   `--outer`, using real fsspec memory sources and a local range-capable HTTP server.
-  Add `aiohttp` and `requests` to the dev dependency group and update `uv.lock`.
-  HTTP integration tests skip when those packages are absent in the core-only
+  Add `aiohttp` to the dev dependency group and update `uv.lock`.
+  HTTP integration tests skip when aiohttp is absent in the core-only
   leg; dependency-absence tests must still run there.
 - [ ] 3.2 Test local precedence without importing fsspec, Windows/UNC paths,
   unknown protocols, literal URL characters, no remote glob/volume discovery,
@@ -36,8 +38,9 @@
   Include unknown schemes with/without fsspec, cache and archive chains, raw
   backslash/colon stems, Windows invalid/reserved names and literal percent escapes.
 - [ ] 3.3 Test missing objects, authentication and connection failures, unsupported
-  ranges and a source changing during a read. Include a real HTTP 403 and a signed
-  HTTP 404, HTTP failures during iteration and setup, and an unlisted exception
+  ranges and a source changing during a read. Include a real HTTP 403 during a
+  member read on a signed URL whose query contains `%2F`, a signed HTTP 404,
+  HTTP failures during iteration and setup, and an unlisted exception
   that must propagate. Check exit codes, URL redaction and partial output.
 - [ ] 3.4 Update `docs/cli.md` and `docs/remote.md` with URL examples, HTTP/store
   dependencies, chains, backend credential discovery, the handled exception

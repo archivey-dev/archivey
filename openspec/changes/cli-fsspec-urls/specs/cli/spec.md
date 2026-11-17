@@ -103,7 +103,11 @@ a public API name or importing internal helpers into CLI code.
 Before emitting third-party exception text, including through CLI logging, the
 CLI SHALL replace every exact occurrence of the original argument and its
 URL-bearing chain links with their sanitized labels, longest strings first.
-Perform substitution before terminal escaping. A backend that transforms or
+Perform substitution before terminal escaping. For `aiohttp.ClientResponseError`
+the CLI SHALL NOT print the exception text, because aiohttp re-encodes the
+request URL (for example `%2F` becomes `/`) and exact substitution then misses
+it. The CLI SHALL build that message itself from the exception's `status` and
+`message` and the sanitized label. Any other backend that transforms or
 re-encodes a URL, or prints credentials separately, is not guaranteed to be
 redacted. Library exception propagation remains unchanged.
 
@@ -137,9 +141,9 @@ constructing its filesystem/`OpenFile`. Existing `ArchiveyError` and `OSError`
 handling covers missing objects, OS-level permission and connection failures,
 unsupported range responses rejected by archivey, and `SourceChangedError`.
 
-For HTTP(S), also handle `aiohttp.ClientError` and
-`requests.exceptions.RequestException`, imported only when their packages are
-loaded by the backend. The handled exceptions SHALL be recognized during setup,
+For HTTP(S), also handle `aiohttp.ClientError`, imported only when its package is
+loaded by the backend. The default `http`/`https` backend uses aiohttp only, so no
+`requests` exception is handled. The handled exceptions SHALL be recognized during setup,
 detection, opening and member iteration, including HTTP layers inside chains.
 The CLI MUST NOT catch arbitrary `ValueError`, `RuntimeError` or `Exception` as
 transport failures. Non-HTTP backends retain the shared `OSError` handling;
