@@ -321,12 +321,15 @@ class _DataTree:
         with every ``..`` taken lexically and no symlink followed, lands in
         ``DEBIAN``. A read of the symlink resolves its target this way
         (``resolve_link_target_name``)."""
-        out = [] if is_rooted(target) else where[:-1]
+        # Built in place: a copy per segment would make one long target cost
+        # the square of its length.
+        out = [] if is_rooted(target) else list(where[:-1])
         for segment in _segments(target):
             if segment == "..":
-                out = out[:-1]
+                if out:
+                    out.pop()
             else:
-                out = [*out, _fold(segment)]
+                out.append(_fold(segment))
         return out[:1] == [_CONTROL_KEY]
 
     def has_symlink(self, where: list[str]) -> bool:

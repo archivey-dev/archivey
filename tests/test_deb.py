@@ -9,6 +9,7 @@ import hashlib
 import io
 import lzma
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -936,6 +937,18 @@ def test_steps_inside_followed_targets_count_against_max_members(pipe: bool) -> 
     ):
         for _member, _stream in reader.stream_members():
             pass
+
+
+def test_a_long_symlink_target_lists_in_linear_time() -> None:
+    """The lexical check of a symlink target copied its path once per segment, so
+    one 200,000-segment target (an 11 KB package) took about 30 s to list."""
+    data = [("./s@symlink", ("d/" * 200_000).encode())]
+    start = time.perf_counter()
+    with open_archive(io.BytesIO(_deb(data=data))) as reader:
+        assert [m.name for m in reader.members()][-1] == "s"
+    # Linear work takes well under a second; the bound only has to catch the
+    # quadratic walk.
+    assert time.perf_counter() - start < 10
 
 
 def test_symlinks_that_follow_short_ones_stay_within_max_members() -> None:
