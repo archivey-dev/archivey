@@ -1553,7 +1553,8 @@ NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are ship
 Archivey reads the TARs and never runs the script.
 
 - **Needs:** nothing for gzip, bzip2, xz and uncompressed payloads; a Zstandard, LZ4, lzop or
-  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs.
+  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs;
+  an `--ssl-encrypt` payload needs `cryptography`.
 - **Listing:** needs decompression. The members are the TAR's, named as makeself extracts them
   into its target folder.
 - **Reading members:** solid.
@@ -1566,8 +1567,11 @@ Archivey reads the TARs and never runs the script.
   payload. Archivey checks each one it finds when it reads to the end of the payload. They cover
   every file of the payload, so a match raises each to `Verification.CHECKSUM`, and a mismatch
   raises `CorruptionError` and makes `verify_all()` return each file of the payload.
-- **Encryption.** A payload written with `--base64` is read. One encrypted with
-  `--ssl-encrypt` or `--gpg-encrypt` raises `UnsupportedFeatureError`.
+- **Encryption.** A payload written with `--base64` is read. One written with `--ssl-encrypt`
+  is read with `password=` and needs `cryptography`, as AES in a ZIP does. Without a password,
+  opening the archive raises `EncryptionError`, and with a wrong one it raises `EncryptionError`
+  saying the password is wrong. One written with `--gpg-encrypt` raises
+  `UnsupportedFeatureError`.
 - `ArchiveInfo.format_version` is the makeself version the header names (`"2.4.5"`).
   `ArchiveInfo.extra` holds `makeself.label`, `makeself.script` (the command run after
   extraction), `makeself.target_dir`, `makeself.compression` (`"gzip"`, `"xz"`, `"none"`, …),
