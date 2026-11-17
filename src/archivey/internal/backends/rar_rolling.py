@@ -570,6 +570,11 @@ class VolumeFeeder:
                             stdin.close()
                     except (BrokenPipeError, OSError):
                         return  # unrar exited; its status says why
+                    except ValueError:
+                        # The reader closed unrar's input while this volume was
+                        # written (``_ForwardUnrarStream.close``): unrar ends at the
+                        # end of its input and needs no answer.
+                        return
                 elif _QUESTION.search(seen):
                     self._stop(
                         ReadError(
