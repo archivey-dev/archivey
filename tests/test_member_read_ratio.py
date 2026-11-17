@@ -462,10 +462,8 @@ def _accelerated(mode: AcceleratorMode) -> ArchiveyConfig:
     return ArchiveyConfig(use_rapidgzip=mode)
 
 
-@pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
-def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
-    tmp_path: Path, mode: AcceleratorMode
-) -> None:
+def _lying_zip(tmp_path: Path) -> Path:
+    """A ZIP of one member, 24 MiB of zeros, that records an uncompressed size of 1000."""
     path = tmp_path / "lying.zip"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("z.bin", bytes(24 * _MIB))
@@ -475,12 +473,58 @@ def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
     central = data.find(b"PK\x01\x02")
     struct.pack_into("<I", data, central + 24, 1000)
     path.write_bytes(data)
+    return path
+
+
+@pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
+def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
+    tmp_path: Path, mode: AcceleratorMode
+) -> None:
+    path = _lying_zip(tmp_path)
     with (
         open_archive(path, seekable_members=True, config=_accelerated(mode)) as reader,
         reader.open("z.bin") as stream,
         pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
     ):
         stream.seek(0, io.SEEK_END)
+
+
+def test_an_accelerated_seek_to_the_end_moves_the_child_no_further_than_a_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal comes from where the child stopped, a step past the ratio line, not
+    from the member's real end: the child's decode is bounded by the check, not
+    judged after it."""
+    config = _accelerated(AcceleratorMode.ON)
+    path = _lying_zip(tmp_path)
+    reached: list[int] = []
+    seek = rapidgzip_child.RapidgzipChildStream.seek
+
+    def recording(
+        self: rapidgzip_child.RapidgzipChildStream, offset: int, whence: int = 0
+    ) -> int:
+        position = seek(self, offset, whence)
+        reached.append(position)
+        return position
+
+    monkeypatch.setattr(rapidgzip_child.RapidgzipChildStream, "seek", recording)
+    with open_archive(path, seekable_members=True, config=config) as reader:
+        (member,) = reader.members()
+        assert member.compressed_size
+        limits = DecoderLimits()
+        assert limits.max_ratio is not None
+        line = max(
+            limits.ratio_activation_threshold,
+            limits.max_ratio * member.compressed_size,
+        )
+        with (
+            reader.open("z.bin") as stream,
+            pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
+        ):
+            stream.seek(0, io.SEEK_END)
+    assert reached
+    assert line < 24 * _MIB  # the member's real end is past the line
+    assert max(reached) <= line + bomb_tracker._GUARD_STEP
 
 
 @pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
