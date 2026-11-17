@@ -38,6 +38,7 @@ from archivey.internal.backends import makeself_reader
 from archivey.internal.backends.makeself_reader import MakeselfReader
 from archivey.internal.streams import crypto
 from tests.conftest import requires_zstd
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 
 MAKESELF = archivey.ArchiveFormat.MAKESELF
@@ -234,6 +235,43 @@ def test_a_variable_set_twice_is_damage() -> None:
     data = _edited(b'totalsize="224"', b'totalsize="224"\nfilesizes="10"')
     with pytest.raises(CorruptionError, match="assigns 'filesizes' twice"):
         open_archive(io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'  filesizes="10"', id="indented"),
+        pytest.param(b'\tfilesizes="10"', id="tab"),
+        pytest.param(b': ; filesizes="10"', id="after-semicolon"),
+        pytest.param(b'export filesizes="10"', id="export"),
+        pytest.param(b"if true; then skip=3; fi", id="unquoted-in-if"),
+        pytest.param(b'quiet="n"; label=x', id="after-another-value"),
+    ],
+)
+def test_a_used_variable_set_where_the_parse_does_not_look_is_damage(
+    line: bytes,
+) -> None:
+    # The shell runs these lines, so the value they set is the one makeself uses;
+    # the parse does not read them as assignments, so it must refuse them.
+    data = _edited(b'totalsize="224"', b'totalsize="224"\n' + line)
+    with pytest.raises(CorruptionError, match="where this reader does not read it"):
+        open_archive(io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'    print_cmd="printf"', id="indented-other-variable"),
+        pytest.param(b"echo filesizes and skip", id="names-without-equals"),
+        pytest.param(b'scriptargs="$script"', id="longer-name"),
+        pytest.param(b"# see --skip=3 in the help", id="option-in-comment"),
+        pytest.param(b"echo $skip=x", id="expansion"),
+    ],
+)
+def test_other_lines_in_the_variables_still_read(line: bytes) -> None:
+    data = _edited(b'totalsize="224"', b'totalsize="224"\n' + line)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert _contents(reader) == FILES
 
 
 @pytest.mark.parametrize(
@@ -505,6 +543,111 @@ def test_payload_commands(
     command: bytes, decrypt: bytes, expected: tuple[StreamFormat, str | None]
 ) -> None:
     assert makeself_reader._decoders(command, decrypt) == expected
+
+
+def _empty_tar_gz() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w"):
+        pass
+    return gzip.compress(buffer.getvalue(), mtime=0)
+
+
+def _with_payloads(payloads: list[bytes]) -> bytes:
+    """The 2.7.1 fixture's header over ``payloads``, its sizes and digests listed for
+    each (all-zero digests: makeself writes those where it computed none)."""
+    header, _ = _split((DATA / "gzip-2.7.1.run").read_bytes())
+    lists = {
+        b"CRCsum": b" ".join(b"0" for _ in payloads),
+        b"MD5": b" ".join(b"0" * 32 for _ in payloads),
+        b"SHA": b"",
+        b"filesizes": b" ".join(b"%d" % len(p) for p in payloads),
+        b"totalsize": b"%d" % sum(len(p) for p in payloads),
+    }
+    for name, value in lists.items():
+        header, count = re.subn(
+            rb'^%s="[^"]*"$' % name,
+            lambda _, n=name, v=value: b'%s="%s"' % (n, v),
+            header,
+            flags=re.MULTILINE,
+        )
+        assert count == 1, name
+    return header + b"".join(payloads)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(b"Terms of use.\n" * 70_000, id="lines"),
+        pytest.param(b"a" * 1_000_000, id="one-line"),
+        # An escape every 3 bytes, across many chunk ends: the value's read stops
+        # before an escape that a chunk end cuts and resumes there.
+        pytest.param(b'a\\"' * 330_000, id="escapes"),
+    ],
+)
+def test_a_long_value_is_read_in_memory_linear_in_it(value: bytes) -> None:
+    # A regex that repeats a group with an alternation keeps state for each
+    # repetition: about 150 bytes per byte of the value.
+    data = _edited(b'licensetxt=""', b'licensetxt="' + value + b'"')
+
+    def read() -> None:
+        with open_archive(io.BytesIO(data)) as reader:
+            assert _contents(reader) == FILES
+
+    read()
+    assert traced_peak(read) < 8 * len(data)
+
+
+def test_the_payload_count_is_checked_before_the_lists_are_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each listed value becomes an object, so a long list costs memory before any
+    # check on its length could run.
+    parsed: list[str] = []
+    real = makeself_reader._number
+    real_hex = makeself_reader._hex
+
+    def number(raw: bytes, what: str) -> int:
+        parsed.append(what)
+        return real(raw, what)
+
+    def hex_digest(raw: bytes, what: str, length: int) -> bytes:
+        parsed.append(what)
+        return real_hex(raw, what, length)
+
+    monkeypatch.setattr(makeself_reader, "_number", number)
+    monkeypatch.setattr(makeself_reader, "_hex", hex_digest)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(_with_payloads([_empty_tar_gz()] * 11)), config=config)
+    assert "filesizes" not in parsed
+    parsed.clear()
+    data = _with_payloads([_empty_tar_gz()] * 2)
+    data = re.sub(rb'^CRCsum="0 0"$', b'CRCsum="0 0 0"', data, flags=re.MULTILINE)
+    with pytest.raises(CorruptionError, match="CRCsum lists 3 values for 2 payloads"):
+        open_archive(io.BytesIO(data))
+    assert "CRCsum" not in parsed
+    # A SHA list of zeros may be any length (2.4.0's --append leaves it short), and
+    # zeros state no digest, so a long one is accepted without being parsed.
+    parsed.clear()
+    data = _with_payloads([_empty_tar_gz()] * 2)
+    zeros = b" ".join([b"0" * 64] * 5)
+    data = re.sub(rb'^SHA=""$', b'SHA="%s"' % zeros, data, flags=re.MULTILINE)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert reader.members() == []
+    assert "SHA" not in parsed
+
+
+def test_payloads_count_against_max_members() -> None:
+    # Each payload builds a TAR reader, which costs far more than its few bytes of
+    # header, and an empty one lists nothing for max_members to count.
+    data = _with_payloads([_empty_tar_gz()] * 11)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(data), config=config)
+    with open_archive(
+        io.BytesIO(_with_payloads([_empty_tar_gz()] * 10)), config=config
+    ):
+        pass
 
 
 def _tar(name: str, data: bytes) -> bytes:

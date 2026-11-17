@@ -11,12 +11,14 @@ import os
 import struct
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 from typing import BinaryIO, cast
 
 import pytest
 
 from archivey import (
+    AcceleratorMode,
     ArchiveMember,
     ArchiveyConfig,
     DecoderLimits,
@@ -31,6 +33,12 @@ from archivey.internal.bomb_tracker import (
     MemberRatioCheck,
     ReadRatioTally,
 )
+from archivey.internal.streams.codecs import rapidgzip_child
+from archivey.internal.streams.codecs.rapidgzip_child import (
+    rapidgzip_child_unavailable_reason,
+)
+from archivey.internal.streams.decompressor_stream import DataAfterEndError
+from archivey.internal.streams.streamtools.binaryio import decode_to
 from archivey.types import MemberType
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO, SizedNonSeekable
 from tests.test_audit_tar_streams import _TRAILER, _gnu_sparse
@@ -444,9 +452,18 @@ def test_a_seek_to_the_end_past_a_small_recorded_size_stops_within_a_step() -> N
     assert decoder.furthest <= floor + bomb_tracker._GUARD_STEP
 
 
-def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
-    tmp_path: Path,
-) -> None:
+def _accelerated(mode: AcceleratorMode) -> ArchiveyConfig:
+    """A config with ``mode``; ``ON`` skips where the rapidgzip child cannot run."""
+    if mode is AcceleratorMode.ON:
+        pytest.importorskip("rapidgzip")
+        reason = rapidgzip_child_unavailable_reason()
+        if reason is not None:
+            pytest.skip(reason)
+    return ArchiveyConfig(use_rapidgzip=mode)
+
+
+def _lying_zip(tmp_path: Path) -> Path:
+    """A ZIP of one member, 24 MiB of zeros, that records a size of 1000 bytes."""
     path = tmp_path / "lying.zip"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("z.bin", bytes(24 * _MIB))
@@ -456,12 +473,136 @@ def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
     central = data.find(b"PK\x01\x02")
     struct.pack_into("<I", data, central + 24, 1000)
     path.write_bytes(data)
+    return path
+
+
+@pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
+def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
+    tmp_path: Path, mode: AcceleratorMode
+) -> None:
+    path = _lying_zip(tmp_path)
     with (
-        open_archive(path, seekable_members=True) as reader,
+        open_archive(path, seekable_members=True, config=_accelerated(mode)) as reader,
         reader.open("z.bin") as stream,
         pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
     ):
         stream.seek(0, io.SEEK_END)
+
+
+def test_an_accelerated_seek_to_the_end_moves_the_child_no_further_than_a_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal comes from where the child stopped, a step past the ratio line, not
+    from the member's real end: the child's decode is bounded by the check, not
+    judged after it."""
+    config = _accelerated(AcceleratorMode.ON)
+    path = _lying_zip(tmp_path)
+    reached: list[int] = []
+    seek = rapidgzip_child.RapidgzipChildStream.seek
+
+    def recording(
+        self: rapidgzip_child.RapidgzipChildStream, offset: int, whence: int = 0
+    ) -> int:
+        position = seek(self, offset, whence)
+        reached.append(position)
+        return position
+
+    monkeypatch.setattr(rapidgzip_child.RapidgzipChildStream, "seek", recording)
+    with open_archive(path, seekable_members=True, config=config) as reader:
+        (member,) = reader.members()
+        assert member.compressed_size
+        limits = DecoderLimits()
+        assert limits.max_ratio is not None
+        line = max(
+            limits.ratio_activation_threshold,
+            limits.max_ratio * member.compressed_size,
+        )
+        with (
+            reader.open("z.bin") as stream,
+            pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
+        ):
+            stream.seek(0, io.SEEK_END)
+    assert reached
+    assert line < 24 * _MIB  # the member's real end is past the line
+    assert max(reached) <= line + bomb_tracker._GUARD_STEP
+
+
+@pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
+def test_a_zip_member_with_input_after_its_end_is_refused_on_seek_to_end(
+    tmp_path: Path, mode: AcceleratorMode
+) -> None:
+    """The ratio check's way to the end meets rapidgzip's error on the bytes after the
+    DEFLATE stream; the switch to the standard library gives the error the
+    accelerator off gives."""
+    payload = os.urandom(2 * _MIB) + bytes(2 * _MIB)
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = compressor.compress(payload) + compressor.flush() + b"\x00junkjunk"
+    path = tmp_path / "junk.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("j.bin", body)
+    data = bytearray(path.read_bytes())
+    # Make the stored member a deflated one of the payload, its junk included in the
+    # compressed size: the method, the CRC and the uncompressed size, in both headers.
+    crc = zlib.crc32(payload)
+    for at in (0, data.find(b"PK\x01\x02") + 2):
+        struct.pack_into("<H", data, at + 8, zipfile.ZIP_DEFLATED)
+        struct.pack_into("<I", data, at + 14, crc)
+        struct.pack_into("<I", data, at + 22, len(payload))
+    path.write_bytes(data)
+    with (
+        open_archive(path, seekable_members=True, config=_accelerated(mode)) as reader,
+        reader.open("j.bin") as stream,
+        pytest.raises(DataAfterEndError),
+    ):
+        stream.seek(0, io.SEEK_END)
+
+
+def test_an_accelerated_seek_to_the_end_brings_back_no_member_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ratio check finds the end through the rapidgzip child's own seek, which
+    decodes in the child and sends back only the position: not the member's bytes,
+    which the verifier inside would read on a probe at the recorded size."""
+    config = _accelerated(AcceleratorMode.ON)
+    path = tmp_path / "honest.zip"
+    size = 8 * _MIB
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("m.bin", os.urandom(size // 2) + bytes(size // 2))
+    fetched: list[int] = []
+    fetch = rapidgzip_child.RapidgzipChildStream._fetch
+
+    def counting(self: rapidgzip_child.RapidgzipChildStream, n: int) -> bytes:
+        data = fetch(self, n)
+        fetched.append(len(data))
+        return data
+
+    monkeypatch.setattr(rapidgzip_child.RapidgzipChildStream, "_fetch", counting)
+    with (
+        open_archive(path, seekable_members=True, config=config) as reader,
+        reader.open("m.bin") as stream,
+    ):
+        assert stream.seek(0, io.SEEK_END) == size
+        # The raw DEFLATE end check reads the window before its resume point back.
+        assert sum(fetched) <= _MIB
+        # A read from there gives the verdicts; it reads the member back to check it.
+        assert stream.read() == b""
+
+
+def test_decode_to_reports_where_the_data_ends() -> None:
+    # A stream without the method: a seek and a one-byte read.
+    stream = io.BytesIO(b"abcdef")
+    assert decode_to(stream, 2) == 3
+    assert decode_to(stream, 6) == 6
+    assert decode_to(stream, 100) == 6
+    assert stream.tell() == 6
+
+    class _Answers(io.BytesIO):
+        def decode_to(self, target: int) -> int:
+            return min(target, 4)
+
+    answering = _Answers(b"abcdef")
+    assert decode_to(answering, 10) == 4
+    assert answering.tell() == 0  # the method answered; nothing was read
 
 
 def test_a_seek_to_the_end_under_the_ratio_lands_there() -> None:

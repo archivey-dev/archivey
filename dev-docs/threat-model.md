@@ -408,8 +408,9 @@ data its pass keeps for link targets beside it.
   such as UTF-16, which expat would read in a way the scan cannot see) and a tag of
   more than 65 536 pieces (characters outside quotes, or whole quoted values), since
   expat builds a tag's attributes before any handler can weigh them.
-  makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
-  it in one pass and keeps only the variables it uses; the header is parsed, never run
+  makeself weighs its shell header against `max_metadata_bytes` as it reads it, at open,
+  and refuses a header that lists more payloads than `max_members`; it parses the header
+  in one pass and keeps only the variables it uses; the header is parsed, never run
   (`makeself_reader.py`).
   CAB weighs the block tables it keeps, one per folder read, against
   `max_metadata_bytes` as they are read, at 256 bytes a block: folders may all name one

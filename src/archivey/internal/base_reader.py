@@ -209,6 +209,7 @@ from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
+    ErrorStamp,
     ExceptionTranslator,
     MemberStreamParts,
     RewindWarning,
@@ -1541,15 +1542,33 @@ class BaseArchiveReader(ArchiveReader):
         )
         if not excluded:
             return
-        names = ", ".join(f"CompressionAlgorithm.{m.name}" for m in excluded)
         subject = (
             f"{quoted(member.name)} is"
             if decoded is member
             else f"{quoted(member.name)} copies {quoted(decoded.name)}, which is"
         )
+        them = "it" if len({entry for _, entry in excluded}) == 1 else "them"
+        if all(method is entry for method, entry in excluded):
+            names = ", ".join(f"CompressionAlgorithm.{m.name}" for m, _ in excluded)
+            message = (
+                f"{subject} compressed with {names}, which ArchiveyConfig.formats "
+                f"turns off: exclude= lists {them}."
+            )
+        else:
+            # The member's method is not the entry: name both, so the message
+            # matches the member's ``compression``.
+            names = "; and ".join(
+                f"CompressionAlgorithm.{m.name}"
+                if m is entry
+                else (
+                    f"CompressionAlgorithm.{m.name}, which decodes with "
+                    f"CompressionAlgorithm.{entry.name}"
+                )
+                for m, entry in excluded
+            )
+            message = f"{subject} compressed with {names}; exclude= lists {them}."
         raise UnsupportedFeatureError(
-            f"{subject} compressed with {names}, which ArchiveyConfig.formats turns "
-            f"off: exclude= lists {'it' if len(excluded) == 1 else 'them'}.",
+            message,
             source_format=self._format,
             archive_name=self._archive_name,
             member_name=member.name,
@@ -1863,10 +1882,12 @@ class BaseArchiveReader(ArchiveReader):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        on_error: ErrorStamp | None = None,
     ) -> ArchiveStreamImpl:
         """A member stream that calls ``open_fn`` on its first read: one
         ``ArchiveStream``, whose read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
+        ``on_error`` is then given each ``ArchiveyError`` the stream raises.
 
         The arguments are :meth:`_member_parts`'s, and ``seekable`` defaults to
         declared. If ``open_fn`` returns ``MemberStreamParts`` (from ``_open_member``),
@@ -1893,6 +1914,12 @@ class BaseArchiveReader(ArchiveReader):
             use_open: Callable[[], BinaryIO | MemberStreamParts] = tracked_open
         else:
             use_open = open_fn
+
+        def stamp(exc: ArchiveyError) -> None:
+            self._stamp_error_context(exc, member_name)
+            if on_error is not None:
+                on_error(exc)
+
         return ArchiveStreamImpl(
             use_open,
             translate=(
@@ -1900,7 +1927,7 @@ class BaseArchiveReader(ArchiveReader):
                 if translate is None
                 else compose_translators(translate, self._translate_exception)
             ),
-            stamp=lambda exc: self._stamp_error_context(exc, member_name),
+            stamp=stamp,
             lazy=True,
             seekable=(self._seek_declared() if seekable is None else seekable),
             size=size,
