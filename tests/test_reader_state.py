@@ -787,7 +787,7 @@ def test_an_error_out_of_the_orphan_pass_closes_it(
     def fail(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("linking failed")
 
-    monkeypatch.setattr(ExtractionCoordinator, "_link_orphan_group", fail)
+    monkeypatch.setattr(ExtractionCoordinator, "_fill_held_source", fail)
     with open_archive(_tar_with_orphaned_hardlink(tmp_path)) as reader:
         passes = []
         real = reader.stream_members

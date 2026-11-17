@@ -10,9 +10,11 @@ HARDLINK, tracking bomb limits and per-member results.
 
 Hardlinks (TAR ordering guarantees the source precedes its links) are resolved by one
 **core** algorithm: a sequential forward pass with a conditional second pass. When a
-filter/selector orphans a selected link (its source excluded), a re-readable (seekable)
-source is recovered in a single second pass; a forward-only source is unrecoverable and
-fails per ``OnError``. See ``safe-extraction`` / ``format-tar`` for the normative spec.
+selected link's source is not on disk (excluded by a filter or selector, or not
+written), a re-readable (seekable) source gets an empty placeholder file at the link's
+place in archive order, which a single second pass fills; a forward-only source is
+unrecoverable and fails per ``OnError``. See ``safe-extraction`` / ``format-tar`` for
+the normative spec.
 
 The optional *planned single pass* optimization (staging an excluded source during the
 first pass when a free member list exists) is deliberately not implemented here — it is an
@@ -40,8 +42,8 @@ comments mark its sections):
    applies ``OnError`` and ``AbortOn.BLOCKED_MEMBER``, and rechecks the run's symlinks
    (``_recheck_links``). The name and collision aborts are raised where they are
    detected, as ``_AbortExtraction``, which passes through ``_handling``.
-4. **The second pass.** ``_resolve_orphans`` completes the hardlinks whose source was
-   not on disk when the first pass reached them.
+4. **The second pass.** ``_fill_held_sources`` puts each held source's bytes in the
+   placeholders the first pass made for hardlinks whose source was not on disk.
 5. **Filesystem helpers.** The destination root, directory creation, atomic landings
    (a temp file, then ``_swap_into_place``) and metadata.
 """
@@ -49,12 +51,9 @@ comments mark its sections):
 from __future__ import annotations
 
 import bisect
-import collections
 import contextlib
 import errno
-import heapq
 import io
-import itertools
 import os
 import posixpath
 import stat
@@ -304,6 +303,15 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
+def _is_windows_directory_link(st: os.stat_result) -> bool:
+    """Whether ``st`` (from ``lstat``) is a Windows directory symlink:
+    ``os.replace`` cannot move a file over one (access denied), so it is removed
+    first, as a directory is."""
+    return stat.S_ISLNK(st.st_mode) and bool(
+        getattr(st, "st_file_attributes", 0) & 0x10  # FILE_ATTRIBUTE_DIRECTORY
+    )
+
+
 def _file_identity(st: os.stat_result) -> tuple[int, int, int, int]:
     """What says a file is still the one this run wrote: its inode, size and mtime."""
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
@@ -344,12 +352,7 @@ class _NameTakenSince(Exception):
     existence check, by another writer into the same folder. The member is skipped
     as the check would have skipped it: the caller reports it ``NOT_OVERWRITTEN``.
     A plain ``Exception``, so the per-member handlers let it through to that caller.
-
-    ``temp`` is the written temp file when the landing was asked to keep it
-    (``_write_file_atomic(keep_taken=True)``): the orphan pass offers it to the next
-    link, as the source's bytes it holds were read for this one."""
-
-    temp: Path | None = None
+    """
 
 
 class _PassedData(io.RawIOBase):
@@ -499,72 +502,42 @@ def _closing_pass(passing: _Closable) -> Generator[None, None, None]:
 
 
 @dataclass
-class _Orphan:
-    """A selected hardlink whose source was not yet on disk, awaiting the second pass.
+class _HeldLink:
+    """A selected hardlink the first pass made as a placeholder: an empty file at its
+    place in archive order, which the second pass fills (``_fill_held_sources``).
 
     ``transformed`` is the policy/filter-transformed copy from the first pass: it supplies
-    the on-disk identity (mode, timestamps) when the source's content is materialized at
-    this link's path (see the ``safe-extraction`` "copy supplies the identity" rule).
-    ``spelled_from`` is ``transformed`` before its disk spelling, when that differs, so
-    an error names it as the first pass would (``_MemberState.spelled_from``).
+    the on-disk identity (mode, timestamps) when the source's content lands at this
+    link's path (see the ``safe-extraction`` "copy supplies the identity" rule).
+    ``path`` is the name it landed on, as the run records it (``source_paths``),
+    ``physical`` where that is, its parents resolved, and ``identity`` the file's
+    ``(st_dev, st_ino)``. ``live`` turns False once anything else goes to ``path``
+    (``_forget_source_path``). The second pass fills the name only while it is live
+    and still holds that file (``_holds_placeholder``), so a later member that
+    replaced it, or re-pointed one of the archive's symlinks on its way, keeps what
+    it put there. ``spelled_from`` is
+    ``transformed`` before its disk spelling, when that differs, so an error names it
+    as the first pass would (``_MemberState.spelled_from``).
     """
 
     result_index: int
+    source_id: int
     original: ArchiveMember
     transformed: ArchiveMember
-    dest_path: Path
-    source: ArchiveMember
+    path: Path
+    physical: Path
+    identity: tuple[int, int]
     spelled_from: ArchiveMember | None = None
-    # The path the link asked for, before the first pass routed it onto the path of
-    # an earlier member of the same name (``_resolve_collision``).
-    requested: Path | None = None
-    # The collision key of this link's name, as the first pass computed it
-    # (``_reserve_orphan``): the second pass releases the reservation under it and
-    # orders the links of one key by it, since a link made in between can change
-    # what the path resolves to. The claim the reservation took the key from, put
-    # back when it is released; and whether a later member replaced the link before
-    # the second pass made it.
-    key: str | None = None
-    previous_claim: _Claim | None = None
-    cancelled: bool = False
-    # Where ``dest_path`` and ``requested`` physically were at the link's place in
-    # archive order, its parent resolved (``_physical_path``), once the first pass
-    # created that parent: the second pass makes the link there, so a later member
-    # that re-points or replaces one of the archive's symlinks on the way does not
-    # move it. ``None`` when the first pass left the parent to the second pass.
-    pinned_dest: Path | None = None
-    pinned_requested: Path | None = None
-    # The earlier held-back link whose name a parent of this link reached in the
-    # first pass. If a later member replaced that link (``cancelled``), the made
-    # run had failed this one at its place, as the name was a file then.
-    parent_holder: _Orphan | None = None
-    # Where the link's name physically was when the first pass reserved it
-    # (``_reserve_orphan``): a directory probe reaches the link only there, however
-    # the archive spells either path (``_reservation_at``).
-    reserved_at: Path | None = None
+    live: bool = True
 
 
 @dataclass
-class _SecondPass:
-    """What the second pass (``_resolve_orphans``) knows about the held-back links
-    while it makes them. ``by_index``, ``by_key`` and ``by_source``: the links that
-    are not cancelled, in archive order, by result index, by first-pass collision
-    key and by source. ``under``: by the collision key of each of their parent
-    directories, computed when the second pass starts (if a parent's key changed
-    since the first pass, the lookup misses and the link is attempted as its
-    source arrives). ``done``: the result indexes attempted. ``waiting_on``: the
-    links that wait for the link of a result index. ``ready``: a heap of the result
-    indexes whose wait ended. ``stash``: a source's content kept in the staging
-    directory for links that wait."""
+class _HeldSource:
+    """A hardlink source with no written copy on disk, and the links made to it as
+    placeholders, in archive order (``_HeldLink``)."""
 
-    by_index: dict[int, _Orphan] = field(default_factory=dict)
-    by_key: dict[str | None, collections.deque[_Orphan]] = field(default_factory=dict)
-    by_source: dict[int, list[_Orphan]] = field(default_factory=dict)
-    under: dict[str | None, collections.deque[_Orphan]] = field(default_factory=dict)
-    done: set[int] = field(default_factory=set)
-    waiting_on: dict[int, list[_Orphan]] = field(default_factory=dict)
-    ready: list[int] = field(default_factory=list)
-    stash: dict[int, Path] = field(default_factory=dict)
+    source: ArchiveMember
+    links: list[_HeldLink] = field(default_factory=list)
 
 
 @dataclass
@@ -678,34 +651,13 @@ class _RunState:
     # Kept so a REPLACE that removes an empty directory this run wrote can revise
     # that result to OVERWRITTEN.
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
-    # Hardlinks whose source was not on disk yet, for the second pass.
-    orphans: list[_Orphan] = field(default_factory=list)
-    # The same links by result index, so a later copy that supersedes one finds it
-    # without a scan (``_take_back_written``).
-    orphan_at: dict[int, _Orphan] = field(default_factory=dict)
-    # The names those hardlinks hold until the second pass makes them, by collision
-    # key (``_reserve_orphan``): a later member meets the name as taken, as it would
-    # had the link been made at its place in archive order.
-    reservations: dict[str, _Orphan] = field(default_factory=dict)
-    # The held-back links that hold a name, by where each of their parent
-    # directories physically is (``_held_dir_key``), in archive order
-    # (``_index_held_parents``). The first pass creates those directories, as the
-    # made links would; a directory that holds only held-back links is empty on disk,
-    # but not in the made run (``_holds_held_link``). Entries whose link no longer
-    # holds its name are dropped when met.
-    held_under: dict[str, collections.deque[_Orphan]] = field(default_factory=dict)
-    # The keys of ``held_under`` by ``_physical_key``, which folds case under every
-    # policy: on a filesystem that folds case, ``D`` names the directory ``d``.
-    held_under_folded: dict[str, set[str]] = field(default_factory=dict)
-    # In the second pass, the result index of the held-back link it attempts now, or
-    # attempted last (``_begin_orphan_attempt``): a name that a later link holds is not
-    # seen (``_reservation_at``), as that link would not be made yet. ``None`` outside
-    # the second pass.
-    attempting: int | None = None
-    # Whether the destination's filesystem folds case, probed the first time a
-    # directory lands on a held-back link's key under another spelling
-    # (``_folds_case``); ``None`` until then.
-    folds_case: bool | None = None
+    # Hardlinks made as placeholders because their source has no written copy on
+    # disk, by source member id, in archive order of each source's first link
+    # (``_write_hardlink``): the second pass fills them (``_fill_held_sources``).
+    held: dict[int, _HeldSource] = field(default_factory=dict)
+    # Each placeholder name, as recorded in ``source_paths``, -> its link, so the
+    # first thing that replaces it marks the link no longer live.
+    placeholder_at: dict[Path, _HeldLink] = field(default_factory=dict)
     # Superseded copies the filesystem refused to remove, by archive name, as in
     # ``_MemberState.parked``: the next member of that name parks them again.
     unremoved: dict[str, dict[Path, int]] = field(default_factory=dict)
@@ -885,7 +837,7 @@ def hardlink_chain_end(
 
 class ExtractionCoordinator:
     """Writes a reader's members safely to disk: one forward pass, then a second pass
-    for orphaned hardlinks when needed. The module docstring maps its sections."""
+    that fills held hardlinks' placeholders when needed. The module docstring maps its sections."""
 
     def __init__(
         self,
@@ -1208,7 +1160,7 @@ class ExtractionCoordinator:
         stream_selector: Callable[[ArchiveMember], bool] | None,
         selected_total: int | None,
     ) -> None:
-        """The forward pass and the orphan second pass, appending into the results.
+        """The forward pass and the held-link second pass, appending into the results.
 
         Split out of ``_run()`` only so an ``abort_on`` trigger raised anywhere inside it
         has one place to unwind to; the results are filled in place because an abort
@@ -1227,36 +1179,49 @@ class ExtractionCoordinator:
         # because ``_closing_pass`` closes it: without that, a caller holding the
         # traceback would keep it (and the unrar child) alive on CPython too.
         listing_damage: list[CorruptionError] = []
-        if reader._REVISES_YIELDED_MEMBERS:
-            self._stage_then_place(reader, stream_selector, copies, listing_damage)
-        else:
-            members_done = 0
-            # Archive name -> result index of the latest member of that name that
-            # went on to be written (or tried). Random access stamps last-entry-wins
-            # before the pass, so a shadowed copy reaches the SUPERSEDED branch of
-            # ``_handle_member`` and is never recorded here. A streaming pass learns
-            # of the later copy only when it arrives; see ``_park_earlier_copies``.
-            current_by_name: dict[str, int] = {}
-            pairs = _until_listing_damage(
-                reader, reader._stream_members(stream_selector, copies), listing_damage
-            )
-            with _closing_pass(pairs):
-                for original, stream in pairs:
-                    self._handle_member(
-                        original,
-                        stream,
-                        current_by_name=current_by_name,
-                        members_done=members_done,
-                    )
-                    members_done += 1
-                    if selected_total is not None and members_done >= selected_total:
-                        break
+        try:
+            if reader._REVISES_YIELDED_MEMBERS:
+                self._stage_then_place(reader, stream_selector, copies, listing_damage)
+            else:
+                members_done = 0
+                # Archive name -> result index of the latest member of that name that
+                # went on to be written (or tried). Random access stamps last-entry-wins
+                # before the pass, so a shadowed copy reaches the SUPERSEDED branch of
+                # ``_handle_member`` and is never recorded here. A streaming pass learns
+                # of the later copy only when it arrives; see ``_park_earlier_copies``.
+                current_by_name: dict[str, int] = {}
+                pairs = _until_listing_damage(
+                    reader,
+                    reader._stream_members(stream_selector, copies),
+                    listing_damage,
+                )
+                with _closing_pass(pairs):
+                    for original, stream in pairs:
+                        self._handle_member(
+                            original,
+                            stream,
+                            current_by_name=current_by_name,
+                            members_done=members_done,
+                        )
+                        members_done += 1
+                        if (
+                            selected_total is not None
+                            and members_done >= selected_total
+                        ):
+                            break
+        except BaseException as exc:
+            if state.held:
+                self._fill_held_after(reader, exc)
+            raise
 
-        # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
-        # excluded. Only populated for a seekable source; forward-only orphans already
-        # failed at the link during the main pass.
-        if state.orphans:
-            self._resolve_orphans(reader)
+        # Core second pass: fill the placeholders of hardlinks whose (re-readable)
+        # source has no written copy. Only populated for a seekable source;
+        # forward-only links already failed at the link during the main pass.
+        if state.held:
+            try:
+                self._fill_held_sources(reader)
+            finally:
+                self._remove_placeholders()
         if listing_damage:
             raise listing_damage[0]
 
@@ -1828,8 +1793,8 @@ class ExtractionCoordinator:
         already made to it is its own directory entry and stays, and its bytes stay
         counted against the byte cap while it holds them. A directory is removed now if
         it is empty; one that other members were written into stays, as their parent,
-        as it would in random access. An orphaned hardlink waiting on the second pass
-        is dropped with the result it would fill. An error recorded on the earlier
+        as it would in random access. A held hardlink's placeholder is parked as a file
+        is, and the second pass no longer fills it. An error recorded on the earlier
         result is dropped with it: random access never tried that copy.
         """
         self._take_back_written(index)
@@ -1865,6 +1830,12 @@ class ExtractionCoordinator:
             and path is not None
             and path in state.written_paths
         ):
+            claim = state.collision_map.get(self._claimed_key(path))
+            # Where the copy was written: ``path`` no longer leads there once a later
+            # member re-pointed one of the archive's symlinks on its way.
+            physical = (
+                claim.physical if claim is not None and claim.path == path else path
+            )
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             on_disk = long_path(path)
@@ -1877,16 +1848,15 @@ class ExtractionCoordinator:
                     state.written_paths.discard(path)
             else:
                 state.written_paths.discard(path)
+                if physical != path and physical != self._physical_path(path):
+                    # The later copy lands where ``path`` leads now, so it does not
+                    # replace this one: the copy is parked where it is, and removed
+                    # with the other parked copies (``_drop_parked_copies``).
+                    path = physical
                 self._current.parked[path] = index
         if index in state.counted:
             member_bytes = state.counted.pop(index)
             state.tracker.refund(0 if content_kept else member_bytes)
-        orphan = state.orphan_at.pop(index, None)
-        if orphan is not None:
-            # Superseded by a later copy: the second pass leaves it out, and a link
-            # under its name meets it as replaced (``_fail_under_a_replaced_holder``).
-            orphan.cancelled = True
-            self._release_reservation_of(orphan)
 
     def _drop_parked_copies(self, name: str, result_index: int | None) -> None:
         """Remove each parked copy of ``name`` unless the member just handled, recorded
@@ -1932,6 +1902,7 @@ class ExtractionCoordinator:
                 state.unremoved.setdefault(name, {})[path] = index
             else:
                 state.written_paths.discard(path)
+                self._forget_source_path(path)
 
     # --- selection / transform -----------------------------------------------------
 
@@ -2374,11 +2345,9 @@ class ExtractionCoordinator:
         own."""
         existed = self._occupied(dest_path)
         callers = self._is_callers_directory(dest_path)
-        if (
-            not self._meet_reservation(transformed, dest_path)
-            or not self._make_room_for_parents(transformed, dest_path)
-            or not self._prepare_destination(transformed, dest_path)
-        ):
+        if not self._make_room_for_parents(
+            transformed, dest_path
+        ) or not self._prepare_destination(transformed, dest_path):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
@@ -2431,11 +2400,9 @@ class ExtractionCoordinator:
         rule across both calls: the parent's own skip check runs before it removes
         anything, and once it has replaced the parent nothing is left at
         ``dest_path`` for ``_prepare_destination`` to skip."""
-        if (
-            not self._meet_reservation(transformed, dest_path)
-            or not self._make_room_for_parents(transformed, dest_path)
-            or not self._prepare_destination(transformed, dest_path, atomic=atomic)
-        ):
+        if not self._make_room_for_parents(
+            transformed, dest_path
+        ) or not self._prepare_destination(transformed, dest_path, atomic=atomic):
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
@@ -2478,8 +2445,8 @@ class ExtractionCoordinator:
         ERROR/SKIP/REPLACE to the prior path so the existing OverwritePolicy machinery
         handles it uniformly, or derive a fresh ``name (N)`` under RENAME. TRUSTED keys
         on the exact name and defers to the local OS (no collision *event*, but RENAME
-        still uses the map to avoid re-deriving names). Shared by the main pass and the
-        orphan second pass so deferred hardlinks honour the map too.
+        still uses the map to avoid re-deriving names). Hardlinks held for the second pass
+        claim their name here too, at their place in archive order.
 
         Under RENAME, a parent of ``requested`` that the caller holds as a file or a
         symlink first moves ``requested`` under a derived name for that parent
@@ -2487,10 +2454,8 @@ class ExtractionCoordinator:
         """
         if self._overwrite is OverwritePolicy.RENAME:
             requested = self._rename_callers_parent(requested)
-        if (
-            transformed.type == MemberType.DIRECTORY
-            and not self._blocks_directory(requested)
-            and self._reservation_at(requested, directory=True) is None
+        if transformed.type == MemberType.DIRECTORY and not self._blocks_directory(
+            requested
         ):
             return requested, None, None
         prior = self._state.collision_map.get(self._collision_key(requested))
@@ -2643,14 +2608,6 @@ class ExtractionCoordinator:
         if blocked is None:
             return True
         return self._prepare_destination(member, blocked)
-
-    @staticmethod
-    def _is_real_directory(path: Path) -> bool:
-        """Whether ``path`` is a directory itself, not a symlink to one."""
-        try:
-            return stat.S_ISDIR(os.lstat(long_path(path)).st_mode)
-        except (OSError, ValueError):
-            return False
 
     def _blocks_directory(self, path: Path) -> bool:
         """Whether ``path`` holds an entry that is not a real directory: a file or a
@@ -2818,8 +2775,8 @@ class ExtractionCoordinator:
     def _register_collision_key(
         self, transformed: ArchiveMember, result: ExtractionResult, result_index: int
     ) -> None:
-        """Claim the key for an actually-written non-directory member so later members (in
-        this pass and the orphan second pass) collide against it.
+        """Claim the key for an actually-written non-directory member so later members
+        collide against it.
 
         The claim carries ``result_index`` so a later REPLACE onto this destination can
         revise this member's result to OVERWRITTEN. Re-claiming a key transfers it: after
@@ -3442,9 +3399,9 @@ class ExtractionCoordinator:
         """Create the hardlink ``transformed`` at ``dest_path`` against a path this run
         wrote its source's content to (``_place_link``).
 
-        A source not on disk yet fails the link on a forward-only stream. On a
-        re-readable one the link is queued for the second pass (``_resolve_orphans``),
-        and its result is a ``FAILED`` placeholder that the second pass revises.
+        A source not on disk fails the link on a forward-only stream. On a re-readable
+        one the link is made as an empty placeholder file, which the second pass fills
+        (``_fill_held_sources``); a source that then fails fails the link.
         """
         source = original.link_target_member
         if source is None and original.link_target_unrecorded:
@@ -3479,550 +3436,381 @@ class ExtractionCoordinator:
                 link_target=source.name,
             )
 
-        if source.member_id in self._state.source_paths:
+        state = self._state
+        if source.member_id not in state.source_paths and state.reader._streaming:
+            # A streaming pass that meets a later copy of a name parks the earlier
+            # copy until the later one is handled (``_park_earlier_copies``). A link
+            # to that earlier copy (``file c``, then ``hard c -> c``) finds its
+            # content there, as random access finds it in the archive.
+            parked = self._parked_copy_of(source.member_id)
+            if parked is not None:
+                self._record_source_path(source.member_id, parked)
+        if source.member_id in state.source_paths:
             # Taken before ``_make_room``: under REPLACE a link can land on one of its
             # own source's paths, which ``_make_room`` then forgets.
-            on_source = dest_path in self._state.source_paths[source.member_id]
+            on_source = dest_path in state.source_paths[source.member_id]
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
             dest_path = self._place_link(
                 source.member_id, dest_path, transformed, on_source=on_source
             )
+            if source.member_id in state.held:
+                # A second name of a placeholder (or of a copy of one, past the
+                # link-count limit or across devices): the second pass fills it too.
+                self._hold(source, result_index, original, transformed, dest_path)
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
             )
 
-        # Source not on disk yet: either it was excluded by the selector/filter, or (in a
-        # crafted/non-TAR-ordered archive) it simply appears later in archive order. The
-        # second pass distinguishes the two: a source written later in this same pass is
-        # just linked against; a truly excluded one is re-read and materialized.
-        if self._state.reader._streaming:
+        # Source not on disk: excluded by the selector or filter, or selected and
+        # not written (a failure, SKIP, a later member that replaced it). A hard
+        # link only names an earlier member, so it will not be written later.
+        if state.reader._streaming:
             # Forward-only: the source's bytes already streamed past — unrecoverable. Per
-            # spec this is a per-member ExtractionError handled by OnError.
+            # spec this is a per-member ExtractionError handled by OnError. The policy
+            # meets the name first, as for any member, so a link that random access
+            # would skip or refuse at a taken name is skipped or refused here too.
+            # REPLACE is left out: it could remove a directory there before the link
+            # fails, and the result is FAILED either way.
+            if self._overwrite is not OverwritePolicy.REPLACE:
+                declined = self._make_room(
+                    original, transformed, dest_path, atomic=True
+                )
+                if declined is not None:
+                    return declined
             raise ExtractionError(
                 "Hardlink source was excluded or replaced by a later member, and "
                 "cannot be recovered on a forward-only stream",
                 link_target=source.name,
                 member_name=transformed.name,
             )
-        # Re-readable: resolve in the second pass. The made link would create its
-        # parent directories here, at its place in archive order, so the held one does
-        # too, and is pinned to where they physically are: a later member at a parent
-        # (a symlink, a file) then meets a directory, as it would meet the made
-        # link's, and a later member that re-points a symlink on the way does not move
-        # the link. A parent that reaches an earlier held link's name is left to the
-        # second pass, which waits for that link (``_orphan_blocker``) and fails this
-        # one against it (``_makedirs``), or against its name if a later member
-        # replaced it (``parent_holder``).
-        if not self._make_room_for_parents(transformed, dest_path):
-            return ExtractionResult(
-                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-            )
-        if (
-            self._overwrite is OverwritePolicy.REPLACE
-            and self._reservation_at(dest_path, directory=False) is None
-            and self._is_real_directory(dest_path)
-        ):
-            # A directory at the link's name: the made link replaced it here, or
-            # failed here if it was not empty, before any member under that name
-            # came. Other entries the second pass replaces as it makes the link.
-            self._prepare_destination(transformed, dest_path, atomic=True)
-        requested = self._current.requested_path
-        orphan = _Orphan(
-            result_index,
-            original,
-            transformed,
-            dest_path,
-            source,
-            spelled_from=self._current.spelled_from,
-            requested=requested,
-        )
-        parent = self._parent(dest_path)
-        component = self._reserved_component(parent)
-        if component is None:
-            self._makedirs(parent, transformed)
-            orphan.pinned_dest = self._physical_path(dest_path)
-            if requested is not None:
-                orphan.pinned_requested = self._physical_path(requested)
-        else:
-            orphan.parent_holder = self._reservation_at(component, directory=True)
-        self._state.orphans.append(orphan)
-        self._state.orphan_at[result_index] = orphan
-        self._reserve_orphan(orphan)
-        return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+        # Re-readable: the link is made here, at its place in archive order, as an
+        # empty file (a placeholder), and the second pass puts the source's bytes in
+        # it (``_fill_held_sources``). A made hard link is a regular file at its name
+        # too, so every later member meets the placeholder as it would meet the made
+        # link, under every overwrite policy: the filesystem answers, so nothing has
+        # to model the link (GNU tar makes its delayed links the same way).
+        declined = self._make_room(original, transformed, dest_path, atomic=True)
+        if declined is not None:
+            return declined
+        dest_path = self._write_placeholder(dest_path, transformed)
+        self._record_source_path(source.member_id, dest_path)
+        self._hold(source, result_index, original, transformed, dest_path)
+        return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
 
-    def _reserve_orphan(self, orphan: _Orphan) -> None:
-        """Hold ``orphan``'s name from its place in archive order until the second
-        pass makes it. First in archive order wins a name, so a later member that
-        collides with it meets the overwrite policy as it would meet the link already
-        made: refused under ``ERROR`` and ``SKIP``, given another name under
-        ``RENAME``, and under ``REPLACE`` it replaces the link, which the second pass
-        then does not make (``_meet_reservation``). Without this, the later member
-        took the name and the link, made after it, was the one refused."""
-        state = self._state
-        key = self._collision_key(orphan.dest_path)
-        orphan.key = key
-        orphan.reserved_at = orphan.pinned_dest or self._physical_path(orphan.dest_path)
-        previous = state.reservations.get(key)
-        if previous is not None:
-            if self._overwrite is not OverwritePolicy.REPLACE:
-                # Two held-back links of one name: the earlier keeps it. Under
-                # ERROR and SKIP the second pass refuses this one against it, and
-                # under RENAME gives it another name, as for the made link.
-                return
-            # Under REPLACE this link replaces the earlier one, as it would the
-            # made link: the earlier one is not made, and this one holds the name
-            # from the claim the earlier one took it from.
-            previous.cancelled = True
-            self._revise_to_overwritten(previous.result_index)
-            orphan.previous_claim = previous.previous_claim
-            self._claim(orphan.dest_path, orphan.result_index)
-            state.reservations[key] = orphan
-            self._index_held_parents(orphan)
-            return
-        orphan.previous_claim = state.collision_map.get(key)
-        self._claim(orphan.dest_path, orphan.result_index)
-        state.reservations[key] = orphan
-        self._index_held_parents(orphan)
-
-    def _held_dir_key(self, path: Path) -> str:
-        """Where the directory ``path`` physically is, relative to the destination
-        and not folded: the key of ``held_under``."""
-        rel = self._physical_rel(path)
-        return self._rel_name(path) if rel is None else rel
-
-    def _index_held_parents(self, orphan: _Orphan) -> None:
-        """Record ``orphan`` under each of its parent directories (``held_under``),
-        where they physically are: the pinned path when the first pass created
-        them."""
-        state = self._state
-        for parent in self._parents_in_dest(orphan.pinned_dest or orphan.dest_path):
-            key = self._held_dir_key(parent)
-            links = state.held_under.get(key)
-            if links is None:
-                links = state.held_under[key] = collections.deque()
-                state.held_under_folded.setdefault(
-                    self._physical_key(parent), set()
-                ).add(key)
-            links.append(orphan)
-
-    def _holds_held_link(self, path: Path) -> bool:
-        """Whether a held-back link that still holds its name lies under the
-        directory ``path`` and would be on disk in the made run: in the second pass,
-        only a link earlier than the one attempted now (``_reservation_at``)."""
-        state = self._state
-        if not state.held_under:
-            return False
-        key = self._held_dir_key(path)
-        keys = [key]
-        spellings = state.held_under_folded.get(self._physical_key(path))
-        if (
-            spellings
-            and (len(spellings) > 1 or key not in spellings)
-            and self._folds_case()
-        ):
-            # On a filesystem that folds case, another case names this directory.
-            keys.extend(each for each in spellings if each != key)
-        reservations = state.reservations
-        for each in keys:
-            links = state.held_under.get(each)
-            if not links:
-                continue
-            while links and (
-                links[0].key is None or reservations.get(links[0].key) is not links[0]
-            ):
-                links.popleft()
-            # In archive order, so the first link that holds its name is the
-            # earliest; in the second pass a later link is not made yet.
-            if links and (
-                state.attempting is None or links[0].result_index <= state.attempting
-            ):
-                return True
-        return False
-
-    def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
-        """Apply the overwrite policy to a held-back link's name that ``member`` lands
-        on (``_reserve_orphan``), as ``_prepare_destination`` would to the link once
-        made; False to skip ``member``. Under ``REPLACE`` the link is replaced: its
-        result and the one it would have replaced become OVERWRITTEN, and the second
-        pass leaves it out. A directory meets the link only where the filesystem
-        would find the made link (``_reservation_at``), as directories take no part
-        in the collision map."""
-        state = self._state
-        if not state.reservations:
-            return True
-        orphan = self._reservation_at(
-            dest_path, directory=member.type is MemberType.DIRECTORY
-        )
-        if orphan is None:
-            return True
-        key = self._collision_key(dest_path)
-        if self._overwrite is OverwritePolicy.ERROR:
-            raise self._already_exists(dest_path, member)
-        if self._overwrite is OverwritePolicy.SKIP:
-            return False
-        if self._overwrite is OverwritePolicy.REPLACE:
-            del state.reservations[key]
-            orphan.cancelled = True
-            self._revise_to_overwritten(orphan.result_index)
-            if orphan.previous_claim is not None:
-                self._revise_to_overwritten(orphan.previous_claim.result_index)
-        return True
-
-    def _reservation_at(
-        self, path: Path, *, directory: bool, seen_by: int | None = None
-    ) -> _Orphan | None:
-        """The held-back link whose name ``path`` reaches (``_reserve_orphan``), or
-        ``None``. A non-directory reaches it by collision key, as it would reach the
-        made link's claim. A directory, or a parent a member implies, reaches it only
-        where an ``lstat`` would find the made link: where its name physically is,
-        however the archive spells either path, or under another case on a filesystem
-        that folds case (``_folds_case``). On a case-sensitive filesystem ``H/`` beside
-        the link ``h`` is another entry, as it is beside a made one.
-
-        In the second pass, a link later in archive order than the held-back link of
-        result index ``seen_by`` (by default the one attempted now,
-        ``state.attempting``) is not reached: made in archive order, it would not be
-        on disk yet."""
-        state = self._state
-        reservations = state.reservations
-        if not reservations:
-            return None
-        orphan = reservations.get(self._collision_key(path))
-        if orphan is None:
-            return None
-        if seen_by is None:
-            seen_by = state.attempting
-        if seen_by is not None and orphan.result_index > seen_by:
-            return None
-        if not directory or orphan.reserved_at == self._physical_path(path):
-            return orphan
-        return orphan if self._folds_case() else None
-
-    def _folds_case(self) -> bool:
-        """Whether the destination's filesystem finds a name under another case,
-        probed once a run with a directory created and removed under the
-        destination (as ``tests.conftest.case_sensitive`` does). Only a directory
-        that lands on a held-back link's key under another spelling asks, so a run
-        without one never probes. A probe that cannot be made counts as
-        case-sensitive: the directory is then written, as it is beside a made link
-        on such a filesystem."""
-        state = self._state
-        if state.folds_case is None:
-            folds = False
-            with contextlib.suppress(OSError, ValueError):
-                probe = state.dest / f"Archivey-Case-Probe-{uuid.uuid4().hex}"
-                os.mkdir(long_path(probe))
-                try:
-                    folds = os.path.lexists(
-                        long_path(probe.with_name(probe.name.swapcase()))
-                    )
-                finally:
-                    os.rmdir(long_path(probe))
-            state.folds_case = folds
-        return state.folds_case
-
-    def _release_reservation_of(self, orphan: _Orphan) -> None:
-        """Drop the name ``orphan`` holds, if any, for a link taken back
-        (``_take_back_written``): the claim it took the name from gets it back, so a
-        later copy of the same name meets what the link would have replaced, not the
-        link."""
-        state = self._state
-        key = orphan.key
-        if key is not None and state.reservations.get(key) is orphan:
-            del state.reservations[key]
-            self._give_back_name(key, orphan)
-
-    def _give_back_name(self, key: str, orphan: _Orphan) -> None:
-        """Put back the claim ``orphan``'s reservation took ``key`` from, unless a
-        later member has claimed ``key`` since (``REPLACE``). The rename counters
-        start over, as ``_release_claim`` starts them: the name the link held, or one
-        it was renamed to, can be the first free one for a later RENAME again."""
-        state = self._state
-        collision_map = state.collision_map
-        claim = collision_map.get(key)
-        if claim is not None and claim.result_index == orphan.result_index:
-            del collision_map[key]
-            if orphan.previous_claim is not None:
-                collision_map[key] = orphan.previous_claim
-            state.rename_next.clear()
-
-    def _release_reservations(self) -> None:
-        """Give each held-back link's name back to the claim it took it from: the
-        second pass has ended, and the links it did not make hold no name."""
-        state = self._state
-        for key, orphan in state.reservations.items():
-            self._give_back_name(key, orphan)
-        state.reservations.clear()
-
-    def _begin_orphan_attempt(self, orphan: _Orphan) -> None:
-        """Start the second pass's attempt of ``orphan``: give its name back to the
-        claim it took it from, so the link is resolved as the first pass would have
-        resolved it, and record it as the link attempted (``state.attempting``).
-        The names of the links not made yet stay held. An earlier link's name is
-        met as the made link would be (``_meet_reservation``, ``_makedirs``); a
-        later link's name is not seen, as that link would not be made yet
-        (``_reservation_at``)."""
-        state = self._state
-        state.attempting = orphan.result_index
-        key = orphan.key
-        if key is not None and state.reservations.get(key) is orphan:
-            del state.reservations[key]
-            self._give_back_name(key, orphan)
-
-    # --- orphan (second pass) ------------------------------------------------------
-
-    def _resolve_orphans(self, reader: BaseArchiveReader) -> None:
-        """The second pass: complete each hardlink the first pass queued as an orphan,
-        and revise its placeholder result.
-
-        Each link is attempted with the outcome a link made at its place in archive
-        order gives. Two links interact when they have the same name, or when the
-        name of one is a parent of the other's path (``_orphan_blocker``): the later
-        one waits until the earlier one has been attempted, whatever order their
-        sources come in, and it does not see a name that a later link holds
-        (``_reservation_at``). Links that do not interact are attempted as their
-        sources arrive. So under ``OnError.STOP`` the run stops at the member where
-        the made run stops, but a later link that does not interact with that
-        member can already be made.
-
-        The links of a source the first pass wrote after them are linked against it.
-        For each other source, one more pass over the archive writes its content at
-        the first of its links that takes it and is not waiting
-        (``_materialize_orphan_source``), and the others are linked against that.
-        When no such link takes it and links are waiting, the content is kept in the
-        staging directory until one of them lands it.
-        """
-        self._state.rename_next.clear()
-        second = _SecondPass()
+    def _write_placeholder(self, dest_path: Path, member: ArchiveMember) -> Path:
+        """Land an empty, private file at ``dest_path`` as a held link's placeholder
+        (``_write_hardlink``), as a FILE lands (``_swap_into_place``), and return the
+        name it landed on. The second pass replaces it with a file that carries the
+        link's metadata, so none is applied here."""
+        fd, tmp = self._new_temp_file(self._parent(dest_path))
+        os.close(fd)
         try:
-            self._resolve_orphans_in_order(reader, second)
-        finally:
-            for stashed in second.stash.values():
-                with contextlib.suppress(OSError):
-                    os.unlink(long_path(stashed))
-            self._state.attempting = None
-            self._release_reservations()
+            return self._swap_into_place(tmp, dest_path, member, fresh=True)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(long_path(tmp))
+            raise
 
-    def _resolve_orphans_in_order(
-        self, reader: BaseArchiveReader, second: _SecondPass
-    ) -> None:
-        """:meth:`_resolve_orphans`, while the links not made yet hold their names
-        (``_begin_orphan_attempt``)."""
-        state = self._state
-        for orphan in state.orphans:
-            if orphan.cancelled:
-                continue
-            second.by_index[orphan.result_index] = orphan
-            second.by_key.setdefault(orphan.key, collections.deque()).append(orphan)
-            second.by_source.setdefault(orphan.source.member_id, []).append(orphan)
-            for parent in self._parents_in_dest(orphan.dest_path):
-                second.under.setdefault(
-                    self._collision_key(parent), collections.deque()
-                ).append(orphan)
-        if not second.by_index:
-            return
-
-        # A source that was written LATER in the first pass (a link preceding its source in
-        # archive order) is already on disk: just link against it — re-reading its bytes
-        # here would create an independent inode and double-count against the bomb limits.
-        needed = [
-            source_id
-            for source_id in second.by_source
-            if source_id not in state.source_paths
-        ]
-        for orphan in second.by_index.values():
-            if orphan.source.member_id in state.source_paths:
-                self._try_orphan(second, orphan)
-                self._drain_orphans(second)
-        if needed:
-            self._materialize_orphan_sources(reader, second, needed)
-        # Every link is attempted by now: a waiting link waits on one not attempted
-        # yet, and the earliest of those never waits. This is the backstop.
-        for orphan in second.by_index.values():
-            if orphan.result_index not in second.done:
-                self._attempt_orphan(second, orphan)
-
-    def _materialize_orphan_sources(
-        self, reader: BaseArchiveReader, second: _SecondPass, needed: list[int]
-    ) -> None:
-        """One more pass over the archive for the sources ``needed``: each one's
-        content goes to its links (``_materialize_orphan_source``)."""
-        # One second forward pass over the (re-readable) source. Driven through the
-        # public stream_members() with the needed sources as an identity selector, so
-        # unneeded members are never surfaced (or opened — the streams are lazy).
-        # Built here for the same reason as the first pass's identity selector:
-        # these entries are the coordinator's, so an unmatched one is not reported
-        # as MEMBER_SELECTOR_UNMATCHED.
-        left = set(needed)
-        needed_sources = CollectionSelector(
-            [second.by_source[source_id][0].source for source_id in needed],
-            record=False,
-        )
-        # Closed on the way out, so an error out of the loop body closes the open
-        # member stream (and any unrar child) now, not when the pass is collected.
-        passing = reader.stream_members(needed_sources)
-        with _closing_pass(passing):
-            for member, stream in passing:
-                links = [
-                    orphan
-                    for orphan in second.by_source[member.member_id]
-                    if orphan.result_index not in second.done
-                ]
-                try:
-                    self._materialize_orphan_source(member, stream, links, second)
-                finally:
-                    self._close(stream)
-                self._drain_orphans(second)
-                left.discard(member.member_id)
-                if not left:
-                    break  # every orphaned source is materialized; stop opening members
-
-        # Any orphan whose source never reappeared (should not happen for a re-readable
-        # source) is a per-member failure.
-        for source_id in needed:
-            if source_id not in left:
-                continue
-            group = second.by_source[source_id]
-            name = group[0].source.name
-            err = ExtractionError(
-                "Hardlink source was not found on the second pass", member_name=name
-            )
-            self._record_failure_group(group, err)
-            for orphan in group:
-                self._orphan_done(second, orphan)
-            self._stop_or_log(
-                err,
-                err,
-                ExtractionStatus.FAILED,
-                kind="orphaned hardlink source",
-                name=name,
-            )
-            self._drain_orphans(second)
-
-    def _orphan_request(self, orphan: _Orphan) -> Path:
-        """The path the second pass resolves ``orphan`` from. Under ERROR and SKIP
-        that is the path it asked for: the first pass routed it onto an earlier
-        member of its name only to refuse it there, and that member may have failed
-        since, so the name is resolved again against what the run holds now. Under
-        REPLACE and RENAME it is the path the first pass gave it: the spelling it
-        replaces, or the name that pass already claimed for it."""
-        if orphan.requested is None or self._overwrite not in (
-            OverwritePolicy.ERROR,
-            OverwritePolicy.SKIP,
-        ):
-            return orphan.pinned_dest or orphan.dest_path
-        return orphan.pinned_requested or orphan.requested
-
-    def _spelled_result(
-        self, orphan: _Orphan, result: ExtractionResult
-    ) -> ExtractionResult:
-        """``result`` with the path the archive spelled, as the made link reports
-        it: the second pass makes a pinned link under its physical parent
-        (``pinned_dest``), which can be another spelling of the same directory."""
-        pinned = orphan.pinned_dest
-        path = result.path
-        if pinned is None or path is None or path.parent != pinned.parent:
-            return result
-        spelled = orphan.dest_path.parent / path.name
-        return result if spelled == path else copy_with(result, path=spelled)
-
-    def _fail_under_a_replaced_holder(self, orphan: _Orphan) -> None:
-        """Raise for ``orphan`` when a parent of it reached an earlier held-back
-        link's name in the first pass and a later member has replaced that link
-        since (``parent_holder``): the made link failed at its place, as that name
-        was a file there. A holder the second pass attempted and could not make
-        does not fail it, as the made holder failed at its place too."""
-        holder = orphan.parent_holder
-        if holder is not None and holder.cancelled:
-            raise ExtractionError(
-                f"Cannot create {quoted(orphan.transformed.name)}: "
-                f"{quoted(self._rel_name(holder.dest_path))} is a "
-                "non-directory already extracted from this archive",
-                member_name=orphan.transformed.name,
-            )
-
-    def _orphan_blocker(self, second: _SecondPass, orphan: _Orphan) -> _Orphan | None:
-        """The earlier held-back link that ``orphan`` has to wait for, or ``None``.
-        Made in archive order, that link would be on disk when ``orphan`` is made.
-
-        It is the earliest link not attempted yet of one of these:
-        - the links of the same name;
-        - the links whose path has a parent of that name (``under``), as ``orphan``
-          made first would be in the way of their parent directory;
-        - a link that holds the name of a parent of ``orphan``
-          (``_reservation_at``, as ``_makedirs`` meets it).
-        A link later in archive order never blocks ``orphan``, so no link waits on
-        itself through another."""
-        for queue in (second.by_key[orphan.key], second.under.get(orphan.key)):
-            if not queue:
-                continue
-            while queue and queue[0].result_index in second.done:
-                queue.popleft()
-            if queue and queue[0].result_index < orphan.result_index:
-                return queue[0]
-        if not self._state.reservations:
-            return None
-        for parent in self._parents_in_dest(orphan.dest_path):
-            holder = self._reservation_at(
-                parent, directory=True, seen_by=orphan.result_index
-            )
-            if holder is not None and holder is not orphan:
-                return holder
+    def _parked_copy_of(self, source_id: int) -> Path | None:
+        """The parked earlier copy of the current name that holds ``source_id``'s
+        content (``_take_back_written`` forgot it as a source), or ``None``."""
+        forgotten = self._state.forgotten_source
+        for path in self._current.parked:
+            if forgotten.get(path) == source_id and _is_regular_file(path):
+                return path
         return None
 
-    def _parents_in_dest(self, path: Path) -> list[Path]:
-        """The parents of ``path`` below the destination root, nearest first; none
-        for a path outside it."""
-        dest = self._state.dest
-        if not path.is_relative_to(dest):
-            return []
-        return list(itertools.takewhile(lambda p: p != dest, path.parents))
+    def _hold(
+        self,
+        source: ArchiveMember,
+        result_index: int,
+        original: ArchiveMember,
+        transformed: ArchiveMember,
+        landed: Path,
+    ) -> None:
+        """Record ``landed`` as one name of ``source``'s placeholder, for the second
+        pass to fill (``_fill_held_sources``): where it physically is, and the file it
+        names, so a later member that re-points one of the archive's symlinks on its
+        way or replaces it does not make the second pass write elsewhere."""
+        physical = self._physical_path(landed)
+        try:
+            st = os.lstat(long_path(physical))
+        except OSError:
+            # The file was landed a moment ago, so this is rare. The link fails
+            # (``_handling``): the empty file it landed is removed and no longer
+            # offered as the source's path, so no empty file stands for it and no
+            # later link is made to it unfilled.
+            self._forget_source_path(landed)
+            with contextlib.suppress(OSError):
+                os.unlink(long_path(physical))
+            self._state.written_paths.discard(landed)
+            raise
+        held = self._state.held.setdefault(source.member_id, _HeldSource(source))
+        link = _HeldLink(
+            result_index,
+            source.member_id,
+            original,
+            transformed,
+            landed,
+            physical,
+            (st.st_dev, st.st_ino),
+            spelled_from=self._current.spelled_from,
+        )
+        held.links.append(link)
+        self._state.placeholder_at[landed] = link
 
-    def _try_orphan(self, second: _SecondPass, orphan: _Orphan) -> None:
-        """Attempt ``orphan`` if no earlier link holds it back and its source's
-        content is at hand; else leave it to wait for that link, or for its source."""
-        blocker = self._orphan_blocker(second, orphan)
-        if blocker is not None:
-            second.waiting_on.setdefault(blocker.result_index, []).append(orphan)
+    def _holds_placeholder(self, link: _HeldLink) -> bool:
+        """Whether ``link``'s name still holds the placeholder it was made as: a later
+        member has not replaced it, nor taken it back. Both checks are needed. Every
+        replacement forgets the name as a source (``_forget_source_path``), which
+        ends ``live``, but a member spelled through a symlink a later member
+        re-pointed does not name it. The identity alone can match a new file that
+        reused the inode of a placeholder removed since; that file is then not
+        empty, unless its content is."""
+        return link.live and self._is_placeholder_file(link)
+
+    @staticmethod
+    def _is_placeholder_file(link: _HeldLink) -> bool:
+        """Whether ``link.physical`` is the empty file made as ``link``'s placeholder."""
+        try:
+            st = os.lstat(long_path(link.physical))
+        except OSError:
+            return False
+        return (
+            stat.S_ISREG(st.st_mode)
+            and (st.st_dev, st.st_ino) == link.identity
+            and st.st_size == 0
+        )
+
+    def _fill_held_sources(self, reader: BaseArchiveReader) -> None:
+        """The second pass: read each held source once and put its bytes in every
+        placeholder name of it that is still there, in archive order of the sources.
+
+        The first pass made each such link as an empty file at its place in archive
+        order (``_write_hardlink``), so every later member met it as it meets a made
+        link, and nothing here changes a result except to fail a link. A placeholder
+        a later member replaced holds nothing to fill. A placeholder this pass cannot
+        fill is removed, so no empty file stands for a link that failed
+        (``_remove_placeholders``, also on the way out of a stopped run)."""
+        state = self._state
+        needed = {
+            source_id: held
+            for source_id, held in state.held.items()
+            if any(self._holds_placeholder(link) for link in held.links)
+        }
+        if not needed:
             return
-        source_id = orphan.source.member_id
-        if source_id in self._state.source_paths or source_id in second.stash:
-            self._attempt_orphan(second, orphan)
-
-    def _attempt_orphan(self, second: _SecondPass, orphan: _Orphan) -> None:
-        """Make ``orphan`` from its source's content on disk, or from the content the
-        second pass keeps for it, and record it as attempted."""
-        source_id = orphan.source.member_id
-        stashed = second.stash.pop(source_id, None)
-        if source_id in self._state.source_paths or stashed is None:
-            if stashed is not None:
-                second.stash[source_id] = stashed
-            self._link_orphan(orphan, source_id)
-        else:
-            _placed, stashed = self._materialize_at(
-                orphan.source, None, [orphan], 0, stashed
+        # One more forward pass over the (re-readable) source, through the public
+        # stream_members() with the held sources as an identity selector, so other
+        # members are never opened. Built here for the same reason as the first
+        # pass's identity selector: these entries are the coordinator's, so an
+        # unmatched one is not reported as MEMBER_SELECTOR_UNMATCHED.
+        left = dict(needed)
+        selector = CollectionSelector(
+            [held.source for held in needed.values()], record=False
+        )
+        passing = reader.stream_members(selector)
+        with _closing_pass(passing):
+            for member, stream in passing:
+                held = left.pop(member.member_id, None)
+                try:
+                    if held is not None:
+                        self._fill_held_source(held, stream)
+                finally:
+                    self._close(stream)
+                if not left:
+                    break
+        for held in left.values():
+            # A re-readable source always comes back; this is the backstop.
+            error = ExtractionError(
+                "Hardlink source was not found on the second pass",
+                member_name=held.source.name,
             )
-            if stashed is not None:
-                second.stash[source_id] = stashed
-        self._orphan_done(second, orphan)
+            self._fail_held_source(held, error)
 
-    def _orphan_done(self, second: _SecondPass, orphan: _Orphan) -> None:
-        """Record ``orphan`` as attempted: the links waiting on it are tried again."""
-        second.done.add(orphan.result_index)
-        for waiting in second.waiting_on.pop(orphan.result_index, ()):
-            heapq.heappush(second.ready, waiting.result_index)
+    def _fill_held_after(self, reader: BaseArchiveReader, exc: BaseException) -> None:
+        """Fill the placeholders made before ``exc`` stopped the first pass, as the
+        made run made those links before it stopped there, then remove the ones left
+        empty. An interrupt (not an ``Exception``) fills nothing. A failure of the
+        fill rides on ``exc`` as a note: ``exc`` is the run's error."""
+        try:
+            if isinstance(exc, Exception):
+                self._fill_held_sources(reader)
+        except Exception as fill_exc:  # noqa: BLE001  # kept as a note, not raised
+            exc.add_note(
+                "Filling the hard links made before the stop also failed: "
+                + exception_detail(fill_exc, with_type=True)
+            )
+        finally:
+            self._remove_placeholders()
 
-    def _drain_orphans(self, second: _SecondPass) -> None:
-        """Try again, in archive order, each link whose wait has ended."""
-        while second.ready:
-            orphan = second.by_index[heapq.heappop(second.ready)]
-            if orphan.result_index not in second.done:
-                self._try_orphan(second, orphan)
+    def _fill_held_source(self, held: _HeldSource, stream: BinaryIO | None) -> None:
+        """Fill the placeholders of ``held`` with the source's bytes from ``stream``.
+
+        The first name still holding the placeholder that takes the content gets it,
+        written as any file is (a temp sibling, then a rename onto the placeholder),
+        with that link's metadata. The other names are then linked to it, each by its
+        own rename. Two kinds of failure are the source's, and fail every name not yet
+        made as one group (``_fail_held_source``): the refusal of the source's recorded
+        size, and any failure once the copy into the temp file begins. A failure
+        before the copy (a directory that refuses the temp file) is that link's own,
+        and the content moves to the next name. So is a failure linking another name."""
+        live = [link for link in held.links if self._holds_placeholder(link)]
+        if not live:
+            return
+        source = held.source
+        pending = list(live)
+        source_error: ArchiveyError | OSError | None = None
+        # Whether a failure now is the source's rather than the current link's: the
+        # recorded-size check runs first, and so does the copy from its first read.
+        source_fails = True
+
+        def copy_begins() -> None:
+            nonlocal source_fails
+            source_fails = True
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            nonlocal source_error
+            # Nothing the second pass runs raises FilterRejectionError.
+            assert failed.status is ExtractionStatus.FAILED
+            if source_fails:
+                source_error = error
+                return True  # stopped on or logged below, under the source's name
+            link = pending.pop(0)
+            self._revise_result(link.result_index, failed)
+            self._remove_placeholder(link)
+            return False  # this link's own failure, stopped on or logged as one
+
+        try:
+            # The links were counted as entries when their placeholders were placed;
+            # the source itself is not an entry on disk.
+            self._state.tracker.start_member(source, entry=False)
+            self._current = _MemberState(
+                requested_path=live[0].physical, spelled_from=live[0].spelled_from
+            )
+            with self._handling(live[0].original, kind="hardlink", record=record):
+                self._state.tracker.check_recorded_size()
+            source_fails = False
+            for link in pending:
+                self._forget_source_path(link.path)
+            landed: Path | None = None
+            while landed is None and pending and source_error is None:
+                first = pending[0]
+                current = self._current = _MemberState(
+                    requested_path=first.physical, spelled_from=first.spelled_from
+                )
+                # A placeholder counts as free, as a parked copy does, so the
+                # landings replace it under every overwrite policy.
+                current.parked = {link.physical: link.result_index for link in pending}
+                with self._handling(first.original, kind="hardlink", record=record):
+                    landed = self._write_file_atomic(
+                        stream,
+                        first.physical,
+                        first.transformed,
+                        copy_begins=copy_begins,
+                    )
+                    self._record_source_path(source.member_id, landed)
+                    pending.pop(0)
+            if source_error is not None:
+                self._fail_held_source(held, source_error, live=pending)
+                return
+            for link in pending:
+                self._link_held(source.member_id, link)
+        except BaseException:
+            # An error ``_handling`` lets through (a stop on a link's failure, an
+            # always-stop limit, an interrupt) leaves placeholders that are no longer
+            # ``live``, as they were forgotten as sources above, so the run's own
+            # clean-up skips them. Each name that still holds its empty placeholder is
+            # removed here; a filled or linked name no longer matches and stays.
+            for link in live:
+                self._remove_placeholder(link)
+            raise
+        self._current.parked = {}
+
+    def _link_held(self, source_id: int, link: _HeldLink) -> None:
+        """Link ``link``'s placeholder name to its source's filled file, by a rename
+        onto the placeholder (``_place_link``). On failure the link alone fails, and
+        its empty placeholder is removed."""
+        self._current = _MemberState(
+            requested_path=link.physical, spelled_from=link.spelled_from
+        )
+        self._current.parked = {link.physical: link.result_index}
+
+        def record(_error: object, failed: ExtractionResult) -> bool:
+            # A single link's failure, not a source fan-out: no group id.
+            self._revise_result(link.result_index, failed)
+            self._remove_placeholder(link)
+            return False
+
+        with self._handling(link.original, kind="hardlink", record=record):
+            self._place_link(
+                source_id, link.physical, link.transformed, on_source=False
+            )
+        self._current.parked = {}
+
+    def _fail_held_source(
+        self,
+        held: _HeldSource,
+        error: ArchiveyError | OSError,
+        *,
+        live: list[_HeldLink] | None = None,
+    ) -> None:
+        """The source of ``held`` failed: remove its placeholders, record each of
+        their links as FAILED in one group, and stop or log under the source's name."""
+        if live is None:
+            live = [link for link in held.links if self._holds_placeholder(link)]
+        for link in live:
+            self._remove_placeholder(link)
+        self._record_failure_group(live, error)
+        self._current = _MemberState()
+        self._stop_or_log(
+            error,
+            error,
+            ExtractionStatus.FAILED,
+            kind="orphaned hardlink source",
+            name=held.source.name,
+        )
+
+    def _remove_placeholder(self, link: _HeldLink) -> None:
+        """Remove ``link``'s empty placeholder, if its name still holds it, and give
+        the name back: the link was not made."""
+        state = self._state
+        if not self._is_placeholder_file(link):
+            # Something else is there now: it is not this link's to remove.
+            return
+        try:
+            with self._readonly_cleared(link.physical, ours=True):
+                os.unlink(long_path(link.physical))
+        except OSError as exc:
+            self._rebase_os_error(exc)
+            logger.warning(
+                "Could not remove the empty file left for hardlink %r: %s",
+                link.original.name,
+                exc,
+            )
+            return
+        self._forget_source_path(link.path)
+        state.written_paths.discard(link.physical)
+        prior = state.results[link.result_index].path
+        if prior is not None:
+            state.written_paths.discard(prior)
+            claim = state.collision_map.get(self._claimed_key(prior))
+            if claim is not None and claim.result_index == link.result_index:
+                self._release_claim(prior)
+
+    def _remove_placeholders(self) -> None:
+        """Remove every placeholder still empty on the way out of a run that stopped
+        before the second pass filled it: its link was not made, so no empty file
+        stands for it. Its result stays the one the run recorded."""
+        for held in self._state.held.values():
+            for link in held.links:
+                if self._holds_placeholder(link):
+                    self._remove_placeholder(link)
 
     def _record_failure_group(
-        self, group: list[_Orphan], error: ArchiveyError | OSError
+        self, group: list[_HeldLink], error: ArchiveyError | OSError
     ) -> None:
         """Record one failed hardlink source as N FAILED results sharing a group id.
 
@@ -4031,14 +3819,18 @@ class ExtractionCoordinator:
         partial fill can never look like a group."""
         group_id = uuid.uuid4().hex
         group_size = len(group)
-        for orphan in group:
-            self._revise_result(
-                orphan.result_index,
+        for link in group:
+            prior = self._state.results[link.result_index]
+            self._set_result(
+                link.result_index,
                 ExtractionResult(
-                    orphan.original,
+                    link.original,
                     None,
                     ExtractionStatus.FAILED,
                     error,
+                    presented_name=prior.presented_name,
+                    rewrites=prior.rewrites,
+                    requested_path=prior.requested_path,
                     failure_group_id=group_id,
                     failure_group_size=group_size,
                 ),
@@ -4094,311 +3886,6 @@ class ExtractionCoordinator:
                 self._state.members_extracted += step
             elif status is ExtractionStatus.BLOCKED:
                 self._state.members_blocked += step
-
-    def _materialize_orphan_source(
-        self,
-        source_member: ArchiveMember,
-        stream: BinaryIO | None,
-        links: list[_Orphan],
-        second: _SecondPass,
-    ) -> None:
-        """Write the source's content at the first of ``links`` that takes it and is
-        not waiting on an earlier link, and link the others that are not waiting
-        against it. When none of them takes it and some links wait, the content is
-        kept in the staging directory (``second.stash``) for them. A failure of the
-        source fails every link in ``links`` from the one that met it."""
-        # Count the recovered source bytes toward the cumulative/ratio guards too.
-        self._state.tracker.start_member(source_member)
-        ready: list[_Orphan] = []
-        waiting: list[_Orphan] = []
-        for orphan in links:
-            (waiting if self._orphan_blocker(second, orphan) else ready).append(orphan)
-        group = ready + waiting
-        source_id = source_member.member_id
-
-        # The excluded source's content is written to the FIRST link whose destination the
-        # OverwritePolicy allows writing, never to the source's own name. A link the
-        # policy declines (SKIP over an existing entry), or one that fails before the
-        # copy of the source's bytes begins (ERROR over an existing entry, a REPLACE
-        # that cannot remove what is there, a temp file its directory refuses), records
-        # that outcome as its own, and the content moves on to the next link.
-        #
-        # A link whose name another writer takes between the check and the landing,
-        # under SKIP, is skipped once the source's bytes are read into its temp file
-        # (``_NameTakenSince``). That file is then the content: each later link is
-        # offered it, as a staged file, rather than the spent stream.
-        leftover: Path | None = None
-        try:
-            for index, orphan in enumerate(ready):
-                placed, leftover = self._materialize_at(
-                    source_member, stream, group, index, leftover
-                )
-                if placed is None:
-                    # The source failed: every link from this one on is in its group.
-                    for failed in group[index:]:
-                        self._orphan_done(second, failed)
-                    return
-                self._orphan_done(second, orphan)
-                if placed:
-                    # Each link after the one that took the content is its own
-                    # attempt: its failure is that link's, not the source's.
-                    rest = ready[index + 1 :]
-                    self._link_orphan_group(rest, source_id)
-                    for linked in rest:
-                        self._orphan_done(second, linked)
-                    break
-            else:
-                if waiting:
-                    if leftover is None:
-                        leftover = self._stash_orphan_source(
-                            source_member, stream, waiting, second
-                        )
-                    if leftover is not None:
-                        second.stash[source_id] = leftover
-                        leftover = None
-        finally:
-            if leftover is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(long_path(leftover))
-        for orphan in waiting:
-            if orphan.result_index not in second.done:
-                self._try_orphan(second, orphan)
-
-    def _stash_orphan_source(
-        self,
-        source_member: ArchiveMember,
-        stream: BinaryIO | None,
-        waiting: list[_Orphan],
-        second: _SecondPass,
-    ) -> Path | None:
-        """Keep the source's content in the staging directory for the links that
-        wait (``_materialize_orphan_source``); ``None`` when the source failed, which
-        fails every one of them as one group."""
-        source_error: ArchiveyError | OSError | None = None
-
-        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
-            nonlocal source_error
-            assert failed.status is ExtractionStatus.FAILED
-            self._record_failure_group(waiting, error)
-            source_error = error
-            return True  # stopped on or logged below, under the source's name
-
-        first = waiting[0]
-        self._current = _MemberState(
-            requested_path=first.dest_path, spelled_from=first.spelled_from
-        )
-        stashed: Path | None = None
-        with self._handling(first.original, kind="hardlink", record=record):
-            stashed = self._write_to_staging(
-                stream, f"orphan-{source_member.member_id}", None
-            )
-        if source_error is None:
-            return stashed
-        for orphan in waiting:
-            self._orphan_done(second, orphan)
-        self._stop_or_log(
-            source_error,
-            source_error,
-            ExtractionStatus.FAILED,
-            kind="orphaned hardlink source",
-            name=source_member.name,
-        )
-        return None
-
-    def _materialize_at(
-        self,
-        source_member: ArchiveMember,
-        stream: BinaryIO | None,
-        group: list[_Orphan],
-        index: int,
-        leftover: Path | None,
-    ) -> tuple[bool | None, Path | None]:
-        """Try to write the source's content at link ``group[index]``, as one step of
-        ``_materialize_orphan_source``: True when it took the content, False when the
-        link was declined or failed on its own, ``None`` when the source failed; and
-        the temp file that holds the content read for an earlier link, or ``None``.
-
-        ``leftover``, when set, is that file: an earlier link read the source into it
-        and was skipped at the landing (``_NameTakenSince``). This link lands it as a
-        staged file instead of reading ``stream``, so nothing this link does is the
-        source's failure, and the file is handed back unless this link took it.
-
-        The content is written atomically (temp, then ``_swap_into_place``), same as a
-        normal FILE, so a failure while re-reading does not clobber an existing entry.
-        The link's transformed copy supplies the on-disk mode and timestamps: hardlinks
-        share one inode, so the metadata goes on the file that carries the content. The
-        destination is O2-collision-resolved against the map the main pass built (a
-        deferred link's key may have been claimed after it was orphaned).
-
-        Two kinds of failure are the source's, and fail this link and every later
-        one as one group: the refusal of the source's recorded size
-        (``check_recorded_size``), which every link would meet, and any failure from
-        the moment the copy into the link's temp file begins, as the source's bytes
-        are then being read and cannot be offered to another link. Every other
-        failure (collision resolution, ``_make_room``, creating the temp file) is
-        this link's own, as for any other link (``_link_orphan``)."""
-        orphan = group[index]
-        self._begin_orphan_attempt(orphan)
-        current = self._current = _MemberState(
-            requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
-        )
-        # True while a failure is the source's (see the docstring).
-        source_step = False
-        source_error: ArchiveyError | OSError | None = None
-
-        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
-            nonlocal source_error
-            # Nothing the second pass runs raises FilterRejectionError.
-            assert failed.status is ExtractionStatus.FAILED
-            if not source_step:
-                # This link's own failure, not a source fan-out: no group id.
-                self._revise_result(orphan.result_index, failed)
-                return False
-            # One failed source, N failed links: the fan-out is recorded on the
-            # results themselves, so a caller can tell N separate failures from one
-            # failure seen N times without joining against a diagnostic. Earlier
-            # links keep their own results.
-            self._record_failure_group(group[index:], error)
-            source_error = error
-            return True  # stopped on or logged below, under the source's name
-
-        def copy_begins() -> None:
-            nonlocal source_step
-            source_step = True
-
-        placed = False
-        with self._handling(orphan.original, kind="hardlink", record=record):
-            self._fail_under_a_replaced_holder(orphan)
-            resolved, prior, collided_with = self._resolve_collision(
-                orphan.original, orphan.transformed, self._orphan_request(orphan)
-            )
-            current.collided_with = collided_with
-            result = self._make_room(
-                orphan.original, orphan.transformed, resolved, atomic=True
-            )
-            if result is None:
-                if leftover is None:
-                    # ``_write_file_atomic`` runs this check again. Running it here
-                    # first lets its refusal count as the source's failure.
-                    source_step = True
-                    self._state.tracker.check_recorded_size()
-                    source_step = False
-                try:
-                    if leftover is None:
-                        resolved = self._write_file_atomic(
-                            stream,
-                            resolved,
-                            orphan.transformed,
-                            copy_begins=copy_begins,
-                            keep_taken=True,
-                        )
-                    else:
-                        resolved = self._write_file_atomic(
-                            None, resolved, orphan.transformed, staged=leftover
-                        )
-                        leftover = None
-                except _NameTakenSince as taken:
-                    if leftover is None:
-                        leftover = taken.temp
-                    result = ExtractionResult(
-                        orphan.original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-                    )
-                else:
-                    self._state.written_paths.add(resolved)
-                    self._record_source_path(source_member.member_id, resolved)
-                    result = ExtractionResult(
-                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
-                    )
-            result = self._settle_placement(
-                result,
-                requested=orphan.dest_path,
-                target=orphan.dest_path,
-                prior=prior,
-                collided_with=collided_with,
-                transformed=orphan.transformed,
-                result_index=orphan.result_index,
-            )
-            # Reported as spelled; recorded above where it physically is.
-            self._revise_result(
-                orphan.result_index, self._spelled_result(orphan, result)
-            )
-            placed = result.status is ExtractionStatus.EXTRACTED
-        if source_error is not None:
-            self._stop_or_log(
-                source_error,
-                source_error,
-                ExtractionStatus.FAILED,
-                kind="orphaned hardlink source",
-                name=source_member.name,
-            )
-            return None, leftover
-        return placed, leftover
-
-    def _link_orphan_group(self, group: list[_Orphan], source_id: int) -> None:
-        """Link each orphan in ``group`` against the source content already on disk
-        (recorded under ``source_id``), applying the OverwritePolicy per link (O2 collisions
-        resolved against the map) and recording per-link results; failures follow
-        ``OnError``. A link can replace a symlink or a directory, so the symlinks it
-        may have moved are rechecked after each one, whatever its outcome."""
-        for orphan in group:
-            self._link_orphan(orphan, source_id)
-
-    def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
-        """One link of ``_link_orphan_group``."""
-        self._begin_orphan_attempt(orphan)
-        current = self._current = _MemberState(
-            requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
-        )
-
-        def record(_error: object, failed: ExtractionResult) -> bool:
-            # Nothing the second pass runs raises FilterRejectionError.
-            assert failed.status is ExtractionStatus.FAILED
-            # A single link's failure, not a source fan-out: no group id.
-            self._revise_result(orphan.result_index, failed)
-            return False
-
-        with self._handling(orphan.original, kind="hardlink", record=record):
-            self._fail_under_a_replaced_holder(orphan)
-            resolved, prior, collided_with = self._resolve_collision(
-                orphan.original, orphan.transformed, self._orphan_request(orphan)
-            )
-            current.collided_with = collided_with
-            # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link
-            # of the group that failed after its ``_make_room`` can have taken the
-            # last path; ``_place_link`` then fails this link as well. No archive
-            # reaches that alone: the earlier link has to fail in ``os.link`` or
-            # ``os.replace``, which needs the filesystem to change under the run.
-            on_source = resolved in self._state.source_paths.get(source_id, ())
-            result = self._make_room(
-                orphan.original, orphan.transformed, resolved, atomic=True
-            )
-            if result is None:
-                try:
-                    resolved = self._place_link(
-                        source_id, resolved, orphan.transformed, on_source=on_source
-                    )
-                except _NameTakenSince:
-                    result = ExtractionResult(
-                        orphan.original, None, ExtractionStatus.NOT_OVERWRITTEN, None
-                    )
-                else:
-                    self._state.written_paths.add(resolved)
-                    result = ExtractionResult(
-                        orphan.original, resolved, ExtractionStatus.EXTRACTED, None
-                    )
-            result = self._settle_placement(
-                result,
-                requested=orphan.dest_path,
-                target=orphan.dest_path,
-                prior=prior,
-                collided_with=collided_with,
-                transformed=orphan.transformed,
-                result_index=orphan.result_index,
-            )
-            # Reported as spelled; recorded above where it physically is.
-            self._revise_result(
-                orphan.result_index, self._spelled_result(orphan, result)
-            )
 
     # --- removals, link rechecks and result revisions ------------------------------
 
@@ -4489,6 +3976,9 @@ class ExtractionCoordinator:
         seekable, as an excluded one is.
         """
         state = self._state
+        placeholder = state.placeholder_at.pop(path, None)
+        if placeholder is not None:
+            placeholder.live = False
         source_id = state.source_of.pop(path, None)
         if source_id is None:
             return False
@@ -4617,9 +4107,8 @@ class ExtractionCoordinator:
 
         Called once the caller knows the earlier member lost its destination — either
         because a later REPLACE landed on it, or because a REPLACE cleared it and then
-        failed. Shared by the main pass and the orphan second pass: a deferred hardlink
-        can be the member that replaces an earlier write just as a first-pass member
-        can."""
+        failed. A hardlink held for the second pass replaces an earlier write at its
+        place in archive order, as a made one does."""
         if prior is None or self._overwrite is not OverwritePolicy.REPLACE:
             return
         self._revise_to_overwritten(prior.result_index)
@@ -4736,23 +4225,6 @@ class ExtractionCoordinator:
             make_dirs(dest)
         return True
 
-    def _reserved_component(self, path: Path) -> Path | None:
-        """The first component of the directory ``path`` not on disk yet that reaches
-        a held-back link's name (``_reserve_orphan``), or ``None``. The link holds its
-        name as the made link would, so no directory can be created there. Checked
-        before anything is created."""
-        if not self._state.reservations:
-            return None
-        missing: list[Path] = []
-        probe = path
-        while probe != probe.parent and not os.path.lexists(long_path(probe)):
-            missing.append(probe)
-            probe = probe.parent
-        for component in reversed(missing):
-            if self._reservation_at(component, directory=True) is not None:
-                return component
-        return None
-
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
         """``os.makedirs(path, exist_ok=True)`` for ``member``, typed when the archive
         itself is in the way.
@@ -4774,15 +4246,6 @@ class ExtractionCoordinator:
                 return
         except OSError:
             pass
-        component = self._reserved_component(path)
-        if component is not None:
-            # The member fails as it would against the made link.
-            raise ExtractionError(
-                f"Cannot create {quoted(member.name)}: "
-                f"{quoted(self._rel_name(component))} is a "
-                "non-directory already extracted from this archive",
-                member_name=member.name,
-            )
         try:
             # The directories this run creates, nearest the root first: a directory
             # member naming one later is not the caller's (``_is_callers_directory``).
@@ -4915,10 +4378,7 @@ class ExtractionCoordinator:
                 # into it, which would then still report EXTRACTED, and the caller's
                 # own files when the directory was already there.
                 with os.scandir(long_path(dest_path)) as entries:
-                    # A held-back link under it counts: the made link would be there.
-                    if next(entries, None) is not None or self._holds_held_link(
-                        dest_path
-                    ):
+                    if next(entries, None) is not None:
                         raise ExtractionError(
                             f"Destination is a directory that is not empty: "
                             f"{display_path(self._shown(dest_path))}",
@@ -4941,7 +4401,7 @@ class ExtractionCoordinator:
         # over an existing file or symlink.
         if moves_links:
             self._note_link_change(dest_path)
-        if not atomic:
+        if not atomic or _is_windows_directory_link(st):
             with self._readonly_cleared(dest_path):
                 os.unlink(long_path(dest_path))
             # A parked copy's result is already SUPERSEDED: nothing to revise.
@@ -4958,15 +4418,14 @@ class ExtractionCoordinator:
         *,
         staged: Path | None = None,
         copy_begins: Callable[[], None] | None = None,
-        keep_taken: bool = False,
     ) -> Path:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then moving it onto ``dest_path`` (``_swap_into_place``: ``os.replace``, or a
         link or rename that refuses a taken name) — atomic, so a mid-stream failure
         never truncates or removes an existing destination (only the temp is discarded),
         and the target name never appears half-written. The temp lives in the destination
-        directory so the rename stays on one filesystem. When the orphan pass materializes
-        an unselected hardlink source, ``member`` is the *link's* transformed copy, so the
+        directory so the rename stays on one filesystem. When the second pass fills a held
+        hardlink's placeholder, ``member`` is the *link's* transformed copy, so the
         file carrying the content gets the link's (policy-capped) mode, not the source's.
 
         Under TRUSTED, a member with no stored mode gets the mode an ordinary file
@@ -4983,14 +4442,13 @@ class ExtractionCoordinator:
         copied, uncounted, as any stream is.
 
         ``copy_begins`` is called once the temp file exists, just before the first
-        read of ``stream``: the orphan pass blames a failure from then on on the
-        source, not the link (``_materialize_at``). A staged write copies nothing, so
+        read of ``stream``: the hard-link fill blames a failure from then on on the
+        source, not the link (``_fill_held_source``). A staged write copies nothing, so
         the two are never passed together.
 
         Returns the name the file landed on: ``dest_path``, or under RENAME another
         free name when another writer took ``dest_path`` first (``_land_on_free_name``).
-        Under SKIP, such a name raises ``_NameTakenSince``; with ``keep_taken`` the temp
-        file is left in place and handed over on it, rather than removed."""
+        Under SKIP, such a name raises ``_NameTakenSince``."""
         assert copy_begins is None or staged is None
         if staged is not None:
             return self._land_staged(staged, dest_path, member)
@@ -5019,10 +4477,7 @@ class ExtractionCoordinator:
                 )
             self._apply_metadata(tmp, member)
             return self._swap_into_place(tmp, dest_path, member, fresh=True)
-        except BaseException as exc:
-            if keep_taken and isinstance(exc, _NameTakenSince):
-                exc.temp = tmp
-                raise
+        except BaseException:
             # os.replace consumes the temp on success; on any earlier failure remove it so
             # no .archivey-tmp-* file is left behind (the existing destination is untouched).
             try:
