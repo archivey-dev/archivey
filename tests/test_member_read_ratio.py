@@ -463,7 +463,7 @@ def _accelerated(mode: AcceleratorMode) -> ArchiveyConfig:
 
 
 def _lying_zip(tmp_path: Path) -> Path:
-    """A ZIP of one member, 24 MiB of zeros, that records an uncompressed size of 1000."""
+    """A ZIP of one member, 24 MiB of zeros, that records a size of 1000 bytes."""
     path = tmp_path / "lying.zip"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("z.bin", bytes(24 * _MIB))
