@@ -5265,6 +5265,124 @@ def test_a_held_back_link_extracts_as_a_made_one(
     assert runs[True] == runs[False]
 
 
+def _held_and_made(
+    tmp_path: Path,
+    entries: list,
+    *,
+    on_error: OnError,
+    existing: dict[str, bytes] | None = None,
+) -> dict[bool, tuple[object, dict[str, bytes | None]]]:
+    """Extract ``entries`` with every ``src*`` member excluded (held) and selected
+    (made), each into a destination that holds ``existing``, under ``ERROR``. Each
+    run gives its statuses, or the error and the member it names, and what is on
+    disk."""
+    archive = _tar_bytes(entries)
+    runs: dict[bool, tuple[object, dict[str, bytes | None]]] = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        dest.mkdir()
+        for name, data in (existing or {}).items():
+            (dest / name).write_bytes(data)
+        outcome: object
+        with open_archive(io.BytesIO(archive)) as reader:
+            try:
+                report = reader.extract_all(
+                    dest,
+                    overwrite=OverwritePolicy.ERROR,
+                    on_error=on_error,
+                    members=(
+                        (lambda m: not m.name.startswith("src")) if held else None
+                    ),
+                )
+            except ExtractionError as exc:
+                outcome = ("raised", exc.member_name)
+            else:
+                outcome = [
+                    (r.member.name, r.status.name)
+                    for r in report.results
+                    if not r.member.name.startswith("src")
+                ]
+        runs[held] = (outcome, _extracted(dest))
+    return runs
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("hard", "X", "src2"),
+            ("hard", "x", "src1"),
+        ],
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("hard", "d", "src2"),
+            ("hard", "d/x", "src1"),
+        ],
+    ],
+    ids=["same-key", "under-the-name"],
+)
+def test_a_held_back_link_stops_where_a_made_one_does(
+    tmp_path: Path, entries: list
+) -> None:
+    # Under OnError.STOP the earlier link is made before the later one stops the
+    # run, as in archive order, though the later link's source comes first.
+    runs = _held_and_made(tmp_path, entries, on_error=OnError.STOP)
+    assert runs[True] == runs[False]
+    assert runs[True][0][0] == "raised"
+
+
+def test_a_superseded_held_back_link_frees_its_renamed_name(tmp_path: Path) -> None:
+    # Under RENAME the first copy of `a` is given `a (1)`, then a later copy of `a`
+    # supersedes it. The name it took is free again, so the later copy gets
+    # `a (1)` too, as when the first copy was made.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("file", "A", b"A"),
+            ("hard", "a", "src2"),
+            ("hard", "a", "src1"),
+        ]
+    )
+    runs = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        with open_archive(io.BytesIO(archive)) as reader:
+            report = reader.extract_all(
+                dest,
+                overwrite=OverwritePolicy.RENAME,
+                members=(lambda m: not m.name.startswith("src")) if held else None,
+            )
+        paths = [
+            (r.member.name, r.status.name, r.path and r.path.name)
+            for r in report.results
+            if not r.member.name.startswith("src")
+        ]
+        runs[held] = (paths, _extracted(dest))
+    assert runs[True] == runs[False]
+    assert runs[True][1] == {"A": b"A", "a (1)": b"one"}
+
+
+def test_a_held_back_link_that_fails_gives_its_name_back(tmp_path: Path) -> None:
+    # The earliest link of a name fails on a file already there. The later
+    # spellings of the name are then tried as they are after a made link fails.
+    entries = [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("file", "src3", b"three"),
+        ("hard", "Readme", "src3"),
+        ("hard", "readme", "src2"),
+        ("hard", "README", "src1"),
+    ]
+    runs = _held_and_made(
+        tmp_path, entries, on_error=OnError.CONTINUE, existing={"Readme": b"mine"}
+    )
+    assert runs[True] == runs[False]
+
+
 def test_a_directory_reaches_a_held_back_link_under_another_case_where_case_folds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
