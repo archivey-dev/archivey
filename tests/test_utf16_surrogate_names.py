@@ -26,7 +26,7 @@ import pytest
 import archivey
 from archivey.config import ArchiveyConfig, RarDecompressor
 from archivey.types import ExtractionPolicy, ExtractionStatus, OnError
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, sevenzip_reads_rar
 from tests.extract_util import open_and_extract
 from tests.test_audit_rar_iso_dir import _fixture, _rar3_build, _rar3_parse
 from tests.test_sevenzip_surrogate_names import _surrogate_7z, _tree
@@ -335,6 +335,8 @@ def test_trusted_extraction_matches_the_7z_tool(archive: Path, tmp_path: Path) -
     """
     files = [(name, data) for name, data in _FILES if "\udc80" not in name]
     if archive.suffix == ".rar":
+        if not sevenzip_reads_rar():
+            pytest.skip("this 7z was built without RAR support (Fedora's is)")
         archive = _rar4_unicode(tmp_path, files)
     else:
         archive.write_bytes(_joliet_iso(files))

@@ -96,7 +96,7 @@ def test_single_file_member_reaches_what_its_frames_check(
     path = tmp_path / "data.bin.compressed"
     path.write_bytes(compress(_DATA))
     with open_archive(path) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         member = next(m for m in reader.members() if m.is_file)
         assert (member.verified, member.verifiable) == (expected, expected)
 
@@ -176,7 +176,7 @@ def test_a_member_synced_mid_read_ends_with_verified_equal_to_verifiable(
             assert stream.verifiable is CHECKSUM
             stream.read()
             assert (stream.verified, stream.verifiable) == (LENGTH, LENGTH)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
 
 
@@ -306,7 +306,7 @@ def test_a_read_that_jumped_to_the_end_is_read_again_for_its_frame_checks(
             if call == "verify":
                 assert stream.verify() is expected
         if call == "verify_all":
-            assert reader.verify_all() == ()
+            assert reader.verify_all().failures == ()
         assert (member.verified, member.verifiable) == (expected, expected)
 
 
@@ -436,7 +436,7 @@ def test_member_verifiable_is_what_verify_reaches(
             assert member.verifiable is expected
             _check_ceiling_holds(stream, expected)
         assert (member.verified, member.verifiable) == (expected, expected)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
 
 
 @requires_zstd()
@@ -455,7 +455,7 @@ def test_a_frame_found_without_a_check_lowers_the_ceiling(tmp_path: Path) -> Non
         with reader.open(member) as stream:
             _seek_into_the_last_frame(stream)
             assert member.verifiable is CHECKSUM
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert (member.verified, member.verifiable) == (LENGTH, LENGTH)
 
 

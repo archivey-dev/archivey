@@ -1,4 +1,9 @@
-"""Capture the ``open_archive()`` caller location for capability-error breadcrumbs."""
+"""Record where the caller invoked ``open_archive()``, for one error message.
+
+``core`` captures the site on every open and the reader state keeps it. When a second
+member stream is refused on a reader opened without ``concurrent_operations``, the
+``ArchiveyUsageError`` names this ``file:line`` so the caller can find the open to change.
+"""
 
 from __future__ import annotations
 
@@ -13,12 +18,11 @@ from archivey.terminal import display_path
 class OpenSite:
     """Where the caller invoked ``open_archive`` (outside archivey frames).
 
-    Only the ``file:line`` is captured — that is all any consumer reads (the
-    concurrent-open ``ArchiveyUsageError`` breadcrumb). We deliberately do NOT retain a full
-    ``traceback.extract_stack()`` snapshot: it cost an unconditional stack format on
-    every ``open_archive`` and held ``FrameSummary`` objects for the reader's whole
-    lifetime, which the founding "open millions of archives" dedupe workload pays for
-    with nothing reading it back.
+    Only the ``file:line`` is captured, because that is all the error message reads.
+    A full ``traceback.extract_stack()`` snapshot is deliberately not kept: it would
+    format the whole stack on every ``open_archive`` and hold ``FrameSummary``
+    objects for the reader's lifetime. A workload that opens millions of archives
+    would pay for that with nothing reading it back.
     """
 
     filename: str

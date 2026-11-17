@@ -1,4 +1,7 @@
-"""Deflate64 (ZIP method 9)."""
+"""Deflate64 (ZIP method 9), decoded by the ``inflate64`` package
+(:func:`Deflate64DecompressorStream`). Only ZIP members and 7z coders use it, so it
+has no single-file format and no detection signals.
+"""
 
 from __future__ import annotations
 

@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.18, pytest-9.1.1, pluggy-1.7.0
+rootdir: /workspace/work/py-snappy-git
+configfile: pytest.ini
+plugins: hypothesis-6.170.5, cov-7.1.0, timeout-2.4.0, platformdirs-4.13.5, xdist-3.8.0
+collected 43 items
+
+tests/core/test_empty_bytestring.py ..                                   [  4%]
+tests/core/test_import.py .                                              [  6%]
+tests/core/test_libsnappy_compat.py ..F                                  [ 13%]
+tests/core/test_official_test_vectors.py .....................

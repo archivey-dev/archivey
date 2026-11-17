@@ -37,6 +37,7 @@ from archivey.exceptions import (
 from archivey.internal.backends import rar_copy_sources, rar_reader
 from tests.conftest import binary_refusal
 from tests.extract_util import open_and_extract
+from tests.rar_util import flag_size_unknown
 
 _COPIES = 6
 _COPY_NAMES = [f"d_copy{i}.txt" for i in range(_COPIES)]
@@ -147,6 +148,34 @@ def test_stream_members_serves_every_copy_from_one_decode(
         assert seen[name] == payload, name
     assert seen["c_other.txt"] == b"other"
     assert spawns == [decompressor]
+
+
+@pytest.mark.parametrize("decompressor", _DECOMPRESSORS)
+@pytest.mark.parametrize("flagged", ["source", "copies"])
+def test_copies_of_a_member_of_unknown_size(
+    tmp_path: Path, decompressor: str, flagged: str
+) -> None:
+    """A copy holds its source's bytes, so it lists its source's size. When the
+    source's header leaves the size unknown, every copy lists no size either, and
+    reads the source's bytes; when only the copies' headers do, they list the
+    source's size."""
+    config = _config(decompressor)
+    archive, payload = _solid_with_copies(tmp_path)
+    data = archive.read_bytes()
+    if flagged == "source":
+        data = flag_size_unknown(data, only=1)
+    else:
+        for index in range(3, 3 + _COPIES):
+            data = flag_size_unknown(data, only=index)
+    archive.write_bytes(data)
+    want = None if flagged == "source" else len(payload)
+    with open_archive(archive, config=config) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert [members[name].size for name in _COPY_NAMES] == [want] * _COPIES
+        assert reader.read(members[_COPY_NAMES[0]]) == payload
+    with open_archive(archive, config=config) as reader:
+        seen = {m.name: s.read() for m, s in reader.stream_members() if s}
+    assert all(seen[name] == payload for name in ["b_source.txt", *_COPY_NAMES])
 
 
 @pytest.mark.parametrize("decompressor", _DECOMPRESSORS)

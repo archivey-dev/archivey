@@ -30,6 +30,8 @@ class MutableDetectionCostReceipt:
     skips: list[TierSkip] = field(default_factory=list)
 
     def freeze(self) -> DetectionCostReceipt:
+        # ``skips`` is not part of the public receipt: it reaches the caller as
+        # ``FormatInfo.unavailable_tiers``.
         return DetectionCostReceipt(
             prefix_bytes=self.prefix_bytes,
             unique_bytes_read=self.unique_bytes_read,

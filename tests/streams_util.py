@@ -13,7 +13,7 @@ import sys
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
 import pytest
 
@@ -290,6 +290,53 @@ class QueuedChunks(io.RawIOBase):
         else:
             self._chunks[0] = chunk[take:]
         return chunk[:take]
+
+
+class _HeldView:
+    """A ``memoryview`` stand-in that adds the real view, and each view ``cast``
+    makes from it, to ``held``. A view that is never released stays alive there."""
+
+    def __init__(self, view: memoryview, held: list[memoryview]) -> None:
+        held.append(view)
+        self._view = view
+        self._held = held
+
+    def __enter__(self) -> Self:
+        self._view.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._view.__exit__(*exc)
+
+    def cast(self, format: str) -> _HeldView:
+        return _HeldView(self._view.cast(format), self._held)
+
+    def __len__(self) -> int:
+        return len(self._view)
+
+    def __getitem__(self, key: int | slice) -> object:
+        return self._view[key]
+
+    def __setitem__(self, key: int | slice, value: object) -> None:
+        self._view[key] = value  # type: ignore[index]
+
+
+def hold_views(monkeypatch: pytest.MonkeyPatch, module: object) -> list[memoryview]:
+    """Keep alive every view that ``module`` makes with ``memoryview``, casts
+    included, and return the list that holds them.
+
+    On CPython a dropped view is freed at once; PyPy frees it only at a collection.
+    A view the code does not release stays alive in the list, so the caller's
+    buffer cannot be resized after it (``BufferError``), on CPython as on PyPy.
+    """
+    held: list[memoryview] = []
+    monkeypatch.setattr(
+        module,
+        "memoryview",
+        lambda obj: _HeldView(memoryview(obj), held),
+        raising=False,
+    )
+    return held
 
 
 def lzma_alone_with_filter(data: bytes, lzma1: dict) -> bytes:

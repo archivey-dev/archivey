@@ -67,7 +67,7 @@ def test_detect_crash_reaches_the_flags_column(
 
 
 def test_near_excludes_over_in_flags_and_summary() -> None:
-    limit = scan.ExtractionLimits().max_ratio
+    limit = scan.DecoderLimits().max_ratio
     over = scan._Row(path="over", numbers={"archive_ratio": limit * 3})
     near = scan._Row(path="near", numbers={"archive_ratio": limit * 0.7})
     for row in (over, near):

@@ -2,9 +2,17 @@
 
 No RAR structure knowledge beyond argv safety — metadata/listing is
 :mod:`.rar_parser`. Locates a RARLAB decompressor on ``PATH`` (``unrar`` first,
-then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``) and
+then the trialware writer ``rar``; not ``unrar-free`` / ``unar`` / ``7z``), or on
+Windows in WinRAR's Program Files folder, and
 spawns ``<binary> p`` with the password on stdin (bare ``-p``, secret not in
 argv) and optional ``-n./member`` include masks. Never ``x`` / extract-to-disk.
+
+:mod:`.rar_reader` calls :func:`open_unrar_p` for every member read and solid pass
+that runs ``unrar``, and :func:`decompress_rar3_blob` for a compressed RAR 1.5-4
+comment. :func:`find_rarlab_unrar` is the 6.0 banner probe: :func:`open_unrar_p`
+runs it before each spawn, :mod:`.rar_reader` runs it to resolve
+``RarDecompressor.AUTO``, and ``format_availability`` runs it through
+:func:`rarlab_unrar_missing`.
 """
 
 from __future__ import annotations
@@ -18,13 +26,14 @@ import sys
 import tempfile
 import threading
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
 from archivey.exceptions import (
     PackageNotInstalledError,
+    ReadError,
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_parser import (
@@ -46,6 +55,7 @@ from archivey.internal.external.cli import (
     stat_identity,
     terminate_process,
 )
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.terminal import display_path, quoted
 from archivey.types import MissingComponent
 
@@ -58,10 +68,23 @@ from archivey.types import MissingComponent
 # Ubuntu 22.04 apt packages work; 5.x is still refused. Parsed from the
 # identification banner, not from a second spawn.
 _UNRAR_VERSION_FLOOR: tuple[int, int] = (6, 0)
+# The first ``unrar`` version rolling volumes were measured on.
+_ROLLING_VOLUMES_FLOOR: tuple[int, int] = (7, 0)
 # Prefer the freeware reader. The writer is the same vendor's decompressor
 # under a different PATH name (Ubuntu ``apt install rar`` Suggests ``unrar``
 # and does not put ``unrar`` on PATH).
 _RARLAB_BINARY_NAMES: tuple[str, ...] = ("unrar", "rar")
+# On Windows, WinRAR's installer puts both programs in its own folder and does not
+# add that folder to PATH, so the finder also looks there when PATH has no usable
+# program. The variables name the 64-bit and the 32-bit Program Files folders;
+# writing there needs administrator rights.
+_ON_WINDOWS = sys.platform == "win32"
+_WINRAR_EXE_NAMES: tuple[str, ...] = ("UnRAR.exe", "Rar.exe")
+_WINDOWS_PROGRAM_FILES_VARS: tuple[str, ...] = (
+    "ProgramW6432",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+)
 # Bound the digit runs: an unbounded run then ``int()`` raises ``ValueError``
 # past CPython's 4300-digit limit, and that must not cross ``open_archive``.
 # ``[0-9]`` and ``[ \t]``, not ``\d`` and ``\s``: those match Unicode digits and
@@ -139,8 +162,9 @@ UNAR_BY_POSITION_HINT = (
 
 _NOT_INSTALLED_MSG = (
     "RARLAB unrar or rar is required to read RAR member data, but neither was found "
-    "on PATH (or the unrar/rar on PATH is not a RARLAB binary). Install RARLAB unrar "
-    "or rar 6.0 or later; unrar-free, 7z and 7zz are not substitutes. With "
+    "on PATH or, on Windows, in WinRAR's folder under Program Files (or the one found "
+    "is not a RARLAB binary). Install RARLAB unrar or rar 6.0 or later and put it on "
+    "PATH; unrar-free, 7z and 7zz are not substitutes. With "
     "ArchiveyConfig.rar_decompressor 'auto' or 'unar', a unar 1.10 or later that "
     "passes archivey's RAR5 check reads most RAR data too; Debian and Ubuntu packages "
     "before 1.10.8+ds1-10 fail that check and are not used."
@@ -185,6 +209,7 @@ def _is_rarlab_unrar(path: str) -> _UnrarBanner:
 
 
 def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
+    """One binary's part of :func:`_unrar_floor_message`: why it was turned down."""
     shown = display_path(path)
     if version is None:
         return f"the version of {shown} could not be parsed from its banner"
@@ -192,31 +217,53 @@ def _describe_floor_refusal(path: str, version: tuple[int, int] | None) -> str:
 
 
 def _unrar_floor_message(
-    refusals: list[tuple[str, tuple[int, int] | None]],
+    refusals: list[tuple[str, tuple[int, int] | None]], *, pinned: bool = False
 ) -> str:
     floor = f"{_UNRAR_VERSION_FLOOR[0]}.{_UNRAR_VERSION_FLOOR[1]}"
     found = "; ".join(
         _describe_floor_refusal(path, version) for path, version in refusals
     )
+    fix = (
+        "archivey does not look on PATH when ArchiveyConfig.unrar_path is set; point "
+        f"it at RARLAB unrar or rar {floor} or later."
+        if pinned
+        else f"Install RARLAB unrar or rar {floor} or later."
+    )
     return (
         f"RARLAB unrar or rar {floor} or later is required to read RAR member data, "
-        f"but {found}. Install RARLAB unrar or rar {floor} or later."
+        f"but {found}. {fix}"
     )
 
 
-def _unrar_timeout_message(paths: list[str]) -> str:
+def _unrar_timeout_message(paths: list[str], *, pinned: bool = False) -> str:
     shown = " and ".join(display_path(path) for path in paths)
     them = "it" if len(paths) == 1 else "them"
+    where = " at ArchiveyConfig.unrar_path" if pinned else ""
+    fix = (
+        "point ArchiveyConfig.unrar_path at a working RARLAB unrar or rar"
+        if pinned
+        else "put a working RARLAB unrar or rar on PATH"
+    )
     return (
-        f"RARLAB unrar or rar is required to read RAR member data. Found {shown} on "
-        f"PATH, but the identification probe got no answer from {them} within "
+        f"RARLAB unrar or rar is required to read RAR member data. Found {shown}"
+        f"{where}, but the identification probe got no answer from {them} within "
         f"{_PROBE_TIMEOUT_SECONDS:g} seconds. archivey does not probe an unchanged "
-        "binary again in this process; fix or replace it, or put a working RARLAB "
-        "unrar or rar on PATH."
+        f"binary again in this process; fix or replace it, or {fix}."
     )
 
 
-def _stat_identity(path: str) -> tuple[int, int, int, int]:
+def _pinned_unrar_missing_message(program: str) -> str:
+    return (
+        f"RARLAB unrar or rar is required to read RAR member data, but "
+        f"ArchiveyConfig.unrar_path names {display_path(program)}, which could not be "
+        "run, or is not a RARLAB binary. archivey does not look on PATH when "
+        "unrar_path is set. Point it at RARLAB unrar or rar 6.0 or later."
+    )
+
+
+def _stat_identity(
+    path: str, message: str = _NOT_INSTALLED_MSG
+) -> tuple[int, int, int, int]:
     """``(st_dev, st_ino, st_mtime_ns, st_size)``, or ``PackageNotInstalledError``.
 
     Same syscall ``Path.is_file()`` would make; wrapping keeps the finder's
@@ -226,7 +273,7 @@ def _stat_identity(path: str) -> tuple[int, int, int, int]:
     try:
         return stat_identity(path)
     except OSError as exc:
-        raise _unrar_missing(_NOT_INSTALLED_MSG) from exc
+        raise _unrar_missing(message) from exc
 
 
 def _unrar_missing(message: str) -> PackageNotInstalledError:
@@ -238,6 +285,7 @@ def _unrar_missing(message: str) -> PackageNotInstalledError:
 
 
 def _banner_meets_floor(banner: _UnrarBanner) -> bool:
+    """Whether a banner is RARLAB's and reports a version at or above the floor."""
     return (
         banner.is_rarlab
         and banner.version is not None
@@ -245,7 +293,7 @@ def _banner_meets_floor(banner: _UnrarBanner) -> bool:
     )
 
 
-def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
+def rarlab_unrar_missing(program: str | None = None) -> tuple[MissingComponent, ...]:
     """What ``format_availability(RAR)`` names when no usable RARLAB program is found.
 
     Without one, RAR still opens and lists, and stored members read natively, so the
@@ -256,22 +304,95 @@ def rarlab_unrar_missing() -> tuple[MissingComponent, ...]:
     not make RAR FULL: it is a bounded fallback that reads fewer archives.
     """
     try:
-        find_rarlab_unrar()
+        find_rarlab_unrar(program)
     except PackageNotInstalledError as exc:
         return exc.missing
     return ()
 
 
-def find_rarlab_unrar() -> str:
+def winrar_install_candidates() -> list[str]:
+    """``UnRAR.exe`` then ``Rar.exe`` in each Program Files ``WinRAR`` folder that has them.
+
+    Empty off Windows. Only files that exist are listed; the caller still probes
+    each one's banner, as it does a ``PATH`` hit.
+    """
+    if not _ON_WINDOWS:
+        return []
+    folders: list[str] = []
+    for var in _WINDOWS_PROGRAM_FILES_VARS:
+        base = os.environ.get(var)
+        if base:
+            folders.append(os.path.join(base, "WinRAR"))
+    found: list[str] = []
+    seen: set[str] = set()
+    for exe in _WINRAR_EXE_NAMES:
+        for folder in folders:
+            candidate = os.path.abspath(os.path.join(folder, exe))
+            key = os.path.normcase(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if os.path.isfile(candidate):
+                found.append(candidate)
+    return found
+
+
+def _rarlab_candidates(path_env: str) -> Iterator[str]:
+    """Absolute paths to probe, best first: ``unrar`` then ``rar`` on ``PATH``, then
+    :func:`winrar_install_candidates`.
+
+    Lazy, so the WinRAR folders are looked at only when no ``PATH`` hit is usable.
+    A path already yielded is not yielded again.
+    """
+    seen: set[str] = set()
+
+    def _first_time(candidate: str) -> bool:
+        key = os.path.normcase(candidate)
+        if key in seen:
+            return False
+        seen.add(key)
+        return True
+
+    for name in _RARLAB_BINARY_NAMES:
+        hit = shutil.which(name, path=path_env)
+        if hit is not None:
+            candidate = os.path.abspath(hit)
+            if _first_time(candidate):
+                yield candidate
+    for candidate in winrar_install_candidates():
+        if _first_time(candidate):
+            yield candidate
+
+
+def _unrar_candidates(program: str | None) -> Iterator[str]:
+    """The binaries to try, in order: ``program`` alone when the caller pinned one
+    (``ArchiveyConfig.unrar_path``), else :func:`_rarlab_candidates`."""
+    if program is not None:
+        return iter([program])
+    # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
+    # rewrite cannot stamp a new lookup with the old key.
+    return _rarlab_candidates(os.environ.get("PATH", ""))
+
+
+def find_rarlab_unrar(program: str | None = None) -> str:
     """Return path to RARLAB ``unrar`` or ``rar`` 6.0+, or raise PackageNotInstalledError.
 
     ``unrar`` wins when both names resolve to a usable binary. A lookalike or
-    too-old ``unrar`` does not hide a usable ``rar``. A ``which`` miss is never
-    cached. Spawn sites still only run ``p`` (see :func:`open_unrar_p`).
+    too-old ``unrar`` does not hide a usable ``rar``. ``PATH`` comes first; on
+    Windows, WinRAR's own folder is tried after it (:func:`winrar_install_candidates`).
+    A ``which`` miss is never cached. Spawn sites still only run ``p`` (see
+    :func:`open_unrar_p`).
+
+    ``program`` is ``ArchiveyConfig.unrar_path``: when set, it is the only binary
+    tried, neither ``PATH`` nor the WinRAR folder is searched, and it is held to the
+    same identification and version floor.
     """
-    path_env = os.environ.get("PATH", "")
-    # Sample PATH once and pass it to ``which`` so a concurrent ``os.environ``
-    # rewrite cannot stamp a new lookup with the old key.
+    pinned = program is not None
+    not_installed = (
+        _pinned_unrar_missing_message(program)
+        if program is not None
+        else _NOT_INSTALLED_MSG
+    )
     floor_refusals: list[tuple[str, tuple[int, int] | None]] = []
     timed_out: list[str] = []
     run_cause: BaseException | None = None
@@ -281,14 +402,9 @@ def find_rarlab_unrar() -> str:
             return
         floor_refusals.append((path, version))
 
-    for name in _RARLAB_BINARY_NAMES:
-        candidate = shutil.which(name, path=path_env)
-        if candidate is None:
-            continue
-        candidate = os.path.abspath(candidate)
-
+    for candidate in _unrar_candidates(program):
         try:
-            identity = _stat_identity(candidate)
+            identity = _stat_identity(candidate, not_installed)
         except PackageNotInstalledError as exc:
             run_cause = exc.__cause__ if exc.__cause__ is not None else exc
             continue
@@ -341,15 +457,31 @@ def find_rarlab_unrar() -> str:
             _note_floor(candidate, banner.version)
 
     if floor_refusals:
-        raise _unrar_missing(_unrar_floor_message(floor_refusals))
+        raise _unrar_missing(_unrar_floor_message(floor_refusals, pinned=pinned))
     if timed_out:
-        message = _unrar_timeout_message(timed_out)
+        message = _unrar_timeout_message(timed_out, pinned=pinned)
         if run_cause is not None:
             raise _unrar_missing(message) from run_cause
         raise _unrar_missing(message)
     if run_cause is not None:
-        raise _unrar_missing(_NOT_INSTALLED_MSG) from run_cause
-    raise _unrar_missing(_NOT_INSTALLED_MSG)
+        raise _unrar_missing(not_installed) from run_cause
+    raise _unrar_missing(not_installed)
+
+
+def unrar_reads_rolling_volumes(program: str | None = None) -> bool:
+    """Whether the ``unrar`` archivey runs reads rolling volumes (:mod:`rar_rolling`).
+
+    Measured on ``unrar`` 7.00 and later only. 6.x has the same ``-vp`` code in its
+    source, but no 6.x binary has been run against rolling volumes, so it keeps the
+    whole copy. Raises what :func:`find_rarlab_unrar` raises.
+    """
+    found = find_rarlab_unrar(program)
+    cached = _cached_unrar.get(found)
+    return (
+        cached is not None
+        and cached.version is not None
+        and cached.version >= _ROLLING_VOLUMES_FLOOR
+    )
 
 
 def _password_arg(password: str | bytes | None) -> str:
@@ -516,11 +648,6 @@ def _unrar_env() -> dict[str, str] | None:
     return {**os.environ, "LC_ALL": name}
 
 
-_NUL_REFUSAL = (
-    "its stored name contains a NUL character, which cannot be passed to a subprocess"
-)
-
-
 def unrar_mask_carries_non_ascii() -> bool:
     """Whether a non-ASCII mask reaches ``unrar`` as the text it was built from.
 
@@ -529,6 +656,175 @@ def unrar_mask_carries_non_ascii() -> bool:
     without one a non-ASCII mask never matches its own member.
     """
     return sys.platform == "win32" or _utf8_locale_name() is not None
+
+
+def unrar_matches_names_as_windows() -> bool:
+    """Whether ``unrar`` changes and compares names the way its Windows build does.
+
+    Windows ``unrar`` converts a Unix-host name to NFC (``ConvertToPrecomposed`` in
+    ``arcread.cpp``) before it compares it with a mask, and does not convert the
+    mask. It compares the directory part of a mask with ``CompareStringW``, which
+    ignores some code points (U+00AD, U+200B, ...) and treats canonically
+    equivalent sequences as equal. ``rar_reader._plain_unrar_masks`` takes out of
+    the plain set every name that is not NFC, and, when any name in the archive has
+    a directory that is not printable ASCII, every name with a directory.
+    """
+    return sys.platform == "win32"
+
+
+def unrar_expands_wildcards(path: str | Path) -> bool:
+    """Whether ``unrar`` reads ``path``, given as the archive, as a wildcard mask.
+
+    ``unrar`` expands ``*`` and ``?`` in an archive name, and ``--`` does not stop
+    that: ``rep*.rar`` also opens a ``rep-a.rar`` beside it, and a FIFO that the
+    mask matches blocks the open forever. Those are the only two wildcard
+    characters (``IsWildcard`` in unrar's ``pathfn.cpp``; ``[`` is literal). On
+    Windows it skips the ``\\\\?\\`` long-path prefix before it looks, and a
+    Windows name cannot hold either character, so only that prefix is exempt.
+    """
+    text = str(path)
+    if sys.platform == "win32" and text.startswith("\\\\?\\"):
+        text = text[4:]
+    return "*" in text or "?" in text
+
+
+# The longest archive path that ``unrar`` is trusted to keep whole: UTF-16 code units
+# on Windows, and on POSIX also bytes of the name as it reaches the filesystem. unrar
+# 6.x copies the archive argument into ``wchar ArcName[NM]`` with NM 2048
+# (``cmddata.cpp`` and ``extract.cpp``, unrarsrc 6.2.12), and ``wchar_t`` is UTF-16 on
+# Windows. On POSIX ``File::Open`` converts the name back to bytes in ``char
+# NameA[NM]`` (``WideToChar``, ``file.cpp``), so a non-ASCII path is cut at 2047
+# bytes, which can be far fewer characters (measured on 6.24: a CJK path of 708 units
+# and 2068 bytes opened a file at its 2046-byte prefix). Either way unrar opens
+# whatever file the cut path names. Half of NM leaves margin for a path unrar makes
+# absolute or derives a next volume name from.
+_UNRAR_ARCHIVE_PATH_MAX = 1024
+
+# The longest absolute archive path, in UTF-16 units, that Windows hands to ``unrar``
+# with no working directory: 6.x keeps NM - 1 = 2047 units of ``ArcName`` (above),
+# less room for a next volume name. A staged name is ``archive.part1.rar`` or
+# ``archive.rar``, and the longest it grows to is ``archive.part999999.rar`` (the
+# reader caps volumes at 999 999): 16 units cover that.
+_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT = 2047 - 16
+
+
+# The longest member name, in UTF-16 code units, that ``unrar`` keeps whole when it
+# compares it with a ``-n`` mask. ``unrar`` cuts a stored name to a fixed buffer, but
+# the mask is the full argument, so a longer name matches no mask, and two names that
+# share the kept prefix match one. 6.x keeps NM - 1 = 2047 ``wchar_t`` units of the
+# name and of each mask (``FileName[NM]`` in ``headers.hpp``, ``CurMask[NM]`` in
+# ``cmdfilter.cpp``, unrarsrc 6.2.12), and the mask carries a ``./`` prefix, so 2045
+# units of name fit. 7.00 keeps 65 536 characters of both (measured on Linux: a
+# 65 536-character name read alone through ``-n./<name>``, a 65 537-character one
+# matched nothing), but the mask must also reach it as one argument: a Windows
+# command line holds 32 767 units in all, and Linux refuses one argument over 128 KiB
+# (``MAX_ARG_STRLEN``) with E2BIG. 16 384 units leave the rest of the Windows command
+# line half of it, and are at most 49 152 bytes of UTF-8. ``wchar_t`` is UTF-16 on
+# Windows, so the count is in UTF-16 units, which is never fewer than code points.
+_UNRAR6_PLAIN_NAME_MAX = 2047 - len("./")
+_UNRAR7_PLAIN_NAME_MAX = 16384
+
+
+def unrar_plain_name_max(program: str | None = None) -> int:
+    """The longest name, in UTF-16 units, a mask on the ``unrar`` that reads next
+    selects whole (see ``_UNRAR6_PLAIN_NAME_MAX``).
+
+    Taken from the banner version :func:`find_rarlab_unrar` probed for ``program``
+    (``ArchiveyConfig.unrar_path``, or ``None`` to search). When no usable
+    ``unrar`` is found, or its version did not parse, the 6.x bound applies: it is
+    the smaller one, and the read that follows fails on the missing program anyway.
+    """
+    try:
+        path = find_rarlab_unrar(program)
+    except PackageNotInstalledError:
+        return _UNRAR6_PLAIN_NAME_MAX
+    probe = _cached_unrar.get(path)
+    if probe is not None and probe.version is not None and probe.version >= (7, 0):
+        return _UNRAR7_PLAIN_NAME_MAX
+    return _UNRAR6_PLAIN_NAME_MAX
+
+
+def unrar_may_cut_archive_path(path: str | Path) -> bool:
+    """Whether ``path`` is too long to hand to ``unrar`` as the archive.
+
+    Measured as an absolute path, so a short relative path in a deep working
+    directory counts at its full length: in UTF-16 units, and on POSIX also in the
+    bytes ``os.fsencode`` gives, which is what ``unrar`` 6.x cuts there.
+    """
+    text = os.path.abspath(path)
+    size = len(text.encode("utf-16-le", "surrogatepass")) // 2
+    if sys.platform != "win32":
+        size = max(size, len(os.fsencode(text)))
+    return size > _UNRAR_ARCHIVE_PATH_MAX
+
+
+def unrar_needs_staged_name(path: str | Path) -> bool:
+    """Whether ``path`` must be staged under a fixed name before ``unrar`` reads it.
+
+    On POSIX ``unrar`` gets the file's name alone, started in its directory
+    (:func:`_unrar_archive_argument`), so only the name counts: one ``unrar``
+    would expand (:func:`unrar_expands_wildcards`), or one too long to keep. On
+    Windows it gets the whole path, so a wildcard or a cut anywhere in it counts
+    (:func:`unrar_may_cut_archive_path`).
+    """
+    if sys.platform == "win32":
+        return unrar_expands_wildcards(path) or unrar_may_cut_archive_path(path)
+    name = os.path.basename(path)
+    return unrar_expands_wildcards(name) or len(os.fsencode(name)) > (
+        _UNRAR_ARCHIVE_PATH_MAX
+    )
+
+
+def _unrar_archive_argument(archive_path: str | Path) -> tuple[str, str | None]:
+    """The archive argument for ``unrar``, and the directory to start it in.
+
+    On POSIX ``unrar`` always starts in the archive's directory and gets the file's
+    name alone, so no directory reaches its argv: ``unrar`` expands ``*`` and ``?``
+    in every directory of the archive argument, and 6.x cuts a long one. A name
+    that ``unrar`` would expand reaches here only as a file archivey made: the
+    reader stages such a caller path (:func:`unrar_needs_staged_name`) under a
+    fixed name, in the system temp directory or one made in it. A long directory
+    needs no staging: ``unrar`` opens the name relative to its working
+    directory, and the system resolves that with no length to cut. ``unrar``
+    finds the next volume of a set beside that name. ``unrar p`` writes only to
+    stdout, so the working directory changes no output location.
+
+    Windows names cannot hold ``*`` or ``?``, so there only the length applies, and
+    a working directory that long is past what ``CreateProcess`` takes, so Windows
+    never sets one. The path goes over whole while ``unrar`` keeps it whole, and is
+    refused past that, never handed to ``unrar`` to cut. ``_UNRAR_ARCHIVE_PATH_MAX``
+    (1024) is itself a margin under the 2047-unit cut, kept for a relative path or
+    an unknown next volume name; a staged path is absolute with a fixed name, so on
+    Windows it is measured against ``_UNRAR_WINDOWS_ARCHIVE_PATH_KEPT`` instead.
+    """
+    path = str(archive_path)
+    if sys.platform == "win32":
+        if not unrar_may_cut_archive_path(path):
+            return path, None
+        whole = os.path.abspath(path)
+        limit = _UNRAR_WINDOWS_ARCHIVE_PATH_KEPT
+        if len(whole.encode("utf-16-le", "surrogatepass")) // 2 <= limit:
+            return whole, None
+        # ReadError, like a command line the system refuses (_start_error): a
+        # configuration fact, not a shortage a retry could clear.
+        raise ReadError(
+            f"unrar cannot read {display_path(path)}: the path is longer than "
+            f"{limit} characters, more than unrar keeps. Set TMP or TEMP to a "
+            "shorter directory."
+        )
+    # A plain split, never abspath or normpath: those drop ``..`` by text, and
+    # through a symlinked directory ``link/../a.rar`` names another file than the
+    # one the system opens, the one archivey parsed.
+    directory, name = os.path.split(path)
+    if not name or unrar_expands_wildcards(name):
+        # The reader stages every such name; reaching here is a bug upstream.
+        raise ReadError(
+            f"the archive {display_path(path)} cannot be handed to unrar: its name "
+            "holds a wildcard character"
+        )
+    # A bare name is already in this process's working directory, which the child
+    # inherits: no cwd, so no chdir that a path past PATH_MAX would fail.
+    return name, directory or None
 
 
 def unrar_member_refusal(member: str) -> str | None:
@@ -655,8 +951,19 @@ def open_unrar_p(
     member: str | None = None,
     version_control: bool = False,
     rar5: bool = False,
+    program: str | None = None,
+    usage: ResourceUsageRecorder | None = None,
+    volume_pause: bool = False,
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
     """Spawn ``<unrar|rar> p -inul -cfg- [-ver] [-p|-p-] [-n./member] -- archive``.
+
+    ``volume_pause`` reads a set of rolling volumes (:mod:`rar_rolling`): it adds
+    ``-vp`` and replaces ``-inul`` with ``-idq``, which keeps the next-volume prompt
+    on stderr. stdin and stderr are then pipes the caller owns: the password, when
+    there is one, is written to stdin, which stays open for the prompts' answers.
+
+    ``program`` is ``ArchiveyConfig.unrar_path`` (see :func:`find_rarlab_unrar`).
+    ``usage`` records the binary that ran, for ``ArchiveReader.backends_used``.
 
     ``version_control`` adds ``-ver`` so the pipe includes WinRAR file-version history
     payloads (needed for solid demux when versioned FILE rows are present, and for a
@@ -676,9 +983,10 @@ def open_unrar_p(
     the part before it, and a longer one is cut to the 127 UTF-16 units RAR hashes —
     see :func:`_password_stdin_bytes`, which also needs ``rar5`` (true for a RAR5
     archive) to tell a wrong password from one ``unrar``'s stdin cannot carry; the
-    default gives the refusal, which claims nothing about the password. That bound is what lets the whole password be
-    written before stdout is read: it always fits in the pipe buffer, so the write
-    cannot block on a child that is itself blocked writing a full stdout.
+    default gives the refusal, which claims nothing about the password. That bound is
+    what lets the whole password be written before stdout is read: it always fits in the
+    pipe buffer, so the write cannot block on a child that is itself blocked writing a
+    full stdout.
 
     Reading ``stdout`` has no time bound. A read waits for as long as the child
     takes to produce bytes, and nothing here stops a child that stalls. A solid
@@ -689,8 +997,15 @@ def open_unrar_p(
 
     Returns ``(proc, stdout)``. Caller must terminate/wait/close.
     """
-    unrar = find_rarlab_unrar()
-    cmd: list[str | bytes] = [unrar, "p", "-inul", _RAR_DISABLE_CONFIG]
+    unrar = find_rarlab_unrar(program)
+    if usage is not None:
+        usage.note_backend("program", "unrar", "RAR", unrar)
+    cmd: list[str | bytes] = [
+        unrar,
+        "p",
+        *(("-vp", "-idq") if volume_pause else ("-inul",)),
+        _RAR_DISABLE_CONFIG,
+    ]
     if version_control:
         cmd.append("-ver")
     pass_arg = _password_arg(password)
@@ -708,7 +1023,11 @@ def open_unrar_p(
     # ``@`` prefix needs no guard: unrar reads the first non-switch argument as
     # the archive, and only later file-name arguments as listfiles.
     cmd.append("--")
-    cmd.append(str(archive_path))
+    archive_arg, cwd = _unrar_archive_argument(archive_path)
+    # With a cwd, a relative program would resolve against the temp directory.
+    # find_rarlab_unrar returns an absolute path; keep it that way.
+    assert cwd is None or os.path.isabs(unrar), unrar
+    cmd.append(archive_arg)
     feed_password = pass_arg == "-p"
     # Encode before spawning: _password_stdin_bytes refuses a password unrar would
     # silently cut, and raising after Popen would leave the child and its pipes behind.
@@ -720,14 +1039,19 @@ def open_unrar_p(
         cmd,
         name="unrar",
         not_started=_NOT_INSTALLED_MSG,
-        stdin=subprocess.PIPE if feed_password else subprocess.DEVNULL,
+        stdin=subprocess.PIPE if feed_password or volume_pause else subprocess.DEVNULL,
         env=_unrar_env(),
+        cwd=cwd,
+        stderr=subprocess.PIPE if volume_pause else subprocess.DEVNULL,
     )
     if stdin_bytes is not None:
         assert proc.stdin is not None
         try:
             proc.stdin.write(stdin_bytes + b"\n")
-            proc.stdin.close()
+            if volume_pause:
+                proc.stdin.flush()
+            else:
+                proc.stdin.close()
         except BrokenPipeError:
             # unrar exited before consuming the password; surface via exit-code mapping.
             pass

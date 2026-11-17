@@ -67,7 +67,12 @@ from archivey.exceptions import (
     StreamNotSeekableError,
 )
 from archivey.types import StreamFormat
-from tests.conftest import ARCHIVEY_TEST_CACHE, has_binary, importorskip
+from tests.conftest import (
+    ARCHIVEY_TEST_CACHE,
+    has_binary,
+    importorskip,
+    unrar_reads_from_pipes,
+)
 from tests.sample_archives import (
     GENERATOR_VERSION,
     CorpusEntry,
@@ -95,8 +100,9 @@ CONTAINERS = (
 STREAMS = ("gz", "bz2", "xz", "zst", "lz4", "lz", "zz", "br")
 FORMATS = CONTAINERS + STREAMS
 
-# Formats that cannot be read at all from a forward-only source.
-_NEEDS_SEEK = frozenset({"7z", "rar", "iso"})
+# Formats that cannot be read at all from a forward-only source. RAR can, with RARLAB
+# unrar 7.00 or later (``_must_refuse_forward_only``).
+_NEEDS_SEEK = frozenset({"7z", "iso"})
 
 # Small, but past the 8 KiB and 64 KiB buffer and chunk sizes the stream layers use.
 LEAF = (
@@ -232,6 +238,8 @@ def _must_refuse_forward_only(fmt: str, config: ArchiveyConfig) -> bool:
     cannot seek: the format needs to seek, or an accelerator set to ON decodes it."""
     if fmt in _NEEDS_SEEK:
         return True
+    if fmt == "rar":
+        return not unrar_reads_from_pipes()
     if fmt in _RAPIDGZIP_FORMATS:
         return config.use_rapidgzip is AcceleratorMode.ON
     if fmt in _BZIP2_FORMATS:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import gc
 import io
+import re
 import struct
 import threading
 import tracemalloc
@@ -26,10 +27,15 @@ from functools import partial
 
 import pytest
 
-from archivey import open_archive
+from archivey import ArchiveReader, open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import ListingCost
-from archivey.diagnostics import ArchiveEofContext, DiagnosticCode, DiagnosticPolicy
+from archivey.diagnostics import (
+    ArchiveEofContext,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    LocalHeaderContext,
+)
 from archivey.exceptions import (
     CorruptionError,
     DiagnosticRaisedError,
@@ -41,6 +47,7 @@ from archivey.internal.backends import zip_parser
 from archivey.internal.backends.zip_reader import ZipReader
 from archivey.types import ArchiveFormat, HashAlgorithm
 from tests.corruption_util import raises_corruption_not_truncation
+from tests.pe_build import pe_file
 from tests.test_zip_pipe_encrypted import _PASSWORD, _bit3_stored_zipcrypto
 from tests.test_zip_pipe_parity import _with_modes
 
@@ -385,6 +392,145 @@ def test_a_zip_missing_its_first_bytes_says_so(tmp_path: object) -> None:
             caught.value
         )
         assert reader.read(c) == b"c.txtc.txtc.txt"
+
+
+def _local_headers(data: bytes) -> list[int]:
+    found, at = [], data.find(b"PK\x03\x04")
+    while at >= 0:
+        found.append(at)
+        at = data.find(b"PK\x03\x04", at + 1)
+    return found
+
+
+def _shifts(reader: ArchiveReader) -> list[LocalHeaderContext]:
+    found = [
+        d.context
+        for d in reader.diagnostics.retained
+        if d.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+    ]
+    contexts = [c for c in found if isinstance(c, LocalHeaderContext)]
+    assert contexts == found
+    return contexts
+
+
+def test_a_zip_missing_bytes_in_its_middle_reads_the_members_before_them(
+    tmp_path: object,
+) -> None:
+    """Seven bytes gone from inside the second member's data move the directory, so
+    every offset the directory gives is seven bytes short of where it was written. The
+    third member sits there, but the first two sit at their stored offsets: each is
+    read from there, where a local header with its name, method, CRC-32 and sizes
+    is, and reported. The second member's data is short, so its CRC-32 fails."""
+    from pathlib import Path
+
+    data = _zip()
+    _a_at, b_at, _c_at = _local_headers(data)
+    cut = b_at + 30 + len("b.txt") + 4
+    path = Path(str(tmp_path)) / "gap.zip"
+    path.write_bytes(data[:cut] + data[cut + 7 :])
+    with open_archive(path) as reader:
+        report = reader.members_report()
+        assert report.error is None
+        a, b, c = report.members
+        assert reader.read(a) == b"a.txta.txta.txt"
+        assert reader.read(c) == b"c.txtc.txtc.txt"
+        with raises_corruption_not_truncation():
+            reader.read(b)
+        assert _shifts(reader) == [
+            LocalHeaderContext(
+                archive_name=str(path),
+                member_name=name,
+                member_id=index,
+                field="offset",
+                local_offset=at,
+                central_offset=at - 7,
+            )
+            for index, name, at in ((0, "a.txt", 0), (1, "b.txt", b_at))
+        ]
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(path, config=strict) as reader:
+        with pytest.raises(DiagnosticRaisedError) as ei:
+            reader.read("a.txt")
+        assert ei.value.diagnostic.code is DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED
+        assert reader.read("c.txt") == b"c.txtc.txtc.txt"
+
+
+@pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])
+def test_offsets_behind_a_stub_count_from_the_start_of_the_file(forced: bool) -> None:
+    """A ZIP appended to a program with its offsets left counting from its own start:
+    detection reads it from where it starts, and every offset a report names counts
+    from the file's first byte, where a hex editor shows it. A forced ``format=`` reads
+    the whole file and finds its start from the end record, so its offsets are the
+    file's already; for the shifted member it finds another start (the seven missing
+    bytes move the end record), so only detection is asked about that one."""
+    stub = pe_file(0x1000)
+    data = _zip()
+    _a_at, b_at, _c_at = _local_headers(data)
+    cut = b_at + 30 + len("b.txt") + 4
+    gap = data[:cut] + data[cut + 7 :]
+    fmt = ArchiveFormat.ZIP if forced else None
+    with open_archive(io.BytesIO(stub + gap)) as reader:
+        reader.members()
+        reader.read("a.txt")
+        shifted = _shifts(reader)
+        assert [(c.local_offset, c.central_offset) for c in shifted] == [
+            (len(stub), len(stub) - 7)
+        ]
+        message = reader.diagnostics.retained[0].message
+        assert f"at offset {len(stub)}, as stored, not at {len(stub) - 7}," in message
+    counted = bytearray(data)
+    eocd = counted.rfind(b"PK\x05\x06")
+    counted[eocd + 10] += 1
+    with open_archive(io.BytesIO(stub + bytes(counted)), format=fmt) as reader:
+        reader.members()
+        (diagnostic,) = reader.diagnostics.retained
+        assert diagnostic.code is DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+        assert isinstance(diagnostic.context, ArchiveEofContext)
+        assert diagnostic.context.observed_bytes == len(stub) + eocd
+
+
+def test_a_zip_missing_a_whole_member_reads_the_others(tmp_path: object) -> None:
+    """The second member's local header and data are gone. The first member reads from
+    its stored offset; the directory puts the second member's header where the first
+    one's is, which names another member, and its stored offset holds the third
+    member's header, so nothing confirms it: it is read where the directory puts it,
+    and fails. The third member reads where the directory puts it."""
+    from pathlib import Path
+
+    data = _zip()
+    _a_at, b_at, c_at = _local_headers(data)
+    path = Path(str(tmp_path)) / "lost-member.zip"
+    path.write_bytes(data[:b_at] + data[c_at:])
+    with open_archive(path) as reader:
+        a, b, c = reader.members()
+        assert reader.read(a) == b"a.txta.txta.txt"
+        assert reader.read(c) == b"c.txtc.txtc.txt"
+        with pytest.raises(CorruptionError):
+            reader.read(b)
+        assert [s.member_name for s in _shifts(reader)] == ["a.txt"]
+
+
+def test_a_shifted_header_that_disagrees_with_the_directory_is_not_used(
+    tmp_path: object,
+) -> None:
+    """The first member's stored offset holds a local header with its name but another
+    CRC-32: nothing confirms it, so the read raises what the directory's own offset
+    gives, the front cut it seems to be."""
+    from pathlib import Path
+
+    data = bytearray(_zip())
+    _a_at, b_at, _c_at = _local_headers(bytes(data))
+    data[14] ^= 0xFF  # the first local header's CRC-32
+    cut = b_at + 30 + len("b.txt") + 4
+    path = Path(str(tmp_path)) / "gap-decoy.zip"
+    path.write_bytes(bytes(data[:cut] + data[cut + 7 :]))
+    with open_archive(path) as reader:
+        with raises_corruption_not_truncation(
+            match="missing at least its first 7 bytes"
+        ):
+            reader.read("a.txt")
+        assert reader.read("c.txt") == b"c.txtc.txtc.txt"
+        assert [s.member_name for s in _shifts(reader)] == []
 
 
 def _bad_utf8_second_name(*, local_too: bool, header_offset: int | None) -> bytes:
@@ -1083,3 +1229,53 @@ def test_decoded_name_field_order_is_pinned() -> None:
         "unicode_extra_fault",
         "unicode_path_used",
     )
+
+
+class _ReadPipe(io.RawIOBase):
+    """A source that cannot seek, for the forward reader."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:  # type: ignore[override]
+        chunk = self._data.read(len(buffer))
+        buffer[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("damage", ["junk_after_directory", "junk_for_directory"])
+def test_a_missing_end_record_behind_a_stub_names_the_offset_in_the_file(
+    damage: str,
+) -> None:
+    """With no end record, the reader walks the local headers and words why none
+    follows them. Detected, forced and from a pipe, the message names the offset in
+    the file: the plain archive's offset plus the stub's length."""
+    stub = pe_file(0x1000)
+    data = _zip()
+    eocd = data.rfind(b"PK\x05\x06")
+    if damage == "junk_after_directory":
+        broken = data[:eocd] + b"JUNK" * 8
+    else:
+        directory = data.find(b"PK\x01\x02")
+        broken = data[:directory] + b"JUNK" * 8
+
+    def offset(source: object, fmt: ArchiveFormat | None = None) -> int:
+        pipe = isinstance(source, _ReadPipe)
+        with (
+            pytest.raises(CorruptionError) as exc,
+            open_archive(source, format=fmt, streaming=pipe) as reader,  # type: ignore[arg-type]
+        ):
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+        match = re.search(r"stream offset (\d+)", str(exc.value))
+        assert match is not None, str(exc.value)
+        return int(match.group(1))
+
+    plain = offset(io.BytesIO(broken))
+    assert offset(io.BytesIO(stub + broken)) == plain + len(stub)
+    assert offset(io.BytesIO(stub + broken), ArchiveFormat.ZIP) == plain + len(stub)
+    assert offset(_ReadPipe(stub + broken), ArchiveFormat.ZIP) == plain + len(stub)

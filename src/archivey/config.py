@@ -1,22 +1,39 @@
-"""Public configuration types for archivey."""
+"""Public configuration types for archivey: :class:`ArchiveyConfig` and its parts.
+
+A caller builds one :class:`ArchiveyConfig` and passes it as ``config=`` to the
+functions that open, detect or report on archives: :func:`~archivey.open_archive`,
+:func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
+:func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
+fields are grouped into the limit classes here (:class:`ExtractionLimits`,
+:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`), the enums that
+pick an accelerator, an external program, or which decoders run in a child process
+(:class:`AcceleratorMode`, :class:`RarDecompressor`, :class:`ProcessIsolation`), and
+policies defined in their own modules (diagnostics, formats, detection budget). Every
+field is checked when the config is built, so a wrong value fails at the caller's line
+rather than deep inside a read. This module also holds the password types.
+"""
 
 from __future__ import annotations
 
+import os
+import pathlib
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from enum import Enum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     DetectionBudget,
     DetectionBudgetPreset,
+    DetectionBudgetPresetStr,
 )
 from archivey.diagnostics import DiagnosticPolicy, OnDiagnostic
-from archivey.exceptions import ArchiveyUsageError
+from archivey.exceptions import _UsageTypeError, _UsageValueError
 from archivey.format_policy import FormatPolicy
 from archivey.internal.arg_checks import (
+    check_bool,
     check_callable,
     check_encoding,
     check_instance,
@@ -25,6 +42,7 @@ from archivey.internal.arg_checks import (
 )
 from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
+from archivey.terminal import quoted
 from archivey.types import ArchiveMember, OptionalLibrary
 
 
@@ -65,13 +83,16 @@ class AcceleratorMode(Enum):
         ``PackageNotInstalledError`` if the package is missing — the user asked for it
         explicitly; ``min_size`` is ignored). ``AUTO`` enables it only when ``seekable``
         is true and the package is available, so a missing package falls back silently.
-        ``seekable`` is the demand for the accelerator: declared seeking, or for the
-        DEFLATE family also a large sequential read judged worth it
-        (``_sequential_read_pays`` in ``codecs/rapidgzip_select.py``). When ``min_size``
+        ``seekable`` is the demand for the accelerator: declared seeking, or a large
+        sequential read judged worth it (``_sequential_read_pays`` in
+        ``codecs/rapidgzip_select.py`` for the DEFLATE family,
+        ``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``). When ``min_size``
         is set and ``input_size`` is known and strictly below that threshold, ``AUTO``
         also falls back (tiny members do not repay per-stream accelerator setup).
         Unknown ``input_size`` keeps the pre-threshold AUTO behaviour.
         """
+        check_bool(seekable, call="AcceleratorMode.enabled_for(seekable=…)")
+        check_bool(available, call="AcceleratorMode.enabled_for(available=…)")
         if self is AcceleratorMode.OFF:
             return False
         if self is AcceleratorMode.ON:
@@ -82,6 +103,15 @@ class AcceleratorMode(Enum):
         return not (
             min_size is not None and input_size is not None and input_size < min_size
         )
+
+
+# The string spellings of ``AcceleratorMode``, which ``ArchiveyConfig`` takes for
+# ``use_rapidgzip`` and ``use_indexed_bzip2``, so a type checker flags a bad one at the
+# call. Deliberately narrower than what ``internal.enum_args`` accepts: coercion also
+# takes the member *name* and ignores case, and a literal can express neither. Keep it
+# beside the enum: ``tests/test_enum_arguments.py`` fails if the two drift. The same
+# holds for ``ProcessIsolationStr`` and ``RarDecompressorStr`` below.
+AcceleratorModeStr = Literal["auto", "on", "off"]
 
 
 class ProcessIsolation(Enum):
@@ -99,8 +129,8 @@ class ProcessIsolation(Enum):
     """The default: only the decoders seen to crash on some input run in a child
     process: rapidgzip (``use_rapidgzip``, ``use_indexed_bzip2``), pyppmd (every PPMd
     member) and libbzip3 (every ``.bz3`` file, a young library with memory-safety fixes
-    in its 2023 releases). Every other decoder runs in the caller's process. Processes are reused for
-    later decoders. Measured on one Linux machine
+    in its 2023 releases). Every other decoder runs in the caller's process. Processes
+    are reused for later decoders. Measured on one Linux machine
     (``scripts/investigations/bench_process_isolation.py``), each PPMd decoder costs
     about 1.4 to 2 ms more than in-process: a non-solid 7z of 1024 PPMd members of 4 KiB
     took about twice as long. A ZIP member or a non-solid 7z member has a decoder of its
@@ -133,12 +163,18 @@ class ProcessIsolation(Enum):
     """No child process at all: every decoder runs in the caller's process.
 
     Not recommended for archives you do not trust: rapidgzip, pyppmd and libbzip3 are
-    isolated by default because they crash the process on some input or may, and here a crash takes the
-    caller with it. It suits trusted files where speed matters, tests, and environments
-    that cannot start processes. PPMd members and ``.bz3`` files decode in-process, and
-    rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2`` under ``AUTO`` use
-    the standard library, and ``ON`` is refused with
+    isolated by default because they crash the process on some input or may, and here a
+    crash takes the caller with it. It suits trusted files where speed matters, tests,
+    and environments that cannot start processes. PPMd members and ``.bz3`` files decode
+    in-process, and rapidgzip is not used: ``use_rapidgzip`` and ``use_indexed_bzip2``
+    under ``AUTO`` use the standard library, and ``ON`` is refused with
     :class:`~archivey.ArchiveyUsageError` when the config is built."""
+
+
+# The string spellings of ``ProcessIsolation``, for ``process_isolation``.
+ProcessIsolationStr = Literal[
+    "known_crashes", "known-crashes", "native_decoders", "native-decoders", "none"
+]
 
 
 class RarDecompressor(Enum):
@@ -193,6 +229,10 @@ class RarDecompressor(Enum):
     ``check_programs=False`` to avoid that."""
 
 
+# The string spellings of ``RarDecompressor``, for ``rar_decompressor``.
+RarDecompressorStr = Literal["unrar", "unar", "auto", "none"]
+
+
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
 # rapidgzip for a DEFLATE-family stream (gzip / zlib / raw deflate). ``ON`` ignores
 # this; unknown size keeps pre-threshold AUTO.
@@ -215,7 +255,9 @@ RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE: int = 16 * 1024 * 1024
 # for itself much sooner than for DEFLATE: a full read broke even near 0.6 MiB
 # compressed with 4 cores, and near 2 MiB with one
 # (``scripts/investigations/bench_bzip2_child.py``). 1 MiB sits between the two. A
-# caller that seeks backward a lot gains from the index sooner, and can set ``ON``.
+# caller that seeks backward a lot gains from the index sooner, and can set ``ON``. The
+# same threshold gates a large sequential read on two or more CPUs, where the parallel
+# decoder pays more (``_bzip2_sequential_read_pays`` in ``codecs/bzip2_codec.py``).
 INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 
 
@@ -234,50 +276,17 @@ INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE: int = 1024 * 1024
 REWIND_REDECODE_WARN_BYTES: int = 1 * 1024 * 1024
 
 
-class _InheritedFloat(float):
-    """The default of a deprecated ``ExtractionLimits`` ratio field: not set, so
-    :class:`DecoderLimits` decides. A ``float`` of the default value, so it reads as
-    one; told apart by type."""
-
-    __slots__ = ()
-
-
-class _InheritedInt(int):
-    """:class:`_InheritedFloat` for the integer ratio fields."""
-
-    __slots__ = ()
-
-
-def ratio_field_is_set(value: object) -> bool:
-    """Whether a deprecated ``ExtractionLimits`` ratio field was given a value."""
-    return not isinstance(value, (_InheritedFloat, _InheritedInt))
-
-
-_DEPRECATED_RATIO_FIELDS = (
-    "max_ratio",
-    "ratio_activation_threshold",
-    "live_ratio_activation_threshold",
-)
-
-
 @dataclass(frozen=True)
 class ExtractionLimits:
     """Decompression-bomb limits for extraction.
 
     Applied by :meth:`~archivey.ForwardArchiveReader.extract_all`.
 
-    ``None`` on a guard field disables that guard. :attr:`UNLIMITED` sets the guard
-    fields to ``None``.
+    ``None`` on a field disables that guard. :attr:`UNLIMITED` sets every field to
+    ``None``.
 
-    The ratio fields (:attr:`max_ratio`, :attr:`ratio_activation_threshold`,
-    :attr:`live_ratio_activation_threshold`) are deprecated: the ratio holds every
-    decode, reads and listing included, so it lives on :class:`DecoderLimits`. A ratio
-    field set here still overrides the :class:`DecoderLimits` one, with a
-    ``DeprecationWarning``: in :attr:`ArchiveyConfig.extraction_limits` for every
-    decode of the reader, and in ``extract_all(limits=...)`` for that extraction.
-    Left unset, they read as the :class:`DecoderLimits` defaults. :attr:`UNLIMITED`
-    still turns the ratio off for the extraction it is passed to, until these fields
-    go.
+    The decompression ratio is :attr:`DecoderLimits.max_ratio`, which holds every
+    decode, reads and listing included.
     """
 
     max_extracted_bytes: int | None = 2 * 2**30
@@ -290,17 +299,9 @@ class ExtractionLimits:
     Crossing it stops the whole extraction, even under ``on_error="continue"``.
     """
 
-    max_ratio: float | None = _InheritedFloat(800.0)
-    """Deprecated: use :attr:`DecoderLimits.max_ratio`, which holds reads too.
-
-    Set here, it overrides that field: in :attr:`ArchiveyConfig.extraction_limits` for
-    the reader, in ``extract_all(limits=...)`` for that extraction only.
-    """
-
-    ratio_activation_threshold: int = _InheritedInt(5 * 2**20)
-    """Deprecated: use :attr:`DecoderLimits.ratio_activation_threshold`. Set here, it
-    overrides that field as :attr:`max_ratio` does."""
-
+    # Keyword-only, so a second positional argument raises rather than setting an
+    # entry cap the caller may not have meant.
+    _: KW_ONLY
     max_entries: int | None = 262_144
     """Most entries one extraction may create: files, directories and links.
 
@@ -313,40 +314,15 @@ class ExtractionLimits:
     quadratic in its size.
     """
 
-    live_ratio_activation_threshold: int = _InheritedInt(256 * 2**20)
-    """Deprecated: use :attr:`DecoderLimits.live_ratio_activation_threshold`. Set
-    here, it overrides that field as :attr:`max_ratio` does."""
-
     UNLIMITED: ClassVar[ExtractionLimits]
 
     def __post_init__(self) -> None:
         # allow_none and allow_float come from the field annotations.
         check_limit_fields(self, cls="ExtractionLimits")
-        set_fields = [
-            name
-            for name in _DEPRECATED_RATIO_FIELDS
-            if ratio_field_is_set(getattr(self, name))
-        ]
-        # ``max_ratio=None`` alone is what ``UNLIMITED`` holds, and a copy of it made
-        # with ``dataclasses.replace`` passes the value on as if the caller had set
-        # it. It stays silent, so ``replace(UNLIMITED, max_entries=...)`` does not
-        # warn about a field the caller never wrote; written by hand, it still works.
-        if set_fields and not (set_fields == ["max_ratio"] and self.max_ratio is None):
-            warnings.warn(
-                "The ratio fields of ExtractionLimits (max_ratio, "
-                "ratio_activation_threshold, live_ratio_activation_threshold) are "
-                "deprecated and will be removed in a future release; set them on "
-                "DecoderLimits, which holds reads and listing as well as extraction.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
 
 
-# ``UNLIMITED`` keeps turning the ratio off for an extraction until the deprecated
-# fields go.
 ExtractionLimits.UNLIMITED = ExtractionLimits(
     max_extracted_bytes=None,
-    max_ratio=None,
     max_entries=None,
 )
 
@@ -384,8 +360,15 @@ class ListingLimits:
     for the whole image, every tree together.
     RPM refuses a header that lists more files than ``max_members`` at open, before it
     builds the file list.
+    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
+    open.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than is left of ``max_metadata_bytes``, before reading it.
+    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
+    header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
+    keyword does not count again.
+    A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
+    ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
+    ``max_metadata_bytes``, before reading it.
     SquashFS walks the whole directory tree before it lists a member, and weighs the
     paths it finds, and the symlink targets it keeps for later, against
     ``max_metadata_bytes`` as it goes: a listing whose names and kept targets cross the
@@ -412,20 +395,49 @@ class ListingLimits:
 
     Counts member names (and raw names), comments, link targets, owner and group names
     and the string or bytes values in ``extra``, plus the keys of a dict nested in it
-    (such as TAR's PAX keywords), plus the archive comment. The top-level ``extra``
-    keys are fixed per format and do not count. Non-ASCII text counts four bytes per
-    character, so it is an upper bound rather than an exact size. A TAR sparse member's
-    map, which the listing keeps to read the member, counts 24 bytes per entry, and
-    each ZIP extra field kept in ``extra["zip.extra_fields"]`` counts 72 bytes plus its
-    data. A cabinet's block tables, read as members of each folder are first opened
-    and kept for the reader's life, count 256 bytes per data block on a running total
-    of their own, so opening a member can raise too.
+    (such as TAR's PAX keywords) with 96 bytes more for each such text key, plus the
+    archive comment. Each distinct PAX keyword also counts 256 bytes once while its header
+    is parsed. The top-level ``extra`` keys are fixed per format and do not
+    count. Non-ASCII text counts four bytes per character, so it is an upper bound
+    rather than an exact size. A TAR sparse member's map, which the listing keeps to
+    read the member, counts 24 bytes per entry, and each ZIP extra field kept in
+    ``extra["zip.extra_fields"]`` counts 72 bytes plus its data. A cabinet's block
+    tables, read as members of each folder are first opened and kept for the reader's
+    life, count 256 bytes per data block on a running total of their own, so opening a
+    member can raise too.
 
     A ZIP read from a stream that cannot seek also keeps the data of each member
     short enough to be a symlink until its directory says which members are links.
     That data does not count here; the pass holds at most this many bytes of it,
     dropping the longest first. A link whose data was dropped is listed without its
     target and reports ``SYMLINK_TARGET_UNAVAILABLE``.
+
+    An archive a format reads inside its own (``ReaderContext.open_nested``) counts
+    toward the same total: what its reader keeps beyond the members it hands out is
+    added while it reads, and its members count once, as the outer listing lists them.
+    """
+
+    max_decoded_bytes: int | None = 4 * 2**30
+    """Most bytes one listing may decode. 4 GiB.
+
+    Some archives can only be listed by decoding them: a ``.tar.gz`` (or any
+    compressed TAR or cpio) is one compressed stream, and its member
+    headers sit between the members' data, so listing it decodes all of it. A
+    streaming ZIP decodes the start of each compressed member it passes over (up to
+    about 4 KiB, in case the directory makes it a link), so it counts about 4 KiB a
+    member. A solid 7z decodes its folder up to the last symlink whose target it reads
+    (``read_link_targets``). That work happens on ``open_archive`` and the first
+    listing call, before the caller has read anything, so this caps it. Each reader's
+    listing counts from zero, and so does a walk started over after a failure; a reader
+    keeps its listing, so listing again decodes nothing. The bytes a caller reads from
+    a member do not count, only those the reader decodes on its own: the header read
+    at open, the data a walk passes over to reach the next header, the link targets it
+    reads. A 7z header stored compressed counts too, at open.
+
+    :attr:`DecoderLimits.max_ratio` already holds a listing's decode to a multiple of
+    the archive's size; this is the absolute cap, for a large archive that compresses
+    well. Detection has its own cap (:class:`~archivey.detection_cost.DetectionBudget`)
+    and does not count here.
     """
 
     UNLIMITED: ClassVar[ListingLimits]
@@ -437,6 +449,7 @@ class ListingLimits:
 ListingLimits.UNLIMITED = ListingLimits(
     max_members=None,
     max_metadata_bytes=None,
+    max_decoded_bytes=None,
 )
 
 
@@ -456,17 +469,17 @@ class DecoderLimits:
     block, ``.lzma`` and each lzip member — the window each zstd frame declares,
     on ``.zst``, ZIP method 93 and 7z, and twice the decoded size a mozlz4 header
     declares (the decode buffer and its copy), and the block size a ``.bz3`` header
-    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's dictionary is checked too, before
-    ``unrar`` or ``unar`` is started, at what that program allocates for it. ``unar``
-    writes to the whole declared dictionary, so the declared size counts. ``unrar``
-    writes to it only as output is produced, so the declared size counts only up
-    to the unpacked bytes the read decodes: the member's own size, or in a solid
-    archive the members up to and including it. The two decoders that allocate what
-    the header says, pyppmd and liblzma, differ. A refused allocation inside pyppmd
-    takes its process down (a child process unless ``process_isolation`` is ``NONE``).
-    liblzma does raise ``MemoryError`` when it cannot reserve the dictionary, but a
-    reservation that succeeds is its real cost: the dictionary fills as output is
-    written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
+    declares, at what libbzip3 allocates for it (about 10 times the block size). RAR's
+    dictionary is checked too, before ``unrar`` or ``unar`` is started, at what that
+    program allocates for it. ``unar`` writes to the whole declared dictionary, so the
+    declared size counts. ``unrar`` writes to it only as output is produced, so the
+    declared size counts only up to the unpacked bytes the read decodes: the member's
+    own size, or in a solid archive the members up to and including it. The two decoders
+    that allocate what the header says, pyppmd and liblzma, differ. A refused allocation
+    inside pyppmd takes its process down (a child process unless ``process_isolation``
+    is ``NONE``). liblzma does raise ``MemoryError`` when it cannot reserve the
+    dictionary, but a reservation that succeeds is its real cost: the dictionary fills
+    as output is written, so a 151 KB stream declaring 4 GiB held 1.1 GiB resident after
     producing 1 GiB, where the same stream declaring 1 MiB held 59 MB. The
     dictionary bounds how much of the output the decoder keeps, and the archive
     picks it.
@@ -505,16 +518,19 @@ class DecoderLimits:
     allocation, in its own process, and going over the cap raises nothing to the
     caller. The child is stopped and the standard library continues the stream.
 
-    **Detection is not capped.** Formats without magic (``.lzma``, and the
+    **Detection is capped too.** Formats without magic (``.lzma``, and the
     compressed tar inside ``.tar.xz`` and its siblings) are recognised by
-    decoding a small sample, and that sample is decoded with no decoder limit,
-    because a capped probe would report a different format for a caller who
-    passed :attr:`UNLIMITED`. It does not need one: a probe builds its LZMA
-    decoder with only the dictionary its sample needs (4 to 64 KiB, whatever the
-    header declares), which decodes the sample to the same bytes, and lowers
-    zstd's window limit to libzstd's default 128 MiB, treating a frame over it
-    as unrecognised. The open that follows detection is capped as described
-    here.
+    decoding a small sample, and that decoder is held to
+    :attr:`max_decoder_memory`. A probe builds its LZMA decoder with only the
+    dictionary its sample needs (4 to 64 KiB, whatever the header declares),
+    which decodes the sample to the same bytes, and the cap is checked against
+    that dictionary, so a ``.tar.xz`` whose declared dictionary is over the cap
+    is still found as one and then refused on open. A zstd window cannot be
+    shrunk, so a frame whose window is over the cap (or over libzstd's default
+    128 MiB, whatever the cap) is not looked inside: a ``.tar.zst`` is then
+    reported as a bare ``.zst``, which the read refuses for the same window. When
+    the cap is the reason, detection records the diagnostic
+    ``DETECTION_DECODER_LIMITED``, which names it.
 
     Under a memory cap (a container limit, ``RLIMIT_AS``, a small machine) a
     refused native allocation does not always surface as ``MemoryError`` —
@@ -530,7 +546,10 @@ class DecoderLimits:
     folder's ``main``, ``call`` and ``jump`` branches), so when it has more than one,
     their LZMA dictionaries, PPMd memory sizes and zstd windows count together against
     it. A zstd window counts as the first frame declares it, when the zstd coder reads a
-    packed stream directly.
+    packed stream directly. An LZMA Alone stream with a known size counts its dictionary
+    twice, because archivey reads it with two decoders at once: liblzma cannot be
+    trusted to read an end marker after a known size (before 5.2.6 never, and in every
+    version measured not when a read boundary falls just before the marker).
 
     That number is a policy choice, not a limit of the format, so here
     is what it was chosen against. Measured on 7-Zip 23.01, a writer
@@ -564,6 +583,12 @@ class DecoderLimits:
     liblzma's own memory limit, which also counts about 64 KiB of the
     decoder's overhead; a 128 KiB allowance keeps a dictionary exactly
     at the cap readable there as on every other path.
+
+    An archive a format reads inside its own (``ReaderContext.open_nested``) decodes
+    while the outer archive's decoder runs, so the two share the cap: the inner
+    archive's decoders get it less the largest working set the outer archive declared
+    by the time the inner archive's first byte was decoded, and a refusal there names
+    what was left.
 
     What the default is *not* is a promise about the machine. The cap
     bounds what an archive may ask for; whether an allocation succeeds
@@ -640,7 +665,9 @@ class DecoderLimits:
     Every decode of member data is held to it: ``open()``, ``read()``,
     ``stream_members()`` and ``extract_all``, and for a container inside a compression
     stream (a ``.tar.gz``, a format handler's ``.cpio.xz``) listing too, since listing
-    one decodes all of it. Two checks, each from the decoded output:
+    one decodes all of it. The stream :func:`~archivey.open_stream` returns is held
+    too, against the size of its source, by the archive-wide check alone. Two checks,
+    each from the decoded output:
 
     - **Per member**, against the member's recorded compressed size. A member over it
       fails on its own: a read of it raises
@@ -690,6 +717,31 @@ class DecoderLimits:
     Lower it to stop such a bomb sooner; raise it for piped archives with longer blank
     starts. A value below :attr:`ratio_activation_threshold` has no effect. It cannot be
     ``None``; set :attr:`max_ratio` to ``None`` to turn the ratio guard off.
+    """
+
+    max_nest_decoded_bytes: int | None = None
+    """Most bytes a whole nest of archives may decode. ``None`` (the default): no cap.
+
+    A nest is an archive's reader and every reader opened inside it, by a format
+    (``ReaderContext.open_nested``) or by the caller with
+    ``open_archive(..., parent=reader)``. This cap is a fixed work budget for one
+    upload, whatever its size: every byte any reader of the nest decodes counts, on
+    every thread, closed readers included. That covers member reads, extraction, the
+    gap a forward seek skips, and the bytes a decoder produces to get past members
+    nobody reads (a compressed TAR's listing, a solid RAR's prefix, a CAB folder, a 7z
+    header stored compressed). A byte decoded again counts again. The read that crosses
+    it decodes at most one byte past it and raises
+    :exc:`~archivey.exceptions.ResourceLimitError`, which stops an extraction.
+
+    The count never refills while the nest lives, so on a reader kept open for long
+    (an :class:`~archivey.fsspec.ArchiveyFileSystem`, a reader a server shares) this
+    bounds every read it ever serves. With no cap, a nest is still held to
+    :attr:`max_ratio` times its outermost archive's size, counting each reader's
+    bytes once per pass. Each reader's value is combined with the outermost reader's
+    by taking the stricter one: a child can tighten the nest's cap, never loosen it.
+    A reader whose combined value is ``None`` counts nothing, so its reads cost no
+    counting: a child that sets a cap the outermost reader does not set counts the
+    bytes of the readers that set one.
     """
 
     UNLIMITED: ClassVar[DecoderLimits]
@@ -916,6 +968,10 @@ class ArchiveyConfig:
     To read a set then, pass its volumes as a list. That suits a directory other users
     can write to, where a planted part (a hard link to a file the caller can read and
     they cannot, which looks like any file) would end up inside an extracted member.
+
+    An ``fsspec.core.OpenFile`` is never searched, whatever this says: pass a remote
+    set as a list of ``OpenFile`` objects. With this ``True`` a lone remote
+    ``x.7z.001`` is still refused by its name, and the message says to pass the list.
     """
 
     diagnostic_policy: DiagnosticPolicy = field(default_factory=DiagnosticPolicy)
@@ -957,8 +1013,87 @@ class ArchiveyConfig:
     30 ms at 50 MB/s). ``0`` fetches only the bytes a read needs.
     """
 
+    unrar_path: str | os.PathLike[str] | None = None
+    """The RARLAB ``unrar`` or ``rar`` program to run, as an absolute path, or ``None``
+    to look for ``unrar`` and then ``rar`` on ``PATH``.
+
+    When set, archivey runs that file and no other RARLAB program: ``PATH`` is not
+    searched, so a program put there later cannot be picked up. It is still identified
+    before it first runs, and one that is not RARLAB's, or older than 6.0, is refused as
+    a missing one is. A relative path is refused, since it would depend on the current
+    directory. Stored as a ``str``. :func:`~archivey.format_availability` answers for it
+    when passed the config."""
+
+    unar_path: str | os.PathLike[str] | None = None
+    """The ``unar`` program to run, as an absolute path, or ``None`` to look for
+    ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
+    ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
+
+    recover_partial_data: bool = True
+    """Whether a read that meets damaged compressed data first hands back the bytes
+    before the damage.
+
+    ``True``: on a source that can seek, a read with a size that meets a decoder error
+    returns every byte the decoder gives before it, and the next read raises. Finding
+    those bytes means decompressing that part again, from the last point the stream can
+    restart at, so it costs a second decode on damaged data. ``False``: archivey does not
+    decode again for them, and on a pipe a gzip, zlib or deflate decoder does not copy
+    its state before each step. The read that meets the damage raises, and the bytes the
+    failing decoder step gave before it are lost; the bytes the read's earlier steps
+    gave still come back, as do the bytes the in-house decoders (``.Z``, lzop, the old
+    ZIP methods) and bzip3 return before an error at no extra cost. Use it when a
+    damaged member is thrown away whole anyway. (Brotli still decodes again to tell
+    bytes after its stream from damage: that decides which error is raised, not which
+    bytes come back.)
+
+    A compressed TAR's own stream recovers its bytes either way, so every member that
+    ends before the damage is still read whole; the member the damage cuts may still
+    hand back its first bytes. The same archive gives the same members and the same
+    error either way: only the partial bytes before an error differ.
+    """
+
+    if TYPE_CHECKING:
+        # The constructor's input types, wider than the fields for the enum fields and
+        # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
+        # preset) to what the field holds, so a typed caller writing
+        # ``process_isolation="none"``, as documented, needs no suppression, and a
+        # caller reading the field sees the member only. ``@dataclass`` does not
+        # replace an ``__init__`` the class body defines, and this one exists only for
+        # type checkers, so the runtime keeps the generated one. Each default is
+        # ``...`` here: the field's own default applies, and is not written twice.
+        # ``tests/test_api_surface.py`` fails if this and the generated ``__init__``
+        # differ in anything but the widened annotations.
+        def __init__(
+            self,
+            use_rapidgzip: AcceleratorMode | AcceleratorModeStr = ...,
+            use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = ...,
+            process_isolation: ProcessIsolation | ProcessIsolationStr = ...,
+            zip_unflagged_fallback_encoding: str = ...,
+            rar_allow_glob_member_concatenation: bool = ...,
+            rar_decompressor: RarDecompressor | RarDecompressorStr = ...,
+            read_link_targets: bool = ...,
+            extraction_limits: ExtractionLimits = ...,
+            listing_limits: ListingLimits = ...,
+            decoder_limits: DecoderLimits = ...,
+            spool_limits: SpoolLimits = ...,
+            detection_budget: (
+                DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr
+            ) = ...,
+            always_probe_content: bool = ...,
+            discover_volumes: bool = ...,
+            diagnostic_policy: DiagnosticPolicy = ...,
+            max_retained_diagnostic_references: int = ...,
+            on_diagnostic: OnDiagnostic | None = ...,
+            formats: FormatPolicy = ...,
+            max_read_through: int = ...,
+            unrar_path: str | os.PathLike[str] | None = ...,
+            unar_path: str | os.PathLike[str] | None = ...,
+            recover_partial_data: bool = ...,
+        ) -> None: ...
+
     def __post_init__(self) -> None:
-        """Check the fields at construction, and convert the two that hold enums.
+        """Check the fields at construction, and convert the ones that hold enums or
+        program paths.
 
         A config field is read wherever it is needed, which is never where it was
         written: ``ArchiveyConfig(extraction_limits="none")`` builds fine and then
@@ -968,73 +1103,16 @@ class ArchiveyConfig:
         points does not reach this: the object passed there *is* an ``ArchiveyConfig``,
         and the wrong type is one field in.
 
-        The two accelerator fields are **converted** rather than only checked, because
-        their consumers test them with ``is`` (:meth:`AcceleratorMode.enabled_for`): a
-        string that survived construction would not be refused on use, it would read as
-        "neither ON nor OFF" and silently take the AUTO path. Converting here means the
-        field always holds a member, and a bad spelling names itself at the call site
-        that wrote it rather than during some later stream open.
-
-        They stay annotated ``AcceleratorMode`` rather than ``AcceleratorMode | str``
-        because that is what they hold once constructed, and it keeps every consumer
-        honest. A string is still accepted at construction — a type checker flags it,
-        which is the right answer for a typed caller who has the enum imported anyway,
-        and an untyped script gets the conversion.
-
-        That conversion goes through ``object.__setattr__`` because the dataclass is
-        frozen and it *rewrites* the field rather than only inspecting it. The checks
-        above reject without writing, so they need no such thing.
+        The steps run in this order, not field order: with several bad fields, the
+        first check that fails is the error the caller sees.
         """
-        # The checks below run in this order, not field order: with several bad
-        # fields, the first check that fails is the error the caller sees.
-        instance_fields: tuple[tuple[str, type], ...] = (
-            ("extraction_limits", ExtractionLimits),
-            ("listing_limits", ListingLimits),
-            ("decoder_limits", DecoderLimits),
-            ("spool_limits", SpoolLimits),
-            ("diagnostic_policy", DiagnosticPolicy),
-            ("formats", FormatPolicy),
-        )
-        for field_name, expected in instance_fields:
-            check_instance(
-                getattr(self, field_name),
-                expected,
-                call=f"ArchiveyConfig({field_name}=…)",
-                allow_none=False,
-            )
-        if not isinstance(self.detection_budget, DetectionBudget):
-            # A preset member, or its name, is converted here so the field always
-            # holds the budget detection reads. The annotation stays the budget alone,
-            # as it does for ``use_rapidgzip`` below: it is read by every consumer of
-            # the attribute, not only by the constructor's callers, and after
-            # construction it always holds a ``DetectionBudget``.
-            # ``tests/test_enum_arguments.py`` records the exemption.
-            preset = coerce_enum(
-                self.detection_budget,
-                DetectionBudgetPreset,
-                call="ArchiveyConfig()",
-                param="detection_budget=",
-                also_accepts="DetectionBudget",
-            )
-            object.__setattr__(
-                self, "detection_budget", DetectionBudget.for_preset(preset)
-            )
-        # Guard switches: a string such as "false" is truthy, so it would silently
-        # turn a refusal off. Only a real bool is accepted.
-        for field_name in (
-            "rar_allow_glob_member_concatenation",
-            "read_link_targets",
-            "always_probe_content",
-            "discover_volumes",
-        ):
-            check_instance(
-                getattr(self, field_name),
-                bool,
-                call=f"ArchiveyConfig({field_name}=…)",
-                allow_none=False,
-            )
+        _check_policy_fields(self)
+        _convert_detection_budget(self)
+        _check_guard_switches(self)
         # Archivey's own copies of a caller's config (``copy_config_quietly``) pass
         # the field on as if it were set again; only the caller's construction warns.
+        # The warning stays in this method so that ``stacklevel=3`` names the caller's
+        # line: one level is this method, the next is the dataclass ``__init__``.
         if self.rar_allow_glob_member_concatenation and not copying_config():
             warnings.warn(
                 "ArchiveyConfig.rar_allow_glob_member_concatenation is deprecated and "
@@ -1043,78 +1121,222 @@ class ArchiveyConfig:
                 DeprecationWarning,
                 stacklevel=3,
             )
-        check_callable(self.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
-        check_encoding(
-            self.zip_unflagged_fallback_encoding,
-            call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+        _check_scalar_fields(self)
+        _convert_enum_fields(self)
+        _convert_program_paths(self)
+        _refuse_unusable_forced_accelerator(self)
+
+
+# The helpers below are the steps of ``ArchiveyConfig.__post_init__``. The ones that
+# convert a field write it with ``object.__setattr__``, because the dataclass is
+# frozen; the checks reject without writing, so they need no such thing.
+
+
+def _check_policy_fields(config: ArchiveyConfig) -> None:
+    """Refuse a limits or policy field that does not hold an object of its own class."""
+    instance_fields: tuple[tuple[str, type], ...] = (
+        ("extraction_limits", ExtractionLimits),
+        ("listing_limits", ListingLimits),
+        ("decoder_limits", DecoderLimits),
+        ("spool_limits", SpoolLimits),
+        ("diagnostic_policy", DiagnosticPolicy),
+        ("formats", FormatPolicy),
+    )
+    for field_name, expected in instance_fields:
+        check_instance(
+            getattr(config, field_name),
+            expected,
+            call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-        check_limit(
-            self.max_read_through,
-            cls="ArchiveyConfig",
-            field_name="max_read_through",
+
+
+def _convert_detection_budget(config: ArchiveyConfig) -> None:
+    """Replace a :class:`DetectionBudgetPreset` member, or its name, with its budget.
+
+    The field then always holds the :class:`DetectionBudget` that detection reads, so
+    its annotation is the budget alone; the constructor's input type also names the
+    preset and ``DetectionBudgetPresetStr``, for the reason :func:`_convert_enum_fields`
+    gives.
+    """
+    if isinstance(config.detection_budget, DetectionBudget):
+        return
+    preset = coerce_enum(
+        config.detection_budget,
+        DetectionBudgetPreset,
+        call="ArchiveyConfig()",
+        param="detection_budget=",
+        also_accepts="DetectionBudget",
+    )
+    object.__setattr__(config, "detection_budget", DetectionBudget.for_preset(preset))
+
+
+def _check_guard_switches(config: ArchiveyConfig) -> None:
+    """Refuse a boolean switch that does not hold a real ``bool``.
+
+    A string such as ``"false"`` is truthy, so it would silently turn a refusal off.
+    """
+    for field_name in (
+        "rar_allow_glob_member_concatenation",
+        "read_link_targets",
+        "recover_partial_data",
+        "always_probe_content",
+        "discover_volumes",
+    ):
+        check_instance(
+            getattr(config, field_name),
+            bool,
+            call=f"ArchiveyConfig({field_name}=…)",
             allow_none=False,
         )
-        check_limit(
-            self.max_retained_diagnostic_references,
-            cls="ArchiveyConfig",
-            field_name="max_retained_diagnostic_references",
-            allow_none=False,
-        )
-        # These two are coerced at a public boundary with no ``Literal`` alias beside
-        # them (as are ``ArchiveFormat``'s two fields), and that is deliberate: the
-        # annotation is read by every consumer of the attribute, not only by the
-        # constructor's callers, and after construction the field always holds a
-        # member. ``tests/test_enum_arguments.py``
-        # records the exemption so the gap is not "fixed" back into a union.
-        for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-            object.__setattr__(
-                self,
-                field_name,
-                coerce_enum(
-                    getattr(self, field_name),
-                    AcceleratorMode,
-                    call="ArchiveyConfig()",
-                    param=f"{field_name}=",
-                ),
-            )
+
+
+def _check_scalar_fields(config: ArchiveyConfig) -> None:
+    """Check the callback, the ZIP fallback encoding and the two integer limits."""
+    check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
+    check_encoding(
+        config.zip_unflagged_fallback_encoding,
+        call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",
+        allow_none=False,
+    )
+    check_limit(
+        config.max_read_through,
+        cls="ArchiveyConfig",
+        field_name="max_read_through",
+        allow_none=False,
+    )
+    check_limit(
+        config.max_retained_diagnostic_references,
+        cls="ArchiveyConfig",
+        field_name="max_retained_diagnostic_references",
+        allow_none=False,
+    )
+
+
+def _convert_enum_fields(config: ArchiveyConfig) -> None:
+    """Replace each enum field's value, a member or its name, with the member.
+
+    The fields are **converted** rather than only checked because their consumers
+    test them with ``is`` (:meth:`AcceleratorMode.enabled_for`, for one): a string
+    that survived construction would not be refused on use, it would read as "neither
+    ON nor OFF" and silently take the AUTO path. Converting here means the field
+    always holds a member, and a bad spelling names itself at the call site that
+    wrote it rather than during some later stream open.
+
+    The fields are annotated with the enum alone, because that is what they hold once
+    constructed, and every consumer of the attribute reads that annotation. The
+    constructor's input types are wider: the ``__init__`` declared for type checkers in
+    the class body takes the enum or its ``Literal`` alias (``AcceleratorModeStr``,
+    ``ProcessIsolationStr``, ``RarDecompressorStr``). The docs show these fields set by
+    their string spellings, and a typed caller who copies such an example must not need
+    a suppression for it; a misspelling is still a type error, because the alias lists
+    the spellings, not ``str``.
+    """
+    # Each call names its enum class directly: ``tests/test_enum_arguments.py`` reads
+    # the coerced classes from the second argument of every ``coerce_enum`` call.
+    for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
         object.__setattr__(
-            self,
-            "rar_decompressor",
+            config,
+            field_name,
             coerce_enum(
-                self.rar_decompressor,
-                RarDecompressor,
+                getattr(config, field_name),
+                AcceleratorMode,
                 call="ArchiveyConfig()",
-                param="rar_decompressor=",
+                param=f"{field_name}=",
             ),
         )
-        object.__setattr__(
-            self,
-            "process_isolation",
-            coerce_enum(
-                self.process_isolation,
-                ProcessIsolation,
-                call="ArchiveyConfig()",
-                param="process_isolation=",
-            ),
+    object.__setattr__(
+        config,
+        "rar_decompressor",
+        coerce_enum(
+            config.rar_decompressor,
+            RarDecompressor,
+            call="ArchiveyConfig()",
+            param="rar_decompressor=",
+        ),
+    )
+    object.__setattr__(
+        config,
+        "process_isolation",
+        coerce_enum(
+            config.process_isolation,
+            ProcessIsolation,
+            call="ArchiveyConfig()",
+            param="process_isolation=",
+        ),
+    )
+
+
+def _refuse_unusable_forced_accelerator(config: ArchiveyConfig) -> None:
+    """Refuse an accelerator set to ``ON`` that the rest of the config turns off.
+
+    rapidgzip runs only in a child process, so ``process_isolation=NONE`` rules it
+    out, and so does excluding the library in :attr:`ArchiveyConfig.formats`. ``ON``
+    asks for the accelerator by name, so the conflict is refused when the config is
+    built rather than when a stream opens.
+    """
+    forced = next(
+        (
+            field_name
+            for field_name in ("use_rapidgzip", "use_indexed_bzip2")
+            if getattr(config, field_name) is AcceleratorMode.ON
+        ),
+        None,
+    )
+    if forced is None:
+        return
+    if config.process_isolation is ProcessIsolation.NONE:
+        raise _UsageValueError(
+            f"ArchiveyConfig({forced}=ON) cannot be combined with "
+            "process_isolation=NONE: rapidgzip runs only in a child "
+            "process. Use AUTO or OFF, or another process_isolation."
         )
-        if self.process_isolation is ProcessIsolation.NONE:
-            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-                if getattr(self, field_name) is AcceleratorMode.ON:
-                    raise ArchiveyUsageError(
-                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "process_isolation=NONE: rapidgzip runs only in a child "
-                        "process. Use AUTO or OFF, or another process_isolation."
-                    )
-        if OptionalLibrary.RAPIDGZIP in self.formats.exclude_libraries:
-            for field_name in ("use_rapidgzip", "use_indexed_bzip2"):
-                if getattr(self, field_name) is AcceleratorMode.ON:
-                    raise ArchiveyUsageError(
-                        f"ArchiveyConfig({field_name}=ON) cannot be combined with "
-                        "formats=FormatPolicy(exclude_libraries=) naming rapidgzip, "
-                        "which turns that accelerator off. Use AUTO or OFF, or drop "
-                        "the exclusion."
-                    )
+    if OptionalLibrary.RAPIDGZIP in config.formats._libraries_off:
+        raise _UsageValueError(
+            f"ArchiveyConfig({forced}=ON) cannot be combined with "
+            "a formats=FormatPolicy that turns rapidgzip off "
+            "(exclude_libraries= or only_libraries=), which turns that "
+            "accelerator off. Use AUTO or OFF, or let rapidgzip run."
+        )
+
+
+def _convert_program_paths(config: ArchiveyConfig) -> None:
+    """Replace ``unrar_path`` and ``unar_path`` with an absolute ``str``, or refuse
+    them (:func:`_coerce_program_path`)."""
+    for field_name in ("unrar_path", "unar_path"):
+        object.__setattr__(
+            config,
+            field_name,
+            _coerce_program_path(field_name, getattr(config, field_name)),
+        )
+
+
+def _coerce_program_path(field_name: str, value: object) -> str | None:
+    """An ``unrar_path=`` / ``unar_path=`` value as an absolute ``str``, or ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, bytes) or not isinstance(value, (str, os.PathLike)):
+        raise _UsageTypeError(
+            f"ArchiveyConfig({field_name}=) takes a path as a str or os.PathLike, "
+            f"got {type(value).__name__}."
+        )
+    path = os.fspath(value)
+    if not isinstance(path, str):
+        raise _UsageTypeError(
+            f"ArchiveyConfig({field_name}=) takes a str path, got a bytes one."
+        )
+    # ``PurePath.is_absolute`` needs a drive or share on Windows on every version;
+    # ``os.path.isabs`` before 3.13 accepts a root-relative ``/usr/bin/unrar``.
+    if not path or not pathlib.PurePath(path).is_absolute():
+        raise _UsageValueError(
+            f"ArchiveyConfig({field_name}=) takes an absolute path, got {quoted(path)}: a "
+            "relative one would depend on the current directory."
+        )
+    if "\0" in path:
+        raise _UsageValueError(
+            f"ArchiveyConfig({field_name}=) got a path with a NUL character."
+        )
+    return path
 
 
 DEFAULT_ARCHIVEY_CONFIG = ArchiveyConfig()

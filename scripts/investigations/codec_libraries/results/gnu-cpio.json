@@ -1,0 +1,10 @@
+{
+  "tool": "GNU cpio 2.15",
+  "debian_package": "cpio_2.15+dfsg-2_amd64.deb",
+  "command": "cpio -it --quiet",
+  "input": "upstream-unpackio-009-cpio.bin",
+  "returncode": 2,
+  "stdout": "./same.txt\n",
+  "stderr": "/workspace/work/tools/cpio/usr/bin/cpio: premature end of file\n",
+  "debian_package_sha256": "d8faece250bcf72e91ac15a5fef198be173af18c9f48bae257e7ee937fbc6cdc"
+}

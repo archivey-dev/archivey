@@ -896,10 +896,17 @@ Every public `ArchiveStream` SHALL expose two read-only properties of type
   is read from, for a file whose data is a slice of it), it is the level that check
   proves once it passes: `CHECKSUM`. Such a check runs only when all the members it
   covers are read, so a read of one member alone, `verify()` included, can end at
-  `LENGTH` below it, and `verify_all()` reaches it.
-  `verified` SHALL NOT exceed it. Before a lazy stream opens its member it describes
-  what the stream knows without opening it. Once the stream is open it MAY rise (a
-  password confirmed by another member), and it SHALL fall only when the format
+  `LENGTH` below it, and `verify_all()` reaches it. A TAR file whose data lies inside
+  `.bz2` or `.bz3` blocks whose CRCs passed, or inside `.xz` blocks whose checks passed,
+  SHALL reach `CHECKSUM` once those blocks are checked, before the walk reaches the
+  stream's end: each byte passed a check stored with it. An `.xz` block is checked once
+  the decode is past its end, or at the end of its stream. Bytes decoded from a restart
+  point the file's own index named do not count, and neither do bytes an accelerator
+  decoded. When damage keeps the stream's whole check from passing, `verify_all()` SHALL
+  return each file the block checks raised as a failure: only that check shows no block
+  is missing. `verified` SHALL NOT exceed it. Before a lazy stream opens its member it
+  describes what the stream knows without opening it. Once the stream is open it MAY
+  rise (a password confirmed by another member), and it SHALL fall only when the format
   shows, late, that no read can check every byte: a read finds a stream or frame of
   an `.xz`, `.zst` or `.lz4` file that carries no check (below), or a walk over a
   compressed TAR, CPIO or ar archive finds a stream or frame of the stream it is read
@@ -978,6 +985,11 @@ level adds no new error and no new way to read.
 | `.tar.xz` whose stream has check type None | every file's `verifiable` is `LENGTH` once the walk finds it |
 | `.tar.gz` cut inside its footer, the files whole, walked to the end | every file's `verified` is `LENGTH` and `verifiable` stays `CHECKSUM`; `verify_all()` returns every file |
 | `.tar.gz` listed to its end, trailer matches | every member's `verified` is `CHECKSUM` |
+| `.tar.bz2` walked in a streaming pass, a file whose data lies in blocks already checked | `verified` is `CHECKSUM` before the walk reaches the stream's end |
+| Same, a block after the file damaged | the file stays at `CHECKSUM`; the files in the damaged block stay below it, and the walk raises `CorruptionError`; `verify_all()` returns the file, as the whole-stream check did not pass |
+| `.tar.bz2` with one whole block cut out between intact markers | the files the blocks before the gap raised, the one spanning the gap among them, are at `CHECKSUM`; `verify_all()` returns each of them |
+| `.tar.xz` of several blocks with a check, walked in a streaming pass, a file whose data lies in blocks the decode is past | `verified` is `CHECKSUM` before the walk reaches the stream's end |
+| `.tar.gz`, a one-block `.tar.xz`, or a `.tar.xz` with no check, walked in a streaming pass, before the end | no file is at `CHECKSUM` |
 | 7z one-file folder with a folder CRC and no file CRC, read to the end | `CHECKSUM` |
 | 7z folder of several files with only a folder CRC, a file read to the end | `verified` is `LENGTH` and `verifiable` is `CHECKSUM`; both `CHECKSUM` for all once the folder is read and its CRC matches |
 | Same, the folder CRC does not match | the read at the last file's end raises `CorruptionError`; `verify_all()` returns every file of the folder; the files read before stay at `LENGTH`, below their `CHECKSUM` ceiling |
@@ -1055,7 +1067,20 @@ before it, whatever `n` is, found by decoding again from the last seek point to 
 failing byte. Each decoder call SHALL ask for what the read asks, at most 1 MiB, so a
 clean read costs about what it did before fixed feeding. A read after an index seek MAY
 return a different prefix from a linear read (DR-4a). An accelerator SHALL give the
-prefix of the decoder it replaces.
+prefix of the decoder it replaces. A decoder that hands out every byte before an error
+before it raises it ("In-house decoders hand back their bytes before an error") already
+gives that prefix, and SHALL NOT be decoded again for it.
+
+With `ArchiveyConfig.recover_partial_data=False` a stream SHALL NOT decode again: the
+read that meets the error raises the same error, and MAY lose the bytes the failing
+decoder call gave before it. On a pipe a deflate decoder SHALL NOT copy its state for
+them either ("A pipe loses at most the call that failed" then holds to its bound for
+deflate too). What costs no extra work still holds under it: "In-house decoders hand
+back their bytes before an error" and "A read that meets a decoder error returns what it
+holds first". Brotli's replay to find its stream's end is not recovery and runs under
+both settings, since it decides the error. A compressed TAR's own stream SHALL recover
+its bytes whatever the setting, so every member that ends before the damage reads whole
+under both settings.
 
 #### Scenario: read sizes
 
@@ -1085,11 +1110,14 @@ call that raised. Each call SHALL be fed compressed input up to the next multipl
 64 KiB of compressed offset from where the decoder started (a short source read is fed
 as it is) and SHALL ask for what the read asks, at most 64 KiB.
 
-A gzip, zlib or raw deflate decoder on such a source SHALL lose nothing: it copies its
-zlib state (`decompressobj.copy()`) before each call, and when a call raises, the copy
-decodes the same input again one output byte per call up to the error. The decoder
-returns those bytes and raises the error from its next call. A decoder in a decoder
-child, which has no `copy()`, keeps the bound above.
+Unless the caller set `recover_partial_data=False`, a gzip, zlib or raw deflate decoder
+on such a source SHALL lose nothing: it keeps a copy of its zlib state
+(`decompressobj.copy()`) taken before the call or up to 256 calls, 1 MiB of compressed
+input or 8 MiB of output earlier, and when a call raises, the copy decodes the calls
+since it again and then the failing call's input one output byte per call up to the
+error. The decoder returns those bytes and raises the error from its next call. A
+decoder in a decoder child, which has no `copy()`, keeps the bound above, and so does
+every such decoder under a PyPy whose `copy()` leaks memory (every release so far).
 
 #### Scenario: read sizes on a pipe
 
@@ -1104,7 +1132,8 @@ child, which has no `copy()`, keeps the bound above.
 - **GIVEN** a `.gz`, a zlib stream or raw deflate of 1 MB of text with 64 bytes of `0xff`
   in the middle, or a `.gz` whose second member is damaged, from a pipe
 - **WHEN** it is read in loops of `read(512)` and `read(1 MiB)`
-- **THEN** each loop gets the bytes a file gets, then the error
+- **THEN** each loop gets the bytes a file gets, then the error; under a PyPy whose
+  `copy()` leaks, each loop gets at most the failing call's bytes fewer (64 KiB at most)
 
 #### Scenario: a small read
 
@@ -1114,11 +1143,19 @@ child, which has no `copy()`, keeps the bound above.
 
 ### Requirement: In-house decoders hand back their bytes before an error
 
-The decoders archivey implements (`.Z` LZW, lzop, ZIP Shrink, Reduce and Implode) SHALL
+The decoders archivey implements (`.Z` LZW, lzop, ZIP Shrink, Reduce, Implode and DCL
+Implode), the bzip3 decoder, which reads the block framing itself and calls libbzip3
+once per block, and the bzip2 decoder, which feeds `bz2` one block at a time, SHALL
 return the bytes they decoded before a corrupt code or a failed block, and raise the
-error from the next call. A decoder that calls its decompressor more than once per call
-(`FramedDecoder`) SHALL return the bytes earlier calls gave when a later one raises,
-and raise the error from its next call.
+error from the next call. The bzip2 decoder SHALL hand out a block's bytes only once
+`bz2` has checked the block's CRC, and SHALL hand out none of a block whose CRC fails:
+the inverse Burrows-Wheeler transform scrambles a damaged block as a whole. It finds
+block starts by their 48-bit magic and confirms each by the output a drain gives there,
+and it checks the stream's combined CRC itself. Holding a block holds its output, at
+most 46.6 MB, which counts against `DecoderLimits.max_decoder_memory` as it grows: a
+block over the cap raises `ResourceLimitError`. A decoder that calls its decompressor
+more than once per call (`FramedDecoder`) SHALL return the bytes earlier calls gave when
+a later one raises, and raise the error from its next call.
 
 #### Scenario: a bad LZW code
 
@@ -1133,6 +1170,31 @@ and raise the error from its next call.
 - **GIVEN** an lzop file of stored 256 KiB blocks whose third block is damaged
 - **WHEN** it is read in `read(512)` or `read(1 MiB)` steps, from a file or a pipe
 - **THEN** it gets the first two blocks whole, then the error
+
+#### Scenario: a damaged bzip2 block
+
+- **GIVEN** a bzip2 stream of several blocks with a byte flipped inside its fourth
+  block, or a block whose data is intact and whose stored CRC is wrong
+- **WHEN** it is read in `read(61)`, `read(4 KiB)` or `read(1 MiB)` steps, from a file
+  or a pipe, under `process_isolation` `NONE` or `NATIVE_DECODERS`
+- **THEN** it gets every byte of the blocks before that block, none of that block, then
+  `CorruptionError`
+
+#### Scenario: a damaged bzip2 block magic
+
+- **GIVEN** a bzip2 stream of several blocks with a bit flipped in the magic of a block
+  after the first, so the block before it ends in bytes that are no marker
+- **WHEN** it is read as in the scenario above
+- **THEN** it gets every byte of the blocks before the damaged magic, the block right
+  before it included, then `CorruptionError`
+
+#### Scenario: a bad bzip3 block header
+
+- **GIVEN** a two-block `.bz3` file followed by a block header that fails its size checks,
+  or by a second `.bz3` file
+- **WHEN** it is read in `read(4 KiB)` or `read(1 MiB)` steps, under every
+  `process_isolation`
+- **THEN** it gets every byte of the two blocks, then `CorruptionError`
 
 ### Requirement: A read that meets a decoder error returns what it holds first
 

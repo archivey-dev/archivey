@@ -13,7 +13,9 @@ it cannot serve) is the format's decision, not this stream's.
 
 The zeros of a hole are output the archive chooses, and this stream neither counts nor
 caps them: the output limits (``max_extracted_bytes``, ``max_ratio``) must count above
-it, where the logical bytes are.
+it, where the logical bytes are. The one exception is ``draw_hole``, for a caller whose
+limit counts below this stream (a shared budget drawn at a decode stage): it sees each
+hole read before its zeros are made, and may shorten it or raise.
 
 Stored data that ends early follows the member-stream truncation rule (ADR 0014): a
 sized ``read(n)`` returns the logical bytes before the cut, holes included, short, and
@@ -33,7 +35,7 @@ from __future__ import annotations
 
 import io
 from bisect import bisect_right
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 from archivey.internal.overrides import override
@@ -52,6 +54,9 @@ class SparseStream(DelegatingStream):
     how long it is; chunk ``i`` is stored right after chunk ``i - 1`` in ``inner``.
     The first chunk starts where ``inner`` is positioned when this stream is made.
     Owns ``inner``, as every :class:`DelegatingStream` does.
+
+    ``draw_hole``, when given, is called with the size of each hole read before its
+    zeros are made and returns how many to make (at least one), or raises.
     """
 
     # read() transforms the inner's bytes, so readinto must go through it.
@@ -63,8 +68,11 @@ class SparseStream(DelegatingStream):
         offsets: Sequence[int],
         lengths: Sequence[int],
         size: int,
+        *,
+        draw_hole: Callable[[int], int] | None = None,
     ) -> None:
         super().__init__(inner)
+        self._draw_hole = draw_hole
         # A zero-length chunk's end equals its start. Keeping it can make a
         # fragment ask the inner stream for zero bytes. Dropping it keeps the
         # ends increasing, so adding one to the index matches the search.
@@ -183,6 +191,8 @@ class SparseStream(DelegatingStream):
 
     def _read_hole(self, want: int, boundary: int) -> bytes:
         count = min(want, boundary - self._pos)
+        if self._draw_hole is not None:
+            count = self._draw_hole(count)
         self._pos += count
         # Built whole: ``read`` already bounds ``want``, and a read that is one hole
         # returns this object without a join copying it.

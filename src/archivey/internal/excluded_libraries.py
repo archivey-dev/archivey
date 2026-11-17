@@ -1,4 +1,4 @@
-"""The optional packages a call's ``FormatPolicy.exclude_libraries`` turns off.
+"""The optional packages a call's ``FormatPolicy`` turns off (``_libraries_off``).
 
 An excluded package reads as not installed for that call only. Nothing process-wide
 changes: every availability check takes the call's excluded set, carried on the reader's
@@ -16,7 +16,10 @@ from archivey.types import MissingComponent, OptionalLibrary
 NO_EXCLUSIONS: frozenset[OptionalLibrary] = frozenset()
 """The excluded set of a call whose policy excludes nothing: every check as without one."""
 
-EXCLUDED_REASON = "ArchiveyConfig.formats.exclude_libraries turns it off"
+EXCLUDED_REASON = (
+    "ArchiveyConfig.formats turns it off (exclude_libraries= lists it, or "
+    "only_libraries= does not)"
+)
 """``MissingComponent.reason`` for an excluded package: installing it would not help."""
 
 

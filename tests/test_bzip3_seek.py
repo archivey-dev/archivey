@@ -177,6 +177,56 @@ def test_bytes_after_the_last_block_end_the_walk_and_fail_the_decode() -> None:
             stream.read()
 
 
+def _read_until_error(stream: Any, chunk: int) -> bytes:
+    """Bounded reads until the stream raises ``CorruptionError``."""
+    got = bytearray()
+    with pytest.raises(CorruptionError, match="decoded bytes"):
+        while piece := stream.read(chunk):
+            got += piece
+    return bytes(got)
+
+
+@pytest.mark.parametrize("isolation", list(ProcessIsolation), ids=lambda i: i.name)
+@pytest.mark.parametrize("chunk", [4 << 10, 1 << 20], ids=["4KiB", "1MiB"])
+@pytest.mark.parametrize("point", ["walked", "recorded"])
+def test_a_seek_before_a_bad_block_header_gets_the_good_blocks_first(
+    isolation: ProcessIsolation,
+    chunk: int,
+    point: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read resumed at a block returns every byte up to a bad block header before it
+    raises, as a read from the start does (``compressed-streams`` §"In-house decoders
+    hand back their bytes before an error"). The point comes from the header walk, or
+    from a forward read that recorded it and stopped before the bad header: a stream
+    that already raised withholds a rewound read's last bytes (``ArchiveStreamImpl``),
+    which is not what this pins."""
+    raw = bytearray(_raw())
+    struct.pack_into("<i", raw, _block_offsets(_raw())[3] + 4, BLOCK + 1)
+    pos = STARTS[1] + 3
+    with _open(io.BytesIO(bytes(raw)), isolation=isolation) as stream:
+        if point == "recorded":
+            assert stream.read(STARTS[2] + 10) == DATA[: STARTS[2] + 10]
+        else:
+            # The walk stops at the bad header: no size, the points before it.
+            assert _engine(stream).try_get_size() is None
+        assert _points(stream) == STARTS[:3]
+        # Which block each decode gave, by its first bytes.
+        firsts: list[bytes] = []
+        original = bzip3_codec.Bzip3Decompressor._decode_block
+
+        def noting(self: Any, compressed: int, decoded: int) -> None:
+            original(self, compressed, decoded)
+            firsts.append(bytes(self._output[:16]))
+
+        monkeypatch.setattr(bzip3_codec.Bzip3Decompressor, "_decode_block", noting)
+        stream.seek(pos)
+        assert _read_until_error(stream, chunk) == DATA[pos : STARTS[3]]
+        # The seek resumed at block 1: block 0 is not decoded again.
+        assert DATA[:16] not in firsts
+        assert firsts[:2] == [DATA[start : start + 16] for start in STARTS[1:3]]
+
+
 @pytest.mark.parametrize(
     ("compressed", "decoded"),
     [(None, BLOCK + 1), (0, BLOCK), (7, 1), (8, 1)],
@@ -243,3 +293,39 @@ def test_a_walk_over_the_cap_is_thinned_and_keeps_the_total(
         for pos in (BLOCK * 13 + 11, BLOCK * 3 + 5, len(data) - 7):
             stream.seek(pos)
             assert stream.read(7) == data[pos : pos + 7]
+
+
+def _headers(block_size: int, *blocks: tuple[int, int]) -> bytes:
+    """A file of block headers and filler, for the walk, which never decodes."""
+    out = bytearray(bzip3_codec.BZIP3_MAGIC + struct.pack("<i", block_size))
+    for compressed, decoded in blocks:
+        out += struct.pack("<ii", compressed, decoded) + bytes(compressed)
+    return bytes(out)
+
+
+def test_the_walk_steps_over_blocks_the_decoder_accepts_at_their_bounds() -> None:
+    """An empty literal (8 bytes, no output), a block of exactly ``bz3_bound``, and a
+    block with no output: none ends the walk. The blocks with output are the seek
+    points, and the first, at output 0, is the known start."""
+    bound = bzip3_codec.bz3_bound(BLOCK)
+    raw = _headers(BLOCK, (8, 0), (bound, BLOCK), (20, 0), (30, 5))
+    points, size = bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None)
+    assert [(p.compressed_offset, p.decompressed_offset) for p in points] == [
+        (9 + 16 + 8 + bound + 28, BLOCK)
+    ]
+    assert size == BLOCK + 5
+
+
+def test_the_walk_reads_the_largest_block_size() -> None:
+    raw = _headers(bzip3_codec.MAX_BLOCK_SIZE, (30, 5), (30, 5))
+    points, size = bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None)
+    assert [p.state for p in points] == [bzip3_codec.MAX_BLOCK_SIZE]
+    assert size == 10
+
+
+def test_the_walk_needs_the_magic_even_with_a_valid_block_size() -> None:
+    raw = b"BZ2v1" + _headers(BLOCK, (30, 5))[5:]
+    assert bzip3_codec.build_bzip3_index(io.BytesIO(raw), SeekPoint(0, 0), None) == (
+        [],
+        None,
+    )

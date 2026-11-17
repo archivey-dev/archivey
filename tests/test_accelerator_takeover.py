@@ -5,7 +5,7 @@ Maintainer ruling: a truncated stream read under ``AUTO`` or ``ON`` raises the e
 standard library raises with the accelerator ``OFF``, after the same bytes. rapidgzip's
 bzip2 decoder raises an opaque ``RuntimeError('std::exception')`` on a cut stream, so
 the standard library takes over (``_StdlibOnAcceleratorError``) at the newest block the
-accelerator had indexed at or before the reader (``bzip2_resume``), and gives the
+accelerator had indexed at or before the reader (``bzip2_blocks``), and gives the
 verdict. rapidgzip reads a zlib stream cut mid-body as a short stream with no error;
 the Adler-32 check hands it to the standard library the same way.
 
@@ -262,7 +262,9 @@ def test_after_a_bzip2_takeover_seeks_back_and_forward_read_the_data(
         assert bytes(got) == data[: len(got)]
         stdlib = _decompressor(s)
         resumes = [
-            p for p in stdlib._seek_points if type(p.state).__name__ == "Bzip2Resume"
+            p
+            for p in stdlib._seek_points
+            if type(p.state).__name__ == "Bzip2BlockStart"
         ]
         assert resumes, "the takeover started from the origin"
 

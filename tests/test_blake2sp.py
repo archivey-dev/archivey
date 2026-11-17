@@ -44,6 +44,44 @@ def test_blake2sp_incremental_matches_oneshot(length: int, expected_hex: str) ->
     assert hasher.digest() == hasher.digest()  # idempotent
 
 
+# Past the official vectors' 255 bytes: inputs around and past the 512-byte stride
+# (eight 64-byte leaf blocks), where full strides go to the leaves. Input bytes are
+# ``i & 0xFF`` for i in range(n); digests computed by 7-Zip 23.01
+# (``7zz h -scrcBLAKE2sp``).
+_LONG: tuple[tuple[int, str], ...] = (
+    (511, "50285271956932d39b0967202b56006cbb6d738ee29e5a867edf72c8c4386f1b"),
+    (512, "322ce06cc141a0b3d89bcdcfcb385975dbca56e5719a78c34000fcec2e15b55d"),
+    (513, "1336628c7f1541c7815fc0ff1fb5dfb07a85cf5a17a2872a3ce4b322d4a03d0b"),
+    (1023, "13bc5720de247edd4dc087a08a1e44388bf2047b102c5d878a86c8aa10e50019"),
+    (1024, "c9f79171d19c3703b7ebf9f762ce3fd24b302e2281f72da31a65014ff923c859"),
+    (1025, "1cf65560deef7dad5282fa8b42e289d71a43b972b24eb3c8ed4d6e725e5f14ad"),
+    (1536, "399bf742b49a597858a1b0c2b599f9fd4d6d66204941a893bc79fcf097e9d992"),
+    (4097, "ff56cf04d1724a53f37ffea682e83bbcd0033f6fc0dfef6a21dbf621a79eb667"),
+)
+
+
+@pytest.mark.parametrize(("length", "expected_hex"), _LONG)
+@pytest.mark.parametrize("chunk", [None, 1, 300, 512, 700])
+def test_blake2sp_past_one_stride(
+    length: int, expected_hex: str, chunk: int | None
+) -> None:
+    data = bytes(i & 0xFF for i in range(length))
+    hasher = Blake2sp()
+    step = chunk or max(length, 1)
+    for i in range(0, len(data), step):
+        hasher.update(data[i : i + step])
+    assert hasher.digest() == bytes.fromhex(expected_hex)
+
+
+def test_blake2sp_refuses_an_update_after_the_digest() -> None:
+    hasher = Blake2sp()
+    hasher.update(b"abc")
+    digest = hasher.digest()
+    with pytest.raises(ValueError, match="finalized"):
+        hasher.update(b"d")
+    assert hasher.digest() == digest
+
+
 def test_blake2sp_matches_rar5_fixture_payload() -> None:
     """Degree-8 / unkeyed / 32-byte params match WinRAR ``-htb`` (task 1.1)."""
     from pathlib import Path

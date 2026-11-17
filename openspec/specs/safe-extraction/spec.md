@@ -33,6 +33,8 @@ def extract_all(
     policy: ExtractionPolicy = ExtractionPolicy.STRICT,
     overwrite: OverwritePolicy = OverwritePolicy.ERROR,
     on_error: OnError = OnError.STOP,
+    on_blocked: OnBlocked = OnBlocked.RAISE,
+    abort_on: Collection[AbortOn] = (),
     on_progress: Callable[[ExtractionProgress], None] | None = None,
     limits: ExtractionLimits | None = None,
 ) -> ExtractionReport: ...
@@ -63,8 +65,9 @@ extract (ADR 0019).
 
 `ArchiveReader.extract_all()` SHALL accept `limits: ExtractionLimits | None`. Per-call
 `limits` takes precedence over the reader's `config.extraction_limits`, then the
-library default. `ExtractionLimits.UNLIMITED` disables byte, ratio,
-archive-wide ratio/live-ratio, and entry-count guards. Policy, overwrite,
+library default. `ExtractionLimits.UNLIMITED` disables the byte and entry-count
+guards. The ratio guards (per-member, archive-wide and live) take their fields from
+the reader's `config.decoder_limits`, which no per-call argument changes. Policy, overwrite,
 `on_error`, progress, and member-selection/filter arguments remain operational
 arguments outside config.
 
@@ -78,7 +81,8 @@ tuple on success; there is no no-tracking mode.
 | `extract_all(limits=...)` on an existing reader | Limits apply to this extraction; the report holds only this call's own diagnostics, from the existing collector |
 | `open_archive(..., config=ArchiveyConfig(extraction_limits=ExtractionLimits(max_extracted_bytes=10 * 2**30)))` then `extract_all(dest)` | Cumulative byte limit is 10 GiB |
 | Reader config has limits, call passes `limits=ExtractionLimits(max_extracted_bytes=50 * 2**20)` | 50 MiB governs this run; later calls without `limits` revert to reader config |
-| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip default guards complete without bomb-guard error |
+| `limits=ExtractionLimits.UNLIMITED` | Archives that would trip only the byte or entry guards complete; the ratio guards still apply |
+| `ExtractionLimits.UNLIMITED` and `DecoderLimits(max_ratio=None)` in the reader's config | Archives that would trip default guards complete without bomb-guard error |
 | Reader opened with custom config and `extract_all(dest)` | Reader config, including extraction limits, governs the run |
 
 ### Requirement: Non-Bypassable Universal Path-Safety Constraints
@@ -137,7 +141,7 @@ string checks SHALL raise `FilterRejectionError`, never a raw
 | Null byte | `FilterRejectionError` | `member.name` contains `\x00` |
 | Unrepresentable name | `FilterRejectionError` | `member.name` cannot be encoded by the platform filesystem encoding |
 | Link-target NUL / unrepresentable | `FilterRejectionError` | SYMLINK `link_target` contains `\x00` or cannot be encoded by the platform filesystem encoding |
-| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest` |
+| Symlink escape | `FilterRejectionError` | SYMLINK whose fully resolved target escapes `dest`. Under `TRUSTED` only, a target that starts with `/` is exempt (see "Symlink Escape Re-Validated at Extraction Time") |
 | Link-target Windows root | `FilterRejectionError` | SYMLINK whose `link_target` starts with a drive letter (`C:`, `C:/x`, `C:x`) or a UNC root (two separators, `//server/share`), on every OS. Named exception: a target rooted by a single `\` (`\foo`) |
 | Refused hardlink source | `FilterRejectionError` | HARDLINK whose source (`link_target_member`, the end of its chain) was refused (see "Hardlink Two-Pass Extraction") |
 | Special file | `FilterRejectionError` | `MemberType.OTHER` device/FIFO/socket/etc. |
@@ -458,11 +462,32 @@ NOT be refused. Rechecks count against `max_entries`; once it is spent, the link
 waiting are removed unresolved and the run stops with `ResourceLimitError`. Tests:
 `tests/test_symlink_recheck.py`; rationale: `dev-docs/threat-model.md` O22.
 
+Under `TRUSTED` only, a SYMLINK whose stored target starts with `/` SHALL be written as
+stored, wherever it resolves, and is neither refused at creation nor rechecked, as GNU
+tar, cpio and unsquashfs write it: a root filesystem or initramfs image holds hundreds
+(`usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh`). `STRICT` and `STANDARD` SHALL keep
+refusing one that escapes. A drive or UNC target stays refused under every policy, and a
+target that starts with a single `\` is not one of these. Such a link is not rechecked:
+when a later member changes where its target resolves, it stays. No member SHALL be
+written outside `dest` through such a link under any policy: a later member whose parent
+resolves through it to outside is refused by the parent check, a link whose own
+resolution runs through it to outside is refused as an escape (one made after it when it
+is made, one made before it by the recheck that the rooted link's creation starts), a
+hard link to a file under it is refused with its source, and a member that lands on the
+link's own name replaces the link or is refused by `overwrite`, never written through
+it. A target that leads back into `dest` is followed there, as any symlink is. The
+`archivey://` tree under `TRUSTED` lists such a link as `"other"` and follows nothing
+through it, since it has no destination path: a member under it is left out. Tests:
+`tests/test_rooted_symlinks.py`.
+
 #### Scenario: symlink revalidation matrix
 
 | Case | Expected |
 | --- | --- |
 | Created symlink resolves outside `dest` | Link is unlinked; `FilterRejectionError`; no later data written through it |
+| `TRUSTED`; SYMLINK `etc -> /etc` (or any target from `/`), then `etc/passwd`, `etc/x/`, HARDLINK `h -> etc/passwd`, SYMLINK `r -> etc/passwd` | `etc` `EXTRACTED`, pointing at `/etc`; the four others `BLOCKED`; nothing outside `dest` changes |
+| `TRUSTED`; SYMLINK `r -> x/passwd`, then SYMLINK `x -> /etc` | `x` `EXTRACTED`; `r` `BLOCKED` by the recheck and removed |
+| `STRICT` or `STANDARD`; SYMLINK `etc -> /etc` | `BLOCKED`, as any escape |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
 | Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError` with the message "Symlink target is part of a symlink loop", not the escape message; no uncaught OS/runtime error; same on every Python version |
 
@@ -506,6 +531,19 @@ pass instead, as `format-tar` describes; archivey does not, so recovering an orp
 a solid archive decodes the solid stream a second time. A hardlink that merely precedes
 its selected source is linked after the source is written, with one read and one
 bomb-limit count for the source bytes.
+
+A link held back for the second pass SHALL hold its name from its place in archive
+order, so the outcome is the one a link made there would give. A later member that
+collides with it meets the overwrite policy against that link: refused under `ERROR`,
+skipped under `SKIP`, given a free name under `RENAME`, and under `REPLACE` it replaces
+the link, which the second pass then does not make (the link and the member it would
+have replaced are `OVERWRITTEN`). A second held-back link of the same key meets the
+first the same way, so under `REPLACE` it replaces the first. A directory, and a parent
+that a later member implies, meets the held-back link only where the filesystem would
+find the made link: at its own path, or under another case on a filesystem that folds
+case. A directory there meets the overwrite policy, and a member under the link's name
+fails, as a non-directory already extracted is in the way. If the second pass cannot
+make the link, no other member gets the name, as with any refused member.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
@@ -559,6 +597,12 @@ refuses its links; any other is recovered as above.
 | HARDLINK `hl` → SYMLINK with no target (`/s` under `STRICT`, or `s`) | `hl` `FAILED`, not refused for `/s`'s name: `ExtractionError` naming the source's type when the listing was read first, else `LinkTargetNotFoundError` |
 | HARDLINK whose target names no earlier member (`../x`, `C:x`, `/abs` with no such member) | `LinkTargetNotFoundError`, a failure; the target string is never refused as a path |
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
+| `S`, `s` (not written: same key as `S` under `STRICT`), HARDLINK `h` → `s` (held back), then `H`, seekable | `h` written with `s`'s bytes in the second pass; `H` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)` under `RENAME` |
+| HARDLINK `H` → an excluded source (held back), then a file `h`, `REPLACE` | `h` replaces the held-back link: `H` `OVERWRITTEN`, never made; `h` `EXTRACTED` |
+| Directory `H/` after a held-back HARDLINK `h`, case-sensitive filesystem | Both written |
+| Directory `H/` after a held-back HARDLINK `h`, case-insensitive filesystem | `H/` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)/` under `RENAME` |
+| File `h/x` after a held-back HARDLINK `h` | `h/x` `FAILED`, as `h` is a non-directory already extracted; `h` written in the second pass |
+| HARDLINKs `ab` then `AB` to an excluded source (both held back), then a file `Ab`, `REPLACE` | `ab` and `AB` `OVERWRITTEN`, neither made; `Ab` `EXTRACTED` |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
 ### Requirement: Policy-Specific Metadata Transforms
@@ -585,6 +629,7 @@ non-bypassable safety checks.
 | Behavior | `STRICT` default | `STANDARD` | `TRUSTED` |
 | --- | --- | --- | --- |
 | Path, absolute-path, link-escape, special-file rejection | Always | Always | Always |
+| SYMLINK whose target starts with `/` and leads out of `dest` | Refused | Refused | Written as stored; nothing written outside `dest` through it |
 | Missing file/dir mode | File `0o644`, dir `0o755` | File `0o644`, dir `0o755` | Apply as stored |
 | Permission normalization | Files masked with `0o755` (execute kept when the owner has it; without owner execute, group/other execute are cleared too; group/other write stripped); dirs `0o755` | Preserve ordinary execute bits | Apply as stored |
 | setuid/setgid/sticky | Strip all | Strip all | Preserve |
@@ -907,8 +952,11 @@ The system SHALL apply `max_extracted_bytes` and `max_entries` only during
 `ArchiveReader.extract_all()`. The system SHALL apply `max_ratio` to every member
 stream a caller reads as well: `ArchiveReader.open()`, `ArchiveReader.read()` and the
 streams `stream_members()` yields (Requirement: A member read is held to the ratio),
-and to every decode of a container inside a compression stream, listing included
-(Requirement: A compressed container's decode is held to the archive-wide ratio).
+to every decode of a container inside a compression stream, listing included
+(Requirement: A compressed container's decode is held to the archive-wide ratio), and
+to the stream `open_stream()` returns, by the archive-wide rule against the compressed
+source (its trusted size, or the compressed bytes it has consumed when the size is not
+known), as a member read of the same bytes through `open_archive()` is held.
 Extraction's own passes are held by its tracker, to the limits the `extract_all` call
 was given. Listing materialization caps are separate (`ListingLimits` in
 `archive-reading`).
@@ -922,6 +970,8 @@ was given. Listing materialization caps are separate (`ListingLimits` in
 | `reader.read(member)` on a large member under the ratio | All bytes returned; no byte cap applies to a read |
 | `reader.members()` on a metadata bomb | `ListingLimits` / `ResourceLimitError` per `archive-reading`, not `ExtractionLimits` |
 | `reader.members()` on a container inside a compression stream past `max_ratio` | `ResourceLimitError` from the archive-wide ratio |
+| `open_stream(p)` read past `max_ratio` of the compressed file, `p` a bare `.gz` or `.bz2` | The read or seek that crosses it raises `ResourceLimitError`, as `open_archive(p)` then `read()` of its member does |
+| `open_stream(pipe)` read past `max_ratio` of the bytes taken from the pipe | `ResourceLimitError` once the output passes `live_ratio_activation_threshold` |
 
 ### Requirement: A member read is held to the ratio
 
@@ -937,13 +987,14 @@ rules extraction applies to what it writes:
   read or seek that crosses it SHALL raise `ResourceLimitError` for that member. It is
   not the always-stop kind, so a pass can go on to the next member.
 - **Across the reader.** The output of all the reader's member reads together, each
-  member counted once at the furthest offset any read of it reached, is judged by the
-  archive-wide rule (`archive_ratio_refusal`: the static denominator, or the live one
-  past `live_ratio_activation_threshold`). Crossing it SHALL raise the always-stop
-  `ResourceLimitError`. Where neither denominator exists (an archive read from a
-  non-seekable stream that is not inside a compression stream: no trusted size, and no
-  counter installed), this rule does not apply to reads, as it does not to extraction;
-  extraction keeps `max_extracted_bytes` there, and a read keeps only the per-member rule.
+  member the caller reads counted once at the furthest offset any read of it reached, is
+  judged by the archive-wide rule (`archive_ratio_refusal`: the static denominator, or
+  the live one past `live_ratio_activation_threshold`). Crossing it SHALL raise the
+  always-stop `ResourceLimitError`. Where neither denominator exists (an archive read
+  from a non-seekable stream that is not inside a compression stream: no trusted size,
+  and no counter installed), this rule does not apply to reads, as it does not to
+  extraction; extraction keeps `max_extracted_bytes` there, and a read keeps only the
+  per-member rule.
 
 A member whose data is a run of the archive stream's own bytes, as every TAR member's is
 except a sparse one's (a TAR is compressed as a whole, if at all), SHALL NOT be held:
@@ -952,7 +1003,13 @@ archive-wide ratio. It SHALL be counted toward the archive-wide total at its rec
 size when its stream is handed out, read or not, so a member that is held (a sparse
 one) is judged with it. Counting more than was read can only refuse sooner.
 
-A RAR file copy is held, and counted, as the member whose data it repeats. The read
+A link that `open()` follows (a hard link or symlink) and a RAR file copy hand out
+another member's data. The per-member rule SHALL judge them as that member, against its
+`compressed_size`. The archive-wide total SHALL count them as the member the caller
+asked for, so N members that hand out one member's data count N times: their output is
+N times those bytes, and each costs the archive only a small record. Where that data is
+the archive stream's own bytes, the read SHALL be judged at its recorded size when the
+stream is handed out, since no guard sees those bytes again. The read
 that crosses a limit SHALL NOT return the bytes it decoded. Reads and forward seeks
 reach the decoder in steps of at most 1 MiB, so a `read()` of a whole member stops
 within a step of the limit instead of first holding all of it in memory. A decoder
@@ -968,8 +1025,9 @@ turns it off.
 | `stream_members()` over an archive whose second member is over the ratio | The second member's read raises; the pass yields the third |
 | Archive of many members under 5 MiB each, together past the ratio of the archive's size | The read that crosses the archive-wide ratio raises the always-stop error |
 | The same member read twice | Counted once toward the archive-wide total |
+| Many hard links or symlinks to one TAR or RPM file, each read with `read()`, together past the ratio of the archive's size | The `open()` that crosses the archive-wide ratio raises the always-stop error |
+| Many XAR files naming one heap range, or ISO records naming one extent, each read | The read that crosses the archive-wide ratio raises the always-stop error |
 | `DecoderLimits(max_ratio=None)` in the reader's config | Reads, lists and extracts unchanged |
-| Deprecated `extract_all(limits=ExtractionLimits(max_ratio=None))` | Extracts; reads of the same reader stay held |
 
 ### Requirement: Progress Reporting via on_progress Callback
 
@@ -1238,10 +1296,10 @@ per-member ratio violation. A policy **block** (a `FilterRejectionError` from a 
 path-safety check or a policy filter) is NOT a failure: it SHALL always be recorded as a
 `BLOCKED` `ExtractionResult`, have its partial output removed, and let extraction
 proceed — under **either** `OnError.STOP` or `OnError.CONTINUE`. `OnError.STOP`
-therefore never raises on a blocked member; a STOP run can complete and return an
-`ExtractionReport` whose results include `BLOCKED`. Aborting the whole extraction on the
-first unsafe member (fail-closed strict security) SHALL be expressed through
-`AbortOn.BLOCKED_MEMBER`, not through `OnError`.
+therefore never stops at a blocked member. What the call does once every member is
+processed is `on_blocked`'s ("A refused member raises once the rest are extracted").
+Aborting the whole extraction on the first unsafe member (fail-closed strict security)
+SHALL be expressed through `AbortOn.BLOCKED_MEMBER`, not through `OnError`.
 
 Under `CONTINUE`, a member-scoped failure records `FAILED`, removes partial output,
 and proceeds.
@@ -1265,14 +1323,14 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | --- | --- |
 | Member blocked by policy/path-safety under `STOP` | `BLOCKED` result; partial output removed; extraction does **not** halt; later members continue |
 | Member blocked by policy/path-safety under `CONTINUE` | `BLOCKED` result; partial output removed; later members continue |
-| First member blocked, remaining members extractable, under `STOP` | Run completes; report contains `BLOCKED` + later `EXTRACTED`; no exception escapes |
+| First member blocked, remaining members extractable, under `STOP` | Run completes; `BLOCKED` + later `EXTRACTED` recorded; no exception at the blocked member; the call ends as `on_blocked` says |
 | Corrupt member under `CONTINUE` | Partial output removed; `FAILED` result; later members continue |
 | Default `STOP` member failure (e.g. `CorruptionError`) | Original error propagates immediately; failing partial file removed; earlier outputs remain (from a ZIP read from a pipe, less the files that could still be links: `format-zip`) |
 | Filesystem `OSError` while writing under `CONTINUE` | Partial output removed; `FAILED` result; extraction proceeds |
 | A member under a non-directory this run extracted (file `d`, then `d/f` or directory `d/y`) | Per-member `ExtractionError` naming `d`, not a raw `OSError`, under every `OverwritePolicy` |
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
 | Cumulative bytes/live ratio/max entries exceed limit under any `OnError` | `ResourceLimitError` propagates and halts; no later member processed |
-| Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes |
+| Mixed good/corrupt/blocked archive under `CONTINUE` | Extractable members written; report includes `EXTRACTED` plus `FAILED`/`BLOCKED`; no per-member exception escapes; the call ends as `on_blocked` says |
 | Reading diagnostic resolves to `RAISE` under `CONTINUE` (e.g. `MEMBER_TIMESTAMP_INVALID`) | `DiagnosticRaisedError` halts; no report returned |
 
 ### Requirement: A ZIP extracted from a non-seekable source is settled at the end of the pass
@@ -1402,11 +1460,22 @@ Immutability is structural, not deep: `ExtractionResult.member` is the original
 mutable, caller-read-only `ArchiveMember`, whose documented late-bound metadata
 and diagnostics may still change; `error` may be an ordinary exception object.
 
+The report iterates, indexes and sizes as `results`. Testing its truth SHALL raise
+`TypeError`, as for `VerifyReport` and `MemberListReport`: a sequence's truth is
+whether it is empty, so a failed extraction would read as true and an empty archive's
+clean one as false. `ok` and `raise_for_failure()` answer whether it succeeded.
+
 #### Scenario: report immutability matrix
 
 | Case | Expected |
 | --- | --- |
 | Caller keeps a report and reader later does more work | Result tuple/outcomes and diagnostic summary stay unchanged; referenced member may receive documented late-bound updates |
+
+#### Scenario: report refuses a truth test
+
+| Case | Expected |
+| --- | --- |
+| `bool(report)` / `if report:`, the report empty or not | `TypeError` naming `ok` |
 
 ### Requirement: Archive-wide decompression ratio for solid containers
 
@@ -1468,12 +1537,8 @@ does not count again. Reads and forward seeks, a seek to the end included, reach
 decoder in steps of at most 1 MiB, so the decode stops within a step of the limit. A
 decoder error after a read already returned bytes in the same call is held for the
 next read, so the prefix of a cut stream is kept; a seek, even a refused one, drops
-it. `max_ratio=None` turns it off. An `extract_all` call's own decodes SHALL be held to the
-ratio fields that call applies instead, so `ExtractionLimits.UNLIMITED` or a deprecated
-ratio field passed in `limits=` lifts or tightens it for that call alone, as for a
-ZIP. A read after the call, or from the caller's own code the call runs (`filter`,
-a `members=` predicate, `on_progress`), SHALL still be held to the reader's limits,
-though the call decoded past them.
+it. `max_ratio=None` turns it off. An `extract_all` call's decodes SHALL be held to the
+same reader limits: `limits=` holds no ratio field, so no call lifts or tightens it.
 
 #### Scenario: compressed container decode matrix
 
@@ -1483,9 +1548,8 @@ though the call decoded past them.
 | The same archive from a pipe | Refused once 256 MiB are decoded (the live floor) |
 | The same archive with `DecoderLimits(max_ratio=None)` | Lists, as before |
 | A `.tar.gz` under the ratio | Lists, reads and extracts unchanged |
-| A `.tar.gz` of 24 MiB of zeros, `extract_all(limits=ExtractionLimits.UNLIMITED)` | Extracts, from a seekable source and in streaming mode |
-| The same, with a deprecated `ExtractionLimits(max_ratio=1e9)` in `limits=`, then `read()` | Extracts; the read raises `ResourceLimitError` |
-| The same `.tar.gz` or a ZIP of it under `UNLIMITED`, with an `on_progress`, `filter` or `members=` callback that calls `read()` | The callback's read raises `ResourceLimitError` |
+| A `.tar.gz` of 4 MiB of zeros, `DecoderLimits(max_ratio=10)` in the reader's config, `extract_all()` | `ResourceLimitError`, from a seekable source and in streaming mode |
+| The same with `DecoderLimits(max_ratio=None)` | Extracts, from a seekable source and in streaming mode |
 
 ### Requirement: Enforce Maximum Entry Count
 
@@ -1795,7 +1859,7 @@ expresses "raise on the first failure".
 | Case | Expected |
 | --- | --- |
 | Absolute-path member, `abort_on={BLOCKED_MEMBER}`, `OnError.CONTINUE` | `FilterRejectionError` raised at that member; no report; later members untouched |
-| Same archive, `abort_on=()` | `BLOCKED` result; extraction completes; report returned |
+| Same archive, `abort_on=()` | `BLOCKED` result; extraction completes; `FilterRejectionError` carrying the report (`on_blocked="skip"`: report returned) |
 | `REPLACE` collision, `abort_on={NAME_COLLISION}` | `NameCollisionError` at the second member; no report; first member's bytes remain on disk |
 | `SKIP` collision, `abort_on={NAME_COLLISION}` | Aborts — the trigger is the collision, not the resolution |
 | `RENAME` collision, `abort_on={NAME_COLLISION}` | Aborts, even though the rename loses nothing; parity with the escalation this replaces |
@@ -1806,10 +1870,46 @@ expresses "raise on the first failure".
 | `abort_on={BLOCKED_MEMBER}` with `OnError.STOP` and a corrupt member | Failure still raises via `OnError`; abort applies only to blocks |
 | ZIP from a pipe, `abort_on={NAME_COLLISION}`, two members colliding | `NameCollisionError` when the second is placed; the first stays placed |
 
+### Requirement: A refused member raises once the rest are extracted
+
+`extract_all()` SHALL take `on_blocked: OnBlocked = OnBlocked.RAISE`:
+
+```python
+class OnBlocked(StrEnum):
+    RAISE = "raise"
+    SKIP = "skip"
+```
+
+A refused member never stops the pass (`OnError` above). Once the pass ends and the
+report is built, under `RAISE`, if any result is `BLOCKED`, the call SHALL raise a
+`FilterRejectionError` whose `report` attribute is that report, whose `member_name` is
+the first `BLOCKED` member's, whose message counts the other refused members, and
+whose `__cause__` is the first refusal's own error. Under `SKIP` it SHALL return the
+report. `FilterRejectionError.report` SHALL be `None` on every other
+`FilterRejectionError`: the one a `BLOCKED` result holds, and the one
+`AbortOn.BLOCKED_MEMBER` raises. A dry run SHALL follow the same rule. The raised error
+SHALL survive pickle, copy and deepcopy with its report.
+
+`ExtractionReport.ok` SHALL be `True` when no result is `BLOCKED` or `FAILED`, and
+`raise_for_failure()` SHALL raise the first such result's error, in report order, and
+do nothing when `ok`. Diagnostics SHALL NOT count toward `ok`.
+
+The CLI passes `OnBlocked.SKIP`: it reports refused members itself.
+
+#### Scenario: on_blocked matrix
+
+| Case | Expected |
+| --- | --- |
+| `good1`, `../escape`, `good2`, defaults | both good members written; `FilterRejectionError` naming `../escape`, `report` holding all three results |
+| Same archive, `on_blocked="skip"` | report returned; `ok` is `False`; `raise_for_failure()` raises the `BLOCKED` result's error |
+| Same archive, `abort_on={BLOCKED_MEMBER}` | `FilterRejectionError` at `../escape`, `report` is `None`; `good2` not written |
+| Same archive, `dry_run=True` | `FilterRejectionError` with the report; nothing kept |
+| No refused member | report returned under either value |
+
 ### Requirement: Dry-run extraction
 
-`extract_all()` SHALL accept `dry_run: bool = False`, read for its
-truthiness like the other boolean flags.
+`extract_all()` SHALL accept `dry_run: bool = False`, refusing a value that is not a
+`bool` as the other boolean flags do (`error-handling`).
 
 With `dry_run=True`, the extraction SHALL run the same pass as a real extraction into
 a private scratch directory, and SHALL NOT create or change anything under `dest`.
@@ -1899,3 +1999,50 @@ NOT fail the member.
 | A member with `created = None` | No birth time call |
 | On Windows, a file with `created` extracted over an existing file | The member's birth time, not the replaced file's |
 | The system refuses the birth time | The member is extracted; no error |
+
+### Requirement: A nest's decoded bytes are held to one total
+
+`DecoderLimits.max_nest_decoded_bytes: int | None` SHALL cap the bytes every reader of
+a nest (archive-reading, "A reader opened inside another joins its nest")
+decodes, summed across its levels and its threads; `None` disables it.
+
+- **Bytes.** Every byte a member stream delivers (a read, `stream_members()`, an
+  extraction's writes) SHALL count, and so SHALL the gap a forward seek skips past the
+  furthest offset reached, and the byte a compressed single file's open-time check
+  decodes. A seek whose target is known SHALL be refused before the decoder moves when
+  the gap does not fit; a seek to an end the stream cannot size SHALL read to it,
+  counted. A read that would cross the cap SHALL decode at most one byte past what is
+  left, then raise the always-stop `ResourceLimitError`, so an extraction stops at that
+  member. This holds for a buffer's read-ahead over a source that cannot seek too.
+  Readers on several threads MAY each overshoot by one read. Once spent, the
+  nest SHALL refuse every later read before it decodes.
+- **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
+  count where they are decoded, in every format (a compressed TAR's listing included): a
+  compressed TAR's, cpio's or RPM payload's skipped members and headers, a CAB folder's
+  output before the member read, the part of a streaming ZIP member the pass decodes,
+  the solid prefix `unrar` or `unar` decodes and does not emit, and a 7z header stored
+  compressed. A member that is read SHALL count once. A step that decodes all at once (a
+  RAR prefix, a 7z header) SHALL be counted before it runs, and refused, counting
+  nothing, when it does not fit. A sparse TAR member's holes SHALL count as they are
+  read. Other metadata a format decodes into memory (SquashFS metadata blocks, XAR's
+  table of contents) is held by the listing limits, not by this total.
+- A byte decoded again (a member read twice, a backward seek in compressed data, the
+  same archive opened twice in one nest) SHALL count again.
+- A reader whose cap, the stricter of its own and the outermost reader's, is `None`
+  SHALL count nothing, so its reads pay for no counting: a child that sets a cap the
+  outermost reader does not set counts only the bytes of the readers that set one.
+- The counter SHALL NOT refill while the nest lives, so on a reader kept open for long
+  (an `ArchiveyFileSystem`, a reader shared by a server) the cap bounds every read it
+  ever serves; the field's documentation SHALL say so.
+
+#### Scenario: decoded-bytes matrix
+
+- **WHEN** a nest decodes as each row says
+- **THEN** the total is counted and held as the row's Expected column says
+
+| Case | Expected |
+| --- | --- |
+| `max_nest_decoded_bytes=350_000`, ZIP of five 100 000-byte members, two read by the outer reader and two by the same ZIP opened a second time with `parent=outer` | The fourth read raises `ResourceLimitError` naming `max_nest_decoded_bytes=350000`; 350 001 bytes counted |
+| `max_nest_decoded_bytes=10**12`, `.tar.gz` of three 100 000-byte members, `stream_members()` reads only the third | At least 300 000 bytes counted; reading all three counts no more than the decoded tar's size |
+| `max_nest_decoded_bytes=2 * 100_000 + 10`, `extract_all` on the ZIP | Raises; two members written whole, no later member opened |
+| One config, two separate `open_archive` calls with no `parent=` | Each counts from zero |

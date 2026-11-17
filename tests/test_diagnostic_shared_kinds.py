@@ -80,6 +80,10 @@ _MATCHED: list[tuple[DiagnosticCode, DiagnosticContext]] = [
     (DiagnosticCode.MEMBER_LOCAL_NAME_DIFFERS, LocalHeaderContext(field="name")),
     (DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS, LocalHeaderContext(field="method")),
     (DiagnosticCode.MEMBER_LOCAL_CRC_USED, LocalHeaderContext(field="crc32")),
+    (
+        DiagnosticCode.MEMBER_LOCAL_OFFSET_SHIFTED,
+        LocalHeaderContext(field="offset"),
+    ),
 ]
 
 

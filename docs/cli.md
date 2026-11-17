@@ -74,9 +74,11 @@ To choose the folder yourself, pass `-d out/`, or `-d .` for the current directo
     as `notes (1).txt`; with `error`, `skip` or `replace`, the folder stays in `photos/` instead.
 
     For an archive that doesn't list its members up front, such as a TAR, archivey extracts into
-    `photos/` first and moves the folder out at the end. It leaves the folder in `photos/`, and
-    prints why, if the move could change what a link points to (the folder is a symlink, or holds
-    one that leads outside it), or if part of it couldn't be listed.
+    `photos/` first and moves the folder out at the end. It does the same for any archive whose
+    single folder holds a link, or whose member names start with `/`, `\` or a drive letter. It
+    leaves the folder in `photos/`, and prints why, if the move could change what a link points to
+    (the folder is a symlink, holds one that leads outside it, or holds one and would merge into a
+    folder of the same name that is already there), or if part of it couldn't be listed.
 
 Extraction uses the `strict` policy by default: a member that would land outside the destination,
 or a link that points outside it, is refused and reported, and the rest are still extracted.
@@ -90,6 +92,7 @@ report instead of stopping at the first problem:
 | --- | --- | --- |
 | A file with the member's name is already there | writes the member as `photo (1).jpg` | raises an error |
 | A member fails | reports it, carries on, and exits with `1` at the end | raises an error at once |
+| A member is refused | reports it and carries on | writes the rest, then raises `FilterRejectionError` |
 
 `--overwrite error --stop-on-error` makes the command behave like the library. `--overwrite` also
 takes `skip` (keep the file that's there) and `replace` (write over it).
@@ -174,11 +177,11 @@ cat backup.tar.gz | archivey list /dev/stdin
 ```
 
 A pipe can only be read once, from start to end, so archivey reads it in a single pass. That works
-for TAR (compressed or not), ZIP and single compressed files such as `.gz`. 7z, RAR and ISO
-archives need to jump around in the file, so from a pipe they fail with exit `1` and a message to
-copy the input to a file first. `extract --outer` and `test --outer` also need a file; for a pipe,
-use `archivey cat - --outer`. A redirect from a file, as in `archivey cat - < backup.7z`, isn't a
-pipe, so every format works that way.
+for TAR (compressed or not), ZIP, single compressed files such as `.gz`, and RAR with RARLAB `unrar`
+7.00 or later. 7z and ISO archives need to jump around in the file, so from a pipe they fail with
+exit `1` and a message to copy the input to a file first. `extract --outer` and `test --outer` also
+need a file; for a pipe, use `archivey cat - --outer`. A redirect from a file, as in
+`archivey cat - < backup.7z`, isn't a pipe, so every format works that way.
 
 ## Exit codes
 

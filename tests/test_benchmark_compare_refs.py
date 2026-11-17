@@ -113,7 +113,7 @@ def test_one_sided_and_skipped_cases(tmp_path: Path) -> None:
         in report
     )
     assert (
-        "Measured only in the candidate (added, removed, or skipped on the other side): `lib`, `new`"
-        in report
+        "Measured only in the candidate (added, removed, or skipped on the other side): "
+        "`lib`, `new`" in report
     )
     assert "Skipped in every baseline run: `lib` (skipped: no lib)" in report

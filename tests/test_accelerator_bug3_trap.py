@@ -6,9 +6,9 @@ decoding — classically, the caller closes their own source underneath a live a
 Python ``try/except`` can contain that abort. ``_open_rapidgzip`` runs rapidgzip in a child
 process and serves the child's reads of a caller-owned source from this process, so the fault
 is raised here as a normal Python exception, and rapidgzip only ever sees an end of input. The
-bzip2 decoder runs in the same kind of child. Each scenario runs in its own subprocess so an abort is
-contained; the assertion is that the **untrapped** raw path aborts (documenting the hazard)
-while archivey's path exits cleanly with a Python-level error.
+bzip2 decoder runs in the same kind of child. Each scenario runs in its own subprocess
+so an abort is contained; the assertion is that the **untrapped** raw path aborts
+(documenting the hazard) while archivey's path exits cleanly with a Python-level error.
 """
 
 from __future__ import annotations

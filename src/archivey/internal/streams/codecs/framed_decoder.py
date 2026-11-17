@@ -16,10 +16,6 @@ from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 from archivey.exceptions import TruncatedError
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.overrides import override
-from archivey.internal.streams.codecs.bzip2_resume import (
-    Bzip2Resume,
-    Bzip2ResumeDecoder,
-)
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
     DecodeOut,
@@ -92,7 +88,7 @@ class FrameCheck:
 
 
 class BlockResumable(Protocol):
-    """A decompressor whose stream is a run of blocks it can resume at (bzip3).
+    """A decompressor whose stream is a run of blocks it can resume at (bzip3, bzip2).
 
     Internal: plugin codecs do not implement it. :class:`FramedDecoder` asks it, after
     each ``decompress``, for the blocks it began: each as the block's compressed and
@@ -250,8 +246,7 @@ class FramedDecoder(BaseDecoder):
         self._zero_padding = zero_padding
         self._decomp = new_decompressor()
         if start is not None and start.state is not None:
-            # Only a BlockResumable's points carry a state here (bzip2's takeover
-            # points go to their own decoder in ``recreate``).
+            # Only a BlockResumable's points carry a state here (bzip3, bzip2).
             cast("BlockResumable", self._decomp).resume(start.state)
         self._fed = False
         # Past a stream's end, looking for the next one.
@@ -275,10 +270,6 @@ class FramedDecoder(BaseDecoder):
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> Decoder:
         del inner
-        if isinstance(point.state, Bzip2Resume):
-            # Only the bzip2 takeover adds such a point (``bzip2_resume``), so
-            # ``_new`` builds a bz2 decompressor.
-            return Bzip2ResumeDecoder(point.state, self, self._new)
         return FramedDecoder(
             self._new,
             magic=self._magic,
@@ -383,24 +374,25 @@ class FramedDecoder(BaseDecoder):
             if max_length >= 0 and len(output) >= max_length:
                 self._held = data
                 break
-            if self._between:
-                data = self._next_stream(data)
-                if self._between or self._done:
-                    break
-                self._stream_comp = self._fed_end - len(data)
-                self._stream_dec = self._produced + len(output)
-                if self._index is not None and self._index.resumes_at(data):
-                    self._pending_point = SeekPoint(
-                        self._produced + len(output), self._fed_end - len(data)
-                    )
             limit = max_length - len(output) if max_length >= 0 else -1
-            if self._head_pending and data:
-                self._take_head(data)
             try:
+                if self._between:
+                    data = self._next_stream(data)
+                    if self._between or self._done:
+                        break
+                    self._stream_comp = self._fed_end - len(data)
+                    self._stream_dec = self._produced + len(output)
+                    if self._index is not None and self._index.resumes_at(data):
+                        self._pending_point = SeekPoint(
+                            self._produced + len(output), self._fed_end - len(data)
+                        )
+                if self._head_pending and data:
+                    self._take_head(data)
                 produced = self._decomp.decompress(data, limit)
             except Exception as exc:
                 # Bytes decoded before an error are handed back, not lost with it
-                # (spec ``compressed-streams``): the next feed raises.
+                # (spec ``compressed-streams``): the next feed raises. That covers a
+                # damaged next stream's start too, after an earlier stream's output.
                 if not output:
                     raise
                 self._raise_next = exc
@@ -422,6 +414,10 @@ class FramedDecoder(BaseDecoder):
         return DecodeOut(bytes(output), points)
 
     def flush(self) -> DecodeOut:
+        # An error held back behind earlier output raises here too, should the input end
+        # before the next feed.
+        if self._raise_next is not None:
+            raise self._raise_next
         if self._done:
             return DecodeOut(b"")
         if self._between:
@@ -507,6 +503,20 @@ class FramedDecoder(BaseDecoder):
         return self._draining
 
     @property
+    def checks_every_byte(self) -> bool:
+        """Whether every byte this decoder hands out has passed a block check: its
+        decompressor says so (``checks_output``: bzip2 one block at a time, bzip3)."""
+        return bool(getattr(self._decomp, "checks_output", False))
+
+    @property
+    @override
+    def holds_back_errors(self) -> bool:
+        # A raise here comes only after the bytes earlier calls gave (``_raise_next``),
+        # a damaged next stream's start included, so the decoder holds back errors
+        # when its decompressor does.
+        return bool(getattr(self._decomp, "holds_back_errors", False))
+
+    @property
     def finished(self) -> bool:
         return self._done
 
@@ -542,6 +552,7 @@ def FramedDecompressorStream(
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
     frame_check: FrameCheck | None = None,
+    file_index: bool = True,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec.
 
@@ -561,4 +572,5 @@ def FramedDecompressorStream(
         codec_name=codec_name,
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
+        file_index=file_index,
     )

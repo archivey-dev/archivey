@@ -109,7 +109,7 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | --- | --- |
 | `fs`, `path` | Used: every range read and the size come from them |
 | `mode` other than `"rb"` | `ArchiveyUsageError` (a `ValueError`) naming the mode |
-| `compression` not `None` after fsspec resolves it (`"infer"` on `x.zip.gz` is `"gzip"`) | Read through `of.open()`, fsspec's decompressing stream, which archivey owns and closes: no range reads, and a seek back decodes again. One WARNING says so and, for gzip, bz2, xz/lzma, zstd and lz4, that `compression=None` lets archivey decode and read by range. Not turned into `format=`: `x.zip.gz` with `format=` gzip would be a one-member GZ, not the ZIP fsspec delivers. Refused in a volume sequence and by `open_stream()`, which would get the decoded bytes. A `FormatDetectionError` on one (a lone `y.txt.gz`) carries a note naming fsspec's decoding |
+| `compression` not `None` after fsspec resolves it (`"infer"` on `x.zip.gz` is `"gzip"`) | Read through fsspec's decompressing stream, built as `of.open()` builds it (`fs.open(path)` wrapped in `fsspec.compression.compr[compression]`) without entering `of`. archivey opened both layers, so it closes both with the source, the decompressor first: a decompressor leaves the file it was handed open, and that file holds fsspec's read-ahead cache. Not entering `of` keeps them out of `of.fobjects`, so the caller's `of.close()` cannot close a stream archivey is reading. No range reads, and a seek back decodes again. One WARNING says so and, for gzip, bz2, xz/lzma, zstd and lz4, that `compression=None` lets archivey decode and read by range. Not turned into `format=`: `x.zip.gz` with `format=` gzip would be a one-member GZ, not the ZIP fsspec delivers. Refused in a volume sequence and by `open_stream()`, which would get the decoded bytes. A `FormatDetectionError` on one (a lone `y.txt.gz`) carries a note naming fsspec's decoding |
 | `encoding`, `errors`, `newline` | Meaningless in binary mode; ignored, as fsspec ignores them for `"rb"` |
 
 **The boundary row for an `OpenFile` source** (`access-mode-and-cost` §boundary table):
@@ -119,9 +119,55 @@ other way or refuses them, rather than drop them in silence (DR-1, DR-15):
 | `size` | `fs.size(path)`, read once at open, as a **fact**: it clamps reads, the way `stat` does for a path. The archive is the object as it was at open; a later change is D7's to catch, not the clamp's |
 | `size_hint` | The same value |
 | `path`, `volume_paths` | `None`: there is no local file. A backend that needs a path (RAR's `unrar`) spools, under `SpoolLimits`, as it does for any stream |
-| `name` | `of.path`. Detection's name checks and volume discovery (D4) read it |
-| `seek_is_expensive` | `True` |
+| `name` | `of.path` without credentials: the `user:password@` of a URL is removed, and for `http`/`https` the query and fragment too, because a signed URL keeps its signature there. The name reaches `archive_name` and archivey's own messages, diagnostics and logs, so it must not carry a secret. An I/O error the file system raises propagates unchanged (DR-15a) and can carry the URL as given. Detection's name checks read it. Every fetch uses `of.path` as given |
+| `seek_is_expensive` | `True`: a seek may cost a request, so detection's probe reads at an offset grow the prefix instead (`detection.md` §4.2) |
+| `nearest_resume_offset(target)` | `target`: a range request starts anywhere and decodes nothing, so the tail reads run as on a path, one request each (below) |
 | Ownership | Nothing to close: the planner holds `(fs, path, size)` and its fetched windows, and `close()` drops the windows. The caller's file system object is never closed |
+
+**Tail reads run** (maintainer, 2026-11-08). Three reads look at the end of the
+source: detection's 512-byte UDIF `koly` block (and the ZIP tail probe behind a PE),
+the single-file probes (the xz index, the lzip trailer) and the gzip ISIZE read. Each
+asks `seeks_to_end_are_cheap`. The first version of this change set
+`seek_is_expensive` and nothing else, which turned all three off for a remote source,
+so the same bytes gave another result than from a path: a UDIF image whose first block
+is bzip2 was detected as `BZ2`, a `.xz` member had no `size`, and a `.gz` member had no
+`gzip.isize`. The ruling: a remote archive lists like a local one, and the one extra
+request each read costs is accepted. `RangeSource.nearest_resume_offset` answers the
+target, a joined volume set asks the volume that holds the target, and detection's tail
+read uses `seeks_to_end_are_cheap` (as the single-file probes already did), not
+`seek_is_expensive`. A tail read that steps backward (the xz footer, then the index
+before it) stays one request: a new run that the end would cut short starts earlier, so
+its window holds the minimum fetch (D2 rule 5). Detection hints its tail read (D2 rule
+3), so on an object within the read-through distance the tail is a run of its own and
+does not read through from the head and drop the head's window, which the backend reads
+next. Detection's probe reads at an offset still do not seek a remote source: each
+would be a request, and they grow the prefix.
+
+**Multi-stream files list lazily on a remote source** (maintainer, 2026-11-08: "lazy
+for multi-stream only"). The size of a `.xz` or `.lz` file comes from every stream's
+index (every member's trailer), read from the end toward the start. On a remote source
+the open reads only the last stream's footer and index (the last member's trailer), in
+the same tail request as above. If that read shows an earlier stream, the open stops:
+the member's `size` is `None`, and nothing else the walk fills is set (for `.lz`, the
+combined CRC). A local path keeps the full walk and reports the size. This is the one
+accepted difference between a remote and a local listing of the same bytes: the walk
+costs one step per stream, and a file of many tiny streams would pay for it on every
+open, while a read from start to end never needs it. A single-stream file keeps its
+size on a remote source. The walk runs later only when a seek needs it (the member
+stream's own index build); it steps its window back and doubles (D2 rule 6), so it
+costs about what a forward read of the same bytes costs. xz stream padding after the
+last stream has no length limit, and the scan back over it reads every byte (a
+50 MB run of zeros cost 50 requests and 155 MB), so on a remote source the open looks
+at one tail window only: when it is all zeros, the open cannot tell and treats the
+file as above, with no size and no scan.
+
+Rejected:
+
+- **Skip the tail reads on a remote source** (the first version). A request is cheap
+  next to a different answer for the same bytes.
+- **Set `seek_is_expensive` to `False`.** The probe reads at an offset would then each
+  cost a request too, and `seek_is_expensive` also tells the size rules that the source
+  is not a caller's plain stream.
 
 ```python
 import fsspec, archivey
@@ -139,8 +185,8 @@ Why this shape:
   paths, streams and sequences. An `OpenFile` is one more kind of source.
 - **It gives archivey what it needs and a file object does not:** the file system and
   the path. With those, archivey fetches ranges directly (`fs.cat_file(path, start,
-  end)`), learns the size once (`fs.size(path)`), and lists the parent directory to find
-  sibling volumes.
+  end)`) and learns the size once (`fs.size(path)`). It does not list the parent
+  directory for sibling volumes (D4).
 - **The check costs nothing without fsspec.** `open_archive()` tests for `OpenFile` only
   when `"fsspec" in sys.modules`. A caller who has not imported fsspec cannot be holding
   an `OpenFile`.
@@ -197,10 +243,14 @@ a thin planner that decides each fetch's start and length:
    as each is read): archivey infers the view's span; declared `ranges` win over it.
    A source keeps its latest 8 pending hints, and a read takes the newest one
    that covers it, so members read side by side each keep their own. A span that starts
-   within the read-through distance past a run's window continues that run when reads
-   have taken the window to its end, so spans that lie almost back to back (ISO extents
-   with their sector padding) keep one growing run; a window not yet read to its end
-   may still be another stream's, and the span then gets a run of its own.
+   within the read-through distance past a run's window, and no further past it than
+   the window's own size, continues that run when reads have taken the window to its
+   end, so spans that lie almost back to back (ISO extents with their sector padding)
+   keep one growing run; a window not yet read to its end may still be another
+   stream's, and the span then gets a run of its own. So does a span further off, such
+   as a tail read (D1): continuing the run would fetch the whole gap and drop the
+   head's window, which the reader reads next (a 740 KB `.lz` opened in 3 requests
+   and 740 KB, not 2 and 131 KB).
 
    | Backend | Hint |
    | --- | --- |
@@ -233,6 +283,32 @@ a thin planner that decides each fetch's start and length:
    count, which is the honest place for it. Remote benchmark cases with more streams than
    windows, and with more than the window limit under the seam, pin both rules
    (`tasks.md` 1.3).
+
+5. **A run at the end keeps the minimum fetch.** A new run whose
+   window the end of the object would cut short starts earlier instead, so the window
+   still holds `_MIN_FETCH` and ends at the end. A tail read comes in pieces that step
+   backward (the xz stream footer, then its index; the gzip ISIZE, then nothing), and
+   without this each piece would be a request of its own. It costs up to `_MIN_FETCH`
+   bytes before the read (D1, tail reads). A hinted span ends at or before the end,
+   so the window still holds all of it.
+6. **A read just before an end-placed window steps back from it.** A window is
+   end-placed when rule 5 or this rule placed it by where it ends. A read that
+   ends before such a window's start, by at most the window's size and at most
+   `max_read_through`, fetches the bytes up to that start, doubling as a forward run does, and the window moves back.
+   A window a forward run placed is not stepped back from: a read just before it
+   is a reader starting a new member, which reads forward (applied to every
+   window, this rule cost the gated TAR cases an extra request and 160 KB). A
+   longer gap is a read of something else: with Python 3.15's 128 KiB
+   `io.DEFAULT_BUFFER_SIZE`, the xz reader re-reads the stream header at offset 0,
+   and without the size limit that read fetched the whole gap up to the tail. The xz
+   index walk and the lzip member walk step backward a few bytes per stream:
+   without this rule each step was a new run of `_MIN_FETCH` bytes, and a crafted
+   1.2 MB file of 20,000 xz streams took 75,633 requests and 1.7 GB to list. With
+   it the walk fetches each byte about once, in about as many requests as a
+   forward read (5 requests for that file). Since multi-stream files list lazily on
+   a remote source (D1), the open no longer walks; the rule stays for the walk a
+   seek needs (the member stream's own index build), which without it costs 75,631
+   requests on that file and with it 4.
 
 `_MIN_FETCH`, `_MAX_FETCH` and `_POOL_BYTES` are internal. They are fixed bounds per
 reader that do not grow with input, so DR-9 does not ask for a new public limit. If the
@@ -378,18 +454,47 @@ Rejected:
 
 ### D4. Sibling volumes over fsspec
 
-For an `OpenFile` source, volume discovery lists the parent directory once (`fs.ls(parent,
-detail=True)`, cached per directory) and applies the same naming rules as local discovery
-(`archive-reading` §Multi-volume). The rules run on a path-like adaptor,
-`RemoteVolumePath`, that answers every question they ask (`iterdir`, `is_file`,
-`is_symlink`) from that one listing, so the same rule code serves both callers; the
-listing's `type` and `islink` keep the link refusal. Each volume becomes its own
-`RangeSource`, with its size taken from the listing, so no part costs an `info` request. A
-file system without listing (plain HTTP) finds no siblings, and a multi-volume open then
-fails as it does today for a lone first volume; an explicit sequence of `OpenFile` objects
-is the way to open those.
+**An `OpenFile` source is never searched for sibling volumes** (davi, 2026-11-11, which
+replaces the remote discovery this section first designed). archivey does not list the
+parent directory and probes no sibling name, whatever `ArchiveyConfig.discover_volumes`
+says. A remote set is opened from an explicit sequence of `OpenFile` objects, in order;
+each one becomes its own `RangeSource` over the reader's one window pool (D2 rule 4), and
+the sequence is held to the same name checks as a list of paths (a gap or two sets is
+refused).
+
+Why: listing a remote folder is unreliable. On S3 it needs a permission that reading an
+object does not, HTTP servers often have no index page and parsing one is fragile, and
+nothing bounds what a search costs on a large folder, while every remote `.rar`, `.exe`
+or `.sfx` open would pay it. The caller knows the parts, so the list is cheaper and
+certain.
+
+What the caller sees instead:
+
+- A lone remote part whose name marks it as one (`x.7z.001`, `x.zip.001`, `x.exe.001`) is
+  refused by name with `TruncatedError` ("found part 1 only"), as a lone local part is,
+  and the message adds: pass the volume parts as a list of `OpenFile` objects. With
+  `discover_volumes=False` it is read alone, as a local part is.
+- A RAR volume read alone whose headers say another follows (`x.part1.rar`, `x.rar`, an
+  SFX `.exe`) lists what it holds and then raises `TruncatedError`, and a later volume
+  read alone (`x.part2.rar`, `x.r00`) raises "Need first volume", and a volume that
+  says nothing follows it raises "additional volumes required"; for a lone `OpenFile`
+  each message adds the same remedy, and for a stream none does.
+- A remote archive that is complete opens as before, under a volume-shaped name too, with
+  no diagnostic: a local lone part that opens has none either.
+- `discover_volumes=True` on a remote source is neither warned about nor refused: it is
+  the default, so an explicit `True` cannot be told from no choice, and a warning on
+  every remote open would be noise.
+- Info-ZIP `x.z01` keeps the spanned-ZIP refusal: a list does not help there, as no
+  spanned set is read.
+
+Reopen if a store gives a cheap, permission-free and bounded way to find the parts (a
+manifest, a known naming convention the caller opts into). Lazy opening of parts and
+probing predicted names instead of listing are a later design, not started here.
 
 ### D5. Batched fetches for whole-archive passes
+
+**Dropped, not built** (maintainer, 2026-11-11). The design below is kept as the record
+of what was weighed.
 
 `extract_all()` and `stream_members()` over a non-solid ZIP or 7z know every member span
 before they start. With the spans as hints, the planner coalesces them with
@@ -443,7 +548,19 @@ only for data that has a checksum. In order of strength:
    reader says so at open with the advisory diagnostic `SOURCE_CHANGE_UNDETECTABLE`
    (§Decisions 3), so that silence never reads as "checked".
 
-A change that is caught raises `SourceChangedError` (§Decisions 3).
+A change that is caught raises `SourceChangedError` (§Decisions 3). It stays caught: the
+range source keeps it and raises it again on every later read, a read a fetched window
+still holds included, and the points where an operation ends (detection's answer, the
+open, the end of a member walk) raise it in place of the answer or the other error the
+operation would have ended with. A diagnostic that a handler recorded before the end
+stays recorded.
+`SourceChangedError` is a `ReadError`, so a handler built for damage to the archive
+catches it too and can answer with another format, a diagnostic or a missing size;
+ending the operation with the change is one rule that holds whichever handler took it.
+
+A source with fsspec `compression=` is read through fsspec's decompressing file, not
+through range fetches, so archivey compares nothing with the size seen at open. It
+records `SOURCE_CHANGE_UNDETECTABLE` too, with a reason that names that file.
 
 Tier 3 lands with the first remote read (stage 2): the size comparison and the
 diagnostic cost nothing and are what keeps silence honest. Tiers 1 and 2 need

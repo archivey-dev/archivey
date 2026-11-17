@@ -55,7 +55,7 @@ def _refuse_processes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _without_unrar(monkeypatch: pytest.MonkeyPatch) -> None:
-    def missing() -> str:
+    def missing(_program: str | None = None) -> str:
         raise PackageNotInstalledError(rar_unrar._NOT_INSTALLED_MSG)
 
     monkeypatch.setattr(rar_unrar, "find_rarlab_unrar", missing)

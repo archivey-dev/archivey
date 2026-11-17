@@ -128,11 +128,26 @@ def test_7z_written_archives_read_the_same_under_every_value(
     _assert_same_under_every_value(_7z_write(tmp_path, archive_type, switches))
 
 
-def test_none_with_rapidgzip_on_is_refused() -> None:
-    with pytest.raises(ArchiveyUsageError, match="rapidgzip runs only in a child"):
+@pytest.mark.parametrize("field", ["use_rapidgzip", "use_indexed_bzip2"])
+def test_none_with_rapidgzip_on_is_refused(field: str) -> None:
+    # A ValueError too, as every refused argument value is (DR-15).
+    with pytest.raises(
+        ValueError, match=rf"{field}=ON\).*rapidgzip runs only in a child"
+    ) as caught:
+        ArchiveyConfig(
+            process_isolation=ProcessIsolation.NONE,
+            **{field: AcceleratorMode.ON},
+        )
+    assert isinstance(caught.value, ArchiveyUsageError)
+
+
+def test_none_with_both_accelerators_on_names_use_rapidgzip() -> None:
+    """With both fields ``ON``, the refusal names the first one, ``use_rapidgzip``."""
+    with pytest.raises(ArchiveyUsageError, match=r"\(use_rapidgzip=ON\)"):
         ArchiveyConfig(
             process_isolation=ProcessIsolation.NONE,
             use_rapidgzip=AcceleratorMode.ON,
+            use_indexed_bzip2=AcceleratorMode.ON,
         )
 
 

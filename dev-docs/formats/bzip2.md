@@ -83,21 +83,41 @@ read.
 
 ### 2.3 Member data
 
-**The standard library engine.** `FramedDecompressorStream` runs one `bz2.BZ2Decompressor`
-per stream, which checks each block's CRC and the stream's combined CRC, and starts
-another when the bytes right after a stream are `BZh` and a block size digit. Bytes
-there that match those four in two or three places (`BYh9`, `BZh0`) are a stream with a
-damaged header and raise `CorruptionError`, although `bzip2 -t` ignores them as trailing
-garbage: the rule is the one every codec with a magic follows
-([`single-file.md`](single-file.md) §2.3). Anything else after the last stream is
-reported as `ARCHIVE_TRAILING_DATA` unless it is zeros that run to the end of the file
-(§2.3). After zeros, any byte ends the data, a further stream's header too (§6); the
-report names the first non-zero byte. One to three zeros that start a damaged header
-with the bytes after them raise as a damaged header does, since the damaged byte can be
-a zero. `bz2.open`, which this replaces, ignored trailing bytes without a word. A stream
-that ends before its end marker is `TruncatedError`. An `OSError` saying "Invalid data
-stream" is `CorruptionError`. It can seek, but a backward seek decodes again from the
-start, and the rewind report says so.
+**The standard library engine.** `FramedDecompressorStream` runs one
+`Bzip2BlockDecompressor` per stream (`bzip2_blocks.py`), which feeds a
+`bz2.BZ2Decompressor` one block at a time, and starts another when the bytes right after
+a stream are `BZh` and a block size digit. `bz2` checks a block's CRC only after the
+block's last byte is out, so a plain decode hands out a damaged block's bytes before it
+raises, and those bytes are garbage: the inverse Burrows-Wheeler transform scrambles the
+whole block, and one flipped bit anywhere leaves at most a byte or two right. So each
+block's output is held until `bz2` has checked it, and a block whose CRC fails gives
+none of its bytes; a block with intact data and a wrong stored CRC gives none either.
+The blocks before it come out whole, then the error (`holds_back_errors`, so no
+re-decode runs). Nothing gives a block's length, so the input is scanned for the 48-bit
+block and end-of-stream magics. At each match the input is fed up to it and `bz2`
+drained: output there means a block ended there, none means the match was inside a
+block. Between matches no more is fed than ends before the first bit a match not found
+yet can start at, so no block ends unseen. The scan costs a few percent of the decode.
+The end-of-stream marker is never fed to `bz2`: archivey checks the combined CRC itself,
+from the CRC in each block's header. Holding a block holds its output: about 900 kB at
+level 9 for ordinary data, at most 46.6 MB for a crafted block of runs, which counts
+against `DecoderLimits.max_decoder_memory` as it grows. Bytes there that match those
+four in two or three places (`BYh9`, `BZh0`) are a stream with a damaged header and
+raise `CorruptionError`, although `bzip2 -t` ignores them as trailing garbage: the rule
+is the one every codec with a magic follows ([`single-file.md`](single-file.md) §2.3).
+Anything else after the last stream is reported as `ARCHIVE_TRAILING_DATA` unless it is
+zeros that run to the end of the file (§2.3). After zeros, any byte ends the data, a
+further stream's header too (§6); the report names the first non-zero byte. One to three
+zeros that start a damaged header with the bytes after them raise as a damaged header
+does, since the damaged byte can be a zero. `bz2.open`, which this replaces, ignored
+trailing bytes without a word. A stream that ends before its end marker is
+`TruncatedError`. An `OSError` saying "Invalid data stream" is `CorruptionError`. On
+declared seek demand or restart points every block it checks is a seek point, whose
+state is the block's bit offset into its first byte, the stream's level digit and the
+combined CRC of the blocks before it. A resume feeds `bz2` a made-up stream header with
+that digit, then the input shifted to the block's bit, and checks the combined CRC at
+the end from the state, so it never decodes from the start. Without either, a backward
+seek decodes again from the start, and the rewind report says so.
 
 **When the accelerator is used.** `use_indexed_bzip2` is an `AcceleratorMode`, `AUTO` by
 default:
@@ -106,7 +126,7 @@ default:
 | --- | --- |
 | `OFF` | The standard library, always |
 | `ON` | `rapidgzip.IndexedBzip2File` in a child process, or `PackageNotInstalledError` without `rapidgzip`, or `StreamNotSeekableError` on a source that cannot seek (a pipe, or a member stream of an outer archive opened without `seekable_members`), or `ResourceUnavailableError` where no child process can start |
-| `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Otherwise the standard library, silently; where no child process can start, with one warning per process |
+| `AUTO` | The accelerator when seeking was declared (`seekable_members=True`, `open_stream(seekable=True)`), the source is seekable, `rapidgzip` is installed and the compressed input is at least `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` (1 MiB) or of unknown size. Without declared seeking, the accelerator too for a read on Linux or macOS from a file on disk (a path, or a byte range of a regular file) of known size at least that threshold, when the process may run on two CPUs or more (`_bzip2_sequential_read_pays`); the stream stays forward-only. Otherwise the standard library, silently; where no child process can start, with one warning per process |
 
 The same rules hold for a bzip2 ZIP member or 7z coder, whose data is one stream
 (`CodecParams.single_stream`). The standard library stops at the first stream's end, and
@@ -124,7 +144,15 @@ is not the reason; the standard library's decoders run in-process. A child that 
 the data hands the read to the standard library, like any data error (§2.3 below). The child
 costs about 45 ms per stream, which the 1 MiB `AUTO` threshold accounts for: a full read
 broke even near 0.6 MiB compressed with 4 cores and near 2 MiB with one
-(`scripts/investigations/bench_bzip2_child.py`). The guards below sit around the child's stream.
+(`scripts/investigations/bench_bzip2_child.py`). A sequential full read gains more, because
+rapidgzip decodes blocks in parallel: on 4 cores it took 0.62 of the standard library's time at
+0.6 MiB compressed and 0.40 at 2.3 MiB, and a 48 MiB `.tar.bz2` read in 0.28 of the time; on 2
+cores 0.86 and 0.63; on one core it was slower (1.24 and 1.05), which is why the sequential rule
+wants two usable CPUs. rapidgzip also reads its bzip2 input about twice: a full read of a 3 MiB
+`.tar.bz2` from a caller's `BytesIO` pulled 2.47 times the archive, against 1.29 with the standard
+library (detection's probe included). From a file the child reads the region itself, through the
+page cache; from a caller's stream every byte crosses the pipe twice, and a remote stream fetches
+it twice. So the sequential rule takes only a file on disk. The guards below sit around the child's stream.
 
 - **A corrupt source must not read as empty.** The bundled decoder returns no output and no
   error for input that is not bzip2 at all: 40 000 zero bytes, a zero-byte file, a bare
@@ -227,13 +255,17 @@ before the reader got anything, and the takeover starts at the origin. When the 
 further in, the standard library starts at the newest block at or before it from the
 accelerator's index (`available_block_offsets()`, which still answers after the error), and
 keeps up to eight such blocks as seek points. A bzip2 block carries nothing from the blocks
-before it, so a resume is the compressed bits from the block on, shifted to a byte boundary
-behind a made-up `BZh9` header (`bzip2_resume.py`; 9 accepts a block of any level). A
-resumed decode that meets its stream's end marker fails the combined CRC, and `bz2`
-reports that as it reports a damaged block, so either one starts the decode over from the
-origin, which decides. Scanning the source for the block magic instead of reading the index
-would find blocks, but not where their output starts, which only decoding everything before
-them tells.
+before it, so the takeover resumes there as at the standard library's own block points
+(`bzip2_blocks.py`), at the level its stream header gives. The index gives no block
+CRCs, so they are read from the block headers at the index's blocks, and folded into the
+combined CRC each point carries (`Bzip2BlockStart.from_index`). A resumed decode that
+meets its stream's end marker checks it; when it does not match, or a stream header is
+not right before the first indexed block (level 9, which accepts a block of any level,
+and no combined CRC), the decode starts over from the origin, which decides. A damaged
+block after the point is a verdict: blocks decode on their own, so a decode from the
+origin gives the same bytes before it and the same error. Scanning the source for the
+block magic instead of reading the index would find blocks, but not where their output
+starts, which only decoding everything before them tells.
 
 ### 2.4 Extract
 
@@ -274,6 +306,9 @@ bzip2-specific only; the shared items are [`single-file.md`](single-file.md) §4
   output byte, and detection's inner-TAR probe reads up to 1 MiB of compressed input to
   reach it. Both are bounded by the block size; the detection budget bounds the probe
   (threat-model O11).
+- **A held block costs its whole output.** The standard library engine holds a block's
+  output until its CRC passes: up to 46.6 MB for a crafted block of runs a few hundred
+  bytes long. It counts against `DecoderLimits.max_decoder_memory` as it grows.
 - **Garbage must not read as empty.** Covered by `_Bzip2EmptyStreamCheck` (§2.3). Without
   it a corrupt file would pass a read as a valid empty member.
 
@@ -287,7 +322,9 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Each accelerated bzip2 open of a caller's own stream (a file object or `io.BytesIO`) leaks about 1.7 kB of Python objects; every accelerated open, from a path too, leaks a few kB of native memory | **library** | rapidgzip keeps the file object it reads from; archivey frees the caller's stream behind it, so its size does not matter (`known-issues.md` Bug 5) |
 | `member.size` is `None` for a `.bz2` | **format** | No size field (§1) |
 | Opening a small `.bz2` decodes up to 900 kB | **format** | Open-time validation needs the first block (§1, §2.2) |
-| A backward seek re-decodes from the start | **format** | Install `[seekable]` and pass `seekable_members=True` |
+| A backward seek re-decodes from the start | **format** | Pass `seekable_members=True`: every block read is then a seek point. A random-access read of a `.tar.bz2` keeps the points too |
+| A block whose data is intact but whose stored CRC is wrong gives none of its bytes | **archivey** | A block's output is held until its CRC passes (§2.3); nothing tells a wrong CRC from wrong data |
+| A damaged block, or a damaged block magic, costs about two more decodes of one block | **library** | `bz2` checks a block and refuses the bytes after it in one call, which drops the call's output. So when a feed raises, the block being decoded is decoded again up to its end, the last 4 KiB one byte at a time, and its bytes come out before the error if it passes (`_recover_block`); a damaged block fails again |
 | A cold backward seek with the accelerator still re-decodes up to a block, and may log it | **format** | Blocks are the unit of random access |
 | A cut or damaged stream right after the data costs a second decode of the file with the accelerator | **archivey** | The accelerator stops before it, and the standard library takes over at the end from the start of the file (§2.3) |
 | With `pack_size` declared on a source that is not cut there, the accelerator reads through input after the end that the standard library refuses under `refuse_input_after_end` | **archivey** | Only the accelerator's input is clipped (§2.3). No reader produces that source: the 7z reader cuts each coder's input at its packed size |
@@ -311,6 +348,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Check the stream layout from the index before a read returns (`_Bzip2Layout`) | Bytes from after a skipped region must not reach the caller; the index already says where each stream's first block is | Checking at the end of data only, after the wrong bytes were delivered |
 | The scan skips whole empty streams right after the data, and zeros only where they run to the end | The compressed position stops before trailing empty streams, and the standard library engine reads them as part of the data | Reading the end from the decoder's block offsets, whose last entry is where an end-of-stream marker starts: undocumented, and it forces the full index |
 | On a data error from the accelerator, the standard library takes over and gives the verdict (maintainer ruling, 2026-10-03) | The accelerator must not change what a cut or damaged file delivers or raises; its `std::exception` names no cause | Mapping `std::exception` to `TruncatedError`, which would mislabel damage |
+| Hold each block's output until its CRC passes, and drop a block that fails (maintainer ruling, 2026-11-12) | A damaged block's output is garbage as a whole; handing it out before the error gave callers about 900 kB of wrong bytes per damaged block. Holding also makes every block a seek point and lets the combined CRC be checked from the block headers | Handing out the bytes before the error, as `bz2` does; re-decoding to the error, which finds the same garbage |
 | The takeover resumes at a block from the accelerator's index | A block needs no window; decoding again from the origin costs as much as the bytes already delivered | Scanning the source for the block magic, which gives no decompressed offset |
 | Translate the accelerator's errors by message text | They carry no distinct type; each string was seen on a real corrupt file | Treating every `RuntimeError` as corruption, which would hide archivey's own bugs |
 
@@ -326,7 +364,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
     tests/test_accelerator_truncation_abort.py tests/test_seekable_streams.py \
     tests/test_detection.py tests/test_exception_handlers.py \
     tests/test_stream_trailing_data.py tests/test_accelerator_takeover.py \
-    tests/test_bzip2_resume.py -k "bz"
+    tests/test_bzip2_blocks.py -k "bz"
 ```
 
 | Claim |

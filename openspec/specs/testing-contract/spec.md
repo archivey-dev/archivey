@@ -179,24 +179,26 @@ solid-RAR mutation cases SHALL skip cleanly rather than fail.
 
 ### Requirement: Non-seekable stream coverage for streaming backends
 
-The system SHALL test every backend that supports streaming with a **non-seekable double**
-that raises `io.UnsupportedOperation` from `seek()` and reports `seekable()` as `False`. A
-streaming-capable backend MUST read and iterate correctly without repositioning the source.
+The system SHALL test every backend that supports streaming with a **non-seekable
+double** that raises `io.UnsupportedOperation` from `seek()` and reports `seekable()` as
+`False`. A streaming-capable backend MUST read and iterate correctly without
+repositioning the source.
 
 The double SHALL be named in `tests/`, not in this spec. Naming a concrete class here is
 what let the spec drift: it named `FakeNonSeekable` — a class that has never existed in
 `tests/` — while the double actually used is `NonSeekableBytesIO`. It also described the
-double as raising on *every* `seek` **and `tell`** call, which `NonSeekableBytesIO` does not
-do: it answers `tell()` from its inner `BytesIO`. Answering `tell()` is load-bearing rather
-than an oversight — `ConcatenatedFile.__init__` probes `tell()` then `seek()` on
+double as raising on *every* `seek` **and `tell`** call, which `NonSeekableBytesIO` does
+not do: it answers `tell()` from its inner `BytesIO`. Answering `tell()` is load-bearing
+rather than an oversight — `ConcatenatedFile.__init__` probes `tell()` then `seek()` on
 `BinaryIO` volumes (Path volumes are sized with `stat()`), and
 `fix_stream_start_position` needs a position for the mid-stream origin contract — so the
-requirement is stated on `seek()` and `seekable()`, which is what the doubles enforce and
-what backends branch on.
+requirement is stated on `seek()` and `seekable()`, which is what the doubles enforce
+and what backends branch on.
 
-A backend that requires a seekable source, including ISO, 7z and RAR per
+A backend that requires a seekable source, including ISO and 7z per
 `access-mode-and-cost` and the format specs, SHALL fail fast at open time with
-`StreamNotSeekableError`. So SHALL a backend that reads front to back (TAR, ZIP, the
+`StreamNotSeekableError`, and so SHALL RAR when no RARLAB `unrar` 7.00 or later is
+found. So SHALL a backend that reads front to back (TAR, ZIP, the
 single-file compressors) opened with `streaming=False`. No backend may implicitly
 buffer the non-seekable source to make it seekable. The recovery path is to provide a
 seekable source for seek-required formats, or `streaming=True` where the backend reads
@@ -414,13 +416,13 @@ installed only via the CI `fuzz` dependency group (`packaging-and-extras`).
 
 | Case | Expected |
 | --- | --- |
-| Merge-queue group changing a library, test, dependency or CI path | Short partitioned budgets over the full target set (MAY be sharded across parallel jobs); green if no crash/hang/raw exception, else the group does not merge |
-| Merge-queue group changing none of those paths (docs, review files, or a script the list does not name) | Short fuzz not required; the nightly guard still sees the commit on `main` |
-| Pull request push | Short fuzz not required (the merge queue runs it for a group that changes one of those paths) |
+| Merge-queue group | Fuzz not required; the nightly guard sees the commit once it is on `main` |
+| Pull request push | Fuzz not required |
+| Release gate | A dispatched full run is green on the release pull request |
 | Scheduled nightly, HEAD commit within ~3 days | Full partitioned target set runs |
 | Scheduled nightly, HEAD older than ~3 days | Expensive fuzz skipped (guard only) |
 | `workflow_dispatch` (optional longer env budget) | Full partition; extended exploration allowed |
-| Push to `main` alone | Full Atheris job not required (covered by merge-queue short + change-guarded nightly) |
+| Push to `main` alone | Full Atheris job not required (covered by the change-guarded nightly) |
 | RAR backend absent | RAR targets skipped; other targets still run |
 | RAR backend present + `unrar` installed (Atheris CI) | RAR open+list target runs (not skipped for missing binary) |
 | Fuzzer finds a crashing input | Job fails; repro bytes uploaded; re-run command printed |

@@ -9,6 +9,20 @@ mitigation imposes lives on the format handbook page ([`formats/`](formats/)), a
 behaviour lives in the handbook's sharp-edges tables and, when users hit it, in
 the user docs ([`docs/formats.md`](../docs/formats.md) for format behaviour).
 
+## Brotli probe past the completion window: a source of unknown size can detect differently (open)
+
+- **Symptom.** With `always_probe_content`, bytes over the completion window (64 KiB under
+  `BALANCED`) can detect as Brotli from a seekable stream with no cheap size (a socket
+  wrapper, a user-written file object), and as nothing from a file or `BytesIO`.
+- **Why.** With a known size, the Brotli probe checks that its first meta-block fits
+  the source, walks the block chain and decodes through it (`brotli_codec.py`). With
+  no size it skips those checks and accepts the 4 KiB window. Within the completion
+  window, detection measures the source first (`_measure_within_completion_window`),
+  so the two agree there.
+- **Remains.** Past the window the probe would need to treat a short `read_at` as
+  the source's end. `tests/test_detect_unknown_size.py` pins the current difference.
+- **Found by** the follow-up fuzz campaign (`diff_modes` oracle), 2026-11-09.
+
 ## MacPaw `unar` / XADMaster: RAR5 solid after an empty entry is silent-wrong (open)
 
 **Symptom.** On a RAR5 solid archive, `unar` fails on a member with data that comes after
@@ -18,17 +32,17 @@ earlier members; the XADMaster 1.10.8 lineage (the local build and Homebrew's bo
 exits 0 with empty output. RAR4 is unaffected.
 
 **What archivey does.** `unar` is the second RAR data program (used when no RARLAB program
-is found, under `auto` for a member `unrar` cannot name whose read needs no password,
-or with `ArchiveyConfig.rar_decompressor="unar"`). `internal/backends/rar_unar.py`
-refuses, from the native listing, every RAR5 solid member with data that follows an empty
-file, a directory or a link, and names only the readable members to `unar`, so it never
-reaches the crash. The same module handles the six other `unar` failures found on the
-fixtures: it refuses RAR 1.5 compression, encrypted RAR 2.x to 4.x data (and compressed
-members after it in the same solid stream), non-ASCII passwords, header-encrypted RAR5
-volume sets and prefixed volume sets, copies a prefixed
+is found, under `auto` for a member `unrar` cannot name whose read needs no password, or
+with `ArchiveyConfig.rar_decompressor="unar"`). `internal/backends/rar_unar.py` refuses,
+from the native listing, every RAR5 solid member with data that follows an empty file, a
+directory or a junction (other links are measured harmless), and names only the readable
+members to `unar`, so it never reaches the crash. The same module handles the six other
+`unar` failures found on the fixtures: it refuses RAR 1.5 compression, encrypted RAR 2.x
+to 4.x data (and compressed members after it in the same solid stream), non-ASCII
+passwords, header-encrypted RAR5 volume sets and prefixed volume sets, copies a prefixed
 single archive from where the RAR starts, and names stream volumes under the set's own
-scheme. Pinned by `tests/test_rar_unar.py`, which CI's macOS leg runs against the
-Homebrew bottle.
+scheme. Pinned by `tests/test_rar_unar.py`, which CI's macOS leg runs against the Homebrew
+bottle.
 
 **What remains.** The gate is built from measured shapes, and ANTI members and
 packed-nonzero empty entries are untested, so a shape could slip past it. The per-member size and digest check
@@ -185,8 +199,8 @@ of MB with every core decoding.
 **What remains.** Nothing runs rapidgzip in the caller's process. To know whether the
 isolation is still needed, `scripts/investigations/accelerator_crash_search.py` runs both decoders
 in-process on damaged input, in a process it watches, and reports each crash by its
-signature; `.github/workflows/accelerator-crash-search.yml` runs it monthly and on a
-lockfile change, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the
+signature; `.github/workflows/accelerator-crash-search.yml` runs it monthly and after a
+merge that changes the lockfile, on Linux, macOS and Windows. A new signature (any bzip2 crash) turns the
 run red; a run with cut inputs that no longer finds this abort suggests it is fixed.
 
 **Upstream.** Not filed. It is the one worth filing: a destructor must not throw, and the
@@ -289,7 +303,7 @@ handles large buffers under PyPy (its cpyext build), or a pure-Python Deflate64 
 **Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
 ([`docs/install.md`](../docs/install.md) §PyPy).
 
-## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash)
+## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash; open, the 2026-11 soak did not reproduce it)
 
 **Symptom.** On GitHub Actions `ubuntu-latest` required legs with `--extra all` or
 `all-lowest` (py3.11 to 3.13, sometimes 3.14), the suite process dies with
@@ -313,8 +327,8 @@ stacks are not in a PPMd decode.
 
 1. The in-process rapidgzip decoder in a long-lived pytest process. Every codec now runs
    rapidgzip in a child process (Bug 4), bzip2 included, so the suite's own process no
-   longer loads it. The last recorded red runs predate the move and the rate has not been
-   re-measured since.
+   longer loads it. The last recorded red runs predate the move. The soak of 2026-11-10
+   (below) found no crash after it.
 2. Allocator layout: many natives loaded together, plus coverage and GC, with Hypothesis
    or `subprocess` only the tripwire.
 3. Not the gzip/zlib truncation-recovery logic: the crashes do not stack in
@@ -324,13 +338,26 @@ stacks are not in a PPMd decode.
 steps so a corrupted heap in one cannot take down another. That is CI hygiene, not a
 product fix.
 
-**What remains.** The cause. The next step is a soak rate, then an A/B run without
-rapidgzip.
+**Measured 2026-11-10 and 2026-11-11.** 32 whole-suite passes in the shape the crashes
+came from (one long-lived pytest process, serial, pytest-cov on, `PYTHONFAULTHANDLER=1`),
+and no process died. 30 ran on `ubuntu-latest` in two runs of `heap-corruption-soak.yml`
+(42834255485 at 7a0bfab and 43108671291 at 5cbc64d), each with py3.11, 3.12, 3.13 and 3.14
+`[all]` and py3.11 `[all-lowest]`, three passes each; 2 ran in a Linux container (py3.11
+`[all]`). In 2026-07 the same shape crashed in four CI runs within days, often on two legs
+of one run. Zero in 32 puts the per-pass rate below about 9% at 95% confidence (the rule
+of three), far under what those runs showed. The crash is not reproduced in the current tree;
+the cause was never found, so it is not shown fixed either.
+
+**What remains.** Re-run `heap-corruption-soak.yml` (on demand) after a native dependency
+upgrade or a change that brings a native decoder back into the parent process. If a pass
+dies, the A/B without rapidgzip in the investigation page is the next step. The four-step
+CI split stays: it is cheap, and it is what keeps one native crash from hiding the rest of
+the suite's results.
 
 **Upstream.** Unknown owner; nothing to file yet.
 
 **Evidence.** [`linux-heap-corruption-soak.md`](investigations/linux-heap-corruption-soak.md):
-the CI step split, the soak and A/B recipes, and the recorded red runs.
+the CI step split, the soak and A/B recipes, the recorded red runs and the 2026-11-10 soak.
 
 ## PyPy: a C `bool` member reads as an int (open, upstream)
 
@@ -446,8 +473,34 @@ estimates alone. The PyPy CI job runs the pins above; nothing measures the zstd 
 windows, what a caller who leaves streams unclosed really uses, or what the same drops
 cost in a long-lived process with a large heap, the shape the ENOMEM failures had.
 
+**zlib copies.** PyPy's `decompressobj.copy()` leaks zlib's inflate state, about
+7 KiB, on every call: `inflateCopy` in `rpython/rlib/rzlib.py` allocates the copy with
+`inflateInit()`, whose state zlib's `inflateCopy` then overwrites without freeing. No
+collection reaches it. The rest of a copy, its 32 KiB window, waits for a major
+collection, which copies barely bring forward (40 KB of pressure per copy did not change
+the growth). Measured on PyPy 3.11.15 (7.3.23): 60,000 copies hold 2.6 GB; with
+`gc.collect()` every 1,000 copies, 200,000 copies keep 1.5 GB; the same count of new
+decompressors stays at 98 MB. The pipe path that keeps the bytes before a zlib error
+(`_KeepsOutputBeforeErrors` in `codecs/deflate_decoder.py`) used to take a copy before
+every bounded step, which is one copy per byte on a source that returns one byte per
+read: one parametrised case of `tests/test_arrived_codec_input.py` took 64,121 copies
+and grew its worker by 2.7 GB. In the merge queue's PyPy job that put the runner's four
+workers past its 16 GB, the runner stopped answering, and the job ran into its
+45-minute limit with no log (2026-11-13 and 14). The path now takes one copy per
+`REPLAY_MAX_STEPS` steps, 1 MiB of input or 8 MiB of output, and replays the steps since
+the copy on an error. Where the copy leaks (`native_memory.ZLIB_COPY_LEAKS`: every
+PyPy so far; `_PYPY_ZLIB_COPY_FIXED` names the first fixed release once one exists),
+archivey takes no zlib copy at all (maintainer's ruling, 2026-11-14: a leak that never
+ends would grow a long-lived process without bound). There, a damaged pipe loses the
+failing call's bytes, at most 64 KiB, as every other codec does on a pipe, and gzip,
+zlib and raw DEFLATE record no snapshot seek points (`ZlibSnapshot`), so a backward seek
+decodes again from the start of the member. On a 64 MiB text gzip under PyPy 3.11.15,
+15 random seeks took 4.8 ms median with snapshots and 71 ms (max 384 ms) without; a
+full read is about 600 ms.
+
 **Upstream.** Not filed; PyPy documents that native memory needs
-`add_memory_pressure` from whoever allocates it.
+`add_memory_pressure` from whoever allocates it. The copy that is never freed is a PyPy
+bug (the `rzlib` cause above), not filed yet.
 
 **Evidence.** PR #927. On main, the PyPy job's extras step had 163 failures and
 53 errors, 154 of them ENOMEM, with one worker's `[heap]` mapping at 74 GB. With the fix

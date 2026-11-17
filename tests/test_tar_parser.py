@@ -32,6 +32,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
+    PAX_KEYWORD_BYTES,
     Ambiguity,
     HeaderBlock,
     HeaderFormat,
@@ -339,6 +340,28 @@ def test_pax_repeated_key_keeps_its_last_value() -> None:
     data = _rec(b"a", b"1") + _rec(b"a", b"2") + _rec(b"b", b"3")
     records = parse_pax_records(data, binary_default=False).values
     assert {k: v.value for k, v in records.items()} == {b"a": b"2", b"b": b"3"}
+
+
+def test_pax_keyword_is_charged_once_however_often_it_repeats() -> None:
+    """A repeated keyword is not charged again: a PAX sparse 0.0 map repeats two
+    keywords once per fragment, and its entries are weighed by the sparse-map rule."""
+    fragments = b"".join(
+        _rec(b"GNU.sparse.offset", b"%d" % (i * 1024))
+        + _rec(b"GNU.sparse.numbytes", b"512")
+        for i in range(500)
+    )
+    data = (
+        _rec(b"path", b"abc")
+        + fragments
+        + b"".join(_rec(b"a", b"%d" % i) for i in range(500))
+        + _rec(b"b", b"1")
+    )
+    charges: list[tuple[int, str]] = []
+    parse_pax_records(
+        data, binary_default=False, charge=lambda n, what: charges.append((n, what))
+    )
+    distinct = ["path", "GNU.sparse.offset", "GNU.sparse.numbytes", "a", "b"]
+    assert charges == [(PAX_KEYWORD_BYTES, "a PAX keyword")] * len(distinct)
 
 
 def test_pax_hdrcharset_binary_marks_the_block() -> None:

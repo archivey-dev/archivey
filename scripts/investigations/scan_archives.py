@@ -63,12 +63,12 @@ hardlink never falls back to a copy: ``bytes_written`` is a floor for
 (``reader._resource_usage()``). The three peaks are read when the reader closes, even
 if the scan raised, since a failing archive is a row they are for; ``metadata_bytes``
 is written once the listing was reached, so a row that never listed leaves it empty.
-The record is internal, so the script checks it is there and prints ``warning:
-resource usage not recorded`` rather than leaving the columns silently empty. ``decoder_memory`` is the largest allocation
-an archive *declared* that archivey checks itself; xz, LZMA Alone and zstd hand the
-limit to liblzma / libzstd and are not counted, and neither is a size a detection
-probe checks. A file the reader could not open has no record, so its row leaves these
-columns empty.
+The record is internal, so the script checks it is there and prints
+``warning: resource usage not recorded`` rather than leaving the columns silently empty.
+``decoder_memory`` is the largest allocation an archive *declared* that archivey checks
+itself; xz, LZMA Alone and zstd hand the limit to liblzma / libzstd and are not counted,
+and neither is a size a detection probe checks. A file the reader could not open has no
+record, so its row leaves these columns empty.
 """
 
 from __future__ import annotations
@@ -156,8 +156,8 @@ def _scan_config(default_limits: bool) -> ArchiveyConfig:
 _LIMITS: tuple[tuple[str, str, float | None], ...] = (
     ("bytes_written", "max_extracted_bytes", ExtractionLimits().max_extracted_bytes),
     ("entries_written", "max_entries", ExtractionLimits().max_entries),
-    ("archive_ratio", "max_ratio", ExtractionLimits().max_ratio),
-    ("max_member_ratio", "max_ratio", ExtractionLimits().max_ratio),
+    ("archive_ratio", "max_ratio", DecoderLimits().max_ratio),
+    ("max_member_ratio", "max_ratio", DecoderLimits().max_ratio),
     ("members", "max_members", ListingLimits().max_members),
     ("metadata_bytes", "max_metadata_bytes", ListingLimits().max_metadata_bytes),
     ("decoder_memory", "max_decoder_memory", DecoderLimits().max_decoder_memory),
@@ -380,6 +380,7 @@ def _scan_open_reader(
                 Path(tmp) / "out",
                 dry_run=True,
                 on_error="continue",
+                on_blocked="skip",
                 on_progress=on_progress,
             )
     except Exception as exc:  # noqa: BLE001
@@ -499,7 +500,7 @@ def _read_report(
 
     # ``max_ratio`` only looks at output past ``ratio_activation_threshold``, so the
     # ratio columns follow the same rule and compare with the limit.
-    floor = config.extraction_limits.ratio_activation_threshold
+    floor = config.decoder_limits.ratio_activation_threshold
     archive_ratio = _ratio(written, row.file_size)
     if written > floor and archive_ratio is not None:
         row.numbers["archive_ratio"] = archive_ratio

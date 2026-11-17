@@ -250,9 +250,8 @@ def readinto_via_read(src: ReadableStream, b: WriteableBuffer) -> int:
     That ``ValueError`` means the *source object* is broken, not that a
     payload is damaged. Callers that translate ``ValueError`` into
     archive-corruption errors must carve this out, the way a closed-handle
-    ``ValueError`` already is. Not reachable through the routes exercised
-    today (ZIP, streaming TAR): slicers clamp the request before it
-    reaches this helper.
+    ``ValueError`` already is. Not reachable through the ZIP and streaming
+    TAR routes: slicers clamp the request before it reaches this helper.
     """
     # Views released on return: see try_readinto.
     with memoryview(b) as outer, outer.cast("B") as mv:
@@ -314,7 +313,7 @@ def read_exact(stream: ReadableStream, n: int) -> bytes:
             raise BlockingIOError(_BLOCKING_READ_MESSAGE)
         return b""
 
-    # Fast path, and the common one now that the source boundary makes every
+    # Fast path, and the common one since the source boundary makes every
     # archive source full-count: one read satisfied the ask, so hand back
     # the inner's own object instead of copying it. On a large read — a whole
     # decoded 7z folder in ``sevenzip_pipeline`` — that is 1x peak memory where
@@ -941,8 +940,7 @@ class BinaryIOWrapper(io.RawIOBase, BinaryIO):
         Copied from :class:`ReadOnlyIOStream` rather than subclassing it
         (``base.py`` imports this module). This class and
         :class:`DelegatingStream` both forward ``name`` via ``source_name``, on
-        different inner attributes (``_raw`` / ``_inner``); parked as #329 C4
-        rather than a mixin.
+        different inner attributes (``_raw`` / ``_inner``), with no shared mixin.
         This class must stay an ``io.RawIOBase`` so :func:`ensure_bufferedio`
         can feed ``io.BufferedReader``.
         """
@@ -1102,9 +1100,8 @@ def ensure_bufferedio(obj: object, *, owns: bool = False) -> io.BufferedIOBase:
     # raises NotImplementedError, so wrap those.
     #
     # A class that *overrides* readinto and then refuses is not wrapped. The
-    # buffer raises that refusal at read time. The previous call-based probe
-    # caught this via BinaryIOWrapper; it was given up so wrap-time cannot
-    # skip-decode a pending solid member. Parked as #329 C1.
+    # buffer raises that refusal at read time. A call-based probe would catch
+    # it, at the cost of a skip-decode of a pending solid member at wrap time.
     #
     # getattr, because PyPy's io.RawIOBase has no readinto attribute at all: there
     # the default lives nowhere, so a subclass without its own readinto has none.

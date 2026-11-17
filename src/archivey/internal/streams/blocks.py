@@ -78,6 +78,11 @@ class BlockStream(ReadOnlyIOStream):
         return self._pos
 
     def _block_at(self, index: int) -> bytes:
+        """Block ``index``, decoded and length-checked; the last one is kept.
+
+        A block streamed back is read for one byte more than it should hold, so a
+        block that decodes too long is caught as well as one that decodes too short.
+        """
         if index != self._index:
             start = index * self._block_size
             expected = min(self._block_size, self._size - start)

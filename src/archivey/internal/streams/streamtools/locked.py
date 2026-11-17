@@ -1,7 +1,8 @@
 """Lock-wrapping stream for library-owned shared handles.
 
 :class:`LockedStream` holds ``lock`` across **every** read/seek/tell on ``inner``
-(TAR/ISO under ``MemberStreams.CONCURRENT``: seek-then-read must be atomic). Archivey
+(a reader whose members share one handle under ``MemberStreams.CONCURRENT``:
+seek-then-read must be atomic). Archivey
 buffering/error wrappers sit *outside* this layer.
 
 For independent logical positions over one file, prefer

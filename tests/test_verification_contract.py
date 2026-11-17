@@ -138,7 +138,7 @@ def test_verify_all_brings_every_member_to_its_ceiling(
 ) -> None:
     ceiling = _CASES[name][1]
     with _open(name, streaming=streaming) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         report = reader.members_report()
         assert report.error is None
         files = _files(report.members)
@@ -199,11 +199,11 @@ def test_a_proved_member_is_not_read_again(name: str) -> None:
         first = max(files, key=lambda member: member.size or 0)
         held = reader.open(first)
         assert held.read(3) == _content(name, first)[:3]
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         before = source.bytes_read
         # 10: a second call has nothing left to prove. (RAR is read through unrar,
         # which takes the archive once, so this counter cannot see its later reads.)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert source.bytes_read == before
         # 4: nor has a stream of a proved member. Opening may position the stream
         # (a solid 7z decodes up to the member), so only verify() itself is counted.
@@ -234,7 +234,7 @@ def _content(name: str, member: ArchiveMember) -> bytes:
 def test_a_streaming_report_after_verify_all_reads_nothing(name: str) -> None:
     source = CountingBytesIO(_CASES[name][0]())
     with _open(name, streaming=True, source=source) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         before = source.bytes_read
         report = reader.members_report()
         assert source.bytes_read == before
@@ -249,7 +249,7 @@ def test_a_streaming_report_after_verify_all_reads_nothing(name: str) -> None:
 @pytest.mark.parametrize("name", _PARAMS)
 def test_the_check_everything_recipe(name: str, streaming: bool) -> None:
     with _open(name, streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         report = reader.members_report()
         diagnostics = reader.diagnostics
     assert failures == ()

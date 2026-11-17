@@ -136,6 +136,18 @@ _UNKNOWN_REDIRECT: tuple[_File, ...] = (
     _File("b.txt", _hex_lines(b"unknown-redirect-b", 300)),
 )
 
+# A Unix symlink, a hard link and a file copy (``-oi``), each before compressed data in
+# one solid run: ``unar`` must decode the members after them (``rar_unar`` gate).
+_LINKS_BEFORE_DATA: tuple[_File, ...] = (
+    _File("a.txt", _hex_lines(b"links-before-data-a", 300)),
+    _File("symlink", link_target="a.txt"),
+    _File("b.txt", _hex_lines(b"links-before-data-b", 300)),
+    _File("hardlink", hardlink_to="a.txt"),
+    _File("c.txt", _hex_lines(b"links-before-data-c", 300)),
+    _File("copy.txt", _hex_lines(b"links-before-data-a", 300)),
+    _File("d.txt", _hex_lines(b"links-before-data-d", 300)),
+)
+
 _HARDLINKS: tuple[_File, ...] = (
     _File("file1.txt", b"Hello 1!"),
     _File("subdir/file2.txt", b"Hello 2!"),
@@ -723,6 +735,17 @@ def _build_unknown_redirect(rar5_bin: Path, out_dir: Path) -> None:
     print(f"wrote {_shown(out)}")
 
 
+def _build_links_before_data(rar5_bin: Path, out_dir: Path) -> None:
+    """``_LINKS_BEFORE_DATA`` as one solid run; ``-ds`` keeps the order, and ``-oi:1``
+    stores ``copy.txt`` as a file copy of ``a.txt``."""
+    out = out_dir / "links_before_data_solid__.rar"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        names = _write_tree(root, _LINKS_BEFORE_DATA)
+        _rar_a(rar5_bin, out, names, cwd=root, extra=("-s", "-ds", "-m3", "-oi:1"))
+    print(f"wrote {_shown(out)}")
+
+
 def _build_unar_drop(rar5_bin: Path, out_dir: Path) -> None:
     """Members unar 1.10.1 drops; in a solid run, other bytes then sit in their place."""
     builds: list[tuple[str, tuple[_File, ...], tuple[str, ...], str | None]] = [
@@ -964,6 +987,7 @@ def generate_all(*, rar5_bin: Path, rar4_bin: Path, out_dir: Path) -> None:
     )
     _build_unar_drop(rar5_bin, out_dir)
     _build_unknown_redirect(rar5_bin, out_dir)
+    _build_links_before_data(rar5_bin, out_dir)
     _build_file_version(
         rar5_bin,
         out_dir / "file_version__.rar",

@@ -8,7 +8,8 @@ the original 7z baseline, then secondary contamination axes::
 
     uv run --extra all python scripts/investigations/ppmd_native_stress.py
     uv run --extra all python scripts/investigations/ppmd_native_stress.py 40
-    uv run --extra all python scripts/investigations/ppmd_native_stress.py --scenarios raw_pyppmd7 warmup_codecs
+    uv run --extra all python scripts/investigations/ppmd_native_stress.py \\
+        --scenarios raw_pyppmd7 warmup_codecs
 
 Exit code is non-zero if any child crashed or failed. Console I/O is ASCII-safe for
 Windows cp1252 runners.
@@ -547,8 +548,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         lines.append("")
     lines.append(
-        "Known issue: PPMd streams can abort inside `pyppmd`. Prefer `raw_*` scenarios to isolate the minimal "
-        "surface. See `dev-docs/known-issues.md`."
+        "Known issue: PPMd streams can abort inside `pyppmd`. Prefer `raw_*` scenarios "
+        "to isolate the minimal surface. See `dev-docs/known-issues.md`."
     )
     summary = "\n".join(lines) + "\n"
 

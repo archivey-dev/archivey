@@ -1,4 +1,7 @@
-"""Unix ``compress`` (``.Z``, LZW)."""
+"""Unix ``compress`` (``.Z``, LZW), decoded in Python
+(:func:`UnixCompressDecompressorStream`). Each CLEAR code restarts the dictionary, so
+under seek demand or restart points each one is a seek point.
+"""
 
 from __future__ import annotations
 
@@ -33,9 +36,10 @@ class UnixCompressCodec(StreamCodec):
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
         # Native LZW over DecompressorStream: forward decode works on non-seekable
-        # sources; CLEAR boundaries become SeekPoints when config.seekable is true.
+        # sources; CLEAR boundaries become SeekPoints when
+        # config.records_restart_points is true.
         return UnixCompressDecompressorStream(
-            source, collector=config.collector, seekable=config.seekable
+            source, collector=config.collector, seekable=config.records_restart_points
         )
 
     @override

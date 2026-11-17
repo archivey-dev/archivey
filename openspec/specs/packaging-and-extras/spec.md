@@ -165,7 +165,10 @@ NOT list `uncompresspy` in any user-facing extra or the `dev` group.
 
 The system SHALL treat RARLAB `unrar` or RARLAB `rar` as the preferred external
 decompressors for RAR member data. It MUST identify the binary on `PATH`
-as a RARLAB build before use (`unrar` first, then `rar`) and MUST NOT implement a
+as a RARLAB build before use (`unrar` first, then `rar`). On Windows, when `PATH` has no
+usable RARLAB binary, it SHALL also try `UnRAR.exe`, then `Rar.exe`, in the `WinRAR`
+folder under each Program Files folder (`ProgramW6432`, `ProgramFiles`,
+`ProgramFiles(x86)`), identified the same way. It MUST NOT implement a
 fallback matrix to `unrar-free`, `unar`, `bsdtar`, `7z`, or other tools. The one
 alternative is `unar`, used when `ArchiveyConfig.rar_decompressor` selects it, or
 when it is `auto` (the default) and no RARLAB binary is found, provided it passes the
@@ -181,6 +184,8 @@ needs no program: archivey decrypts it with `cryptography` (`format-rar`).
 | RARLAB `unrar` 6.0+ on `PATH` | Used for compressed member data and encrypted data archivey does not decrypt |
 | RARLAB `rar` 6.0+ on `PATH`, `unrar` missing | Used for compressed member data and encrypted data archivey does not decrypt |
 | RARLAB `unrar` 6.0+ and RARLAB `rar` both on `PATH` | `unrar` is used |
+| Windows, no usable RARLAB binary on `PATH`, WinRAR 6.0+ in Program Files | WinRAR's `UnRAR.exe` is used |
+| Windows, RARLAB `unrar` 6.0+ on `PATH` and WinRAR in Program Files | The one on `PATH` is used |
 | RARLAB `unrar`/`rar` older than 6.0, or a RARLAB banner with no parseable version | `PackageNotInstalledError` naming the floor and the version found; refused at identification |
 | Only `unrar-free` / `7z` on `PATH`, default config | `PackageNotInstalledError` naming RARLAB `unrar` or `rar`; they are never used |
 | Only a `unar` 1.10+ that passes the RAR5 check on `PATH`, default config | `unar` is used for compressed member data |
@@ -502,6 +507,25 @@ config, since a probe is not handed the policy and may import what `requires` na
 file only that probe recognises is then not detected. A `requires` entry names a module,
 and one inside an excluded package (`lz4.block` when `lz4` is excluded) counts as
 excluded.
+
+`FormatPolicy.only_libraries` SHALL be the allowlist form: `None` (the default) allows
+every package, and a set SHALL turn off every `OptionalLibrary` it does not list,
+exactly as if `exclude_libraries` named it, including a member a later release adds.
+It SHALL take the same spellings and refuse the same names as `exclude_libraries`, and
+a package in both SHALL be refused at construction. It SHALL NOT affect a module that is
+not an `OptionalLibrary` (a plugin's own modules): `plugins` governs those.
+`FormatPolicy.allows_library(module)` SHALL answer whether a module, or the package it
+is part of, may run under the policy, combining both fields, and every check archivey
+makes SHALL agree with it.
+
+#### Scenario: only_libraries turns off every package it does not list
+
+- **WHEN** a caller opens a 7z archive with a PPMd member under
+  `FormatPolicy(only_libraries=set())`, with `pyppmd` installed
+- **THEN** reading the PPMd member raises `PackageNotInstalledError` naming `pyppmd`
+  with the policy as its `reason`
+- **AND** under `FormatPolicy(only_libraries={"pyppmd"})` it reads
+- **AND** `FormatPolicy(only_libraries={"lz4"}, exclude_libraries={"lz4"})` is refused
 
 #### Scenario: An excluded pyppmd refuses only the PPMd member
 

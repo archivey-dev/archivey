@@ -16,7 +16,8 @@ member, here.
 Two things can depend on the feeds, and only for data that does not read clean. A
 decoder call that fails gives no output, so how many bytes come out before an error
 depends on how much input that call had (:func:`_same_outcome`). And Brotli finds its
-end only by failing such a call (:func:`test_a_brotli_tar_with_bytes_after_its_end_gives_right_bytes_or_brotli_error`).
+end only by failing such a call
+(:func:`test_a_brotli_tar_with_bytes_after_its_end_gives_right_bytes_or_brotli_error`).
 """
 
 from __future__ import annotations

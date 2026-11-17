@@ -1,0 +1,1103 @@
+{
+  "cases": [
+    {
+      "case": "copy4-valid",
+      "kind": "raw",
+      "input": "copy4-valid.bin",
+      "package": "py-snappy",
+      "reference": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "BaseSnappyError",
+        "message": "Unsupported COPY_4 tag"
+      }
+    },
+    {
+      "case": "copy4-valid",
+      "kind": "raw",
+      "input": "copy4-valid.bin",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      }
+    },
+    {
+      "case": "copy4-valid",
+      "kind": "raw",
+      "input": "copy4-valid.bin",
+      "package": "python-snappy-pure",
+      "reference": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      }
+    },
+    {
+      "case": "copy4-valid",
+      "kind": "raw",
+      "input": "copy4-valid.bin",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      }
+    },
+    {
+      "case": "copy4-valid",
+      "kind": "raw",
+      "input": "copy4-valid.bin",
+      "package": "compress-utils",
+      "reference": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      }
+    },
+    {
+      "case": "copy4-valid",
+      "kind": "raw",
+      "input": "copy4-valid.bin",
+      "package": "cramjam",
+      "reference": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "11770b3ea657fe68cba19675143e4715c8de9d763d3c21a85af6b7513d43997d"
+      }
+    },
+    {
+      "case": "copy-zero-invalid",
+      "kind": "raw",
+      "input": "copy-zero-invalid.bin",
+      "package": "py-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 4,
+        "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+      }
+    },
+    {
+      "case": "copy-zero-invalid",
+      "kind": "raw",
+      "input": "copy-zero-invalid.bin",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "UncompressError",
+        "message": ""
+      }
+    },
+    {
+      "case": "copy-zero-invalid",
+      "kind": "raw",
+      "input": "copy-zero-invalid.bin",
+      "package": "python-snappy-pure",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CompressionError",
+        "message": "Invalid zero offset in copy"
+      }
+    },
+    {
+      "case": "copy-zero-invalid",
+      "kind": "raw",
+      "input": "copy-zero-invalid.bin",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Could not uncompress"
+      }
+    },
+    {
+      "case": "copy-zero-invalid",
+      "kind": "raw",
+      "input": "copy-zero-invalid.bin",
+      "package": "compress-utils",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: snappy: uncompress failed (invalid block)"
+      }
+    },
+    {
+      "case": "copy-zero-invalid",
+      "kind": "raw",
+      "input": "copy-zero-invalid.bin",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (expected valid offset but got offset 0; dst position: 0)"
+      }
+    },
+    {
+      "case": "literal-then-junk",
+      "kind": "raw",
+      "input": "literal-then-junk.bin",
+      "package": "py-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CorruptError",
+        "message": ""
+      }
+    },
+    {
+      "case": "literal-then-junk",
+      "kind": "raw",
+      "input": "literal-then-junk.bin",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "UncompressError",
+        "message": ""
+      }
+    },
+    {
+      "case": "literal-then-junk",
+      "kind": "raw",
+      "input": "literal-then-junk.bin",
+      "package": "python-snappy-pure",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "case": "literal-then-junk",
+      "kind": "raw",
+      "input": "literal-then-junk.bin",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Could not uncompress"
+      }
+    },
+    {
+      "case": "literal-then-junk",
+      "kind": "raw",
+      "input": "literal-then-junk.bin",
+      "package": "compress-utils",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: snappy: uncompress failed (invalid block)"
+      }
+    },
+    {
+      "case": "literal-then-junk",
+      "kind": "raw",
+      "input": "literal-then-junk.bin",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (expected literal read of length 1; remaining src: 1; remaining dst: 0)"
+      }
+    },
+    {
+      "case": "empty-raw-missing-length",
+      "kind": "raw",
+      "input": "empty-raw-missing-length.bin",
+      "package": "py-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CorruptError",
+        "message": ""
+      }
+    },
+    {
+      "case": "empty-raw-missing-length",
+      "kind": "raw",
+      "input": "empty-raw-missing-length.bin",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "UncompressError",
+        "message": ""
+      }
+    },
+    {
+      "case": "empty-raw-missing-length",
+      "kind": "raw",
+      "input": "empty-raw-missing-length.bin",
+      "package": "python-snappy-pure",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "case": "empty-raw-missing-length",
+      "kind": "raw",
+      "input": "empty-raw-missing-length.bin",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Could not determine uncompressed length"
+      }
+    },
+    {
+      "case": "empty-raw-missing-length",
+      "kind": "raw",
+      "input": "empty-raw-missing-length.bin",
+      "package": "compress-utils",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "compressed input truncated"
+      }
+    },
+    {
+      "case": "empty-raw-missing-length",
+      "kind": "raw",
+      "input": "empty-raw-missing-length.bin",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (empty)"
+      }
+    },
+    {
+      "case": "zero-length-with-junk",
+      "kind": "raw",
+      "input": "zero-length-with-junk.bin",
+      "package": "py-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "BaseSnappyError",
+        "message": "Unsupported COPY_4 tag"
+      }
+    },
+    {
+      "case": "zero-length-with-junk",
+      "kind": "raw",
+      "input": "zero-length-with-junk.bin",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "UncompressError",
+        "message": ""
+      }
+    },
+    {
+      "case": "zero-length-with-junk",
+      "kind": "raw",
+      "input": "zero-length-with-junk.bin",
+      "package": "python-snappy-pure",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "case": "zero-length-with-junk",
+      "kind": "raw",
+      "input": "zero-length-with-junk.bin",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Could not uncompress"
+      }
+    },
+    {
+      "case": "zero-length-with-junk",
+      "kind": "raw",
+      "input": "zero-length-with-junk.bin",
+      "package": "compress-utils",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: snappy: uncompress failed (invalid block)"
+      }
+    },
+    {
+      "case": "zero-length-with-junk",
+      "kind": "raw",
+      "input": "zero-length-with-junk.bin",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Google Snappy rejects raw block"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (expected valid offset but got offset 1633841761; dst position: 0)"
+      }
+    },
+    {
+      "case": "missing-identifier",
+      "kind": "framed",
+      "input": "missing-identifier.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "missing stream identifier"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "case": "missing-identifier",
+      "kind": "framed",
+      "input": "missing-identifier.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "missing stream identifier"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Stream missing snappy identifier"
+      }
+    },
+    {
+      "case": "missing-identifier",
+      "kind": "framed",
+      "input": "missing-identifier.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "missing stream identifier"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (expected stream header but got unexpected chunk type byte 0)"
+      }
+    },
+    {
+      "case": "bad-crc",
+      "kind": "framed",
+      "input": "bad-crc.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "CRC-32C mismatch"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "snappy: corrupt input (bad checksum; expected: 3545484555, got: 3545484554)"
+      }
+    },
+    {
+      "case": "bad-crc",
+      "kind": "framed",
+      "input": "bad-crc.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "CRC-32C mismatch"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "crc mismatch"
+      }
+    },
+    {
+      "case": "bad-crc",
+      "kind": "framed",
+      "input": "bad-crc.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "CRC-32C mismatch"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (bad checksum; expected: 3545484555, got: 3545484554)"
+      }
+    },
+    {
+      "case": "unknown-mandatory",
+      "kind": "framed",
+      "input": "unknown-mandatory.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "unknown mandatory chunk"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "snappy: corrupt input (unsupported chunk type: 2)"
+      }
+    },
+    {
+      "case": "unknown-mandatory",
+      "kind": "framed",
+      "input": "unknown-mandatory.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "unknown mandatory chunk"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Stream received unskippable but unknown chunk: 2"
+      }
+    },
+    {
+      "case": "unknown-mandatory",
+      "kind": "framed",
+      "input": "unknown-mandatory.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "unknown mandatory chunk"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (unsupported chunk type: 2)"
+      }
+    },
+    {
+      "case": "skippable",
+      "kind": "framed",
+      "input": "skippable.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "case": "skippable",
+      "kind": "framed",
+      "input": "skippable.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "case": "skippable",
+      "kind": "framed",
+      "input": "skippable.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "case": "partial-header",
+      "kind": "framed",
+      "input": "partial-header.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "partial Snappy frame header"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "case": "partial-header",
+      "kind": "framed",
+      "input": "partial-header.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "partial Snappy frame header"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Chunk truncated"
+      }
+    },
+    {
+      "case": "partial-header",
+      "kind": "framed",
+      "input": "partial-header.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "partial Snappy frame header"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "failed to fill whole buffer"
+      }
+    },
+    {
+      "case": "partial-identifier",
+      "kind": "framed",
+      "input": "partial-identifier.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "partial Snappy frame payload"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "case": "partial-identifier",
+      "kind": "framed",
+      "input": "partial-identifier.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "partial Snappy frame payload"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "Exception",
+        "message": "Chunk truncated"
+      }
+    },
+    {
+      "case": "partial-identifier",
+      "kind": "framed",
+      "input": "partial-identifier.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "partial Snappy frame payload"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "failed to fill whole buffer"
+      }
+    },
+    {
+      "case": "oversized-uncompressed-chunk",
+      "kind": "framed",
+      "input": "oversized-uncompressed-chunk.sz",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Snappy frame expands beyond 64 KiB"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "snappy: corrupt input (unsupported chunk length: 65537)"
+      }
+    },
+    {
+      "case": "oversized-uncompressed-chunk",
+      "kind": "framed",
+      "input": "oversized-uncompressed-chunk.sz",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Snappy frame expands beyond 64 KiB"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "ac72112c832fa4683b15ebff51a8f5f2ca08226c0d59bdb9ac739c2cdc28a05c"
+      }
+    },
+    {
+      "case": "oversized-uncompressed-chunk",
+      "kind": "framed",
+      "input": "oversized-uncompressed-chunk.sz",
+      "package": "cramjam",
+      "reference": {
+        "accepted": false,
+        "error": "ValueError",
+        "message": "Snappy frame expands beyond 64 KiB"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (unsupported chunk length: 65537)"
+      }
+    },
+    {
+      "case": "hadoop-multi",
+      "kind": "hadoop",
+      "input": "hadoop-multi.bin",
+      "package": "python-snappy",
+      "reference": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "case": "hadoop-multi",
+      "kind": "hadoop",
+      "input": "hadoop-multi.bin",
+      "package": "pysnappy",
+      "reference": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+      },
+      "candidate": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+      }
+    }
+  ],
+  "incremental": [
+    {
+      "kind": "gzip",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "zlib",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "deflate",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "bzip2",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "xz",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "zstd",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "lz4",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "brotli",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    },
+    {
+      "kind": "raw",
+      "split": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "eof": true
+    }
+  ],
+  "bounded_drain": [
+    {
+      "kind": "gzip",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "zlib",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "deflate",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "bzip2",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "xz",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "zstd",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "lz4",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    },
+    {
+      "kind": "brotli",
+      "maximum_return": 17,
+      "bytes": 2048,
+      "unused": "5441494c",
+      "eof": true
+    }
+  ],
+  "checksums": [
+    {
+      "kind": "gzip",
+      "reference": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading gzip stream: Error -3 while decompressing data: incorrect data check"
+      },
+      "python": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: zlib: code -3 (data error)"
+      },
+      "bounded": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: zlib: code -3 (data error)"
+      }
+    },
+    {
+      "kind": "zlib",
+      "reference": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading zlib stream: Error -3 while decompressing data: incorrect data check"
+      },
+      "python": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: zlib: code -3 (data error)"
+      },
+      "bounded": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: zlib: code -3 (data error)"
+      }
+    },
+    {
+      "kind": "bzip2",
+      "reference": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "bzip2 stream is corrupt: the combined CRC in the end-of-stream marker is 0x7f40a566, but the stream's blocks combine to 0x7f40b566"
+      },
+      "python": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: bz2: corrupted data"
+      },
+      "bounded": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: bz2: corrupted data"
+      }
+    },
+    {
+      "kind": "xz",
+      "reference": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "XZ decompression error: Corrupt input data"
+      },
+      "python": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: xz: lzma_ret 9"
+      },
+      "bounded": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: xz: lzma_ret 9"
+      }
+    },
+    {
+      "kind": "zstd",
+      "reference": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading zstd stream: Unable to decompress Zstandard data: Restored data doesn't match checksum"
+      },
+      "python": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: zstd: Restored data doesn't match checksum"
+      },
+      "bounded": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: zstd: Restored data doesn't match checksum"
+      }
+    },
+    {
+      "kind": "lz4",
+      "reference": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading lz4 stream: LZ4F_decompress failed with code: ERROR_contentChecksum_invalid"
+      },
+      "python": {
+        "accepted": false,
+        "error": "CompressError",
+        "message": "decompression failed: lz4: ERROR_contentChecksum_invalid"
+      },
+      "bounded": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: lz4: ERROR_contentChecksum_invalid"
+      }
+    }
+  ]
+}

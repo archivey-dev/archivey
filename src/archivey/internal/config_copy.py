@@ -1,4 +1,9 @@
-"""Copies of a caller's ``ArchiveyConfig`` that archivey makes for itself."""
+"""Copies of a caller's ``ArchiveyConfig`` that archivey makes for itself.
+
+``ArchiveyConfig.__post_init__`` warns when a deprecated field is set. A copy archivey
+makes with :func:`copy_config_quietly` runs that hook again; the hook asks
+:func:`copying_config` and stays quiet, since the caller was already warned.
+"""
 
 from __future__ import annotations
 

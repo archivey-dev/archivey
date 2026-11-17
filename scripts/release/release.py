@@ -74,13 +74,22 @@ _LINK_RE = re.compile(r"^\[[^\]]+\]: ", re.MULTILINE)
 RELEASE_GATE_WORKFLOWS = (
     "accelerator-crash-search.yml",
     "accelerator-fuzz-soak.yml",
-    # Its merge-queue mode runs each target for 1 to 3 seconds; a dispatched run uses
-    # the nightly budgets, about ten times longer.
+    # Nothing else fuzzes before a release: the nightly skips when main has been quiet
+    # for three days, and neither pull requests nor the merge queue run it.
     "atheris-fuzz.yml",
+    # pandas, pyarrow and dask are installed nowhere else, so their archivey:// tests
+    # skip in ci.yml.
+    "fsspec-consumers.yml",
     "rapidgzip-resume-stress.yml",
     # Pull requests run a reduced set of jobs and the merge queue skips PyPy's core-only
-    # suite; a dispatched run includes everything, as the daily run on main does.
+    # suite; a dispatched run includes everything, as the daily run on main does. The
+    # `test-daily` legs (Linux 3.12-3.14, macOS and Windows 3.11) run nowhere else
+    # before a release, and the minimum versions only when the dependencies change.
     "ci.yml",
+    # The library on python.org, Ubuntu, Fedora and conda-forge Pythons, whose codec
+    # libraries differ from uv's. It runs daily, on a dispatch, and on a pull request
+    # that changes it, never in the merge queue, so the release dispatches it.
+    "python-distributions.yml",
 )
 
 
@@ -258,6 +267,24 @@ def changelog_for_release(
             + text[body_end:].lstrip("\n")
         )
     return _set_links(text, version, previous_tag)
+
+
+def check_performance_section(text: str, version: str) -> None:
+    """Refuse a release entry that has no ``### Performance`` section.
+
+    Every final release, patch releases included, gives its peer wall ratios
+    (dev-docs/release-checklist.md, section 2): a fix can make reading slower as well
+    as faster. A pre-release is not checked; its final release is.
+    """
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        return
+    if not re.search(
+        r"^### Performance$", changelog_section(text, version), re.MULTILINE
+    ):
+        raise ReleaseError(
+            f"the CHANGELOG entry for {version} has no '### Performance' section;"
+            " measure and write it first (dev-docs/release-checklist.md, section 2)"
+        )
 
 
 def _set_links(text: str, version: str, previous_tag: str | None) -> str:
@@ -536,6 +563,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         _previous_tag(),
         str(dt.date.today()),
     )
+    check_performance_section(changelog, version)
     branch = f"release/v{version}"
     runner.run("git", "switch", "-c", branch)
     _write_versions(runner, pyprojects)

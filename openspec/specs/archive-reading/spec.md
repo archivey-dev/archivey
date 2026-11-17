@@ -34,6 +34,7 @@ archivey.open_archive(
     password: PasswordInput = None,
     encoding: str | None = None,
     config: ArchiveyConfig | None = None,
+    parent: ForwardArchiveReader | None = None,
 ) -> ArchiveReader  # ForwardArchiveReader when streaming may be True; see below
 ```
 
@@ -47,11 +48,15 @@ The distinction SHALL be static only: every reader returned at run time is an
 `ArchiveReader` instance, and a streaming reader still raises `ArchiveyUsageError`
 from the four methods.
 
-`tests/test_public_api.py` checks each case under both type checkers the project uses (ty and Pyrefly).
+`tests/test_public_api.py` checks each case under both type checkers the project uses
+(ty and Pyrefly).
 
-`source`, multi-volume ordering, `streaming`, password candidates/providers,
-encoding, configuration precedence, and backend selection retain their existing
-contracts. `format=None` auto-detects; an explicit format bypasses detection.
+`source`, multi-volume ordering, `streaming`, password candidates/providers, encoding,
+configuration precedence, and backend selection retain their existing contracts.
+`parent` names the reader, open or closed, whose archive this one was read from; the new
+reader then joins that reader's nest (see "A reader opened inside another joins its
+nest" and "Limits apply per nest"). `format=None` auto-detects; an explicit format
+bypasses detection.
 
 **An explicit argument the resolved backend cannot act on is handled by its
 *intent*, and the rule SHALL be applied to every such argument:**
@@ -64,15 +69,16 @@ contracts. `format=None` auto-detects; an explicit format bypasses detection.
 | `format=` | assertion — "I claim this is a ZIP" | refuse when it cannot hold (see the directory rule below) |
 | `password=` | resource — a keyring | permit in **every** form; `PASSWORD_ARGUMENT_UNUSED` for a concrete value, none for a provider |
 | `encoding=` | resource — a hint for name decoding | permit; `ENCODING_ARGUMENT_UNUSED` |
+| `parent=` | assertion — "this archive was read from that reader" | not backend-specific: every reader joins the nest; a `parent` that is not an archivey reader is refused |
 
 `password=` on a format with no encryption SHALL NOT raise, in any of its forms — a
 single value, an ordered sequence, and a provider callable SHALL open identically
 (accepted, never consulted). A single value or a sequence records one diagnostic; a
-provider callable records none, because it offers a password only if asked. A *wrong* password on an *encrypted*
-archive is unaffected and still raises. Each backend SHALL declare whether it consumes
-`encoding` (`ReadBackend.USES_ENCODING`) the same way it declares
-`ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than per-backend
-silence.
+provider callable records none, because it offers a password only if asked. A *wrong*
+password on an *encrypted* archive is unaffected and still raises. Each backend SHALL
+declare whether it consumes `encoding` (`ReadBackend.USES_ENCODING`) the same way it
+declares `ReadBackend.SUPPORTS_PASSWORD`, so the check is central rather than
+per-backend silence.
 
 A **directory path** resolves to `ArchiveFormat.DIRECTORY`. An explicit `format=`
 naming anything else SHALL raise `ArchiveyUsageError` rather than being discarded:
@@ -96,6 +102,9 @@ Handoff mechanics (one shared collector/budget, no copy/re-seed): see
 `format-detection` and `diagnostics`.
 
 #### Scenario: open matrix
+
+- **WHEN** `open_archive` is called as each row says
+- **THEN** it behaves as the row's Expected column says
 
 | Case | Expected |
 | --- | --- |
@@ -374,7 +383,11 @@ SHALL still raise (limits are not the damage story).
 `error is None` SHALL mean the listing is complete. Callers MUST treat a
 non-`None` `error` as an incomplete listing even when `members` is non-empty.
 The report SHALL iterate, index, and size as its `members` sequence (same
-ergonomics as `ExtractionReport` vs its results).
+ergonomics as `ExtractionReport` vs its results). Testing its truth SHALL raise
+`TypeError`, as for `ExtractionReport` and `VerifyReport`: a sequence's truth is
+whether it is empty, and an incomplete listing with members would read as success.
+`ok` SHALL be `error is None`, and `raise_for_failure()` SHALL raise `error` when it
+is set and do nothing otherwise.
 
 Members in the report SHALL be identity-stamped for this reader (`member in
 reader`) so `open(member)` works for recovered `FILE` members. An incomplete
@@ -415,6 +428,7 @@ earlier, an I/O error).
 | `members_report_if_available()` with no materialization and no upfront index | `None` |
 | `ListingLimits.max_members` exceeded during `members_report` | `ResourceLimitError` raised (not soft-returned on `error`) |
 | Streaming `members_report` after recoverable prefix + terminal error | Report with prefix + error; pass consumed |
+| `bool(report)` / `if report:` | `TypeError` naming `ok`; `report.ok` is `error is None`; `report.raise_for_failure()` raises `error` |
 
 ### Requirement: Sequential in-order iteration
 
@@ -513,11 +527,12 @@ per-call listing-limits override.
 class ListingLimits:
     max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20  # 64 MiB
+    max_decoded_bytes: int | None = 4 * 2**30  # 4 GiB
     UNLIMITED: ClassVar["ListingLimits"]
 ```
 
-`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables both.
-Crossing either guard SHALL raise `ResourceLimitError` naming the knob and
+`None` on a field disables that guard. `ListingLimits.UNLIMITED` disables all three.
+Crossing any guard SHALL raise `ResourceLimitError` naming the knob and
 limit. Format-local parser bounds (e.g. 7z header-size checks) MAY still raise
 at parse/open for nonsensical or hostile headers and are complementary, not a
 substitute. ZIP, 7z, RAR and ISO apply `listing_limits.max_members` at parse
@@ -550,6 +565,29 @@ non-seekable source has no directory to read at open: its forward pass charges
 `max_members` on the local headers as it yields members, and again on the directory
 entries it reads after the last member (`format-zip`).
 
+`max_decoded_bytes` SHALL cap the bytes one listing pass decodes on its own: a
+compressed TAR's (or cpio's, or another `decompress()` layer's)
+stream as the walk reads headers and skips member data, the start of each compressed
+member a streaming ZIP pass decodes as it passes over it (up to the link-target cap
+and a reparse prefix), a solid folder decoded up to the symlinks whose targets the
+listing reads, the first header a reader parses at open, and a 7z header stored
+compressed, decoded at open. Each
+reader's listing SHALL count from zero, and so SHALL a walk started over after a
+failure. Bytes a caller reads from a member SHALL NOT
+count, whether between walk steps or on another thread. The step that crosses the cap
+SHALL decode at most one byte past it and raise `ResourceLimitError` naming
+`max_decoded_bytes`; a 7z header that does not fit SHALL be refused before it is
+decoded. Detection's decoding is held by `DetectionBudget`, not by this cap.
+
+#### Scenario: listing a .tar.gz past the decode cap
+
+- **GIVEN** `ListingLimits(max_decoded_bytes=100_000)` and a `.tar.gz` of three
+  100 000-byte members
+- **WHEN** `members()` runs, or a streaming `stream_members()` pass skips every member
+- **THEN** it raises `ResourceLimitError` naming `max_decoded_bytes=100000`
+- **AND** a streaming pass that reads every member instead counts only the headers,
+  and lists under a cap of 50 000
+
 #### Scenario: listing-limits matrix
 
 | Case | Expected |
@@ -558,7 +596,7 @@ entries it reads after the last member (`format-zip`).
 | Registered member count would exceed `max_members` | `ResourceLimitError` before/at that registration, or at `open_archive` on formats that apply `max_members` at parse (`format-zip`, `format-7z`, `format-rar`, `format-iso`); no full cache published |
 | Cumulative retained metadata would exceed `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes`, at `open_archive` on 7z and RAR, which weigh the names their headers hold at parse (`format-7z`, `format-rar`) |
 | RAR archive whose compressed RAR 1.5-4 comments, each weighed by the larger of its declared size and its packed bytes, total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` (`format-rar`) |
-| `ListingLimits.UNLIMITED` | Count and metadata guards disabled |
+| `ListingLimits.UNLIMITED` | Count, metadata and decoded-bytes guards disabled |
 | `stream_members()` / `for member in reader` / `streaming=True` over an archive that would fail `members()` under defaults | The same `ResourceLimitError` `members()` raises: at `open_archive` on formats that apply `max_members` at parse (ZIP, 7z, RAR and ISO; ZIP also as its directory is walked; together with 7z's and RAR's weighing of the names and comments their headers hold against `max_metadata_bytes` (RAR's compressed comments by declared or packed size, whichever is larger) and ISO's weighing of the directory records, path tables and UDF descriptors it parses against `max_metadata_bytes` and its count of path-table entries (more than `max_members + 1` entries; each is a directory, a member anyway) and of UDF names (a tree it parses but does not list) against `max_members`); otherwise during the pass, as the next rows say |
 | `extract_all` path that materializes members first | Same listing caps as `members()` before extraction bomb guards |
 | `extract_all` on a streaming reader, or on a random-access TAR | Same caps, checked as members arrive in the one pass: `ResourceLimitError` at the member that crosses a cap, before it is written |
@@ -582,9 +620,11 @@ mirror an allocator — but the weight MUST NOT under-count UTF-8 size:
 - `raw_name`: `len(raw_name)` when not `None` (stored archive bytes; already exact)
 - `extra`: lengths of `str` / `bytes` values under the same rules; for a one-level
   `dict` value, its `str` / `bytes` keys and values (archive-sized text such as TAR's
-  PAX keywords), and 72 bytes for each entry whose key is not text (a ZIP extra
-  field's tag in `zip.extra_fields`, whose count the archive sets and whose value may
-  be empty). Top-level `extra` keys are format-defined literals and are not counted
+  PAX keywords) with 96 bytes more for each such entry, and 72 bytes for each entry
+  whose key is not text (a ZIP extra field's tag in `zip.extra_fields`). The archive
+  sets how many entries there are, and each keeps objects that outweigh a short key
+  and value many times. Top-level `extra` keys are format-defined literals and are not
+  counted
 - Exclude: `_raw` (apart from a TAR sparse map, below), `hashes`, diagnostics, Python
   object overhead
 
@@ -631,7 +671,13 @@ and `streaming=True` included), SHALL raise `ResourceLimitError` naming
 `max_metadata_bytes` without reading its data. The headers ahead of one member form a
 chain the parser holds whole until the member is built, so each header of the chain, and
 the member's sparse map, SHALL be weighed against what the headers before it in the
-chain left, not against the member's whole share.
+chain left, not against the member's whole share. Each distinct keyword of a PAX
+header SHALL also be weighed 256 bytes as the header is parsed, before anything is kept
+for it; a keyword repeated in one header SHALL NOT be weighed again (a PAX sparse 0.0
+map repeats two keywords once per fragment). A member with PAX records of its own gets
+a copy of the global records in force, so that copy SHALL be weighed 96 bytes per
+global record before it is made. Either weight crossing what the chain left SHALL
+raise `ResourceLimitError` naming `max_metadata_bytes` in any walk.
 
 #### Scenario: metadata accounting matrix
 
@@ -641,6 +687,7 @@ chain left, not against the member's whole share.
 | Huge `ArchiveInfo.comment` alone | Counts toward the budget once |
 | `extra` holds opaque non-str/bytes object | Not counted, and neither is its top-level key |
 | `extra` holds a dict with a long key (PAX keyword) | The key counts, like its value |
+| `extra["tar.pax_headers"]` holds many short keywords with empty values | Each entry counts 96 bytes plus its key and value, so the budget bounds them |
 | `extra["zip.extra_fields"]` holds many empty fields | Each entry counts 72 bytes, so the budget bounds them |
 | ASCII-only name | Weight equals `len(name)` (exact UTF-8) |
 | Non-ASCII / surrogateescape name | Weight ≥ UTF-8-with-surrogateescape byte length (upper-bound OK) |
@@ -648,6 +695,8 @@ chain left, not against the member's whole share.
 | RAR compressed comments whose declared (or larger packed) sizes sum past the cap | Refused at `open_archive` before any is decoded (`format-rar`) |
 | TAR chain of extended headers ahead of one member, each under the cap, together over it | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
 | TAR sparse map whose entries weigh more than the member has left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before its entries are parsed |
+| TAR PAX header of many distinct short keywords, its bytes under what is left | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the member is built |
+| TAR PAX global header of many records, then members that each have a PAX record of their own | `ResourceLimitError` naming `max_metadata_bytes` in any walk, before the copy that crosses the cap is made |
 
 ### Requirement: Name lookup and member identity
 
@@ -907,16 +956,23 @@ inherent to a single pass.
 **Target-name resolution:** hardlink targets are archive-root relative and in
 the member-name namespace: `.` and empty segments are dropped and `..` is
 **retained**, exactly as `normalize_member_name` treats a name, so `a/../b` names
-the member stored as `a/../b` and never the member `b`. Symlink targets are
-filesystem paths: they join to the link's directory first and `..` is collapsed.
+the member stored as `a/../b` and never the member `b`. Every format, built-in or
+plugin, SHALL list a hardlink's `link_target` in that normalized form, so it equals
+the `name` of the member it links to (`./b` lists as `b`, in TAR as in CPIO). A
+hardlink target that ends in `/` SHALL keep the `/`: it names a directory and SHALL
+NOT resolve to a non-directory member of the same name. A target that names only the
+archive root (`./`, `/`, `//`) lists as `.`, as a root-only member name does, and
+names no member. A symlink's `link_target` SHALL stay as stored; to look it up, the
+target is a filesystem path that joins to the link's directory first, and `..` is
+collapsed.
 A hardlink target's leading `/` is kept, as in a member name, so `/a` names the member
 stored as `/a` (`tar -P` writes both), and so is a `..` that climbs out of the root:
 `../a` names the member stored as `../a` (extraction refuses that member, and every
 link to it; `safe-extraction`). Absolute and `..`-escaping symlink targets stay
 unresolved (`None`; open → `LinkTargetNotFoundError`); the escape test runs on the
 collapsed form. A RAR file copy's source lookup keeps that escape test for its
-hardlink-style target (`format-rar`). Directory lookup tries bare and `/`-suffixed
-forms.
+hardlink-style target (`format-rar`). A target without a final `/` is looked up
+under its bare and its `/`-suffixed spelling, since a directory's name ends in `/`.
 
 Follow chains recursively; detect cycles by **member id** (not name); no arbitrary
 depth limit. Missing target and cycle → `LinkTargetNotFoundError` (a `ReadError`).
@@ -1241,6 +1297,7 @@ class ExtractionLimits:
 class ListingLimits:
     max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20
+    max_decoded_bytes: int | None = 4 * 2**30
     UNLIMITED: ClassVar["ListingLimits"]
 
 @dataclass(frozen=True)
@@ -1251,6 +1308,7 @@ class DecoderLimits:
     max_ratio: float | None = 800.0
     ratio_activation_threshold: int = 5 * 2**20
     live_ratio_activation_threshold: int = 256 * 2**20
+    max_nest_decoded_bytes: int | None = None
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -1287,66 +1345,65 @@ mappings and the dataclasses SHALL be defensively immutable. `config=None` →
 immutable library default. No mutable global/context-local diagnostic policy or
 callback.
 
-A reader carries its open config, all of it, for its lifetime. Reader methods
-SHALL NOT take a `config=`: `extract_all(limits=...)` is the one per-call
-override, and it replaces only the extraction limits for that call.
-`decoder_limits` SHALL bound the working memory a codec allocates on the
-strength of a number the archive declares, and SHALL be enforced before that
-allocation is made. `max_key_derivation_rounds` SHALL bound the total
-password-to-key hashing rounds one reader runs, counted as the archive declares
-them (RAR5 `2**kdf_count` PBKDF2 rounds plus the `+16`/`+32` offsets, 7z
-`2**NumCyclesPower`, RAR3 its fixed `2**18`), summed over the derivations that
-actually run: a key the reader already derived for the same password, salt and
-cost SHALL cost nothing, and every candidate password tried SHALL count. The
-check SHALL run before the derivation that would cross the cap, and SHALL raise
-`ResourceLimitError`, which SHALL NOT be treated as a wrong password by
-candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
-`NATIVE_DECODERS`, every PPMd member SHALL decode in a child process (`compressed-streams`,
-"Native decoders run where process_isolation puts them"), where a crash of the native
-decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
-surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
-member's model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
+A reader carries its open config, all of it, for its lifetime. Reader methods SHALL NOT
+take a `config=`: `extract_all(limits=...)` is the one per-call override, and it
+replaces only the extraction limits for that call. The limits apply per reader except
+where "Limits apply per nest" sums them over a nest: `max_nest_decoded_bytes`
+(`safe-extraction`, "A nest's decoded bytes are held to one total"), `max_members` and
+`max_ratio` also hold the nest to one total, read from the outermost reader's config.
+`decoder_limits` SHALL bound the working memory a codec allocates on the strength of a
+number the archive declares, and SHALL be enforced before that allocation is made.
+`max_key_derivation_rounds` SHALL bound the total password-to-key hashing rounds one
+reader runs, counted as the archive declares them (RAR5 `2**kdf_count` PBKDF2 rounds
+plus the `+16`/`+32` offsets, 7z `2**NumCyclesPower`, RAR3 its fixed `2**18`), summed
+over the derivations that actually run: a key the reader already derived for the same
+password, salt and cost SHALL cost nothing, and every candidate password tried SHALL
+count. The check SHALL run before the derivation that would cross the cap, and SHALL
+raise `ResourceLimitError`, which SHALL NOT be treated as a wrong password by candidate
+iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and `NATIVE_DECODERS`,
+every PPMd member SHALL decode in a child process (`compressed-streams`, "Native
+decoders run where process_isolation puts them"), where a crash of the native decoder (a
+fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL surface as
+`CorruptionError`. A child killed by SIGKILL, or one that dies allocating the member's
+model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
-SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
-SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
-whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
-one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
-a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
-whose size is known.
-`process_isolation` SHALL be converted from the member or its name at construction, as
-the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
-`use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
-only in a child process.
-Per-call `limits` still beat `config.extraction_limits`, then reader/library default.
-Other per-call operational args stay outside `ArchiveyConfig`.
-`detection_budget` SHALL bound what format detection spends, for `detect_format` and for
-every detection `open_archive` and `open_stream` run (see `detection-cost`): the
-auto-detection itself, and under `format=` the stub-volume check and the rescan that
-confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
-fields beside it: a preset member or its name is converted at construction, so the field
-always holds a budget.
-`always_probe_content` SHALL decide whether `detect_format` and `open_archive` run every
-content probe or only the probe of the format the source's extension names
-(`format-detection`); `open_stream` SHALL run every probe whatever it holds. Like the other
-switches it SHALL be a real `bool`.
-`spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
-its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
-volume set and across attempts: a copy refused once SHALL stay refused for that reader
-without writing again. The same limit SHALL bound the decoded member data a declared
-strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid pass),
-counted while the data is on disk: kept data SHALL count from its first written byte
-until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input` SHALL
+bound the compressed bytes of one PPMd member the process holds to hand to pyppmd whole,
+in the child or, under `process_isolation=NONE`, in-process; a larger member, and one
+whose size is known only once it has been read (a ZIP member with bit 3 set, read from a
+non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
+whose size is known. `process_isolation` SHALL be converted from the member or its name
+at construction, as the accelerator fields are. `process_isolation=NONE` together with
+`use_rapidgzip=ON` or `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` (also a
+`ValueError`) at construction: rapidgzip runs only in a child process. Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other per-call
+operational args stay outside `ArchiveyConfig`. `detection_budget` SHALL bound what
+format detection spends, for `detect_format` and for every detection `open_archive` and
+`open_stream` run (see `detection-cost`): the auto-detection itself, and under `format=`
+the stub-volume check and the rescan that confirms an empty listing. It is annotated as
+a `DetectionBudget`, like the accelerator fields beside it: a preset member or its name
+is converted at construction, so the field always holds a budget. `always_probe_content`
+SHALL decide whether `detect_format` and `open_archive` run every content probe or only
+the probe of the format the source's extension names (`format-detection`); `open_stream`
+SHALL run every probe whatever it holds. Like the other switches it SHALL be a real
+`bool`. `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a
+copy of its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled
+across a volume set and across attempts: a copy refused once SHALL stay refused for that
+reader without writing again. The same limit SHALL bound the decoded member data a
+declared strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid
+pass), counted while the data is on disk: kept data SHALL count from its first written
+byte until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
 declined, not refused: the read falls back to decoding again. `None` SHALL disable the
 guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise
-`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
-size is known, and otherwise before the written total passes the limit, with the partial
-copy removed. A path source that is read in place is not copied and SHALL NOT be refused
-by it; a path source that has to be copied (`format-rar`: a prefixed archive read with
-`unar`, or explicit volume files that cannot be linked side by side) is bounded like a
-stream source.
-`read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
-the format stores as member data (see "Link targets stored as member data are read only
-when configured"); like `listing_limits`, it holds for the reader's lifetime.
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when
+the size is known, and otherwise before the written total passes the limit, with the
+partial copy removed. A path source that is read in place is not copied and SHALL NOT be
+refused by it; a path source that has to be copied (`format-rar`: a prefixed archive
+read with `unar`, or explicit volume files that cannot be linked side by side) is
+bounded like a stream source. `read_link_targets` SHALL decide whether the reader reads,
+on its own, a symlink target the format stores as member data (see "Link targets stored
+as member data are read only when configured"); like `listing_limits`, it holds for the
+reader's lifetime.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
@@ -1358,11 +1415,14 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 
 #### Scenario: config matrix
 
+- **WHEN** a call is made as each row says
+- **THEN** it behaves as the row's Expected column says
+
 | Case | Expected |
 | --- | --- |
 | `ArchiveyConfig()` | AUTO accelerators; documented extraction, listing and spool defaults (spool 1 GiB); COLLECT; budget 256; no callback |
 | `open_archive(..., config=ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=100)))` then `extract_all(dest)` | 100:1 per-member ratio enforced (`safe-extraction`), and on member reads |
-| `ExtractionLimits(max_ratio=100)` | `DeprecationWarning`; in `extraction_limits` it overrides `decoder_limits.max_ratio` for the reader, in `extract_all(limits=...)` for that extraction; an `<unset>` ratio field reads as the `DecoderLimits` default and warns nothing |
+| `ExtractionLimits(max_ratio=100)` | `TypeError`: `ExtractionLimits` holds no ratio field; `decoder_limits` holds them |
 | Reader opened with `listing_limits=ListingLimits(max_members=10)` | Listing caps stay at 10 for the reader lifetime; `extract_all()` has no `config=` to change them |
 | `detect_format(BytesIO(zlib_bytes))`, then with `always_probe_content=True` | `FormatDetectionError`, then `ZLIB` / `content_probe` |
 | Reader opened with `read_link_targets=False` | No data-stored link target is read by listing or a pass for the reader lifetime |
@@ -1483,8 +1543,28 @@ seeks to `_SIGNATURE_HEADER_SIZE + next_header_offset`) discard caller
 positioning. The system SHALL NOT copy the remainder of the source to a
 temporary file solely to strip an SFX stub.
 
+When detection also reports `payload_end` (`format-detection`: the start of a PE's
+Authenticode certificate table), `open_archive` SHALL pass it the same way, and the
+backend SHALL behave as if handed a view of `[payload_offset, payload_end)`: it reads
+nothing at or past the end and treats the bytes there as identified, not as part of the
+archive or data after it. A backend SHALL NOT read before its start offset to find an end
+for itself. A backend that hands the file to an external program (`unrar`) applies the end
+to its own checks only.
+
 An explicit `format=` that bypasses detection retains each backend’s own
-start-offset / SFX rules (`format-rar`, `format-7z`).
+start-offset / SFX rules (`format-rar`, `format-7z`). For a backend whose format can carry
+a stub (RAR, 7z, ZIP), on a seekable source, `open_archive` SHALL read the
+source's first 4096 bytes and, when they are a PE whose layout parses, SHALL pass the
+payload end derived from them with the PE layout helper detection uses. A volume set is
+read as its joined bytes, as detection reads it, so the last part's table ends the join.
+The same read applies when detection ran but did not judge a prefix (`prefixed` is
+`False`), such as a format taken from the name with the scan off: only a prefixed
+detection answer carries an end of its own. Detection reads
+the layout from the same 4096 bytes whatever `max_prefix_bytes` says. So a forced
+`format=` and auto-detect open the same region and list the same members: what an archive
+holds SHALL NOT depend on whether its format was named. No backend derives an end itself.
+A non-seekable source gets no end either way, since its size is unknown and the table
+cannot be placed.
 
 #### Scenario: payload_offset hand-off
 
@@ -1494,6 +1574,15 @@ start-offset / SFX rules (`format-rar`, `format-7z`).
 | `payload_offset == 0` | Unchanged open-at-current-position behaviour |
 | Explicit `format=` | Detection skipped; backend SFX/start-offset rules apply |
 | Bare seek only (no start-offset / no offset view) | Insufficient for 7z; MUST NOT be the sole hand-off mechanism |
+| Auto-detect, signed PE SFX, `payload_end == E` | Backend reads nothing at or past `E`; the certificate raises no `ARCHIVE_TRAILING_DATA` |
+| Forced `format=` on the same signed SFX (RAR, 7z, or ZIP from a seekable source) | `open_archive` passes the same `E`, read from the same headers; same listing, same diagnostics |
+| Auto-detect with `max_prefix_bytes` below 4096 | Detection still reads the layout from the first 4096 bytes and reports the same `E` |
+| The same SFX from a non-seekable stream, auto-detect or forced | No `E`: the certificate is reported as trailing data, the same both ways |
+| Forced `format=ZIP` on the IRPF installer under `DiagnosticPolicy.STRICT` | Opens, as auto-detect does: the certificate is past `E` |
+| Forced `format=ZIP` on a signed SFX whose certificate holds a second whole ZIP, its offsets counted from its own start or from the start of the file | The archive before `E` is listed, as auto-detect lists it; the ZIP inside the certificate is not |
+| Signed PE split into `signed.zip.001` / `.002`, a second ZIP planted in the certificate table, forced `format=ZIP` | The end read from the joined set's headers; the ZIP before it is listed, as auto-detect lists it |
+| Signed PE named `signed.zip`, detected from its name with `max_scan_bytes=0` | The end read from the headers at open; the ZIP before it is listed, not one planted in the certificate table |
+| No `payload_end` (unsigned, non-PE, or total size unknown) | Unchanged: the archive is read to the end of the source |
 
 ### Requirement: Bounded symlink-target reads from member data
 
@@ -1769,6 +1858,11 @@ cases, even an intact archive whose only fault is a missing library, as it alrea
 for `reason="password_required"`: strict means every member can be vouched for, and this
 install cannot vouch for that link.
 
+A read that raises `ResourceUnavailableError` (the system gave it no descriptor, memory
+or process slot, for example to start `unrar`) SHALL be handled the same way, with
+`reason="resource_unavailable"`: the shortage says nothing about the archive, so it costs
+that link its target and not the listing, and opening the link SHALL read it again.
+
 #### Scenario: undecodable link target matrix
 
 | Case | Expected |
@@ -1781,22 +1875,24 @@ install cannot vouch for that link.
 | ZIP Zstandard, ZIP WinZip AES or 7z PPMd symlink with the library it needs absent | Every member listed; `reason="package_not_installed"`; `open()` raises `PackageNotInstalledError` |
 | Same, `extract_all(on_error=CONTINUE)` | Link `FAILED` with `PackageNotInstalledError`; other members extract |
 | Same, `DiagnosticPolicy.STRICT` | Listing raises `DiagnosticRaisedError`, though the archive is intact |
+| Any symlink whose target read raises `ResourceUnavailableError` | Every member listed; `reason="resource_unavailable"`; `open()` reads again and raises `ResourceUnavailableError` while the shortage lasts |
 
 ### Requirement: Streams and passes come from archivey
 
 `ArchiveStream` and `MemberPass` SHALL stay public types for annotations and
 `isinstance`, as base classes with no public constructor: every stream and pass
 archivey hands out SHALL be an instance of an internal subclass, so how one is built
-can change in any release. Until archivey 0.4.0, calling either base directly SHALL
-still work, building that internal subclass, and SHALL emit a `DeprecationWarning`
-(DR-12a).
+can change in any release. Calling either base directly, or a subclass that leaves an
+abstract method unimplemented, SHALL raise
+`TypeError` naming where to get one.
 
 #### Scenario: construction matrix
 
 | Call | Result |
 |---|---|
-| `ArchiveStream(open_fn, translate=…)` | Working stream; `DeprecationWarning` naming `ArchiveReader.open()` |
-| `MemberPass(generator)` | Working pass; `DeprecationWarning` naming `stream_members()` |
+| `ArchiveStream(open_fn, translate=…)` | `TypeError` naming `ArchiveReader.open()` |
+| `MemberPass(generator)` | `TypeError` naming `stream_members()` |
+| A subclass of either that implements every abstract method | Builds as written |
 | `reader.open()`, `reader.read()`, `stream_members()`, iterating a reader, `open_stream()` | No `DeprecationWarning` |
 
 #### Scenario: internal subclasses
@@ -1813,9 +1909,16 @@ API.
 ### Requirement: verify_all checks every member and keeps going
 
 Every reader SHALL have `verify_all()`, which reads every listed member to the end,
-does not stop at a member's failure, and returns a tuple of `(member, error)` pairs,
-one for each member whose read raised an `ArchiveyError`. An empty tuple SHALL mean no
-member failed. A member whose password the password input did not supply SHALL be a
+does not stop at a member's failure, and returns a `VerifyReport`. Its `failures` SHALL
+be a tuple of `(member, error)` pairs, one for each member whose read raised an
+`ArchiveyError`; an empty tuple SHALL mean no member failed. Its `structure_error`
+SHALL be the damage that stopped the walk through the archive (the same error as
+`members_report().error`), or `None`. Its `diagnostics` SHALL be the diagnostics the
+call emitted on its own thread. Its `ok` SHALL be `True` exactly when `failures` is
+empty and `structure_error` is `None`; diagnostics SHALL NOT affect `ok`. Its
+`raise_for_failure()` SHALL raise `structure_error` when set, else the first failure's
+error, and do nothing when `ok`. The report SHALL NOT be a sequence, so a truth test
+of it cannot stand in for `ok`. A member whose password the password input did not supply SHALL be a
 failure, returned with its `EncryptionError`. A per-member limit (a decode ratio
 breach) SHALL be a member failure.
 
@@ -1825,7 +1928,8 @@ streaming-only reader, any call after a pass has started, its own included); the
 `ResourceLimitError` that `members_report()` raises when the listing exceeds
 `ListingLimits`; an error the caller's diagnostic policy escalates; and errors that
 are not `ArchiveyError` (`OSError`, `KeyboardInterrupt`). Damage that stops the listing
-SHALL NOT raise: `verify_all()` stops there, and `members_report().error` holds it.
+SHALL NOT raise: `verify_all()` stops there, and the report's `structure_error` holds
+it, as `members_report().error` does.
 A failed checksum over the archive's whole compressed stream (a `.tar.gz` trailer) that
 ends the listing or the pass SHALL make every listed file a failure, returned with that
 error, whether or not the listing ran before the call.
@@ -1838,23 +1942,140 @@ members whose `verifiable` is `NONE`; it MAY skip any other member. On a
 streaming-only reader, `members_report()` after `verify_all()` SHALL return the report
 of that same pass without reading again.
 
-Archive-level damage and findings are reported by `members_report()` and
-`reader.diagnostics`, never as a verification level.
+Archive-level damage and findings are reported by the report's `structure_error` and
+`diagnostics` (and by `members_report()` and `reader.diagnostics`), never as a
+verification level.
 
 #### Scenario: verify_all matrix
 
+"Returns" a member means the member is in the report's `failures`.
+
 | Case | Expected |
 | --- | --- |
-| Intact ZIP | returns `()`; every member `verified == verifiable` |
+| Intact ZIP | `failures` is `()`, `structure_error` is `None`, `ok` is `True`; every member `verified == verifiable` |
+| ZIP cut inside its central directory | `failures` is `()`; `structure_error` is a `TruncatedError`; `ok` is `False`; `raise_for_failure()` raises it |
 | ZIP with one member whose CRC fails | returns that member with `CorruptionError`; the other members at `CHECKSUM` |
 | Encrypted ZIP, no password given | returns each encrypted member with `EncryptionError` |
 | Second call after a password provider now supplies the password | re-reads only the members that failed; returns `()` |
 | `.tar.gz` with a matching trailer | returns `()`; every member at `CHECKSUM` |
 | `.tar.gz` whose trailer CRC fails, with or without `members()` first | returns every file with `CorruptionError`; so does a second call |
-| TAR cut inside the member listing | returns the failures before the cut; `members_report().error` is a `TruncatedError` |
-| TAR with no end-of-archive blocks | returns `()`; `reader.diagnostics` holds `ARCHIVE_EOF_MARKER_MISSING` (raises only when the policy escalates it) |
+| TAR cut inside the member listing | `failures` holds the failures before the cut; `structure_error` (and `members_report().error`) is a `TruncatedError` |
+| TAR with no end-of-archive blocks | `ok` is `True`; `reader.diagnostics` holds `ARCHIVE_EOF_MARKER_MISSING` (raises only when the policy escalates it) |
 | 7z AES folder with no CRC, truncated | returns the member with `TruncatedError`, on a first and a second call |
 | Streaming-only reader, second call | raises `ArchiveyUsageError` |
 | Streaming-only reader, call after `stream_members()` has started | raises `ArchiveyUsageError` |
 | Streaming-only reader, `members_report()` after `verify_all()` | returns the cached report; reads nothing |
 | Random-access reader with a caller stream open at position 100 | the caller's stream stays at position 100 |
+
+### Requirement: An archive stored as a program resource
+
+A PE program can hold an archive as one of its resources, inside its resource section,
+with other resources, other sections and a certificate table after it (Squirrel's setup
+program holds its ZIP this way). For a backend whose format can carry a stub (ZIP, 7z,
+RAR), on a seekable source of known size, `open_archive` SHALL let the backend learn the
+file extents of the resources of a PE program at the start of the source, read from its
+headers and the start of its resource directory, whether the format was detected or
+named. The ZIP, 7z and RAR (lone archive) readers SHALL NOT report
+`ARCHIVE_TRAILING_DATA` for a non-zero byte that lies at or past the end of the resource
+whose data holds the archive's end. A non-zero byte after the archive and before that
+resource's end SHALL be reported as before. An archive whose end lies in no resource
+SHALL be reported as before. The extents SHALL be read only when a reader has found a
+non-zero byte after its archive, at most 4096 header bytes and 64 KiB of resource tables,
+and they SHALL NOT change what the archive lists. LHA is not covered and reports as
+before.
+
+#### Scenario: archive stored as a program resource
+
+| Case | Default policy | `STRICT` |
+| --- | --- | --- |
+| ZIP, 7z or RAR filling one resource, other resources and `.reloc` after it, detected or forced | Nothing reported | Opens |
+| The same, signed | Nothing reported | Opens |
+| Zero padding after the archive inside its resource | Nothing reported | Opens |
+| Non-zero bytes after the archive inside its resource | `ARCHIVE_TRAILING_DATA`, measured from the archive's end | Refused |
+| Archive appended in the overlay of a program that has resources, bytes after it | `ARCHIVE_TRAILING_DATA` | Refused |
+| GitHub Desktop's Squirrel installer | `ZIP` at 169 888, 5 members, nothing reported | Opens |
+| No trailing bytes | The resource table is not read | Opens |
+
+### Requirement: A reader opened inside another joins its nest
+
+A nest SHALL be an archive's reader and every reader opened inside it: by
+`ReaderContext.open_nested`, or by `open_archive(..., parent=reader)` at any depth. With
+`parent=` and no `config`, the reader SHALL use its parent's config. `parent` SHALL be
+an archivey reader, open or closed, else `ArchiveyUsageError`. A nest SHALL hold at most
+nine archives in a chain, the outermost included, both kinds of nesting counted: opening
+the tenth SHALL raise `UnsupportedFeatureError`. Closing a parent SHALL NOT close the
+readers opened inside it. A reader opened with `parent=` SHALL run its own name checks
+(`MEMBER_NAME_DUPLICATE`, names with NUL), since no outer listing lists its members. A
+reader opened on the same thread while `open_archive(..., parent=)` runs (by a password
+provider or an `on_diagnostic` callback) SHALL NOT join the nest.
+
+#### Scenario: joining a nest
+
+- **WHEN** a reader is opened as each row says
+- **THEN** it joins the nest, or is refused, as the row's Expected column says
+
+| Case | Expected |
+| --- | --- |
+| `outer` opened with `ListingLimits(max_members=2)`, inner of 3 members opened with `parent=outer` and no `config` | The inner listing raises `ResourceLimitError` naming `max_members=2`: the parent's config applies |
+| `parent=` with a `config` whose only difference is `diagnostic_policy` | Its own policy; the nest's totals |
+| `parent=` an object that is not an archivey reader | `ArchiveyUsageError` naming `parent` |
+| `parent=outer` after `outer` was closed (extract, then recurse) | Opens; in `outer`'s nest |
+| Ten archives chained with `parent=` | The tenth open raises `UnsupportedFeatureError`; the ninth opens |
+| `parent=` child whose archive holds the same name twice | `MEMBER_NAME_DUPLICATE` on the child's diagnostics |
+| `ListingLimits(max_members=5)`, outer of 3 members, listed, then closed; inner of 3 opened with `parent=outer` | The inner listing raises `ResourceLimitError` naming `max_members=5` |
+
+### Requirement: Limits apply per nest
+
+Every reader of a nest SHALL keep the limits it would have as a top-level reader opened
+with its own config, except where `ReaderContext.open_nested` shares them today
+(`max_metadata_bytes` through the outermost tracker, `max_decoder_memory` less what the
+open outer levels declared, `max_ratio` against the outermost archive). On top, an
+account owned by the outermost reader SHALL hold three totals for the whole nest, every
+level counted, closed ones included. Each draw SHALL be held to the stricter of the
+outermost reader's config and the drawing reader's own config; a child config can
+tighten a nest total, never loosen it:
+
+- **Members.** Each member a `parent=` reader registers SHALL count against
+  `max_members`, once per reader however often it lists. A member that an `open_nested`
+  reader yields SHALL count once, as the outer listing's member. A member a reader holds
+  back before listing it (a cpio or RPM hard-link set) SHALL be drawn when it is held.
+  Crossing the total SHALL raise `ResourceLimitError` naming `max_members` and the nest;
+  the refused member SHALL NOT be counted.
+- **Ratio.** Each reader opened as the outermost or with `parent=` SHALL add the most it
+  has decoded of its archive in one pass (the largest of its container stream's decoded
+  position, its member read tally and its largest single extraction), and only that
+  number's growth: reading again, or extracting after reading, SHALL add nothing. A
+  reader `open_nested` builds SHALL add nothing; its bytes are in its outer reader's
+  number. The sum SHALL be held to `max_ratio` times the outermost archive's trusted
+  size, once it passes `ratio_activation_threshold` (the lower of the outermost reader's
+  and the drawing reader's, since a higher floor would loosen the total), and crossing
+  it SHALL raise the always-stop `ResourceLimitError` naming `max_ratio` and the nest. A
+  nest of one SHALL never be refused by this total where the reader's own ratio rules
+  pass. An outermost reader with no trusted size (a `DIRECTORY`, a stream of unknown
+  length) SHALL leave this total off.
+- **Decoded bytes.** `DecoderLimits.max_nest_decoded_bytes` (`safe-extraction`).
+
+`ListingLimits.max_decoded_bytes`, `max_ppmd_held_input`
+and `ExtractionLimits` SHALL stay per pass, decoder and call.
+
+#### Scenario: nest limit matrix
+
+- **WHEN** an inner archive is read as each row says
+- **THEN** the limits hold as the row's Expected column says
+
+| Case | Expected |
+| --- | --- |
+| Stored ZIP of 2.17 MB holding a 15 428-byte `.tar.xz` of 100 MiB of zeros; inner opened with `parent=outer` from a temporary-file copy; defaults | An inner read raises the always-stop `ResourceLimitError` naming `max_ratio` after about 11.5 MiB, at the same point as when opened without `parent=` |
+| `max_ratio=100`; outer ZIP of 1 MiB whose deflated members are inner `.tar.gz` archives at 90:1, together 90 MiB; each inner, decoding 90:1, opened with `parent=outer` from a copy | Every inner archive is within its own ratio; a read raises `ResourceLimitError` naming `max_ratio` and the nest (always-stop) once the nest's sum passes 100 MiB, plus at most one read |
+| The same, each inner opened with a config whose `ratio_activation_threshold` is far above the root's | Refused as in the row above: the nest ratio's floor is the lower of the two |
+| The same inner archive, outer opened from a directory | Inner held to its own ratio only; no nest ratio |
+| `ListingLimits(max_members=5)`, outer of 3 members, listed; inner opened with `parent=` holding 3 | The inner listing raises `ResourceLimitError` naming `max_members=5` at its third member |
+| The same, inner opened without `parent=` | Lists all 3: a separate nest |
+| The same, inner listed twice | The second listing counts nothing more |
+| `max_decoder_memory=256 MiB`, outer `.tar.xz` with a 200 MiB dictionary listed, inner `.7z` copied to a file needing 200 MiB opened with `parent=` | Opens and reads; its decoder memory is its own |
+| Child config with `ListingLimits(max_members=10)`, root default, root listed 5 members; child of 8 | The child's listing raises naming `max_members=10` at its sixth member: the child's stricter value holds its draws on the nest |
+| Child config with `ListingLimits.UNLIMITED`, root `max_members=5`, root listed 3; child of 3 | The child's listing raises naming `max_members=5`: a child cannot loosen a nest total |
+| Default config, honest `.tar.gz` past the activation floor at about 500:1, listed, every member read, then extracted twice | No refusal: a nest of one is held only to its own rules |
+| Default config, honest `.deb` whose `data.tar.gz` is at about 500:1, read once with `stream_members()` | No refusal: the `open_nested` reader adds nothing to the nest's sum |
+| Default config, one member of an honest `.tar.gz` past the floor at 500:1 read 1000 times | No refusal: re-reads add nothing |
+| `ExtractionLimits(max_extracted_bytes=N)`, outer and inner each extracted | Each `extract_all` call is held to N on its own |

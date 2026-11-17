@@ -9,20 +9,16 @@ have worked. The class raised is the private subclass that is also a ``ValueErro
 value of the wrong type (an ``int``, a member of another enum) gets the one that is also
 a ``TypeError``.
 
-**Why coerce rather than refuse.** The CLI and a throwaway script both hold strings, and
-the CLI was already doing this by hand (``ExtractionPolicy(policy)`` in
-``cli/extract_cmd.py``) with its own dash-to-underscore fixup for ``AbortOn``. Doing it
-in one place makes the library and the CLI accept the same vocabulary instead of two
-that drift.
+**Why coerce rather than refuse.** The CLI and a throwaway script both hold strings.
+Coercing in one place makes the library and the CLI accept the same vocabulary instead
+of two that drift.
 
-**Why it must happen at the boundary.** Before this module, an unrecognised value was
-not refused, it was *ignored*: the consuming code tests ``policy is
-ExtractionPolicy.TRUSTED`` and a string is never any member, so it silently took the
-other branch. ``overwrite="skip"`` reached ``_apply_overwrite_policy``, matched neither
-``ERROR`` nor ``SKIP``, and fell through to REPLACE — deleting the file the caller asked
-to keep. ``on_error="stop"`` behaved as ``CONTINUE``. Converting at the entry point is
-what makes those unreachable; a check that happens later, or not at all, is how they
-happened.
+**Why it must happen at the boundary.** The consuming code tests identity (``policy is
+ExtractionPolicy.TRUSTED``), and a string is never any member, so an unconverted string
+would silently take the other branch. ``overwrite="skip"`` would match neither ``ERROR``
+nor ``SKIP`` and fall through to REPLACE, deleting the file the caller asked to keep;
+``on_error="stop"`` would behave as ``CONTINUE``. Converting at the entry point is what
+makes those unreachable.
 
 **The cost, stated plainly.** Accepting a string makes the enum **values** public API.
 ``OverwritePolicy.SKIP.value`` cannot be renamed from ``"skip"`` afterwards without

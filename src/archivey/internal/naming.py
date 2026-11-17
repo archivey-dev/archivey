@@ -85,8 +85,7 @@ def _emit_name_controls(
     Bidi controls and the zero-width characters are Unicode category Cf too; each goes
     to its own code only, so the invisible set is every other Cf character. Each code is
     emitted at most once, naming every character of its set in order. ASCII text
-    contains none of them, so it skips the per-character scan (listing hot path; perf
-    review H3 / Q1).
+    contains none of them, so it skips the per-character scan (listing hot path).
     """
     if text.isascii():
         return
@@ -282,12 +281,13 @@ def infer_member_name_from_archive(
       its replacement to the stem (``.tgz`` → ``.tar``).
     - Otherwise → ``basename + \".uncompressed\"``.
 
-    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a name: extraction
-    refuses it and the caller gets an empty directory for an intact payload. Those fall
-    through to the ``.uncompressed`` spelling, which the length guard already gives
-    ``\".gz\"``. That also renames the cases the looser policies used to extract:
-    ``\"....gz\"`` presented ``\"...\"`` and extracted under ``STANDARD`` / ``TRUSTED``,
-    and now presents ``\"....gz.uncompressed\"`` under every policy.
+    A stem of only dots and spaces (``\"..gz\"`` → ``\".\"``) is not a usable name (see
+    :func:`_is_usable_stem` for which policies refuse which stems): a policy that
+    refuses it would leave the destination empty for an intact payload. Those fall
+    through to the ``.uncompressed`` spelling, which ``\".gz\"`` also gets, because the
+    length guard keeps the suffix there (``\".gz.uncompressed\"``). The rule does not
+    depend on the policy: ``\"....gz\"`` presents ``\"....gz.uncompressed\"`` under
+    every policy, even though ``TRUSTED`` would write ``\"...\"``.
     """
     if archive_name is None:
         return "data"
@@ -309,11 +309,15 @@ def infer_member_name_from_archive(
     for suffix, tail in candidates:
         if not suffix:
             continue
-        suf = suffix if suffix.startswith(".") else f".{suffix}"
-        if lower.endswith(suf.lower()) and len(suf) > best_len and len(base) > len(suf):
-            best = base[: -len(suf)]
+        dotted = suffix if suffix.startswith(".") else f".{suffix}"
+        if (
+            lower.endswith(dotted.lower())
+            and len(dotted) > best_len
+            and len(base) > len(dotted)
+        ):
+            best = base[: -len(dotted)]
             best_tail = tail
-            best_len = len(suf)
+            best_len = len(dotted)
     if best is not None and _is_usable_stem(best):
         return best + best_tail
 
@@ -384,6 +388,21 @@ def normalize_member_name(
     return name
 
 
+def normalize_hardlink_target(target: str) -> str:
+    """A hard link's stored target in the form of the member name it refers to.
+
+    A hard-link target is the earlier member's stored path (the TAR model), so it is
+    cleaned as :func:`normalize_member_name` cleans a name: ``./b`` lists as ``b``,
+    the target of a link to the member listed as ``b``. A target that ends in ``/``
+    names a directory and keeps the ``/``, as a directory's name does, so a lookup
+    does not take it for a file of the same name. A backslash stays a literal
+    character: a reader that treats it as a separator has converted it already, as
+    it does in the name.
+    """
+    member_type = MemberType.DIRECTORY if target.endswith("/") else MemberType.FILE
+    return normalize_member_name(target, member_type, backslash_is_separator=False)
+
+
 def _without_dot_prefix(presented_name: str) -> str:
     """``presented_name`` without its leading run of ``./``.
 
@@ -420,7 +439,7 @@ def emit_member_name_normalized(
     Suppresses the no-op case where a DIRECTORY member only gained the canonical
     trailing slash (Python's ``tarfile`` strips it on read) — that is not an
     observable override, and warning once per directory on every ordinary tar is
-    noise (R3 / Brief 4).
+    noise.
 
     ``link_stored_as_directory`` is the mirror of that case, and the caller must say
     so rather than leaving it to be inferred here: a ZIP directory reparse point (a
@@ -486,9 +505,10 @@ def resolve_link_target_name(
 
     - A **hardlink** target is archive-relative from the root (the TAR model: the
       linkname is the earlier member's own stored path), so it is in the member-name
-      namespace and cleaned the way :func:`normalize_member_name` cleans a name: ``.``
-      and empty segments dropped, ``..`` **retained**. ``a/../b`` names the member
-      stored as ``a/../b``, never the unrelated member ``b``.
+      namespace and cleaned the way :func:`normalize_hardlink_target` cleans it: ``.``
+      and empty segments dropped, ``..`` **retained**, and a final ``/`` kept, since
+      it names a directory. ``a/../b`` names the member stored as ``a/../b``, never
+      the unrelated member ``b``.
     - A **symlink** target is a filesystem path relative to the link's *own directory*
       (``dir/link -> file`` means ``dir/file``), so it is joined to that directory and
       ``..`` is collapsed, as the filesystem would resolve it.
@@ -528,7 +548,11 @@ def resolve_link_target_name(
         joined = target.lstrip("/")
         if not within_root:
             segments = [seg for seg in joined.split("/") if seg not in ("", ".")]
-            return root + "/".join(segments) if segments else None
+            if not segments:
+                return None
+            # A final "/" says the target is a directory (link_target_name_keys).
+            slash = "/" if joined.endswith("/") else ""
+            return root + "/".join(segments) + slash
     resolved = posixpath.normpath(joined)
     if resolved in (".", "/") or resolved.startswith(("../", "/")) or resolved == "..":
         return None  # escapes the archive root (or names the root itself)

@@ -1,20 +1,31 @@
-"""The decompression-bomb tracker: the byte, ratio and entry-count limits one extraction
-enforces as it writes (``ExtractionLimits``), the archive-wide ratio a compressed
-container's decode is held to in every use (:class:`DecodeRatioGuard`), and the ratio
-member reads are held to outside extraction (:class:`MemberRatioGuard`)."""
+"""The decompression-bomb guards: the limits that stop a small archive from writing or
+decoding far more data than it is worth.
+
+Three users share one archive-wide ratio rule (:func:`archive_ratio_refusal`).
+:class:`BombTracker` and :class:`MemberRatioGuard` also check a per-member ratio, each
+with its own code:
+
+- :class:`BombTracker`: the byte and entry-count limits one extraction enforces as it
+  writes (``ExtractionLimits``), and the ratio it holds them to (``DecoderLimits``).
+  The extraction coordinator builds one per call and counts every chunk through it
+  before writing.
+- :class:`DecodeRatioGuard`: the archive-wide ratio a compressed container's decode
+  (a ``.tar.gz``) is held to in every use, listing included. The reader wraps the
+  decoded stream in it.
+- :class:`MemberRatioGuard`: the ratio member reads are held to outside extraction
+  (``open()``, ``stream_members()``). The reader wraps each member stream in it.
+"""
 
 from __future__ import annotations
 
 import io
 import math
 import threading
-from dataclasses import replace
 from typing import TYPE_CHECKING, BinaryIO, cast
 
 from archivey.config import (
     DecoderLimits,
     ExtractionLimits,
-    ratio_field_is_set,
 )
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.overrides import override
@@ -29,39 +40,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from archivey.internal.base_reader import BaseArchiveReader
+    from archivey.internal.nesting import NestDraws
     from archivey.internal.streams.streamtools.readahead import _ReadsAhead
     from archivey.types import ArchiveMember
-
-
-def ratio_limits(
-    decoder: DecoderLimits, *overrides: ExtractionLimits | None
-) -> DecoderLimits:
-    """``decoder``, with each ratio field a deprecated ``ExtractionLimits`` sets in its
-    place (a later override wins). The guards read the ratio fields from the result."""
-    max_ratio = decoder.max_ratio
-    floor = decoder.ratio_activation_threshold
-    live_floor = decoder.live_ratio_activation_threshold
-    for limits in overrides:
-        if limits is None:
-            continue
-        if ratio_field_is_set(limits.max_ratio):
-            max_ratio = limits.max_ratio
-        if ratio_field_is_set(limits.ratio_activation_threshold):
-            floor = limits.ratio_activation_threshold
-        if ratio_field_is_set(limits.live_ratio_activation_threshold):
-            live_floor = limits.live_ratio_activation_threshold
-    if (max_ratio, floor, live_floor) == (
-        decoder.max_ratio,
-        decoder.ratio_activation_threshold,
-        decoder.live_ratio_activation_threshold,
-    ):
-        return decoder
-    return replace(
-        decoder,
-        max_ratio=max_ratio,
-        ratio_activation_threshold=floor,
-        live_ratio_activation_threshold=live_floor,
-    )
 
 
 def archive_ratio_refusal(
@@ -106,6 +87,36 @@ def archive_ratio_refusal(
     return None
 
 
+def refuse_past_archive_ratio(
+    total: int,
+    *,
+    limits: DecoderLimits,
+    static_size: int | None,
+    consumed: Callable[[], int | None] | None,
+    counted: str,
+    member_name: str | None = None,
+) -> None:
+    """Raise :class:`AlwaysStopResourceLimitError` when ``total`` decoded bytes break
+    the archive-wide ratio (:func:`archive_ratio_refusal`, with ``limits``' fields).
+
+    ``counted`` says what ``total`` counts, for the message. One place for the step the
+    archive-wide guards share: a compressed container's decode, member reads, and a
+    link read judged at its size (``BaseArchiveReader._hold_to_ratio``).
+    """
+    refusal = archive_ratio_refusal(
+        total,
+        max_ratio=limits.max_ratio,
+        floor=limits.ratio_activation_threshold,
+        live_floor=limits.live_ratio_activation_threshold,
+        static_size=static_size,
+        consumed=consumed,
+    )
+    if refusal is not None:
+        raise AlwaysStopResourceLimitError(
+            f"{refusal} ({total} bytes of {counted})", member_name=member_name
+        )
+
+
 class AlwaysStopResourceLimitError(ResourceLimitError):
     """A cumulative/global bomb guard: halts extraction even under ``OnError.CONTINUE``.
 
@@ -127,13 +138,13 @@ class BombTracker:
         self,
         max_bytes: int | None,
         max_ratio: float | None,
-        # The defaults come from ExtractionLimits, the one place the limits are set.
-        ratio_activation_threshold: int = ExtractionLimits.ratio_activation_threshold,
+        # The defaults come from the limit classes, the one place the limits are set.
+        ratio_activation_threshold: int = DecoderLimits.ratio_activation_threshold,
         max_entries: int | None = ExtractionLimits.max_entries,
         *,
         source: BaseArchiveReader | None = None,
         live_ratio_activation_threshold: int = (
-            ExtractionLimits.live_ratio_activation_threshold
+            DecoderLimits.live_ratio_activation_threshold
         ),
     ) -> None:
         self._max_bytes = max_bytes
@@ -148,6 +159,8 @@ class BombTracker:
         self._compressed_source_size = (
             source.compressed_source_size if source is not None else None
         )
+        # The reader's draws on its nest, which counts this extraction as one pass.
+        self._nest = getattr(source, "_nest", None)
         self._max_entries = max_entries
         self._entry_count = 0
         self._total_bytes = 0  # decoded output, cumulative across all members
@@ -172,9 +185,12 @@ class BombTracker:
         return self._member_bytes
 
     def start_member(self, member: ArchiveMember) -> None:
-        # Called with the ORIGINAL member (not a filter copy), so compressed_size and any
-        # late-bound fields are accurate. Increments the entry-count guard, which — like
-        # the cumulative byte guard — halts even under OnError.CONTINUE.
+        """Start counting ``member``'s output, and count it toward the entry limit.
+
+        The caller passes the original member, not a filter copy, so
+        ``compressed_size`` and any late-bound fields are accurate. The entry-count
+        guard, like the cumulative byte guard, halts even under ``OnError.CONTINUE``.
+        """
         self._member = member
         self._member_bytes = 0
         self._entry_count += 1
@@ -228,14 +244,14 @@ class BombTracker:
         if self._max_ratio is None or member is None:
             return
         size = member.size
-        cs = member.compressed_size
-        if size is None or not cs or cs <= 0:
+        compressed_size = member.compressed_size
+        if size is None or not compressed_size or compressed_size <= 0:
             return
-        if size > max(self._ratio_floor, self._max_ratio * cs):
+        if size > max(self._ratio_floor, self._max_ratio * compressed_size):
             raise ResourceLimitError(
-                f"Decompression ratio {size / cs:.0f}:1 exceeds limit "
+                f"Decompression ratio {size / compressed_size:.0f}:1 exceeds limit "
                 f"max_ratio={self._max_ratio:.0f}:1 (from recorded sizes: "
-                f"{size} bytes from {cs} compressed)",
+                f"{size} bytes from {compressed_size} compressed)",
                 member_name=member.name,
             )
 
@@ -248,15 +264,15 @@ class BombTracker:
         # Per-member ratio: activates on THIS member's output; a per-member failure
         # (skippable under OnError.CONTINUE).
         member = self._member
-        cs = member.compressed_size if member is not None else None
+        compressed_size = member.compressed_size if member is not None else None
         if (
             self._max_ratio is not None
             and member is not None
             and self._member_bytes > self._ratio_floor
-            and cs
-            and cs > 0
+            and compressed_size
+            and compressed_size > 0
         ):
-            ratio = self._member_bytes / cs
+            ratio = self._member_bytes / compressed_size
             if ratio > self._max_ratio:
                 raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "
@@ -305,13 +321,13 @@ class BombTracker:
             )
 
     def _check_archive_ratio(self) -> None:
-        # Archive-wide ratio: activates on CUMULATIVE output; a whole-archive bomb signal
-        # (always-stop). Uses the static outer compressed size when it is cheaply known,
-        # otherwise a LIVE denominator — the compressed bytes consumed from the source so
-        # far — which works for a streaming/pipe source whose total size is unknown. The two
-        # are mutually exclusive (static when known, live otherwise), so the ratio is never
-        # counted twice.
-        css = self._compressed_source_size
+        """Archive-wide ratio guard (always-stop), judged on the cumulative output.
+
+        The denominator is the static outer compressed size when it is cheaply known,
+        otherwise a live one: the compressed bytes consumed from the source so far,
+        which works for a streaming or pipe source whose total size is unknown. Only one
+        of the two is used, so the ratio is never counted twice.
+        """
         # Decoded output plus the copies made at the link-count limit (``count_copy``).
         output = self._total_bytes + self._link_limit_copied_bytes
         # Says which part was not decoded, so a trip on a store-only archive with many
@@ -329,7 +345,7 @@ class BombTracker:
             max_ratio=self._max_ratio,
             floor=self._ratio_floor,
             live_floor=self._live_ratio_floor,
-            static_size=css,
+            static_size=self._compressed_source_size,
             consumed=(
                 (lambda: source.compressed_bytes_consumed)
                 if source is not None
@@ -338,12 +354,21 @@ class BombTracker:
         )
         if refusal is not None:
             raise AlwaysStopResourceLimitError(refusal + detail)
+        if self._nest is not None:
+            # This extraction's output is one pass over the archive: the nest ratio
+            # counts the most any one pass decoded.
+            self._nest.report_pass(output)
 
 
 # How far a forward seek moves the decoder before the guard checks again. A codec
 # serves a forward seek by decoding the gap, so one seek over a huge member would
 # decode all of it before a check after the seek could refuse.
 _GUARD_STEP = 1 << 20
+# The most one decoder read asks for when the guard reads on to an end it does not know.
+# The room can reach gigabytes, and a decoder may allocate what a read asks for before
+# it reads: ``RawIOBase.read`` does, and under PyPy that buffer is real memory, not
+# pages the kernel hands out as they are touched.
+_READ_TO_END_STEP = _GUARD_STEP * 16
 
 
 class _RatioGuard(DelegatingStream):
@@ -351,9 +376,11 @@ class _RatioGuard(DelegatingStream):
     rule (:meth:`_judge`).
 
     The measure is the furthest offset decoded, so a backward seek that decodes again
-    costs nothing here. Reads and seeks forward go to the decoder in steps of at most
-    1 MiB, a seek to the end included, so a refusal comes within a step of the limit,
-    from the call that crosses it, whose bytes are withheld.
+    costs nothing here. Near the limit, reads and seeks forward go to the decoder in
+    steps of at most 1 MiB, a seek to the end included, so a refusal comes within a step
+    of the limit, from the call that crosses it, whose bytes are withheld. Further from
+    it, a read or a seek toward an end the guard cannot see asks for at most 16 MiB per
+    call (``_READ_TO_END_STEP``).
     """
 
     # Changes no bytes and no positions: verification and resume offsets look
@@ -378,6 +405,17 @@ class _RatioGuard(DelegatingStream):
         # one read; a subclass sets it.
         self._size: int | None = None
 
+    def try_get_size(self) -> int | None:
+        """The inner stream's cheap size, as ``ArchiveStreamImpl.size`` asks it: a
+        guard changes no bytes, so the decoded length is the decoder's."""
+        inner = self._inner
+        try_get_size = getattr(inner, "try_get_size", None)
+        if callable(try_get_size):
+            result = try_get_size()
+            return result if isinstance(result, int) else None
+        size = getattr(inner, "size", None)
+        return size if isinstance(size, int) and not isinstance(size, bool) else None
+
     def _judge(self, position: int) -> None:
         """Raise if ``position`` decoded bytes break the rule; called as it grows."""
         raise NotImplementedError
@@ -386,7 +424,9 @@ class _RatioGuard(DelegatingStream):
         """How far past the current position one call may decode before a check.
 
         At least a step; more where no position before it can break the rule, so a
-        large read stays one read of the decoder (``math.inf``: the rest of it).
+        large read takes few reads of the decoder (``math.inf``: the rest of it, in
+        one). A read toward an end the guard cannot see still asks for at most
+        ``_READ_TO_END_STEP`` per call (:meth:`_step`).
         """
         return _GUARD_STEP
 
@@ -397,10 +437,11 @@ class _RatioGuard(DelegatingStream):
             size = self._size
             if room == math.inf or (size is not None and self._pos + room >= size):
                 return -1
-            return int(room)
-        return int(min(left, room))
+            return int(min(room, _READ_TO_END_STEP))
+        return int(min(left, room, _READ_TO_END_STEP))
 
     def _check(self, position: int) -> None:
+        """Judge ``position`` if it is past the furthest offset judged so far."""
         if position <= self._decoded or self._max_ratio is None:
             return
         # Recorded once judged: an offset refused stays unjudged, so a later read that
@@ -416,7 +457,8 @@ class _RatioGuard(DelegatingStream):
     @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_held()
-        if n is not None and 0 <= n <= max(_GUARD_STEP, self._room()):
+        # The bound is at least a step, so a read of at most a step needs no ``_room``.
+        if n is not None and 0 <= n and (n <= _GUARD_STEP or n <= self._room()):
             data = read_blocking(self._inner, n)
             self._pos += len(data)
             self._check(self._pos)
@@ -503,13 +545,16 @@ class DecodeRatioGuard(_RatioGuard):
     Listing such an archive decodes all of it, member data included, before
     extraction counts a byte, so a few hundred bytes of bzip2 could keep ``members()``
     decoding for minutes. This refuses it while listing, reading or extracting, at
-    the reader's ratio, except that an ``extract_all`` call holds its own decodes to
-    the ratio fields it applies (``run_limits``) for the length of the call, on its
-    thread. A read after the call is judged again under the reader's limits.
+    the reader's ratio.
 
     With a ``tally``, the guard is one of several whose decoded bytes count toward one
     total, each under its own ``key`` (as member reads count, :class:`ReadRatioTally`):
     the rule judges the total, not this stream's bytes alone.
+
+    ``open_stream()`` uses it too, for a bare compressed stream judged against the
+    stream's size. That caller passes ``holds_errors=False``, so a single ``read()``
+    raises the decoder's error rather than holding it for a later read, and
+    ``counted="the stream decoded"`` for its message (see ``__init__``).
     """
 
     def __init__(
@@ -521,65 +566,55 @@ class DecodeRatioGuard(_RatioGuard):
         consumed: Callable[[], int | None] | None,
         tally: ReadRatioTally | None = None,
         key: int = 0,
-        run_limits: Callable[[], DecoderLimits | None] = lambda: None,
+        nest: NestDraws | None = None,
+        holds_errors: bool = True,
+        counted: str = "the archive decoded",
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
+        # A container's decode holds the decoder's error after a whole step for the
+        # next call, so the members before the damage are not lost with the step. A
+        # stream handed to the caller raises it from the call that meets it, as a
+        # member stream does (MemberRatioGuard): a single ``read()`` must not return
+        # damaged data without an error.
+        self._holds_errors = holds_errors
+        self._counted = counted
         self._limits = limits
         self._static_size = static_size
         self._consumed = consumed
         self._tally = tally
         self._key = key
-        # The limits an ``extract_all`` call running on this thread applies to its own
-        # decodes, in place of ``limits`` (``None``: no such call).
-        self._run_limits = run_limits
-        # The limits the furthest offset decoded was judged under.
-        self._judged_under = limits
+        self._nest = nest
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
 
-    def _current_limits(self) -> DecoderLimits:
-        run = self._run_limits()
-        return self._limits if run is None else run
-
-    @override
-    def _check(self, position: int) -> None:
-        limits = self._current_limits()
-        if limits is not self._judged_under and limits != self._judged_under:
-            # An extraction that lifted the ratio may have decoded past what these
-            # limits allow: what it decoded is judged again, under these.
-            self._judged_under = limits
-            self._decoded = 0
-        super()._check(position)
-
     @override
     def _judge(self, position: int) -> None:
-        limits = self._current_limits()
+        limits = self._limits
         if self._tally is not None:
             position = self._tally.advance(self._key, position)
-        refusal = archive_ratio_refusal(
+        refuse_past_archive_ratio(
             position,
-            max_ratio=limits.max_ratio,
-            floor=limits.ratio_activation_threshold,
-            live_floor=limits.live_ratio_activation_threshold,
+            limits=limits,
             static_size=self._static_size,
             consumed=self._consumed,
+            counted=self._counted,
         )
-        if refusal is not None:
-            raise AlwaysStopResourceLimitError(
-                f"{refusal} ({position} bytes of the archive decoded)"
-            )
+        if self._nest is not None:
+            self._nest.report_pass(position)
 
 
 class ReadRatioTally:
     """The bytes a reader's member reads have decoded, for the archive-wide ratio.
 
-    Each member counts once, at the furthest offset any read of it reached, so reading
-    a member again or seeking back in it adds nothing. A member that gets no guard
-    because its data is the archive stream's own bytes (``_hold_to_ratio``) counts at
-    its recorded size instead, read or not, so the total can pass what was decoded but
-    never what one full pass decodes. Shared by every member stream of one reader,
-    from any thread.
+    Each member the caller reads counts once, at the furthest offset any read of it
+    reached, so reading a member again or seeking back in it adds nothing. A link the
+    read follows, or a file copy, counts as its own member: N members that hand out one
+    member's data count N times, as their output is N times those bytes. A member that
+    gets no guard because its data is the archive stream's own bytes
+    (``_hold_to_ratio``) counts at its recorded size instead, read or not, so the total
+    can pass what was decoded but never what reading each member once hands out.
+    Shared by every member stream of one reader, from any thread.
     """
 
     def __init__(self) -> None:
@@ -627,18 +662,24 @@ class MemberRatioGuard(_RatioGuard):
         *,
         limits: DecoderLimits,
         member: ArchiveMember,
+        tally_key: int,
+        member_name: str,
         tally: ReadRatioTally,
         static_size: int | None,
         consumed: Callable[[], int | None] | None,
+        nest: NestDraws | None = None,
     ) -> None:
         super().__init__(inner, max_ratio=limits.max_ratio)
         self._limits = limits
-        self._member_name = member.name
+        self._nest = nest
+        # The member the caller asked for, which errors name.
+        self._member_name = member_name
         self._compressed_size = member.compressed_size
         # Never decoded past: the member's recorded size bounds a seek's gap.
         self._size = member.size
-        assert member._member_id is not None, member.name
-        self._key = member._member_id
+        # The member the caller asked for, which may be a link to ``member`` or a copy
+        # of it: the tally counts each member read, not each member's data once.
+        self._key = tally_key
         self._tally = tally
         self._static_size = static_size
         self._consumed = consumed
@@ -646,12 +687,12 @@ class MemberRatioGuard(_RatioGuard):
         # member's own, and the archive-wide one, less what other members read.
         floor = limits.ratio_activation_threshold
         max_ratio = limits.max_ratio
-        cs = member.compressed_size
+        compressed_size = member.compressed_size
         self._member_safe: float = math.inf
         self._archive_safe: float = math.inf
         if max_ratio is not None:
-            if cs and cs > 0:
-                self._member_safe = max(floor, max_ratio * cs)
+            if compressed_size and compressed_size > 0:
+                self._member_safe = max(floor, max_ratio * compressed_size)
             if static_size and static_size > 0:
                 self._archive_safe = max(floor, max_ratio * static_size)
             elif consumed is not None:
@@ -659,16 +700,6 @@ class MemberRatioGuard(_RatioGuard):
 
     def nearest_resume_offset(self, target: int) -> int | None:
         return ask_resume_offset(self._inner, target)
-
-    def try_get_size(self) -> int | None:
-        """The inner stream's cheap size, as ``ArchiveStreamImpl.size`` asks it."""
-        inner = self._inner
-        try_get_size = getattr(inner, "try_get_size", None)
-        if callable(try_get_size):
-            result = try_get_size()
-            return result if isinstance(result, int) else None
-        size = getattr(inner, "size", None)
-        return size if isinstance(size, int) and not isinstance(size, bool) else None
 
     @override
     def _room(self) -> float:
@@ -727,7 +758,7 @@ class MemberRatioGuard(_RatioGuard):
             # Refused before the drain, not after decoding it all.
             raise io.UnsupportedOperation("seek")
         while data := read_blocking(
-            self._inner, min(int(self._room()), _GUARD_STEP * 16)
+            self._inner, min(int(self._room()), _READ_TO_END_STEP)
         ):
             self._pos += len(data)
             self._check(self._pos)
@@ -738,12 +769,16 @@ class MemberRatioGuard(_RatioGuard):
         limits = self._limits
         max_ratio = limits.max_ratio
         assert max_ratio is not None  # _check returns first otherwise
-        cs = self._compressed_size
+        compressed_size = self._compressed_size
         if self._size is not None:
             # A seek past the end decodes nothing there.
             position = min(position, self._size)
-        if position > limits.ratio_activation_threshold and cs and cs > 0:
-            ratio = position / cs
+        if (
+            position > limits.ratio_activation_threshold
+            and compressed_size
+            and compressed_size > 0
+        ):
+            ratio = position / compressed_size
             if ratio > max_ratio:
                 raise ResourceLimitError(
                     f"Decompression ratio {ratio:.0f}:1 exceeds limit "
@@ -754,16 +789,13 @@ class MemberRatioGuard(_RatioGuard):
         # one step uncounted per refused member: every step before it was counted, and
         # ``_room`` keeps a step within reach of the first refusable position.
         total = self._tally.advance(self._key, position)
-        refusal = archive_ratio_refusal(
+        refuse_past_archive_ratio(
             total,
-            max_ratio=max_ratio,
-            floor=limits.ratio_activation_threshold,
-            live_floor=limits.live_ratio_activation_threshold,
+            limits=limits,
             static_size=self._static_size,
             consumed=self._consumed,
+            counted="member data read",
+            member_name=self._member_name,
         )
-        if refusal is not None:
-            raise AlwaysStopResourceLimitError(
-                f"{refusal} ({total} bytes of member data read)",
-                member_name=self._member_name,
-            )
+        if self._nest is not None:
+            self._nest.report_pass(total)

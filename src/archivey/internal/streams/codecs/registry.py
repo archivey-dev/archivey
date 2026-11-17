@@ -1,5 +1,15 @@
 """The codec registry: every openable codec, lookups by id and stream format, and
 :func:`open_codec_stream` / :func:`open_codec_raw` / :func:`resolve_codec`.
+
+Detection, the single-file reader and the format backends that decode a codec stream
+(ZIP, 7z, compressed TAR, …) open it through here. Readers that decode blocks of their
+own format build those decoders directly: CAB's MSZIP and LZX, ISO's zisofs, SquashFS
+blocks and the XAR table of contents. An open prepares the config
+(``_decoder_config``: whether the source can seek, its size, then the codec's own
+:meth:`StreamCodec.prepare_config`), resolves the backend (the codec's ``open`` with
+the translator and rewind warning that match the engine the config selects), and wraps
+the result in an :class:`ArchiveStreamImpl`, or hands it to a caller that wraps it
+itself (:func:`open_codec_raw`).
 """
 
 from __future__ import annotations
@@ -49,14 +59,23 @@ from archivey.internal.streams.codecs.lzo_codec import Lzo1xCodec, LzopCodec
 from archivey.internal.streams.codecs.mozlz4_codec import MozLz4Codec
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
+from archivey.internal.streams.codecs.text_codecs import Base64Codec, UuCodec
 from archivey.internal.streams.codecs.unix_compress_codec import UnixCompressCodec
-from archivey.internal.streams.codecs.zip_legacy_codec import ImplodeCodec, ShrinkCodec
+from archivey.internal.streams.codecs.zip_legacy_codec import (
+    DclImplodeCodec,
+    ImplodeCodec,
+    ReduceCodec,
+    ShrinkCodec,
+)
 from archivey.internal.streams.codecs.zlib_codec import (
     DeflateCodec,
     ZlibCodec,
 )
 from archivey.internal.streams.codecs.zstd_codec import ZstdCodec
-from archivey.internal.streams.decompressor_stream import probe_streams
+from archivey.internal.streams.decompressor_stream import (
+    partial_data_recovery,
+    probe_streams,
+)
 from archivey.internal.streams.streamtools import (
     fix_stream_start_position,
     is_seekable,
@@ -96,10 +115,14 @@ _STREAM_CODECS: list[StreamCodec] = [
     Deflate64Codec(),
     ShrinkCodec(),
     ImplodeCodec(),
+    ReduceCodec(),
+    DclImplodeCodec(),
     LzopCodec(),
     MozLz4Codec(),
     Bzip3Codec(),
     Lzo1xCodec(),
+    UuCodec(),
+    Base64Codec(),
 ]
 
 _BY_CODEC: dict[CodecId, StreamCodec] = {c.codec: c for c in _STREAM_CODECS}
@@ -182,7 +205,7 @@ def is_codec_available(
     codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 ) -> bool:
     """Whether ``codec``'s decompression backend is importable right now, and
-    ``excluded`` (a call's ``FormatPolicy.exclude_libraries``) does not turn it off.
+    ``excluded`` (a call's ``FormatPolicy._libraries_off``) does not turn it off.
 
     A codec with no ``requirement`` is stdlib-backed and always available; an optional codec
     reports on its backing package's live sentinel. Used by the registry to compute a
@@ -224,13 +247,12 @@ def resolve_codec(
 ) -> CodecBackend:
     """Resolve ``codec`` to its backend (open function + translator) without opening anything.
 
-    The translator must match the *active* backend: when an accelerator
-    (``rapidgzip`` / ``indexed_bzip2``) is the chosen backend, its exception taxonomy
+    The translator must match the *active* backend: when the rapidgzip accelerator is
+    the chosen backend (for gzip, zlib, raw DEFLATE or bzip2), its exception taxonomy
     differs from stdlib's, so the codec's :meth:`StreamCodec.translator` selects the right one.
     Whichever it is, :meth:`StreamCodec.eof_truncation` maps the ``EOFError`` it leaves.
-    The ``rewind_warning`` is likewise config-dependent (an active accelerator gives indexed
-    random access, so it carries none); it is attached to the ``ArchiveStream`` by
-    :func:`open_codec_stream`.
+    The ``rewind_warning`` also depends on the config (whether to suggest installing the
+    accelerator); it is attached to the ``ArchiveStream`` by :func:`open_codec_stream`.
 
     Raises ``KeyError`` for a filter-only codec (Delta/BCJ), which is composed into a raw
     LZMA chain rather than opened standalone.
@@ -263,9 +285,11 @@ def open_codec_stream(
     The returned stream wraps the backend so corrupt/truncated/non-seekable errors surface
     as ``ArchiveyError`` subclasses (never raw codec exceptions).
 
-    ``config.seekable`` gates native index construction and accelerator ``AUTO``
-    resolution; for the DEFLATE family, ``AUTO`` also takes a large sequential read
-    (``_sequential_read_pays`` in ``rapidgzip_select.py``).
+    ``config.records_restart_points`` (seek demand or restart points) gates native
+    index construction, and ``config.seekable`` alone gates accelerator ``AUTO``
+    resolution; for the DEFLATE family and bzip2, ``AUTO`` also takes a large sequential
+    read (``_sequential_read_pays`` in ``rapidgzip_select.py``,
+    ``_bzip2_sequential_read_pays`` in ``bzip2_codec.py``).
     The ArchiveStream seekability hint is separate: pass ``seekable=False`` to force a
     forward-only public handle (as :func:`~archivey.open_stream` does by default). When
     ``seekable`` is omitted the handle stays seekable so format backends that need
@@ -358,11 +382,23 @@ def _open_backend(
     config: StreamConfig,
 ) -> BinaryIO:
     """``backend.open``; a detection probe's streams (``probe_read_bound``) ask their
-    decoder for exactly what each read asks (:func:`probe_streams`)."""
-    if config.probe_read_bound is None:
-        return backend.open(source, params)
-    with probe_streams():
-        return backend.open(source, params)
+    decoder for exactly what each read asks (:func:`probe_streams`), and the streams
+    of a caller that turned ``recover_partial_data`` off do not decode again
+    (:func:`partial_data_recovery`)."""
+    with partial_data_recovery(config.recover_partial_data):
+        if config.probe_read_bound is None:
+            stream = backend.open(source, params)
+        else:
+            with probe_streams():
+                stream = backend.open(source, params)
+    usage = config.usage
+    # A detection probe's decode is not the reader's: ``backends_used`` leaves it out
+    # even when a recorder reaches the probe.
+    if usage is not None and config.probe_read_bound is None:
+        sc = _BY_CODEC[backend.codec]
+        for kind, name in sc.backend_uses():
+            usage.note_backend(kind, name, sc.stream_name)
+    return stream
 
 
 def _prepared_backend(
@@ -410,8 +446,10 @@ def _decoder_config(
     if collector is not None and config.collector is not collector:
         changes["collector"] = collector
     # ``ZipReader._member_config`` fills ``source_seekable`` and clears ``seekable`` by
-    # these two rules before it gets here, so a ZIP member's config is copied once: a
-    # change to either rule belongs there too.
+    # these two rules before it gets here, so a ZIP member's config is copied once:
+    # a change to either rule belongs there too. ``restart_points`` needs no rule here:
+    # only a random-access reader's outer codec stream sets it, and random access
+    # refuses a source that cannot seek before any codec opens.
     source_seekable = isinstance(source, (str, os.PathLike)) or is_seekable(source)
     if config.seekable and not source_seekable:
         # Seek demand on a source that cannot seek cannot be met, and it would make

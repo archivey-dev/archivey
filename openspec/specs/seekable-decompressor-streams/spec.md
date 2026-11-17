@@ -26,7 +26,20 @@ The system SHALL construct seek support only when seekability is declared:
 single-stream API. Undeclared streams SHALL NOT parse XZ footers, scan lzip
 trailers, retain rewind buffers, or retain seek-point tables, and SHALL NOT
 instantiate rapidgzip accelerators except for the large sequential DEFLATE-family
-read below; they are forward-only, whichever decoder reads them.
+and bzip2 reads below; they are forward-only, whichever decoder reads them.
+
+One stream asks for restart points without declaring seek demand: the codec stream
+around a sequential container (a compressed TAR, or a sequential format inside a
+compressor such as `.cpio.xz`) opened for random access, because the reader itself
+seeks back in it for every member read after the listing (maintainer ruling
+2026-11-10). Such a stream SHALL keep the seek points a decode finds as it passes
+them (each requirement below that says "on declared seek demand or restart points"
+covers it, and XZ blocks a decode passes, §"XZ blocks found by a forward decode"), and
+SHALL NOT read the file's own index: it parses no XZ footer, scans no
+lzip trailers, reads no zstd seek table and walks no BGZF, mgzip or bzip3 headers, so
+a crafted index cannot change what a default read returns. Its accelerator `AUTO`
+SHALL still resolve as for an undeclared stream. A streaming open SHALL NOT ask for
+restart points.
 
 `use_rapidgzip` and `use_indexed_bzip2` SHALL resolve their `AUTO` / `ON` / `OFF`
 configuration against declared seek demand, not the `streaming` access-mode
@@ -54,6 +67,14 @@ rapidgzip decodes in parallel, which repays the child process on a full read onl
 that is not very compressible, and not on Windows, where the child costs more than it saves
 (`formats/gzip.md` §2.3). The stream stays forward-only.
 
+Without declared seek demand, `use_indexed_bzip2=AUTO` SHALL select rapidgzip for a bzip2
+stream only when it is otherwise eligible, the platform is Linux or macOS, the source is a path
+or a byte range of a regular file, the compressed input size is known and reaches
+`INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`, and the process may run on at least two CPUs.
+rapidgzip decodes bzip2 blocks in parallel; on one CPU it is slower than the standard library,
+and it reads its input about twice, which a caller's stream (a remote file above all) would
+serve twice (`formats/bzip2.md` §2.3). The stream stays forward-only.
+
 Over a ZipCrypto decrypt stage `AUTO` SHALL resolve to `OFF` for the codec that reads
 it, because every backward seek restarts decryption from the member's start.
 
@@ -61,32 +82,51 @@ it, because every backward seek restarts decryption from the member's start.
 
 | Case | Expected |
 | --- | --- |
-| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next row says |
+| gzip/xz/bzip2/lzip opened without seekability under `AUTO` | No index, no accelerator, forward-only, except as the next two rows say |
 | DEFLATE-family stream opened without seekability under `AUTO`, on Linux or macOS, seekable source, known size ≥ threshold, decoded size ≤ 3× compressed | rapidgzip decodes it; the stream stays forward-only |
+| bzip2 stream opened without seekability under `AUTO`, on Linux or macOS, a file on disk, known size ≥ `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`, two or more usable CPUs | rapidgzip decodes it; the stream stays forward-only |
 | Same stream opened with seekability, `AUTO`, accelerator installed, size ≥ threshold | Accelerator or native index provides random access |
 | Declared-seekable deflate/zlib/gzip under `AUTO`, known size < threshold | rapidgzip not selected; stdlib backend used |
 | Declared-seekable DEFLATE-family stream, `use_rapidgzip=ON`, size below threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable bzip2 under `AUTO`, known size < `INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE` | rapidgzip not selected; stdlib backend used |
 | Declared-seekable bzip2, `use_indexed_bzip2=ON`, size below that threshold | rapidgzip still selected (threshold ignored) |
 | Declared-seekable gzip without accelerator, caller seeks backward | Seek re-decompresses from the nearest member or BGZF block start before the target, else from the start; reports `STREAM_REWIND_REDECOMPRESSES`, naming the `[seekable]` accelerator, once the discarded progress reaches `REWIND_REDECODE_WARN_BYTES` |
+| Compressed TAR opened for random access, no `seekable_members` | The codec stream keeps the points a decode finds, reads no file index; accelerator `AUTO` as without seekability |
+| Compressed TAR opened with `streaming=True` | No restart points |
 
 ### Requirement: XZ and lzip use format-native indexes
 
-The system SHALL support random access in XZ and lzip by reading their embedded
-index structures. XZ SHALL use the footer and block index to map uncompressed
-offsets to compressed block positions. Lzip SHALL scan trailers to locate block
-boundaries. A forward read SHALL record a member start as a seek point only for a member
-that has output. A seek SHALL decompress only the block range needed for the requested
-uncompressed offset.
+On declared seek demand, the system SHALL support random access in XZ and lzip by
+reading their embedded index structures. XZ SHALL use the footer and block index to map
+uncompressed offsets to compressed block positions. Lzip SHALL scan trailers to locate
+block boundaries. A forward read SHALL record a member start as a seek point only for a
+member that has output. A seek SHALL decompress only the block range needed for the
+requested uncompressed offset.
 
 #### Scenario: native index matrix
 
 | Case | Expected |
 | --- | --- |
-| Seekable XZ source opens | Footer/block index maps uncompressed offsets to compressed positions |
+| Seekable XZ source opens with declared seek demand | Footer/block index maps uncompressed offsets to compressed positions |
 | Seek within XZ | Only containing block range is decompressed |
-| Seekable lzip source opens | Trailer scan locates block boundaries |
+| Seekable lzip source opens with declared seek demand | Trailer scan locates block boundaries |
 | Seek within lzip | Only required block range is decompressed |
+
+#### Scenario: XZ blocks found by a forward decode
+
+With restart points and no seek demand, the XZ decoder SHALL find each stream's blocks
+from the bytes it decodes: a block header gives its own size, and the LZMA2 chunk
+headers give each chunk's compressed and decompressed size up to the end marker. It
+SHALL keep those block points only once the stream has decoded to its end (liblzma has
+then checked the stream's index against the blocks), and only when the stream's index
+lists the same blocks the walk found. Otherwise it SHALL keep none for that stream.
+
+| Case | Expected |
+| --- | --- |
+| Multi-block `.tar.xz` opened for random access | After the listing, every block with output is a point; a later member read resumes at the block before it |
+| Index that does not match the blocks | liblzma refuses the stream; no block points |
+| Stream not decoded to its end yet | No block points for it |
+| Stream opened with neither seek demand nor restart points | No walk, no points |
 
 ### Requirement: rapidgzip is the only gzip and bzip2 accelerator
 
@@ -291,9 +331,13 @@ hand the operation to the standard library decoder, so the bytes delivered and t
 `use_indexed_bzip2=OFF`. The standard library SHALL start at the newest block from rapidgzip's
 index at or before the position delivered to the caller, among a bounded number of the newest
 such blocks it keeps as seek points; where there is none, at the start of the stream. A bzip2
-block carries no window. A decode started at a block that meets the end of its stream (the
-combined CRC, which it cannot check) or a damaged block SHALL start over from the start of the
-stream; one that runs out of input first SHALL raise the standard library's `TruncatedError`.
+block carries no window. A decode started at such a block SHALL check the stream's
+combined CRC at its end from the block CRCs read at the index's blocks. When it does not
+match, or could not be read, the decode SHALL start over from the start of the stream,
+which decides. A damaged block after the start is a verdict, as from a decode from the
+start: blocks decode on their own, so that decode gives the same bytes before it and the
+same error. One that runs out of input first SHALL raise the standard library's
+`TruncatedError`.
 
 rapidgzip does not validate zlib's Adler-32 and returns a silent short read on some
 mid-stream DEFLATE truncations. For a zlib stream the system SHALL check the Adler-32 after
@@ -548,6 +592,7 @@ decoded point is kept (an empty lzip member makes such a pair in an honest file)
 | Backward scan finds more units than the cap (lzip members, xz streams or blocks) | Kept units thinned by spacing, last one kept; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
 | A thinned xz index leaves out streams after block points a forward read recorded | A seek from those points reads every stream after them |
 | A forward read's per-stream xz scan finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED`; seeks read the right bytes |
+| A forward xz block walk (restart points, no seek demand) finds more blocks than the cap | That stream's blocks thinned by spacing; `SEEK_INDEX_DEGRADED` (scan `forward_walk`); seeks read the right bytes |
 | Forward read records more points than the cap | Table thinned by spacing; `SEEK_INDEX_DEGRADED`; later seeks read the right bytes |
 | XZ blocks after a resume point decode to a size other than the stream index declares | `CorruptionError` |
 | A forward read finds a frame or member start at another output offset than the zstd seek table or BGZF walk gave it | `SEEK_INDEX_DEGRADED` (scan `decode_check`, `SeekIndexContradicted`); index points and size dropped; later seeks and the size match a read from the start |
@@ -601,10 +646,10 @@ Unknown reserved header flag bits (`0x60` in the third header byte) SHALL raise
 
 ### Requirement: zstd frame starts are seek points
 
-On declared seek demand, every regular zstd frame after the first SHALL be a seek
-point, recorded when a forward read reaches it. A skippable frame holds no output and
-SHALL NOT be one. A stream opened without seek demand SHALL keep no points. A ZIP or 7z
-zstd coder keeps them as a `.zst` file does.
+On declared seek demand or restart points, every regular zstd frame after the first
+SHALL be a seek point, recorded when a forward read reaches it. A skippable frame holds
+no output and SHALL NOT be one. A stream opened with neither seek demand nor restart
+points SHALL keep no points. A ZIP or 7z zstd coder keeps them as a `.zst` file does.
 
 #### Scenario: frame point matrix
 
@@ -612,18 +657,19 @@ zstd coder keeps them as a `.zst` file does.
 | --- | --- |
 | Multi-frame file, read forward, then seek back | Resumes at the frame start before the target |
 | Skippable frame before each frame (pzstd) | Points at the regular frames only |
-| Stream opened without seek demand | No points kept, no table read |
+| Stream opened with neither seek demand nor restart points | No points kept, no table read |
 | ZIP zstd member of two frames ending in a seek table, seek declared | The table's frame starts are the seek points, as in a `.zst` file |
 
 ### Requirement: zstd reads the Seekable Zstandard seek table
 
-A forward seek past the known points, a `SEEK_END`, or a size query SHALL read the
-*Seekable Zstandard* seek table when the source ends with one (skippable magic
-`0x184D2A5E`, footer magic `0x8F92EAB1`). Its frame sizes SHALL give the seek points and
-the total size, with no decoding. The table is trusted like the xz and lzip indexes
-(threat-model O17) until a decode contradicts it, which drops it (§"Recoverable
-seek-index degradation is diagnostic data"); its per-frame XXH64 checksums SHALL NOT be
-checked. A table over the seek-table cap SHALL be thinned and keep the exact total.
+On declared seek demand only, a forward seek past the known points, a `SEEK_END`, or a
+size query SHALL read the *Seekable Zstandard* seek table when the source ends with one
+(skippable magic `0x184D2A5E`, footer magic `0x8F92EAB1`). Its frame sizes SHALL give
+the seek points and the total size, with no decoding. The table is trusted like the xz
+and lzip indexes (threat-model O17) until a decode contradicts it, which drops it
+(§"Recoverable seek-index degradation is diagnostic data"); its per-frame XXH64
+checksums SHALL NOT be checked. A table over the seek-table cap SHALL be thinned and
+keep the exact total.
 
 #### Scenario: seek table matrix
 
@@ -637,10 +683,10 @@ checked. A table over the seek-table cap SHALL be thinned and keep the exact tot
 
 ### Requirement: gzip member starts are seek points
 
-Each gzip member starts a fresh DEFLATE stream. On declared seek demand the standard
-library engine SHALL record every member after the first that has output as a seek
-point when a forward read reaches it. A stream opened without seek demand SHALL keep no
-points.
+Each gzip member starts a fresh DEFLATE stream. On declared seek demand or restart
+points the standard library engine SHALL record every member after the first that has
+output as a seek point when a forward read reaches it. A stream opened with neither seek
+demand nor restart points SHALL keep no points.
 
 #### Scenario: member point matrix
 
@@ -648,18 +694,18 @@ points.
 | --- | --- |
 | Multi-member gzip, read forward, then seek back | Resumes at the member start before the target |
 | Plain one-member gzip | No points, no diagnostic; seeks decode from the start |
-| Stream opened without seek demand | No walk, no points |
+| Stream opened with neither seek demand nor restart points | No walk, no points |
 
 ### Requirement: BGZF members are walked without decoding
 
-A forward seek past the known points or a `SEEK_END` SHALL walk a BGZF file's members
-from the start, reading the file once front to back and inflating nothing: each member's
-`BC` extra subfield gives its size and its ISIZE its output. The walk SHALL stop quietly
-at the first member without one, keeping the points before it; the size is known only
-when it reaches the end of the file. The sizes are trusted like the xz and lzip indexes
-(threat-model O17) until a decode contradicts them, which drops the walk's points and
-size. A file whose first member is not BGZF SHALL cost one read buffer's worth before the
-walk stops. A `.gzi` file is not read.
+On declared seek demand only, a forward seek past the known points or a `SEEK_END` SHALL
+walk a BGZF file's members from the start, reading the file once front to back and
+inflating nothing: each member's `BC` extra subfield gives its size and its ISIZE its
+output. The walk SHALL stop quietly at the first member without one, keeping the points
+before it; the size is known only when it reaches the end of the file. The sizes are
+trusted like the xz and lzip indexes (threat-model O17) until a decode contradicts them,
+which drops the walk's points and size. A file whose first member is not BGZF SHALL cost
+one read buffer's worth before the walk stops. A `.gzi` file is not read.
 
 A size query (`try_get_size()`, `ArchiveStream.size`) SHALL NOT walk the file, because
 the walk reads all of it and a size query must be cheap. Before a walk or a read to the
@@ -706,18 +752,19 @@ decode contradicts them. A walk over the seek-table cap SHALL report scan `mgzip
 
 ### Requirement: bzip3 blocks are seek points, walked without decoding
 
-On declared seek demand every bzip3 block with output after the first SHALL be a seek
-point, recorded when a forward read reaches it, with the file's block size as its resume
-state: every block decodes on its own, and its 8-byte header gives its compressed and
-decoded size. A forward seek past the known points, a `SEEK_END` or a size query SHALL
-walk the block headers from the start of the file, jumping from header to header and
-decoding nothing, for every point and the total size. The walk SHALL stop quietly at a
-header whose sizes the decoder would refuse or at a block that runs past the end of the
-file, keeping the points before it; the size is known only when the last block ends
-exactly at the end of the file. The sizes are trusted like the xz and lzip indexes
-(threat-model O17); a block that is decoded is still checked against its header and its
-CRC-32. A stream opened without seek demand SHALL keep no points and SHALL NOT walk. A
-walk over the seek-table cap SHALL report scan `bzip3_blocks`.
+On declared seek demand or restart points every bzip3 block with output after the first
+SHALL be a seek point, recorded when a forward read reaches it, with the file's block
+size as its resume state: every block decodes on its own, and its 8-byte header gives
+its compressed and decoded size. On declared seek demand only, a forward seek past the
+known points, a `SEEK_END` or a size query SHALL walk the block headers from the start
+of the file, jumping from header to header and decoding nothing, for every point and the
+total size. The walk SHALL stop quietly at a header whose sizes the decoder would refuse
+or at a block that runs past the end of the file, keeping the points before it; the size
+is known only when the last block ends exactly at the end of the file. The sizes are
+trusted like the xz and lzip indexes (threat-model O17); a block that is decoded is
+still checked against its header and its CRC-32. A stream opened with neither seek
+demand nor restart points SHALL keep no points and SHALL NOT walk. A walk over the
+seek-table cap SHALL report scan `bzip3_blocks`.
 
 #### Scenario: bzip3 block matrix
 
@@ -731,15 +778,39 @@ walk over the seek-table cap SHALL report scan `bzip3_blocks`.
 | Bytes after the last block | Points for the blocks; no size; reading past the last block raises `CorruptionError` |
 | A header whose sizes the decoder refuses (out of range, under 8 bytes, or an empty literal that declares output) | Points for the blocks before it; no size |
 | Walk over the seek-table cap | `SEEK_INDEX_DEGRADED` (scan `bzip3_blocks`, `SeekTableThinned`); exact total kept |
-| Stream opened without seek demand | No walk, no points |
+| Stream opened with neither seek demand nor restart points | No walk, no points |
+
+### Requirement: bzip2 blocks are seek points, found while decoding
+
+On declared seek demand or restart points every bzip2 block that the standard library
+engine checks SHALL be a seek point, recorded when a forward read reaches it, with the
+block's bit offset into its first byte, the stream's level digit and the combined CRC of
+the stream's blocks before it as its resume state. A block carries no state from the
+blocks before it, so a decode resumed there SHALL check every block after it and the
+stream's combined CRC, and give the same bytes and errors as a decode from the start.
+bzip2 has no index: no walk finds points without decoding. A stream opened with neither
+seek demand nor restart points SHALL keep no points. The rapidgzip engine keeps its own
+index (§"rapidgzip is the only gzip and bzip2 accelerator").
+
+#### Scenario: bzip2 block matrix
+
+| Case | Expected |
+| --- | --- |
+| Read forward, then seek back into block N | Decoding resumes at block N's start; one block decoded |
+| Seek forward past the points read so far | Decodes on from the last point |
+| A resumed decode reaches the end-of-stream marker | Its combined CRC is checked from the point's state; no decode from the start |
+| Concatenated streams | Each stream's blocks are points; the combined CRC restarts with each stream |
+| Stream opened with neither seek demand nor restart points | No points |
 
 ### Requirement: gzip decodes record zlib snapshot points
 
-On declared seek demand, the standard library engine SHALL record a seek point inside a
-gzip member about every MiB of output, whose state is a `zlib` `decompressobj.copy()`
-taken between two feeds. A decode resumed from one MUST still check the member's CRC-32
-and ISIZE, which the copy carries. A decompressor in a decoder child has no `copy()` and
-records none.
+On declared seek demand or restart points, the standard library engine SHALL record a
+seek point inside a gzip member about every MiB of output, whose state is a `zlib`
+`decompressobj.copy()` taken between two feeds. A decode resumed from one MUST still
+check the member's CRC-32 and ISIZE, which the copy carries. A decompressor in a decoder
+child has no `copy()` and records none. Neither does any decompressor under a PyPy whose
+`copy()` leaks memory (every release so far): a backward seek there decodes again from
+the start of the member.
 
 #### Scenario: snapshot matrix
 
@@ -750,7 +821,7 @@ records none.
 | --- | --- |
 | One-member gzip, read forward with seek demand, then seek back | Resumes at the nearest snapshot before the target |
 | Trailer CRC-32 damaged, seek back to a snapshot and read on | `CorruptionError` at the end of the member |
-| Stream opened without seek demand | No snapshots |
+| Stream opened with neither seek demand nor restart points | No snapshots |
 
 ### Requirement: Snapshot points have a memory cap
 
@@ -771,10 +842,11 @@ holds SHALL NOT be recorded.
 
 ### Requirement: zlib and raw DEFLATE decodes record zlib snapshot points
 
-On declared seek demand, the standard library engine SHALL record zlib snapshot points
-in a zlib stream and in raw DEFLATE (such as a ZIP member's), as in a gzip member
-(§"gzip decodes record zlib snapshot points"). A zlib stream resumed from one MUST still
-check its Adler-32, which the copy carries.
+On declared seek demand or restart points, the standard library engine SHALL record zlib
+snapshot points in a zlib stream and in raw DEFLATE (such as a ZIP member's), as in a
+gzip member (§"gzip decodes record zlib snapshot points"), and records none under a PyPy
+whose `copy()` leaks memory, as there. A zlib stream resumed from one MUST still check
+its Adler-32, which the copy carries.
 
 #### Scenario: zlib and raw DEFLATE snapshot matrix
 
@@ -785,4 +857,5 @@ check its Adler-32, which the copy carries.
 | --- | --- |
 | zlib or raw DEFLATE stream, read forward with seek demand, then seek back | Resumes at the nearest snapshot before the target |
 | ZIP DEFLATE member opened with `seekable_members=True`, rapidgzip off | Same |
+| Either, under a PyPy whose `copy()` leaks | No snapshot; a backward seek decodes again from the start of the stream |
 | zlib Adler-32 damaged, seek back to a snapshot and read on | `CorruptionError` at the end of the stream |

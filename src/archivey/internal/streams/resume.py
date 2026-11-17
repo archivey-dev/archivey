@@ -17,14 +17,16 @@ The duck-typing helper itself is generic ``getattr`` plumbing, so it lives in
 re-exports it as the archivey-facing name.
 
 :class:`ResumeReachedStreamEnd` is the signal both mid-stream resume decoders
-(``deflate_resume`` and ``bzip2_resume``) raise when they cannot give a verdict.
+(``deflate_resume`` and ``bzip2_blocks``) raise when they cannot give a verdict.
 """
 
 from __future__ import annotations
 
+import io
 from contextvars import ContextVar
 
 from archivey.internal.streams.streamtools.binaryio import ask_resume_offset
+from archivey.internal.streams.verification import MAX_WRAPPER_DEPTH
 
 __all__ = [
     "ResumeReachedStreamEnd",
@@ -32,12 +34,36 @@ __all__ = [
     "ask_seek_resume_offset",
     "hold_for_planned_seek",
     "planning_seek",
+    "restarts_follow_decoding",
 ]
 
 # Inside ``ask_seek_resume_offset``: the reports held for the planning caller.
 _PLANNING_SEEK: ContextVar[list[Exception] | None] = ContextVar(
     "archivey_planning_seek", default=None
 )
+
+
+def restarts_follow_decoding(stream: object | None) -> bool:
+    """Whether the seek-point table under ``stream`` holds only points its decoder has
+    already decoded past, so that a forward seek through one skips no decoding.
+
+    rapidgzip's index is such a table: its prefetch decodes ahead of the reader and
+    indexes what it decoded (``RapidgzipChildStream.restarts_follow_decoding``). A
+    table read from the file (bgzip blocks, a Seekable Zstandard seek table) is not:
+    a seek through it jumps bytes that are never decoded. Follows ``_inner`` from
+    ``stream`` down to the layer that answers, and a ``BufferedReader``'s raw stream,
+    as the verification walks do.
+    """
+    for _ in range(MAX_WRAPPER_DEPTH):
+        if stream is None:
+            return False
+        if getattr(stream, "restarts_follow_decoding", False) is True:
+            return True
+        if isinstance(stream, io.BufferedReader):
+            stream = stream.raw
+        else:
+            stream = getattr(stream, "_inner", None)
+    return False
 
 
 def ask_seek_resume_offset(
@@ -89,8 +115,9 @@ class ResumeReachedStreamEnd(Exception):
     caller decodes again from the start.
 
     Raised by ``DeflateResumeDecoder`` (the gzip CRC-32 or zlib Adler-32) and by
-    ``Bzip2ResumeDecoder`` (the combined CRC, whose failure ``bz2`` reports the same
-    way as a damaged block, so that decoder raises this on either).
+    ``Bzip2BlockDecompressor`` resumed at a point whose combined CRC is not known, or
+    was read from rapidgzip's index and does not match at the end (the bzip2
+    takeover's points, ``Bzip2BlockStart.from_index``).
 
     It is control flow, not an error a caller may see: it is not an ``ArchiveyError``.
     Only ``_StdlibOnAcceleratorError`` in ``codecs/stdlib_takeover.py`` adds resume points to a

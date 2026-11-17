@@ -11,8 +11,13 @@ Public surface layout (this package root only — not ``internal`` / ``cli``):
 - :mod:`archivey.cost` — listing/access cost receipt
 - :mod:`archivey.diagnostics` — advisory codes, summaries, extraction reports
 - :mod:`archivey.exceptions` — error hierarchy
+- :mod:`archivey.format_policy` — ``FormatPolicy``, which formats one open may use
 - :mod:`archivey.detection_cost` — detection budgets and receipts; public, not re-exported
 - :mod:`archivey.terminal` — terminal-safe display helpers; public, not re-exported
+- :mod:`archivey.paths` — destination naming and member globs for front ends; public,
+  not re-exported
+- :mod:`archivey.formats` — the experimental interface for adding formats; public, not
+  re-exported
 
 Names in ``__all__`` are the documented API, and the root exposes no other public
 name apart from submodules. Niche names, such as the ``*Context`` diagnostic payloads
@@ -63,6 +68,7 @@ from archivey.diagnostics import (
     ExtractionReport,
     MemberListReport,
     OnDiagnostic,
+    VerifyReport,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -102,6 +108,8 @@ from archivey.types import (
     ArchiveInfo,
     ArchiveInfoExtra,
     ArchiveMember,
+    BackendKindStr,
+    BackendUse,
     CompressionAlgorithm,
     CompressionMethod,
     ContainerFormat,
@@ -118,6 +126,7 @@ from archivey.types import (
     MemberType,
     MissingComponent,
     NameRewrite,
+    OnBlocked,
     OnError,
     OptionalLibrary,
     OverwritePolicy,
@@ -142,6 +151,8 @@ __all__ = [
     "ArchiveyConfig",
     "ArchiveyError",
     "ArchiveyUsageError",
+    "BackendKindStr",
+    "BackendUse",
     "CompressionAlgorithm",
     "CompressionMethod",
     "ContainerFormat",
@@ -186,6 +197,7 @@ __all__ = [
     "NameCollisionError",
     "NameRewrite",
     "NameRewrittenError",
+    "OnBlocked",
     "OnDiagnostic",
     "OnError",
     "OpenError",
@@ -210,6 +222,7 @@ __all__ = [
     "TruncatedError",
     "UnsupportedFeatureError",
     "Verification",
+    "VerifyReport",
     "__version__",
     "detect_format",
     "format_availability",
@@ -262,6 +275,42 @@ def _pin_public_module() -> None:
 
 _pin_public_module()
 del _pin_public_module
+
+
+def _bind_annotation_names() -> None:
+    """Give the modules that import a public annotation's type only for type checking
+    that type at runtime, so ``typing.get_type_hints`` resolves every public signature.
+
+    These modules import each other, so the names cannot be imported at the top of the
+    module: ``types`` and ``diagnostics`` raise ``exceptions``' errors, and
+    ``exceptions`` names their classes in its constructors; ``diagnostics`` builds on
+    ``types``' classes, and ``ArchiveMember.diagnostics`` returns ``Diagnostic``. This
+    is the one place such names are bound, once every module has loaded; a module with
+    no cycle imports its annotation types directly. ``tests/test_public_annotations.py``
+    fails when a new public annotation needs one.
+    """
+    import archivey.exceptions as exceptions_module
+    import archivey.types as types_module
+    from archivey.diagnostics import Diagnostic, ExtractionReport
+    from archivey.types import ArchiveFormat, MemberType, MissingComponent
+
+    bindings = {
+        exceptions_module: (
+            Diagnostic,
+            ExtractionReport,
+            ArchiveFormat,
+            MemberType,
+            MissingComponent,
+        ),
+        types_module: (Diagnostic,),
+    }
+    for module, names in bindings.items():
+        for obj in names:
+            vars(module).setdefault(obj.__name__, obj)
+
+
+_bind_annotation_names()
+del _bind_annotation_names
 
 
 def __getattr__(name: str) -> object:

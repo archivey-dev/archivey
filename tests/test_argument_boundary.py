@@ -46,6 +46,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import io
+import stat
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
@@ -54,6 +55,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from archivey import (
+    AcceleratorMode,
     ArchiveFormat,
     ArchiveReader,
     ArchiveyConfig,
@@ -64,6 +66,7 @@ from archivey import (
     ListingLimits,
     SpoolLimits,
     detect_format,
+    format_availability,
     open_archive,
     open_stream,
 )
@@ -73,6 +76,8 @@ from archivey.detection_cost import (
     DetectionBudgetPreset,
 )
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
+from archivey.formats import unix_member_type
+from archivey.paths import match_glob, numbered_name
 
 # An ArchiveyError is permitted only for the arguments named here; see the module
 # docstring.
@@ -223,6 +228,19 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: open_archive(archive, encoding=b),
             ),
         ]
+
+    # A program path must be absolute: a relative one would depend on the current
+    # directory, so it is no pin.
+    for program_field in ("unrar_path", "unar_path"):
+        for bad in ("", "unrar", 0, b"/usr/bin/unrar", "/bin/un\0rar"):
+            rows.append(
+                _case(
+                    "ArchiveyConfig",
+                    program_field,
+                    bad,
+                    lambda b=bad, f=program_field: ArchiveyConfig(**{f: b}),
+                )
+            )
 
     # Object shape of detection_budget=, not preset spellings. ``"balanced"`` is a real
     # DetectionBudgetPreset value, coerced by ``enum_args`` and asserted in
@@ -394,6 +412,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: ListingLimits(max_metadata_bytes=b),
             ),
             _case(
+                "ListingLimits",
+                "max_decoded_bytes",
+                bad,
+                lambda b=bad: ListingLimits(max_decoded_bytes=b),
+            ),
+            _case(
                 "ExtractionLimits",
                 "max_extracted_bytes",
                 bad,
@@ -424,6 +448,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: DecoderLimits(max_ppmd_held_input=b),
             ),
             _case(
+                "DecoderLimits",
+                "max_nest_decoded_bytes",
+                bad,
+                lambda b=bad: DecoderLimits(max_nest_decoded_bytes=b),
+            ),
+            _case(
                 "SpoolLimits",
                 "max_bytes",
                 bad,
@@ -433,8 +463,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
 
     # The two activation thresholds are the limit fields that are not ``| None``, so
     # None belongs in their bad set: it disables nothing, it breaks the comparison.
-    # The deprecated ExtractionLimits fields are checked as the DecoderLimits ones are.
-    for cls in (DecoderLimits, ExtractionLimits):
+    for cls in (DecoderLimits,):
         for bad in ("x", -1, True, 1.5, None):
             rows.append(
                 _case(
@@ -522,6 +551,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), formats=b),
             )
         )
+    for bad in ("x", 10, ArchiveyConfig(), frozenset()):
+        rows.append(
+            _case(
+                "open_archive",
+                "parent",
+                bad,
+                lambda b=bad: open_archive(archive, parent=b),
+            )
+        )
     for bad in ("x", -1, True, 1.5, None):
         rows.append(
             _case(
@@ -557,6 +595,7 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
+        "recover_partial_data",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(
@@ -567,6 +606,87 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                     lambda b=bad, f=field_name: _with_config(archive, out(), **{f: b}),
                 )
             )
+    # Operation flags take a real bool, as the config's switches do: "false" is
+    # truthy, so a flag loaded from text would switch a mode on.
+    for bad in ("false", 0, 1, None):
+        for flag in ("streaming", "seekable_members", "concurrent_operations"):
+            rows.append(
+                _case(
+                    "open_archive",
+                    flag,
+                    bad,
+                    lambda b=bad, f=flag: open_archive(archive, **{f: b}),
+                )
+            )
+        rows += [
+            _case(
+                "open_stream",
+                "seekable",
+                bad,
+                lambda b=bad: open_stream(archive, seekable=b),
+            ),
+            _case(
+                "detect_format",
+                "follow_stub_volumes",
+                bad,
+                lambda b=bad: detect_format(archive, follow_stub_volumes=b),
+            ),
+            _case(
+                "extract_all",
+                "dry_run",
+                bad,
+                lambda b=bad: _extract_all(archive, out(), None, dry_run=b),
+            ),
+            _case(
+                "format_availability",
+                "check_programs",
+                bad,
+                lambda b=bad: format_availability("zip", check_programs=b),
+            ),
+            _case(
+                "match_glob",
+                "with_contents",
+                bad,
+                lambda b=bad: match_glob("*", with_contents=b),
+            ),
+            _case(
+                "numbered_name",
+                "is_dir",
+                bad,
+                lambda b=bad: numbered_name("photo.jpg", 1, is_dir=b),
+            ),
+            _case(
+                "unix_member_type",
+                "has_data",
+                bad,
+                lambda b=bad: unix_member_type(stat.S_IFIFO, has_data=b),
+            ),
+            _case(
+                "AcceleratorMode.enabled_for",
+                "seekable",
+                bad,
+                lambda b=bad: AcceleratorMode.AUTO.enabled_for(
+                    seekable=b, available=True
+                ),
+            ),
+            _case(
+                "AcceleratorMode.enabled_for",
+                "available",
+                bad,
+                lambda b=bad: AcceleratorMode.AUTO.enabled_for(
+                    seekable=True, available=b
+                ),
+            ),
+        ]
+    for bad in ("x", ArchiveyConfig, 0, ()):
+        rows.append(
+            _case(
+                "format_availability",
+                "config",
+                bad,
+                lambda b=bad: format_availability("zip", config=b),
+            )
+        )
     for bad in ("not-a-codec", "rot13", b"cp437", 0, None):
         rows.append(
             _case(
@@ -680,6 +800,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     # argument name.)
     ("open_archive", "format"): "coerced by format_args; test_format_arguments.py",
     ("open_stream", "format"): "coerced by format_args; test_format_arguments.py",
+    ("format_availability", "fmt"): "coerced by format_args; test_format_arguments.py",
+    # Each pattern is checked by the glob itself, and an empty one is refused;
+    # tests/test_paths_match_glob.py asserts what each shape does.
+    (
+        "match_glob",
+        "patterns",
+    ): "patterns validated by the glob; test_paths_match_glob.py",
     # The enum-typed arguments, owned by ``internal/enum_args``, which **coerces**
     # them: a recognised spelling becomes the member, so a refusal here would
     # contradict it. ``tests/test_enum_arguments.py`` asserts what they do; this
@@ -698,6 +825,7 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
     ("extract_all", "policy"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "overwrite"): "coerced by enum_args; test_enum_arguments.py",
     ("extract_all", "on_error"): "coerced by enum_args; test_enum_arguments.py",
+    ("extract_all", "on_blocked"): "coerced by enum_args; test_enum_arguments.py",
     # Collection[AbortOn], not an enum, so the container shape is a second way to get
     # it wrong. ``coerce_enum_collection`` refuses both: a bare string, which would
     # otherwise iterate into characters and silently disable every abort, and a
@@ -713,15 +841,6 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
         "ArchiveyConfig",
         "use_indexed_bzip2",
     ): "coerced by enum_args, in __post_init__",
-    # Flags read for their truthiness. There is no wrong type to find: every value
-    # means something, and ``streaming="no"`` opening in streaming mode is Python
-    # behaving as written, not a leak.
-    ("open_archive", "streaming"): "truthiness flag",
-    ("open_archive", "seekable_members"): "truthiness flag",
-    ("open_archive", "concurrent_operations"): "truthiness flag",
-    ("open_stream", "seekable"): "truthiness flag",
-    ("detect_format", "follow_stub_volumes"): "truthiness flag",
-    ("extract_all", "dry_run"): "truthiness flag",
     # ``get`` answers an absent *name* with the default, like ``dict.get``. A value
     # that is not a name at all is swept above: ``get(b"h.txt")`` used to answer
     # "absent" for a member that exists, which is a wrong answer, not a lookup miss.
@@ -732,7 +851,13 @@ _NOT_SWEPT: dict[tuple[str, str], str] = {
 def _public_surface() -> list[tuple[str, list[str]]]:
     """(name, argument names) for every public entry point this file is about."""
     surface: list[tuple[str, list[str]]] = []
-    for func in (open_archive, open_stream, detect_format):
+    for func in (
+        open_archive,
+        open_stream,
+        detect_format,
+        format_availability,
+        match_glob,
+    ):
         surface.append((func.__name__, list(inspect.signature(func).parameters)))
     for method in ("open", "read", "extract_all", "stream_members", "get"):
         names = list(inspect.signature(getattr(ArchiveReader, method)).parameters)
@@ -885,7 +1010,7 @@ def test_valid_arguments_still_work(archive: Path, tmp_path: Path) -> None:
         assert len(report.results) == 1
 
     assert ListingLimits(max_members=None) == ListingLimits(max_members=None)
-    assert ExtractionLimits(max_ratio=2.5).max_ratio == 2.5
+    assert DecoderLimits(max_ratio=2.5).max_ratio == 2.5
 
 
 def test_unknown_member_name_still_raises_keyerror(archive: Path) -> None:
@@ -1053,8 +1178,8 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
         ValueError,
     ),
     (
-        "ExtractionLimits(max_ratio=nan)",
-        lambda a, t: ExtractionLimits(max_ratio=float("nan")),
+        "DecoderLimits(max_ratio=nan)",
+        lambda a, t: DecoderLimits(max_ratio=float("nan")),
         ValueError,
     ),
     (
@@ -1233,3 +1358,13 @@ def test_max_ppmd_in_process_input_kwarg_is_gone() -> None:
     """
     with pytest.raises(TypeError, match="max_ppmd_in_process_input"):
         DecoderLimits(max_ppmd_in_process_input=1)  # type: ignore[call-arg]
+
+
+def test_dry_run_is_checked_before_the_closed_reader(
+    archive: Path, tmp_path: Path
+) -> None:
+    # The flag's own error names it, as the enum arguments' do, even on a closed reader.
+    with open_archive(archive) as reader:
+        pass
+    with pytest.raises(TypeError, match="dry_run"):
+        reader.extract_all(tmp_path / "out", dry_run="false")  # type: ignore[arg-type]

@@ -137,6 +137,7 @@ MEMORY_LIMIT_EXIT = 86
 # How often the child checks its peak memory, in seconds.
 _MEMORY_POLL_INTERVAL = 0.001
 
+# Put on both queues when the parent's pipe ends; no message uses tag 0.
 _EOF = (0, 0, b"")
 
 
@@ -327,7 +328,7 @@ def _serve(channel: _Channel, stream: Any, watch: _MemoryWatch) -> bool:
     ``watch``'s ceiling."""
     while True:
         tag, arg, payload = channel.requests.get()
-        if tag == 0:
+        if tag == 0:  # ``_EOF``: the parent closed its end of the pipe
             return False
         if tag == RESET:
             return True
@@ -575,6 +576,9 @@ def _reset_peak(refs: int | None = None) -> bool:
 
 
 def _main(argv: list[str], refs: int | None) -> None:
+    """Serve one stream per ``OPEN``, until the parent stops sending, an ``OPEN`` fails
+    (reported as ``ERR``), or a stream ends in a way that leaves this process unfit for
+    another (no ``RESET``, or a ``RESET`` reply of 0)."""
     # ``decoder_worker.prepare_child`` has run: no core dumps, and Ctrl-C ignored (it
     # would kill the process with rapidgzip's threads running, which aborts it and
     # reads as a decoder crash).

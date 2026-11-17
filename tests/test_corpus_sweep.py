@@ -214,6 +214,7 @@ def _check_extraction(tmp_path: Path, source, entry: CorpusEntry, key: str) -> N
         results = ar.extract_all(
             dest,
             on_error=OnError.CONTINUE,
+            on_blocked="skip",
         ).results
 
     by_member_name: dict[str, list] = {}

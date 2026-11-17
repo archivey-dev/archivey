@@ -1,0 +1,144 @@
+name: Linux heap-corruption soak
+
+# Soak for the "Intermittent Linux full-suite heap corruption" entry in
+# dev-docs/known-issues.md (recipe in dev-docs/investigations/linux-heap-corruption-soak.md).
+#
+# Each job runs the WHOLE suite once in ONE long-lived pytest process, serial, with
+# pytest-cov on (the addopts default), on ubuntu-latest with [all] or [all-lowest]. That is
+# the shape the recorded crashes came from, before CI split the suite into four steps. The
+# required CI legs no longer run that shape, so they cannot tell us whether the crash is
+# still there; this job can. A job fails only when the pytest process dies: exit 128 or
+# more (the 2026-07 crashes were 139 SIGSEGV and 134 SIGABRT; 137 is an out-of-memory kill)
+# or a "Fatal Python error" in the log, which then ends with the faulthandler stack and the
+# last test names.
+#
+# Runs on demand and on a PR that changes this file. Not a required check.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/heap-corruption-soak.yml"
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "Whole-suite passes per Python and install (one job each)"
+        required: false
+        default: "3"
+
+concurrency:
+  group: heap-soak-${{ github.event.pull_request.number || 'dispatch' }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      reps: ${{ steps.reps.outputs.reps }}
+    steps:
+      # The input reaches the script only through the environment, and only an
+      # integer from 1 to 20 is accepted (5 matrix rows x 20 = 100 jobs).
+      - id: reps
+        env:
+          REPEATS: ${{ inputs.repeats || '3' }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          raw = os.environ["REPEATS"].strip()
+          if not raw.isdigit() or not 1 <= int(raw) <= 20:
+              raise SystemExit(f"repeats must be an integer from 1 to 20, got {raw!r}")
+          print("reps=" + json.dumps(list(range(1, int(raw) + 1))))
+          PY
+
+  soak:
+    needs: plan
+    name: py${{ matrix.python-version }} / ${{ matrix.install }} / pass ${{ matrix.rep }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        install: [all, all-lowest]
+        rep: ${{ fromJSON(needs.plan.outputs.reps) }}
+        # [all-lowest] runs on 3.11 only, as in ci.yml: the dependency floors (pyyaml
+        # 6.0 among them) do not build on newer Pythons.
+        exclude:
+          - { python-version: "3.12", install: all-lowest }
+          - { python-version: "3.13", install: all-lowest }
+          - { python-version: "3.14", install: all-lowest }
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install all extras + dev group
+        if: matrix.install == 'all'
+        run: uv sync --python ${{ matrix.python-version }} --group dev --extra all
+
+      - name: Install all extras + dev group (minimum versions)
+        if: matrix.install == 'all-lowest'
+        run: >
+          uv sync --python ${{ matrix.python-version }}
+          --group dev --extra all --resolution lowest-direct
+
+      # unrar is on the path of one recorded crash (open_unrar_p); p7zip-full (the 7z
+      # the encrypted-ZIP corpus and BCJ2 oracle call, as in ci.yml), xorriso and
+      # bgzip keep the suite's shape close to CI's. The unar and 7-Zip source builds
+      # are left out: their tests skip, and no recorded crash stacks in them.
+      - name: Install p7zip-full, unrar, xorriso and bgzip
+        uses: ./.github/actions/apt-install
+        with:
+          packages: p7zip-full unrar xorriso tabix
+
+      - name: Record versions
+        run: >
+          uv pip list --python .venv/bin/python 2>/dev/null
+          | grep -iE '^(rapidgzip|pyppmd|lz4|brotli|backports.zstd|inflate64|cffi|hypothesis|coverage|pytest) '
+          || true
+
+      - name: Whole suite, one process, serial, coverage on
+        shell: bash
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          rc=0
+          # timeout_method=signal: the repo's "thread" method ends the whole process
+          # on a slow test (os._exit), which would end the soak at the first test
+          # that runs past 60 s serially under coverage. With "signal" only that
+          # test fails and the pass goes on.
+          uv run --no-sync pytest tests/ -v -p no:cacheprovider \
+            -o timeout_method=signal > soak.log 2>&1 || rc=$?
+          echo "rc=$rc secs=$(( $(date +%s) - start ))" | tee soak-result.txt
+          tail -n 3 soak.log
+          if [ "$rc" -ne 0 ]; then
+            echo "::group::last 120 lines"; tail -n 120 soak.log; echo "::endgroup::"
+            grep -n "Fatal Python error\|Extension modules:" soak.log || true
+          fi
+          {
+            echo "py${{ matrix.python-version }} ${{ matrix.install }} pass ${{ matrix.rep }}: $(cat soak-result.txt)"
+            echo '```'; tail -n 1 soak.log; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Only a dead process is the finding (exit 128 or more, or a faulthandler
+          # report). Ordinary test failures are listed, not fatal here.
+          if [ "$rc" -ge 128 ] || grep -q "Fatal Python error" soak.log; then
+            echo "::error::process died (rc=$rc)"; exit 1
+          fi
+          grep -E "^(FAILED|ERROR) " soak.log | head -20 || true
+
+      - name: Upload the log of a failed pass
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: heap-soak-py${{ matrix.python-version }}-${{ matrix.install }}-${{ matrix.rep }}
+          path: soak.log

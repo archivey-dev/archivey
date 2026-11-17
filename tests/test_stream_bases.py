@@ -337,10 +337,15 @@ def test_verifying_stream_forwards_resume_offset() -> None:
     assert s.nearest_resume_offset(1) == 7
 
 
+# A module that exists to plug archivey into another package, and the package it needs.
+_PLUGS_INTO = {"archivey.fsspec": "fsspec"}
+
+
 def _import_all_archivey_modules() -> None:
     """Import every archivey module so ``__subclasses__()`` is not collection-order-blind.
 
-    ``archivey.__main__`` calls ``main()`` at import, so it is skipped.
+    ``archivey.__main__`` calls ``main()`` at import, so it is skipped, and
+    ``archivey.fsspec`` is skipped when fsspec is not installed (``_PLUGS_INTO``).
 
     This walk also proves every ``archivey.*`` module imports with no extras
     (the ``[core-only]`` lazy-optional-import boundary). A top-level extra
@@ -356,6 +361,16 @@ def _import_all_archivey_modules() -> None:
             continue
         try:
             importlib.import_module(module.name)
+        except ModuleNotFoundError as exc:
+            # The one module that exists to plug into another package: it imports
+            # that package, and no archivey extra installs it.
+            if _PLUGS_INTO.get(module.name) != exc.name:
+                raise ImportError(
+                    f"{module.name} failed to import while walking archivey modules "
+                    "for the ReadOnlyIOStream resume-offset inventory. This walk also "
+                    "proves every archivey module imports with no extras "
+                    "([core-only]); a top-level extra import fails here."
+                ) from exc
         except Exception as exc:  # any import-time failure is this check
             raise ImportError(
                 f"{module.name} failed to import while walking archivey modules "
@@ -416,6 +431,8 @@ def test_readonly_stream_resume_offset_inventory() -> None:
     )
     from archivey.internal.backends import (
         rar_copy_sources,
+        rar_forward,
+        rar_forward_reader,
         rar_reader,
         sevenzip_pipeline,
         sevenzip_reader,
@@ -461,6 +478,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         codecs.stdlib_takeover._StdlibOnAcceleratorError,
         codecs.rapidgzip_select._StdlibSeekContract,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,  # the decoded stream's offsets
         bomb_tracker.DecodeRatioGuard,  # the codec's offsets
         bomb_tracker.MemberRatioGuard,  # the member stream's offsets
         readahead.ReadAheadStream,  # the inner's offsets
@@ -488,6 +506,12 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         counting.CountingReader,
         counting.SeekCountingStream,
         rar_reader._UnrarOwnedStream,
+        rar_reader._RollingUnrarStream,  # the unrar pipe fed rolling volumes
+        rar_forward_reader._ForwardUnrarStream,  # the same, for a pipe source
+        rar_forward_reader._ForwardMemberStream,  # forward-only decoded member slice
+        # A pipe RAR walk's archive source: archive offsets under the header walk
+        # and the rolling volumes, never under a member's decompressed chain.
+        rar_forward.ForwardSource,
         respawn.RespawnStream,
         # Subprocess stdout, like the unrar pipe: nothing below it has a table.
         unar.UnarOutputStream,
@@ -693,6 +717,7 @@ def test_delegating_stream_close_inventory() -> None:
     from archivey.internal import bomb_tracker, password_confirm, walk_handoff
     from archivey.internal.backends import (
         rar_copy_sources,
+        rar_forward_reader,
         rar_reader,
         sevenzip_pipeline,
         sevenzip_reader,
@@ -712,6 +737,7 @@ def test_delegating_stream_close_inventory() -> None:
         fullcount.FullCountStream,
         counting.CountingReader,
         counting.OutputCountingStream,
+        counting.BudgetDrawStream,
         counting.SeekCountingStream,
         bomb_tracker._RatioGuard,
         bomb_tracker.DecodeRatioGuard,
@@ -729,6 +755,7 @@ def test_delegating_stream_close_inventory() -> None:
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
         rar_reader._ClosesSyntheticFile,
+        rar_forward_reader._ForwardMemberStream,
         sparse.SparseStream,
         readahead.ReadAheadStream,
         walk_handoff.MemberDataView,
@@ -736,6 +763,8 @@ def test_delegating_stream_close_inventory() -> None:
     subclass_closes_inner = {
         cli.ProcessOutputStream,
         rar_reader._UnrarOwnedStream,
+        rar_reader._RollingUnrarStream,
+        rar_forward_reader._ForwardUnrarStream,
         unar.UnarOutputStream,
     }
     found = _delegating_stream_subclasses()

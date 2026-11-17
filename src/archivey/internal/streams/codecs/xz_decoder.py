@@ -23,13 +23,15 @@ XZ spec: https://tukaani.org/xz/xz-file-format.txt
 from __future__ import annotations
 
 import functools
+import hashlib
 import io
 import itertools
 import lzma
 import os
 import struct
 import zlib
-from collections.abc import Callable, Iterator
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -41,7 +43,12 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.config import DecoderLimits, probe_lzma_dictionary
+from archivey.internal.config import (
+    DecoderLimits,
+    check_decoder_memory,
+    probe_dictionary_origin,
+    probe_lzma_dictionary,
+)
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -66,9 +73,11 @@ from archivey.internal.streams.decompressor_stream import (
     release_decoder,
     truncated_message,
 )
+from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
 _XZ_FOOTER_MAGIC = b"YZ"
@@ -128,7 +137,10 @@ def _parse_xz_header(data: bytes) -> int:
     if len(data) < _STREAM_HEADER_SIZE:
         raise CorruptionError(f"XZ stream header too short: {len(data)} bytes")
     if data[:6] != _XZ_STREAM_MAGIC:
-        raise CorruptionError(f"XZ stream header magic not found (got {data[:6]!r})")
+        raise CorruptionError(
+            "XZ stream header magic not found "
+            f"(got {quoted(data[:6].decode('ascii', 'surrogateescape'))})"
+        )
     stream_flags = data[6:8]
     stored_crc = struct.unpack_from("<I", data, 8)[0]
     computed_crc = zlib.crc32(stream_flags) & 0xFFFFFFFF
@@ -149,7 +161,8 @@ def _parse_xz_footer(data: bytes) -> tuple[int, int]:
         raise CorruptionError(f"XZ stream footer too short: {len(data)} bytes")
     if data[10:12] != _XZ_FOOTER_MAGIC:
         raise CorruptionError(
-            f"XZ stream footer magic 'YZ' not found (got {data[10:12]!r})"
+            "XZ stream footer magic 'YZ' not found "
+            f"(got {quoted(data[10:12].decode('ascii', 'surrogateescape'))})"
         )
     stored_crc = struct.unpack_from("<I", data, 0)[0]
     backward_size_raw = struct.unpack_from("<I", data, 4)[0]
@@ -429,12 +442,32 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     )
 
 
+class _MoreStreams(Exception):
+    """The walk met a stream before the ones it was allowed to read."""
+
+
+def last_stream_is_the_whole_file(stream: BinaryIO, file_size: int) -> bool:
+    """Whether the last xz stream starts at offset 0, read from its footer and index.
+
+    Reads the last stream's footer and index only (and its header when it starts at
+    offset 0), and stops before any earlier stream: on a remote source a
+    multi-stream file then costs no more requests than a single-stream one
+    (fsspec-integration design D1).
+    """
+    try:
+        _read_xz_index_backwards(stream, file_size, last_stream_only=True)
+    except _MoreStreams:
+        return False
+    return True
+
+
 def _read_xz_index_backwards(
     stream: BinaryIO,
     file_size: int,
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
     on_thinned: Callable[[], None] | None = None,
+    last_stream_only: bool = False,
 ) -> list[_XzBlockBounds]:
     """Walk XZ streams from EOF toward ``stop_at``, building a block index.
 
@@ -446,6 +479,9 @@ def _read_xz_index_backwards(
     resumes correctly (``_XzBlockResume``). Within a stream the records are walked
     forward and thinned there first, so a stream declaring millions of blocks is never
     held whole. The last block is always kept, so the total stays exact.
+
+    With ``last_stream_only``, the walk raises ``_MoreStreams`` when the last stream
+    does not start at ``stop_at``, before reading that stream's header.
     """
     # Keyed on decompressed distance from the block's start to the end of the scan,
     # which only grows as the walk goes back.
@@ -489,6 +525,10 @@ def _read_xz_index_backwards(
         if stream_header_start < 0:
             raise CorruptionError("XZ stream header start computes to negative offset")
 
+        if last_stream_only and stream_header_start > stop_at:
+            # Before the header read: on a remote source the header of a large last
+            # stream is far from both the head and the tail windows.
+            raise _MoreStreams
         stream.seek(stream_header_start)
         header_data = stream.read(_STREAM_HEADER_SIZE)
         if len(header_data) < _STREAM_HEADER_SIZE:
@@ -664,10 +704,255 @@ def _report_unverifiable_check(
     )
 
 
+# A walk kept only for block checks gives up once its stream averages fewer compressed
+# bytes than this per LZMA2 chunk, past ``_CHECK_WALK_SLACK`` chunks (``_chunk``).
+# liblzma writes chunks of up to 64 KiB compressed, and only a block's last chunk is
+# short.
+_CHECK_WALK_BYTES_PER_CHUNK = 4096
+_CHECK_WALK_SLACK = 64
+
+
+def _runs_check(check: int) -> bool:
+    """Whether liblzma runs a stream's check: not ``CHECK_NONE``, and one it implements
+    (an unknown ID is decoded without it, ``_report_unverifiable_check``)."""
+    return check != lzma.CHECK_NONE and lzma.is_check_supported(check)
+
+
 def _note_check(check: int, frame_checks: FrameChecks) -> None:
-    """Note whether a stream's check is one liblzma runs: not ``CHECK_NONE``, and one it
-    implements (an unknown ID is decoded without it, ``_report_unverifiable_check``)."""
-    frame_checks.note(check != lzma.CHECK_NONE and lzma.is_check_supported(check))
+    """Note whether a stream's check is one liblzma runs."""
+    frame_checks.note(_runs_check(check))
+
+
+def _encode_mbi(value: int) -> bytes:
+    """``value`` as an xz multibyte integer (xz spec §1.2)."""
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+@dataclass(slots=True, frozen=True)
+class _WalkedBlock:
+    """One block a forward decode passed, with offsets relative to its stream: the
+    compressed one from the stream header's first byte, the decompressed one from the
+    stream's first output byte."""
+
+    compressed_start: int
+    decompressed_start: int
+    unpadded_size: int
+    uncompressed_size: int
+
+
+@dataclass(slots=True, frozen=True)
+class _WalkedStream:
+    """What :class:`_XzBlockWalker` found in one stream that liblzma decoded whole.
+
+    ``padding`` is the stream padding before the stream's header, which the stream's
+    compressed size (and so ``XzDecoder``'s cursor) counts in.
+    """
+
+    padding: int
+    blocks: list[_WalkedBlock]
+    # Stream-relative, like the blocks: where the last block ends and the index starts.
+    blocks_end: int
+    check: int
+    # More blocks than the seek-table cap: ``blocks`` is a spaced subset.
+    thinned: bool = False
+
+
+class _XzBlockWalker:
+    """Finds the blocks of one xz stream in the bytes fed to liblzma, without decoding.
+
+    A block is its header (its size is in its first byte), LZMA2 data, padding to four
+    bytes, and its check. LZMA2 data is a run of chunks whose headers give their sizes
+    (xz spec §5.3.1 and the LZMA2 chunk format), up to a 0x00 end marker. So a forward
+    read finds every block's start and decompressed size from a few header bytes per
+    chunk, and xz block points need neither the file's index nor a seek.
+
+    The walk is only kept when liblzma decodes the stream to its end: it has then
+    checked the stream's index against the blocks it decoded. The walk checks the same
+    index against the blocks it found (a digest of their records, whose length and
+    count it knows), so a point the walk makes is a block liblzma verified. Anything
+    the walk does not expect makes it give up; liblzma reports the damage itself.
+    """
+
+    def __init__(self, check: int) -> None:
+        self.check = check
+        self._check_size = _check_size(check)
+        self._pos = _STREAM_HEADER_SIZE  # stream-relative offset of the next byte
+        self._out = 0  # decompressed size of the blocks walked so far
+        self._skip = 0  # bytes to pass over before the next field
+        self._hashing = False  # whether skipped bytes go to the index digest
+        self._buf = bytearray()
+        self._need = 1
+        self._step: Callable[[bytes], None] = self._block_start
+        self._block_pos = 0
+        self._block_out = 0
+        self._chunk_control = 0
+        self._count = 0
+        self._expected_count = b""
+        self._records = hashlib.sha256()
+        self._records_len = 0
+        self._index = hashlib.sha256()
+        self.blocks: SpacedCollector[_WalkedBlock] = SpacedCollector(
+            key=lambda b: b.decompressed_start
+        )
+        self.blocks_end = 0
+        self.failed = False
+        # The index was read and matches the blocks walked.
+        self.done = False
+        # Every block walked, as stream-relative ``(start, end)`` output ranges, until
+        # :class:`_XzState` takes them (``_take_checked``); unlike ``blocks``, never
+        # thinned.
+        self.ended: list[tuple[int, int]] = []
+        # LZMA2 chunk headers read, and whether the walk is kept only to tell which
+        # output each block check covers, which gives up on tiny chunks (``_chunk``).
+        self.chunks = 0
+        self.checks_only = False
+
+    @property
+    def decompressed_size(self) -> int:
+        return self._out
+
+    @property
+    def index_end(self) -> int:
+        """Stream-relative: where the footer starts, once the walk is done."""
+        return self._pos
+
+    def feed(self, data: bytes) -> None:
+        if self.failed or self.done:
+            return
+        view = memoryview(data)
+        i, n = 0, len(view)
+        while i < n and not (self.failed or self.done):
+            if self._skip:
+                take = min(self._skip, n - i)
+                if self._hashing:
+                    self._index.update(view[i : i + take])
+                self._skip -= take
+                self._pos += take
+                i += take
+                continue
+            take = min(self._need - len(self._buf), n - i)
+            self._buf += view[i : i + take]
+            self._pos += take
+            i += take
+            if len(self._buf) == self._need:
+                field = bytes(self._buf)
+                self._buf.clear()
+                self._step(field)
+
+    def _expect(self, need: int, step: Callable[[bytes], None], skip: int = 0) -> None:
+        self._need = need
+        self._step = step
+        self._skip = skip
+
+    def _block_start(self, field: bytes) -> None:
+        if field[0] == 0:
+            # The index indicator: the blocks end here. Its record count is the number
+            # of blocks walked, and its records are as long as theirs.
+            self.blocks_end = self._pos - 1
+            count = _encode_mbi(self._count)
+            self._expect(len(count), self._index_count)
+            self._expected_count = count
+            return
+        self._block_pos = self._pos - 1
+        self._block_out = 0
+        self._expect(1, self._chunk, skip=(field[0] + 1) * 4 - 1)
+
+    def _chunk(self, field: bytes) -> None:
+        self.chunks += 1
+        if (
+            self.checks_only
+            and self.chunks
+            > _CHECK_WALK_SLACK + self._pos // _CHECK_WALK_BYTES_PER_CHUNK
+        ):
+            # Each chunk header is a Python step: a stream of chunks far smaller than
+            # an encoder writes would make the walk cost far more than liblzma's
+            # decode. A walk kept only for block checks gives up; its members wait for
+            # the stream's end. A walk for block points goes on (threat model, "No
+            # CPU or wall-clock bound").
+            self.failed = True
+            return
+        control = field[0]
+        if control == 0:
+            self._end_block()
+        elif control in (1, 2):
+            self._expect(2, self._uncompressed_chunk)
+        elif control >= 0x80:
+            self._chunk_control = control
+            # A properties byte follows the sizes when the chunk resets the state and
+            # sets new properties (0xC0 and up).
+            self._expect(5 if control >= 0xC0 else 4, self._lzma_chunk)
+        else:
+            self.failed = True
+
+    def _uncompressed_chunk(self, field: bytes) -> None:
+        size = int.from_bytes(field, "big") + 1
+        self._block_out += size
+        self._expect(1, self._chunk, skip=size)
+
+    def _lzma_chunk(self, field: bytes) -> None:
+        unpacked = ((self._chunk_control & 0x1F) << 16) + (
+            int.from_bytes(field[0:2], "big") + 1
+        )
+        packed = int.from_bytes(field[2:4], "big") + 1
+        self._block_out += unpacked
+        self._expect(1, self._chunk, skip=packed)
+
+    def _end_block(self) -> None:
+        unpadded = self._pos - self._block_pos + self._check_size
+        block = _WalkedBlock(self._block_pos, self._out, unpadded, self._block_out)
+        self.blocks.add(block)
+        record = _encode_mbi(unpadded) + _encode_mbi(self._block_out)
+        self._records.update(record)
+        self._records_len += len(record)
+        self._count += 1
+        self.ended.append((self._out, self._out + self._block_out))
+        self._out += self._block_out
+        padding = -self._pos % 4
+        self._expect(1, self._block_start, skip=padding + self._check_size)
+
+    def _index_count(self, field: bytes) -> None:
+        if field != self._expected_count:
+            self.failed = True
+            return
+        self._hashing = True
+        # Padding to four bytes, then the index's CRC32.
+        tail = -(1 + len(field) + self._records_len) % 4 + 4
+        self._expect(tail, self._index_end, skip=self._records_len)
+
+    def _index_end(self, field: bytes) -> None:
+        del field  # liblzma checks the padding and the CRC
+        self._hashing = False
+        if self._index.digest() == self._records.digest():
+            self.done = True
+        else:
+            self.failed = True
+
+    def result(self, padding: int) -> _WalkedStream | None:
+        """The walk, if it read the index and the index matched every block."""
+        if not self.done:
+            return None
+        return _WalkedStream(
+            padding,
+            self.blocks.items,
+            self.blocks_end,
+            self.check,
+            thinned=self.blocks.thinned,
+        )
+
+
+@dataclass(slots=True, frozen=True)
+class _StreamUnit:
+    """A stream ``_XzState`` decoded to its end."""
+
+    decompressed_size: int
+    # Stream padding before it included.
+    compressed_size: int
+    walked: _WalkedStream | None = None
 
 
 class _XzState:
@@ -684,12 +969,32 @@ class _XzState:
         after_stream: bool = False,
         start_offset: int = 0,
         natives: Natives = IN_PROCESS,
+        walk_blocks: bool = False,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         """``after_stream``: start just past a stream decoded elsewhere, where padding,
         more streams or the end of the data may follow, as after any stream here.
         ``on_check`` is given each stream's check ID once its header has decoded.
-        ``start_offset`` is the source offset of the first byte fed, for errors."""
+        ``start_offset`` is the source offset of the first byte fed, for errors.
+        ``walk_blocks``: find each stream's blocks as it decodes
+        (:class:`_XzBlockWalker`) and report them with the stream.
+        ``usage`` is noted the dictionary each stream's first block header declares
+        (``_note_block_head``)."""
+        self._walk_blocks = walk_blocks
+        self._walker: _XzBlockWalker | None = None
+        # The output of this engine before the current stream's first byte.
+        self._out_before_stream = 0
+        # Blocks walked whose check liblzma has not passed yet, as output ranges from
+        # this engine's first byte; and those it has passed, until ``take_checked``.
+        self._unchecked: deque[tuple[int, int]] = deque()
+        self._checked: list[tuple[int, int]] = []
+        # The current stream's check is one liblzma runs (``_runs_check``).
+        self._walk_checks = False
         self._limits = limits
+        self._usage = usage
+        # The start of the current stream's first block header, while it is
+        # collected for ``usage``; ``None`` once noted, or with no ``usage``.
+        self._block_head: bytearray | None = None
         self._natives = natives
         self._on_check = on_check
         self._state = self._NEED_HEADER
@@ -714,7 +1019,7 @@ class _XzState:
 
     def feed(
         self, data: bytes, max_length: int = -1
-    ) -> tuple[bytes, list[tuple[int, int]]]:
+    ) -> tuple[bytes, list[_StreamUnit]]:
         if self._finished:
             if self.trailing_bytes is None:
                 self._end_at(data)  # only zeros so far: keep looking
@@ -741,7 +1046,7 @@ class _XzState:
         if rest:
             self.trailing_bytes = len(rest)
 
-    def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
+    def flush(self) -> tuple[bytes, list[_StreamUnit]]:
         if self._state == self._NEED_HEADER:
             if self._streams_seen == 0:
                 # The source ended before a first header: nothing, or the start of the
@@ -779,6 +1084,34 @@ class _XzState:
         self.truncated = True
         return out, units
 
+    def _note_block_head(self, chunk: bytes) -> None:
+        """Collect the stream's first block header from ``chunk``, the next bytes
+        fed to liblzma, and note the LZMA2 dictionary it declares to ``usage``.
+
+        liblzma reads the dictionary itself and refuses one over its ``memlimit``
+        (:func:`new_capped_decompressor`), but archivey never sees the number. The
+        decoders of a nest of archives share ``max_decoder_memory``
+        (``_PluginAdapter._nested_config``), and an archive inside this stream's
+        output gets the cap less what this decoder declared. Only the first block of
+        each stream is read: xz writes one dictionary for every block of a stream.
+        """
+        head = self._block_head
+        assert head is not None and self._usage is not None
+        head += chunk[: _BLOCK_HEADER_MAX - len(head)]
+        if not head:
+            return
+        if head[0] == 0:
+            # The index: a stream with no block declares no dictionary.
+            self._block_head = None
+            return
+        size = (head[0] + 1) * 4
+        if len(head) < size:
+            return
+        self._block_head = None
+        declared = _block_dictionary(bytes(head[:size]))
+        if declared is not None:
+            self._usage.note_decoder_memory(declared, "an xz block's LZMA2 dictionary")
+
     def _header_offset(self) -> int:
         """The source offset of ``_buf[0]`` while a stream header is awaited."""
         return self._stream_offset + self._padding_before_stream
@@ -794,9 +1127,9 @@ class _XzState:
             return False
         return not self._buf
 
-    def _process(self, max_length: int = -1) -> tuple[bytes, list[tuple[int, int]]]:
+    def _process(self, max_length: int = -1) -> tuple[bytes, list[_StreamUnit]]:
         output = bytearray()
-        new_streams: list[tuple[int, int]] = []
+        new_streams: list[_StreamUnit] = []
         while True:
             if max_length >= 0 and len(output) >= max_length:
                 break
@@ -816,7 +1149,7 @@ class _XzState:
                     if self._streams_seen == 0:
                         raise CorruptionError(
                             f"Not valid XZ data: expected magic {_XZ_STREAM_MAGIC!r}, "
-                            f"got {header[:6]!r}"
+                            f"got {quoted(header[:6].decode('ascii', 'surrogateescape'))}"
                         )
                     if near_stream_magic(header, _XZ_STREAM_MAGIC):
                         raise damaged_stream_error(self._header_offset())
@@ -834,11 +1167,21 @@ class _XzState:
                         e, "XZ stream header error", self._limits
                     ) from e
                 # liblzma accepted the header, so its CRC holds and byte 6 is zero.
-                self._on_check(header[7] & 0x0F)
+                check = header[7] & 0x0F
+                self._on_check(check)
+                if self._walk_blocks or _runs_check(check):
+                    # Walked for block points, or to tell which output each block
+                    # check covers (``_note_checked``).
+                    self._walker = _XzBlockWalker(check)
+                    self._walker.checks_only = not self._walk_blocks
+                    self._walk_checks = _runs_check(check)
+                self._unchecked.clear()
                 self._bytes_fed = _STREAM_HEADER_SIZE
                 self._stream_decomp_bytes = len(plain)
                 output.extend(plain)
                 self._state = self._IN_STREAM
+                if self._usage is not None:
+                    self._block_head = bytearray()
 
             elif self._state == self._IN_STREAM:
                 assert self._dec is not None
@@ -846,6 +1189,8 @@ class _XzState:
                     break
                 chunk = bytes(self._buf)
                 self._buf.clear()
+                if self._block_head is not None:
+                    self._note_block_head(chunk)
                 try:
                     remaining = max_length - len(output) if max_length >= 0 else -1
                     plain = self._dec.decompress(chunk, remaining)
@@ -853,32 +1198,96 @@ class _XzState:
                     raise lzma_error_to_archivey(
                         e, "XZ decompression error", self._limits
                     ) from e
+                if self._walker is not None and not self._dec.eof:
+                    self._walker.feed(chunk)
                 self._bytes_fed += len(chunk)
                 self._stream_decomp_bytes += len(plain)
                 output.extend(plain)
                 if self._dec.eof:
                     unused = self._dec.unused_data
+                    if self._walker is not None:
+                        self._walker.feed(chunk[: len(chunk) - len(unused)])
+                    self._note_checked(stream_end=True)
                     compressed_size = (
                         self._padding_before_stream + self._bytes_fed - len(unused)
                     )
+                    new_streams.append(
+                        _StreamUnit(
+                            self._stream_decomp_bytes,
+                            compressed_size,
+                            self._walked(compressed_size),
+                        )
+                    )
                     self._padding_before_stream = 0
+                    self._out_before_stream += self._stream_decomp_bytes
                     self._stream_offset += compressed_size
-                    new_streams.append((self._stream_decomp_bytes, compressed_size))
                     self._streams_seen += 1
                     release_decoder(self._dec)
                     self._dec = None
                     self._buf[0:0] = unused
                     self._state = self._NEED_HEADER
-                elif not self._dec.needs_input:
+                    self._walker = None
+                    continue
+                self._note_checked(stream_end=False)
+                if not self._dec.needs_input:
                     # More output available under the budget; loop to drain with b"".
                     # If a drain produced nothing, stop — avoid spinning on a stuck
                     # decompressor that reports needs_input=False with empty output.
                     if not plain and not chunk:
                         break
                     continue
-                else:
-                    break
+                break
         return bytes(output), new_streams
+
+    def _note_checked(self, *, stream_end: bool) -> None:
+        """Move the walked blocks whose check liblzma has passed to ``_checked``.
+
+        liblzma reads a block's check right after its data, before any output of the
+        next block, so a block is checked once the output is past its end, or once the
+        stream has ended. At the end, the walk must agree with what liblzma decoded,
+        as for block points (``_walked``); a walk that gave up names no block.
+        """
+        walker = self._walker
+        if walker is None:
+            return
+        if walker.failed or not self._walk_checks:
+            walker.ended.clear()
+            self._unchecked.clear()
+            self._walk_checks = False
+            return
+        base = self._out_before_stream
+        self._unchecked.extend((base + a, base + b) for a, b in walker.ended if b > a)
+        walker.ended.clear()
+        if stream_end:
+            if walker.done and walker.decompressed_size == self._stream_decomp_bytes:
+                self._checked.extend(self._unchecked)
+            self._unchecked.clear()
+            return
+        out = base + self._stream_decomp_bytes
+        while self._unchecked and self._unchecked[0][1] < out:
+            self._checked.append(self._unchecked.popleft())
+
+    def take_checked(self) -> list[tuple[int, int]]:
+        """The output ranges, from this engine's first byte, whose block checks passed
+        since the last call."""
+        checked, self._checked = self._checked, []
+        return checked
+
+    def _walked(self, compressed_size: int) -> _WalkedStream | None:
+        """The finished stream's walk, when it agrees with what liblzma decoded."""
+        walker = self._walker
+        if walker is None or not self._walk_blocks:
+            return None
+        walked = walker.result(self._padding_before_stream)
+        if walked is None:
+            return None
+        stream_size = compressed_size - self._padding_before_stream
+        if (
+            walker.decompressed_size != self._stream_decomp_bytes
+            or walker.index_end + _STREAM_FOOTER_SIZE != stream_size
+        ):
+            return None
+        return walked
 
 
 class _XzBlockResume:
@@ -925,7 +1334,7 @@ class _XzBlockResume:
 
     def feed(
         self, data: bytes, max_length: int = -1
-    ) -> tuple[bytes, list[tuple[int, int]]]:
+    ) -> tuple[bytes, list[_StreamUnit]]:
         if self._finished:
             return b"", []
         # Bytes past the blocks (the index, the footer, later streams) are dropped;
@@ -952,7 +1361,7 @@ class _XzBlockResume:
             self._finished = True
         return plain, []
 
-    def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
+    def flush(self) -> tuple[bytes, list[_StreamUnit]]:
         out, units = self.feed(b"")
         if not self._finished:
             self.truncated = True
@@ -964,6 +1373,30 @@ class _XzBlockResume:
     @property
     def needs_input(self) -> bool:
         return self._finished or self._dec.needs_input
+
+
+def _add_block_points(
+    blocks: Iterable[_XzBlockBounds], stream_decomp_start: int, points: list[SeekPoint]
+) -> bool:
+    """Add a point for each of a stream's blocks worth seeking to, from its index or a
+    forward walk alike; return whether one is the stream's start.
+
+    A block of zero decoded size is skipped: it shares its offset with the next block.
+    The stream's first block is a point only past offset 0 (point 0 always exists), and
+    then it carries resume state, so no ``state=None`` placeholder is needed there and
+    it cannot collide with a ``build_index`` point at the same offset. A thinned stream
+    still keeps its first block.
+    """
+    at_start = False
+    for b in blocks:
+        if b.uncompressed_size == 0 or b.decompressed_start < stream_decomp_start:
+            continue
+        if b.decompressed_start == stream_decomp_start:
+            if stream_decomp_start == 0:
+                continue
+            at_start = True
+        points.append(SeekPoint(b.decompressed_start, b.compressed_start, state=b))
+    return at_start
 
 
 class XzDecoder(BaseDecoder):
@@ -991,8 +1424,12 @@ class XzDecoder(BaseDecoder):
         handoff: SeekPoint | None = None,
         natives: Natives = IN_PROCESS,
         frame_checks: FrameChecks | None = None,
+        walk_blocks: bool = False,
+        usage: ResourceUsageRecorder | None = None,
     ) -> None:
         self._engine = engine
+        self._walk_blocks = walk_blocks
+        self._usage = usage
         # Each stream's check, as its header (or a resumed block's footer) gives it.
         self.frame_checks = frame_checks if frame_checks is not None else FrameChecks()
         self._natives = natives
@@ -1002,6 +1439,8 @@ class XzDecoder(BaseDecoder):
         self._inner = inner
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
+        # The output offset of the engine's first byte.
+        self._engine_origin = decomp_cursor
         self._index_enabled = index_enabled
         self._collector = collector
         self._index_built = index_built
@@ -1018,9 +1457,15 @@ class XzDecoder(BaseDecoder):
         limits: DecoderLimits,
         reported_checks: set[int],
         natives: Natives = IN_PROCESS,
+        walk_blocks: bool = False,
+        usage: ResourceUsageRecorder | None = None,
     ) -> XzDecoder:
         """``reported_checks`` is shared by every decoder of one file (see
-        :func:`_report_unverifiable_check`)."""
+        :func:`_report_unverifiable_check`). ``walk_blocks``: make block points from
+        the blocks a decode passes (:class:`_XzBlockWalker`), for a stream that keeps
+        restart points but does not read the file's index. ``usage`` is noted each
+        stream's dictionary (:meth:`_XzState._note_block_head`); a block resume notes
+        none."""
 
         frame_checks = FrameChecks()
 
@@ -1035,6 +1480,8 @@ class XzDecoder(BaseDecoder):
                 on_check,
                 start_offset=point.compressed_offset,
                 natives=natives,
+                walk_blocks=walk_blocks,
+                usage=usage,
             )
         else:
             start: _XzBlockBounds = point.state
@@ -1055,6 +1502,8 @@ class XzDecoder(BaseDecoder):
             handoff=handoff,
             natives=natives,
             frame_checks=frame_checks,
+            walk_blocks=walk_blocks,
+            usage=usage,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -1067,13 +1516,25 @@ class XzDecoder(BaseDecoder):
             limits=self._limits,
             reported_checks=self._reported_checks,
             natives=self._natives,
+            walk_blocks=self._walk_blocks,
+            usage=self._usage,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
         data, units = self._engine.feed(chunk, max_length=max_length)
         points = self._points_for_units(units)
+        checked = self._take_checked()
         self._hand_off_if_resume_done()
-        return DecodeOut(data, points)
+        return DecodeOut(data, points, checked)
+
+    def _take_checked(self) -> list[tuple[int, int]]:
+        """The output ranges whose block checks passed in the last engine call, at
+        their offsets in the whole output. A block resume reports none."""
+        engine = self._engine
+        if not isinstance(engine, _XzState):
+            return []
+        origin = self._engine_origin
+        return [(origin + a, origin + b) for a, b in engine.take_checked()]
 
     def flush(self) -> DecodeOut:
         data, units = self._engine.flush()
@@ -1087,7 +1548,7 @@ class XzDecoder(BaseDecoder):
             # still owed (a seek table that outlived the file it was built from), fail
             # loudly rather than report finished and publish a size that stops short.
             self._pending_error = TruncatedError("XZ data is truncated")
-        return DecodeOut(data, self._points_for_units(units))
+        return DecodeOut(data, self._points_for_units(units), self._take_checked())
 
     def _hand_off_if_resume_done(self) -> None:
         """Continue sequentially past the stream once ``_XzBlockResume`` has finished.
@@ -1114,9 +1575,12 @@ class XzDecoder(BaseDecoder):
             after_stream=True,
             start_offset=point.compressed_offset,
             natives=self._natives,
+            walk_blocks=self._walk_blocks,
+            usage=self._usage,
         )
         self._comp_cursor = point.compressed_offset
         self._decomp_cursor = point.decompressed_offset
+        self._engine_origin = point.decompressed_offset
 
     @property
     def finished(self) -> bool:
@@ -1143,21 +1607,27 @@ class XzDecoder(BaseDecoder):
     def needs_input(self) -> bool:
         return self._engine.needs_input
 
-    def _points_for_units(self, units: list[tuple[int, int]]) -> list[SeekPoint]:
+    def _points_for_units(self, units: list[_StreamUnit]) -> list[SeekPoint]:
         # Only _XzState reports finished streams; _XzBlockResume never does.
         if not units:
             return []
         return self._progressive_stream_points(units)
 
     def _progressive_stream_points(
-        self, new_streams: list[tuple[int, int]]
+        self, new_streams: list[_StreamUnit]
     ) -> list[SeekPoint]:
         points: list[SeekPoint] = []
-        for decompressed_size, compressed_size in new_streams:
+        for unit in new_streams:
+            decompressed_size = unit.decompressed_size
+            compressed_size = unit.compressed_size
             stream_comp_start = self._comp_cursor
             stream_decomp_start = self._decomp_cursor
             stream_comp_end = stream_comp_start + compressed_size
             emitted_stream_start = False
+            if unit.walked is not None and not self._index_enabled:
+                emitted_stream_start = self._walked_points(
+                    unit, stream_comp_start, stream_decomp_start, points
+                )
             if (
                 self._index_enabled
                 and not self._index_built()
@@ -1177,29 +1647,9 @@ class XzDecoder(BaseDecoder):
                         emit_index_thinned(
                             self._collector, "xz", "per_stream", units="blocks"
                         )
-                    # Prefer block-bounds (with resume state) for the stream start
-                    # over a state=None placeholder — avoids colliding with a prior
-                    # build_index point at the same decompressed offset. A thinned
-                    # stream still keeps its first block.
-                    for b in blocks:
-                        if b.uncompressed_size == 0:
-                            continue  # zero-length span is never a useful seek target
-                        if b.decompressed_start < stream_decomp_start:
-                            continue
-                        if b.decompressed_start == stream_decomp_start:
-                            if stream_decomp_start > 0:
-                                points.append(
-                                    SeekPoint(
-                                        b.decompressed_start,
-                                        b.compressed_start,
-                                        state=b,
-                                    )
-                                )
-                                emitted_stream_start = True
-                            continue
-                        points.append(
-                            SeekPoint(b.decompressed_start, b.compressed_start, state=b)
-                        )
+                    emitted_stream_start = _add_block_points(
+                        blocks, stream_decomp_start, points
+                    )
                 except CorruptionError as e:
                     message = (
                         "XZ per-stream backward scan failed; block-level seek points for "
@@ -1232,6 +1682,34 @@ class XzDecoder(BaseDecoder):
             self._decomp_cursor += decompressed_size
         return points
 
+    def _walked_points(
+        self,
+        unit: _StreamUnit,
+        stream_comp_start: int,
+        stream_decomp_start: int,
+        points: list[SeekPoint],
+    ) -> bool:
+        """Add a point per block the walk found; whether one is the stream's start."""
+        walked = unit.walked
+        assert walked is not None
+        if walked.thinned:
+            emit_index_thinned(self._collector, "xz", "forward_walk", units="blocks")
+        header = stream_comp_start + walked.padding
+        blocks = [
+            _XzBlockBounds(
+                compressed_start=header + block.compressed_start,
+                decompressed_start=stream_decomp_start + block.decompressed_start,
+                unpadded_size=block.unpadded_size,
+                uncompressed_size=block.uncompressed_size,
+                check=walked.check,
+                blocks_end=header + walked.blocks_end,
+                stream_decompressed_end=stream_decomp_start + unit.decompressed_size,
+                stream_compressed_end=stream_comp_start + unit.compressed_size,
+            )
+            for block in walked.blocks
+        ]
+        return _add_block_points(blocks, stream_decomp_start, points)
+
     @override
     def build_index(
         self, inner: BinaryIO, last_known: SeekPoint
@@ -1261,11 +1739,14 @@ def XzDecompressorStream(
     refuse_input_after_end: bool = False,
     initial_index: PrebuiltIndex | None = None,
     natives: Natives = IN_PROCESS,
+    file_index: bool = True,
+    usage: ResourceUsageRecorder | None = None,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
     ``decoder_limits`` caps the dictionary each block header declares (see
     :func:`new_capped_decompressor`); it defaults to the public default, not to no cap.
+    ``usage`` is the reader's recorder, noted each stream's dictionary.
     ``initial_index`` is an index scan already made over the same source, used in
     place of a second one (see :class:`PrebuiltIndex`).
 
@@ -1287,12 +1768,16 @@ def XzDecompressorStream(
         return XzDecoder.from_point(
             point,
             inner,
-            index_enabled=seekable,
+            # The per-stream backward scan reads the file's index too. Without it, a
+            # stream that keeps restart points finds its blocks as it decodes them.
+            index_enabled=seekable and file_index,
+            walk_blocks=seekable and not file_index,
             collector=collector,
             index_built=index_built,
             limits=decoder_limits,
             reported_checks=reported_checks,
             natives=natives,
+            usage=usage,
         )
 
     stream = DecompressorStream(
@@ -1304,6 +1789,7 @@ def XzDecompressorStream(
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
         initial_index=initial_index,
+        file_index=file_index,
     )
     stream_cell[0] = stream
     return stream
@@ -1341,13 +1827,33 @@ def _lzma2_dictionary(code: int) -> int:
     return (2 | (code & 1)) << (code // 2 + 11)
 
 
-def _head_filter_chain(header: bytes, read_bound: int) -> list[dict[str, int]]:
+# The largest xz block header: its size byte counts 4-byte units, 1024 bytes at most.
+_BLOCK_HEADER_MAX = 1024
+
+
+def _block_dictionary(header: bytes) -> int | None:
+    """The LZMA2 dictionary the block header ``header`` declares, or ``None`` when
+    the header does not parse here. Its CRC is not checked: liblzma checks it, and
+    refuses the block, before it decodes anything."""
+    try:
+        chain = _head_filter_chain(header, None, None)
+    except (ArchiveyError, IndexError):
+        return None
+    return chain[-1].get("dict_size") if chain else None
+
+
+def _head_filter_chain(
+    header: bytes, read_bound: int | None, limits: DecoderLimits | None
+) -> list[dict[str, int]]:
     """The raw filter chain a block header declares, its LZMA2 dictionary clamped.
 
     ``header`` is the whole block header, CRC included and already checked. Delta and
     the BCJ filters are kept as declared; only the LZMA2 dictionary changes, to
-    :func:`~archivey.internal.config.probe_lzma_dictionary`. A chain this cannot build
-    raises ``UnsupportedFeatureError``, which the probe reads as "can't tell".
+    :func:`~archivey.internal.config.probe_lzma_dictionary`, or stays as declared
+    with no ``read_bound``. A chain this cannot build raises
+    ``UnsupportedFeatureError``, which the probe reads as "can't tell". The clamped
+    dictionary, which is what liblzma reserves, is checked against ``limits``; with no
+    ``limits`` (reading a declaration, not building a decoder) it is not checked.
     """
     body = header[:-4]
     flags = body[1]
@@ -1370,12 +1876,15 @@ def _head_filter_chain(header: bytes, read_bound: int) -> list[dict[str, int]]:
             raise CorruptionError("XZ block header filter properties are truncated")
         if index == last and filter_id == lzma.FILTER_LZMA2 and props_size == 1:
             declared = _lzma2_dictionary(props[0])
-            chain.append(
-                {
-                    "id": lzma.FILTER_LZMA2,
-                    "dict_size": probe_lzma_dictionary(declared, read_bound),
-                }
-            )
+            dict_size = probe_lzma_dictionary(declared, read_bound)
+            if limits is not None:
+                check_decoder_memory(
+                    dict_size,
+                    limits=limits,
+                    what="the LZMA2 dictionary a detection probe reserves",
+                    counted_from=probe_dictionary_origin(declared),
+                )
+            chain.append({"id": lzma.FILTER_LZMA2, "dict_size": dict_size})
         elif index < last and filter_id == lzma.FILTER_DELTA and props_size == 1:
             chain.append({"id": lzma.FILTER_DELTA, "dist": props[0] + 1})
         elif index < last and filter_id in _HEAD_BCJ_FILTERS and props_size in (0, 4):
@@ -1505,7 +2014,10 @@ def _starts_next_stream(source: _HeadInput) -> bool:
 
 
 def _decode_xz_head(
-    read: Callable[[int], bytes], size: int, natives: Natives = IN_PROCESS
+    read: Callable[[int], bytes],
+    size: int,
+    natives: Natives = IN_PROCESS,
+    limits: DecoderLimits = DecoderLimits(),
 ) -> bytes:
     """Up to ``size`` bytes of the xz data ``read`` returns, its dictionaries clamped.
 
@@ -1532,7 +2044,7 @@ def _decode_xz_head(
         if zlib.crc32(header[:-4]) & 0xFFFFFFFF != stored:
             raise CorruptionError("XZ block header CRC32 mismatch")
         dec = natives.lzma_decompressor(
-            format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size)
+            format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size, limits)
         )
         fed = 0
         try:
@@ -1554,7 +2066,10 @@ def _decode_xz_head(
 
 
 def open_xz_head(
-    source: BinaryIO, size: int, natives: Natives = IN_PROCESS
+    source: BinaryIO,
+    size: int,
+    natives: Natives = IN_PROCESS,
+    limits: DecoderLimits = DecoderLimits(),
 ) -> BinaryIO:
     """The first ``size`` bytes an xz source decodes to, for a detection probe.
 
@@ -1565,4 +2080,4 @@ def open_xz_head(
     at ``size``. ``source`` is the probe's bounded reader: nothing here limits how
     much input a block reads to reach ``size`` bytes.
     """
-    return io.BytesIO(_decode_xz_head(source.read, size, natives))
+    return io.BytesIO(_decode_xz_head(source.read, size, natives, limits))

@@ -203,7 +203,7 @@ more indexed plugin, 2026-10-27).
       the format's own spelling of the type, not only the TAR typeflag byte; and the
       `zeros_to_eof` format list and `MEMBER_TYPE_UNKNOWN`'s STRICT-exemption rationale
       read as examples, not as the set of emitters.
-- [ ] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.
+- [x] 4.3 `dev-docs/IDEAS.md` and `VISION.md`: the public backend API item points here.
 
 ## 5. Later: decoders that compound (maintainer, 2026-10-28)
 

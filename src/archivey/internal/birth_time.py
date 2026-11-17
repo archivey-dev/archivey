@@ -73,7 +73,9 @@ def _windows_setter() -> Callable[[str | int, datetime], bool] | None:
     share_all = 0x1 | 0x2 | 0x4
     open_existing = 3
     # A directory opens only with backup semantics; a reparse point is changed itself.
-    flags = 0x02000000 | 0x00200000
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    flags = file_flag_backup_semantics | file_flag_open_reparse_point
 
     def set_windows(target: str | int, when: datetime) -> bool:
         ticks = _microseconds_since(_FILETIME_EPOCH, when) * 10
@@ -160,6 +162,8 @@ def _macos_setter() -> Callable[[str | int, datetime], bool] | None:
 
 
 def _platform_setter() -> Callable[[str | int, datetime], bool] | None:
+    """This system's birth-time setter, or ``None`` where there is none or its
+    library calls cannot be bound."""
     try:
         if sys.platform == "win32":
             return _windows_setter()

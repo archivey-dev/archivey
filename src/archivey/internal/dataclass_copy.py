@@ -48,6 +48,8 @@ _PLANS: dict[
 def _plan(
     cls: type[DataclassInstance],
 ) -> tuple[attrgetter[Any], dict[str, int]] | None:
+    """The getter and field positions :func:`copy_with` uses for ``cls``, or ``None``
+    when ``cls`` must be copied with ``dataclasses.replace``."""
     names = tuple(f.name for f in dataclasses.fields(cls))
     if len(names) < 2:  # attrgetter of one name returns the value, not a tuple
         return None

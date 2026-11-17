@@ -38,6 +38,7 @@ from archivey.internal.streams.streamtools.binaryio import (
     source_byte_size,
 )
 from archivey.internal.streams.streamtools.slice import (
+    _MAX_OFFSET,
     SharedView,
     _already_at,
     _clamp_slice_length,
@@ -129,7 +130,7 @@ class SharedSource:
             raise ValueError(f"offset {offset} or length {n} is negative")
         if self._size is not None:
             n = max(0, min(n, self._size - offset))
-        if n == 0:
+        if n == 0 or offset > _MAX_OFFSET:
             return b""
         with self._lock:
             self._raise_if_closed()

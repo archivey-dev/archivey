@@ -249,6 +249,9 @@ _REFUSALS_TESTED_ABOVE = {
     "archivey.internal.backends.zip_aes.WinZipAesDecryptStream",
 }
 _CLOSE_STATE_FIRST = {
+    "archivey.internal.backends.rar_forward_reader._ForwardMemberStream": (
+        "assigns its callback before DelegatingStream.__init__; close uses only the base state"
+    ),
     "archivey.internal.streams.streamtools.base.DelegatingStream": (
         "assigns _inner and _subclass_closes_inner before is_seekable()"
     ),
@@ -295,6 +298,7 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.bomb_tracker._RatioGuard": "plain assignments only",
     "archivey.internal.streams.counting.CountingReader": "plain assignments only",
     "archivey.internal.streams.counting.OutputCountingStream": "plain assignments only",
+    "archivey.internal.streams.counting.BudgetDrawStream": "plain assignments only",
     "archivey.internal.streams.counting.SeekCountingStream": "plain assignments only",
     "archivey.internal.streams.codecs.zlib_codec._DeflateEndCheckStream": (
         "plain assignments only"
@@ -311,7 +315,9 @@ _CLOSE_STATE_FIRST = {
     "archivey.internal.streams.codecs.stdlib_takeover._StdlibOnAcceleratorError": (
         "plain assignments only"
     ),
-    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": "plain assignments only",
+    "archivey.internal.streams.codecs.rapidgzip_select._StdlibSeekContract": (
+        "plain assignments only"
+    ),
     "archivey.internal.volumes.JoinedViews": (
         "assigns _views, then ConcatenatedFile.__init__, which sets its close state "
         "first; its views come from SharedSource.view, which has already checked them"
@@ -330,6 +336,12 @@ _CLOSE_STATE_FIRST = {
     ),
     "archivey.internal.backends.rar_reader._UnrarOwnedStream": (
         "assigns every field close() reads before DelegatingStream.__init__"
+    ),
+    "archivey.internal.backends.rar_reader._RollingUnrarStream": (
+        "assigns every field close() reads before DelegatingStream.__init__"
+    ),
+    "archivey.internal.backends.rar_forward_reader._ForwardUnrarStream": (
+        "assigns _fpass, then the parent's fields, before DelegatingStream.__init__"
     ),
     "archivey.internal.streams.respawn.RespawnStream": "plain assignments only",
     "archivey.internal.backends.rar_copy_sources._TeeBlock": "plain assignments only",

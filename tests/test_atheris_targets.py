@@ -10,13 +10,23 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
+import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyError, open_archive
+from archivey import ArchiveFormat, ArchiveyError, ContainerFormat, open_archive
 from tests.atheris_fuzz import TARGET_NAMES, seeds as fuzz_seeds
+from tests.atheris_fuzz.oracles import (
+    ORACLE_TARGETS,
+    _compare,
+    _extract,
+    _make_accessible,
+    extract_diff_one,
+    oracle_seeds,
+)
 from tests.atheris_fuzz.seeds import (
     _compressed_tar_seeds,
     _koly_block,
@@ -185,3 +195,91 @@ def test_soak_workflow_runs_every_accelerator_target() -> None:
     accel = [name for name in TARGET_NAMES if name.endswith("_accel")]
     assert accel
     assert [name for name in accel if name not in matrix] == []
+
+
+@pytest.mark.parametrize("name", sorted(ORACLE_TARGETS))
+def test_oracle_targets_agree_on_every_seed(name: str) -> None:
+    # Each oracle reads a seed two to four ways; a seed they disagree on would fail
+    # every run on its first iteration.
+    target = ORACLE_TARGETS[name]
+    for seed in oracle_seeds():
+        target(seed)
+
+
+def test_oracle_targets_are_registered() -> None:
+    assert set(ORACLE_TARGETS) <= set(TARGET_NAMES)
+
+
+def _tar_with_modes(*entries: tuple[str, int]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, mode in entries:
+            info = tarfile.TarInfo(name)
+            info.mode = mode
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            else:
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b"x"))
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        (("{n}", 0o000),),
+        (("{n}/", 0o500), ("{n}/f", 0o644)),
+    ],
+    ids=["unreadable-file", "read-only-dir"],
+)
+def test_extract_diff_reads_and_removes_restrictive_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: tuple[tuple[str, int]]
+) -> None:
+    # As a user that is not root (CI), a member at mode 000 could not be read, and a
+    # read-only directory could not be emptied, so it leaked into the next input.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    # The first byte, the first member name's first letter, picks the policy:
+    # ord("a") % 3 == 1, "b" 2, "c" 0, so the three names run all three.
+    for n in "abc":
+        data = _tar_with_modes(*((name.format(n=n), mode) for name, mode in entries))
+        tree, error = _extract(
+            data,
+            ContainerFormat.TAR,
+            streaming=False,
+            dest=tmp_path / "check",
+            policy="standard",
+        )
+        assert error is None
+        assert tree
+        _make_accessible(tmp_path / "check")
+        shutil.rmtree(tmp_path / "check")
+        extract_diff_one(data)
+    assert list(tmp_path.iterdir()) == []
+
+
+_ROW = (("a", "FILE", None), "0123456789abcdef:1")
+_ERR_ROW = (("a", "FILE", None), "ERR:CorruptionError")
+
+
+def test_compare_flags_a_member_that_fails_in_one_mode_only() -> None:
+    with pytest.raises(AssertionError, match="differ at member 0"):
+        _compare(
+            "t", ContainerFormat.TAR, ([_ROW], True, None), ([_ERR_ROW], True, None)
+        )
+    with pytest.raises(AssertionError, match="differ at member 0"):
+        _compare(
+            "t",
+            ContainerFormat.TAR,
+            ([_ERR_ROW], True, None),
+            ([_ROW], True, None),
+            second_may_fail=True,
+        )
+    # A pipe may fail where the seekable read has the bytes.
+    _compare(
+        "t",
+        ContainerFormat.TAR,
+        ([_ROW], True, None),
+        ([_ERR_ROW], True, None),
+        second_may_fail=True,
+    )

@@ -287,6 +287,18 @@ def requires_unrar_cli() -> pytest.MarkDecorator:
     )
 
 
+def unrar_reads_from_pipes() -> bool:
+    """Whether archivey reads a RAR archive from a non-seekable source here: that takes
+    RARLAB ``unrar`` 7.00 or later (``RarForwardReader``)."""
+    from archivey.exceptions import ArchiveyError
+    from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
+
+    try:
+        return unrar_reads_rolling_volumes()
+    except ArchiveyError:
+        return False
+
+
 SEVEN_ZIP_CLI_TIMEOUT = 30.0
 """Seconds a ``7z`` command-line run may take before :func:`run_7z` stops it."""
 
@@ -368,6 +380,24 @@ def sevenzip_lists_arm64() -> bool:
         print(f"7z i did not finish: {exc}", file=sys.stderr)
         return False
     return re.search(r"\bARM64\b", listing) is not None
+
+
+@functools.cache
+def sevenzip_reads_rar() -> bool:
+    """Whether ``7z i`` lists the RAR format, so ``7z x`` can extract a RAR archive.
+
+    Fedora's ``7zip`` package is built without the unRAR code (its licence), so its
+    ``7z`` lists no ``Rar`` format and exits 2 on a RAR archive. A missing ``7z``, or a
+    run that does not finish, is false; the latter is written to stderr once.
+    """
+    if shutil.which("7z") is None:
+        return False
+    try:
+        listing = run_7z(["i"], text=True).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"7z i did not finish: {exc}", file=sys.stderr)
+        return False
+    return re.search(r"\bRar5?\b", listing) is not None
 
 
 @functools.cache
@@ -460,6 +490,33 @@ def pytest_exception_interact(node, call, report) -> None:
         tr.write_line(msg, red=True, bold=True)
 
 
+def _put_winrar_on_path() -> None:
+    """Put a WinRAR install the finder would fall back to on ``PATH`` for this run.
+
+    Many tests point ``PATH`` at a folder of fake binaries and expect archivey to
+    find nothing else, so :func:`_no_winrar_fallback` turns the Windows fallback off
+    in every test. A machine whose RARLAB programs live only in WinRAR's folder would
+    then skip or fail its RAR data tests; with the folder on ``PATH`` they run as on a
+    machine where ``unrar`` is installed there. Child processes inherit it too.
+    """
+    from archivey.internal.backends.rar_unrar import winrar_install_candidates
+
+    folders = dict.fromkeys(os.path.dirname(p) for p in winrar_install_candidates())
+    if folders:
+        os.environ["PATH"] = os.pathsep.join([*folders, os.environ.get("PATH", "")])
+
+
+@pytest.fixture(autouse=True)
+def _no_winrar_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the RARLAB finder look on ``PATH`` only (see :func:`_put_winrar_on_path`).
+
+    The fallback's own tests restore it with ``monkeypatch.setattr``.
+    """
+    from archivey.internal.backends import rar_unrar
+
+    monkeypatch.setattr(rar_unrar, "winrar_install_candidates", list)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register the shared Hypothesis settings profile used by property-safety tests.
 
@@ -468,7 +525,10 @@ def pytest_configure(config: pytest.Config) -> None:
     the mutation harness's ``ARCHIVEY_FUZZ_MUTATIONS`` pattern. Hypothesis is a ``dev``
     dependency; under ``[core-only]`` the import is absent and this is a no-op (the
     property module itself skips collection).
+
+    It also puts a WinRAR install on ``PATH`` first (:func:`_put_winrar_on_path`).
     """
+    _put_winrar_on_path()
     try:
         from hypothesis import settings
     except ImportError:
@@ -487,6 +547,16 @@ def pytest_configure(config: pytest.Config) -> None:
         derandomize=True,
     )
     settings.load_profile("archivey")
+
+
+@pytest.fixture
+def zip_general_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open every ZIP member through the codec layer: no small member is read whole at
+    open (``ZipReader._speculative_small_member``). For tests that inject faults into,
+    or count, what that layer builds."""
+    from archivey.internal.backends import zip_reader
+
+    monkeypatch.setattr(zip_reader, "_SPECULATIVE_MAX", -1)
 
 
 @pytest.fixture
@@ -556,3 +626,12 @@ def unrar_mask_route(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(RarReader, "_synthetic_entry", lambda self, *args: None)
     monkeypatch.setattr(RarReader, "_nonsolid_pass_batches", lambda self: [])
+
+
+@pytest.fixture
+def no_rolling_volumes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read RAR as an ``unrar`` older than rolling volumes (``rar_rolling``) does:
+    a stream source's large member and solid pass are copied whole."""
+    from archivey.internal.backends.rar_reader import RarReader
+
+    monkeypatch.setattr(RarReader, "_rolling_ok", lambda self: False)

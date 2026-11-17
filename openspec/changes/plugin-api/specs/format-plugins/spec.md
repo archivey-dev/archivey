@@ -105,6 +105,23 @@ members in the same order.
 | Decoded data shorter than the listed size | `TruncatedError` when read |
 | A second walk yields another member at the opened member's place | `ValueError` (a plugin bug) |
 
+### Requirement: A sequential plugin may list from a header and read data on demand
+
+A `SequentialReader` that sets `data_on_demand` lists every member from a header at the
+start of the archive and hands each member's data as a `MemberSpan.data` stream that
+reads the rest of the archive only when it is read. The adapter SHALL close such a
+stream unread when the walk moves on instead of draining it, SHALL report the listing
+as `ListingCost.INDEXED`, and SHALL drop the reports a walk started over to reach member
+data makes, since the listing walk made them already.
+
+#### Scenario: data on demand
+
+| Case | Expected |
+| --- | --- |
+| An RPM whose payload does not decode; `members()` | Every member; `CorruptionError` only when a member's data is read |
+| An RPM; `info.cost.listing_cost` | `INDEXED` |
+| An RPM with a member reported at listing; `read()` of another member | The report once |
+
 ### Requirement: Sequential plugin formats are detected inside compression streams
 
 Detection SHALL check registered sequential plugins' magic inside any single-file

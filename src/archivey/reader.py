@@ -1,21 +1,33 @@
-"""Public read-only archive interface."""
+"""Public read-only archive interface: the reader and member-stream classes.
+
+:func:`~archivey.open_archive` returns an :class:`ArchiveReader` (random access) or a
+:class:`ForwardArchiveReader` (one forward pass, from a pipe too), and member reads
+return an :class:`ArchiveStream`. The classes here are abstract: they fix the public
+methods and their docstrings, and archivey's implementations live under
+``archivey.internal``. They are not built by callers: an :class:`ArchiveStream` or
+:class:`MemberPass` comes from a reader or :func:`~archivey.open_stream`.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import io
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self, TypeVar, cast
+from typing import Any, Self, TypeVar
 
 from archivey.config import ExtractionLimits
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
-from archivey.diagnostics import DiagnosticSummary, ExtractionReport, MemberListReport
-from archivey.exceptions import ArchiveyError
+from archivey.diagnostics import (
+    DiagnosticSummary,
+    ExtractionReport,
+    MemberListReport,
+    VerifyReport,
+)
+from archivey.internal.arg_checks import check_bool
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
 from archivey.types import (
@@ -24,11 +36,14 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    BackendUse,
     ExtractionPolicy,
     ExtractionPolicyStr,
     ExtractionProgress,
     MemberFilter,
     MemberSelectorArg,
+    OnBlocked,
+    OnBlockedStr,
     OnError,
     OnErrorStr,
     OverwritePolicy,
@@ -54,47 +69,16 @@ MemberSelector = MemberSelectorArg
 _T_co = TypeVar("_T_co", covariant=True)
 
 
-def _with_implementation(cls: type, implementation: type) -> type:
-    """``cls`` on top of archivey's own implementation, as a 0.2 subclass of the then
-    concrete class was: what ``cls`` defines wins, and the rest is archivey's. Kept
-    on ``cls`` itself, so it goes when ``cls`` goes."""
-    built = cls.__dict__.get("_archivey_with_implementation")
-    if built is None:
-        built = type(cls)(
-            cls.__name__,
-            (cls, implementation),
-            {"__module__": cls.__module__, "__qualname__": cls.__qualname__},
+def _refuse_abstract(cls: type, get: str) -> None:
+    """Raise ``TypeError`` for ``cls`` when it has an abstract method left: the public
+    base itself, or an incomplete subclass. The message says where to get one
+    instead."""
+    missing = getattr(cls, "__abstractmethods__", None)
+    if missing:
+        raise TypeError(
+            f"Can't instantiate abstract class {cls.__qualname__} with abstract "
+            f"methods {', '.join(sorted(missing))}; get one from {get}"
         )
-        type.__setattr__(cls, "_archivey_with_implementation", built)
-    return built
-
-
-def _class_to_build(cls: type, base: type, implementation: type, get: str) -> type:
-    """The class to build for ``cls``, which is ``base`` itself or a subclass with an
-    abstract method left: archivey's own implementation, after a deprecation
-    warning. Until 0.4.0 both still work, as in 0.2 (DR-12a)."""
-    if cls is base:
-        message = (
-            f"constructing {base.__name__} directly is deprecated and stops working "
-            f"in archivey 0.4.0; get one from {get}"
-        )
-        built = implementation
-    elif issubclass(cls, implementation):
-        # An abstract subclass of archivey's own class is not a 0.2 subclass: it
-        # gets the usual error for an abstract class, or none, as it would without
-        # this.
-        return cls
-    else:
-        missing = ", ".join(sorted(cls.__dict__.get("__abstractmethods__", ())))
-        message = (
-            f"{cls.__qualname__} subclasses {base.__name__} without implementing "
-            f"{missing}; this is deprecated and stops working in archivey 0.4.0. "
-            f"Implement them, or wrap the {base.__name__} archivey gives you "
-            "instead of subclassing it"
-        )
-        built = _with_implementation(cls, implementation)
-    warnings.warn(message, DeprecationWarning, stacklevel=3)
-    return built
 
 
 # How much ``ArchiveStream.verify()`` asks for per read: large enough that the call
@@ -110,25 +94,12 @@ class ArchiveStream(ReadOnlyIOStream):
     :meth:`~archivey.ArchiveReader.open`, :meth:`~archivey.ForwardArchiveReader.stream_members`
     and :func:`~archivey.open_stream` return one; there is no need to build one yourself.
     It is an ``io.RawIOBase``, and ``seekable()`` says whether it can seek.
-
-    Building one directly, or through a subclass that leaves an abstract method
-    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
-    builds archivey's own stream, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is ArchiveStream or getattr(cls, "__abstractmethods__", None):
-            # Deprecated: build archivey's own stream (under the subclass, for a
-            # subclass), which then runs its ``__init__`` with these arguments.
-            from archivey.internal.streams.archive_stream import ArchiveStreamImpl
-
-            built = _class_to_build(
-                cls,
-                ArchiveStream,
-                ArchiveStreamImpl,
-                "ArchiveReader.open(), stream_members() or open_stream()",
-            )
-            return super().__new__(cast("type[Self]", built))
+        # ``io.RawIOBase`` builds an instance without the abstract-method check that
+        # ``object.__new__`` makes, so it is made here.
+        _refuse_abstract(cls, "ArchiveReader.open(), stream_members() or open_stream()")
         return super().__new__(cls)
 
     @property
@@ -252,14 +223,18 @@ class ArchiveStream(ReadOnlyIOStream):
         stream is still put back where it was. Otherwise compare the result with
         ``verifiable``: when they are equal, nothing more can be checked. A closed
         stream raises ``ValueError``, as every ``io`` method does, also after
-        ``verify()`` consumed it. Which reads a target needs can get cheaper in a later
-        release; the result and the errors stay the same.
+        ``verify()`` consumed it. A ``password_only`` that is not a ``bool`` raises
+        :class:`~archivey.ArchiveyUsageError` (also a ``TypeError``) before anything is
+        read; on a closed stream the ``ValueError`` comes first. Which reads a target
+        needs can get cheaper in a later release; the result and the errors stay the
+        same.
 
         Experimental: any release, a patch included, may change or remove this method,
         its arguments or what it returns.
         """
         if self.closed:
             raise ValueError("I/O operation on closed file.")
+        check_bool(password_only, call="verify(password_only=…)")
         level = Verification.UNLOCKED if password_only else Verification.CHECKSUM
         if not self.seekable():
             if self._verify_consumed():
@@ -429,27 +404,14 @@ class MemberPass(Iterator[_T_co]):
             for member, stream in members:
                 if member.is_file and stream is not None:
                     process(member, stream.read())
-
-    Building one directly, or through a subclass that leaves an abstract method
-    unimplemented (as a subclass written for archivey 0.2 does), is deprecated: it
-    builds archivey's own pass, with a ``DeprecationWarning``, until 0.4.0.
     """
 
     __slots__ = ()
 
     def __new__(cls, *args: Any, **kwargs: Any) -> Self:
-        if cls is MemberPass or getattr(cls, "__abstractmethods__", None):
-            # Deprecated: build archivey's own pass (under the subclass, for a
-            # subclass), which then runs its ``__init__`` with these arguments.
-            from archivey.internal.member_pass import MemberPassImpl
-
-            built = _class_to_build(
-                cls,
-                MemberPass,
-                MemberPassImpl,
-                "stream_members() or by iterating the reader",
-            )
-            return super().__new__(cast("type[Self]", built))
+        # Without this, a call with arguments fails on ``object.__new__``'s "takes no
+        # arguments" before its abstract-method check.
+        _refuse_abstract(cls, "stream_members() or by iterating the reader")
         return super().__new__(cls)
 
     @override
@@ -539,6 +501,26 @@ class ForwardArchiveReader(ABC):
 
     @property
     @abstractmethod
+    def backends_used(self) -> tuple[BackendUse, ...]:
+        """The readers, packages and programs this reader has run so far, in the order
+        each was first used.
+
+        A snapshot: it grows as members are read. The format reader comes first
+        (``BackendUse("reader", "archivey", "ZIP")``, or the plugin that reads the
+        format), then each optional package the moment it decodes something (``pyppmd``
+        for a PPMd member, ``rapidgzip`` when the accelerator runs), each plugin codec
+        with the packages its ``requires`` names, and each external program with its
+        path (``unrar`` at ``/usr/bin/unrar``). An archive a plugin reads through
+        ``ReaderContext.open_nested`` adds its own reader and packages here. The
+        standard library's codecs are not listed, except zstd, which names the module in
+        use (``compression.zstd`` on Python 3.14 and later). Decodes made while
+        detecting the format are not listed either. Experimental, as
+        :class:`~archivey.BackendUse` is.
+        """
+        ...
+
+    @property
+    @abstractmethod
     def diagnostics(self) -> DiagnosticSummary:
         """Fresh immutable cumulative snapshot of diagnostics for this reader."""
         ...
@@ -557,8 +539,8 @@ class ForwardArchiveReader(ABC):
     def members_report(self) -> MemberListReport:
         """Materialize the member listing and return a report.
 
-        ``report.error is None`` means ``report.members`` is complete. A non-``None``
-        error is terminal archive damage found while listing (a
+        ``report.ok`` (``report.error is None``) means ``report.members`` is complete.
+        A non-``None`` error is terminal archive damage found while listing (a
         :class:`~archivey.exceptions.CorruptionError`, including
         :class:`~archivey.exceptions.TruncatedError`): the tuple is the recovered
         prefix. Only that damage is returned instead of raised. Every other failure
@@ -581,8 +563,7 @@ class ForwardArchiveReader(ABC):
         For a complete-or-raise list on a streaming reader::
 
             report = reader.members_report()
-            if report.error is not None:
-                raise report.error
+            report.raise_for_failure()
         """
         ...
 
@@ -613,6 +594,18 @@ class ForwardArchiveReader(ABC):
         ``members`` is an optional selector: a predicate, any iterable of names or
         members (read once, so a generator works), or ``None`` for all. The yielded
         stream is valid only until the iterator advances.
+
+        **A yielded member may not be final.** The pass hands it over before archivey
+        has read the rest of the archive, and it is updated in place when archivey
+        learns more: a ZIP read from a pipe gets its type, permissions and link target
+        from the index at its end, so a symlink is yielded looking like a file; and in
+        a pass that lists as it goes (every streaming reader, and TAR), a member whose
+        name a later member reuses is yielded with ``is_current`` set to ``True``.
+        While :attr:`~archivey.ArchiveMember.member_state_final` is ``False``, do not
+        act on those fields in a way you cannot take back (an upload, a database row,
+        an event sent on): check it first. The end of the pass settles the listing, but
+        a link target or size that nothing has read yet can still be pending then, so
+        the flag stays the check after the loop too. ``extract_all`` already waits.
 
         The stream is ``None`` for every member that has no data of its own: links,
         special entries, tombstones and most directories. A directory that declares
@@ -659,9 +652,10 @@ class ForwardArchiveReader(ABC):
         ``seekable_members=True``: ``seekable()`` is ``False``, ``seek()`` raises
         ``io.UnsupportedOperation``, and ``tell()`` works. A nested archive read from
         it is a non-seekable source: ``open_archive()`` accepts it only with
-        ``streaming=True`` and only for TAR, ZIP and single-file compressors. For a member
-        you need to seek, nested archives included, use :meth:`~ArchiveReader.open` under
-        ``seekable_members=True``.
+        ``streaming=True``, and only for a format that reads forward
+        (``format_availability(format).required_source`` is ``FORWARD_ONLY``). For a
+        member you need to seek, nested archives included, use
+        :meth:`~ArchiveReader.open` under ``seekable_members=True``.
 
         On a default reader the pass owns the reader while it runs:
         :meth:`~ArchiveReader.open`, :meth:`~ArchiveReader.read`,
@@ -695,35 +689,43 @@ class ForwardArchiveReader(ABC):
         ...
 
     @abstractmethod
-    def verify_all(self) -> tuple[tuple[ArchiveMember, ArchiveyError], ...]:
-        """Read every member's data to run its checks; return the members that failed.
+    def verify_all(self) -> VerifyReport:
+        """Read every member's data to run its checks; report what failed.
+
+        Returns a :class:`~archivey.VerifyReport`. Its ``ok`` is ``True`` only when
+        every check passed: no member failed, and nothing stopped the walk through the
+        archive. ``report.raise_for_failure()`` raises the first problem instead.
 
         Each member is read as :meth:`ArchiveStream.verify` reads one, with
         ``verifiable`` as the target, and a member that fails does not stop the call:
-        it is returned with its error, and the next member is read. A failed check
-        that covers several members (a 7z folder CRC) returns each member it covers,
-        each paired with the same error object, whichever member's read reached the
-        check; that error's ``member_name`` is the member whose read reached it, not
-        the member it is paired with. Afterwards every
-        listed member has ``verified == verifiable`` except the ones returned. A member
-        whose password the password input did not supply is returned with its
-        ``EncryptionError``. The levels are raised on the members in place, so
+        it goes in ``report.failures`` with its error, and the next member is read. A
+        failed check that covers several members (a 7z folder CRC) puts each member it
+        covers in ``failures``, each paired with the same error object, whichever
+        member's read reached the check; that error's ``member_name`` is the member
+        whose read reached it, not the member it is paired with. Afterwards every
+        listed member has ``verified == verifiable`` except the ones in ``failures``.
+        A member whose password the password input did not supply is a failure with
+        its ``EncryptionError``. The levels are raised on the members in place, so
         :meth:`~ArchiveReader.members` and :meth:`members_report` show them, and so do
         streams of those members opened later.
 
-        Damage to the archive's structure that stops the listing ends the call without
-        raising: :meth:`members_report` returns it as ``error``. A failed checksum over
-        the whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the
-        same way, and every listed file is returned with that error. The checksum may
+        Damage to the archive's structure that stops the walk (a ZIP cut inside its
+        central directory, a TAR cut inside a member) ends the call without raising:
+        it is ``report.structure_error``, the same error as
+        ``members_report().error``, and ``ok`` is ``False``. A failed checksum over the
+        whole compressed archive (the gzip trailer of a ``.tar.gz``) ends it the same
+        way, and every listed file is a failure with that error too. The checksum may
         cover only some of the files (a concatenated ``.tar.gz``, a ``.tar.zst`` of
-        several frames) and nothing says which, so all are returned rather than pass
-        a damaged one. When damage keeps such a check from running at all (a 7z
-        folder whose decode stops early, a ``.tar.gz`` cut before its trailer), each
-        member only that check would prove is returned too, with an error that says
-        so: damage does not lower ``verifiable``. Archive-level findings,
-        such as a missing end-of-archive marker, are in ``reader.diagnostics``. To check
-        everything about an archive, call ``verify_all()``, then look at
-        ``members_report()`` and ``diagnostics``.
+        several frames) and nothing says which, so all are failures rather than pass a
+        damaged one. When damage keeps such a check from running at all (a 7z folder
+        whose decode stops early, a ``.tar.gz`` cut before its trailer), each member
+        only that check would prove is a failure too, with an error that says so:
+        damage does not lower ``verifiable``.
+
+        ``report.diagnostics`` holds the diagnostics this call emitted. They do not
+        count toward ``ok``: the :class:`~archivey.DiagnosticPolicy` decides which
+        codes are errors, and a code it raises on stops the call with
+        :class:`~archivey.DiagnosticRaisedError`.
 
         On a random-access reader a second call reads again the members that failed
         (asking the password input again), the members whose ``verifiable`` is
@@ -753,6 +755,7 @@ class ForwardArchiveReader(ABC):
         policy: ExtractionPolicy | ExtractionPolicyStr = ExtractionPolicy.STRICT,
         overwrite: OverwritePolicy | OverwritePolicyStr = OverwritePolicy.ERROR,
         on_error: OnError | OnErrorStr = OnError.STOP,
+        on_blocked: OnBlocked | OnBlockedStr = OnBlocked.RAISE,
         abort_on: Collection[AbortOn | AbortOnStr] = (),
         on_progress: Callable[[ExtractionProgress], None] | None = None,
         limits: ExtractionLimits | None = None,
@@ -766,8 +769,9 @@ class ForwardArchiveReader(ABC):
         checks, so it sees unsafe members too; it may rename/sanitize a member (return
         a ``.replace()``d copy) or skip it (return ``None``), and the safety checks run
         on what it returns. The call runs under the config the reader was opened with;
-        ``limits`` overrides its extraction limits for this call only. Returns an :class:`~archivey.ExtractionReport` whose diagnostic
-        summary is the delta for this extraction call.
+        ``limits`` overrides its extraction limits for this call only. Returns an
+        :class:`~archivey.ExtractionReport` whose diagnostic summary is the delta for
+        this extraction call.
 
         ``abort_on`` names events that end the whole call the first time they occur —
         raising instead of returning a report. It is independent of ``on_error``: see
@@ -782,14 +786,22 @@ class ForwardArchiveReader(ABC):
         as the report of a real extraction into the same ``dest`` would, with paths
         under ``dest``.
 
-        A member refused by a safety check is skipped and reported as ``BLOCKED``; it
-        raises only when ``abort_on`` names it.
+        A member refused by a safety check is never written, and the rest still
+        extract. Under ``on_blocked="raise"`` (the default) the call then raises
+        :class:`~archivey.FilterRejectionError`, whose ``report`` attribute is the full
+        report; under ``on_blocked="skip"`` it returns the report, with the member as
+        ``BLOCKED``. ``abort_on=["blocked_member"]`` raises at the first refusal
+        instead, before the rest are extracted (see :class:`~archivey.OnBlocked`).
 
         Raises:
+            FilterRejectionError: Under ``on_blocked="raise"`` (the default), a
+                safety check refused at least one member: raised once every member has
+                been processed, with the full report as its ``report`` attribute. Under
+                ``abort_on=["blocked_member"]``, raised at the first refusal, with
+                ``report`` set to ``None``.
             ExtractionError: Under ``on_error="stop"`` (the default), a member could not
                 be written, such as a file already at its destination under
                 ``overwrite="error"``. Its subclasses
-                :class:`~archivey.FilterRejectionError`,
                 :class:`~archivey.NameCollisionError` and
                 :class:`~archivey.NameRewrittenError` are raised for the events
                 ``abort_on`` names, whatever ``on_error`` says.
@@ -903,10 +915,10 @@ class ArchiveReader(ForwardArchiveReader):
         **Cost, when ``reader.cost.access_cost`` is ``SOLID``** (solid 7z/RAR, any
         compressed tar): members share one compression run, so opening one decodes
         every member before it. Doing that for each member in turn is quadratic in the
-        archive size. On a 7z or RAR reader, the first call that decodes again what an
-        earlier one decoded logs one INFO record per reader on the
-        ``archivey.backends`` logger saying so, and a compressed tar's backward seeks
-        report ``STREAM_REWIND_REDECOMPRESSES``. Prefer
+        archive size. On a 7z or RAR reader, a call that decodes again what an earlier
+        one decoded reports ``SOLID_OPEN_REDECOMPRESSES`` (recorded once per reader,
+        logged at INFO, raised on every such call if the policy raises on it), and a
+        compressed tar's backward seeks report ``STREAM_REWIND_REDECOMPRESSES``. Prefer
         :meth:`~ForwardArchiveReader.stream_members`, which decodes the run once.
 
         Raises:

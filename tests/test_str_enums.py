@@ -31,6 +31,7 @@ from archivey import (
     HashAlgorithm,
     LinkTargetNotFoundReason,
     NameRewrite,
+    OnBlocked,
     OptionalLibrary,
     StreamFormat,
 )
@@ -49,6 +50,7 @@ STR_VALUE_ENUMS: tuple[type[StrEnum], ...] = (
     NameRewrite,
     LinkTargetNotFoundReason,
     OptionalLibrary,
+    OnBlocked,
 )
 
 

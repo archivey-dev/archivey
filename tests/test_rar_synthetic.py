@@ -15,7 +15,7 @@ import stat
 import struct
 import subprocess
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import BytesIO
 from pathlib import Path
 
@@ -534,6 +534,7 @@ def _member_copy(reader: RarReader, name: str) -> object:
     return reader._synthetic_file(member, member._raw)
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_a_member_over_the_spool_limit_does_not_refuse_the_next() -> None:
     """A member copy refused for its size records nothing: a smaller one still fits.
 
@@ -547,6 +548,7 @@ def test_a_member_over_the_spool_limit_does_not_refuse_the_next() -> None:
         assert small is not None
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_a_member_refused_beside_another_copy_fits_once_that_closes() -> None:
     with _stream_reader("basic_nonsolid__.rar", 76 + 72 - 1) as reader:
         big = _member_copy(reader, "subdir/file2.txt")
@@ -687,6 +689,7 @@ def test_a_read_further_in_while_the_stream_is_held_starts_a_new_generation(
     assert not new.exists()
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 def test_a_solid_stream_copy_over_the_spool_limit_is_refused_and_not_recorded() -> None:
     """A stream source cannot fall back: the copy up to the member raises, and a
     read nearer the stream start that fits still copies (nothing is spawned here)."""
@@ -735,7 +738,7 @@ def test_a_solid_member_of_a_large_stream_on_disk_keeps_the_original(
         member = reader.get("file1.txt")
         assert isinstance(member._raw, RarMemberInfo)
         assert reader._synthetic_file(member, member._raw) is None
-        assert reader._solid_streams[0].file is None
+        assert 0 not in reader._solid_streams
 
 
 def test_the_chain_dictionary_counts_the_stream_alone() -> None:
@@ -817,6 +820,215 @@ def _three_streams(tmp_path: Path) -> Path:
     return out
 
 
+def _stream_charges(data: bytes, names: list[str]) -> list[int]:
+    """The spool charge of reading each of ``names`` alone, on a fresh reader."""
+    charges = []
+    for name in names:
+        with open_archive(BytesIO(data)) as reader:
+            assert isinstance(reader, RarReader)
+            reader.read(name)
+            assert reader._spool is not None
+            charges.append(reader._spool._written)
+    return charges
+
+
+# The last member of each of _three_streams's solid streams.
+_STREAM_ENDS = ["f1.txt", "f3.txt", "f5.txt"]
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_idle_solid_streams_give_back_their_charge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stream_source: bool
+) -> None:
+    """A read whose stream fits the spool limit on its own reads, whatever was read
+    before: the files of streams no read holds are removed to make room."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    expected = _pass_bytes(path)
+    charges = _stream_charges(data, _STREAM_ENDS)
+    if not stream_source:
+        # A name the mask cannot select alone: a path source then copies too.
+        monkeypatch.setattr(RarReader, "_plain_mask", lambda self, member: None)
+    live = _LiveFiles(monkeypatch)
+    source: object = BytesIO(data) if stream_source else path
+    with open_archive(source, config=_limited(max(charges))) as reader:  # type: ignore[arg-type]
+        for name in [*_STREAM_ENDS, _STREAM_ENDS[0]]:
+            assert reader.read(name) == expected[name]
+            assert live.live == 1
+    assert live.made == 4
+    assert live.live == 0
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_idle_streams_go_least_recently_read_first(tmp_path: Path) -> None:
+    """A stream read again moves behind the others: the one read longest ago is
+    removed first, not the one first read."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    expected = _pass_bytes(path)
+    c0, c1, c2 = _stream_charges(data, _STREAM_ENDS)
+    # Any two streams fit; all three do not.
+    limit = max(c0 + c1, c0 + c2, c1 + c2)
+    assert limit < c0 + c1 + c2
+    with open_archive(BytesIO(data), config=_limited(limit)) as reader:
+        assert isinstance(reader, RarReader)
+        for name in ["f1.txt", "f3.txt", "f1.txt", "f5.txt"]:
+            assert reader.read(name) == expected[name]
+        # The streams start at members 0, 2 and 4; f3's (2) was read longest ago.
+        assert list(reader._solid_streams) == [0, 4]
+
+
+@pytest.mark.usefixtures("no_rolling_volumes")
+@requires_unrar_cli()
+@requires_binary("rar")
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_a_copy_that_cannot_fit_removes_no_idle_stream(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stream_source: bool
+) -> None:
+    """Removing idle streams that cannot make room for a copy only throws their
+    files away: the copy is refused, or falls back, with the streams kept."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    c0, _, c2 = _stream_charges(data, _STREAM_ENDS)
+    # f1's stream fits; f5's does not, even alone.
+    assert c0 < c2
+    source: object = BytesIO(data) if stream_source else path
+    with open_archive(source, config=_limited(c0)) as reader:  # type: ignore[arg-type]
+        assert isinstance(reader, RarReader)
+        reader.read("f1.txt")
+        if stream_source:
+            with pytest.raises(ResourceLimitError):
+                reader.read("f5.txt")
+        else:
+            # A plain name: the path source reads f5 in place instead.
+            reader.read("f5.txt")
+        assert list(reader._solid_streams) == [0]
+        assert reader._solid_streams[0].file is not None
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_a_refused_budget_removes_no_idle_stream(tmp_path: Path) -> None:
+    """Once the budget recorded a refusal it refuses every reservation, so
+    removing idle streams cannot make room and none is removed."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    with open_archive(BytesIO(data), config=_limited(10**6)) as reader:
+        assert isinstance(reader, RarReader)
+        reader.read("f1.txt")
+        budget = reader._spool_budget("a test copy")
+        with pytest.raises(ResourceLimitError):
+            budget.check_total(10**7)
+        with pytest.raises(ResourceLimitError):
+            reader.read("f3.txt")
+        assert list(reader._solid_streams) == [0]
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_a_held_solid_stream_keeps_its_charge(tmp_path: Path) -> None:
+    """A stream file a read still holds is not removed: a copy that does not fit
+    beside it is refused."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    charges = _stream_charges(data, _STREAM_ENDS)
+    with open_archive(
+        BytesIO(data), config=_limited(max(charges)), concurrent_operations=True
+    ) as reader:
+        with reader.open(_STREAM_ENDS[0]) as held:
+            with pytest.raises(ResourceLimitError):
+                reader.read(_STREAM_ENDS[1])
+            held.read()
+        reader.read(_STREAM_ENDS[1])
+
+
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_the_stream_a_read_extends_is_not_removed(tmp_path: Path) -> None:
+    """Room for a read that extends an idle stream is made from the other idle
+    streams, never from the stream the read extends."""
+    path = _three_streams(tmp_path)
+    data = path.read_bytes()
+    expected = _pass_bytes(path)
+    first, last, other = _stream_charges(data, ["f0.txt", "f1.txt", "f2.txt"])
+    # f0 and f2 fit together; extending f0's stream to f1 then needs f2's room.
+    limit = last + other - 1
+    assert first + other <= limit
+    with open_archive(BytesIO(data), config=_limited(limit)) as reader:
+        assert isinstance(reader, RarReader)
+        for name in ["f0.txt", "f2.txt", "f1.txt"]:
+            assert reader.read(name) == expected[name]
+        assert list(reader._solid_streams) == [0]
+
+
+class _FailingFirstFile(rs.SyntheticArchive):
+    """A synthetic archive whose first temporary file cannot be made."""
+
+    failed = False
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if not _FailingFirstFile.failed:
+            _FailingFirstFile.failed = True
+            raise OSError(28, "No space left on device")
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def _charged_beyond_streams(reader: RarReader) -> int:
+    """Spool bytes charged to anything but the kept solid stream files."""
+    assert reader._spool is not None
+    kept = sum(stream.charge for stream in reader._solid_streams.values())
+    return reader._spool._written - kept
+
+
+@requires_unrar_cli()
+def test_a_batch_file_that_cannot_be_made_gives_its_charge_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _FIXTURES / "wildcard_names__.rar"
+    expected = _nonsolid_expected(path)
+    monkeypatch.setattr(_FailingFirstFile, "failed", False)
+    monkeypatch.setattr(rr, "SyntheticArchive", _FailingFirstFile)
+    with open_archive(BytesIO(path.read_bytes())) as reader:
+        assert isinstance(reader, RarReader)
+        assert reader._nonsolid_pass_batches()
+        got = {
+            member.name: stream.read()
+            for member, stream in reader.stream_members()
+            if stream is not None and member.is_file
+        }
+        assert _FailingFirstFile.failed
+        assert _charged_beyond_streams(reader) == 0
+    assert got == expected
+
+
+@pytest.mark.usefixtures("no_rolling_volumes")
+@requires_unrar_cli()
+@requires_binary("rar")
+def test_a_solid_run_file_that_cannot_be_made_gives_its_charge_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _three_streams(tmp_path)
+    with open_archive(path) as reader:
+        assert isinstance(reader, RarReader)
+        packed = [m.compress_size for m in reader._archive.members]
+    # Two runs, as in test_a_solid_pass_over_a_stream_joins_small_streams_into_runs.
+    monkeypatch.setattr(rr, "_pass_run_bytes", lambda limits: sum(packed[:4]))
+    monkeypatch.setattr(_FailingFirstFile, "failed", False)
+    monkeypatch.setattr(rr, "SyntheticArchive", _FailingFirstFile)
+    with open_archive(BytesIO(path.read_bytes())) as reader:
+        assert isinstance(reader, RarReader)
+        with pytest.raises(OSError, match="No space left"):
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+        assert _FailingFirstFile.failed
+        assert _charged_beyond_streams(reader) == 0
+
+
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 @pytest.mark.parametrize(
     ("fixture", "streams", "password"),
@@ -845,6 +1057,7 @@ def test_a_solid_pass_over_a_stream_runs_each_stream_under_a_small_limit(
     assert live.live == 0
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 @requires_binary("rar")
 def test_a_solid_pass_over_a_stream_joins_small_streams_into_runs(
@@ -931,6 +1144,7 @@ def test_a_solid_pass_fits_a_limit_below_the_archive() -> None:
     assert _pass_bytes(BytesIO(raw), config=_limited(limit)) == expected
 
 
+@pytest.mark.usefixtures("no_rolling_volumes")
 @requires_unrar_cli()
 def test_a_solid_pass_closed_early_removes_its_file(
     monkeypatch: pytest.MonkeyPatch,
@@ -946,6 +1160,11 @@ def test_a_solid_pass_closed_early_removes_its_file(
     assert live.live == 0
 
 
+def _run_plan(reader: RarReader) -> list[rr._PassRun] | None:
+    groups = reader._solid_pass_groups()
+    return None if groups is None else reader._solid_pass_run_plan(groups)
+
+
 def test_a_stream_pass_charges_each_member_its_own_run() -> None:
     """One stream per run: a member pays for its solid chain alone. One run over
     both streams: the whole archive's walk, as unrar keeps the window across."""
@@ -953,7 +1172,7 @@ def test_a_stream_pass_charges_each_member_its_own_run() -> None:
     with open_archive(BytesIO(raw), config=_limited(_ONE_STREAM_PER_RUN)) as reader:
         assert isinstance(reader, RarReader)
         members = reader._archive.members
-        runs = reader._solid_pass_run_plan()
+        runs = _run_plan(reader)
         assert runs is not None and len(runs) == 2
         costs = reader._stream_pass_costs(runs)
         last = reader._members[-1]
@@ -963,7 +1182,7 @@ def test_a_stream_pass_charges_each_member_its_own_run() -> None:
             assert costs[id(member)] == rr._chain_dictionary_cost(members, chain)
     with open_archive(BytesIO(raw)) as reader:
         assert isinstance(reader, RarReader)
-        assert reader._solid_pass_run_plan() is None
+        assert _run_plan(reader) is None
         packed = [
             i
             for i, info in enumerate(reader._archive.members)
@@ -1191,6 +1410,86 @@ def test_a_tainted_batch_leaves_the_next_batch_on_its_own_run(
     assert _pass_bytes(path) == expected
     # Three runs, and member 2 read on its own after batch 0 stopped lining up.
     assert len(spawns.calls) == 4
+
+
+def _main_solid_cleared(data: bytes) -> bytes:
+    """``data`` with its MAIN header's solid flag cleared and the header CRC fixed.
+
+    The members keep their own solid flags, which ``unrar`` still honours.
+    """
+    out = bytearray(data)
+    if out.startswith(b"Rar!\x1a\x07\x01\x00"):
+        pos = 12  # signature and CRC32: the size vint, type, flags, archive flags
+        size, start = _load_vint(out, pos)
+        block_type, at = _load_vint(out, start)
+        header_flags, at = _load_vint(out, at)
+        if header_flags & 0x01:
+            _, at = _load_vint(out, at)
+        assert block_type == 1 and out[at] & 0x04
+        out[at] &= ~0x04
+        struct.pack_into("<I", out, 8, zlib.crc32(bytes(out[12 : start + size])))
+    else:
+        flags, size = struct.unpack_from("<HH", out, 10)
+        assert out[9] == 0x73 and flags & 0x08
+        struct.pack_into("<H", out, 10, flags & ~0x08)
+        struct.pack_into("<H", out, 7, zlib.crc32(bytes(out[9 : 7 + size])) & 0xFFFF)
+    return bytes(out)
+
+
+def _load_vint(buf: bytearray, pos: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        byte = buf[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return value, pos
+
+
+def _outcome(read: Callable[[], bytes]) -> bytes | type[BaseException]:
+    try:
+        return read()
+    except ArchiveyError as exc:
+        return type(exc)
+
+
+@requires_unrar_cli()
+@pytest.mark.parametrize("fixture", ["basic_solid__.rar", "basic_solid__rar4.rar"])
+@pytest.mark.parametrize("stream_source", [False, True], ids=["path", "stream"])
+def test_a_member_with_its_own_solid_flag_is_left_out_of_batches(
+    tmp_path: Path, fixture: str, stream_source: bool
+) -> None:
+    """In an archive whose MAIN header is not solid, ``unrar`` still decodes a
+    member flagged solid on top of the member it decoded before. In a batch that
+    is the batch's previous member; read alone it is an empty window. So such a
+    member is never in a batch, and the pass reads what ``open()`` reads."""
+    data = _main_solid_cleared((_FIXTURES / fixture).read_bytes())
+    path = tmp_path / fixture
+    path.write_bytes(data)
+
+    def source() -> object:
+        return BytesIO(data) if stream_source else path
+
+    with open_archive(source()) as reader:  # type: ignore[arg-type]
+        assert isinstance(reader, RarReader)
+        assert not reader._archive.is_solid
+        batches = reader._nonsolid_pass_batches()
+        alone = {
+            m.name: _outcome(lambda m=m: reader.read(m))
+            for m in reader.members()
+            if m.is_file
+        }
+    # The fixture's later members decode only on top of the earlier ones.
+    assert sum(isinstance(v, bytes) for v in alone.values()) < len(alone)
+    with open_archive(source()) as reader:  # type: ignore[arg-type]
+        passed = {
+            member.name: _outcome(stream.read)
+            for member, stream in reader.stream_members()
+            if stream is not None and member.is_file
+        }
+    assert passed == alone
+    assert batches == []
 
 
 @requires_unrar_cli()

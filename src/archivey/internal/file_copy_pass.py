@@ -1,4 +1,10 @@
-"""How a data pass treats members whose bytes are a copy of an earlier member's."""
+"""How a data pass treats members whose bytes are a copy of an earlier member's.
+
+``BaseArchiveReader._stream_members`` takes a :class:`FileCopyPass`:
+``stream_members()`` builds one from its ``file_copy_streams`` argument, and the
+extraction coordinator passes one whose ``keep_source`` declines a source it writes to
+disk.
+"""
 
 from __future__ import annotations
 

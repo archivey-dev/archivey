@@ -120,6 +120,13 @@ class SpoolBudget:
         self._peak = max(self._peak, self._written)
         return True
 
+    def would_fit(self, size: int, *, freed: int = 0) -> bool:
+        """Whether :meth:`try_reserve` of ``size`` would succeed once ``freed``
+        charged bytes are released. Charges and releases nothing."""
+        if self._refused is not None:
+            return False
+        return self._limit is None or self._written - freed + size <= self._limit
+
     def release(self, size: int) -> None:
         """Give back ``size`` bytes that :meth:`try_reserve` charged, now deleted.
 
@@ -177,8 +184,8 @@ class SpoolBudget:
         return size
 
     def _error(self, size: str) -> ResourceLimitError:
-        # Only check_total, check_fits and copy refuse, and every caller of those names its copy
-        # with describe first; try_reserve never refuses.
+        # Only check_total, check_fits and copy refuse, and by then the copy has a
+        # name, from the constructor or from describe; try_reserve never refuses.
         assert self._what is not None, "describe() must come before a refusing call"
         return ResourceLimitError(
             f"Spool limit reached: {self._what}, and the copy would be {size}, over "

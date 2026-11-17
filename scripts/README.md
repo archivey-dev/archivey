@@ -9,7 +9,7 @@ a different sort of attention.
 |---|---|---|
 | `ci/` | What `ci.yml` and `atheris-fuzz.yml` run to test the library: the queue scope rule, the native-module runner, the JUnit summaries, the unrar, unar and 7-Zip installers | every leg |
 | `fixtures/` | Generators of the committed test fixtures and the pins library tests read | every leg |
-| `checks/` | Repository gates `check.sh` runs: the API surface, the docs tree and links, OpenSpec, tracker URLs | every leg (a library test runs `api_surface.py`) |
+| `checks/` | Repository gates `check.sh` runs: the API surface, the docs tree and links, OpenSpec, tracker URLs, line width | every leg (a library test runs `api_surface.py`) |
 | `investigations/` | Benchmarks, stress runs, sweeps, one-off repros and `exploration/`; several are run by scheduled workflows or by library tests | every leg |
 | `review/` | The review loop and the review tooling around it | the reduced run (below) |
 | `release/` | `release.py` | the reduced run (below) |

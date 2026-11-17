@@ -72,6 +72,14 @@ Archive a completed change in the experimental workflow.
 
    The CLI applies the deltas to `openspec/specs/` and moves the change into the archive. If it fails, report its output and stop. Do not move the directory by hand: a change archived without its deltas leaves `openspec/specs/` wrong, and CI checks for that (`CONTRIBUTING.md` §"Archiving an OpenSpec change").
 
+   Then account for every line the archive deleted from the main specs:
+
+   ```bash
+   git diff origin/main -- openspec/specs | grep '^-' | grep -v '^---'
+   ```
+
+   A MODIFIED delta replaces the whole requirement with the delta's copy. If another PR changed that requirement after the delta was written, the archive silently puts back the older wording, and neither `openspec validate --strict` nor the spec-prose gate notices. Each deleted line must be one the change rewrites on purpose. Copy any other line back word for word from `origin/main`, and update the new text when it names a closed list that a later PR extended (for example, the formats a rule covers).
+
    Commit the resulting `openspec/specs/` updates together with the moved change.
 
 6. **Display summary**

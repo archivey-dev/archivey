@@ -1,4 +1,4 @@
-"""Shrink (ZIP method 1) and Implode (ZIP method 6), the DOS-era ZIP methods."""
+"""The DOS-era ZIP methods: Shrink (1), Reduce (2 to 5), Implode (6), DCL Implode (10)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.internal.streams.codecs.zip_legacy_decoder import (
+    DclImplodeDecompressor,
     ImplodeDecompressor,
+    ReduceDecompressor,
     ShrinkDecompressor,
 )
 
@@ -57,3 +59,34 @@ class ImplodeCodec(StreamCodec):
             large_window=params.implode_large_window,
             literal_tree=params.implode_literal_tree,
         )
+
+
+class ReduceCodec(StreamCodec):
+    """Reduce: container-only, pure Python, forward-only.
+
+    Needs ``params.unpack_size`` (the data has no end marker) and
+    ``params.reduce_factor``, 1 to 4 for ZIP methods 2 to 5.
+    """
+
+    codec = Codec.REDUCE
+
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        if params.unpack_size is None:
+            raise UnsupportedFeatureError(
+                "Reduce data has no end marker: it cannot be read without its size"
+            )
+        if params.reduce_factor is None:
+            raise ValueError("Reduce needs its compression factor")
+        return ReduceDecompressor(params.unpack_size, factor=params.reduce_factor)
+
+
+class DclImplodeCodec(StreamCodec):
+    """DCL Implode: container-only, pure Python, forward-only. Its data ends with an
+    end code, so it needs no size."""
+
+    codec = Codec.DCL_IMPLODE
+
+    @override
+    def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        return DclImplodeDecompressor(params.unpack_size)

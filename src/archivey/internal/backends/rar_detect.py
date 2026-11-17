@@ -1,10 +1,12 @@
 """Cheap RAR main-header identity check for the SFX scan.
 
 Seven or eight bytes of ``Rar!\\x1a\\x07`` in a stub are not a RAR unless the main
-header after them checks out. Both SFX scans hand :func:`validate_rar_main_header` a
-candidate-relative view that holds every byte the header needs, up to the detector's
-budget past its window. A short peek is the source ending, or the budget clamping the
-view, which the detector records; either way the header was not checked.
+header after them checks out. Both SFX scans, format detection's (through
+``RarReadBackend.SFX_HIT_VALIDATOR``) and :mod:`.rar_parser`'s own stub scan, hand
+:func:`validate_rar_main_header` a candidate-relative view that holds every byte the
+header needs, up to the detector's budget past its window. A short peek is the source
+ending, or the budget clamping the view, which the detector records; either way the
+header was not checked.
 """
 
 from __future__ import annotations

@@ -91,7 +91,7 @@ def _reraise(exc: OSError) -> None:
 
 
 def _assert_no_link_leaves(
-    dest: Path, planted: Mapping[str, str] | None = None
+    dest: Path, planted: Mapping[str, str] | None = None, *, rooted: bool = False
 ) -> None:
     """Every symlink under ``dest`` leads to something inside it. The kernel follows
     each link (``os.stat``), one component at a time, and the inode it lands on must
@@ -100,7 +100,9 @@ def _assert_no_link_leaves(
     counts as inside only when the walk found all its hardlinks, so a hardlink to a
     file outside does not make a symlink to it look inside. A directory the walk
     cannot open fails the check rather than hiding the links under it. A link the
-    test ``planted`` before the run, still as planted, is not the run's."""
+    test ``planted`` before the run, still as planted, is not the run's. With
+    ``rooted`` (TRUSTED), a link whose target starts at ``/`` was written as stored
+    and may lead anywhere; nothing outside changed, which the caller checks."""
     st = dest.stat()
     inside = {(st.st_dev, st.st_ino)}
     seen: dict[tuple[int, int], list[int]] = {}  # inode: [links found, st_nlink]
@@ -121,7 +123,10 @@ def _assert_no_link_leaves(
             ):
                 continue
             rel = os.path.relpath(os.path.join(parent, name), dest)
-            if (planted or {}).get(rel) == os.readlink(name, dir_fd=dir_fd):
+            written = os.readlink(name, dir_fd=dir_fd)
+            if (planted or {}).get(rel) == written or (
+                rooted and written.startswith("/")
+            ):
                 continue
             try:
                 st = os.stat(name, dir_fd=dir_fd)
@@ -272,7 +277,7 @@ def _extract_and_check(
     _assert_outside_untouched(tmp_path, outside)
     assert _snapshot(outside) == before
     if os.name != "nt":
-        _assert_no_link_leaves(dest, planted)
+        _assert_no_link_leaves(dest, planted, rooted=policy is ExtractionPolicy.TRUSTED)
     _assert_not_disclosed(dest)
     return report
 
@@ -547,6 +552,17 @@ _PLANTED_CASES: dict[str, tuple[dict[str, str], _Case]] = {
 
 # What the members a filter does not refuse must end with, for the cases that pin
 # them. Members neither refused nor listed here go unchecked.
+# TRUSTED writes a link whose target starts at ``/`` as stored, as GNU tar does, and
+# still refuses every member written through it. ``_extract_and_check`` shows that
+# nothing outside changed.
+_TRUSTED_WRITES: dict[str, dict[_Key, ExtractionStatus]] = {
+    "symlink-absolute": {
+        "dir": ExtractionStatus.EXTRACTED,
+        "dir/victim": ExtractionStatus.BLOCKED,
+    },
+    "symlink-to-a-file-outside": {"outside-link": ExtractionStatus.EXTRACTED},
+}
+
 _OTHER_OUTCOMES: dict[str, dict[_Key, ExtractionStatus]] = {
     "hardlink-through-symlink": {"h": ExtractionStatus.FAILED},
     "hardlink-absolute-with-data": {"h": ExtractionStatus.FAILED},
@@ -617,6 +633,8 @@ def test_link_that_leads_out(
     report = _extract_and_check(tmp_path, archive, policy=policy, streaming=streaming)
     if case == "symlink-backslash" and policy is ExtractionPolicy.TRUSTED:
         expected = {"dir": ExtractionStatus.EXTRACTED}
+    elif case in _TRUSTED_WRITES and policy is ExtractionPolicy.TRUSTED:
+        expected = _TRUSTED_WRITES[case]
     else:
         expected = _expected(case, _LINK_CASES[case], outside)
     _assert_outcomes(report, expected)

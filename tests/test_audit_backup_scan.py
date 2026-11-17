@@ -1,4 +1,4 @@
-"""Reproducers for defects found by `scripts/investigations/scan_archives.py` over a real backup tree.
+"""Reproducers for defects `scripts/investigations/scan_archives.py` found in a backup tree.
 
 The scan dry-ran 57 390 archives; `dev-docs/investigations/2026-10-backup-scan.md` has
 the counts and the clusters these come from. The inputs here are synthetic: each one is

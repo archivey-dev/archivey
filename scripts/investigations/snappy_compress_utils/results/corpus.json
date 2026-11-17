@@ -1,0 +1,1506 @@
+[
+  {
+    "fixture": "alice29.txt",
+    "package": "py-snappy",
+    "source_sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0",
+    "input_size": 86727,
+    "reference": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "alice29.txt",
+    "package": "python-snappy",
+    "source_sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0",
+    "input_size": 86727,
+    "reference": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "alice29.txt",
+    "package": "python-snappy-pure",
+    "source_sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0",
+    "input_size": 86727,
+    "reference": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "alice29.txt",
+    "package": "pysnappy",
+    "source_sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0",
+    "input_size": 86727,
+    "reference": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "alice29.txt",
+    "package": "compress-utils",
+    "source_sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0",
+    "input_size": 86727,
+    "reference": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "alice29.txt",
+    "package": "cramjam",
+    "source_sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0",
+    "input_size": 86727,
+    "reference": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 152089,
+      "sha256": "7467306ee0feed4971260f3c87421154a05be571d944e9cb021a5713700c38f0"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "asyoulik.txt",
+    "package": "py-snappy",
+    "source_sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc",
+    "input_size": 76400,
+    "reference": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "asyoulik.txt",
+    "package": "python-snappy",
+    "source_sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc",
+    "input_size": 76400,
+    "reference": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "asyoulik.txt",
+    "package": "python-snappy-pure",
+    "source_sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc",
+    "input_size": 76400,
+    "reference": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "asyoulik.txt",
+    "package": "pysnappy",
+    "source_sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc",
+    "input_size": 76400,
+    "reference": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "asyoulik.txt",
+    "package": "compress-utils",
+    "source_sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc",
+    "input_size": 76400,
+    "reference": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "asyoulik.txt",
+    "package": "cramjam",
+    "source_sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc",
+    "input_size": 76400,
+    "reference": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 125179,
+      "sha256": "eaa3526fe53859f34ecdf255712f9ecf0b2c903451d4755b2edaa2e2599cb0fc"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata1.snappy",
+    "package": "py-snappy",
+    "source_sha256": "ca84adbcd5b4b784c3405fcdd4fa88f88a6614f2d5e5d4a527838785f1806623",
+    "input_size": 27512,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "BaseSnappyError",
+      "message": "Unsupported COPY_4 tag"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata1.snappy",
+    "package": "python-snappy",
+    "source_sha256": "ca84adbcd5b4b784c3405fcdd4fa88f88a6614f2d5e5d4a527838785f1806623",
+    "input_size": 27512,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "UncompressError",
+      "message": ""
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata1.snappy",
+    "package": "python-snappy-pure",
+    "source_sha256": "ca84adbcd5b4b784c3405fcdd4fa88f88a6614f2d5e5d4a527838785f1806623",
+    "input_size": 27512,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "CompressionError",
+      "message": "Copy offset 1952542066 exceeds output position 19791"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata1.snappy",
+    "package": "pysnappy",
+    "source_sha256": "ca84adbcd5b4b784c3405fcdd4fa88f88a6614f2d5e5d4a527838785f1806623",
+    "input_size": 27512,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "Exception",
+      "message": "Could not uncompress"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata1.snappy",
+    "package": "compress-utils",
+    "source_sha256": "ca84adbcd5b4b784c3405fcdd4fa88f88a6614f2d5e5d4a527838785f1806623",
+    "input_size": 27512,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "CompressError",
+      "message": "decompression failed: snappy: uncompress failed (invalid block)"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata1.snappy",
+    "package": "cramjam",
+    "source_sha256": "ca84adbcd5b4b784c3405fcdd4fa88f88a6614f2d5e5d4a527838785f1806623",
+    "input_size": 27512,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "DecompressionError",
+      "message": "snappy: corrupt input (expected valid offset but got offset 1952542066; dst position: 19791)"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata2.snappy",
+    "package": "py-snappy",
+    "source_sha256": "06f0ca34f0de885d6a849e1c8df95391d4494bf430d3784ea2167113d6ca8947",
+    "input_size": 27483,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "BaseSnappyError",
+      "message": "Unsupported COPY_4 tag"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata2.snappy",
+    "package": "python-snappy",
+    "source_sha256": "06f0ca34f0de885d6a849e1c8df95391d4494bf430d3784ea2167113d6ca8947",
+    "input_size": 27483,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "UncompressError",
+      "message": ""
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata2.snappy",
+    "package": "python-snappy-pure",
+    "source_sha256": "06f0ca34f0de885d6a849e1c8df95391d4494bf430d3784ea2167113d6ca8947",
+    "input_size": 27483,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "CompressionError",
+      "message": "Copy offset 127665 exceeds output position 82393"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata2.snappy",
+    "package": "pysnappy",
+    "source_sha256": "06f0ca34f0de885d6a849e1c8df95391d4494bf430d3784ea2167113d6ca8947",
+    "input_size": 27483,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "Exception",
+      "message": "Could not uncompress"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata2.snappy",
+    "package": "compress-utils",
+    "source_sha256": "06f0ca34f0de885d6a849e1c8df95391d4494bf430d3784ea2167113d6ca8947",
+    "input_size": 27483,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "CompressError",
+      "message": "decompression failed: snappy: uncompress failed (invalid block)"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata2.snappy",
+    "package": "cramjam",
+    "source_sha256": "06f0ca34f0de885d6a849e1c8df95391d4494bf430d3784ea2167113d6ca8947",
+    "input_size": 27483,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "DecompressionError",
+      "message": "snappy: corrupt input (expected valid offset but got offset 127665; dst position: 82393)"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata3.snappy",
+    "package": "py-snappy",
+    "source_sha256": "2f60f8c9b5f3b9b0e3b4ff9aef983946552cdd1fdecdfad122292882894163bd",
+    "input_size": 28384,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "BaseSnappyError",
+      "message": "Unsupported COPY_4 tag"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata3.snappy",
+    "package": "python-snappy",
+    "source_sha256": "2f60f8c9b5f3b9b0e3b4ff9aef983946552cdd1fdecdfad122292882894163bd",
+    "input_size": 28384,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "UncompressError",
+      "message": ""
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata3.snappy",
+    "package": "python-snappy-pure",
+    "source_sha256": "2f60f8c9b5f3b9b0e3b4ff9aef983946552cdd1fdecdfad122292882894163bd",
+    "input_size": 28384,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "CompressionError",
+      "message": "Copy offset 2170465622 exceeds output position 35399"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata3.snappy",
+    "package": "pysnappy",
+    "source_sha256": "2f60f8c9b5f3b9b0e3b4ff9aef983946552cdd1fdecdfad122292882894163bd",
+    "input_size": 28384,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "Exception",
+      "message": "Could not uncompress"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata3.snappy",
+    "package": "compress-utils",
+    "source_sha256": "2f60f8c9b5f3b9b0e3b4ff9aef983946552cdd1fdecdfad122292882894163bd",
+    "input_size": 28384,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "CompressError",
+      "message": "decompression failed: snappy: uncompress failed (invalid block)"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "baddata3.snappy",
+    "package": "cramjam",
+    "source_sha256": "2f60f8c9b5f3b9b0e3b4ff9aef983946552cdd1fdecdfad122292882894163bd",
+    "input_size": 28384,
+    "reference": {
+      "accepted": false,
+      "error": "ValueError",
+      "message": "Google Snappy rejects raw block"
+    },
+    "candidate": {
+      "accepted": false,
+      "error": "DecompressionError",
+      "message": "snappy: corrupt input (expected valid offset but got offset 2170465622; dst position: 35399)"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "fireworks.jpeg",
+    "package": "py-snappy",
+    "source_sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512",
+    "input_size": 123034,
+    "reference": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "fireworks.jpeg",
+    "package": "python-snappy",
+    "source_sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512",
+    "input_size": 123034,
+    "reference": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "fireworks.jpeg",
+    "package": "python-snappy-pure",
+    "source_sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512",
+    "input_size": 123034,
+    "reference": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "fireworks.jpeg",
+    "package": "pysnappy",
+    "source_sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512",
+    "input_size": 123034,
+    "reference": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "fireworks.jpeg",
+    "package": "compress-utils",
+    "source_sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512",
+    "input_size": 123034,
+    "reference": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "fireworks.jpeg",
+    "package": "cramjam",
+    "source_sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512",
+    "input_size": 123034,
+    "reference": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 123093,
+      "sha256": "93b986ce7d7e361f0d3840f9d531b5f40fb6ca8c14d6d74364150e255f126512"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "geo.protodata",
+    "package": "py-snappy",
+    "source_sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24",
+    "input_size": 23242,
+    "reference": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "geo.protodata",
+    "package": "python-snappy",
+    "source_sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24",
+    "input_size": 23242,
+    "reference": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "geo.protodata",
+    "package": "python-snappy-pure",
+    "source_sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24",
+    "input_size": 23242,
+    "reference": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "geo.protodata",
+    "package": "pysnappy",
+    "source_sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24",
+    "input_size": 23242,
+    "reference": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "geo.protodata",
+    "package": "compress-utils",
+    "source_sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24",
+    "input_size": 23242,
+    "reference": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "geo.protodata",
+    "package": "cramjam",
+    "source_sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24",
+    "input_size": 23242,
+    "reference": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 118588,
+      "sha256": "7c2875cd6d06c954240ba644618d1e1f2a167e4541731f019de5b4c1f8080f24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html",
+    "package": "py-snappy",
+    "source_sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759",
+    "input_size": 22758,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html",
+    "package": "python-snappy",
+    "source_sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759",
+    "input_size": 22758,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html",
+    "package": "python-snappy-pure",
+    "source_sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759",
+    "input_size": 22758,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html",
+    "package": "pysnappy",
+    "source_sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759",
+    "input_size": 22758,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html",
+    "package": "compress-utils",
+    "source_sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759",
+    "input_size": 22758,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html",
+    "package": "cramjam",
+    "source_sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759",
+    "input_size": 22758,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "5912445a6d50df1079f022d7e01fa615f5d128d53bad88acbf4f49e62a7ea759"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html_x_4",
+    "package": "py-snappy",
+    "source_sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671",
+    "input_size": 91919,
+    "reference": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "candidate": {
+      "worker_exit": -9
+    },
+    "differs": false,
+    "outcome": "worker_exit"
+  },
+  {
+    "fixture": "html_x_4",
+    "package": "python-snappy",
+    "source_sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671",
+    "input_size": 91919,
+    "reference": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html_x_4",
+    "package": "python-snappy-pure",
+    "source_sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671",
+    "input_size": 91919,
+    "reference": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html_x_4",
+    "package": "pysnappy",
+    "source_sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671",
+    "input_size": 91919,
+    "reference": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html_x_4",
+    "package": "compress-utils",
+    "source_sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671",
+    "input_size": 91919,
+    "reference": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "html_x_4",
+    "package": "cramjam",
+    "source_sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671",
+    "input_size": 91919,
+    "reference": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 409600,
+      "sha256": "ce3b0ceece9a0c0f66a352fd65b87a8e06357b136e99a2a85fcb3b0689ff6671"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "kppkn.gtb",
+    "package": "py-snappy",
+    "source_sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24",
+    "input_size": 69451,
+    "reference": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "kppkn.gtb",
+    "package": "python-snappy",
+    "source_sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24",
+    "input_size": 69451,
+    "reference": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "kppkn.gtb",
+    "package": "python-snappy-pure",
+    "source_sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24",
+    "input_size": 69451,
+    "reference": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "kppkn.gtb",
+    "package": "pysnappy",
+    "source_sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24",
+    "input_size": 69451,
+    "reference": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "kppkn.gtb",
+    "package": "compress-utils",
+    "source_sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24",
+    "input_size": 69451,
+    "reference": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "kppkn.gtb",
+    "package": "cramjam",
+    "source_sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24",
+    "input_size": 69451,
+    "reference": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 184320,
+      "sha256": "1df7e44e4ec9bad952e7716fbdba0a2208665091866ded43407d03ed9ce23c24"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "lcet10.txt",
+    "package": "py-snappy",
+    "source_sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f",
+    "input_size": 231733,
+    "reference": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "candidate": {
+      "worker_exit": -9
+    },
+    "differs": false,
+    "outcome": "worker_exit"
+  },
+  {
+    "fixture": "lcet10.txt",
+    "package": "python-snappy",
+    "source_sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f",
+    "input_size": 231733,
+    "reference": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "lcet10.txt",
+    "package": "python-snappy-pure",
+    "source_sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f",
+    "input_size": 231733,
+    "reference": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "lcet10.txt",
+    "package": "pysnappy",
+    "source_sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f",
+    "input_size": 231733,
+    "reference": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "lcet10.txt",
+    "package": "compress-utils",
+    "source_sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f",
+    "input_size": 231733,
+    "reference": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "lcet10.txt",
+    "package": "cramjam",
+    "source_sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f",
+    "input_size": 231733,
+    "reference": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 426754,
+      "sha256": "5314ba1dbb03f471df88bec6cd120a938ef60d0fd3511c5c1dce61bf7463245f"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "paper-100k.pdf",
+    "package": "py-snappy",
+    "source_sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b",
+    "input_size": 85302,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "paper-100k.pdf",
+    "package": "python-snappy",
+    "source_sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b",
+    "input_size": 85302,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "paper-100k.pdf",
+    "package": "python-snappy-pure",
+    "source_sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b",
+    "input_size": 85302,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "paper-100k.pdf",
+    "package": "pysnappy",
+    "source_sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b",
+    "input_size": 85302,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "paper-100k.pdf",
+    "package": "compress-utils",
+    "source_sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b",
+    "input_size": 85302,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "paper-100k.pdf",
+    "package": "cramjam",
+    "source_sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b",
+    "input_size": 85302,
+    "reference": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 102400,
+      "sha256": "60f73a051b7ca35bfec44734b2eed7736cb5c0b7f728beb7b97ade6c5e44849b"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "plrabn12.txt",
+    "package": "py-snappy",
+    "source_sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c",
+    "input_size": 314741,
+    "reference": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "candidate": {
+      "worker_exit": -9
+    },
+    "differs": false,
+    "outcome": "worker_exit"
+  },
+  {
+    "fixture": "plrabn12.txt",
+    "package": "python-snappy",
+    "source_sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c",
+    "input_size": 314741,
+    "reference": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "plrabn12.txt",
+    "package": "python-snappy-pure",
+    "source_sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c",
+    "input_size": 314741,
+    "reference": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "plrabn12.txt",
+    "package": "pysnappy",
+    "source_sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c",
+    "input_size": 314741,
+    "reference": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "plrabn12.txt",
+    "package": "compress-utils",
+    "source_sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c",
+    "input_size": 314741,
+    "reference": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "plrabn12.txt",
+    "package": "cramjam",
+    "source_sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c",
+    "input_size": 314741,
+    "reference": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 481861,
+      "sha256": "07e2e0b461af78c7c647cb53dab39de560198e16f799b4516eccf0fbd69f764c"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "urls.10K",
+    "package": "py-snappy",
+    "source_sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad",
+    "input_size": 332135,
+    "reference": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "candidate": {
+      "worker_exit": -9
+    },
+    "differs": false,
+    "outcome": "worker_exit"
+  },
+  {
+    "fixture": "urls.10K",
+    "package": "python-snappy",
+    "source_sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad",
+    "input_size": 332135,
+    "reference": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "urls.10K",
+    "package": "python-snappy-pure",
+    "source_sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad",
+    "input_size": 332135,
+    "reference": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "urls.10K",
+    "package": "pysnappy",
+    "source_sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad",
+    "input_size": 332135,
+    "reference": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "urls.10K",
+    "package": "compress-utils",
+    "source_sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad",
+    "input_size": 332135,
+    "reference": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "differs": false,
+    "outcome": "match"
+  },
+  {
+    "fixture": "urls.10K",
+    "package": "cramjam",
+    "source_sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad",
+    "input_size": 332135,
+    "reference": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "candidate": {
+      "accepted": true,
+      "size": 702087,
+      "sha256": "0319ce7fe1f51b14eace3de879fe7da15418d1525d3176c2b26c5985943a3cad"
+    },
+    "differs": false,
+    "outcome": "match"
+  }
+]

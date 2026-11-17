@@ -1,4 +1,8 @@
-"""LZ4 (frame format and the legacy format)."""
+"""LZ4: the frame format and the legacy format, as ``.lz4`` files and 7z coders.
+
+``lz4.frame`` decodes frames and ``lz4.block`` the blocks of a legacy stream
+(``lz4_legacy``), both driven one stream at a time by ``FramedDecoder``.
+"""
 
 from __future__ import annotations
 

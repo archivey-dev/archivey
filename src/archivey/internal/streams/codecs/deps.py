@@ -119,7 +119,7 @@ class LazyOptional:
         return self._module
 
 
-# One zstd module per process: excluding it (``FormatPolicy.exclude_libraries``) turns
+# One zstd module per process: turning it off (``FormatPolicy._libraries_off``) turns
 # zstd off, and excluding the other name changes nothing. backports.zstd does not
 # install on 3.14 and later, so the two are not found together.
 zstd, zstd_library = _optional_zstd()
@@ -130,14 +130,19 @@ zstd, zstd_library = _optional_zstd()
 # (``UNUSED_UNDER_PYPY``), because it must block the imports before archivey loads.
 UNDER_PYPY = sys.implementation.name == "pypy"
 _UNUSED_UNDER_PYPY: dict[OptionalLibrary, str] = {
-    OptionalLibrary.LZ4: "archivey does not use lz4 under PyPy, where its frame decoder crashes the "
-    "interpreter",
-    OptionalLibrary.PYPPMD: "archivey does not use pyppmd under PyPy, where it returns PPMd data cut "
-    "short",
-    OptionalLibrary.RAPIDGZIP: "archivey does not use rapidgzip under PyPy, where it misreads valid "
-    "streams",
-    OptionalLibrary.INFLATE64: "archivey does not use inflate64 under PyPy, where it decodes larger "
-    "Deflate64 input wrong or crashes the interpreter",
+    OptionalLibrary.LZ4: (
+        "archivey does not use lz4 under PyPy, where its frame decoder crashes the interpreter"
+    ),
+    OptionalLibrary.PYPPMD: (
+        "archivey does not use pyppmd under PyPy, where it returns PPMd data cut short"
+    ),
+    OptionalLibrary.RAPIDGZIP: (
+        "archivey does not use rapidgzip under PyPy, where it misreads valid streams"
+    ),
+    OptionalLibrary.INFLATE64: (
+        "archivey does not use inflate64 under PyPy, where it decodes larger "
+        "Deflate64 input wrong or crashes the interpreter"
+    ),
 }
 
 

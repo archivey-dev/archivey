@@ -5,6 +5,7 @@ Asserts no timing. A peer that is not installed prints a skip row instead of a r
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -46,3 +47,25 @@ def test_peers_report_runs_at_ci_scale(
         assert any(
             r.startswith("| 7z solid | read_all | py7zr |") and "×" in r for r in body
         )
+    # gcab and rpmbuild write the CAB and RPM fixtures, and libarchive-c is their
+    # peer, so those rows are measured whenever all of them are present.
+    if peers._peer_available("libarchive-c") is None:
+        for label, tool in (("CAB", "gcab"), ("RPM", "rpmbuild")):
+            if shutil.which(tool) is not None:
+                assert any(
+                    r.startswith(f"| {label} 200 small | read_all | libarchive-c |")
+                    and "×" in r
+                    for r in body
+                ), label
+
+
+@pytest.mark.timeout(60)
+def test_only_keeps_the_archives_its_label_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ARCHIVEY_BENCH_CACHE", str(tmp_path))
+    peers.run("ci", rounds=1, only="ZIP stored")
+
+    body = [line for line in capsys.readouterr().out.splitlines() if line][2:]
+    assert body
+    assert all(r.startswith("| ZIP stored 200 small |") for r in body), body

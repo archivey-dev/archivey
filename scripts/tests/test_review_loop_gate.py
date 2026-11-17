@@ -489,13 +489,21 @@ def test_a_light_or_untiered_pull_request_is_sonnet_s_throughout(
     tier: str | None,
 ) -> None:
     assert not decide(tier=tier).opus_pass
+    assert not decide(tier=tier).opus_model
+    assert not decide(tier=tier, markers=rounds("conditional")).opus_model
 
 
 @pytest.mark.parametrize("tier", sorted(gate.OPUS_PASS_TIERS))
-def test_rounds_after_the_opus_round_re_read_with_sonnet(tier: str) -> None:
+def test_rounds_after_the_opus_round_re_read_with_opus(tier: str) -> None:
     done = [opus_pass_marker(1)]
     assert gate.read_history(done).opus_pass_done
-    assert not decide(tier=tier, markers=done).opus_pass
+    # A fix round on a new commit: not the Opus pass again, but still Opus's model
+    # (davitf, 2026-11-11).
+    fix_round = decide(tier=tier, markers=done, head_sha=LATER)
+    assert fix_round.run
+    assert not fix_round.opus_pass
+    assert fix_round.opus_model
+    assert decide(tier=tier).opus_model
     # Rounds that ran before it, under the old order or a lower tier, do not count.
     earlier = rounds("conditional")
     assert not gate.read_history(earlier).opus_pass_done
@@ -556,6 +564,7 @@ def test_decide_mode_writes_the_keys_the_workflow_reads() -> None:
         "max_rounds",
         "comment",
         "opus_pass",
+        "opus_model",
     ]:
         assert key in payload, key
     assert payload["run"] is True
@@ -902,14 +911,17 @@ def _step(name: str) -> str:
 
 
 def test_the_round_s_model_follows_the_gate() -> None:
-    """The gate names the Opus round; the prompt, the model and the close all follow it."""
+    """The gate names the Opus pass and the model; the prompt, the model and the close
+    follow it."""
     gate_says = "steps.gate.outputs.opus_pass == 'true'"
     assert f"PASS: ${{{{ {gate_says} && 'opus' || '' }}}}" in _step("Close the round")
     assert f"PASS: ${{{{ {gate_says} && 'opus' || '' }}}}" in _step("Write the prompt")
+    model_says = "steps.gate.outputs.opus_model == 'true'"
     assert (
-        f"--model ${{{{ {gate_says} && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}}}"
+        f"--model ${{{{ {model_says} && 'claude-opus-5-5' || 'claude-sonnet-5-5' }}}}"
         in _step("Claude review")
     )
+    assert 'echo "opus_model=' in _step("Decide whether to run")
     assert "run: bash scripts/review/review_loop_close.sh" in _step("Close the round")
     # The review has a timeout of its own, inside the job's.
     assert "timeout-minutes:" in _step("Claude review")

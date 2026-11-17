@@ -1,0 +1,6 @@
+.................. [ 14%]
+......s.................................................................................. [ 87%]
+...............                                                          [100%]
+=========================== short test summary info ============================
+SKIPPED [1] ../snappy-upstream/compress_utils-0.12.1/bindings/python/tests/test_compress_utils.py:367: not a free-threaded build
+121 passed, 1 skipped, 685 subtests passed in 10.52s

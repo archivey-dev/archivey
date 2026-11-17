@@ -48,9 +48,10 @@ for every format archivey reads.
   `fsspec.open`, `pandas.read_csv` and `dask`. It is read-only, owns its reader and
   closes it, and its tree holds the names `extract_all()` would write under a policy the
   caller names (`STRICT` by default).
-- **Sibling volumes over fsspec.** A multi-volume set opened by URL finds its other
-  parts with one listing of the parent directory, by the same naming rules as local
-  discovery.
+- **Volume sets over fsspec, as an explicit list.** A multi-volume set is opened from a
+  list of `OpenFile` objects. A single `OpenFile` is never searched for its other parts
+  (davi, 2026-11-11: remote listing is unreliable and unbounded); a lone part that needs
+  them is refused with a message that says to pass the list.
 - **A new benchmark axis: requests and bytes fetched.** A counting fsspec file system
   over local fixture files records every range request. The structural gate checks
   request and byte counts per format and operation, the same way it checks seek counts

@@ -1,0 +1,87 @@
+Using CPython 3.11.18 interpreter at: work/archivey-snappy/.venv/bin/python
+Creating virtual environment at: work/aff4-env
+Activate with: source work/aff4-env/bin/activate
+Using Python 3.11.18 environment at: work/aff4-env
+Resolved 1 package in 4.10s
+   Building aff4-snappy==0.5.1
+error: Failed to build `aff4-snappy==0.5.1`
+  cause: The build backend returned an error
+  cause: Call to `setuptools.build_meta:__legacy__.build_wheel` failed (exit status: 1)
+
+         [stdout]
+         running bdist_wheel
+         running build
+         running build_py
+         creating build/lib.linux-x86_64-cpython-311
+         copying test_snappy.py -> build/lib.linux-x86_64-cpython-311
+         copying __init__.py -> build/lib.linux-x86_64-cpython-311
+         copying snappy.py -> build/lib.linux-x86_64-cpython-311
+         copying test_snappy_cffi.py -> build/lib.linux-x86_64-cpython-311
+         running build_ext
+         building '_snappy' extension
+         cc -pthread -Wsign-compare -Wunreachable-code -DNDEBUG -g -fwrapv -O3 -Wall -O3 -fstack-protector -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -fPIC -I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include -I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11 -c crc32c.c -o build/temp.linux-x86_64-cpython-311/crc32c.o
+         c++ -pthread -Wsign-compare -Wunreachable-code -DNDEBUG -g -fwrapv -O3 -Wall -O3 -fstack-protector -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -fPIC -I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include -I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11 -c snappy-c.cc -o build/temp.linux-x86_64-cpython-311/snappy-c.o
+         c++ -pthread -Wsign-compare -Wunreachable-code -DNDEBUG -g -fwrapv -O3 -Wall -O3 -fstack-protector -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -fPIC -I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include -I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11 -c snappy-sinksource.cc -o build/temp.linux-x86_64-cpython-311/snappy-sinksource.o
+         c++ -pthread -Wsign-compare -Wunreachable-code -DNDEBUG -g -fwrapv -O3 -Wall -O3 -fstack-protector -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -fPIC -I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include -I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11 -c snappy-stubs-internal.cc -o build/temp.linux-x86_64-cpython-311/snappy-stubs-internal.o
+         c++ -pthread -Wsign-compare -Wunreachable-code -DNDEBUG -g -fwrapv -O3 -Wall -O3 -fstack-protector -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -fPIC -I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include -I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11 -c snappy.cc -o build/temp.linux-x86_64-cpython-311/snappy.o
+         c++ -pthread -Wsign-compare -Wunreachable-code -DNDEBUG -g -fwrapv -O3 -Wall -O3 -fstack-protector -fstack-clash-protection -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fPIC -fPIC -I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include -I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11 -c snappymodule.cc -o build/temp.linux-x86_64-cpython-311/snappymodule.o
+
+         [stderr]
+         WARNING: '.' not a valid package name; please use only .-separated package names in setup.py
+         /workspace/work/uv-cache/builds-v0/.tmpyJz0pM/lib/python3.11/site-packages/setuptools/dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+         !!
+
+                 ********************************************************************************
+                 Please consider removing the following classifiers in favor of a SPDX license expression:
+
+                 License :: OSI Approved :: BSD License
+
+                 See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+                 ********************************************************************************
+
+         !!
+           self._finalize_license_expression()
+         In file included from crc32c.c:16:
+         crc32c.h:79:15: warning: ‘crc_finalize’ defined but not used [-Wunused-function]
+            79 | static  crc_t crc_finalize(crc_t crc)
+               |               ^~~~~~~~~~~~
+         crc32c.h:56:15: warning: ‘crc_init’ defined but not used [-Wunused-function]
+            56 | static  crc_t crc_init(void)
+               |               ^~~~~~~~
+         snappy.cc: In member function ‘bool snappy::SnappyIOVecWriter::Append(const char*, size_t)’:
+         snappy.cc:1020:33: warning: comparison of integer expressions of different signedness: ‘int’ and ‘const size_t’ {aka ‘const long unsigned int’} [-Wsign-compare]
+          1020 |         if (curr_iov_index_ + 1 >= output_iov_count_) {
+               |             ~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~
+         snappy.cc: In member function ‘bool snappy::SnappyIOVecWriter::AppendFromSelf(size_t, size_t)’:
+         snappy.cc:1102:35: warning: comparison of integer expressions of different signedness: ‘int’ and ‘const size_t’ {aka ‘const long unsigned int’} [-Wsign-compare]
+          1102 |           if (curr_iov_index_ + 1 >= output_iov_count_) {
+               |               ~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~
+         snappy.cc: In member function ‘void snappy::SnappySinkAllocator::Flush(size_t)’:
+         snappy.cc:1498:23: warning: comparison of integer expressions of different signedness: ‘int’ and ‘std::vector<snappy::SnappySinkAllocator::Datablock>::size_type’ {aka ‘long unsigned int’} [-Wsign-compare]
+          1498 |     for (int i = 0; i < blocks_.size(); ++i) {
+               |                     ~~^~~~~~~~~~~~~~~~
+         snappy.cc: In instantiation of ‘bool snappy::SnappyScatteredWriter<Allocator>::AppendFromSelf(size_t, size_t) [with Allocator = snappy::SnappySinkAllocator; size_t = long unsigned int]’:
+         snappy.cc:785:36:   required from ‘void snappy::SnappyDecompressor::DecompressAllTags(Writer*) [with Writer = snappy::SnappyScatteredWriter<snappy::SnappySinkAllocator>]’
+           785 |         if (!writer->AppendFromSelf(copy_offset + trailer, length)) {
+               |              ~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+         snappy.cc:871:34:   required from ‘bool snappy::InternalUncompressAllTags(SnappyDecompressor*, Writer*, uint32) [with Writer = SnappyScatteredWriter<SnappySinkAllocator>; uint32 = unsigned int]’
+           871 |   decompressor->DecompressAllTags(writer);
+               |   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~
+         snappy.cc:1555:37:   required from here
+          1555 |     return InternalUncompressAllTags(&decompressor, &writer, uncompressed_len);
+               |            ~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+         snappy.cc:1407:21: warning: comparison of integer expressions of different signedness: ‘size_t’ {aka ‘long unsigned int’} and ‘long int’ [-Wsign-compare]
+          1407 |     if (offset - 1u < op_ptr_ - op_base_) {
+               |         ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~
+         In file included from /workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11/Python.h:44,
+                          from snappymodule.cc:28:
+         snappymodule.cc: In function ‘PyObject* maybe_resize(PyObject*, size_t, size_t)’:
+         /workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11/object.h:145:30: error: lvalue required as left operand of assignment
+           145 | #  define Py_SIZE(ob) Py_SIZE(_PyObject_CAST(ob))
+               |                       ~~~~~~~^~~~~~~~~~~~~~~~~~~~
+         snappymodule.cc:71:13: note: in expansion of macro ‘Py_SIZE’
+            71 |             Py_SIZE(str) = actual_size;
+               |             ^~~~~~~
+         error: Command '['c++', '-pthread', '-Wsign-compare', '-Wunreachable-code', '-DNDEBUG', '-g', '-fwrapv', '-O3', '-Wall', '-O3', '-fstack-protector', '-fstack-clash-protection', '-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=2', '-fno-omit-frame-pointer', '-mno-omit-leaf-frame-pointer', '-fPIC', '-fPIC', '-I/workspace/work/uv-cache/builds-v0/.tmpyJz0pM/include', '-I/workspace/work/python/cpython-3.11.18-linux-x86_64-gnu/include/python3.11', '-c', 'snappymodule.cc', '-o', 'build/temp.linux-x86_64-cpython-311/snappymodule.o']' returned non-zero exit status 1.
+
+hint: Build failures usually indicate a problem with the package or the build environment

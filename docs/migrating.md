@@ -79,8 +79,9 @@ Three options to `open_archive` allow ways of reading that are off by default:
   decompresses again from the start. py7zr has no member streams.
 - **Keep several members open at once:** `concurrent_operations=True`. zipfile, tarfile and rarfile
   allow it. py7zr has no member streams.
-- **Read from a pipe:** one pass, with `streaming=True`, for TAR, ZIP and single compressed files.
-  tarfile reads one pass with mode `"r|*"`. zipfile, py7zr and rarfile can't read from a pipe.
+- **Read from a pipe:** one pass, with `streaming=True`, for TAR, ZIP, cpio, ar, deb, RPM, makeself
+  and single compressed files. tarfile reads one pass with mode `"r|*"`. zipfile, py7zr and rarfile
+  can't read from a pipe.
 
 Seeking and keeping several members open are cheap on some archives and slow on others, and nothing
 in the calling code shows which. Archivey turns them off by default so that code tested on a ZIP
@@ -103,7 +104,9 @@ ones code using `ZipInfo` or `TarInfo` reads most map like this:
   `info.isfile()`, `info.issym()` in tarfile; `info.is_directory`, `info.is_file`,
   `info.is_symlink` in py7zr; `info.is_dir()`, `info.is_file()`, `info.is_symlink()` in rarfile.
 - `member.created` or `member.ctime`: `info.ctime` in rarfile.
-- `member.link_target`: `info.linkname` in tarfile.
+- `member.link_target`: `info.linkname` in tarfile. A symlink's target is kept as stored. A hard
+  link's target is cleaned up as names are, so it equals the `name` of the member it links to:
+  tarfile's `./b` is `b`.
 
 zipfile doesn't recognize symbolic links: a ZIP entry that records one is a plain file to it, and
 `extractall` writes the target's path as the file's contents. Archivey reports it as a link, with
@@ -152,7 +155,9 @@ the names to one `extract` call. rarfile has no way to avoid it. With archivey, 
 member once, in order, in every format ([Solid archives](reading.md#solid-archives)). `read` and
 `open` cost more. In a `.tar.gz`, the first one lists the whole archive, which takes a pass of its
 own, and reading members in the archive's order after that takes one more pass. Going back to an
-earlier member starts again from the beginning. In 7z and RAR, each read decompresses again
+earlier member starts from the restart point archivey kept nearest to it while listing: about
+1 MiB before it in a `.tar.gz`, the xz block before it in a `.tar.xz` written in blocks, and
+usually the beginning in a `.tar.bz2`. In 7z and RAR, each read decompresses again
 everything before its member. If you want to make sure your code avoids these costs, open the
 archive with `streaming=True`: `read` and `open` then always raise, and `stream_members()` is the
 only way to read members.
@@ -184,8 +189,9 @@ warn about it. The Extracting page has [a longer
 table](extracting.md#what-each-policy-does-with-unusual-members), with more kinds of member and
 every policy.
 
-When archivey refuses a member, it skips it and goes on with the others, where tarfile's data
-filter raises and ends the whole extraction. `abort_on=["blocked_member"]` makes archivey stop too.
+When archivey refuses a member, it skips it and goes on with the others, then raises
+`FilterRejectionError` at the end, where tarfile's data filter raises and ends the whole extraction
+at once. `abort_on=["blocked_member"]` makes archivey stop at once too.
 If you want zipfile's renaming, pass `filter=archivey.sanitize_names`. `filter=` also takes your own
 function, which can rename, skip or change each member ([Extracting all or some
 members](extracting.md#extracting-all-or-some-members)).

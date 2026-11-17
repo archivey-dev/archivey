@@ -823,6 +823,8 @@ def test_a_name_that_differs_between_the_two_headers_takes_the_directory_name() 
         "local_crc32": None,
         "local_method": None,
         "central_method": None,
+        "local_offset": None,
+        "central_offset": None,
     }
 
 

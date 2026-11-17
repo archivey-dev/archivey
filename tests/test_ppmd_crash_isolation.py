@@ -147,7 +147,8 @@ def test_random_input_raises_and_never_crashes(variant: int, path: str) -> None:
     """Random bytes (a wrong key, a hostile member) raise an archivey error.
 
     Every input starts with a zero byte, so PPMd7's range decoder accepts it and the
-    model decodes garbage until it reaches an end. Reads alternate between ``read()`` and 4 KiB ``read(n)``.
+    model decodes garbage until it reaches an end. Reads alternate between ``read()``
+    and 4 KiB ``read(n)``.
     """
     _run_ppmd_child(
         textwrap.dedent(

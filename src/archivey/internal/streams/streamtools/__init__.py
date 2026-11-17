@@ -3,10 +3,11 @@
 This subpackage is the codec- and format-agnostic core of the stream layer: it knows
 nothing about archivey's error hierarchy or any codec, only about stdlib binary streams.
 That independence is deliberate — it could be lifted out as a standalone library — so
-nothing here may import from the rest of ``archivey``. The import rule is the half
-tooling enforces; concept leaks count too. Do not put archivey types, the error
-hierarchy, or codec internals in the *API* of this package (call-site examples in
-"when to use" comments can stay).
+nothing here may import from the rest of ``archivey``, except the ``override`` decorator
+shim (``archivey.internal.overrides``), which stands in for ``typing.override``. The
+import rule is the half tooling enforces; concept leaks count too. Do not put archivey
+types, the error hierarchy, or codec internals in the *API* of this package (call-site
+examples in "when to use" comments can stay).
 
 Named exception: ``SlicingStream.nearest_resume_offset`` translates a
 contiguous window into the inner's offset space, and ``ask_resume_offset`` in

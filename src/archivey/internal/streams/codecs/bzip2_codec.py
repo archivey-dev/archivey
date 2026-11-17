@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import itertools
+import os
 import re
 from collections.abc import Callable
 from typing import BinaryIO
@@ -23,6 +24,7 @@ from archivey.internal.config import (
     AcceleratorMode,
     StreamConfig,
 )
+from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
@@ -36,9 +38,14 @@ from archivey.internal.streams.codecs.base import (
     CodecSource,
     StreamCodec,
 )
-from archivey.internal.streams.codecs.bzip2_resume import Bzip2Resume
+from archivey.internal.streams.codecs.bzip2_blocks import (
+    Bzip2BlockDecompressor,
+    Bzip2BlockStart,
+    rotate_combined,
+)
 from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
+    StreamIndex,
     StreamStart,
     stream_magic,
 )
@@ -48,6 +55,7 @@ from archivey.internal.streams.codecs.rapidgzip_child import (
     reported_by_child,
 )
 from archivey.internal.streams.codecs.rapidgzip_select import (
+    _SEQUENTIAL_PLATFORM,
     _bound_rapidgzip_source,
     _open_rapidgzip,
     _rapidgzip_present,
@@ -74,6 +82,7 @@ from archivey.internal.streams.decompressor_stream import (
 )
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
+from archivey.internal.streams.streamtools.slice import file_region
 from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
 
 
@@ -85,11 +94,67 @@ def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
     if config.process_isolation is ProcessIsolation.NONE:
         return False
     return config.use_indexed_bzip2.enabled_for(
-        seekable=config.seekable,
+        seekable=config.seekable or _bzip2_sequential_read_pays(config),
         available=available,
         input_size=config.compressed_input_size,
         min_size=INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE,
     )
+
+
+def _usable_cpus() -> int:
+    """The CPUs this process may run on: ``os.process_cpu_count()`` (Python 3.13), else
+    its affinity where the platform says, else every CPU.
+
+    None of these sees a cgroup CPU quota: a container limited to one CPU's time but
+    allowed on every core counts every core.
+    """
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if process_cpu_count is not None:
+        return process_cpu_count() or 1
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return len(affinity(0))
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+def _bzip2_sequential_read_pays(config: StreamConfig) -> bool:
+    """Whether ``AUTO`` takes a bzip2 read with no declared seek demand through rapidgzip.
+
+    rapidgzip decodes bzip2 blocks in parallel, and the standard library decodes them
+    one after the other. Measured on Linux, 4 cores, text that compresses about 7:1, a
+    full read under ``ON`` took 0.62 of the standard library's time at 0.6 MiB
+    compressed and 0.40 at 2.3 MiB; on 2 cores 0.86 and 0.63. On one core it was
+    slower (1.24 and 1.05), so a single usable CPU keeps the standard library.
+
+    Only on Linux and macOS (the platforms where the DEFLATE rule was measured to pay,
+    ``_SEQUENTIAL_PLATFORM``), for a source that can seek, at or above the same size
+    gate as declared seeking
+    (:data:`~archivey.config.INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`), and only for a
+    file on disk (``source_is_file``). rapidgzip reads its bzip2 input about twice (2.5
+    times a 3 MiB ``.tar.bz2``, against 1.3 for the standard library, detection
+    included): from the page cache that costs nothing, but a caller's stream, remote
+    above all, would serve it all twice.
+    """
+    if not (_sequential_gates_pass(config) and config.source_is_file):
+        return False
+    return _usable_cpus() >= 2
+
+
+def _sequential_gates_pass(config: StreamConfig) -> bool:
+    """The gates of :func:`_bzip2_sequential_read_pays` that read only the config: an
+    ``AUTO`` read with no seek demand, the platform, a source that can seek, and the
+    size."""
+    if (
+        config.use_indexed_bzip2 is not AcceleratorMode.AUTO
+        or config.seekable
+        or not (_SEQUENTIAL_PLATFORM and config.source_seekable)
+    ):
+        return False
+    size = config.compressed_input_size
+    return size is not None and size >= INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE
 
 
 def _bzip2_auto_without_child(config: StreamConfig) -> str | None:
@@ -689,7 +754,7 @@ def _bzip2_resume_points(
     accelerator: BinaryIO, position: int, open_view: Callable[[], BinaryIO]
 ) -> list[SeekPoint]:
     """The blocks rapidgzip's bzip2 decoder had indexed before its error, at or before
-    ``position``, as points ``Bzip2ResumeDecoder`` starts from.
+    ``position``, as points ``Bzip2BlockDecompressor`` resumes at.
 
     Only the accelerator's index knows where a block's output starts. Scanning the
     source for the block magic would find where blocks are, but the decompressed offset
@@ -698,32 +763,66 @@ def _bzip2_resume_points(
     takeover starts at the origin.
 
     The index also lists each end-of-stream marker; the magic read at each offset keeps
-    only blocks. Offset 0 is left out, since the origin is already a point.
+    only blocks. Offset 0 is left out, since the origin is already a point. Each point
+    carries its stream's level digit, read from the header before the stream's first
+    indexed block, and the combined CRC of the blocks the index lists before it in its
+    stream, read from their headers, so a decode from it checks the end-of-stream CRC
+    itself. The index was not checked block by block here, so a mismatch hands back to
+    a decode from the start, which decides (``Bzip2BlockStart.from_index``). A stream
+    whose header is not right before its first indexed block resumes as level 9, which
+    accepts a block of any level, with no combined CRC: its end hands back too. Every
+    indexed block is read, one 11-byte read each, once per takeover.
     """
     offsets = getattr(accelerator, "available_block_offsets", None)
     if offsets is None:
         return []
-    candidates = sorted(
-        (
-            (decoded, bit)
-            for bit, decoded in offsets().items()
-            if 0 < decoded <= position
-        ),
-        reverse=True,
-    )
+    index = sorted(offsets().items())
     points: list[SeekPoint] = []
-    if not candidates:
+    if not any(0 < decoded <= position for _bit, decoded in index):
         return points
     with open_view() as view:
-        for decoded, bit in candidates:
-            marker = _bzip2_marker_at(view, bit)
-            if marker is None or marker[0] != _BZIP2_BLOCK_MAGIC:
-                continue
-            points.append(SeekPoint(decoded, bit // 8, Bzip2Resume(bit % 8)))
-            if len(points) == _BZIP2_RESUME_POINTS:
+        # The stream the walk is in: its level, and its blocks' combined CRC so far;
+        # ``None`` before its first block.
+        level: int | None = None
+        combined: int | None = None
+        for bit, decoded in index:
+            if decoded > position:
                 break
-    points.reverse()
-    return points
+            marker = _bzip2_marker_at(view, bit)
+            if marker is None:
+                break
+            magic, crc = marker
+            if magic == _BZIP2_EOS_MAGIC:
+                level = combined = None
+                continue
+            if magic != _BZIP2_BLOCK_MAGIC:
+                continue  # the end of the last end-of-stream marker
+            if level is None:
+                level = _bzip2_level_before(view, bit)
+                combined = 0 if level is not None else None
+            if decoded > 0:
+                state = Bzip2BlockStart(
+                    bit % 8, level=level or 9, combined=combined, from_index=True
+                )
+                points.append(SeekPoint(decoded, bit // 8, state))
+            if combined is not None:
+                combined = rotate_combined(combined, crc)
+    # Points share an output offset where a block's stream ends at it; the later one
+    # in the source is the block after the end.
+    kept: dict[int, SeekPoint] = {p.decompressed_offset: p for p in points}
+    return list(kept.values())[-_BZIP2_RESUME_POINTS:]
+
+
+def _bzip2_level_before(view: BinaryIO, bit: int) -> int | None:
+    """The level digit of the stream header right before the block at ``bit``, the
+    first of its stream; ``None`` when no header ends there."""
+    if bit % 8 or bit < 32:
+        return None
+    view.seek(bit // 8 - _BZIP2_HEADER_LEN)
+    header = view.read(_BZIP2_HEADER_LEN)
+    if BZIP2_HEADER.fullmatch(header) is None:
+        return None
+    return header[3] - 0x30
 
 
 # Bytes read per step while looking past an accelerator's end for the first byte that is
@@ -776,6 +875,17 @@ class Bzip2Codec(StreamCodec):
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
 
     @override
+    def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
+        """Note a source that is a file on disk (``source_is_file``), for the
+        sequential rule; asked only when its other gates pass, so a member open that
+        cannot take the rule does no ``fstat``."""
+        if config.source_is_file or not _sequential_gates_pass(config):
+            return config
+        if isinstance(source, (str, os.PathLike)) or file_region(source) is not None:
+            return copy_with(config, source_is_file=True)
+        return config
+
+    @override
     def open(
         self, source: CodecSource, params: CodecParams, config: StreamConfig
     ) -> BinaryIO:
@@ -790,7 +900,27 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
-        return config.natives.bz2_decompressor()
+        # One block at a time, each block's output held until its CRC passes
+        # (``bzip2_blocks``).
+        return Bzip2BlockDecompressor(
+            config.natives.bz2_decompressor,
+            memory_cap=config.decoder_limits.max_decoder_memory,
+        )
+
+    @override
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
+        if not config.records_restart_points:
+            return None
+        # Declared seek demand or restart points only, as bzip3: every block a decode
+        # checks is a seek point (``Bzip2BlockDecompressor.take_block_starts``). A
+        # further stream's first block is one, so the stream's own start is not kept,
+        # and nothing in the file indexes the blocks without decoding them.
+        return StreamIndex(
+            resumes_at=lambda data: False, build=lambda inner, last: ([], None)
+        )
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:
@@ -885,7 +1015,7 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def rewind_warning(self, config: StreamConfig) -> RewindWarning | None:
-        # An engaged accelerator no longer suppresses the report: its index can be sparse
+        # An engaged accelerator does not suppress the report: its index can be sparse
         # enough that a backward seek still re-decodes megabytes. The distance decides.
         unused_reason = _rapidgzip_unused_reason(config)
         return RewindWarning(

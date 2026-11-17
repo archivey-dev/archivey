@@ -78,11 +78,13 @@ def spawn(
     bufsize: int = -1,
     env: Mapping[str, str] | None = None,
     pass_fds: Sequence[int] = (),
+    cwd: str | None = None,
 ) -> subprocess.Popen[bytes]:
     """Start ``argv`` with its stdout on a pipe. An ``OSError`` raises ``fail(str(exc))``.
 
     ``env`` replaces the child's environment; ``None`` inherits this process's.
     ``pass_fds`` are descriptors the child inherits under the same numbers (POSIX only).
+    ``cwd`` is the child's working directory; ``None`` inherits this process's.
     """
     try:
         return subprocess.Popen(
@@ -93,6 +95,7 @@ def spawn(
             bufsize=bufsize,
             env=env,
             pass_fds=pass_fds,
+            cwd=cwd,
         )
     except OSError as exc:
         raise fail(str(exc)) from exc

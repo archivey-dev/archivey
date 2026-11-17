@@ -4,7 +4,8 @@ Usage (from the repo root)::
 
     uv run python scripts/investigations/find_unar_probe_member.py
     uv run python scripts/investigations/find_unar_probe_member.py --check-unar /usr/bin/unar
-    uv run python scripts/investigations/find_unar_probe_member.py --validate 300 --check-unar /usr/bin/unar
+    uv run python scripts/investigations/find_unar_probe_member.py \\
+        --validate 300 --check-unar /usr/bin/unar
 
 Requires the RARLAB ``rar`` binary on ``PATH``. The answer is the member of
 ``_RAR5_PROBE_ARCHIVE`` in ``src/archivey/internal/external/unar.py`` and of the

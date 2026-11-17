@@ -22,6 +22,14 @@ _SEVENZIP_MAX_CYCLES_POWER = 24
 _SEVENZIP_NO_HASH_SENTINEL = 0x3F
 
 
+def _unsupported_cycles(cycles: int) -> UnsupportedFeatureError:
+    return UnsupportedFeatureError(
+        f"7z NumCyclesPower {cycles} exceeds the supported maximum "
+        f"({_SEVENZIP_MAX_CYCLES_POWER}); values 25–62 are rejected to match 7-Zip "
+        "(and to bound KDF cost)."
+    )
+
+
 def derive_sevenzip_aes_key(password: bytes, *, salt: bytes, cycles: int) -> bytes:
     """Derive a 32-byte AES-256 key with the 7z SHA-256 scheme.
 
@@ -39,11 +47,7 @@ def derive_sevenzip_aes_key(password: bytes, *, salt: bytes, cycles: int) -> byt
         # The 0x3f sentinel means "no hashing": key = (salt + password), zero-padded to 32.
         return (salt + password + bytes(32))[:32]
     if cycles > _SEVENZIP_MAX_CYCLES_POWER:
-        raise UnsupportedFeatureError(
-            f"7z NumCyclesPower {cycles} exceeds the supported maximum "
-            f"({_SEVENZIP_MAX_CYCLES_POWER}); values 25–62 are rejected to match 7-Zip "
-            "(and to bound KDF cost)."
-        )
+        raise _unsupported_cycles(cycles)
     # Batch rounds to cut hashlib.update call overhead (same approach as py7zr).
     cat_cycle = 6
     if cycles > cat_cycle:
@@ -77,11 +81,7 @@ def parse_sevenzip_aes_properties(properties: bytes) -> tuple[int, bytes, bytes]
     first = properties[0]
     cycles = first & 0x3F
     if cycles > _SEVENZIP_MAX_CYCLES_POWER and cycles != _SEVENZIP_NO_HASH_SENTINEL:
-        raise UnsupportedFeatureError(
-            f"7z NumCyclesPower {cycles} exceeds the supported maximum "
-            f"({_SEVENZIP_MAX_CYCLES_POWER}); values 25–62 are rejected to match 7-Zip "
-            "(and to bound KDF cost)."
-        )
+        raise _unsupported_cycles(cycles)
     if first & 0xC0 == 0:
         # No salt and no IV: 7-Zip takes the one-byte blob as a zero IV and an empty
         # salt (``7zAes.cpp``, ``size == 1 ? S_OK : E_INVALIDARG``), and so does
@@ -148,6 +148,13 @@ class SevenZipKeyCache:
     def aes_params_from_properties(
         self, password: bytes, properties: bytes
     ) -> AesParams:
+        """The key and IV for one AES coder, from its properties and the password.
+
+        ``password`` is already the key-derivation bytes (UTF-16LE for a UTF-8
+        password, the raw bytes otherwise; see the 7z reader's
+        ``_password_to_kdf_bytes``). Raises as
+        :func:`parse_sevenzip_aes_properties` does.
+        """
         cycles, salt, iv = parse_sevenzip_aes_properties(properties)
         key = self._derive(password, salt=salt, cycles=cycles)
         return AesParams(key=key, iv=iv)

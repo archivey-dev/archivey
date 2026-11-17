@@ -36,7 +36,6 @@ from archivey import (
     ArchiveyUsageError,
     CorruptionError,
     DecoderLimits,
-    ExtractionLimits,
     MemberType,
     PluginContainer,
     PluginStream,
@@ -335,8 +334,9 @@ def test_a_cut_member_with_no_digest_raises_at_the_cut(
     toys: ArchiveFormat, tmp_path: Path, pipe: bool
 ) -> None:
     """With no digest there is no verifier to compare the bytes read with the size:
-    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read returns the bytes
-    before the cut and the next read raises (ADR 0014); a read with no size raises.
+    the member's data window (``_SpanWindow``) raises at the cut itself. A sized read
+    returns the bytes before the cut and the next read raises (ADR 0014); a read with no
+    size raises.
 
     Fails when the window returns a short read as a clean end."""
     fmt = _variant(_NoDigestReader, ToysContainer.NO_DIGEST)
@@ -421,6 +421,20 @@ def test_a_long_link_target_is_reported(toys: ArchiveFormat, tmp_path: Path) -> 
         assert long.link_target is None
         assert reader.read("docs/a.txt") == b"alpha\n"
         counts = reader.diagnostics.counts
+    assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_an_empty_link_target_in_the_data_is_reported_once(
+    toys: ArchiveFormat, tmp_path: Path, pipe: bool
+) -> None:
+    entries = [("empty", MemberType.SYMLINK, b""), *_ENTRIES[1:2]]
+    data = build_toys(entries)
+    source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    with open_archive(source, streaming=pipe) as reader:
+        listed = {m.name: m.link_target for m, _ in reader.stream_members()}
+        counts = reader.diagnostics.counts
+    assert listed == {"empty": None, "docs/a.txt": None}
     assert counts[DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE] == 1
 
 
@@ -1463,19 +1477,19 @@ def test_decompress_part_way_ratio_guard(
         + gzip.compress(build_toys(entries[2:]), mtime=0)
     )
     source = NonSeekableBytesIO(data) if pipe else _write(tmp_path, data)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(
+            max_ratio=100.0,
+            ratio_activation_threshold=1 << 20,
+            # A pipe has no size: the live guard, on compressed bytes counted.
+            live_ratio_activation_threshold=1 << 20,
+        )
+    )
     with (
-        open_archive(source, streaming=pipe, format=rpmish) as reader,
+        open_archive(source, streaming=pipe, format=rpmish, config=config) as reader,
         pytest.raises(ResourceLimitError, match="ratio"),
     ):
-        reader.extract_all(
-            tmp_path / "out",
-            limits=ExtractionLimits(
-                max_ratio=100.0,
-                ratio_activation_threshold=1 << 20,
-                # A pipe has no size: the live guard, on compressed bytes counted.
-                live_ratio_activation_threshold=1 << 20,
-            ),
-        )
+        reader.extract_all(tmp_path / "out")
 
 
 # Small floors, so a few MiB of zeros break the default ratio of 800:1 on a file
@@ -1721,7 +1735,7 @@ def test_decompress_misuse_is_not_offered_to_the_plugin_translator(
         open_archive(path, format=_variant(Reuses, ToysContainer.SUM16))
 
 
-# A format whose library decodes each member itself (as LHA's or a libarchive
+# A format whose library decodes each member itself (as ACE's or a libarchive
 # wrapper's does): the reader hands each member's data over as MemberSpan.data, a
 # stream that reads the walk's own stream, good until the walk moves on.
 _ZHEADER = struct.Struct(

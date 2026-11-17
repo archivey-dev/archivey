@@ -1,5 +1,13 @@
 # Stream-wrapper ownership
 
+**In one minute.** archivey stacks streams on streams (a slice of the file, a decryptor, a
+decompressor), and each layer must know whether closing itself also closes the layer
+below. The rule that matters to callers: archivey never closes a stream the caller handed
+it, and closes only what it opened itself. This page lists which wrapper types borrow and
+which own, and why. The guide's [life of an open](../guide/03-life-of-an-open.md) and
+[bugs and lessons](../guide/11-bugs-and-lessons.md#a-caller-stream-got-closed) pages tell
+how the rule came to be.
+
 Who calls `close()` on the stream underneath a wrapper. Not file-mode bits, not
 archive member Unix uid/gid.
 

@@ -6,12 +6,8 @@
 #
 # Non-required status check: a red run must not block merge. Soft EOF / hangs /
 # aborts are the signal we want visibility on, not a merge gate.
+# It runs after a merge to main that changes it, and on demand; never on a pull request.
 on:
-  pull_request:
-    paths:
-      - "scripts/investigations/rapidgzip_truncation_sweep.py"
-      - "openspec/changes/rapidgzip-truncation-investigation/**"
-      - ".github/workflows/rapidgzip-truncation-sweep.yml"
   push:
     branches: [main]
     paths:
@@ -21,7 +17,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: rgz-trunc-${{ github.event.pull_request.number || github.ref }}
+  group: rgz-trunc-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:

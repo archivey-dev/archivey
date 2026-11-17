@@ -44,8 +44,9 @@ The same code works for a ZIP, 7z or RAR download, because `open_archive` identi
 from the file's contents. `overwrite="replace"` lets the script run again over an earlier run's
 files. Without it, the first file that's already there stops the extraction. With
 `abort_on=["blocked_member"]`, a member that would land outside `data/`, such as `../evil.txt`,
-stops the extraction with an exception. Without it, that member is skipped and the report lists it
-as `ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
+stops the extraction with an exception. Without it, that member is skipped, the rest are
+extracted, and the call then raises `FilterRejectionError`, whose `report` lists the member as
+`ExtractionStatus.BLOCKED`. [Extracting](extracting.md#options) explains both options.
 
 By default, an extraction raises `ResourceLimitError` once it has written 2 GiB or 262,144 entries,
 or when data expands more than 800 times. A sparse TAR member, such as a disk image, can expand
@@ -65,11 +66,12 @@ with archivey.open_archive("dataset.tar.gz", config=config) as archive:
     archive.extract_all("data/", limits=archivey.ExtractionLimits.UNLIMITED)
 ```
 
-`ExtractionLimits.UNLIMITED` turns off the extraction limits, `DecoderLimits(max_ratio=None)` the
-expansion check for reads, listing and extraction, and `ListingLimits.UNLIMITED` both listing
-limits. Listing still costs about 1.5 KiB of
-memory per member. To keep some protection, raise single fields instead, such as
-`ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`.
+`ExtractionLimits.UNLIMITED` turns off the byte and entry caps of extraction,
+`DecoderLimits(max_ratio=None)` the expansion check for reads, listing and extraction, and
+`ListingLimits.UNLIMITED` all three listing limits. Listing still costs about 1.5 KiB of memory per
+member. To keep some protection, raise single fields instead, such as
+`ListingLimits(max_members=5_000_000, max_metadata_bytes=2**30)`, which keeps the 4 GiB cap on what
+a listing decodes.
 [Hardening](security.md#hardening) lists each limit with its default and what it costs.
 
 ### Extract while downloading
@@ -89,9 +91,10 @@ with urllib.request.urlopen(URL) as response:
         archive.extract_all("data/", overwrite="replace")
 ```
 
-This works for TAR and ZIP archives and single compressed files. 7z, RAR and ISO archives need a
-source that can seek, so for them `open_archive` raises `StreamNotSeekableError`, and the download
-needs to be saved first, as in the previous recipe.
+This works for TAR, ZIP, cpio, ar, deb, RPM and makeself archives and single compressed files. 7z,
+RAR, ISO, SquashFS, CAB, XAR, LHA and ARJ archives need a source that can seek, so for them
+`open_archive` raises `StreamNotSeekableError`, and the download needs to be saved first, as in the
+previous recipe.
 
 If the download stops partway, the call raises `TruncatedError` or another `CorruptionError`. From
 a TAR, the members written before then stay in `data/`. A ZIP keeps its index at the end, so its
@@ -134,8 +137,9 @@ print(df.shape)
 
 Member streams don't seek by default. A reader that needs to seek, such as one for Parquet files,
 needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)). On
-a `.tar.gz` or a solid 7z archive, opening members one by one decompresses the data before each of
-them again, and the next recipe avoids that.
+a solid 7z archive or a `.tar.bz2`, opening members one by one decompresses the data before each of
+them again. On a `.tar.gz` it goes back only to a restart point near each member
+([Solid archives](reading.md#solid-archives)). The next recipe avoids both.
 
 ### Read every member of a large archive once
 
@@ -226,8 +230,8 @@ reaches the end raises if the data is damaged. No password is given, so an encry
 
 Each setting in `CONFIG` does one job:
 
-- `listing_limits` caps how many members the archive may list and how much text their names,
-  comments and link targets may take.
+- `listing_limits` caps how many members the archive may list, how much text their names,
+  comments and link targets may take, and how much a listing may decode before you read anything.
 - `decoder_limits` caps the memory the archive can ask a decoder for. Lower it to what one upload
   may use on your server.
 - `ProcessIsolation.NATIVE_DECODERS` runs every native decoder, such as zlib, bz2 and lzma, in a
@@ -501,8 +505,10 @@ however far in it starts.
 A compressed file such as `notes.txt.gz` or `data.zz` counts as an archive here, since it can expand
 as much as one. So do Office documents, JAR files and wheels, which are ZIP archives.
 
-If you need to look inside, keep one budget for the bytes read at every level, and refuse the
-upload when archives are nested more deeply than you allow:
+If you need to look inside, open each inner archive with `parent=` set to the reader you found it
+in, and refuse the upload when archives are nested more deeply than you allow. The levels then
+count against the upload's totals together: its members, its ratio, and the decoded bytes you allow
+for one upload:
 
 ```python
 import io
@@ -516,7 +522,11 @@ CONFIG = archivey.ArchiveyConfig(
         max_members=10_000,
         max_metadata_bytes=4 * 2**20,
     ),
-    decoder_limits=archivey.DecoderLimits(max_decoder_memory=256 * 2**20),
+    decoder_limits=archivey.DecoderLimits(
+        max_decoder_memory=256 * 2**20,
+        # All levels of one upload together.
+        max_nest_decoded_bytes=100 * 2**20,
+    ),
     process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
     diagnostic_policy=archivey.DiagnosticPolicy.STRICT,
     always_probe_content=True,
@@ -525,26 +535,19 @@ CONFIG = archivey.ArchiveyConfig(
 MAX_DEPTH = 2
 
 
-class Budget:
-    def __init__(self, max_bytes):
-        self.left = max_bytes
-
-    def take(self, n):
-        self.left -= n
-        if self.left < 0:
-            raise RuntimeError("the upload expands too much")
-
-
-def scan(source, budget, depth=0):
+def scan(source, parent=None, depth=0):
     names = []
-    with archivey.open_archive(source, streaming=True, config=CONFIG) as archive:
+    # An inner archive takes its parent's config.
+    config = CONFIG if parent is None else None
+    with archivey.open_archive(
+        source, streaming=True, config=config, parent=parent
+    ) as archive:
         for member, stream in archive.stream_members():
             names.append("  " * depth + member.name)
             if not member.is_file or stream is None:
                 continue
             with tempfile.TemporaryFile() as copy:
                 while chunk := stream.read(2**20):
-                    budget.take(len(chunk))
                     copy.write(chunk)
                 copy.seek(0)
                 try:
@@ -554,7 +557,7 @@ def scan(source, budget, depth=0):
                 if depth + 1 > MAX_DEPTH:
                     raise RuntimeError("archives are nested too deeply")
                 copy.seek(0)
-                names += scan(copy, budget, depth + 1)
+                names += scan(copy, archive, depth + 1)
     return names
 
 
@@ -565,9 +568,76 @@ with zipfile.ZipFile("upload.zip", "w") as zf:
     zf.writestr("report.txt", "hello")
     zf.writestr("more.zip", inner.getvalue())
 
-print("\n".join(scan("upload.zip", Budget(100 * 2**20))))
+print("\n".join(scan("upload.zip")))
 ```
 
-Each member is copied to a temporary file, which can seek, so an inner 7z, RAR or ISO archive opens
-too. The copy counts against the budget before anything is opened from it, so a nested archive
-can't use more than what's left. The temporary files take disk space up to the budget at each level.
+Going over a total raises `ResourceLimitError`. Each member is copied to a temporary file, which can
+seek, so an inner 7z, RAR or ISO archive opens too. The copy counts as decoded before anything is
+opened from it, so a nested archive can't use more than what's left. An inner archive's bytes count
+twice: once as the outer member, and again as it's decoded. The temporary files take disk space up
+to `max_nest_decoded_bytes` at each level.
+
+### Pin the code that reads uploads
+
+Which packages and programs read a file depends on what's installed: a PPMd 7z member is decoded
+by `pyppmd` if it's there, and a RAR member by whichever `unrar` comes first on `PATH`. On a server,
+you can fix that set in the config, and check after each upload that nothing outside it ran:
+
+```python
+import zipfile
+
+import archivey
+from archivey import OptionalLibrary as L
+
+PINNED = archivey.ArchiveyConfig(
+    formats=archivey.FormatPolicy(
+        # The optional packages archivey may use. Any other one stays off, even one
+        # that a later archivey release starts using. zstd counts as one, even on
+        # Python 3.14 where it's in the standard library.
+        only_libraries={L.CRYPTOGRAPHY, L.BACKPORTS_ZSTD, L.COMPRESSION_ZSTD},
+        plugins=False,
+    ),
+    # The one RAR program to run. PATH isn't searched.
+    unrar_path="/usr/bin/unrar",
+    process_isolation=archivey.ProcessIsolation.NATIVE_DECODERS,
+)
+ALLOWED = {"archivey", "cryptography", "backports.zstd", "compression.zstd", "unrar"}
+
+
+def read_all(path):
+    with archivey.open_archive(path, config=PINNED) as archive:
+        for member, stream in archive.stream_members():
+            if stream is not None:
+                stream.read()
+        used = archive.backends_used
+    unexpected = [use for use in used if use.name not in ALLOWED]
+    if unexpected:
+        raise RuntimeError(f"archivey ran code outside the pinned set: {unexpected}")
+    return used
+
+
+with zipfile.ZipFile("pinned.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.writestr("a.txt", "hello")
+
+for use in read_all("pinned.zip"):
+    print(use)
+```
+
+It prints `BackendUse(kind='reader', name='archivey', used_for='ZIP', path=None)`: the ZIP was
+read by archivey's own reader, with the standard library's `zlib`, which isn't listed. A RAR
+compressed member adds `BackendUse(kind='program', name='unrar', used_for='RAR',
+path='/usr/bin/unrar')`.
+
+A member that needs a package left out of `only_libraries=` raises `PackageNotInstalledError` when
+it's read. The error's `missing` lists the package, and that entry's `reason` says the config turned
+it off. A 7z with a PPMd member fails this way, and the archive's other members can still be read.
+zstd is listed as two optional packages, `backports.zstd` before Python 3.14 and the standard
+library's `compression.zstd` from 3.14 on, so the config names both to keep zstd ZIP members and
+`.tar.zst` files readable. `unrar_path=` must be an absolute path, and a program there that isn't
+RARLAB's, or is older than 6.0, is refused as a missing one is. `format_availability(fmt,
+config=PINNED)` tells you before any upload arrives which formats this setup can read.
+
+`backends_used` grows as members are read, so check it after the last read. It lists each reader,
+optional package and program once, in the order each was first used. It doesn't list the standard
+library's `zlib`, `bz2` and `lzma`, which can't be turned off, or decoding done only to detect the
+format. It's experimental: a later release may add a kind or change what a name holds.

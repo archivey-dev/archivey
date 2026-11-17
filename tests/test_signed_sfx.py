@@ -2,7 +2,7 @@
 
 A code-signed Windows executable keeps its Authenticode certificate table at the end of
 the file, after anything appended to it. Detection reports where that table starts
-(``FormatInfo.payload_end``), and the ZIP, 7z and RAR readers stop there, whether the
+(``FormatInfo.payload_end``), and the ZIP, 7z, RAR and LHA readers stop there, whether the
 end came from detection or, under a forced ``format=``, from ``open_archive``, which
 reads the same headers.
 So the table is not reported as data after the archive, and ``STRICT`` opens the file.
@@ -27,6 +27,7 @@ from archivey.exceptions import (
     FormatDetectionError,
 )
 from archivey.types import ArchiveFormat
+from tests.lha_util import Member, archive as lha_archive
 from tests.pe_build import FILE_ALIGNMENT, pe_file, pe_headers
 from tests.streams_util import NonSeekableBytesIO
 from tests.test_sevenzip_trailing_data import _stored_7z
@@ -49,11 +50,20 @@ def _payload(fmt: ArchiveFormat) -> bytes:
         return _zip()
     if fmt is ArchiveFormat.SEVEN_Z:
         return _stored_7z()
+    if fmt is ArchiveFormat.LHA:
+        return lha_archive([Member(b"f.txt", b"hello\n", method="-lh0-", level=2)])
     return _RAR_FIXTURE.read_bytes()
 
 
-_FORMATS = [ArchiveFormat.ZIP, ArchiveFormat.SEVEN_Z, ArchiveFormat.RAR]
-_IDS = ["zip", "7z", "rar"]
+_FORMATS = [
+    ArchiveFormat.ZIP,
+    ArchiveFormat.SEVEN_Z,
+    ArchiveFormat.RAR,
+    ArchiveFormat.LHA,
+]
+_IDS = ["zip", "7z", "rar", "lha"]
+# LHA counts trailing data from its end byte, the last byte of its payload.
+_FROM_END = {ArchiveFormat.LHA: 1}
 
 
 def _open(
@@ -128,7 +138,7 @@ def test_junk_before_the_certificate_is_still_reported(
         certificate_size=0x800,
     )
     (context,) = _open(data, fmt if forced else None)
-    assert context.observed_bytes == 7
+    assert context.observed_bytes == 7 + _FROM_END.get(fmt, 0)
     with pytest.raises(DiagnosticRaisedError):
         _open(data, fmt if forced else None, config=_STRICT)
 
@@ -137,7 +147,7 @@ def test_junk_before_the_certificate_is_still_reported(
 def test_unsigned_self_extractor_tail_is_still_reported(fmt: ArchiveFormat) -> None:
     data = pe_file(_IMAGE, payload=_payload(fmt), after_payload=b"JUNK")
     (context,) = _open(data, None)
-    assert context.observed_bytes == 0
+    assert context.observed_bytes == _FROM_END.get(fmt, 0)
 
 
 @pytest.mark.parametrize("forced", [False, True], ids=["detected", "forced"])

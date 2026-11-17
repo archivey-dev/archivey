@@ -467,7 +467,10 @@ def _md_report(
         lines.append("| --- | --- | --- | --- | --- | ---: | ---: | --- |")
         for s in silent:
             lines.append(
-                "| {fixture} | {cut}/{size} | {backend} | {par} | {outcome} | {out} | {exp} | {exc} |".format(
+                (
+                    "| {fixture} | {cut}/{size} | {backend} | {par} | {outcome} | {out}"
+                    " | {exp} | {exc} |"
+                ).format(
                     fixture=s["fixture"],
                     cut=s["cut"],
                     size=s["size"],

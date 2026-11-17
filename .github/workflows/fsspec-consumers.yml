@@ -1,0 +1,85 @@
+name: fsspec consumers
+
+# Runs tests/test_fsspec_filesystem.py with the real consumers of the archivey://
+# protocol installed: pandas, pyarrow and dask. The dev group does not install them
+# (they are large), so in ci.yml their tests skip. Here a skip is a failure.
+#
+# The consumers are installed unpinned, on top of the locked dev environment, so the run
+# tests archivey against their latest releases. A red run after a quiet week on main
+# most likely means a new pandas, pyarrow, dask or fsspec release changed something.
+#
+# Runs daily on main, on demand, and after a merge to main that changes the fsspec file
+# system, the remote source under it, its tests, the dependency pins or this file. It
+# never runs on a pull request (CI cost), it is not a required check and the merge
+# queue does not run it. It is a release gate
+# (RELEASE_GATE_WORKFLOWS in scripts/release/release.py).
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "src/archivey/fsspec.py"
+      - "src/archivey/internal/remote.py"
+      - "src/archivey/internal/source.py"
+      - "src/archivey/internal/filters.py"
+      - "tests/test_fsspec_filesystem.py"
+      - ".github/workflows/fsspec-consumers.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+concurrency:
+  group: fsspec-consumers-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  consumers:
+    name: ubuntu / py3.13 / pandas, pyarrow, dask
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Sync (dev + all extras)
+        run: uv sync --group dev --extra all
+
+      - name: Install the consumers (latest releases)
+        run: uv pip install pandas pyarrow "dask[dataframe]"
+
+      - name: Show versions
+        # Also fails the job if one of them cannot be imported, before pytest would
+        # turn that into a skip.
+        run: >
+          uv run --no-sync python -c
+          "import fsspec, pandas, pyarrow, dask, dask.bag, dask.dataframe;
+          print('fsspec', fsspec.__version__); print('pandas', pandas.__version__);
+          print('pyarrow', pyarrow.__version__); print('dask', dask.__version__)"
+
+      - name: Run the fsspec file system tests
+        run: >
+          uv run --no-sync pytest tests/test_fsspec_filesystem.py
+          -q -rs --no-cov --junitxml=fsspec-consumers.xml
+
+      - name: Fail on any skipped test
+        run: >
+          uv run --no-sync python -c
+          "import sys, xml.etree.ElementTree as ET;
+          cases = ET.parse('fsspec-consumers.xml').getroot().iter('testcase');
+          skipped = [c.get('name') for c in cases if c.find('skipped') is not None];
+          print('skipped:', skipped or 'none'); sys.exit(1 if skipped else 0)"

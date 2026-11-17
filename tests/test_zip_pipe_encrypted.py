@@ -1228,7 +1228,7 @@ def _declared_size(data: bytes, size: int) -> bytes:
 
 
 def _unsupported_method_link() -> bytes:
-    """A ZipCrypto symlink whose method says Reduce (2) in both headers: the password
+    """A ZipCrypto symlink whose method says WavPack (97) in both headers: the password
     is right, and the codec is refused once the stage is built."""
     data = bytearray(
         build_zipcrypto_zip(
@@ -1239,8 +1239,8 @@ def _unsupported_method_link() -> bytes:
             unix_mode=0o120777,
         )
     )
-    struct.pack_into("<H", data, 8, 2)
-    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 10, 2)
+    struct.pack_into("<H", data, 8, 97)
+    struct.pack_into("<H", data, data.index(b"PK\x01\x02") + 10, 97)
     return bytes(data)
 
 

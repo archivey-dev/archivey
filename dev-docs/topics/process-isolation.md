@@ -1,5 +1,14 @@
 # Process isolation
 
+**In one minute.** Some decoder libraries written in C or C++ can crash the whole Python
+process on bad input. archivey runs those in a child process, so a crash ends the child
+and the caller gets an `ArchiveyError` instead. By default only the decoders seen to
+crash, plus libbzip3 as a precaution, are isolated, and children are reused, so the cost
+is small. This page covers the settings, how children start, are reused and end, and
+what a caller sees when one dies. The guide's
+[streams and codecs](../guide/06-streams-and-codecs.md#child-processes) and
+[security](../guide/08-security.md) pages give the overview.
+
 Which native decoders archivey runs in a child process, how those children are started,
 reused and ended, and what a caller sees when one dies. The setting is
 `ArchiveyConfig.process_isolation`, a `ProcessIsolation`.
@@ -24,8 +33,11 @@ Other pages own parts of this, and this page links them rather than repeating th
 - **Three settings.** `KNOWN_CRASHES` (the default) isolates the decoders that have been
   seen to crash, rapidgzip's DEFLATE family (`use_rapidgzip`) and pyppmd (every PPMd
   member), and rapidgzip's bzip2 decoder (`use_indexed_bzip2`) as a precaution, because
-  it comes from the same library. `NATIVE_DECODERS` also isolates zlib, bz2, lzma, zstd, lz4, brotli and
-  inflate64, and the trial decodes that detection runs. `NONE` starts no child: pyppmd
+  it comes from the same library. libbzip3 (every `.bz3` file) is isolated as a precaution
+  too: it is a young library with memory-safety fixes in its 2023 releases, and it decodes
+  in a child under every setting but `NONE`. `NATIVE_DECODERS` also isolates zlib, bz2,
+  lzma, zstd, lz4, brotli, inflate64 and python-lzo, and the trial decodes that detection
+  runs. `NONE` starts no child: pyppmd
   decodes in this process, and rapidgzip is not used at all (`AUTO` falls back to the
   standard library, and `ON` is refused when the config is built).
 - **What a caller sees when a child dies.** A crash signal (or its Windows status) is

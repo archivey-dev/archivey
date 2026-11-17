@@ -66,6 +66,7 @@ with archivey.open_archive("download.zip") as archive:
         policy="strict",     # how much to trust names and permissions
         overwrite="error",   # what to do when a file is already there
         on_error="stop",     # whether a damaged member stops the rest
+        on_blocked="raise",  # whether a refused member raises at the end
         abort_on=[],         # events that stop the whole extraction at once
         on_progress=None,    # called as files are written
         limits=archivey.ExtractionLimits(max_extracted_bytes=2 * 2**30),  # how much it may write
@@ -80,7 +81,7 @@ permissions gets written as it is:
 |---|---|---|
 | `"strict"` (default) | Rewritten to a portable spelling, or refused when that isn't possible or another system would read the name differently | Files keep their stored permissions without setuid, setgid, sticky or group and other write, so at most `rwxr-xr-x`; a file the owner can't execute is executable by nobody; folders always `rwxr-xr-x` |
 | `"standard"` | As in `"strict"`, but trailing dots and spaces are kept, absolute paths are placed inside the destination, and a backslash, a control character or bytes that aren't UTF-8 are rewritten instead of refused | As stored, without setuid, setgid and sticky bits. Files are `rw-r--r--` and folders `rwxr-xr-x` when the archive stores no permissions |
-| `"trusted"` | As stored, but absolute paths are placed inside the destination | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
+| `"trusted"` | As stored, but absolute paths are placed inside the destination. A link whose target starts at `/` is written as stored, wherever it points | As stored, and the owner too when running as root. When the archive stores no permissions, whatever your system gives a new file |
 
 Under every policy, files and folders get the member's modification time, and on Windows and
 macOS its birth time too (`member.created`), as 7-Zip does. Linux has no way to set a birth time,
@@ -120,13 +121,23 @@ one's file.
 | `"stop"` (default) | The first failure raises, and extraction stops there |
 | `"continue"` | The failure is recorded in the report, and extraction goes on |
 
-A refused member isn't a failure, so `"stop"` doesn't stop there.
-`abort_on=["blocked_member"]` does.
+A refused member isn't a failure, so `"stop"` doesn't stop there. The rest of the archive is
+extracted, and `on_blocked` decides what the call does at the end:
 
-??? note "Why doesn't a refused member stop the extraction?"
+| `on_blocked` | Effect |
+|---|---|
+| `"raise"` (default) | Once every other member is written, the call raises `FilterRejectionError`. Its `report` attribute is the full report |
+| `"skip"` | The call returns the report, with each refused member as `BLOCKED` |
+
+To stop at the first refused member, before the rest are written, use
+`abort_on=["blocked_member"]`.
+
+??? note "Why does a refused member raise only at the end?"
     Refusing it is the protection doing its job, and the rest of the archive is still safe to write.
-    Otherwise one stray name, such as an absolute path in an archive made on another system, would
-    stop everything after it.
+    Stopping at once would let one stray name, such as an absolute path in an archive made on
+    another system, stop everything after it. Returning quietly would let a caller that never looks
+    at the report miss that something was left out. GNU tar does the same: it extracts what it can,
+    then exits with an error.
 
 `abort_on` lists events that stop the whole extraction immediately if they happen, even ones that
 aren't failures. It's empty by default:
@@ -165,7 +176,9 @@ as it would for real, and is skipped, replaced or renamed under the other polici
 These are refused under every policy:
 
 - `../evil.txt` or `a/../../evil.txt`.
-- A link to `../../outside` or `/etc/passwd`.
+- A link to `../../outside`.
+- A member written through a link that leads out of the destination, such as `etc/passwd`
+  after a link `etc -> /etc`.
 - A device file or a named pipe.
 
 These are written as is under every policy, and noted:
@@ -176,6 +189,12 @@ These are written as is under every policy, and noted:
   `MEMBER_NAME_INVISIBLE_CHARACTER`.
 
 The rest depend on the policy:
+
+- **A link to `/etc/passwd` or `/opt/app/bin/tool`, with a target that starts at `/`:** `"strict"`
+  and `"standard"` refuse it. `"trusted"` writes it as stored, as GNU tar, cpio and unsquashfs do,
+  so a root filesystem or an initramfs image extracts in full. Nothing is written outside the
+  destination through such a link under any policy: a member under it is written only when the
+  link leads back into the destination.
 
 - **`/etc/evil.txt` or `C:/evil.txt`:** `"strict"` refuses it. `"standard"` and `"trusted"` write it
   as `etc/evil.txt` or `evil.txt`.
@@ -235,7 +254,7 @@ the filter does, and a link pointing outside is refused unless the filter also c
 `archivey.sanitize_names` is a ready-made filter for this, passed as `filter=` to `extract_all`. It
 drops a leading `/` or drive letter, resolves or drops `..`, removes those reordering characters,
 and adds `_` to names Windows reserves, such as `CON`. In a symlink's target it makes only the
-character and reserved-name fixes, and it leaves a hard link's target as stored. It does not
+character and reserved-name fixes, and it leaves a hard link's target unchanged. It does not
 rewrite a `\`, a control character or bytes that are not UTF-8, which `STRICT` refuses: extract
 with `policy="standard"` to have those written under a portable spelling.
 
@@ -245,19 +264,29 @@ out, by `members=` or a filter, the link is written as a separate copy of its co
 `streaming=True`, where that data is gone by then and the link fails. If the file is refused, the
 link is refused too. Changing a hard link's target in a filter does nothing.
 
-A refused member isn't written, and the rest of the archive still extracts. The call returns a
-report with one result for each member, with the path it was written to in `result.path` and the
-member as the archive stored it in `result.member`. That shows what was refused:
+A refused member isn't written, and the rest of the archive still extracts. Then the call raises
+`FilterRejectionError`. Its `report` attribute is the report the call would have returned, with
+one result for each member: the path it was written to in `result.path` and the member as the
+archive stored it in `result.member`. That shows what was refused:
 
 ```python
 with archivey.open_archive("download.zip") as archive:
-    report = archive.extract_all("out/")
-for result in report:
-    if result.status is archivey.ExtractionStatus.BLOCKED:
-        print(result.member.name, result.error)
+    try:
+        report = archive.extract_all("out/")
+    except archivey.FilterRejectionError as e:
+        report = e.report
+        assert report is not None  # always set on the end-of-call error
+        for result in report:
+            if result.status is archivey.ExtractionStatus.BLOCKED:
+                print(result.member.name, result.error)
 ```
 
-If you'd rather stop at the first refused member, `abort_on=["blocked_member"]` raises instead.
+With `on_blocked="skip"` the call returns the report instead, and `report.ok` is `False` when a
+member was refused or failed; `report.raise_for_failure()` raises the first one's error. Test
+`report.ok`, not the report: `if report:` always raises `TypeError`. As a sequence, its truth would
+only say whether it is empty, and a report of a failed extraction is not, while the report of an
+empty archive is. If you'd rather stop at the first refused member, `abort_on=["blocked_member"]`
+raises there, and its error has no report.
 
 ## Damaged members
 

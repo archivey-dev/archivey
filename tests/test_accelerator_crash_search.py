@@ -1,6 +1,8 @@
-"""``scripts/investigations/accelerator_crash_search.py`` runs rapidgzip in-process on damaged input in a
-process it watches, and reports each crash by its signature. These tests keep it
-working: they run it on a few cases, and check that it finds the known DEFLATE abort.
+"""``scripts/investigations/accelerator_crash_search.py`` runs rapidgzip on damaged input.
+
+It decodes in-process, in a process it watches, and reports each crash by its signature.
+These tests keep it working: they run it on a few cases, and check that it finds the
+known DEFLATE abort.
 """
 
 from __future__ import annotations

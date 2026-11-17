@@ -23,16 +23,20 @@ from typing import Any
 
 import pytest
 
+from archivey import ProcessIsolation
 from archivey.exceptions import ArchiveyError
 from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams.codecs import (
     Codec,
+    CodecParams,
     deflate_decoder,
     deps,
     open_codec_stream,
 )
+from archivey.internal.streams.codecs.bzip2_blocks import Bzip2BlockDecompressor
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecoder, ZlibDecoder
 from archivey.internal.streams.decompressor_stream import probe_streams
+from archivey.internal.streams.native_memory import ZLIB_COPY_LEAKS
 from tests.conftest import requires
 from tests.streams_util import NonSeekableBytesIO, ShortReadNonSeekable
 
@@ -67,7 +71,8 @@ def _zstd(data: bytes) -> bytes:
 CODECS: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
     "gzip": (Codec.GZIP, lambda d: gzip.compress(d, mtime=0)),
     "xz": (Codec.XZ, lambda d: lzma.compress(d, format=lzma.FORMAT_XZ)),
-    "bzip2": (Codec.BZIP2, bz2.compress),
+    # Level 1: 100 kB blocks, so damage halfway leaves whole blocks before it.
+    "bzip2": (Codec.BZIP2, lambda d: bz2.compress(d, 1)),
     "zstd": (Codec.ZSTD, _zstd),
 }
 
@@ -115,6 +120,15 @@ _DEFLATE_FAMILY: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
 _DEFLATE_WBITS = {"gzip": 31, "zlib": zlib.MAX_WBITS, "deflate": -zlib.MAX_WBITS}
 
 
+# Under PyPy the deflate decoders take no ``decompressobj.copy()`` on a pipe, because
+# PyPy leaks part of every copy (dev-docs/known-issues.md §"PyPy: native decoder
+# memory"): a pipe loses the failing call's bytes there, as with a decoder in a child.
+_DEFLATE_COPIES = pytest.mark.skipif(
+    ZLIB_COPY_LEAKS, reason="no zlib copies where copy() leaks (PyPy)"
+)
+
+
+@_DEFLATE_COPIES
 @pytest.mark.parametrize("name", list(_DEFLATE_FAMILY))
 @pytest.mark.parametrize("size", [512, 1 << 20])
 def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
@@ -143,6 +157,7 @@ def test_deflate_from_a_pipe_gets_every_byte_before_the_error(
     assert _prefix(NonSeekableBytesIO(damaged), codec, size) == expected
 
 
+@_DEFLATE_COPIES
 def test_a_second_gzip_member_from_a_pipe_gets_every_byte_before_the_error() -> None:
     first = _text(200_000, 2)
     data = gzip.compress(first, mtime=0) + _damage(
@@ -179,6 +194,127 @@ def test_an_unbounded_inflate_step_is_not_replayed(
     assert replays == []
 
 
+class _CountsCopies:
+    """A ``decompressobj`` that counts its ``copy()`` calls."""
+
+    def __init__(self, inner: Any, copies: list[int]) -> None:
+        self._inner = inner
+        self._copies = copies
+
+    def copy(self) -> Any:
+        self._copies.append(1)
+        return self._inner.copy()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _fed_in_pieces(
+    decoder_type: type[ZlibDecoder | GzipDecoder],
+    data: bytes,
+    piece: int,
+    copies: list[int],
+    *,
+    unbounded_at: int | None = None,
+) -> tuple[bytes, int, int]:
+    """What a decoder that keeps the output before errors gives from ``data`` fed in
+    ``piece``-byte feeds of at most 64 KiB of output each, before it raises: the bytes,
+    the feeds that returned, and the bytes the failing feed handed back. That feed meets
+    the error, returns the bytes before it and keeps the error; the feed after it
+    raises. The feed at offset ``unbounded_at`` asks for all its output."""
+    decoder: ZlibDecoder | GzipDecoder = (
+        GzipDecoder() if decoder_type is GzipDecoder else ZlibDecoder(zlib.MAX_WBITS)
+    )
+    decoder._decomp = _CountsCopies(decoder._decomp, copies)
+    decoder.keep_output_before_errors()
+    got = bytearray()
+    steps = recovered = 0
+    with pytest.raises(ArchiveyError):
+        for i in range(0, len(data), piece):
+            limit = -1 if i == unbounded_at else 1 << 16
+            out = decoder.feed(data[i : i + piece], limit).data
+            got += out
+            steps += 1
+            if decoder._raise_next is not None:
+                recovered = len(out)
+        decoder.flush()
+    return bytes(got), steps, recovered
+
+
+def _damaged_stream(decoder_type: type[ZlibDecoder | GzipDecoder]) -> bytes:
+    if decoder_type is GzipDecoder:
+        return _damage(gzip.compress(PAYLOAD[:30_000], mtime=0), 0.5)
+    return _damage(zlib.compress(PAYLOAD[:30_000]), 0.5)
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_one_byte_steps_share_a_copy(
+    decoder_type: type[ZlibDecoder | GzipDecoder],
+) -> None:
+    """A source that returns one byte per read makes one step per byte. The steps share
+    one ``decompressobj.copy()`` up to the replay bounds instead of taking one each:
+    under PyPy each copy stays allocated, and part of it is never freed."""
+    copies: list[int] = []
+    got, steps, _ = _fed_in_pieces(
+        decoder_type, _damaged_stream(decoder_type), 1, copies
+    )
+    assert got
+    assert steps > 4 * deflate_decoder.REPLAY_MAX_STEPS
+    assert len(copies) <= steps // deflate_decoder.REPLAY_MAX_STEPS + 1
+
+
+@_DEFLATE_COPIES
+@pytest.mark.parametrize("unbounded", [False, True], ids=["bounded", "one-unbounded"])
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_the_replay_hands_back_what_a_copy_per_step_does(
+    decoder_type: type[ZlibDecoder | GzipDecoder],
+    unbounded: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failing step decodes again from the shared copy through every step since
+    it, so it hands back the bytes a copy taken just before it would. An unbounded step
+    in between moves the decoder without being recorded, so the next bounded step takes
+    a fresh copy. The pieces are large enough that the failing step hands bytes back,
+    so a replay from the wrong state shows in them."""
+    damaged = _damaged_stream(decoder_type)
+    piece = 64
+    unbounded_at = (len(damaged) // 4) // piece * piece if unbounded else None
+    copies: list[int] = []
+    shared = _fed_in_pieces(
+        decoder_type, damaged, piece, copies, unbounded_at=unbounded_at
+    )
+    assert shared[2] > 0
+    assert len(copies) < shared[1] // 2
+    monkeypatch.setattr(deflate_decoder, "REPLAY_MAX_STEPS", 1)
+    per_step: list[int] = []
+    assert (
+        _fed_in_pieces(
+            decoder_type, damaged, piece, per_step, unbounded_at=unbounded_at
+        )
+        == shared
+    )
+
+
+@pytest.mark.parametrize("decoder_type", [ZlibDecoder, GzipDecoder])
+def test_under_pypy_a_pipe_takes_no_copy_and_loses_at_most_the_failing_call(
+    decoder_type: type[ZlibDecoder | GzipDecoder], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under PyPy the decoders take no copy, and a damaged pipe hands back what the
+    feeds before the failing one gave. Both interpreters run it with the flag patched;
+    the reference keeps copies, which PyPy can take, only not without a leak."""
+    damaged = _damaged_stream(decoder_type)
+    monkeypatch.setattr(deflate_decoder, "ZLIB_COPY_LEAKS", False)
+    kept = _fed_in_pieces(decoder_type, damaged, 64, [])
+    monkeypatch.setattr(deflate_decoder, "ZLIB_COPY_LEAKS", True)
+    copies: list[int] = []
+    got, steps, recovered = _fed_in_pieces(decoder_type, damaged, 64, copies)
+    assert copies == []
+    assert recovered == 0
+    assert steps == kept[1] - 1
+    assert got == kept[0][: len(got)]
+    assert len(kept[0]) - len(got) == kept[2]
+
+
 @pytest.mark.parametrize("name", ["gzip", "xz"])
 def test_a_pipe_loses_at_most_one_call(name: str) -> None:
     """A pipe cannot be decoded again: a read loses at most the decoder call that
@@ -200,7 +336,9 @@ def test_a_pipe_loses_at_most_one_call(name: str) -> None:
 _RAW: dict[Codec, Callable[[], Any]] = {
     Codec.GZIP: lambda: zlib.decompressobj(31),
     Codec.XZ: lzma.LZMADecompressor,
-    Codec.BZIP2: bz2.BZ2Decompressor,
+    # One block at a time, as the codec decodes it: a block's bytes come out only once
+    # its CRC passed.
+    Codec.BZIP2: Bzip2BlockDecompressor,
 }
 
 
@@ -371,3 +509,216 @@ def test_an_interrupt_during_the_second_decode_reaches_the_caller(
         while stream.read(5 << 20):
             pass
     assert calls == 3
+
+
+def _bzip3(data: bytes) -> bytes:
+    from bz3.backends import BZ3Compressor
+
+    compressor = BZ3Compressor(65 << 10)
+    return compressor.compress(data) + compressor.flush()
+
+
+def _ppmd8(data: bytes) -> bytes:
+    import pyppmd
+
+    encoder = pyppmd.Ppmd8Encoder(6, 1 << 20, 0)
+    return encoder.encode(data) + encoder.flush(True)
+
+
+_PROBED: dict[str, tuple[Codec, Callable[[bytes], bytes]]] = {
+    **CODECS,
+    "bzip3": (Codec.BZIP3, _bzip3),
+    "ppmd": (Codec.PPMD, _ppmd8),
+}
+
+
+def _probed_prefix(
+    data: bytes, codec: Codec, size: int, config: StreamConfig
+) -> tuple[int, str | None]:
+    params = CodecParams()
+    if codec is Codec.PPMD:
+        params = CodecParams(ppmd_order=6, ppmd_mem_size=1 << 20, pack_size=len(data))
+    got = 0
+    with open_codec_stream(
+        codec, io.BytesIO(data), config=config, params=params
+    ) as stream:
+        try:
+            while chunk := stream.read(size):
+                got += len(chunk)
+        except ArchiveyError as exc:
+            return got, type(exc).__name__
+    return got, None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        *CODECS,
+        pytest.param("bzip3", marks=requires("bz3")),
+        pytest.param("ppmd", marks=requires("pyppmd")),
+    ],
+)
+def test_probes_find_the_byte_one_byte_calls_find(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-decode searches for the failing byte with probes of many bytes; it hands
+    back exactly the bytes a decode asking for one byte per call hands back, wherever
+    the damage falls in the read."""
+    from archivey.internal.streams import decompressor_stream
+
+    codec, compress = _PROBED[name]
+    # In process: one-byte calls to a child process take about 2 ms each.
+    config = replace(_CONFIG, process_isolation=ProcessIsolation.NONE)
+    packed = compress(PAYLOAD[:400_000])
+    rng = random.Random(name)
+    real_probe = decompressor_stream._redecode_probe
+    for _ in range(4):
+        at = rng.randrange(len(packed) // 10, len(packed) - 100)
+        damaged = packed[:at] + rng.randbytes(16) + packed[at + 16 :]
+        for size in (4096, 65536):
+            monkeypatch.setattr(decompressor_stream, "_redecode_probe", real_probe)
+            probed = _probed_prefix(damaged, codec, size, config)
+            assert probed[1] is not None, "the damage must surface as an error"
+            monkeypatch.setattr(decompressor_stream, "_redecode_probe", lambda *_: 1)
+            assert probed == _probed_prefix(damaged, codec, size, config), (at, size)
+
+
+def test_a_large_read_finds_the_failing_byte_in_few_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 1 MiB read that meets damage far into the read does not ask for one byte per
+    call up to it: the probes take a few restarts and a few thousand calls. One byte
+    per call cost about 1 µs each in process and 0.1 to 2 ms each to a child process
+    (PPMd, bzip3)."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    counts = {"restarts": 0, "calls": 0}
+    restart, step = (
+        DecompressorStream._redecode_restart,
+        DecompressorStream._redecode_step,
+    )
+
+    def counting_restart(self: Any, *args: Any) -> Any:
+        counts["restarts"] += 1
+        return restart(self, *args)
+
+    def counting_step(self: Any, *args: Any) -> Any:
+        counts["calls"] += 1
+        return step(self, *args)
+
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting_restart)
+    monkeypatch.setattr(DecompressorStream, "_redecode_step", counting_step)
+    codec, compress = CODECS["xz"]
+    damaged = _damage(compress(PAYLOAD), 0.5)
+    got, error = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    assert error is not None
+    assert got % (1 << 20) > 100_000, "the damage must be far into the read"
+    assert counts["restarts"] <= 8
+    assert counts["calls"] <= 4096
+
+
+_NO_RECOVERY = replace(_CONFIG, recover_partial_data=False)
+
+
+@pytest.mark.parametrize("name", list(CODECS))
+def test_recovery_off_does_not_decode_again(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``recover_partial_data=False``: the read that meets the damage raises the same
+    error with no second decode, and the bytes the failing decoder call gave before
+    it are lost."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    codec, compress = CODECS[name]
+    damaged = _damage(compress(PAYLOAD), 0.5)
+    recovered = _prefix(io.BytesIO(damaged), codec, 1 << 20)
+    restarts = 0
+    real = DecompressorStream._redecode_restart
+
+    def counting(self: Any, *args: Any) -> Any:
+        nonlocal restarts
+        restarts += 1
+        return real(self, *args)
+
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting)
+    got, error = _prefix(io.BytesIO(damaged), codec, 1 << 20, _NO_RECOVERY)
+    assert restarts == 0
+    assert error == recovered[1]
+    # The calls before the failing one still come back; the failing call's are lost.
+    # bzip2 and zstd fail at a block or frame start, where that call gave nothing.
+    assert recovered[0] - (1 << 20) <= got <= recovered[0]
+    if name in ("gzip", "xz"):
+        assert got < recovered[0]
+
+
+@_DEFLATE_COPIES
+def test_recovery_off_takes_no_deflate_copy_on_a_pipe() -> None:
+    """On a pipe the deflate decoder keeps the bytes before an error by copying its
+    state before each call; with recovery off it takes no copy, so the failing call's
+    bytes are lost there too."""
+    damaged = _damage(gzip.compress(PAYLOAD, mtime=0), 0.5)
+    kept = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20)
+    lost = _prefix(NonSeekableBytesIO(damaged), Codec.GZIP, 1 << 20, _NO_RECOVERY)
+    assert lost[1] == kept[1] is not None
+    assert lost[0] < kept[0]
+
+
+def _lzop(data: bytes) -> bytes:
+    from tests.lzop_build import make_lzop
+
+    return make_lzop(data)
+
+
+@pytest.mark.parametrize(
+    ("codec", "compress"),
+    [
+        pytest.param(Codec.BZIP3, _bzip3, marks=requires("bz3")),
+        (Codec.LZOP, _lzop),
+        pytest.param(Codec.UNIX_COMPRESS, _unix_compress, marks=requires("ncompress")),
+        (Codec.SHRINK, _shrink),
+    ],
+    ids=["bzip3", "lzop", "unix_compress", "shrink"],
+)
+def test_a_decoder_that_holds_back_errors_is_not_decoded_again(
+    codec: Codec, compress: Callable[[bytes], bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """These decoders hand out every byte before an error before they raise it, so a
+    file gets those bytes with no second decode: it would find nothing more."""
+    from archivey.internal.streams.decompressor_stream import DecompressorStream
+
+    restarts = 0
+    real = DecompressorStream._redecode_restart
+
+    def counting(self: Any, *args: Any) -> Any:
+        nonlocal restarts
+        restarts += 1
+        return real(self, *args)
+
+    damaged = _bad_code(compress(_text(600_000, 4)), 0.6)
+    expected = _exact_prefix(damaged, codec)
+    assert 0 < expected < 600_000
+    monkeypatch.setattr(DecompressorStream, "_redecode_restart", counting)
+    for size in (4096, 1 << 20):
+        assert _prefix(io.BytesIO(damaged), codec, size) == (
+            expected,
+            "CorruptionError",
+        ), size
+    assert restarts == 0
+
+
+@pytest.mark.parametrize("size", [4096, 1 << 20])
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_damaged_second_stream_start_keeps_the_first_stream(
+    size: int, pipe: bool
+) -> None:
+    """A second lzop stream whose magic is damaged raises only after the first
+    stream's bytes are handed out, from a file and from a pipe: the decoder holds that
+    error back too, so nothing decodes the file again for them."""
+    first = _lzop(_text(200_000, 4))
+    second = bytearray(_lzop(_text(200_000, 5)))
+    second[8] ^= 0xFF  # the last byte of the 9-byte magic
+    damaged = first + bytes(second)
+    expected = _exact_prefix(damaged, Codec.LZOP)
+    assert expected == 200_000
+    source = NonSeekableBytesIO(damaged) if pipe else io.BytesIO(damaged)
+    assert _prefix(source, Codec.LZOP, size) == (expected, "CorruptionError")

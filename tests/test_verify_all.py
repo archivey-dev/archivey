@@ -89,7 +89,7 @@ def _levels(members: list[ArchiveMember]) -> dict[str, tuple[Verification, ...]]
 
 def test_verify_all_returns_a_damaged_member_and_reads_on(tmp_path: Path) -> None:
     with open_archive(_corrupt_first_crc(_zip(tmp_path))) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert [(m.name, type(e)) for m, e in failures] == [("a.txt", CorruptionError)]
         assert _levels(reader.members())["b.txt"] == (CHECKSUM, CHECKSUM)
 
@@ -100,7 +100,7 @@ def test_verify_all_stops_at_listing_damage_without_raising(
 ) -> None:
     # Cut inside b's data: b fails, and the listing cannot find c.
     with open_archive(_tar(tmp_path, keep=512 * 14), streaming=streaming) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert [(m.name, type(e)) for m, e in failures] == [("b", TruncatedError)]
         report = reader.members_report()
         assert isinstance(report.error, TruncatedError)
@@ -149,13 +149,13 @@ def test_a_failed_stream_checksum_returns_every_file_it_covers(
         if first == "listed":
             with pytest.raises(CorruptionError):
                 reader.members()
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert [m.name for m, _e in failures] == ["d/a", "d/b"]
         assert all(isinstance(e, CorruptionError) for _m, e in failures)
         assert isinstance(reader.members_report().error, CorruptionError)
         if first != "streaming":
             # A second call answers the same.
-            assert [m.name for m, _e in reader.verify_all()] == ["d/a", "d/b"]
+            assert [m.name for m, _e in reader.verify_all().failures] == ["d/a", "d/b"]
 
 
 def test_verify_all_on_a_closed_reader_is_a_usage_error(tmp_path: Path) -> None:
@@ -184,7 +184,7 @@ def test_verify_all_raises_an_escalated_diagnostic(tmp_path: Path) -> None:
 
 def test_verify_all_brings_every_member_to_its_ceiling(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path)) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert _levels(reader.members()) == {
             "a.txt": (CHECKSUM, CHECKSUM),
             "b.txt": (CHECKSUM, CHECKSUM),
@@ -195,7 +195,7 @@ def test_verify_all_brings_every_member_to_its_ceiling(tmp_path: Path) -> None:
 
 def test_verify_all_returns_members_it_has_no_password_for() -> None:
     with open_archive(_COLLISION) as reader:
-        failures = reader.verify_all()
+        failures = reader.verify_all().failures
         assert {m.name for m, _ in failures} == {"stored.txt", "deflated.txt"}
         assert all(isinstance(e, EncryptionError) for _, e in failures)
         assert all(m.verified is NONE for m in reader.members())
@@ -203,7 +203,7 @@ def test_verify_all_returns_members_it_has_no_password_for() -> None:
 
 def test_verify_all_with_the_password_reaches_checksum() -> None:
     with open_archive(_COLLISION, password="secret") as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert set(_levels(reader.members()).values()) == {(CHECKSUM, CHECKSUM)}
 
 
@@ -217,7 +217,7 @@ def test_a_held_stream_mirrors_what_verify_all_proved(tmp_path: Path) -> None:
         stream = reader.open("a.txt")
         assert (stream.verified, stream.verifiable) == (UNLOCKED, CHECKSUM)
         stream.read(10)
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert (stream.verified, stream.verifiable) == (CHECKSUM, CHECKSUM)
         # 10. verify_all() did not touch it.
         assert stream.tell() == 10
@@ -367,11 +367,11 @@ def test_a_second_call_retries_the_members_that_failed() -> None:
         return answer[0]
 
     with open_archive(_COLLISION, password=provider) as reader:
-        assert len(reader.verify_all()) == 2
+        assert len(reader.verify_all().failures) == 2
         first = len(asked)
         assert first > 0
         answer[0] = "secret"
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert len(asked) > first
         assert set(_levels(reader.members()).values()) == {(CHECKSUM, CHECKSUM)}
 
@@ -385,7 +385,7 @@ def test_a_second_call_skips_proved_members(tmp_path: Path) -> None:
         ):
             seen.append(member.name)
         assert seen == []
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
 
 
 # --- 11. streaming: one pass --------------------------------------------------------
@@ -393,7 +393,7 @@ def test_a_second_call_skips_proved_members(tmp_path: Path) -> None:
 
 def test_streaming_verify_all_is_the_one_pass(tmp_path: Path) -> None:
     with open_archive(_zip(tmp_path), streaming=True) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         report = reader.members_report()
         assert report.error is None
         assert _levels(list(report.members))["a.txt"] == (CHECKSUM, CHECKSUM)
@@ -406,7 +406,7 @@ def test_streaming_verify_all_is_the_one_pass(tmp_path: Path) -> None:
 
 def test_a_missing_end_marker_is_a_diagnostic(tmp_path: Path) -> None:
     with open_archive(_tar(tmp_path, keep=512 * 33)) as reader:
-        assert reader.verify_all() == ()
+        assert reader.verify_all().failures == ()
         assert reader.members_report().error is None
         assert reader.diagnostics.counts[DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING]
         assert {m.verified for m in reader.members()} == {LENGTH}
@@ -419,3 +419,79 @@ def test_member_level_is_not_part_of_equality(tmp_path: Path) -> None:
         reader.verify_all()
         assert member == before
         assert member.type is MemberType.FILE
+
+
+# --- The report: ok, structure_error, raise_for_failure, diagnostics
+
+
+def test_an_intact_archive_reports_ok(tmp_path: Path) -> None:
+    with open_archive(_zip(tmp_path)) as reader:
+        report = reader.verify_all()
+    assert report.ok
+    assert report.failures == ()
+    assert report.structure_error is None
+    report.raise_for_failure()  # does nothing
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_cut_central_directory_is_not_ok_with_no_member_failure(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # The outside review's case: no member failed, but the walk stopped early, so an
+    # empty failure list alone would have passed a damaged archive. A streaming reader
+    # takes ``structure_error`` from the pass ``verify_all()`` itself ran.
+    path = _zip(tmp_path)
+    data = path.read_bytes()
+    path.write_bytes(data[: len(data) - 30])
+    with open_archive(path, streaming=streaming) as reader:
+        report = reader.verify_all()
+        assert report.failures == ()
+        assert isinstance(report.structure_error, TruncatedError)
+        assert report.structure_error is reader.members_report().error
+    assert not report.ok
+    with pytest.raises(TruncatedError):
+        report.raise_for_failure()
+
+
+def test_raise_for_failure_raises_the_first_member_failure(tmp_path: Path) -> None:
+    with open_archive(_corrupt_first_crc(_zip(tmp_path))) as reader:
+        report = reader.verify_all()
+    assert not report.ok
+    ((member, error),) = report.failures
+    assert member.name == "a.txt"
+    with pytest.raises(CorruptionError) as raised:
+        report.raise_for_failure()
+    assert raised.value is error
+
+
+def test_the_report_is_not_a_sequence(tmp_path: Path) -> None:
+    # ``if not reader.verify_all():`` must not read as "every check passed".
+    with open_archive(_zip(tmp_path)) as reader:
+        report = reader.verify_all()
+    assert not hasattr(report, "__len__")
+    assert not hasattr(report, "__iter__")
+    with pytest.raises(TypeError, match=r"VerifyReport\.ok"):
+        bool(report)
+
+
+def test_diagnostics_are_the_calls_own_and_do_not_affect_ok(tmp_path: Path) -> None:
+    # A TAR with no end-of-archive blocks: listed during the call, so its diagnostic
+    # is in the call's report, and the archive still verifies.
+    path = tmp_path / "noeof.tar"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+        info = tarfile.TarInfo("a.txt")
+        info.size = len(_DATA)
+        tf.addfile(info, io.BytesIO(_DATA))
+    raw = buf.getvalue()
+    path.write_bytes(raw[: 512 + len(_DATA) + (-len(_DATA)) % 512])
+    with open_archive(path) as reader:
+        report = reader.verify_all()
+    assert report.ok
+    assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING in report.diagnostics.counts
+    # Listed before the call: the diagnostic stays the reader's, not the call's.
+    with open_archive(path) as reader:
+        reader.members()
+        report = reader.verify_all()
+        assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING in reader.diagnostics.counts
+    assert DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING not in report.diagnostics.counts

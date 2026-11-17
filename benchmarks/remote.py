@@ -28,7 +28,9 @@ open fsspec file as a plain file object, and an ``OpenFile`` by range; the modes
 Operations: list; read the first, a middle and the last member; ``extract_all()``;
 ``stream_members()`` under ``streaming=True``; and, on the formats that open members
 independently, eight threads reading eight members (``threads``) and sixteen member
-streams open at once (``many_streams``), the cases that pin the planner's window rules.
+streams open at once (``many_streams``), the cases that pin the planner's window rules;
+and ``file_system``: an ``archivey://`` file system over the remote file (how pandas or
+dask reads), listing it and reading its middle member with ``cat``.
 Threads that share one caller-opened file race for its position and its cache, so
 both the requests and the bytes fetched of ``threads`` move from run to run, on TAR as on
 ZIP: the case is reported and not gated.
@@ -62,6 +64,7 @@ import tempfile
 import threading
 import zipfile
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -316,7 +319,15 @@ def _op_many_streams(reader: Any, _dest: Path) -> None:
             s.close()
 
 
-# operation name -> (open_archive keywords, callable)
+def _op_file_system(fs: Any, _dest: Path) -> None:
+    """List the archive through ``archivey://`` and ``cat`` its middle member."""
+    names = sorted(fs.find(""))
+    fs.cat(names[len(names) // 2])
+
+
+# operation name -> (open_archive keywords, callable on the reader and a scratch
+# directory). A FILE_SYSTEM_OPERATIONS entry's keywords are unused, and its callable
+# gets an ArchiveyFileSystem over the remote file in place of the reader.
 OPERATIONS: dict[str, tuple[dict[str, Any], Callable[[Any, Path], None]]] = {
     "list": ({}, _op_list),
     "read_first": ({}, _read_one(lambda n: 0)),
@@ -326,7 +337,13 @@ OPERATIONS: dict[str, tuple[dict[str, Any], Callable[[Any, Path], None]]] = {
     "stream_members": ({"streaming": True}, _op_stream_members),
     "threads": ({"concurrent_operations": True}, _op_threads),
     "many_streams": ({"concurrent_operations": True}, _op_many_streams),
+    # Through ``archivey://``, as pandas or dask reads (``FILE_SYSTEM_OPERATIONS``).
+    "file_system": ({}, _op_file_system),
 }
+
+# Operations whose callable gets an ``ArchiveyFileSystem`` over the remote file.
+FILE_SYSTEM_OPERATIONS = frozenset({"file_system"})
+
 
 # Operations that need several member streams open at once: only the formats that
 # open members independently run them (a solid or compressed-TAR stream cannot).
@@ -448,22 +465,28 @@ def run_case(
     open_kwargs, op = OPERATIONS[operation]
     fs = CountingFileSystem()
     dest = work / f"{fmt}-{operation}-{cache}"
-    if cache == PLANNER_MODE:
-        with (
-            planner_constants(PLANNER_TEST_CONSTANTS),
-            open_archive(
-                OpenFile(fs, str(path), mode="rb"),
-                config=PLANNER_TEST_CONFIG,
-                **open_kwargs,
-            ) as reader,
-        ):
-            op(reader, dest)
-    else:
-        with (
-            fs.open(str(path), "rb", **CACHE_MODES[cache]) as remote,
-            open_archive(remote, **open_kwargs) as reader,
-        ):
-            op(reader, dest)
+    with ExitStack() as stack:
+        # The source: the planner over an OpenFile, or a caller-opened fsspec file.
+        source: Any
+        config: ArchiveyConfig | None
+        if cache == PLANNER_MODE:
+            stack.enter_context(planner_constants(PLANNER_TEST_CONSTANTS))
+            source = OpenFile(fs, str(path), mode="rb")
+            config = PLANNER_TEST_CONFIG
+        else:
+            source = stack.enter_context(fs.open(str(path), "rb", **CACHE_MODES[cache]))
+            config = None
+        # The target: a reader, or an archivey:// file system over the source.
+        target: Any
+        if operation in FILE_SYSTEM_OPERATIONS:
+            from archivey.fsspec import ArchiveyFileSystem
+
+            target = stack.enter_context(ArchiveyFileSystem(source, config=config))
+        else:
+            target = stack.enter_context(
+                open_archive(source, config=config, **open_kwargs)
+            )
+        op(target, dest)
     shutil.rmtree(dest, ignore_errors=True)
     return RemoteCaseResult(
         case=f"{fmt}_{operation}_{cache}",

@@ -14,7 +14,7 @@ import subprocess
 import zipfile
 import zlib
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 
@@ -35,6 +35,9 @@ from archivey.types import MagicSignature
 from tests.conftest import requires, requires_binary, requires_zstd, zstd_backend
 from tests.detection_cost_util import within_budget
 from tests.streams_util import NonSeekableBytesIO
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # LZMA Alone, zlib and Brotli are recognised only by a content probe, and by default a
 # probe runs only when the source's name carries that format's extension. Tests of the
@@ -424,6 +427,43 @@ def test_inner_tar_over_gzip_is_tar_gz() -> None:
     assert info.detected_by == "content_probe"
 
 
+def test_inner_tar_probe_over_gzip_does_not_read_to_the_end() -> None:
+    # The probe decodes the first block only. Seeking to the end of its window for the
+    # gzip ISIZE trailer pulled the whole window (up to 1 MiB) through detection, which
+    # doubled what a remote .tar.gz open fetched.
+    import gzip
+    import tarfile
+
+    rng = random.Random(5)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for i in range(40):
+            payload = rng.randbytes(16 * 1024)
+            info = tarfile.TarInfo(f"m{i}")
+            info.size = len(payload)
+            t.addfile(info, io.BytesIO(payload))
+    data = gzip.compress(buf.getvalue())
+
+    class CountingBytesIO(io.BytesIO):
+        bytes_read = 0
+
+        def read(self, size: int | None = -1, /) -> bytes:
+            chunk = super().read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+        def readinto(self, b: WriteableBuffer, /) -> int:
+            n = super().readinto(b)
+            self.bytes_read += n
+            return n
+
+    # Larger than the bound, so a read to the end and a read of a prefix differ.
+    assert len(data) > 512 * 1024
+    source = CountingBytesIO(data)
+    assert detect_format(source).format == ArchiveFormat.TAR_GZ
+    assert source.bytes_read <= 256 * 1024
+
+
 def test_gzip_without_inner_tar_stays_bare_gz() -> None:
     import gzip
 
@@ -809,7 +849,11 @@ def test_lzma_alone_zero_output_gate_costs_no_real_stream(tmp_path: Path) -> Non
     payload = b"payload data " * 8
     known = bytearray(lzma.compress(payload, format=lzma.FORMAT_ALONE))
     known[5:13] = len(payload).to_bytes(8, "little")
-    assert lzma.decompress(bytes(known), format=lzma.FORMAT_ALONE) == payload
+    # Known size plus end marker: the stdlib decoder refuses this on liblzma before
+    # 5.2.6, and on any version when a read boundary falls before the marker; archivey
+    # reads it.
+    with open_archive(io.BytesIO(bytes(known)), format=ArchiveFormat.LZMA_ALONE) as ar:
+        assert ar.read(ar.members()[0]) == payload
     info = detect_format(io.BytesIO(bytes(known)), config=ALWAYS_PROBE)
     assert info.format == ArchiveFormat.LZMA_ALONE
     assert info.detected_by == "content_probe"
@@ -1676,7 +1720,8 @@ def test_empty_listing_rescan_detects_under_the_config_budget(
 
 def test_empty_listing_rescan_stays_internal(tmp_path: Path) -> None:
     """Under a policy that raises on the conflict, the rescan's own findings neither
-    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with ``format=ZIP`` reports the
+    reach the caller nor raise inside it: an empty ZIP named ``x.tar.gz`` opened with
+    ``format=ZIP`` reports the
     empty archive and nothing else, because detection does identify it as ZIP."""
     from archivey import open_archive
     from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticPolicy

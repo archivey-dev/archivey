@@ -25,8 +25,10 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import enum
+import functools
 import importlib
 import inspect
 import sys
@@ -56,6 +58,7 @@ PUBLIC_MODULES = (
     "archivey.paths",
     "archivey.formats",
     "archivey.terminal",
+    "archivey.fsspec",
 )
 
 #: The enums a patch release may add values to: the diagnostic codes, and the enums
@@ -70,12 +73,13 @@ OPEN_ENUMS = frozenset(
     }
 )
 #: The experimental names: the format and codec plugin interface and the names that
-#: exist only for it, and the verification level (DR-12a). The stability policy leaves them out (``docs/how-it-is-built.md``
-#: §Versioning and stability): any release may change or remove them, with no
-#: deprecation release. A line whose own name is one of them (or under one) never makes
-#: a release a minor; a stable line that only mentions one in a signature still does,
-#: and the maintainer judges it (see :func:`classify`). ``tests/test_api_surface.py``
-#: pins the list: adding a name takes away a promise to callers.
+#: exist only for it, and the verification level (DR-12a). The stability policy leaves
+#: them out (``docs/how-it-is-built.md`` §Versioning and stability): any release may
+#: change or remove them, with no deprecation release. A line whose own name is one of
+#: them (or under one) never makes a release a minor; a stable line that only mentions
+#: one in a signature still does, and the maintainer judges it (see :func:`classify`).
+#: ``tests/test_api_surface.py`` pins the list: adding a name takes away a promise to
+#: callers.
 EXPERIMENTAL = (
     "archivey.formats",
     "archivey.PluginContainer",
@@ -90,6 +94,11 @@ EXPERIMENTAL = (
     "archivey.ArchiveMember.verifiable",
     "archivey.ForwardArchiveReader.verify_all",
     "archivey.ArchiveReader.verify_all",
+    "archivey.VerifyReport",
+    "archivey.BackendUse",
+    "archivey.BackendKindStr",
+    "archivey.ForwardArchiveReader.backends_used",
+    "archivey.ArchiveReader.backends_used",
 )
 #: The literal type that lists every diagnostic code string, which grows with them.
 CODE_LITERALS = frozenset({"archivey.diagnostics.DiagnosticCodeStr"})
@@ -160,11 +169,77 @@ def _fmt_value(value: object) -> str:
     return f"<{type(value).__qualname__}>"
 
 
-def _fmt_signature(func: object) -> str:
+def _init_signature(cls: type) -> inspect.Signature | None:
+    """The constructor's signature, ``None`` when it has none to show.
+
+    A metaclass whose ``__call__`` takes ``(*args, **kwargs)`` (fsspec's, which
+    caches instances) hides ``__init__`` from ``signature(cls)``; ``__init__`` without
+    ``self`` is then what a caller passes.
+    """
     try:
-        sig = inspect.signature(func)  # type: ignore[arg-type]
+        sig = inspect.signature(cls)
+        kinds = [p.kind for p in sig.parameters.values()]
+        if kinds == [inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD]:
+            init = inspect.signature(cls.__init__)
+            sig = init.replace(parameters=list(init.parameters.values())[1:])
     except (TypeError, ValueError):
-        return "(...)"
+        return None
+    stub = type_checking_inits(cls.__module__).get(cls.__qualname__)
+    if stub is not None:
+        # The constructor's input types, which the runtime ``__init__`` does not carry.
+        declared = {
+            arg.arg: ast.unparse(arg.annotation)
+            for arg in stub.args.args + stub.args.kwonlyargs
+            if arg.annotation is not None
+        }
+        sig = sig.replace(
+            parameters=[
+                param.replace(annotation=declared.get(param.name, param.annotation))
+                for param in sig.parameters.values()
+            ]
+        )
+    return sig
+
+
+@functools.cache
+def type_checking_inits(module_name: str) -> dict[str, ast.FunctionDef]:
+    """The ``__init__`` each top-level class of a module declares under ``TYPE_CHECKING``.
+
+    A dataclass whose constructor takes wider input types than its fields hold (a string
+    spelling that ``__post_init__`` converts to the member) declares that ``__init__``
+    inside ``if TYPE_CHECKING:``, for type checkers only. The runtime keeps the
+    ``__init__`` the dataclass generates, so ``inspect`` cannot see the input types:
+    they are read from the source. Keyed by class name.
+    """
+    module = sys.modules.get(module_name)
+    path = getattr(module, "__file__", None)
+    if path is None or not path.endswith(".py"):
+        return {}
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    found: dict[str, ast.FunctionDef] = {}
+    for class_def in tree.body:
+        if not isinstance(class_def, ast.ClassDef):
+            continue
+        for node in class_def.body:
+            if not (
+                isinstance(node, ast.If)
+                and ast.unparse(node.test) in ("TYPE_CHECKING", "typing.TYPE_CHECKING")
+            ):
+                continue
+            for inner in node.body:
+                if isinstance(inner, ast.FunctionDef) and inner.name == "__init__":
+                    found[class_def.name] = inner
+    return found
+
+
+def _fmt_signature(func: object) -> str:
+    if isinstance(func, inspect.Signature):
+        sig = func
+    else:
+        try:
+            sig = inspect.signature(func)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return "(...)"
     params = list(sig.parameters.values())
     last_positional_only = max(
         (i for i, p in enumerate(params) if p.kind is p.POSITIONAL_ONLY), default=-1
@@ -260,7 +335,8 @@ def _class_lines(qualname: str, cls: type) -> Iterator[str]:
         and qualname not in _SKIP_INIT
         and "__init__" in {n for c in own for n in vars(c)}
     ):
-        yield f"init {qualname}{_fmt_signature(cls)}"
+        init = _init_signature(cls)
+        yield f"init {qualname}{'(...)' if init is None else _fmt_signature(init)}"
     fields: dict[str, str] = {}
     for c in reversed(own):
         for name, annotation in inspect.get_annotations(c).items():

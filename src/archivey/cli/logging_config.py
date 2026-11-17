@@ -8,20 +8,17 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TextIO
 
+from archivey.diagnostics import DiagnosticCode
+
 # The library logs this when ``extract_all`` skips a member under CONTINUE (both sites in
 # ``archivey/internal/extraction.py`` point back here). ``extract`` reports the
 # outcome from the returned report instead.
 _MEMBER_SKIP_MESSAGE = "Skipping %s %r: %s"
-# The library logs this (``_note_solid_open`` in ``archivey/internal/base_reader.py``)
-# the first time an ``open()`` decodes a solid block again. Its advice is about the
-# library API, so it is dropped while the CLI's own opens run.
-_SOLID_REOPEN_MESSAGE = (
-    "Archive %r is solid: opening %r decoded again %d bytes an earlier open() "
-    "on this reader had decoded, because each open() or read() decodes its "
-    "member's solid block from the start. Reading many members this way is "
-    "quadratic in the block size; stream_members() decodes each block once. "
-    "Logged once per reader."
-)
+# The library records SOLID_OPEN_REDECOMPRESSES (``_note_solid_open`` in
+# ``archivey/internal/base_reader.py``) the first time an ``open()`` decodes a solid
+# block again. Its advice is about the library API, so its log record is dropped while
+# the CLI's own opens run.
+_SOLID_REOPEN_CODE = DiagnosticCode.SOLID_OPEN_REDECOMPRESSES
 
 
 class _MemberSkipHold(logging.Filter):
@@ -35,7 +32,10 @@ class _MemberSkipHold(logging.Filter):
         self.own_opens = False
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if self.own_opens and record.msg == _SOLID_REOPEN_MESSAGE:
+        if (
+            self.own_opens
+            and getattr(record, "diagnostic_code", None) == _SOLID_REOPEN_CODE
+        ):
             return False
         if self.held is not None and record.msg == _MEMBER_SKIP_MESSAGE:
             self.held.append(record)

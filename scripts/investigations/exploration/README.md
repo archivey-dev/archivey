@@ -155,8 +155,8 @@ uv run python scripts/investigations/exploration/probe_writer_timestamps.py --ou
 ```
 
 The Linux/macOS/Windows matrix runs in CI: the `Writer timestamp probe` workflow
-(`.github/workflows/writer-timestamps.yml`) on demand from the Actions tab, and on PRs
-that change the probe.
+(`.github/workflows/writer-timestamps.yml`), on demand from the Actions tab only;
+dispatch it on your branch after changing the probe.
 
 ## rapidgzip on this platform
 

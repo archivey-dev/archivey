@@ -120,6 +120,9 @@ def unconfirmed_context(
     chosen_by: Literal["argument", "extension", "content_probe"],
     detected_format: str | None,
 ) -> UnconfirmedFormatContext:
+    """The diagnostic context for a format that the archive's bytes did not confirm.
+    Shared by the decode-failure diagnostic here and the reader's empty-listing
+    one."""
     return UnconfirmedFormatContext(
         archive_name=archive_name,
         format=archive_format.display_name,

@@ -13,6 +13,18 @@ The decoders live next to their codec in :mod:`archivey.internal.streams.codecs`
 only the shared engine underneath. One exception: above :class:`SeekPoint` sit the
 DEFLATE family's shared helpers, the ``zlib.error`` translators, the truncation message
 and the inflate step, used by the zlib, gzip, raw DEFLATE and resume decoders.
+
+The file reads top to bottom as:
+
+1. The shared errors and the DEFLATE helpers.
+2. The codec contract: :class:`SeekPoint`, :class:`DecodeOut`, :class:`Decoder` and
+   :class:`BaseDecoder`.
+3. How the decoder is fed, and the caps on the seek table (:data:`MAX_SEEK_POINTS`,
+   :data:`MAX_SNAPSHOT_BYTES`).
+4. The index-scan helpers the codecs share (:func:`build_index_backwards`,
+   :class:`SpacedCollector`, :class:`PrebuiltIndex`).
+5. :class:`DecompressorStream` itself.
+6. The trailing-data helpers, and the helpers that give back decoder processes.
 """
 
 from __future__ import annotations
@@ -20,6 +32,7 @@ from __future__ import annotations
 import bisect
 import io
 import lzma
+import math
 import os
 import zlib
 from collections.abc import Callable, Container, Generator, Sequence
@@ -56,6 +69,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.checked_spans import CheckedSpans
 from archivey.internal.streams.child_process import is_no_verdict
 from archivey.internal.streams.kept_errors import KeptError
 from archivey.internal.streams.native_memory import end_lzma_decoder
@@ -337,6 +351,9 @@ class DecodeOut:
 
     data: bytes
     points: list[SeekPoint] = field(default_factory=list)
+    # Output ranges, as ``[start, end)`` offsets in the whole output, whose block or
+    # frame check passed during this step: see ``checked_spans``.
+    checked: list[tuple[int, int]] = field(default_factory=list)
 
 
 class Decoder(Protocol):
@@ -399,6 +416,17 @@ class Decoder(Protocol):
     @property
     def drains_after_flush(self) -> bool:
         """True when ``flush`` returned output and more follows through ``feed(b"")``."""
+        ...
+
+    @property
+    def holds_back_errors(self) -> bool:
+        """True when a ``feed`` that meets bad data first returns every byte decoded
+        before it, and raises only from a later call that returns nothing.
+
+        A stream then gets every byte before an error from the calls themselves, so it
+        does not decode again to find them (``_redecode_to_error``): a second decode
+        would find nothing more.
+        """
         ...
 
     @property
@@ -494,6 +522,14 @@ class BaseDecoder:
         return self._pending_error
 
     @property
+    def holds_back_errors(self) -> bool:
+        """See :attr:`Decoder.holds_back_errors`: False here. Subclasses that hold
+        back their errors (such as ``.Z``) override it, and ``FramedDecoder`` asks its
+        decompressor (bzip3, lzop, legacy ZIP methods).
+        """
+        return False
+
+    @property
     def trailing_bytes(self) -> int | None:
         return self._trailing_bytes
 
@@ -561,19 +597,18 @@ class BaseDecoder:
 # How the decoder is fed. Each feed is the compressed input up to the next multiple of
 # ``_FEED_SLICE`` counted from where the decoder started, and each bounded call asks
 # for what the read asks, at most ``_FEED_OUTPUT`` bytes on a pipe and
-# ``_SEEKABLE_FEED_OUTPUT`` on a source that can seek (``read(n)`` used to feed
-# ``min(n, 1 MiB)`` and ask for ``n``). CPython's zlib, bz2, lzma and zstd wrappers drop
-# a call's output when the call raises, so a call loses at most what it asked for: a
-# TAR parser reading a header, then a member's data to its end, gets every member
-# before the damaged one whole. On a source that can seek, a call that raises is
-# decoded again to the failing byte (``_redecode_to_error``), so every read size gets
-# every byte before the error, and a call there can be as large as a read used to
-# feed: fewer calls keep a clean ``read(1 MiB)`` within a few percent of one call per
-# read, where 64 KiB calls cost about 10% more (gzip, measured). On a pipe a read can
-# get up to ``_FEED_OUTPUT`` fewer (spec ``compressed-streams``).
+# ``_SEEKABLE_FEED_OUTPUT`` on a source that can seek. CPython's zlib, bz2, lzma and
+# zstd wrappers drop a call's output when the call raises, so a call loses at most what
+# it asked for: a TAR parser reading a header, then a member's data to its end, gets
+# every member before the damaged one whole. On a source that can seek, a call that
+# raises is decoded again to the failing byte (``_redecode_to_error``), so every read
+# size gets every byte before the error, and a call there can be as large as 1 MiB:
+# fewer calls keep a clean ``read(1 MiB)`` within a few percent of one call per read,
+# where 64 KiB calls cost about 10% more (gzip, measured). On a pipe a read can get up
+# to ``_FEED_OUTPUT`` fewer bytes before an error (spec ``compressed-streams``).
 #
 # 64 KiB of input is also the measured plateau for per-call overhead on ZIP members
-# (#136/#137, ``review/archive/2026-07-28-performance/residual-gap.md``).
+# (``review/archive/2026-07-28-performance/residual-gap.md``).
 _FEED_SLICE = 65536
 _FEED_OUTPUT = 65536
 _SEEKABLE_FEED_OUTPUT = 1 << 20
@@ -597,6 +632,39 @@ def probe_streams() -> Generator[None]:
         _PROBE_STREAM.reset(token)
 
 
+# Set to the caller's ``recover_partial_data`` while its codec stream opens
+# (:func:`partial_data_recovery`).
+_RECOVER_PARTIAL: ContextVar[bool] = ContextVar(
+    "archivey_recover_partial", default=True
+)
+
+
+@contextmanager
+def partial_data_recovery(recover: bool) -> Generator[None]:
+    """Streams built inside this block decode again to hand back the bytes before an
+    error only when ``recover`` is true (``ArchiveyConfig.recover_partial_data``).
+
+    Without it, a stream does no extra work for those bytes: on a source that can seek
+    it does not decode again to the failing byte (``_redecode_to_error``), and on a pipe
+    a deflate decoder does not copy its state before each call
+    (``keep_output_before_errors``). The read that meets the error raises, and the
+    bytes its decoder call would have returned are lost. Bytes a decoder hands back
+    before an error at no extra cost (the in-house decoders, bzip3) still come back.
+    """
+    token = _RECOVER_PARTIAL.set(recover)
+    try:
+        yield
+    finally:
+        _RECOVER_PARTIAL.reset(token)
+
+
+def recovers_partial_data() -> bool:
+    """Whether a stream built here would recover the bytes before an error: what a
+    stream built later, outside the :func:`partial_data_recovery` block, re-enters it
+    with (the accelerator's standard-library fallback)."""
+    return _RECOVER_PARTIAL.get()
+
+
 # The step of large bounded reads over a decompressed stream; this module does not
 # use it. ``verify._SIZED_DRAIN_CHUNK`` and ``tar_parser.DATA_READ_STEP`` follow it,
 # and the latter is TAR's stated allocation bound (``tar.md``, ``threat-model.md``
@@ -605,11 +673,51 @@ _LARGE_READ_STEP = 1 << 20
 # Output budget when skipping forward during seek (unbounded skip would reintroduce
 # the per-read amplification bomb on highly compressible spans).
 _SEEK_OUTPUT_CHUNK = 65536
+# From this size up, ``_read`` gathers a read behind buffered bytes in a list and copies
+# out of ``_buffer`` through a ``memoryview``: one copy instead of two, which pays on a
+# large read. Below it, the plain ``bytearray`` extend and slice cost less per call than
+# the list, the join and the view, so small reads keep them.
+_GATHER_FROM = 1 << 16
 # Calls in a row with no output after which a re-decode gives up
 # (``DecompressorStream._redecode_to_error``): far more than the empty calls a decoder
 # makes between outputs (a header, a block's input), and still a bounded loop over a
-# hostile stream. Giving up only hands back no bytes; the error raises as before.
+# hostile stream. Giving up only hands back no bytes; the error still raises.
 _REDECODE_IDLE_LIMIT = 4096
+# How a re-decode searches for the failing byte (``_redecode_probe``). A probe that
+# gives its bytes costs one call; one that raises costs a restart, a second decode from
+# the seek point to where the search stands, unless it asked for one byte, which names
+# the failing byte. So the probes follow the cost of a restart, counted in calls: about
+# ``_REDECODE_RESTART_CALLS`` plus one call per ``_REDECODE_BYTES_PER_CALL`` bytes it
+# decodes again. One byte per call while the search has covered less than that (the
+# error is usually near the start of the failing call's output: a call is fed at most
+# 64 KiB of compressed input) and over any bracket that small; otherwise probes of
+# about the square root of twice the bracket, so a probe that raises leaves a bracket
+# small enough to finish one byte per call. Measured on gzip, xz and PPMd with the
+# damage 3 MB to 100 MB deep (``dev-docs/investigations/redecode-probe-strategies.md``):
+# about half the extra time of the fixed 2 KiB stretch and 1/64 splits before it.
+_REDECODE_RESTART_CALLS = 128
+_REDECODE_BYTES_PER_CALL = 1024
+
+
+def _redecode_probe(done: int, hi: int, met: bool, behind: int) -> int:
+    """How many bytes the next probe of a re-decode asks for, from 1 to ``hi - done``.
+
+    ``done`` bytes past the start of the failing call decoded; the error is at most
+    ``hi`` bytes past it, and ``met`` says whether a probe has raised yet (before that,
+    ``hi`` is only where the search gives up). ``behind`` is how far the seek point a
+    restart decodes from lies before the start of the failing call.
+    """
+    left = hi - done
+    if done == 0 or left <= 1:
+        # A decoder that fails a whole block fails at the first byte: one call finds it.
+        return 1
+    restart = _REDECODE_RESTART_CALLS + (behind + done) // _REDECODE_BYTES_PER_CALL
+    # The tail also takes the first square-root probe's size, so a probe that raises
+    # always leaves a bracket the tail finishes one byte per call.
+    if (not met and done < restart) or left <= restart + math.isqrt(2 * restart):
+        return 1
+    # ``left`` is at least 144 here, so this is at least 16 and less than ``left``.
+    return math.isqrt(2 * left)
 
 
 MakeDecoder = Callable[[SeekPoint, BinaryIO], Decoder]
@@ -650,8 +758,8 @@ class SnapshotState(Protocol):
     two passes can offer them at different offsets (the :class:`DecodeOut` rule does
     not hold for them). The stream keeps them apart instead: one closer than
     ``min_gap`` to a point it holds is dropped, and one at an output offset the table
-    already has a point for yields to that point. ``held_bytes`` is what the snapshot holds in memory, counted
-    against :data:`MAX_SNAPSHOT_BYTES`.
+    already has a point for yields to that point. ``held_bytes`` is what the snapshot
+    holds in memory, counted against :data:`MAX_SNAPSHOT_BYTES`.
     """
 
     @property
@@ -726,8 +834,8 @@ class PrebuiltIndex:
     of its own scan. ``points`` and ``size`` are what :meth:`Decoder.build_index`
     returned. ``reports`` are the diagnostics the scan emitted (a thinned or unreadable
     index). The stream emits them into its own collector when it would have run the
-    scan, so the caller sees each report once per stream, under its own policy, as
-    before.
+    scan, so the caller sees each report once per stream, under its own policy, as if
+    the stream had run the scan itself.
 
     Every stream that takes this index shares the same ``points`` objects, possibly
     on different threads. Nothing may mutate a point or its ``state`` in place.
@@ -904,7 +1012,32 @@ class DecompressorStream(ReadOnlyIOStream):
     (bisect to a point → recreate decoder → skip forward). Does **not** know codec
     formats — ``make_decoder`` supplies that.
 
+    How the methods connect:
+
+    - **Read.** :meth:`read` and :meth:`read_ahead` go through ``_read``;
+      :meth:`readall` has its own loop. Each step is one decoder call,
+      ``_read_decompressed_chunk``: feed the next slice of the source (or ``flush`` at
+      its end). ``_decoding`` wraps the call and keeps an error it raises in
+      ``_spent``. ``_ingest_decode`` adds the seek points the call found to the table
+      (:meth:`add_seek_points`).
+    - **Seek.** :meth:`seek` records the target when reaching it would decode
+      (``SEEK_END`` may decode to find the size, in the seek itself). The next read
+      first runs ``_settle``, which decodes there: ``_seek_to`` picks the nearest seek point
+      (``_find_best_seek_point``), restarts the decoder there when that is closer than
+      where it stands (``_reset_to_seek_point``), and decodes forward (``_skip_to``).
+    - **Index.** A seek forward past every known point first asks the decoder for
+      the file's own index (``_ensure_index_built``). Points from it are marked
+      ``from_index`` and checked against what decoding finds. When the two disagree,
+      ``_drop_index`` drops every index point and the stream goes on with decoded
+      points only.
+    - **End.** Bytes past the codec's end, or a truncation, end a bounded read's
+      stream once the output before them has been read (``_end_at_trailing_data``,
+      ``_raise_deferred``); :meth:`readall` raises at once and drops what it
+      decoded.
+
     ``seekable=False`` skips index/seek-point work (forward-only cheap path).
+    ``file_index=False`` keeps the seek points a decode finds but never reads the file's
+    own index (restart points without declared seek demand).
     ``readable``/``writable``/``write``/``readinto`` come from :class:`ReadOnlyIOStream`.
 
     A stream ``path`` is borrowed by default (``owns_inner=False``): the archive
@@ -944,11 +1077,18 @@ class DecompressorStream(ReadOnlyIOStream):
         report_trailing_data: bool = False,
         refuse_input_after_end: bool = False,
         initial_index: PrebuiltIndex | None = None,
+        file_index: bool = True,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
+        # Whether the file's own index may be read (``_ensure_index_built``): on
+        # declared seek demand only. Restart points alone
+        # (``StreamConfig.restart_points``) keep only the points a decode finds, so a
+        # crafted index cannot change what a default read returns (threat-model O17).
+        self._file_index = seekable and file_index
         # A probe's stream raises where it meets an error (probe_streams).
         self._probe = _PROBE_STREAM.get()
+        self._recover = _RECOVER_PARTIAL.get()
         # Used once, in place of the decoder's index scan (see _ensure_index_built).
         self._initial_index = initial_index
         self._refuse_input_after_end = refuse_input_after_end
@@ -1001,6 +1141,9 @@ class DecompressorStream(ReadOnlyIOStream):
         # The output offset of the decoder's next byte, whoever reads it: the size a
         # decode reaches the end with (_publish_size).
         self._decoder_pos = 0
+        # The output that passed a block or frame check, for a decoder that hands out
+        # only checked bytes (``checks_every_byte``): see ``checked_spans``.
+        self.checked_spans = CheckedSpans()
         self._make_decoder = make_decoder
         # The frame checks seen by decoders this stream has since replaced (a seek).
         self._frame_checks = FrameChecks()
@@ -1018,7 +1161,7 @@ class DecompressorStream(ReadOnlyIOStream):
             seekable = self._inner.seekable()
             # The most output one bounded decoder call asks for (see _FEED_OUTPUT).
             self._call_output = _SEEKABLE_FEED_OUTPUT if seekable else _FEED_OUTPUT
-            if not seekable and not self._probe:
+            if not seekable and not self._probe and self._recover:
                 # A pipe cannot be decoded again (_redecode_to_error): a decoder that
                 # can snapshot its state keeps the bytes before an error itself.
                 keep = getattr(self._decoder, "keep_output_before_errors", None)
@@ -1193,9 +1336,10 @@ class DecompressorStream(ReadOnlyIOStream):
 
         The index is only an accelerator, and the file decodes: seeks go on from the
         points a decode from the origin records, and the size is the decoded one. A
-        size the index gave is forgotten, so the next size query decodes to the end. A
-        decoder that resumed at an index point is restarted before the operation
-        returns (:meth:`_restart_at_position`).
+        size the index gave is forgotten: :meth:`try_get_size` answers ``None`` again,
+        and a seek that needs the size decodes to the end. A decoder that resumed at
+        an index point is restarted before the operation returns
+        (:meth:`_restart_at_position`).
         """
         self._claims = None
         self._index_dropped = True
@@ -1225,6 +1369,8 @@ class DecompressorStream(ReadOnlyIOStream):
         return _INDEX_SOURCES.get(codec, f"{codec} seek index")
 
     def _forget_index_size(self) -> None:
+        """Forget a size the index gave: :meth:`try_get_size` answers ``None`` again,
+        and a seek that needs the size decodes to the end."""
         # _index_built is cleared too. Once the index has been tried its only reader is
         # xz's per-stream scan (the ``index_built`` closure in xz_decoder), which then
         # runs again; _ensure_index_built is gated by _index_build_attempted.
@@ -1406,10 +1552,9 @@ class DecompressorStream(ReadOnlyIOStream):
     def nearest_resume_offset(self, target: int) -> int:
         """Decompressed offset the decoder must restart from to reach ``target``.
 
-        The origin when no seek point lies closer, which is what makes a single-block
-        ``.xz`` behave exactly like a codec with no index at all — the case
-        ``STREAM_REWIND_REDECOMPRESSES`` used to be blind to, because it keyed on the
-        codec's identity rather than on this.
+        The origin when no seek point lies closer, so a single-block ``.xz`` reports the
+        same cost as a codec with no index at all. ``STREAM_REWIND_REDECOMPRESSES``
+        keys on this offset, not on the codec's identity, for that reason.
 
         Deliberately reads the table **as it stands** and never calls
         ``_ensure_index_built()``: a diagnostic that built an index would change the cost
@@ -1444,6 +1589,11 @@ class DecompressorStream(ReadOnlyIOStream):
             hold_for_planned_seek(held)
 
     def _reset_to_seek_point(self, point: SeekPoint) -> None:
+        """Replace the decoder with a new one that resumes at ``point``.
+
+        The buffer, the kept errors and the end state go with the old decoder: the
+        stream stands at ``point`` with nothing decoded yet.
+        """
         self._inner.seek(point.compressed_offset)
         self._compressed_read = point.compressed_offset
         self._feed_origin = point.compressed_offset
@@ -1467,8 +1617,24 @@ class DecompressorStream(ReadOnlyIOStream):
         self._pos = point.decompressed_offset
 
     def _ingest_decode(self, out: DecodeOut) -> bytes:
+        """Account for one decoder call's output and return its bytes.
+
+        Advances ``_decoder_pos`` and adds the call's seek points to the table, marked
+        as the index's when the decoder resumed at an index point. Output also ends
+        the window in which an error drops the index rather than sticking
+        (``_fresh_index_point``, :meth:`_drop_index_at_failed_point`).
+        """
+        # Offsets counted from an index point are the index's, not proved.
+        if out.checked and not self._decode_from_index:
+            for start, end in out.checked:
+                self.checked_spans.add(start, end)
         if out.data:
             self._fresh_index_point = None
+            if not self._decode_from_index and getattr(
+                self._decoder, "checks_every_byte", False
+            ):
+                start = self._decoder_pos
+                self.checked_spans.add(start, start + len(out.data))
         self._decoder_pos += len(out.data)
         if out.points:
             points = out.points
@@ -1635,58 +1801,109 @@ class DecompressorStream(ReadOnlyIOStream):
         A standard-library decoder drops the output of a call that raises, and a call
         asks for up to ``_call_output`` bytes, so the bytes just before damage would be
         lost to a large read. This restarts a decoder at the last seek point at or
-        before ``before``, decodes to ``before`` in calls that stop there, then on one
-        output byte per call until the error comes back, and hands back what came
-        before it. The new decoder replaces the one that raised; the stream is spent
-        either way, and a seek restarts it.
+        before ``before``, decodes to ``before`` in calls that stop there, then searches
+        for the failing byte with probes (:func:`_redecode_probe`): a probe that gives
+        all its bytes moves the search past them on the same decoder, and one that
+        raises bounds where the error is and costs a restart from the seek point.
+        It hands back what came before the error: the bytes a decode that asked for
+        one output byte per call would give, given that a decoder call raises if and
+        only if it asks past the failing byte, whatever sizes the calls before it asked
+        for (``test_probes_find_the_byte_one_byte_calls_find`` checks that for each
+        codec family). A decoder whose failing byte moved with the call sizes would
+        break it. The new decoder replaces the one that
+        raised; the stream is spent either way, and a seek restarts it.
 
-        Only on a source that can seek back, and not in a probe's stream
-        (:func:`probe_streams`). It returns ``b""`` when it cannot run or
+        Only on a source that can seek back, not in a probe's stream
+        (:func:`probe_streams`), and not when the caller turned recovery off
+        (:func:`partial_data_recovery`). It returns ``b""`` when it cannot run or
         recovers nothing, and the error raises as it would have. The cost is a second
-        decode from the seek point, paid only on damaged data.
+        decode from the seek point and one more per probe that raises, paid only on
+        damaged data.
         """
-        if self._probe or not self._inner.seekable():
+        if (
+            self._probe
+            or not self._recover
+            or self._decoder.holds_back_errors
+            or not self._inner.seekable()
+        ):
             return b""
         point = self._find_best_seek_point(before)
+        behind = before - point.decompressed_offset
         got = bytearray()
-        pos = -1
+        # The error is at an offset from ``before`` of at most ``hi``; ``hi`` stays
+        # ``limit`` until a probe raises (``met``). Past ``_call_output`` bytes the
+        # search gives up, as a decode that never meets the error again does.
+        limit = self._call_output + 1
+        hi = limit
+        met = False
+        self._decoder_pos = before
         try:
-            self._inner.seek(point.compressed_offset)
-            old = self._decoder
-            old.close()
-            self._frame_checks.merge(getattr(old, "frame_checks", None))
-            decoder = self._decoder = old.recreate(point, self._inner)
-            self._decode_from_index = point.from_index
-            self._compressed_read = self._feed_origin = point.compressed_offset
-            self._decoder_pos = before
-            pos = point.decompressed_offset
-            idle = 0
-            while pos < before and idle < _REDECODE_IDLE_LIMIT:
-                out = self._redecode_step(decoder, min(self._call_output, before - pos))
-                if out is None:
+            while True:
+                decoder = self._redecode_restart(point, before + len(got))
+                if decoder is None:
                     return b""
-                idle = 0 if out else idle + 1
-                pos += len(out)
-            if pos != before:
-                return b""
-            idle = 0
-            while len(got) <= self._call_output and idle < _REDECODE_IDLE_LIMIT:
-                out = self._redecode_step(decoder, 1)
-                if out is None:
-                    got += decoder.flush().data
-                    break
-                idle = 0 if out else idle + 1
-                got += out
+                last_ask = 0
+                try:
+                    idle = 0
+                    while len(got) < hi:
+                        p = len(got)
+                        want = p + _redecode_probe(p, hi, met, behind)
+                        while len(got) < want and idle < _REDECODE_IDLE_LIMIT:
+                            last_ask = want - len(got)
+                            out = self._redecode_step(decoder, last_ask)
+                            if out is None:
+                                # The input ended. A ``flush`` that raises reaches the
+                                # handler below as a one-byte probe at ``len(got)``, so
+                                # the bytes so far come back; a clean end hands back
+                                # nothing, as the second decode did not meet the error.
+                                last_ask = 1
+                                decoder.flush()
+                                return b""
+                            idle = 0 if out else idle + 1
+                            got += out
+                        if idle >= _REDECODE_IDLE_LIMIT:
+                            return b""
+                except Exception as exc:
+                    if isinstance(exc, MemoryError) or not _may_recover(exc):
+                        raise
+                    # The call that raised asked for ``last_ask`` bytes at ``len(got)``.
+                    hi = len(got) + last_ask - 1
+                    met = True
+                    if len(got) == hi:
+                        return bytes(got)
+                    continue
+                # Every byte up to ``hi`` decoded. After a probe raised, the error is
+                # the next byte; before, the search reached its limit.
+                return bytes(got) if met else b""
         except Exception as exc:
             # Only the verdict met again is the error this hands bytes back before: a
             # failed source read or a MemoryError during the second decode is its own
             # error, and raises.
             if isinstance(exc, MemoryError) or not _may_recover(exc):
                 raise
-            return bytes(got) if pos == before else b""
-        # The decode did not meet the error again where it was met: hand back nothing
-        # rather than bytes the first decode never reached.
-        return b""
+            return b""
+
+    def _redecode_restart(self, point: SeekPoint, target: int) -> Decoder | None:
+        """A new decoder from ``point``, decoded to ``target`` in calls that stop there.
+
+        For :meth:`_redecode_to_error`; ``None`` when it cannot get there.
+        """
+        self._inner.seek(point.compressed_offset)
+        old = self._decoder
+        old.close()
+        self._frame_checks.merge(getattr(old, "frame_checks", None))
+        decoder = self._decoder = old.recreate(point, self._inner)
+        self._decode_from_index = point.from_index
+        self._compressed_read = self._feed_origin = point.compressed_offset
+        pos = point.decompressed_offset
+        idle = 0
+        while pos < target and idle < _REDECODE_IDLE_LIMIT:
+            out = self._redecode_step(decoder, min(self._call_output, target - pos))
+            if out is None:
+                return None
+            idle = 0 if out else idle + 1
+            pos += len(out)
+        return decoder if pos == target else None
 
     def _redecode_step(self, decoder: Decoder, max_length: int) -> bytes | None:
         """One call of :meth:`_redecode_to_error`; ``None`` at the end of the input."""
@@ -1777,6 +1994,7 @@ class DecompressorStream(ReadOnlyIOStream):
         return data
 
     def _trailing_data_offset(self) -> int:
+        """The source offset of the first trailing byte the decoder found."""
         trailing = self._decoder.trailing_bytes or 0
         end = self._compressed_read
         if self._inner.seekable():
@@ -1809,9 +2027,9 @@ class DecompressorStream(ReadOnlyIOStream):
             # The caller asked for the whole stream, which cannot be had: raise now,
             # even with output buffered, as for a deferred error below.
             self._raise_spent()
-        # Prefer join-of-chunks over staging through the shared bytearray: a whole-stream
-        # read never needs the partial-read buffer, and the extend + bytes(buffer) copy
-        # was a measurable share of ZIP read-all overhead (perf review H2).
+        # Join a list of chunks rather than staging them through ``_buffer``: a
+        # whole-stream read never needs the partial-read buffer, and the extend +
+        # bytes(buffer) copy would cost a measurable share of a ZIP read-all.
         chunks: list[bytes] = []
         with self._deferring_raises() as pending:
             while True:
@@ -1911,6 +2129,26 @@ class DecompressorStream(ReadOnlyIOStream):
                 # ``_buffer`` holds it now. A raise below keeps this frame alive on
                 # its traceback, which must not pin a second copy of the bytes.
                 chunk = b""
+            elif (
+                need >= _GATHER_FROM
+                and not self._eof
+                and len(self._buffer) < need
+                and self._spent is None
+                and not self._restart_pending
+            ):
+                # Some bytes are buffered, but fewer than ``need``: for example what a
+                # decoder call gave past its count, which the ``.Z`` decoder does on
+                # almost every call. On a read of at least ``_GATHER_FROM``, gather the
+                # rest behind them in a list, as for a short first chunk above: the
+                # join is one copy, where extending ``_buffer`` and slicing it out
+                # makes two. The buffered bytes are copied once more here, and that
+                # can be a whole decoded chunk (a decoder that ignores ``max_length``).
+                parts = [bytes(self._buffer)]
+                self._buffer.clear()
+                data = self._gather(parts, need, n, pending)
+                if data is not None:
+                    self._pos += len(data)
+                    return data
             # A decoder that raised mid-read is not fed again (see _decoding): what it
             # produced before the error is handed back, and the read after that raises.
             while True:
@@ -1928,7 +2166,15 @@ class DecompressorStream(ReadOnlyIOStream):
             held = pending()
             if held is not None:
                 raise held
-        data = bytes(self._buffer[:n])
+        if n >= _GATHER_FROM:
+            # One copy out of ``_buffer``: ``bytes(self._buffer[:n])`` makes two (the
+            # slice, then the bytes), on reads that can be 16 MiB each. Both views are
+            # released before ``del`` resizes ``_buffer``: the slice is a view too, and
+            # under PyPy an unreleased one still holds the export until a collection.
+            with memoryview(self._buffer) as view, view[:n] as head:
+                data = bytes(head)
+        else:
+            data = bytes(self._buffer[:n])
         del self._buffer[:n]
         self._pos += len(data)
         if not data and self._end_error() is not None:
@@ -1974,11 +2220,16 @@ class DecompressorStream(ReadOnlyIOStream):
         if not got or self._restart_pending or pending() is not None:
             self._stage(parts)
             return None
+        if got > n:
+            # Only the last part can go past ``n``: trim it before the join, so the
+            # excess costs a copy of that part, not of the whole read.
+            last = parts[-1]
+            keep = len(last) - (got - n)
+            self._buffer.extend(memoryview(last)[keep:])
+            parts[-1] = last[:keep]
+            last = b""
         data = b"".join(parts)
         parts.clear()
-        if len(data) > n:
-            self._buffer.extend(memoryview(data)[n:])
-            data = data[:n]
         return data
 
     def _returns_before_spent(self) -> bool:
@@ -2055,7 +2306,13 @@ class DecompressorStream(ReadOnlyIOStream):
                 super().close()
 
     def _ensure_index_built(self) -> None:
-        if not self._index_enabled or self._index_built or self._index_build_attempted:
+        """Add the file's own index to the seek table, once per stream.
+
+        The index comes from the decoder's scan, or from ``initial_index`` when the
+        caller passed one. Its points are marked ``from_index``, and a size it gives
+        is kept as the stream's size until a decode contradicts it.
+        """
+        if not self._file_index or self._index_built or self._index_build_attempted:
             return
         initial = self._initial_index
         if initial is None:
@@ -2106,7 +2363,7 @@ class DecompressorStream(ReadOnlyIOStream):
         :class:`PrebuiltIndex`; the diagnostics the scan emits go to this stream's
         collector.
         """
-        if not self._index_enabled or not self._inner.seekable():
+        if not self._file_index or not self._inner.seekable():
             return None
         return self._scan_index()
 
@@ -2121,7 +2378,7 @@ class DecompressorStream(ReadOnlyIOStream):
         """
         if self._size is not None:
             return self._size
-        if not self._index_enabled or not self._inner.seekable():
+        if not self._file_index or not self._inner.seekable():
             return None
         if self._decoder.index_reads_whole_source:
             return None
@@ -2145,7 +2402,7 @@ class DecompressorStream(ReadOnlyIOStream):
         Done at once, because they decode nothing: a seek within the buffered output,
         to the position the decoder is at, or at or past a size already known.
         ``SEEK_END`` needs the size, so finding it may decode the rest of the stream
-        here, as before.
+        here, in the seek itself.
         """
         if not self._inner.seekable():
             raise io.UnsupportedOperation("seek")
@@ -2187,7 +2444,7 @@ class DecompressorStream(ReadOnlyIOStream):
     def _settle(self) -> None:
         """Decode to the target of the last seek, if no read has reached it yet.
 
-        Raises what the old eager seek raised: a decode error in the gap, or a report
+        Raises what decoding to the target meets: a decode error in the gap, or a report
         the collector escalates. A decode error leaves the stream at the target with
         the error kept (``_spent``), so the next read raises it again and a seek
         restarts the decoder. Any other error (the source's own seek failing) keeps
@@ -2500,6 +2757,7 @@ def retire_decoder_children(stream: object) -> None:
 
 
 def _layers_below(stream: object) -> list[object]:
+    """The streams directly under ``stream`` that :func:`retire_decoder_children` walks."""
     named = getattr(stream, "decoder_layers_below", None)
     if named is not None:
         return list(named())

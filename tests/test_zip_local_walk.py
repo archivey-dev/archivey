@@ -1072,3 +1072,19 @@ def test_an_unheld_local_size_reads_by_file() -> None:
     ):
         for _ in reader.stream_members():
             pass
+
+
+def test_a_descriptor_compressed_size_past_2_63_is_an_archivey_error() -> None:
+    # Found by fuzzing. A stored bit-3 member with no data, then an 8-byte descriptor
+    # with no signature: CRC 0, compressed size 0xCD2B000000000000, uncompressed 0.
+    # The walk past a missing directory kept the compressed size in a signed array,
+    # and the open raised OverflowError instead of an archivey error.
+    header = struct.pack(
+        "<4sHHHHHIIIHH", b"PK\x03\x04", 0x2102, 0x184C, 0, 0, 0, 0xFF00, 0, 43, 0, 0
+    )
+    descriptor = struct.pack("<IQQ", 0, 0xCD2B << 48, 0)
+    with (
+        pytest.raises(archivey.ArchiveyError),
+        archivey.open_archive(io.BytesIO(header + descriptor)) as reader,
+    ):
+        reader.members()

@@ -22,6 +22,8 @@ def pe_headers(
     sections: Sequence[tuple[int, int]],
     *,
     certificate: tuple[int, int] | None = None,
+    resources: tuple[int, int] | None = None,
+    virtual_addresses: Sequence[int] = (),
     plus: bool = False,
     directory_count: int = 16,
     headers_size: int = FILE_ALIGNMENT,
@@ -29,9 +31,10 @@ def pe_headers(
 ) -> bytes:
     """The headers of a PE whose sections are ``(raw_pointer, raw_size)`` pairs.
 
-    ``certificate`` is the ``(file_offset, size)`` the security data directory holds.
-    The result is ``headers_size`` long, padded with zeros, unless the headers need
-    more room.
+    ``certificate`` is the ``(file_offset, size)`` the security data directory holds,
+    ``resources`` the ``(rva, size)`` of the resource directory, and
+    ``virtual_addresses`` each section's RVA (zero when not given). The result is
+    ``headers_size`` long, padded with zeros, unless the headers need more room.
     """
     dos = bytearray(e_lfanew)
     dos[0:2] = b"MZ"
@@ -54,11 +57,14 @@ def pe_headers(
     struct.pack_into("<I", optional, optional_fixed - 4, directory_count)
     if certificate is not None and directory_count > 4:
         struct.pack_into("<II", optional, optional_fixed + 4 * 8, *certificate)
+    if resources is not None and directory_count > 2:
+        struct.pack_into("<II", optional, optional_fixed + 2 * 8, *resources)
     table = bytearray()
     for index, (pointer, size) in enumerate(sections):
         header = bytearray(40)
         header[0:8] = f".s{index}".encode().ljust(8, b"\0")
-        struct.pack_into("<II", header, 16, size, pointer)
+        address = virtual_addresses[index] if index < len(virtual_addresses) else 0
+        struct.pack_into("<IIII", header, 8, size, address, size, pointer)
         table += header
     head = bytes(dos) + b"PE\0\0" + coff + bytes(optional) + bytes(table)
     return head.ljust(headers_size, b"\0")
@@ -84,6 +90,85 @@ def pe_file(
     image = b"\xcc" * image_size
     cert = b"" if certificate_size is None else _certificate(certificate_size)
     return head + image + payload + after_payload + cert
+
+
+def pe_with_resources(
+    resources: Sequence[bytes],
+    *,
+    after_resources: bytes = b"",
+    overlay: bytes = b"",
+    certificate_size: int | None = None,
+) -> tuple[bytes, list[tuple[int, int]]]:
+    """A PE whose ``.rsrc`` section holds ``resources``, the way Squirrel's setup
+    program holds its ZIP, and the file offsets ``(start, end)`` of each one's data.
+
+    The tree is the usual three levels (type, name, language) with one data entry per
+    resource. The data follow the tables in order, each starting on an 8-byte
+    boundary. A ``.reloc`` section of ``after_resources`` bytes follows ``.rsrc``,
+    then ``overlay`` and a certificate table of ``certificate_size`` bytes.
+    """
+    rsrc_offset = FILE_ALIGNMENT * 2
+    rsrc_rva = 0x2000
+    count = len(resources)
+    # Root -> one type -> ``count`` names -> one language each -> a data entry.
+    root = 0
+    type_table = root + 16 + 8
+    lang_tables = type_table + 16 + 8 * count
+    entries = lang_tables + (16 + 8) * count
+    data_at = entries + 16 * count
+    tables = bytearray(data_at)
+    struct.pack_into("<HH", tables, root + 12, 0, 1)
+    struct.pack_into("<II", tables, root + 16, 10, 0x80000000 | type_table)
+    struct.pack_into("<HH", tables, type_table + 12, 0, count)
+    body = bytearray()
+    extents = []
+    for index, data in enumerate(resources):
+        lang = lang_tables + index * 24
+        entry = entries + index * 16
+        struct.pack_into(
+            "<II", tables, type_table + 16 + 8 * index, index + 1, 0x80000000 | lang
+        )
+        struct.pack_into("<HH", tables, lang + 12, 0, 1)
+        struct.pack_into("<II", tables, lang + 16, 1033, entry)
+        while (data_at + len(body)) % 8:
+            body += b"\0"
+        start = data_at + len(body)
+        struct.pack_into("<IIII", tables, entry, rsrc_rva + start, len(data), 0, 0)
+        extents.append((rsrc_offset + start, rsrc_offset + start + len(data)))
+        body += data
+    rsrc = bytes(tables) + bytes(body)
+    rsrc += b"\0" * (-len(rsrc) % FILE_ALIGNMENT)
+    reloc = after_resources + b"\0" * (-len(after_resources) % FILE_ALIGNMENT)
+    text_size = FILE_ALIGNMENT
+    reloc_offset = rsrc_offset + len(rsrc)
+    sections = [(FILE_ALIGNMENT, text_size), (rsrc_offset, len(rsrc))]
+    addresses = [0x1000, rsrc_rva]
+    if reloc:
+        sections.append((reloc_offset, len(reloc)))
+        addresses.append(rsrc_rva + len(rsrc) + 0x1000)
+    body_end = reloc_offset + len(reloc) + len(overlay)
+    certificate = None if certificate_size is None else (body_end, certificate_size)
+    head = pe_headers(
+        sections,
+        certificate=certificate,
+        resources=(rsrc_rva, len(rsrc)),
+        virtual_addresses=addresses,
+    )
+    cert = b"" if certificate_size is None else _certificate(certificate_size)
+    data = head + b"\xcc" * text_size + rsrc + reloc + overlay + cert
+    return data, extents
+
+
+def pe_with_resource_tables(rsrc: bytes) -> bytes:
+    """A PE whose ``.rsrc`` section is ``rsrc``, verbatim: for tables a test writes by
+    hand. The section sits at file offset ``2 * FILE_ALIGNMENT``, RVA ``0x2000``."""
+    rsrc += b"\0" * (-len(rsrc) % FILE_ALIGNMENT)
+    head = pe_headers(
+        [(FILE_ALIGNMENT, FILE_ALIGNMENT), (FILE_ALIGNMENT * 2, len(rsrc))],
+        resources=(0x2000, len(rsrc)),
+        virtual_addresses=[0x1000, 0x2000],
+    )
+    return head + b"\xcc" * FILE_ALIGNMENT + rsrc
 
 
 def _certificate(size: int) -> bytes:

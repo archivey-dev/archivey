@@ -11,13 +11,13 @@ Registers keep the status — this page states the behaviour and links the row.
 | --- | --- |
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable only, in both access modes |
+| Source | Seekable in both access modes; non-seekable with `streaming=True` and RARLAB `unrar` 7.00 or later, one volume only (§2.6) |
 | Listing cost | `REQUIRES_SCANNING` — a header-to-header walk cached at open (§1). RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
-| Stream capability | `SEEKABLE` — of the source. Member streams are a separate question (§5) |
+| Stream capability | `FORWARD_ONLY` — of the source, which a pass reads front to back (§2.6). Member streams are a separate question (§5) |
 | Core dependencies | None to list an unencrypted archive. Compressed member data needs RARLAB `unrar` or `rar` **6.0 or later** on `PATH` (§1), or, by default, `unar` 1.10+ when no RARLAB binary is found (§3). Stored encrypted members need `cryptography` instead |
 | Optional | `[recommended]` (`cryptography`): header decryption, RAR3/RAR4 and RAR5 alike. BLAKE2sp needs nothing — stdlib `hashlib` |
-| Refuses | Non-seekable sources · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a large member on a path source, a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3) · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
+| Refuses | Non-seekable sources without RARLAB `unrar` 7.00 or later, and a volume set from one (§2.6) · a non-RARLAB `unrar`/`rar` (no fallback to `7z` / `bsdtar` / `unrar-free`; `unar` when no RARLAB binary is found, unless `rar_decompressor="unrar"`) · with `unar`: encrypted RAR 2.x-4.x data and, in a solid archive, compressed members after it in the same solid stream, a non-ASCII password, a header-encrypted RAR5 volume set, RAR5 solid members after an empty entry, RAR 1.5 compression, a prefixed multi-volume set · a RARLAB binary older than 6.0, or one whose banner version cannot be parsed · a later volume opened without its first · a member that can only be read in place in the original archive (a RAR4 member past 4 GiB, a solid chain with unreachable data) when its name is not plain enough to select it alone (§2.3); a large member on a path source whose name is not plain is copied instead, and refused (`ResourceLimitError`) only when that copy is over `SpoolLimits.max_bytes` · a member whose dictionary, as the chosen program allocates it, is over `DecoderLimits.max_decoder_memory` (`ResourceLimitError`, §7) · writing |
 
 **Two things a reader might expect and will not find.** Nothing amortizes repeated
 random reads of a solid archive: there is no `unrar x` anywhere in `src/`, so every
@@ -93,8 +93,9 @@ Everything about that boundary is a consequence:
   once the solid prefix plus discarded member progress meets the 1 MiB floor. The unnamed
   ALL-pipe used by `stream_members()` stays forward-only (§2.3, §5). Opening a member of
   a solid archive by name decodes again what an earlier open decoded of its solid prefix
-  (the archive's for `unrar`, the member's solid stream for `unar`), which logs one INFO
-  record per reader on `archivey.backends` (`_solid_run`); it is not a diagnostic.
+  (the archive's for `unrar`, the member's solid stream for `unar`), which records
+  `SOLID_OPEN_REDECOMPRESSES` once per reader, logged at INFO on `archivey.backends`
+  (`_solid_run`).
 - **Identity of the binary costs a process.** `find_rarlab_unrar` looks up `unrar`
   first, then `rar`, runs the candidate with only `-cfg-` (so `~/.unrarrc` cannot inject
   `-idq` and empty the banner), and sniffs the banner.
@@ -124,10 +125,10 @@ whether or not the header sets LONG_BLOCK (0x8000), as `unrar` reads it; other b
 have data only with LONG_BLOCK. Skipping nothing when a FILE header cleared the flag
 parsed the member's data as headers, so a crafted member could carry extra members that
 `unrar` does not list (measured, `unrar` 7.00). So:
-reading the structure needs seek, and a non-seekable source is refused in both access modes
-(§2.1); the whole member table is built at open — walking every header, or reading `QO`
-and skipping the FILE headers it already holds (§1.1) — which is why
-`listing_limits.max_members` is applied at parse (`ResourceLimitError`; `None` /
+a seekable source's walk seeks past each member's data (a non-seekable one is walked by
+the forward reader, §2.6); the whole member table is built at open — walking every
+header, or reading `QO` and skipping the FILE headers it already holds (§1.1) — which is
+why `listing_limits.max_members` is applied at parse (`ResourceLimitError`; `None` /
 `ListingLimits.UNLIMITED` lifts it) — and
 every length is a variable-length integer whose byte count the input chooses, so bounds
 have to be on **bytes consumed**, not on the decoded value — the one place that was
@@ -292,7 +293,8 @@ as the walk's `data_offset` is a ciphertext offset) and keeps the first non-zero
 offset in `RarArchive.trailing_data_volumes`. The reader reports each volume's as
 `ARCHIVE_TRAILING_DATA` (`expected_marker="zeros_to_eof"`) after the members, DR-3.
 Zeros pass. The walk reads a single volume through a view that ends at the payload end,
-so a signed PE self-extractor's certificate table is not reported ([`7z.md`](7z.md) §6);
+so a signed PE self-extractor's certificate table is not reported ([`7z.md`](7z.md) §6),
+nor is anything after the end of a PE program resource that holds the archive ([`topics/prefixed-archives.md`](../topics/prefixed-archives.md) §7) for a lone archive;
 `unrar` still reads the real file. An end block declaring a data area past the seekable range is
 `CorruptionError`, as a FILE header's is. `unrar t` 7.00 exits 0 on such a file; 7-Zip
 warns, for zeros too. Measured on the committed `rar` 7.00 sets
@@ -625,9 +627,10 @@ volume, since RAR 1.5 / 2.x predate it.) Explicit sequences are still read as `1
 explicit sequence of volume *paths* is used as given, with no discovery: headers are read
 from those files in that order. For a discovered set and an explicit one alike, `unrar` is
 pointed at the first file in place only when its own next-volume rule, run from it, finds
-exactly the files parsed and nothing past the last. That rule follows the MAIN header's
-naming flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar`
-is continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
+exactly the files parsed and nothing past the last, and no volume path holds `*` or `?`
+(§"The argv is constructed defensively" below). That rule follows the MAIN header's naming
+flag, not the names on disk: an old-scheme set renamed `x.part1.rar`, `x.part2.rar` is
+continued from `x.part1.r00`, a file archivey never parsed. Otherwise, on the first read
 that needs `unrar`, the files are symlinked — hard-linked where a symlink is
 refused — into a temp directory under the set's own names, and copied within
 `SpoolLimits` only where neither link works. `unar` always gets such a directory. An old-scheme
@@ -821,14 +824,14 @@ between to blame or to defer to.
 | --- | --- | --- |
 | `name` | Decoded header name, normalized (backslash is a separator); a file-version row is presented as `path;n`, matching WinRAR and `unrar` | — |
 | `raw_name` | Stored name bytes, verbatim — including RAR3's `path;n` bytes, which are not rewritten | — |
-| `size` / `compressed_size` | Header sizes; RAR3 `FILE_LARGE` extends both to 64 bits, and the packed skip is extended with them so the walk does not misparse past a >4 GiB member (F5, fixed). A RAR5 part with the "unpacked size unknown" file flag (`0x0008`) holds the placeholder `0x7FFFFFFF7FFFFFFF`, not a size: `rar a -v -si` writes it on every part of a member read from stdin but the last, which carries the size, so `_merge_split_member` takes the size from the first part that knows it, and a plaintext stored member that no part sizes takes its whole packed size (`_settle_unknown_stored_size`; not an unmerged continuation part, and not ciphertext, which is padded to the AES block), as `unrar` reads to the end of the packed data. Listing the placeholder made every read `TruncatedError` and extraction a ratio-limit refusal (`stdin_vol*.rar`) | A compressed or encrypted member with the flag on its last part keeps the declared value (the placeholder); no known writer leaves one. Listing it as `size=None`, filled by a verified read, is tracked internally |
+| `size` / `compressed_size` | Header sizes; RAR3 `FILE_LARGE` extends both to 64 bits, and the packed skip is extended with them so the walk does not misparse past a >4 GiB member (F5, fixed). A RAR5 part with the "unpacked size unknown" file flag (`0x0008`) holds the placeholder `0x7FFFFFFF7FFFFFFF`, not a size: `rar a -v -si` writes it on every part of a member read from stdin but the last, which carries the size, so `_merge_split_member` takes the size from the first part that knows it, and a plaintext stored member that no part sizes takes its whole packed size (`_settle_unknown_stored_size`; not an unmerged continuation part, and not ciphertext, which is padded to the AES block), as `unrar` reads to the end of the packed data. Listing the placeholder made every read `TruncatedError` and extraction a ratio-limit refusal (`stdin_vol*.rar`) | A compressed or encrypted member with the flag on its last part lists `size=None` and `member_state_final == False` (`_size_left_unknown`); no known writer leaves one. `unrar` and `unar` decode it to the end of its data, and a verified full read fills the size in (`fill_size`), as for ZIP and single-file members. A pass that splits one program's output by sizes (the solid pass, nonsolid batches, the `unar` run) has no length to skip that member's bytes by: it serves the member by its own run, as `open()` does, and places the members after it once that read has filled the size (`_measured_size`). That costs one more decode of the solid stream per such member, not one per later member. A stored encrypted one is not decrypted natively, since the AES padding hides where its plaintext ends; `unrar` 7.00 prints the padding too and fails the CRC, and so does the read. A hard link or file copy with the flag packs no bytes, so its packed size does not settle it and it lists no size; a file copy lists its source's size when that is known, and none when the source's is unknown (`_share_unknown_copy_size`). The dictionary-memory estimates keep the header value, which makes them the declared dictionary |
 | `modified` | RAR4 DOS time → naive local; RAR5 Unix/FILETIME → aware UTC. A stored value that is not a date (a DOS month of 13, a FILETIME past `datetime`'s range) is `None` plus `MEMBER_TIMESTAMP_INVALID`, as in ZIP, TAR and 7z; it is not clamped to a nearby date. The same rule covers `accessed` and the creation slot | The header carries none, the DOS word is zero (unset, as in ZIP), or the stored value was invalid |
 | `accessed` / `created` / `ctime` | RAR5 `0x03` time extra (`HAS_ATIME` / `HAS_CTIME`); RAR3 EXTTIME after mtime (ctime then atime; arctime is unused). Same tz convention as that generation's `modified`. No ZIP-style extra-field precedence. The RARLAB writer emits one time extra; a later extra without `HAS_CTIME` / `HAS_ATIME` does not wipe earlier values. The creation slot is `created` from a birth-time host (Win32, and RAR3 MS-DOS / OS2 / Mac / BeOS) and `ctime` from any other. A Unix RARLAB writer fills the slot from `st_ctime` (inode change), which `created` never holds, so a Unix member's slot is `ctime`, and so is an unknown host's | The extra or slot is absent; `created` also when `host_os` is Unix or unknown |
 | `mode` | Unix host: `S_IMODE` of the stored attributes, masked before the C helper so a hostile vint cannot raise `OverflowError` mid-listing | Non-Unix host. A Win32 host puts its attribute word in `windows_attrs`; a FAT, OS/2, Macintosh or BeOS host gets **neither** field |
 | `uid` / `gid` / `uname` / `gname` | Owner record from `rar -ow`. RAR5: the file header's owner record (`0x06`): each field its flags announce. RAR 7.00 on Linux stores the names when the system resolves them and the numeric ids otherwise, never both. Names decode as UTF-8 with other bytes kept as lone surrogates. A record too short for what its flags announce is dropped with `MEMBER_HEADER_RECORD_SKIPPED`, like the other optional records. RAR 1.5-4 keeps the owner in a `UOW` service header right after the file (after a split member's last part, in the last volume): its data, between the name and any salt, is the user name and the group name, each ended by a NUL or the data's end, as `unrar`'s `ExtractUnixOwner30` reads it. Data with no NUL gives no owner, as `unrar` applies none, and is reported once as `MEMBER_HEADER_RECORD_SKIPPED` on the file it follows unless another `UOW` header after it names an owner, like the RAR5 record too short for its flags. A `UOW` header with no file before it is ignored without a report: there is no member to own it, and `unrar` applies it to nothing. RAR 6.23 writes names only, and no `UOW` header when there are none | No owner record, or the flag for that field is clear; `uid` / `gid` always on RAR 1.5-4 |
 | `create_system` | RAR3 `host_os` 0–5 → FAT / OS2 / Win32 / Unix / Mac / BeOS. RAR5 stores only Windows or Unix and the parser maps those to Win32 / Unix | Never — unknown `host_os` is `CreateSystem.UNKNOWN`. Whether the creation slot is a birth time is decided from `host_os` directly, not from this field |
 | `type` | Directory flag; RAR5 `file_redir` gives `HARDLINK` for hard links, `FILE` for a file copy (`rar -oi`, "file reference"; below), `SYMLINK` for Unix/Windows symlinks and junctions (a Windows one also sets `extra["is_reparse_point"]`, and a junction `extra["is_junction"]`). A redirect of a type outside 0 to 5 (no RAR version writes one) is `OTHER` with no `size` or `link_target`, and `MEMBER_TYPE_UNKNOWN`: `unrar` 7.00 lists it as a file (as a directory under the directory flag), warns "Unknown extra field", creates nothing and emits nothing for it in `unrar p`, so `is_payload_file()` leaves it out of the solid demux (counting it shifted the pipe and the next member read short; `redirect_unknown_solid__.rar`; the directory case measured on a copy with the flag set). Type 0 is `unrar`'s `FSREDIR_NONE`: the parser drops such a record, and `unrar` lists and extracts the member as a plain file. A directory flag over a non-zero unpacked size (`rar` never writes one; unrar's `ReadHeader50` accepts it and its `extract.cpp` directory branch returns before the data) stays a directory and emits `MEMBER_DIRECTORY_DATA_IGNORED` (also for an unpacked size of 0 over a non-empty packed body, which `open()` then refuses as having no data). `open()` slices stored, unencrypted directory data itself; compressed or encrypted directory data raises `UnsupportedFeatureError` before any spawn, since `unrar p` emits nothing for a directory. `stream_members()` yields a stream for the same directories that opens the same way on its first read; in a solid pass it is served outside the `unrar p` pipe and takes no offset there. A Unix-host FIFO, device or socket mode makes `OTHER` only when the unpacked size is 0; with data it is a `FILE` with `MEMBER_SPECIAL_FILE_HAS_DATA` (`unrar` extracts the bytes as a regular file), DR-25. Both carry `extra["special_file_type"]`. `rar` skips such files when archiving, so only a rewritten header produces either | — |
-| `link_target` | RAR5: the redirect's target string, at list time; on a file copy, the source's stored path. A Windows symlink or junction (redirect types 2 and 3) holds a Windows path, so it goes through the normalizer ZIP and 7z reparse buffers use (`windows_reparse.normalize_windows_link_target`): `\` becomes `/`, as `unrar`'s `DosSlashToUnix` does, and a leading `\??\` or RAR 5.1's `/??/` is dropped (`\??\C:\Windows` lists as `C:/Windows`, `\??\UNC\srv\share` as `//srv/share`, `..\up\x` as `../up/x`). Extraction refuses a drive or UNC target on every OS (`safe-extraction`); `unrar` on Linux refuses the prefixed ones and `../up/x` and creates `C:/abs/y` as a relative link, measured on 7.00. A Unix symlink (type 1), a hard link and a file copy keep the stored string. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
+| `link_target` | RAR5: the redirect's target string, at list time; on a file copy, the source's stored path. A Windows symlink or junction (redirect types 2 and 3) holds a Windows path, so it goes through the normalizer ZIP and 7z reparse buffers use (`windows_reparse.normalize_windows_link_target`): `\` becomes `/`, as `unrar`'s `DosSlashToUnix` does, and a leading `\??\` or RAR 5.1's `/??/` is dropped (`\??\C:\Windows` lists as `C:/Windows`, `\??\UNC\srv\share` as `//srv/share`, `..\up\x` as `../up/x`). Extraction refuses a drive or UNC target on every OS (`safe-extraction`); `unrar` on Linux refuses the prefixed ones and `../up/x` and creates `C:/abs/y` as a relative link, measured on 7.00. A hard link (type 4) names a member, so its `\` becomes `/` as in a member name (`_rar5_redirect_target`), and archivey then normalizes it as a name at registration: it equals the `name` of the member it links to (maintainer ruling 2026-11-11). A Unix symlink (type 1) and a file copy keep the stored string. RAR4: the member's **data**, read directly when it is stored and unencrypted | An encrypted or compressed RAR4 target with no direct bytes — left unset; listing still succeeds |
 | `compression` | Method id → `CompressionMethod`. Stored members report `STORED`; M1–M5 report `CompressionAlgorithm.RAR` with `level` 1–5 (method byte − 0x30). A method byte outside M0–M5 stays `UNKNOWN` with `level` omitted. Unpack version is `extra["rar.extract_version"]`, not `level` | — |
 | `hashes` | `crc32` and/or `blake2sp` as bytes | A RAR5 **redirect** (see below), or an encrypted member whose digests are tweaked |
 | `is_encrypted` | Per-member encryption flag | — |
@@ -936,7 +939,8 @@ never starts `unrar` and is never asked for a password.
 
 **A solid archive can mix stored and compressed members.** RAR picks the method per
 file: `rar -s -m3 -msbin` compresses most files and stores the `.bin` ones as they are.
-A stored member still gets its own solid flag (`file_solid`), which on a compressed
+A stored member still gets its own solid flag (`file_solid`: the header bit, or for
+a RAR 1.3-1.5 member the archive-wide rule in §3), which on a compressed
 member means "continue from the previous member's decoder state". Its bytes are
 plaintext in the archive all the same, so the direct slice reads them and ignores the
 flag. `unrar` decodes every compressed member ahead of it to reach those bytes, which is
@@ -952,7 +956,37 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   compressed member read as truncated. `--` is RARLAB's documented end-of-switches marker;
   measured on `unrar` 7.00 and `rar` 7.00. An `@` prefix needs no guard in this position:
   `unrar` reads the first non-switch argument as the archive, and only later file-name
-  arguments as list-files (also measured on 7.00).
+  arguments as list-files (also measured on 7.00). `--` does not stop wildcard
+  expansion: `unrar` expands `*` and `?` in the archive name even after it (only those
+  two; `[` and `{` are literal on 7.00, and Windows skips a `\\?\` prefix first). In
+  place, `rep*.rar` also opened a planted `rep-a.rar` beside it, mixing that archive's
+  members into the output, and blocked forever on a FIFO of a matching name. So the
+  reader stages such a name under fixed names in a private temp directory
+  (`unrar_needs_staged_name`; on Windows, where `unrar` gets the whole path, any
+  wildcard or over-long path counts).
+
+- **On POSIX no directory reaches the argv.** `unrar` expands `*` and `?` in the
+  directories of the archive path too (measured on 7.00: `t*p/a.rar` also read
+  `t!p/a.rar`, first, in directory order). The staged files sit in the system temp
+  directory or a directory made in it, so a `TMPDIR` holding a wildcard brought the
+  problem back, and a long one brought back the 6.x cut (§4). So on POSIX `unrar` always
+  starts in the archive's directory with the name alone, for every read, and only the
+  name decides staging: a long or wildcard directory is read in place
+  (`_unrar_archive_argument`, `unrar_needs_staged_name`; maintainer, 2026-11-12). A bare
+  relative name sets no working directory: the child inherits it, and a `chdir` to it
+  could fail past `PATH_MAX`. The path is split as given, never normalised, so
+  `link/../a.rar` through a symlink names the file the system opens. `unrar` opens the
+  name relative to its working directory, and the system resolves that with no length to
+  cut. A name that would be expanded is staged first, under a name that is fixed or made
+  by `mkstemp`, and `unrar` finds a set's next volume beside it. `unrar p` writes only
+  to stdout, so the working directory moves no output. Windows names cannot hold a
+  wildcard, and a directory long enough to be cut is past what `CreateProcess` takes as
+  a working directory, so there the staged path goes over whole, with no working
+  directory, while 6.x keeps it (2047 UTF-16 units less 16 for the longest staged volume
+  name; the 1024 margin is for paths archivey did not make). Past that it is refused
+  with `ReadError` before any process starts (a configuration fact, like a command line
+  the system refuses, not a shortage a retry clears). A directory the child cannot enter
+  is `ReadError`, not the "install unrar" error.
 
 - **The member is never positional.** It is the value of the `-n` include mask, prefixed
   `./`. Passed positionally, a member literally named `-inul` is parsed by `unrar` as a
@@ -972,20 +1006,34 @@ compressed `first.txt`, then a stored `second.bin` with the flag set.
   (`_plain_unrar_masks`): every name in the archive decodes cleanly (valid UTF-8 for RAR5,
   ASCII for an 8-bit RAR 1.5-4 name, no lone surrogate in a Unicode one) with no `\` (RAR5;
   a RAR 1.5-4 `\` is a separator), NUL, `:`, leading `/`, or empty, `.` or `..` component,
-  so `unrar`'s reading of each name is archivey's; and the target has no `*` or `?`,
+  and none is longer than `unrar` keeps whole (`unrar_plain_name_max`), so `unrar`'s
+  reading of each name is archivey's. `unrar` cuts a stored name to a fixed buffer but
+  compares it with the full mask, so a longer name matches no mask, and two names that
+  share the kept prefix match one. 6.x keeps 2047 wide units of a name and of a mask
+  (`FileName[NM]`, `CurMask[NM]`, unrarsrc 6.2.12), less the mask's `./`: 2045 units.
+  7.00 keeps 65 536 characters (measured on Linux), but the mask must also pass as one
+  argument (32 767 units for a whole Windows command line, 128 KiB per argument on
+  Linux), so the bound there is 16 384 units. The version comes from the banner probe;
+  without one the 6.x bound applies. The target has no `*` or `?`,
   no component ending in `.`, is ASCII unless `unrar_mask_carries_non_ascii()` (Windows,
   or a UTF-8 locale for the child on POSIX), and no other name equal to it or starting with it plus
-  `/`, compared after `upper().casefold()` (Windows `unrar` folds case with `towupper`, under
-  which `ı` and `i` are equal though `casefold()` keeps them apart). Such a mask selects the
-  target alone, with no wildcard and no dot rule, so the pipe holds the member and nothing
-  else. History rows count only against the rows `-ver` lists. Every other read gets a
-  synthetic archive whatever its size, within the spool limit; where none can be made (a
-  RAR 1.5-4 member past 4 GiB with no 64-bit sizes, a solid chain with data out of reach)
-  a name that is not plain raises `UnsupportedFeatureError`. This replaced a port of
-  `unrar`'s name reading and matcher (`UtfToWide`, `CharToWide`, `ConvertPath`, `CmpName`),
-  the dot-rule probe for unrar 7.30 beta 2, a skip past the members a mask selected before
-  the target, the glob-concatenation refusal and the `AUTO` fallback to `unar` for names
-  `unrar` could not be given; all were removed with the synthetic route (0.4.0).
+  `/`, compared after NFC and `upper().casefold()` (Windows `unrar` converts a Unix-host
+  name to NFC before it compares it, and folds case with `towupper`, under which `ı` and `i`
+  are equal though `casefold()` keeps them apart). Where `unrar_matches_names_as_windows()`,
+  a name that is not NFC is not plain either (the NFD name `unrar` sees is not the mask);
+  and once any name in the archive has a directory that is not printable ASCII, no name with
+  a directory is plain (`unrar` compares the directory part with `CompareStringW`, which
+  ignores some code points and joins canonical equivalents, so `ab` and `a` U+00AD `b` can be
+  one directory). Such a mask selects the target alone, with no wildcard and no dot rule,
+  so the pipe holds the member and nothing else. History rows count only against the rows
+  `-ver` lists. Every other read gets a synthetic archive whatever its size, within the
+  spool limit; where none can be made (a RAR 1.5-4 member past 4 GiB with no 64-bit sizes,
+  a solid chain with data out of reach) a name that is not plain raises
+  `UnsupportedFeatureError`. This replaced a port of `unrar`'s name reading and matcher
+  (`UtfToWide`, `CharToWide`, `ConvertPath`, `CmpName`), the dot-rule probe for unrar 7.30
+  beta 2, a skip past the members a mask selected before the target, the
+  glob-concatenation refusal and the `AUTO` fallback to `unar` for names `unrar` could not
+  be given; all were removed with the synthetic route (0.4.0).
 - **`-ver` is added** when the target is a history row, or when a solid pass contains any
   versioned payload FILE, because the mask excludes history rows otherwise and the demux
   would go out of alignment.
@@ -1116,6 +1164,64 @@ Not shipped, and not RAR-specific: no format has a writer. RAR would be the leas
 candidate regardless — the compressor is the half of the format nobody outside RARLAB has
 reimplemented, and the UnRAR licence forbids using its source to try.
 
+### 2.6 From a non-seekable source
+
+`RarReadBackend.open_read` hands a source that cannot seek to `RarForwardReader`
+(`internal/backends/rar_forward_reader.py`); only `streaming=True` gets there. It reuses
+the seekable reader's member building, verification and solid-pass demultiplexing
+(`_drive_solid_pass`), and replaces the open and the data path:
+
+- **The walk is the same code.** `_Rar5Walk.walk()` and `_Rar3Walk.walk()` are
+  generators that yield each FILE member before its data is skipped; `run()` drains them
+  for the seekable parse. The source is `ForwardSource` (`rar_forward.py`): a seek
+  forward reads and drops, a seek back lands in the last 4 MiB read, anything else
+  raises. Every committed fixture is walked from a pipe in `tests/test_rar_forward.py`
+  against the seekable walk.
+- **Open reads up to the first member**, so the version, the solid flag, a header
+  password and an archive comment are known there. A header password from several
+  candidates is found by starting the walk again, in the bytes the source still holds. A
+  volume of a set, `unar`, and a missing or older `unrar` are refused with
+  `StreamNotSeekableError`.
+- **One `unrar` run per pass, fed rolling volumes** (§2.3, `rar_rolling.py`). Volume 1
+  is written on the caller's thread; `unrar` starts on the first member read, or when
+  the listing needs a member past volume 1. From then on the feeder thread writes the
+  volumes, and the walk runs on it. A member is queued to the caller once the walk has
+  read the next header (a RAR 1.5-4 `UOW` or `CMT` after it then reaches it), or when
+  a volume that ends inside it is written: a member split across volumes is listed
+  before `unrar` prints it, so the caller can drain it. Only a member larger than a
+  volume is split (`RollingVolumes`), so this is rare at the default 16 MiB volume. A
+  `UOW` or `CMT` after such a member is written into it when the next member is listed
+  or the pass ends (`_add_late_records`); the member is not final until then
+  (`member_state_final`), and extraction places it after the pass. The walk waits for
+  the caller to build a member listed early before it reads the next header
+  (`_ForwardPass.listed`), so nothing changes the parsed header during the build. While
+  waiting for the next member, the caller reads past `unrar`'s output of the members it
+  was given, so `unrar` never blocks on a full pipe while the walk waits for its prompt.
+- **Listing without a pass** (`members_report()`) walks with the data skipped and writes
+  no volume.
+- **What a pipe cannot do.** No file-copy source is kept (the later copies are not
+  known), so a copy is refused. `unrar` gets one password: an `-hp` archive's, the one
+  candidate, or the one the first listed RAR5 PswCheck accepts; an encrypted member it
+  does not fit, or a RAR 1.5-4 encrypted member with several candidates, is refused. A
+  member with no size, a member past 4 GiB in RAR 1.5-4, or in a solid archive a member
+  of an unknown compression version stops the volumes; every later member with data is
+  refused, as is every member after one whose output did not line up. A member cut short
+  is refused as `TruncatedError` when the source ends inside the 4 MiB the forward
+  source reads ahead; a longer one is padded with zeros so the members before it in its
+  volume still decode. The feeder sets the cut flag before writing any padding. The
+  member's stream checks that flag after each read and raises `TruncatedError` before
+  those zeros can pass a size or digest check.
+- **Closing** sets a flag the walk checks before each read of the source, closes
+  `unrar`'s stdin (it ignores a terminate signal while it waits for a volume prompt's
+  answer, but exits at the end of its input), and waits up to a second for the feeder
+  thread: it reads the caller's source, which may never answer. A thread still blocked
+  then removes the volumes when its read returns (`VolumeFeeder.close_after`). That read
+  holds the source's own lock, so the caller's close of a buffered source waits for it
+  too; the user docs say how to bound that wait. An `OSError` reading the source reaches
+  the caller as it is (`SourceReadError` carries it out of the volume write).
+- **A RAR 1.5-4 symlink's target** is its data: up to 64 KiB of it is kept as the walk
+  passes it, for `_ensure_link_target`.
+
 ## 3. In the wild
 
 **The format is defined by one vendor's tool, and that tool is not redistributable.** RAR
@@ -1213,7 +1319,13 @@ pinned RARLAB source tree instead of trusting a third-party tap.
 **Old archives are still readable and still surprising.** RAR 1.5 and 2.x archives (extract
 version ≤ 20) share the RAR3 block layout, so they list and read; extract version alone is
 never a rejection. `rar15-comment.rar` and `rar202-comment-nopsw.rar` are borrowed from
-`rarfile`'s own corpus because modern `rar` cannot emit them. RAR3's two name fields are the
+`rarfile`'s own corpus because modern `rar` cannot emit them. RAR 1.3-1.5 writers never set
+the per-file solid flag: only the MAIN header says the archive is solid, and `unrar` decodes
+every file with extract version 15 or lower after the first file on top of the ones before
+it (`extract.cpp`, `FileCount>1 && Arc.Solid`). The parser sets `file_solid` on those
+members (`_settle_rar15_solid`), so the synthetic chain, the stream-source pass and `unar`'s
+solid runs start at the right member. Neither borrowed fixture is solid; the test patches
+the headers of `basic_solid__rar4.rar` instead. RAR3's two name fields are the
 other legacy trap: the compressed name is UTF-16, which truncates a non-BMP character to a
 single code unit — an emoji arrives as a private-use `U+F600` — and the 8-bit field is
 preferred where it recovers the real character, without overriding a private-use character
@@ -1327,9 +1439,10 @@ RAR-specific only. General extraction and name hazards are §2.4.
 | Handing over **any non-path stream** — a `BytesIO`, a file object, a network-backed reader — may write a full-size copy of the archive to `/tmp`; `cost.notes` says so at open | **archivey** | The RARLAB decompressor needs a path (§1). The copy waits for the first member `unrar` has to read, so listing writes nothing and a stored member (decrypted by archivey, if encrypted) is free; the next member the program has to read, such as a compressed one, is not. Open volume streams behave the same way and copy the whole set (§2.3). Bounding the copy to one member rather than moving it is §7 |
 | A corrupt encrypted member can be reported as a wrong password | **library** / **archivey** | `unrar` reports both as exit 2/3 with empty output on RAR4 and exposes no signal to separate them — that half is upstream's. Resolving the ambiguity toward `EncryptionError` is ours and is reversible (§2.3) |
 | A 7-Zip SFX stub sitting beside a numbered split (`vol.exe` next to `vol.exe.001` / `vol.7z.001` / `vol.zip.001`) | **archivey** | Opening the stub follows that first volume. The stub is still not a sibling. An old-scheme SFX first volume (`name.exe` + `.r00`) is discovered as volume 1 of that `.rNN` set |
-| A RAR on a pipe or socket cannot be opened at all, in either access mode | **format** | Block headers are chained forward but the walk still seeks; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
+| A RAR from a pipe or socket needs RARLAB `unrar` 7.00 or later, one volume, and one password for the pass; a RAR5 file copy is refused, and a failed member ends the data of the pass | **archivey** | §2.6: the source is read once, so nothing can be read again; nothing is buffered for you (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | A RAR 1.5-4 name stored only as 8-bit bytes can list in the wrong code page | **format** | The header records none. Archivey guesses strict UTF-8, then cp437 for a DOS or Windows host and windows-1252 otherwise; `encoding=` overrides the guess, as in ZIP. Reading is unaffected (§2.2) |
 | A member whose name is not plain raises `UnsupportedFeatureError` on the `unrar` path, and reads with `rar_decompressor='unar'` | **archivey** | Only when no synthetic archive can hold it: a RAR 1.5-4 member split past 4 GiB with no 64-bit sizes, or a solid chain with data out of reach. The original archive is then read through a mask, which is trusted only for a plain name (§2.3) |
+| `unrar` given an archive path in place can open a file other than the one archivey parsed | **library** / **archivey** | Two causes. `unrar` 6.x keeps only a prefix of a long archive path and opens the file that prefix names: on POSIX it cuts at 2047 bytes of the multibyte name (`File::Open`; measured on 6.24), on Windows at 2047 wide units (from the 6.2.12 source, not run). And every version expands `*` and `?` in the archive name, even after `--`, so `rep*.rar` also opens a `rep-a.rar` beside it, or blocks forever on a FIFO of that name. Archivey's answer: on POSIX `unrar` is always started in the archive's directory and given the name alone, so no directory reaches it, and a volume whose name holds `*` or `?` is linked under a fixed name in a private directory (`unrar_needs_staged_name`, `_choose_unrar_volume_paths`). On Windows `unrar` gets the whole path, so a volume path holding a wildcard or longer than 1024 UTF-16 units is staged, and a staged path past what 6.x keeps is refused (§2.2) |
 | Every RAR5 symlink and hard link has no `hashes` entry, where ZIP and 7z have one | **format** | The stored field covers zero bytes, so the only honest answer is no digest (§2.2). RAR3/4 keeps its digest, which is genuine — but note what it covers: the **target string**, not anything the link points at, the same as ZIP's and 7z's (§2.2, §6) |
 | Opening several members of a solid archive at once runs one whole-archive decode **per open**, concurrently | **format** / **archivey** | There are no block boundaries to share (§1), so `concurrent_operations=True` makes overlapping reads correct without making them cheap: measured, three open streams are three live `unrar` processes, each decoding from the start, all reaped on close. `AccessCost.SOLID` is the only signal and it does not scale with the number of open streams. Without the flag the second `open()` is refused with `ArchiveyUsageError` and spawns nothing — the live-stream slot is reserved before the member is opened (#293), where it used to be taken after |
 | A compressed RAR 1.5 / 2.x old-style comment is `None` without RARLAB `unrar` | **archivey** | Listing and stored old-style comments stay native; the proprietary compressed blob is decoded only when the optional binary is available (§2.2) |
@@ -1560,8 +1673,17 @@ settled by reading more code. Distinct from §5, which is behaviour a caller alr
   with placeholder names (`internal/backends/rar_synthetic.py`); a pass copies batches
   or runs of streams, and the whole archive only in the fallbacks §2.3 lists. Every copy
   is charged to `SpoolLimits.max_bytes`. Design and measurements:
-  `openspec/changes/rar-synthetic-archives` (PR 1151). Decoding every RAR 1.5-4
-  compressed comment in one run with the same writer is still tracked internally.
+  `openspec/changes/rar-synthetic-archives` (PR 1151). With `unrar` 7.00 or later, the
+  copies that would be whole (over 64 MiB, a member or solid chain the limit has no room
+  for, a stream-source solid pass of several runs or whose whole copy does not fit) are
+  written as rolling volumes instead (`internal/backends/rar_rolling.py`): `unrar -vp`
+  prompts before each next volume and holds none open at the prompt, so one volume is on
+  disk at a time. A non-last part carries no checksum (`MergeArchive` checks a part only
+  against one its header holds), every part is at least a quarter of a volume (one
+  decoder read takes bytes from one part only), and a member that fits in one volume, or
+  is too small for two parts, is not split: it starts the next volume. 6.x has the same
+  `-vp` code but no 6.x binary was run, so it keeps the whole copies. Decoding every RAR
+  1.5-4 compressed comment in one run with the same writer is still tracked internally.
 
 - ~~**Does `ListingCost.INDEXED` mean "cheap" or "already paid"?**~~ Neither: it names
   how the member list is read on the source, so RAR reports `REQUIRES_SCANNING` like TAR

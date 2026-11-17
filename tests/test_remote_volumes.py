@@ -1,14 +1,21 @@
-"""Volume discovery over ``fsspec`` (``fsspec-integration`` §volumes).
+"""Volume sets over ``fsspec`` (``fsspec-integration`` §volumes).
 
-A remote set is found by the same naming rules as a local one, from one ``ls`` of the
-named file's directory, and each volume is read as its own ``OpenFile``.
+An ``OpenFile`` is never searched for the other parts of its set, whatever
+``discover_volumes`` says (maintainer ruling, 2026-11-11): archivey lists no remote
+folder and probes no sibling name. A remote set is passed as a list of ``OpenFile``
+objects, and a lone part whose set turns out to need more parts is refused with a
+message that names that list.
 """
 
 from __future__ import annotations
 
 import io
+import shutil
+import struct
 import zipfile
+import zlib
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -19,18 +26,26 @@ fsspec = pytest.importorskip("fsspec")
 from fsspec.core import OpenFile  # noqa: E402
 from fsspec.implementations.memory import MemoryFileSystem  # noqa: E402
 
-from archivey import open_archive  # noqa: E402
-from archivey.internal.volumes import (  # noqa: E402
-    RemoteVolumePath,
-    discover_volume_siblings,
+from archivey import (  # noqa: E402
+    ArchiveyConfig,
+    DiagnosticCode,
+    TruncatedError,
+    UnsupportedFeatureError,
+    open_archive,
 )
+from archivey.internal.volumes import REMOTE_VOLUMES_AS_LIST  # noqa: E402
 
 FIXTURES = Path(__file__).parent / "fixtures" / "rar"
-RAR_HEAD = b"Rar!\x1a\x07\x01\x00"
 
 
 class CountingMemoryFS(MemoryFileSystem):
-    """A memory file system of its own that counts ``ls`` and ``info`` calls."""
+    """A memory file system of its own that records ``ls`` calls and the paths that
+    ``info``, ``exists`` and ``cat_file`` were asked about: the calls a search for
+    sibling volumes would make.
+
+    Only calls from outside the file system count. Older fsspec (2024.2) has ``_open``
+    check each parent folder with ``isfile``, which calls ``info``; those checks are the
+    file system's own, not a search by archivey."""
 
     cachable = False
 
@@ -39,15 +54,46 @@ class CountingMemoryFS(MemoryFileSystem):
         self.store: dict[str, Any] = {}
         self.pseudo_dirs = [""]
         self.listings = 0
-        self.infos = 0
+        self.asked: list[str] = []
+        self._depth = 0
+
+    @contextmanager
+    def _call(self, path: str | None = None) -> Iterator[None]:
+        if self._depth == 0 and path is not None:
+            self.asked.append(self._strip_protocol(path))
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
 
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
-        self.listings += 1
-        return super().ls(path, detail=detail, **kwargs)
+        if self._depth == 0:
+            self.listings += 1
+        with self._call():
+            return super().ls(path, detail=detail, **kwargs)
 
     def info(self, path: str, **kwargs: Any) -> Any:
-        self.infos += 1
-        return super().info(path, **kwargs)
+        with self._call(path):
+            return super().info(path, **kwargs)
+
+    def exists(self, path: str, **kwargs: Any) -> bool:
+        with self._call(path):
+            return super().exists(path, **kwargs)
+
+    def cat_file(self, path: str, *args: Any, **kwargs: Any) -> Any:
+        with self._call(path):
+            return super().cat_file(path, *args, **kwargs)
+
+    def _open(self, path: str, *args: Any, **kwargs: Any) -> Any:
+        with self._call():
+            return super()._open(path, *args, **kwargs)
+
+    def assert_no_search(self, named: str) -> None:
+        """No listing, and no question about any file but the one named."""
+        assert self.listings == 0
+        assert self.asked
+        assert set(self.asked) == {named}
 
 
 @pytest.fixture
@@ -66,114 +112,162 @@ def _zip_parts(count: int) -> tuple[list[bytes], dict[str, bytes]]:
     return [data[i : i + step] for i in range(0, len(data), step)], members
 
 
-def test_a_numbered_set_opens_as_one_reader_from_one_listing(
+def _read_all(source: object, config: ArchiveyConfig | None = None) -> None:
+    with open_archive(source, config=config) as reader:
+        for member in reader.members():
+            if member.is_file:
+                reader.read(member)
+
+
+RAR_SETS = {
+    "tinyvol.part1.rar": ["tinyvol.part1.rar", "tinyvol.part2.rar"],
+    "tinyvol_rnn.rar": ["tinyvol_rnn.rar", "tinyvol_rnn.r00"],
+}
+
+
+@pytest.mark.parametrize("discover", [True, False])
+@pytest.mark.parametrize(
+    ("named", "error"),
+    [
+        # A first volume whose end-of-archive block says another follows.
+        ("tinyvol.part1.rar", TruncatedError),
+        ("tinyvol_rnn.rar", TruncatedError),
+        # A later volume, which is not where a set starts.
+        ("tinyvol.part2.rar", UnsupportedFeatureError),
+        ("tinyvol_rnn.r00", UnsupportedFeatureError),
+    ],
+)
+def test_a_remote_rar_part_is_not_searched_and_the_error_names_the_list(
+    fs: CountingMemoryFS,
+    named: str,
+    error: type[Exception],
+    discover: bool,
+) -> None:
+    """Every part of the set is beside it, and none is looked for: the open lists no
+    folder, and the refusal says to pass the parts as a list."""
+    for names in RAR_SETS.values():
+        for name in names:
+            fs.pipe(f"/d/{name}", (FIXTURES / name).read_bytes())
+    with pytest.raises(error) as caught:
+        _read_all(
+            OpenFile(fs, f"/d/{named}", mode="rb"),
+            ArchiveyConfig(discover_volumes=discover),
+        )
+    assert REMOTE_VOLUMES_AS_LIST in str(caught.value)
+    fs.assert_no_search(f"/d/{named}")
+
+
+@pytest.mark.parametrize("ext", ["zip", "7z"])
+def test_a_remote_numbered_first_part_is_refused_by_name_naming_the_list(
+    fs: CountingMemoryFS, ext: str
+) -> None:
+    """As a lone local part is (``found part 1 only``), with the list remedy added,
+    and before any byte is read."""
+    for index in (1, 2, 3):
+        fs.pipe(f"/d/x.{ext}.{index:03d}", b"part")
+    with pytest.raises(TruncatedError, match="found part 1 only") as caught:
+        open_archive(OpenFile(fs, f"/d/x.{ext}.001", mode="rb"))
+    assert f"x.{ext}.002, …; pass the volume parts as a list of OpenFile" in str(
+        caught.value
+    )
+    fs.assert_no_search(f"/d/x.{ext}.001")
+
+
+def test_a_remote_numbered_part_without_discovery_is_read_alone(
     fs: CountingMemoryFS,
 ) -> None:
+    """``discover_volumes=False`` reads the part as the one file it names, as for a
+    local part: its format's own error, without the list remedy."""
+    fs.pipe("/d/x.7z.001", b"not a 7z")
+    fs.pipe("/d/x.7z.002", b"part")
+    with pytest.raises(Exception) as caught:
+        open_archive(
+            OpenFile(fs, "/d/x.7z.001", mode="rb"),
+            config=ArchiveyConfig(discover_volumes=False),
+        )
+    assert "found part 1 only" not in str(caught.value)
+    assert "list of OpenFile" not in str(caught.value)
+    fs.assert_no_search("/d/x.7z.001")
+
+
+def _later_volume_with_no_number(data: bytes) -> bytes:
+    """A RAR 2.9/4 volume whose end block neither says another follows nor stores a
+    volume number: how a RAR 1.5 or 2.x later volume looks when its first member
+    starts on its boundary. The end block's header CRC16 is recomputed."""
+    out = bytearray(data)
+    pos = 7
+    end = None
+    while pos < len(out):
+        _crc, block_type, flags, size = struct.unpack_from("<HBHH", out, pos)
+        add = struct.unpack_from("<I", out, pos + 7)[0] if flags & 0x8000 else 0
+        if block_type == 0x7B:
+            end = (pos, pos + size, flags)
+        pos += size + add
+    assert end is not None  # precondition: the fixture has an end block
+    block_pos, header_end, flags = end
+    struct.pack_into("<H", out, block_pos + 3, flags & ~(0x0001 | 0x0008))
+    crc = zlib.crc32(out[block_pos + 2 : header_end]) & 0xFFFF
+    struct.pack_into("<H", out, block_pos, crc)
+    return bytes(out)
+
+
+def test_a_remote_volume_that_expects_no_other_names_the_list(
+    fs: CountingMemoryFS,
+) -> None:
+    """The refusal of a volume that says nothing follows it gains the remedy for a
+    lone ``OpenFile`` only: a stream has no remote set to pass."""
+    data = _later_volume_with_no_number((FIXTURES / "tinyvol_rnn.rar").read_bytes())
+    fs.pipe("/d/set.rar", data)
+    fs.pipe("/d/set.r00", (FIXTURES / "tinyvol_rnn.r00").read_bytes())
+    with pytest.raises(TruncatedError, match="additional volumes required") as caught:
+        _read_all(OpenFile(fs, "/d/set.rar", mode="rb"))
+    assert REMOTE_VOLUMES_AS_LIST in str(caught.value)
+    fs.assert_no_search("/d/set.rar")
+    with pytest.raises(TruncatedError, match="additional volumes required") as caught:
+        _read_all(io.BytesIO(data))
+    assert REMOTE_VOLUMES_AS_LIST not in str(caught.value)
+
+
+def test_a_local_numbered_first_part_alone_keeps_its_message(tmp_path: Path) -> None:
+    """The remedy is for a remote part: a local one was searched for."""
+    (tmp_path / "x.zip.001").write_bytes(b"part")
+    with pytest.raises(TruncatedError, match="found part 1 only") as caught:
+        open_archive(tmp_path / "x.zip.001")
+    assert REMOTE_VOLUMES_AS_LIST not in str(caught.value)
+
+
+def test_a_list_of_open_files_opens_a_numbered_set(fs: CountingMemoryFS) -> None:
     parts, members = _zip_parts(3)
     for index, part in enumerate(parts, 1):
         fs.pipe(f"/d/x.zip.{index:03d}", part)
-    fs.pipe("/d/unrelated.txt", b"x")
-    listings_before = fs.listings
-    infos_before = fs.infos
-    with open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb")) as reader:
-        assert fs.listings - listings_before == 1
-        # Each part's size comes from the listing: no part costs a request of its
-        # own before its bytes are read.
-        assert fs.infos == infos_before
+    files = [OpenFile(fs, f"/d/x.zip.{index:03d}", mode="rb") for index in (1, 2, 3)]
+    with open_archive(files) as reader:
         assert reader.info.extra["zip.volume_count"] == 3
         assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == (
             members
         )
+    assert fs.listings == 0
 
 
-@pytest.mark.parametrize(
-    ("named", "siblings"),
-    [
-        ("tinyvol.part1.rar", ["tinyvol.part2.rar"]),
-        ("tinyvol_rnn.rar", ["tinyvol_rnn.r00"]),
-    ],
-)
-def test_a_rar_set_opens_from_any_naming_scheme(
-    fs: CountingMemoryFS, named: str, siblings: list[str]
-) -> None:
-    for name in [named, *siblings]:
+@pytest.mark.parametrize("named", sorted(RAR_SETS))
+def test_a_list_of_open_files_opens_a_rar_set(fs: CountingMemoryFS, named: str) -> None:
+    names = RAR_SETS[named]
+    for name in names:
         fs.pipe(f"/d/{name}", (FIXTURES / name).read_bytes())
     with open_archive(FIXTURES / named) as local:
         expected = {m.name: m.size for m in local.members()}
-        assert local.info.extra["rar.volume_count"] == len(siblings) + 1
-    with open_archive(OpenFile(fs, f"/d/{named}", mode="rb")) as reader:
-        assert reader.info.extra["rar.volume_count"] == len(siblings) + 1
+        assert local.info.extra["rar.volume_count"] == len(names)
+    with open_archive([OpenFile(fs, f"/d/{name}", mode="rb") for name in names]) as (
+        reader
+    ):
+        assert reader.info.extra["rar.volume_count"] == len(names)
         assert {m.name: m.size for m in reader.members()} == expected
+    assert fs.listings == 0
 
 
-# Name sets where the choice is the rules' (padding, case, gaps, strays): the remote
-# pick is the local one, name for name.
-NAME_SETS = [
-    ("q.part1.rar", ["q.part1.rar", "q.part2.rar", "q.part02.rar"]),
-    ("x.7z.001", ["x.7z.001", "x.7z.002", "x.7z.0002", "x.7z.003"]),
-    ("a.rar", ["a.rar", "a.r00", "a.r01", "A.R02", "a.r04", "backup.z01"]),
-    ("a.r01", ["a.r00", "a.r01", "a.r03"]),
-    ("lone.part1.rar", ["lone.part1.rar"]),
-    ("plain.zip", ["plain.zip", "plain.zip.001"]),
-]
-
-
-@pytest.mark.parametrize(("named", "names"), NAME_SETS)
-def test_remote_discovery_picks_what_local_discovery_picks(
-    fs: CountingMemoryFS, tmp_path: Path, named: str, names: list[str]
-) -> None:
-    for name in names:
-        (tmp_path / name).write_bytes(RAR_HEAD)
-        fs.pipe(f"/d/{name}", RAR_HEAD)
-    local = discover_volume_siblings(tmp_path / named)
-    remote = discover_volume_siblings(RemoteVolumePath(fs, f"/d/{named}", {}))
-    assert (None if remote is None else [p.name for p in remote]) == (
-        None if local is None else [p.name for p in local]
-    )
-    assert fs.listings <= 1
-
-
-class UnlistableFS(CountingMemoryFS):
-    def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
-        raise PermissionError("listing refused")
-
-
-def test_a_file_system_that_cannot_list_opens_the_volume_alone(
-    tmp_path: Path,
-) -> None:
-    """As a lone local first part does: refused as an incomplete set."""
-    from archivey import TruncatedError
-
-    fs = UnlistableFS()
-    parts, _ = _zip_parts(3)
-    for index, part in enumerate(parts, 1):
-        fs.pipe(f"/d/x.zip.{index:03d}", part)
-    (tmp_path / "x.zip.001").write_bytes(parts[0])
-    with pytest.raises(TruncatedError, match="found part 1 only"):
-        open_archive(tmp_path / "x.zip.001")
-    with pytest.raises(TruncatedError, match="found part 1 only"):
-        open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))
-
-
-def test_a_discovered_link_is_refused(tmp_path: Path) -> None:
-    """``islink`` from the listing is honoured as a local sibling link is."""
-    fs = fsspec.filesystem("file")
-    (tmp_path / "x.zip.001").write_bytes(b"a")
-    (tmp_path / "target").write_bytes(b"b")
-    (tmp_path / "x.zip.002").symlink_to(tmp_path / "target")
-    from archivey import OpenError
-
-    with pytest.raises(OpenError, match="symbolic link"):
-        discover_volume_siblings(
-            RemoteVolumePath(fs, (tmp_path / "x.zip.001").as_posix(), {})
-        )
-
-
-def test_a_remote_set_with_a_gap_is_refused_as_a_local_one_is(
+def test_a_listed_remote_set_with_a_gap_is_refused_as_a_local_one_is(
     fs: CountingMemoryFS, tmp_path: Path
 ) -> None:
-    from archivey import TruncatedError
-
     parts, _ = _zip_parts(3)
     for index in (1, 3):
         fs.pipe(f"/d/x.zip.{index:03d}", parts[index - 1])
@@ -181,24 +275,54 @@ def test_a_remote_set_with_a_gap_is_refused_as_a_local_one_is(
     with pytest.raises(TruncatedError, match="missing part 2"):
         open_archive(tmp_path / "x.zip.001")
     with pytest.raises(TruncatedError, match="missing part 2"):
-        open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))
-    # A list the caller gives is checked by name too.
-    with pytest.raises(TruncatedError, match="missing part 2"):
         open_archive(
             [OpenFile(fs, f"/d/x.zip.{index:03d}", mode="rb") for index in (1, 3)]
         )
 
 
-class BrokenListingFS(CountingMemoryFS):
-    def ls(self, path: str, detail: bool = True, **kwargs: Any) -> Any:
-        raise RuntimeError("expired credentials")
+@pytest.mark.parametrize(
+    "named", ["basic_nonsolid__.rar", "single.part1.rar", "single.exe"]
+)
+def test_a_remote_single_file_archive_opens_without_a_search(
+    fs: CountingMemoryFS, named: str
+) -> None:
+    """A complete archive opens alone, under a volume-shaped name too, with no
+    diagnostic and no listing; ``.r00`` siblings of the same base are ignored."""
+    data = (FIXTURES / "basic_nonsolid__.rar").read_bytes()
+    fs.pipe(f"/d/{named}", data)
+    stem = named.split(".")[0]
+    fs.pipe(f"/d/{stem}.r00", b"Rar!\x1a\x07\x01\x00")
+    with open_archive(FIXTURES / "basic_nonsolid__.rar") as local:
+        expected = [m.name for m in local.members()]
+    with open_archive(OpenFile(fs, f"/d/{named}", mode="rb")) as reader:
+        assert [m.name for m in reader.members()] == expected
+        assert reader.info.extra["rar.volume_count"] == 1
+        # The transport note every memory:// open gets; nothing about volumes.
+        assert set(reader.diagnostics.counts) == {
+            DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE
+        }
+    fs.assert_no_search(f"/d/{named}")
 
 
-def test_a_listing_failure_that_is_not_a_refusal_propagates() -> None:
-    """Only a refusal (``OSError``) or no ``ls`` means "no siblings"; a timeout or an
-    auth failure is not blamed on the archive."""
-    fs = BrokenListingFS()
-    parts, _ = _zip_parts(3)
-    fs.pipe("/d/x.zip.001", parts[0])
-    with pytest.raises(RuntimeError, match="expired credentials"):
-        open_archive(OpenFile(fs, "/d/x.zip.001", mode="rb"))
+def test_a_remote_zip_opens_without_a_search(fs: CountingMemoryFS) -> None:
+    parts, members = _zip_parts(1)
+    fs.pipe("/d/plain.zip", parts[0])
+    fs.pipe("/d/plain.zip.001", b"x")
+    with open_archive(OpenFile(fs, "/d/plain.zip", mode="rb")) as reader:
+        assert {m.name: reader.read(m) for m in reader.members() if m.is_file} == (
+            members
+        )
+    fs.assert_no_search("/d/plain.zip")
+
+
+@pytest.mark.parametrize("named", sorted(RAR_SETS))
+def test_local_discovery_is_unchanged(tmp_path: Path, named: str) -> None:
+    """The same files that a remote open does not search for are found beside a
+    local path."""
+    for name in RAR_SETS[named]:
+        shutil.copy(FIXTURES / name, tmp_path / name)
+    with open_archive(tmp_path / named) as reader:
+        assert reader.info.extra["rar.volume_count"] == len(RAR_SETS[named])
+        for member in reader.members():
+            if member.is_file:
+                reader.read(member)

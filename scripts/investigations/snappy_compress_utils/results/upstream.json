@@ -1,0 +1,3700 @@
+{
+  "pytest_exit": 0,
+  "cross_read_counts": {
+    "zstd": 22,
+    "gzip": 21,
+    "zlib": 21,
+    "brotli": 19,
+    "bzip2": 18,
+    "lz4": 18,
+    "xz": 49,
+    "raw": 24,
+    "deflate": 18,
+    "lz4_raw": 10
+  },
+  "cross_reads": [
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "db26f352854a3c89669a410259937116277f329d7acd929e25100031eae67e92",
+      "size": 550,
+      "expected": {
+        "accepted": true,
+        "size": 550,
+        "sha256": "05c00b3e226be41387ea962ba2d75847473f8b2a8915bdeea6082a83eab77105"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 550,
+        "sha256": "05c00b3e226be41387ea962ba2d75847473f8b2a8915bdeea6082a83eab77105"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "7a5ec0f09290c553f268fc99fbd4fea64cc48fb52bbc2a4e07176c4292aabbb2",
+      "size": 840,
+      "expected": {
+        "accepted": true,
+        "size": 840,
+        "sha256": "ab9d0d1e4938101686baf8538d139b4a4e475b9ff3b05e43222bfbd5e5b9cdea"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 840,
+        "sha256": "ab9d0d1e4938101686baf8538d139b4a4e475b9ff3b05e43222bfbd5e5b9cdea"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "c7f861236fd380d3a74ba583db0932139cf7b715c3aed2e2ce7a0cb0e5c0d07a",
+      "size": 550,
+      "expected": {
+        "accepted": true,
+        "size": 550,
+        "sha256": "05c00b3e226be41387ea962ba2d75847473f8b2a8915bdeea6082a83eab77105"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 550,
+        "sha256": "05c00b3e226be41387ea962ba2d75847473f8b2a8915bdeea6082a83eab77105"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "977387c31f33bab2e488f2f6db516714cb293afe3fb04ba13c34eb01b6f6aa66",
+      "size": 840,
+      "expected": {
+        "accepted": true,
+        "size": 840,
+        "sha256": "ab9d0d1e4938101686baf8538d139b4a4e475b9ff3b05e43222bfbd5e5b9cdea"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 840,
+        "sha256": "ab9d0d1e4938101686baf8538d139b4a4e475b9ff3b05e43222bfbd5e5b9cdea"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "263afbf67a700c0e57ccfb6116b47e3f76e91e76e50ed7261be458f67ca5ee66",
+      "size": 550,
+      "expected": {
+        "accepted": true,
+        "size": 550,
+        "sha256": "05c00b3e226be41387ea962ba2d75847473f8b2a8915bdeea6082a83eab77105"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 550,
+        "sha256": "05c00b3e226be41387ea962ba2d75847473f8b2a8915bdeea6082a83eab77105"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "324d1e2bb3c212a809b5d459fce02e2947d5a691229a573eff9a75ea49bb06ee",
+      "size": 840,
+      "expected": {
+        "accepted": true,
+        "size": 840,
+        "sha256": "ab9d0d1e4938101686baf8538d139b4a4e475b9ff3b05e43222bfbd5e5b9cdea"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 840,
+        "sha256": "ab9d0d1e4938101686baf8538d139b4a4e475b9ff3b05e43222bfbd5e5b9cdea"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "860e83458d48132802a2e58fafbe0557ef1f05c0d93324c1e13e9f7e942c6198",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "cf6ef72f7ead53fceebab50210804501f0cb165066bfa1b0070ae14209c5c474",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "58a872fa26d27c39894731ad7734c30a6b680d4ad88c002fee87a27163b317c2",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "7f1304be905eff0a6b44427a19e05001d127a9bd78465dc732500f6e22065d93",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "6859e51922d38f027fd1d1af247d07718f1026eeaba9cb439ee1dec4aa5bed33",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "67f5cd0b4fad2ab78e983a5573e1c35ec94981887d11c500aac36b975e78939e",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "1634c786cde98b26710fe68988475447443a05ad4fadc78d6d3c7598a76e3a95",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "cf763affa32c02eeab129064238ee3da25ad8f5d1a66fdccd3b2de81f26aab36",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "7d5b6cc437453885d3870f05578b06eca1aa6d6de561db53271b083b6f56fcb1",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "a1f259d4365ed4320c377ce26f5c8c56dcdc9a89e7b641bfd8eabfbbeac86654"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "e34115918415980bc3c939bbc9be23a0123e8c06be71719a3fc18d0bfd946cb0",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "6fb8543883dafcc2ed0934866b8b3f775231f5b0933add08bf502e9e84944cbd",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "adfe0eb9e966d2865e17750d8534aa8c97c30fae7a26a8c152c86b46184f6847",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "16f52b5c7edfa89b8aa23890479708c99e38eb24e4ad701dec470ec6ab422995",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "beaa94fad05610e4aacc4a4e40ac5a442bfacf904e31c3581c269879f26553c7",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "587480964cebfcfd43fadf972b802fef30cde79629dfd4458a88c5a6f3a5d9dd",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "67586e98fad27da0b9968bc039a1ef34c939b9b8e523a8bef89d478608c5ecf6",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "57caf5d36db7745c0d75a6814e883ef596a65ac59f7f0839403ed744a268d6a9",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "373f08a961d56480132d4a810e763b9f6da221438a7632ddb31eaa74aa38b830",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "9f3791f3c69935dfc8fb03537164f098571da90c73921f96a25bdf378d20f5bc",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "69e4a10f26d6fab6490cc44c4503fb9f85ae7a25264e438c499308d33fbd1313",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "4124a9b34347a1f878716df4f671e438e6eb308f70838b5e6c48c3eae46d1c23",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "c1f4730a4af9b8006385941e48e668e362095ce2b8a3989769a9741a00cea277",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "353b75636bf975229ef8240257509a7e20d0fe208d88cc41859e34f982acd2c0",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "1ccb447e8e1f90102fa2f194eb561b87f3908b578f015adb464bcd504331645e",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "138adb562b29fa2b86a6d356ff3e632c798c95251d61deedb6e3693dbcbfe2e5",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "4755d72e05f47024e53b2ee49ee6914c991941267c14c1ad532fc5b86eb86972",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "7edac8d0bc8fe06b3a8070367ae2790df84adaa1741fed2e27c76b14869328a1",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "64088269602ed86e892862fb127417de80c276ed5418ec5a62e18690409b05f0",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "e4f36ac322f162db9215263211c8d42e2c070a71390fa5562fdb768ce2998f8c",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "5068161ed79babbf95ac078905e8c2f9b7339d9ed9fd98cb0f2a30c68d6df78d",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "a01ab6c73734fbe3eac2971567666b6cd7d9586d5becc29c4a57b2c5a9225237",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "47e4edb80c5cc36596f5143af5a8d4253612f26762c65b402911ed8ecee3bca9",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "4f2ebe879fa91d86e442f1a144cce15b3ebc26aa51ee15a416ef41a02a7f6bed",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "b09e35af3901bdf0b9db6ae1e7a0ac4d92ea4dcfd0c80be3fb45ab6b99a898f4",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "96e6bee603a80c1819540002d98f5bc868074f21bf21b07a455da71720256e61",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "0040f94d11d0039505328a90b2ff48968db873e9e7967307631bf40ef5679275",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "643c3aaa10103721dbdc7cc51cb7e20fe6c2bacc72707c085c57324a83e6c9af",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "912d05c6c5acb9e386573b509ba10911853063edfa58728523f9635d917c8f29",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "b9f07a5d561c027c2c019de2290488191a40f36f24b560e6e257734231335b16",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "d568657175e03f803f065eb5da75eab896a6f373a0efb95b26a62fbdae82933e",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "462fd23668ae7d949fdc2539f1baabcaa73df4b2bee3604c95707c70b592cf5b",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "aee41b316ed31194738229518296bcd9365a047bdacaeb5a4410f6af1227b092",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "b173c688d1000783cfe4adab7a622f7a5f1b1cf41f149c893d078826846d16c4",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "c8297a01bc37d15b7d5ec90995dded19bc304cd9f965d87777c2c0fa2b4c00c0",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "59869db34853933b239f1e2219cf7d431da006aa919635478511fabbfc8849d2",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "4e0b17fbc7ed53f5071f4ac2feef2cea63bdafcece9d8ecbffd276172a94e8a1",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "5e650c048ad7c8ddc175b58b1732b2e9965295ab237461954ee213b9cf3fd344",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "1de194e61a7ceece437084b2fae6152edf3c6258f9ff0854f05869524ba3d960",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "b6587de90ab1f911171d19cd0145217a360579a825a476c50f75b06dcff8d026",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "9b4fb24edd6d1d8830e272398263cdbf026b97392cc35387b991dc0248a628f9",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "368f084eda77ca9ecdb573d09e754104bb9fe598566da405c7f6f0c5eccf9e43",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "7506bc6a0f39c8f79b867d0067097c3faeb7dc4031f38d15c2f0a6e1d47140ce",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "bf388ec9f2ff2c101c0d22d3abb08315cb35ece06db5c688794aefc910a24606",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "2e36eb12d5b3621f0ddbc60da2fd6b421ff44ba130a48bb2fc09cc7c2d125beb",
+      "size": 12,
+      "expected": {
+        "accepted": true,
+        "size": 12,
+        "sha256": "813ca5285c28ccee5cab8b10ebda9c908fd6d78ed9dc94cc65ea6cb67a7f13ae"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 12,
+        "sha256": "813ca5285c28ccee5cab8b10ebda9c908fd6d78ed9dc94cc65ea6cb67a7f13ae"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "0356f4645ef5ed0c0a499a974fb189afd6aad4ee030bccb7f978dd7707ba5758",
+      "size": 11,
+      "expected": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 11,
+        "sha256": "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "size": 0,
+      "expected": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "4e5071a28ebde7076a7aef877826b5c19707edeb962408b686026cdf706c4cbf",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "63e97ee7efd6c124a6716a6fc0c19affaf553d1e7b4a9cc0692994855ce2e7c2",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "63cd0d2f6e013c34f588be637abd0e33636711ed143fc467e127e3e8c569405a"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "118b47c639ab999a52612240aa3de6cf494515dcca9beba6e6308e5e360d5979",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "4e29ad18ab9f42d7c233500771a39d7c852b200baf328fd00fbbe3fecea1eb56"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "8b5feac68cadb6cae4142318692117eb330e05c7e9640c4b675aaa71a17fcad1",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "0ee9ce4d3b0f483d372be79b394773bed97b5324e267156f87d44fccfcaa4f39",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "094fe9adcd83d69301d36ca51d71738d02096f83e61f3552f95f04d299794f0f",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "6dee6521e7cd75b56658847a578ae7ffff670ca43a46a48541223bde254a49d9",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "0458b2bb45d9e881a4c2f41b1565b1adf95592ac6735583260720997e90b8f49",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "c33b9b9588856d4f981c87843a9f18b3da2d78b4c17329600f0d1dbaf56a8211",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "a808d7300add82a69b40017c2e1b1716488ff4b44b0bbb8eeb64352e2f4578a9",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "845580eb77c340182229afd524e302219f613266479b72c4d3ed105afce329fa",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "ff85864504a5ba20243361a48c62a9de3c3f546b89d32fc851c4a40fe7df6278",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "9e054813adce2606e25632f200a7b09b66734fa426d6350e8d808cf551c45612",
+      "size": 67500,
+      "expected": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 67500,
+        "sha256": "49528df4a3f78046362e4ad6d973f8fc35dcc1eb0689973a01854c4ee3933fc5"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "430d55509e1617fa13780e48bf4f90de5f42bc107a9220f91c9e8cd50a5be694",
+      "size": 55000,
+      "expected": {
+        "accepted": true,
+        "size": 55000,
+        "sha256": "0cde7cc2da86dcde4389b02b0b3d3a62450d29a47906a50376c24ae9596afac2"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 55000,
+        "sha256": "0cde7cc2da86dcde4389b02b0b3d3a62450d29a47906a50376c24ae9596afac2"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "ea79647f837dc09a3933a63cdd74f0b91af26970aeab05b1755dfec2ad6f8fb3",
+      "size": 84000,
+      "expected": {
+        "accepted": true,
+        "size": 84000,
+        "sha256": "e401137dbda3290caaa3c10b70f6cdfb6fcc8b1378003a9e49489b3bda0b2ff3"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 84000,
+        "sha256": "e401137dbda3290caaa3c10b70f6cdfb6fcc8b1378003a9e49489b3bda0b2ff3"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "478d69971353d368b47174a330bb88ae758bb0bb71642be98bc40caf50260f30",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "7828f91672aba5182235e680ae81515c565a9218b3c0b27f8e27394e328362d7",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "10d9d936febcda1bffcd3667b9fd358542e2eb3b1696662c3a575f4a531d9522",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "18f4be69e178879717847c293713961d4213e2acfacd9da5de0718f06f691fbb",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "c4fd6047164b09e71c6ae58226fbbb21dc9c59f541358ca28a084185a391ec56",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "c0e80196ab9d0ac008d1409b96dce38d9513411a30b6e414ee53fe43c6bafa12",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "db32bc6f9f58e71cf7556cd1906de37e4d56f9db35a9ce6915f03e10298611c2",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "d4e32e690c5e4486fd1c0c7a1c2a247a29333f027378e19144d18f06c64a141a",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "0d80e7bfe8f08c04f589bf7d2310f6008bf8c394d4de364fc41c8bb399a8f5f0",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "3fd7e2502b5d874e7897815b3e737013ce49b8eeb367fa40be6d996a28ac7fb5",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "e2f2b688cbbaa8aa3e508b2e36b94e57bbe8f4f56a704aa24408516baf33f101",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "62e43c7ac7aa8ea0b6412feb5646ddb0fb3d0f9082c7539694cc9ce6422f5c6e",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "9201dac02885f85670e790cc1928b7d7c0ae5a49be6b3fbc2571084fe322c1dd",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "06bc3c3fbee980508990c494b4c1d1b256b600e11cde4e3b41b8e29ee55d8e6c",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "3a18c10179ae6af6c4c25fc8412bcc91710fa839694bb61859cfa7d4b580bcd3",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "68971331d45158f7d433ffa6e9fddd2aea2240ac620e40d3a943b7350c6c8997",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "a1c5fcd5ac753f2fe79c88d43219c9f773af361e063679786b8d402e53cd9f29",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "1310f301f232c8b8fcb8a5009372adc1c368f68709f1ac6a4cacbb969aacdd00",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "22f90f15f06940332c11bfdf550db09a4e25c620eeb347914ddcbe870a8a15dc",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "a5ea6cd347070f28901fb965d0cf804a9d24cd74221d8461d9b2fadf25bba35f",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "25e9c4344d584cc2469678169e1a7413c873717ffd4824690b95dc2e54061ca7",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "8fc3010fc81881c261f8c2d9fff12472368e3603089371877c07a7277ab77c72",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "73f8d6ca2088f52dd0ed136312b13e98611751c236c1a68cf0345a35d97a556d",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "bc7196674416a66d223914a6d2d0cdf2dfb8ff3b78bf71e8eef6cb113cbea5c3",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "b9a305e7fe3824548a2e6ab14d0c76e0639772614f03ce4f690e6a31ab173c16",
+      "size": 150000,
+      "expected": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 150000,
+        "sha256": "6b3fb82bf380df0ffb2deaf1780b123a41325034bc44d7342f5e280d6a150b44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "c564094c364cdcbf3247442d1709614e85cdc830d27bd2365e9d0ae72ec7efb9",
+      "size": 5,
+      "expected": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5,
+        "sha256": "81db8ebbbbc69c6c6ad4a6aa92b76e0c08af547da236b9e2c9dbe1d8285a8130"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "e56feeea46e7becaa015a871d58c05772361a4ecc5e34c33368ab2a055b8aadf",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "3cdc92c3d725c404c8cfaa26d17a7ff0420dac1c5fc5a837c8d819f07a9ee698"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "9da394df3a156745855b09e838eb439e0b596f492d3cad94ac4222d81a40c2fc",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "f008b71c0ed7575944bf1d34dd1302600714e5183b75c40ee1e7bb863c02f100",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "bbc69830c1b8b1bf2ef8c16c8ef62c827264e0e449b45241b7c79ac0dc48715a",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "44e411e49c0110f98ff7925c9d29448d55907e6029cbb0a06e3a45e29387bbff",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "1d87ace00c5fb633f9a916100e541f302b3efce85a98bd88e88ea750e80cf2a9",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "1599a9e4d9f8bb4008543682a0851adc069db91323ca773de8e6ede117b684f7",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "ea13523364d8f40fbe7bae6584dd14ed74313581ddea616deee077f48ccf7d73",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "89744b3eef67defb43f0d6bbdc6828bc806e9b98488cd87d54fcdd39877f6531",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "d75f0d9384d933ccdfb8279d5cb37673e98357039a5767c8793ec0de7bc04c0f",
+      "size": 200000,
+      "expected": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 200000,
+        "sha256": "46ce7c458175221111e9ea541f1b1b02412b4147c7e8dae597ee652f0fde4e64"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "2fc875929c83750baa3634951e9d0984450f1af98e85dfc306e73afe809861d4",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "6eb157acf7d7b664d30af51381eb6a0f97727d96ae9cac52eca482fbc72545c4",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "ae9ba201f51844bbbf51c0ed0ce5349fb0e49505052da03f9f02c9d1b70b37ea",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "a28a39c8217df90cdccb5fbabe0309719e802f14f4e1e5221af6ee120530f358",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "1b5bc372d23e27371944799320b9b8db4182a40530252b84ac703589a47f6e7b",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "e6541491f9138b85bd6c4bcc797f85eafe75aeb0a1d379c10c4446ddccad8475",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "9cd97fc85684dbe94114b95650b13dae6464aa5b3e51a9a011d3c0ce236708b5",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "355c58c6195e26483c92c373924c58fefa0a054f95b71fabf25e97ab14f87aab",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "8227c133aaa17a939e190edbb26b7a9420d5a9f39511a6d8e450ae2bbc6c69e2",
+      "size": 1000,
+      "expected": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1000,
+        "sha256": "611a108f12446ad12371365c60a31be2f783c2b4641f37451314daf887656c44"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "d570c279aaa2351a94fbd9e489ebac85eda435fb7390637d4ed2822b1d6f9932",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "c25a7764d938e4c5e198cb1956bf5d2080beb165f93491f49f6357e2c79a93cb",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "adefc77465cdc3dd6fb4ec51cf5fd283afaacce1466b558fbd29e3b28778168f",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "48b9b06624a81c2e5182580230e637e34c717d65006f3bdc96d2fefcad7fd831",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "568e5909c41bf43c6ebe70f846079f460241f8593e332d0668fdcbc221612969",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "047030a8d41d20eac0e67a228fd205484c071abe0297309bb07dedab9dd3c252",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "c82ad4f150eaf25b6e02a6336c0acaf3dca0543a141cd269ab899defa57a56d5",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "972dca5ee113206f268299a7fb90fb40a6b657be37a32d44e5696e937e1a87d8",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "5521e9194db4089293d50e2ee634a9108ee0cc625f89ff89f8276f1e092b3c7e",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "db22edbbb7e2462025f29df1d99e2324eca3f298ae079d475735833d9eb2743a",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "df516ebe291d014b90460729c57f62c89436c276dfadd78dc0d147159dcda615",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "7bc8d8ff5808f06f2c9f9a0261ee03c59f8ee086d1b10763b2b3349d10f492f7",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "f350c46bd2f1f8abfc77935f7f1c2b7b929c034dd8b6942975d61eadba5c7e73",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "264c8167ce0f0a27fe3d36866509364060724d204a78487c660a1b90401baba8",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "cb52b16f2bd567da0e4e0f74b31ee3e8b0696857e3e3725f7c88d22ea935ff65",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "7eee02a9458978b0eb9da1d517b61bbe7bf8339c78a4d8dcbb3be8a24fd40080",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "56e6ee6d8ba19e1b8bf2fd272ce4bc27a0ab8c965ff39a658663e5c6dd10bf6f",
+      "size": 4200,
+      "expected": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4200,
+        "sha256": "5be9e6a5aee7c80ca420a39f6da7951375d5a5bc63ef8478b7294e395ba46564"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "0b6f27a66e4f355f9af806fb7dad9e9396e2c25178b6059495907f1c0e3f97be",
+      "size": 5000,
+      "expected": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 5000,
+        "sha256": "86cbd33c564be3a4332bc18cdf262e2c88300f8fc24e5d1054fde9dbc83ff320"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "479bd773719c444428adf7f3748ef2735473ebaea8f6f511400a939aebfe76b9",
+      "size": 1048576,
+      "expected": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "08b2a8da54e3e185f025ac53633deae5a583c8880a72a21e169a1da022baa003"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1048576,
+        "sha256": "08b2a8da54e3e185f025ac53633deae5a583c8880a72a21e169a1da022baa003"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "575ec75fbb1f5aeca624edcfc0e4ca6f4c293199981591dcf7b28a44530397b9",
+      "size": 524288,
+      "expected": {
+        "accepted": true,
+        "size": 524288,
+        "sha256": "bcbe741d9dec6b180f19a10f147beb89f115a85d3b92d6d8b7a432aa059d7cca"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 524288,
+        "sha256": "bcbe741d9dec6b180f19a10f147beb89f115a85d3b92d6d8b7a432aa059d7cca"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "ecc897c36c0d37d39da42bc7fd54c8bf7bb9046b93e9c2827d23c362dd9de4ff",
+      "size": 614400,
+      "expected": {
+        "accepted": true,
+        "size": 614400,
+        "sha256": "cdeaec997032b0acc5a50f9de583c76bb9e46ab86309415c27857bda160f401b"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 614400,
+        "sha256": "cdeaec997032b0acc5a50f9de583c76bb9e46ab86309415c27857bda160f401b"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "38d984f183f505e74b36445ab75f0d28e8610aa08d7825111f3293f976b36439",
+      "size": 614400,
+      "expected": {
+        "accepted": true,
+        "size": 614400,
+        "sha256": "cdeaec997032b0acc5a50f9de583c76bb9e46ab86309415c27857bda160f401b"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 614400,
+        "sha256": "cdeaec997032b0acc5a50f9de583c76bb9e46ab86309415c27857bda160f401b"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "613aab527a4a3f11a19628d6fa9cb3a412f90aa4dbd9cbd97616f6fc0958d071",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "a55c8569d52621e72fcc94e405a394b5e713bc0333a863d993a0e582e3d95742",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "7e3dbc7113c4461d1b5309f0b9dd00b1325f466c59a22e0670422f7a6ff74ad9",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4_raw",
+      "input_sha256": "032426772db10631a0a10ed4940a0699c15344256df0ab9757ee0b5a109fc1f4",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "aed7683c44781d9798f50505edae3df0c512778bbc68861d5862b4b13b344257",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "ea0f8ae2e180c2279b17048aeea9d8382603eab8ac622d887d606701a72c386d",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "5e61d6879656d518da85954382fd2fc24fa9860b2652dbdf10c21b1d219c727e",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zstd",
+      "input_sha256": "57000d71485015c58bd4465e5d884d9a5d709d16b95811659e294d102e81ddef",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "67bd9e7a319984c9b37e961089776febf7aa8a6c5e9b6a9e7828af5ce2856890",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "df6368fc9c88d896ba7af72e0e9fc233cd740888d7b20906c99f5f4160f7dd58",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "755b1e0503b62c89ff44764f13fad0720664b8026a30c6e1cd76a2243a112084",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "brotli",
+      "input_sha256": "92c1bd0d118c05d81fb4acd9395e2ad2fbbdc47b92ad7893b6fe1c518df724bb",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "e4ec34cdc30fd9a9000a68d98131614153970fb06b83b886f0068e407742d2bf",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "4eec22efb405e22e6adbe41128b5edfa544b1716befddf41058c1333ce840ae8",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "aedc969e078d934add94cc8d58c4380cc23c45593e09142d1b4fe89e7ac9e924",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "zlib",
+      "input_sha256": "23c1d93ebaf4bcbeec40a788d6ec61c420289a3f1b603b9dd5662e79c2d3c258",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "bf3df748767dd76ce66e712ed14ef0ee7414d4d588491e1e7bf8f82d159553e1",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "a46b47c3b2502dffcf9c3de46de98e29ccc013c88cb73ede1128804d7ff1d371",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "b3c454b20fd88a82514b835eafe78289872571160fe99597e669d56c632adf50",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "bzip2",
+      "input_sha256": "2c44ab97c8798ddd6fefa8a3910e1444cbda30e19f2efa8725558a528533b7ac",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "f890504f7c22422ca7f6c18f5dff0bdd6d055118e472a00f4f438d73acd1e8d6",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "d60106f89df2502153e7715cf5a9010197aaa51fc82eb7474b097988ee8e79d3",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "00a27e9b6cdb5df131f788f21183f40e94d0a7dd79be05ac2a54a1431680456b",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "lz4",
+      "input_sha256": "49d94c3483de4c2a15934d3cc34aab24a9911ae003e0c52d29bb2928d3be5797",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "a99a6575cf0c5e4addae986bf5e2a4669373a823442a66f6e84230a53e1638d9",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "32bdc8ee1da6903fc90a813e4c58778995ca75a1a89f9806dfca9020e05070fb",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "c57541b22e6076daad267d7f5a2e7d0a78eac87c0a9148bbc9c8110aad4c5953",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "d52837c3c6180c0ce2ad3e87496075cfd3008525f738cee7a4046de7413bb386",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "bbc9e34cf5a7187ef0dbdaf758564deda74f7289b01556076d6d13fd57ec60c9",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "0cb96471f705b11a5c23e84b427650a3773d8478cf3ed7adbb40e6997465481d",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "5a0dc5e869dc7fbd17c18e09849160978b4d3217d25ce8cd043919a9e4a41553",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "raw",
+      "input_sha256": "0cc14bafe9edbaa0ad38b8487735327abe56bfb500bfe00ab5936fa265c75db2",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "5686daf632abd8e5785fc1afcb60acc5319c5f1f790c2f0b258589af46891623",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "99d69438cc603e064343c8cf225e1e77432a200761db74a7e47ddf7d63562ce0",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "7042ccf6bc2c9a54ff6c5e8812c99b257412f4d3e3f38c517cbe4ef92a5b1bf4",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "gzip",
+      "input_sha256": "4bbf011a6502241e5220b3bb90af0dec818ea8e24f48b0a42ad56558b638138a",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "f65321a8914f73a52dec2a49dcfb63fa173552c608ebae7e4cdc44506b23b00f",
+      "size": 45,
+      "expected": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 45,
+        "sha256": "88e197dce3e2562b9fb62bfdfb92c525328742af370fa2cd7c7bafaefb38f09c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "9617a4071b6d2446aadb4e41545b8930935e2b12a8204764aa547327c4117e63",
+      "size": 16384,
+      "expected": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 16384,
+        "sha256": "8f3a2aa4fb1902b6585dc1af800abf2b7ba371bb156227a72e2801b38b1b2df4"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "6a34730b03106538e13043fe87ac6dadf9510a41168676e96adbfa6a14ff4544",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "deflate",
+      "input_sha256": "031b3aa4f872bf348256fbe1a48b1f4a1be9a1caab5f0451d4f56b00ed522849",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "0cf123b0126165f0de1c42fa66f11e82ff6f6d37d6bcfcbeb0f9cf7c7ad8733c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "b28059e8490d87331d926fe5763da30fa2bc7a2f5e0ee6b34c25cfbc682099de",
+      "size": 1,
+      "expected": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 1,
+        "sha256": "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "4ad7dbf9db0ade50c1f2c22b2200eb3c6769795075cf6d32eade66f3535f5e71",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "e7a058e103920e3524b5cc8a14eda6d486be4cce6fc66d294bb5fbd0eb64d686"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "e7a058e103920e3524b5cc8a14eda6d486be4cce6fc66d294bb5fbd0eb64d686"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "6172b0bf2c6b7753ff23f2aa10164f3d8ca5282244349eff1f3764a5df7fb20a",
+      "size": 4097,
+      "expected": {
+        "accepted": true,
+        "size": 4097,
+        "sha256": "8c50091ba92094c602942871bcc4ccf732306fd5160bbdb8520f81e2639af006"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4097,
+        "sha256": "8c50091ba92094c602942871bcc4ccf732306fd5160bbdb8520f81e2639af006"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "d22984de5c542d464a61ddbffbb2ffd752c8a3d1b4b6b0cc36744d8633a56a27",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "85fde231672fc33c6e82a59e08a2c637bea545258428f1674614ad0310a1a641"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "85fde231672fc33c6e82a59e08a2c637bea545258428f1674614ad0310a1a641"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "c1e8ee4372cdbe2bde4923be00dec461101544b6325f1e9c347163487779bc4d",
+      "size": 300000,
+      "expected": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "6e6e16f5fc31f902cae7b59a22c71946981c923abc8c6a10dc2f7ef1c0074b4d"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 300000,
+        "sha256": "6e6e16f5fc31f902cae7b59a22c71946981c923abc8c6a10dc2f7ef1c0074b4d"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "1a50d5eebc97f531d431c447c656b920326d1d036d297f79b9d8defe455ed56d",
+      "size": 4095,
+      "expected": {
+        "accepted": true,
+        "size": 4095,
+        "sha256": "3a313db1a9f204c0b1de1070092a175a83822856abdefc08cdd2d27d9019edc7"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4095,
+        "sha256": "3a313db1a9f204c0b1de1070092a175a83822856abdefc08cdd2d27d9019edc7"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "9aa5122459164a97fc1c2310f83972bfaae4ca159026c49a542eb673243f3cd8",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "e7a058e103920e3524b5cc8a14eda6d486be4cce6fc66d294bb5fbd0eb64d686"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "e7a058e103920e3524b5cc8a14eda6d486be4cce6fc66d294bb5fbd0eb64d686"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "4a239971477280b836e42e49cb3ec91dc296056aac64d4ca19788348c913b1c4",
+      "size": 4097,
+      "expected": {
+        "accepted": true,
+        "size": 4097,
+        "sha256": "8c50091ba92094c602942871bcc4ccf732306fd5160bbdb8520f81e2639af006"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4097,
+        "sha256": "8c50091ba92094c602942871bcc4ccf732306fd5160bbdb8520f81e2639af006"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "af42fe5efcf0ee0a9d97a15c5b9c91494522c3c69b219eeee4a80dbe5b73c784",
+      "size": 8191,
+      "expected": {
+        "accepted": true,
+        "size": 8191,
+        "sha256": "1690e4008618e670bbfe56d62d9aa6ff26b0ed6f99e18de544749d58d23c950b"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8191,
+        "sha256": "1690e4008618e670bbfe56d62d9aa6ff26b0ed6f99e18de544749d58d23c950b"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "3d644fb5be7596034d38008b1f6c1abd87d686da2c4e01aa74cf35427811e05d",
+      "size": 8192,
+      "expected": {
+        "accepted": true,
+        "size": 8192,
+        "sha256": "5e6efb57dfd98672ddce61d23c1f86cf60dbfc0263ca99df071fcdba84f394f9"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8192,
+        "sha256": "5e6efb57dfd98672ddce61d23c1f86cf60dbfc0263ca99df071fcdba84f394f9"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "9656b3c700fbabfa785cc11972ca1fd25d0b03b6a2937a56d0d194aeaa208b54",
+      "size": 8193,
+      "expected": {
+        "accepted": true,
+        "size": 8193,
+        "sha256": "e1cf6aa882ed73007bac6a4f3efc7022bd6510d928a4d08ddee148b23ad5b7ad"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8193,
+        "sha256": "e1cf6aa882ed73007bac6a4f3efc7022bd6510d928a4d08ddee148b23ad5b7ad"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "79d77bba1bfdb0b6361d1de83a48727732b05abae7593e107fb0f76860ed08bf",
+      "size": 65535,
+      "expected": {
+        "accepted": true,
+        "size": 65535,
+        "sha256": "b19fa6bd8a29cf6fd28264e9c66230e4fecc948196a91e2ac774384f50ee382c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65535,
+        "sha256": "b19fa6bd8a29cf6fd28264e9c66230e4fecc948196a91e2ac774384f50ee382c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "fee2710b6c8904168037eafe3e58f328df2cf1f47ada61e8c0bae3455142e2c0",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "85fde231672fc33c6e82a59e08a2c637bea545258428f1674614ad0310a1a641"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "85fde231672fc33c6e82a59e08a2c637bea545258428f1674614ad0310a1a641"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "39683b4435ccbdf350d70537ef32ef7f91c05018da6500cbcbb796bd92da7769",
+      "size": 65537,
+      "expected": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "b438cd40c52d577d45b4d24f018f55347982a6e136de57e25e20d0a9a201fc4c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "b438cd40c52d577d45b4d24f018f55347982a6e136de57e25e20d0a9a201fc4c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "26f1a8b7b60cc4b8146f71846d0180b23b6ffa5af5b6bcf2e70b2496a6afd264",
+      "size": 4095,
+      "expected": {
+        "accepted": true,
+        "size": 4095,
+        "sha256": "3a313db1a9f204c0b1de1070092a175a83822856abdefc08cdd2d27d9019edc7"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4095,
+        "sha256": "3a313db1a9f204c0b1de1070092a175a83822856abdefc08cdd2d27d9019edc7"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "292ef077220203c2e349cff8a9c96e0c489dce01f5184fc51be02d478d416ad5",
+      "size": 8191,
+      "expected": {
+        "accepted": true,
+        "size": 8191,
+        "sha256": "1690e4008618e670bbfe56d62d9aa6ff26b0ed6f99e18de544749d58d23c950b"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8191,
+        "sha256": "1690e4008618e670bbfe56d62d9aa6ff26b0ed6f99e18de544749d58d23c950b"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "8438149aeb9f78a0038fd59e12fc00a09e2f60ee927f334c1089b8b6acbb63f1",
+      "size": 8192,
+      "expected": {
+        "accepted": true,
+        "size": 8192,
+        "sha256": "5e6efb57dfd98672ddce61d23c1f86cf60dbfc0263ca99df071fcdba84f394f9"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8192,
+        "sha256": "5e6efb57dfd98672ddce61d23c1f86cf60dbfc0263ca99df071fcdba84f394f9"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "e544591d24c8210e5cde4480ea2a3190e41dbd509ed1aa6c0efc9e3edf2b1ccd",
+      "size": 8193,
+      "expected": {
+        "accepted": true,
+        "size": 8193,
+        "sha256": "e1cf6aa882ed73007bac6a4f3efc7022bd6510d928a4d08ddee148b23ad5b7ad"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8193,
+        "sha256": "e1cf6aa882ed73007bac6a4f3efc7022bd6510d928a4d08ddee148b23ad5b7ad"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "9dbe3e6603a4d656c6fb4ed664e5870d0b9a40e1a5837ff02cf1e2463d5c7ec8",
+      "size": 65535,
+      "expected": {
+        "accepted": true,
+        "size": 65535,
+        "sha256": "b19fa6bd8a29cf6fd28264e9c66230e4fecc948196a91e2ac774384f50ee382c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65535,
+        "sha256": "b19fa6bd8a29cf6fd28264e9c66230e4fecc948196a91e2ac774384f50ee382c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "396cb69bbeb78bdea3cfd3a18eeb5a45f10c24bf01f4bd07377768c1b87f590f",
+      "size": 65537,
+      "expected": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "b438cd40c52d577d45b4d24f018f55347982a6e136de57e25e20d0a9a201fc4c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "b438cd40c52d577d45b4d24f018f55347982a6e136de57e25e20d0a9a201fc4c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "9e5d67fb699880f517eec70aa9583350e35b2ef005049181ee28bd82855680c2",
+      "size": 4095,
+      "expected": {
+        "accepted": true,
+        "size": 4095,
+        "sha256": "3a313db1a9f204c0b1de1070092a175a83822856abdefc08cdd2d27d9019edc7"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4095,
+        "sha256": "3a313db1a9f204c0b1de1070092a175a83822856abdefc08cdd2d27d9019edc7"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "410b055f94e7bb96f6f4b00c254c82f63c25d84935281c2e891d57b11ade5b88",
+      "size": 4096,
+      "expected": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "e7a058e103920e3524b5cc8a14eda6d486be4cce6fc66d294bb5fbd0eb64d686"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4096,
+        "sha256": "e7a058e103920e3524b5cc8a14eda6d486be4cce6fc66d294bb5fbd0eb64d686"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "41f0ce07f1c51ad98b6a88574a9c9a6fa36ef711817093894ae697616036c92e",
+      "size": 4097,
+      "expected": {
+        "accepted": true,
+        "size": 4097,
+        "sha256": "8c50091ba92094c602942871bcc4ccf732306fd5160bbdb8520f81e2639af006"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 4097,
+        "sha256": "8c50091ba92094c602942871bcc4ccf732306fd5160bbdb8520f81e2639af006"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "3e52bbc0b977b486f0e6d83d2e74cf78feb667a64398e47f62a346a3a6457495",
+      "size": 8191,
+      "expected": {
+        "accepted": true,
+        "size": 8191,
+        "sha256": "1690e4008618e670bbfe56d62d9aa6ff26b0ed6f99e18de544749d58d23c950b"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8191,
+        "sha256": "1690e4008618e670bbfe56d62d9aa6ff26b0ed6f99e18de544749d58d23c950b"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "0ae6ccf45745b6a35c69ecd88eb3162abdc903e100a74251465a955e4fa90469",
+      "size": 8192,
+      "expected": {
+        "accepted": true,
+        "size": 8192,
+        "sha256": "5e6efb57dfd98672ddce61d23c1f86cf60dbfc0263ca99df071fcdba84f394f9"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8192,
+        "sha256": "5e6efb57dfd98672ddce61d23c1f86cf60dbfc0263ca99df071fcdba84f394f9"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "d50e3e666cef5cfeb258d2287bc27a35d7a4608c1064d6cb337db5d641990581",
+      "size": 8193,
+      "expected": {
+        "accepted": true,
+        "size": 8193,
+        "sha256": "e1cf6aa882ed73007bac6a4f3efc7022bd6510d928a4d08ddee148b23ad5b7ad"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 8193,
+        "sha256": "e1cf6aa882ed73007bac6a4f3efc7022bd6510d928a4d08ddee148b23ad5b7ad"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "01669beb1bca15fc3a48ef7900c6736c3839edde61bfd349c935b5901fdbfc89",
+      "size": 65535,
+      "expected": {
+        "accepted": true,
+        "size": 65535,
+        "sha256": "b19fa6bd8a29cf6fd28264e9c66230e4fecc948196a91e2ac774384f50ee382c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65535,
+        "sha256": "b19fa6bd8a29cf6fd28264e9c66230e4fecc948196a91e2ac774384f50ee382c"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "50d44b390a39f01c28b8eba51b763b327092a317a2d6d21f1514678bf958efbe",
+      "size": 65536,
+      "expected": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "85fde231672fc33c6e82a59e08a2c637bea545258428f1674614ad0310a1a641"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65536,
+        "sha256": "85fde231672fc33c6e82a59e08a2c637bea545258428f1674614ad0310a1a641"
+      }
+    },
+    {
+      "source": "compress-utils Python tests",
+      "kind": "xz",
+      "input_sha256": "a099025669060a336374799349369494df65529dd34b832c61d45976f2b1106f",
+      "size": 65537,
+      "expected": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "b438cd40c52d577d45b4d24f018f55347982a6e136de57e25e20d0a9a201fc4c"
+      },
+      "archivey_or_google": {
+        "accepted": true,
+        "size": 65537,
+        "sha256": "b438cd40c52d577d45b4d24f018f55347982a6e136de57e25e20d0a9a201fc4c"
+      }
+    },
+    {
+      "source": "pysnappy iris.csv",
+      "kind": "raw",
+      "package": "py-snappy",
+      "result": {
+        "accepted": true,
+        "size": 4550,
+        "sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+      },
+      "expected_sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+    },
+    {
+      "source": "pysnappy iris.csv",
+      "kind": "raw",
+      "package": "python-snappy",
+      "result": {
+        "accepted": true,
+        "size": 4550,
+        "sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+      },
+      "expected_sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+    },
+    {
+      "source": "pysnappy iris.csv",
+      "kind": "raw",
+      "package": "python-snappy-pure",
+      "result": {
+        "accepted": true,
+        "size": 4550,
+        "sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+      },
+      "expected_sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+    },
+    {
+      "source": "pysnappy iris.csv",
+      "kind": "raw",
+      "package": "pysnappy",
+      "result": {
+        "accepted": true,
+        "size": 4550,
+        "sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+      },
+      "expected_sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+    },
+    {
+      "source": "pysnappy iris.csv",
+      "kind": "raw",
+      "package": "compress-utils",
+      "result": {
+        "accepted": true,
+        "size": 4550,
+        "sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+      },
+      "expected_sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+    },
+    {
+      "source": "pysnappy iris.csv",
+      "kind": "raw",
+      "package": "cramjam",
+      "result": {
+        "accepted": true,
+        "size": 4550,
+        "sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+      },
+      "expected_sha256": "596ffd580471ca4d4880f8e439c7281f3b50d8249a5960353cb200b1490f63a0"
+    }
+  ],
+  "fuzz_payloads": [
+    {
+      "name": "brotli-empty-input-null-pending",
+      "kind": "brotli",
+      "mode_byte": 0,
+      "reference": {
+        "accepted": false,
+        "error": "TruncatedError",
+        "message": "File is truncated"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "brotli: truncated stream at finish"
+      }
+    },
+    {
+      "name": "bz2-empty-input-null-pending",
+      "kind": "bzip2",
+      "mode_byte": 0,
+      "reference": {
+        "accepted": false,
+        "error": "TruncatedError",
+        "message": "File is empty"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "bz2: truncated stream at finish"
+      }
+    },
+    {
+      "name": "bz2-failed-stream-out-len",
+      "kind": "bzip2",
+      "mode_byte": 57,
+      "reference": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "bzip2 stream is corrupt: Invalid data stream"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: bz2: bad magic"
+      }
+    },
+    {
+      "name": "bz2-finish-after-error-inuse16",
+      "kind": "bzip2",
+      "mode_byte": 0,
+      "reference": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "bzip2 stream is corrupt: Invalid data stream"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: bz2: corrupted data"
+      }
+    },
+    {
+      "name": "bz2-finish-after-error-origptr",
+      "kind": "bzip2",
+      "mode_byte": 0,
+      "reference": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "bzip2 stream is corrupt: Invalid data stream"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "CoreError",
+        "message": "CU status 7: bz2: corrupted data"
+      }
+    },
+    {
+      "name": "xz-empty-input-null-pending",
+      "kind": "xz",
+      "mode_byte": 0,
+      "reference": {
+        "accepted": false,
+        "error": "TruncatedError",
+        "message": "XZ data is truncated"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "xz: truncated stream at finish"
+      }
+    },
+    {
+      "name": "xz-zero-byte-bomb",
+      "kind": "xz",
+      "mode_byte": 0,
+      "reference": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "Not valid XZ data: no streams found"
+      },
+      "candidate": {
+        "accepted": false,
+        "error": "EOFError",
+        "message": "xz: truncated stream at finish"
+      }
+    }
+  ],
+  "lzo_timing": [
+    {
+      "fixture": "1.bin",
+      "implementation": "archivey",
+      "size": 32768,
+      "samples": [
+        2.8262000341783278e-05,
+        2.0590000531228725e-05,
+        1.0875999578274786e-05,
+        9.293999937654007e-06,
+        7.730999641353264e-06,
+        8.28300017019501e-06,
+        8.091999916359782e-06
+      ]
+    },
+    {
+      "fixture": "1.bin",
+      "implementation": "one-shot",
+      "size": 32768,
+      "samples": [
+        1.7815999854065012e-05,
+        2.5440003810217604e-06,
+        2.6939997042063624e-06,
+        2.6339994292357005e-06,
+        2.6640000214683823e-06,
+        2.6739999157143757e-06,
+        2.6039997464977205e-06
+      ]
+    },
+    {
+      "fixture": "1.bin",
+      "implementation": "bounded",
+      "size": 32768,
+      "samples": [
+        8.347400034836028e-05,
+        3.849699987767963e-05,
+        3.0365000384335872e-05,
+        3.199699949618662e-05,
+        2.8962999749637675e-05,
+        2.9894000363128725e-05,
+        3.379000008862931e-05
+      ]
+    },
+    {
+      "fixture": "999.bin",
+      "implementation": "archivey",
+      "size": 32768,
+      "samples": [
+        2.1421999917947687e-05,
+        1.3388999832386617e-05,
+        1.218799934576964e-05,
+        1.1347000508976635e-05,
+        1.1095999980170745e-05,
+        1.0716000360844191e-05,
+        1.0916000064753462e-05
+      ]
+    },
+    {
+      "fixture": "999.bin",
+      "implementation": "one-shot",
+      "size": 32768,
+      "samples": [
+        1.831700046750484e-05,
+        1.3930000022810418e-05,
+        1.382000027660979e-05,
+        1.3720999959332403e-05,
+        1.370999962091446e-05,
+        1.3700999261345714e-05,
+        1.3720999959332403e-05
+      ]
+    },
+    {
+      "fixture": "999.bin",
+      "implementation": "bounded",
+      "size": 32768,
+      "samples": [
+        8.673899992572842e-05,
+        4.5838000005460344e-05,
+        4.2503000258875545e-05,
+        4.511699989961926e-05,
+        4.2022999878099654e-05,
+        4.0980999983730726e-05,
+        3.9618999835511204e-05
+      ]
+    }
+  ]
+}

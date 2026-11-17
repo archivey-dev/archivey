@@ -1,0 +1,117 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.18, pytest-9.1.1, pluggy-1.7.0
+rootdir: /workspace/work/py-snappy-git
+configfile: pytest.ini
+plugins: hypothesis-6.170.5, cov-7.1.0, timeout-2.4.0, platformdirs-4.13.5, xdist-3.8.0
+collected 1 item
+
+tests/core/test_libsnappy_compat.py F
+
+=================================== FAILURES ===================================
+_________________________ test_decompress_error_parity _________________________
+
+data = b'', decoding = None
+
+    def uncompress(data, decoding=None):
+        if isinstance(data, str):
+            raise UncompressError("It's only possible to uncompress bytes")
+        try:
+>           out = bytes(_uncompress(data))
+                        ^^^^^^^^^^^^^^^^^
+E           cramjam.DecompressionError: snappy: corrupt input (empty)
+
+data       = b''
+decoding   = None
+
+../archivey-snappy/.venv/lib/python3.11/site-packages/snappy/snappy.py:84: DecompressionError
+
+The above exception was the direct cause of the following exception:
+
+value = b''
+
+    @given(value=random_test_vectors_small_st)
+    @settings(max_examples=100, deadline=None)  # takes a long time.
+    def test_decompress_error_parity(value):
+        try:
+            py_result = decompress(value)
+        except PY_SNAPPY_ERRORS:
+            py_snappy_error = True
+        else:
+            py_snappy_error = False
+    
+        try:
+>           lib_result = libsnappy_decompress(value)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+py_snappy_error = True
+value      = b''
+
+tests/core/test_libsnappy_compat.py:66: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+data = b'', decoding = None
+
+    def uncompress(data, decoding=None):
+        if isinstance(data, str):
+            raise UncompressError("It's only possible to uncompress bytes")
+        try:
+            out = bytes(_uncompress(data))
+        except cramjam.DecompressionError as err:
+>           raise UncompressError from err
+E           snappy.snappy.UncompressError
+
+data       = b''
+decoding   = None
+
+../archivey-snappy/.venv/lib/python3.11/site-packages/snappy/snappy.py:86: UncompressError
+
+During handling of the above exception, another exception occurred:
+
+    @given(value=random_test_vectors_small_st)
+>   @settings(max_examples=100, deadline=None)  # takes a long time.
+                   ^^^
+
+f          = <function given.<locals>.run_test_as_given.<locals>.wrapped_test at 0x7fb615e9b2e0>
+
+tests/core/test_libsnappy_compat.py:56: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+value = b''
+
+    @given(value=random_test_vectors_small_st)
+    @settings(max_examples=100, deadline=None)  # takes a long time.
+    def test_decompress_error_parity(value):
+        try:
+            py_result = decompress(value)
+        except PY_SNAPPY_ERRORS:
+            py_snappy_error = True
+        else:
+            py_snappy_error = False
+    
+        try:
+            lib_result = libsnappy_decompress(value)
+>       except LIB_SNAPPY_ERRORS:
+E       TypeError: catching classes that do not inherit from BaseException is not allowed
+E       Failing test case: test_decompress_error_parity(
+E           value=b'',
+E       )
+
+py_snappy_error = True
+value      = b''
+
+tests/core/test_libsnappy_compat.py:67: TypeError
+=============================== warnings summary ===============================
+../archivey-snappy/.venv/lib/python3.11/site-packages/_pytest/config/__init__.py:1464
+  /workspace/work/archivey-snappy/.venv/lib/python3.11/site-packages/_pytest/config/__init__.py:1464: PytestConfigWarning: Unknown config option: python_paths
+  
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+============================= slowest 10 durations =============================
+0.10s call     tests/core/test_libsnappy_compat.py::test_decompress_error_parity
+
+(2 durations < 0.005s hidden.  Use -vv to show these durations.)
+=========================== short test summary info ============================
+FAILED tests/core/test_libsnappy_compat.py::test_decompress_error_parity - Ty...
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+========================= 1 failed, 1 warning in 0.39s =========================

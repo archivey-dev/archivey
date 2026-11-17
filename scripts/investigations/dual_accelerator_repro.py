@@ -15,7 +15,9 @@ each scenario in its own subprocess, many times (the corruption is intermittent)
 many runs crashed. Scenarios isolate import-only vs. use, and one library vs. both:
 
     uv run --with rapidgzip,indexed_bzip2 python scripts/investigations/dual_accelerator_repro.py
-    uv run --with rapidgzip,indexed_bzip2 python scripts/investigations/dual_accelerator_repro.py 100   # more iters
+    # more iterations:
+    uv run --with rapidgzip,indexed_bzip2 \\
+        python scripts/investigations/dual_accelerator_repro.py 100
 
 If the ``both_*`` scenarios crash while the single-library controls never do, that confirms the
 two libraries cannot safely coexist in one process — an upstream issue, not an archivey bug.

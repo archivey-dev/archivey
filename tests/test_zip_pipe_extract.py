@@ -96,7 +96,7 @@ def _extract(
 ) -> list[tuple[str, ExtractionStatus, str | None]]:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
     with archivey.open_archive(source, streaming=piped) as reader:
-        report = reader.extract_all(dest, **options)  # type: ignore[arg-type]
+        report = reader.extract_all(dest, **{"on_blocked": "skip", **options})  # type: ignore[arg-type]
     return [
         (
             r.member.name,
@@ -327,7 +327,9 @@ def test_a_member_a_predicate_takes_only_in_the_end_is_an_extraction_error(
 
     source = NonSeekableBytesIO(_dos_docs())
     with archivey.open_archive(source, streaming=True) as reader:
-        report = reader.extract_all(tmp_path, members=docs_only, on_error="continue")
+        report = reader.extract_all(
+            tmp_path, members=docs_only, on_error="continue", on_blocked="skip"
+        )
     errors = [r.error for r in report.results if r.error is not None]
     if os.name == "nt":
         assert errors == []
@@ -787,7 +789,7 @@ def test_a_unix_file_ending_in_a_backslash_with_data_fails_from_a_pipe(
     source = NonSeekableBytesIO(data)
     with archivey.open_archive(source, streaming=True) as reader:
         report = reader.extract_all(
-            tmp_path / "pipe", policy=policy, on_error="continue"
+            tmp_path / "pipe", policy=policy, on_error="continue", on_blocked="skip"
         )
     [result] = report.results
     assert (result.member.name, result.status) == ("odd\\", ExtractionStatus.FAILED)
@@ -837,7 +839,7 @@ def _piped_report(
     data: bytes, dest: Path, **options: object
 ) -> archivey.ExtractionReport:
     with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
-        return reader.extract_all(dest, **options)  # type: ignore[arg-type]
+        return reader.extract_all(dest, **{"on_blocked": "skip", **options})  # type: ignore[arg-type]
 
 
 def _outcomes(
@@ -1086,7 +1088,10 @@ def test_a_reversed_pair_under_skip_matches_the_seekable_results(
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, streaming=piped) as reader:
             report = reader.extract_all(
-                dest, overwrite=OverwritePolicy.SKIP, on_error=OnError.CONTINUE
+                dest,
+                overwrite=OverwritePolicy.SKIP,
+                on_error=OnError.CONTINUE,
+                on_blocked="skip",
             )
         outcomes[piped] = sorted(
             (r.member._member_id is not None and r.member.is_current, r.status.value)
@@ -1129,7 +1134,9 @@ def test_a_reversed_pair_refused_before_the_write_matches_the_seekable_results(
         dest = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, streaming=piped) as reader:
-            report = reader.extract_all(dest, on_error=OnError.CONTINUE, **options)  # type: ignore[arg-type]
+            report = reader.extract_all(
+                dest, on_error=OnError.CONTINUE, **{"on_blocked": "skip", **options}
+            )  # type: ignore[arg-type]
         outcomes[piped] = sorted(
             (r.member.is_current, r.status.value) for r in report.results
         )
@@ -1150,7 +1157,9 @@ def _compare_with_file_read(
             (dest / "b.txt").write_bytes(seed)
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
         with archivey.open_archive(source, streaming=piped) as reader:
-            report = reader.extract_all(dest, on_error=OnError.CONTINUE, **options)  # type: ignore[arg-type]
+            report = reader.extract_all(
+                dest, on_error=OnError.CONTINUE, **{"on_blocked": "skip", **options}
+            )  # type: ignore[arg-type]
         runs[piped] = (
             sorted(
                 (
@@ -1424,5 +1433,5 @@ def test_an_unmatched_entry_under_raise_places_nothing(tmp_path: Path) -> None:
         ) as reader,
         pytest.raises(DiagnosticRaisedError),
     ):
-        reader.extract_all(tmp_path, members=["a.txt", "typo.txt"])
+        reader.extract_all(tmp_path, members=["a.txt", "typo.txt"], on_blocked="skip")
     assert list(tmp_path.iterdir()) == []

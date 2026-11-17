@@ -31,9 +31,10 @@ The cases are deterministic for a given ``--seed``, so a crash reproduces with
 Usage::
 
     uv run --no-sync python scripts/investigations/accelerator_crash_search.py
-    uv run --no-sync python scripts/investigations/accelerator_crash_search.py --codec bzip2 --seconds 600
-    uv run --no-sync python scripts/investigations/accelerator_crash_search.py --codec gzip --cases 200 \\
-        --out crashes/ --json-out crash-search.json
+    uv run --no-sync python scripts/investigations/accelerator_crash_search.py \\
+        --codec bzip2 --seconds 600
+    uv run --no-sync python scripts/investigations/accelerator_crash_search.py \\
+        --codec gzip --cases 200 --out crashes/ --json-out crash-search.json
     uv run --no-sync python scripts/investigations/accelerator_crash_search.py --codec bzip2 \\
         --replay crashes/bzip2-0123abcd.bin
 

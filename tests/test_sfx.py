@@ -429,13 +429,39 @@ def test_scan_probes_source_size_once_per_scan(monkeypatch: pytest.MonkeyPatch) 
     assert calls["n"] == 1
 
 
-def test_scan_rejects_a_nonzero_needle_offset_with_a_validator() -> None:
-    with pytest.raises(ValueError, match="offset-0 needles"):
-        scan_for_magic(
-            io.BytesIO(_NEEDLE),
-            (ScanNeedle(_NEEDLE, 1),),
-            validator=_accept,
-        )
+@pytest.mark.parametrize("shift", [-3, -2, -1, 0, 1])
+def test_scan_validates_a_needle_with_an_offset_from_its_origin(shift: int) -> None:
+    """LHA's needle sits 2 bytes into its candidate. The validator sees the candidate
+    from its origin even when a chunk boundary falls between the origin and the
+    needle, which the window trim would cut without the offset's bytes kept."""
+    from archivey.internal.sfx import _SCAN_CHUNK
+
+    origin = _SCAN_CHUNK + shift
+    data = bytearray(b"x" * (origin + 64))
+    data[origin : origin + 2] = b"OK"
+    data[origin + 2 : origin + 2 + len(_NEEDLE)] = _NEEDLE
+    seen: list[bytes] = []
+
+    def check(peek_more: Callable[[int], bytes], remaining: int | None) -> HitOutcome:
+        head = peek_more(2 + len(_NEEDLE))
+        seen.append(head)
+        ok = head == b"OK" + _NEEDLE
+        return HitOutcome.VALID if ok else HitOutcome.NOT_THIS_FORMAT
+
+    result = scan_for_magic(
+        io.BytesIO(bytes(data)), (ScanNeedle(_NEEDLE, 2),), validator=check
+    )
+    assert result.hit == MagicHit(origin, _NEEDLE, 2)
+    assert seen == [b"OK" + _NEEDLE]
+
+
+def test_scan_judges_first_at_by_a_needle_with_an_offset() -> None:
+    data = b"stub" * 10 + b"OK" + _NEEDLE + b"tail"
+    origin = 40
+    result = scan_for_magic(
+        io.BytesIO(data), (ScanNeedle(_NEEDLE, 2),), validator=_accept, first_at=origin
+    )
+    assert result.hit == MagicHit(origin, _NEEDLE, 2)
 
 
 # --- 7z: signature at a nonzero origin -------------------------------------------------

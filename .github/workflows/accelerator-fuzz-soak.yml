@@ -5,20 +5,23 @@ name: Accelerator fuzz soak
 # The four accelerator targets in tests/atheris_fuzz (gzip_accel, zlib_accel,
 # deflate_accel, bzip2_accel) decode each input with the accelerator forced on and
 # forced off and fail when the accelerated bytes differ or the accelerated read ends
-# cleanly where the plain one raised. atheris-fuzz.yml runs them for 1 to 2 seconds on a
-# pull request and 10 to 15 seconds on the nightly (a few hundred inputs), which finds
-# only shallow differences. This job gives each target a long run once a week, one runner
-# per target, and keeps each target's corpus between runs so the next run starts where
-# this one stopped. GitHub evicts a cache entry nobody has read for 7 days, and a weekly
-# run reads it with only minutes to spare, so a cold start from the seeds is common and
-# the carry-forward is best effort. A cold start costs only depth.
+# cleanly where the plain one raised. atheris-fuzz.yml runs them for 10 to 15 seconds on
+# the nightly (a few hundred inputs), which finds only shallow differences. This job
+# gives each target a long run once a week, one runner per target, and keeps each
+# target's corpus between runs so the next run starts where this one stopped. GitHub
+# evicts a cache entry nobody has read for 7 days, and a weekly run reads it with only
+# minutes to spare, so a cold start from the seeds is common and the carry-forward is
+# best effort. A cold start costs only depth.
 #
 # accelerator-crash-search.yml is the other scheduled accelerator job (monthly): it looks
 # for native crashes in-process, not for wrong data. Not a required check: a red run is the signal.
+# A merge to main that changes this file runs a 60-second soak per target, to check the
+# edit; it never runs on a pull request (CI cost).
 on:
   schedule:
     - cron: "41 4 * * 2"
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - ".github/workflows/accelerator-fuzz-soak.yml"
   workflow_dispatch:
@@ -28,10 +31,10 @@ on:
         required: false
         default: "1200"
 
-# Only a newer push to the same pull request cancels a run; a dispatch never cancels a
-# scheduled soak.
+# A push and a schedule land in different groups, so a post-merge run never cancels the
+# Tuesday soak; a newer post-merge run cancels an older one.
 concurrency:
-  group: accel-fuzz-soak-${{ github.event.pull_request.number || github.run_id }}
+  group: accel-fuzz-soak-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -73,8 +76,9 @@ jobs:
         env:
           ARCHIVEY_FUZZ_ARTIFACT_DIR: artifacts/atheris
           TARGET: ${{ matrix.target }}
-          # A PR that edits this file only checks that the job still runs.
-          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || github.event.inputs.seconds || '1200' }}
+          # A post-merge run (push to main, after an edit of this file) only checks that
+          # the job still runs; the scheduled run and a dispatch soak for longer.
+          SECONDS_PER_TARGET: ${{ github.event_name == 'push' && '60' || github.event.inputs.seconds || '1200' }}
         # A skipped target (accelerator not importable, budget 0) exits 0 from the harness,
         # so the step fails on the harness's skip line: a green soak must have fuzzed.
         run: |

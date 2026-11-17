@@ -22,7 +22,8 @@ then. ``tests/test_refused_constructor_close.py`` keeps an inventory of every st
 class against this rule.
 
 This module is part of the codec-/format-agnostic ``streamtools`` core: it imports only from
-``streamtools`` itself (``is_seekable``), nothing from the rest of ``archivey``.
+``streamtools`` itself (``is_seekable``) and the ``override`` decorator shim
+(``archivey.internal.overrides``), nothing else from ``archivey``.
 The source boundary's full-count guarantee lives outside this package, in
 ``archivey.internal.source``.
 """

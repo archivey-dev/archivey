@@ -28,14 +28,19 @@ run), and reports each subprocess's exit code and the tail of its stderr. Scenar
   * cleanup strategies: explicit close, rely-on-finalize, gc.collect(), exception-traceback cycle,
     partial read + backward seek, many streams (mixed closed/leaked);
   * the same scenarios **with a tracer active** (``--trace``), to mimic ``pytest-cov``'s
-    ``sys.settrace`` C tracer — a prime suspect for why the suite aborts but a plain process does not.
+    ``sys.settrace`` C tracer — a prime suspect for why the suite aborts but a plain
+    process does not.
 
 Usage
 -----
-    python scripts/investigations/macos_accelerator_debug.py                  # full matrix, gzip + bzip2
-    python scripts/investigations/macos_accelerator_debug.py --module gzip    # gzip (rapidgzip) only
-    python scripts/investigations/macos_accelerator_debug.py --trace          # also run every scenario under a tracer
-    coverage run scripts/investigations/macos_accelerator_debug.py --run arch_many   # one scenario under real coverage
+    # the full matrix, gzip and bzip2:
+    python scripts/investigations/macos_accelerator_debug.py
+    # gzip (rapidgzip) only:
+    python scripts/investigations/macos_accelerator_debug.py --module gzip
+    # also run every scenario under a tracer:
+    python scripts/investigations/macos_accelerator_debug.py --trace
+    # one scenario under real coverage:
+    coverage run scripts/investigations/macos_accelerator_debug.py --run arch_many
 
 Please paste the whole printed report into the issue / PR thread.
 """
@@ -311,7 +316,8 @@ def _run_matrix(modules: list[str], trace_modes: list[bool]) -> int:
             "RESULT: no archivey-path scenario aborted. If CI still aborts, try --trace and"
         )
         print(
-            "        `coverage run scripts/investigations/macos_accelerator_debug.py --run arch_many` (real coverage)."
+            "        `coverage run scripts/investigations/macos_accelerator_debug.py"
+            " --run arch_many` (real coverage)."
         )
     else:
         print(

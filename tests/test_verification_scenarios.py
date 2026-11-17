@@ -88,7 +88,7 @@ def test_verify_all_returns_a_truncated_unprovable_member_on_every_call() -> Non
     with open_archive(io.BytesIO(_aes_no_crc(missing=10)), password="pw") as reader:
         (member,) = reader.members()
         for _ in range(2):
-            ((failed, error),) = reader.verify_all()
+            ((failed, error),) = reader.verify_all().failures
             assert failed is member
             assert isinstance(error, TruncatedError)
 

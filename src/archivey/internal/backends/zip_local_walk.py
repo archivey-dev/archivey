@@ -1144,6 +1144,9 @@ class LocalHeaderWalk:
         return f"after member #{self._index - 1}"
 
     def _start(self) -> None:
+        """With ``find_start``, scan past a stub to the first ZIP record, and refuse
+        a stream with none in reach or one cut inside its first signature. Without
+        it, leave the stream as it is for ``next_entry`` to judge."""
         # Anything next_entry knows how to handle opens the stream: a local header, the
         # directory or end records of an archive whose members are gone, or the Strong
         # Encryption record it names. Only other bytes are a stub to scan past.
@@ -1239,6 +1242,11 @@ class LocalHeaderWalk:
             window.extend(more)
 
     def _read_local_header(self) -> LocalEntry:
+        """Consume the local header at the current position and return its entry.
+
+        A header with bit 3 clear that defers a size to a ZIP64 extra field must hold
+        it there, since nothing after the data would supply it.
+        """
         offset = self.source.offset
         fixed = self.source.read(LOCAL_HEADER_SIZE)
         if len(fixed) != LOCAL_HEADER_SIZE:
@@ -1361,6 +1369,13 @@ class LocalHeaderWalk:
         crc: int | None,
         file_size: int | None,
     ) -> DataDescriptor:
+        """Consume the data descriptor that follows ``entry``'s data, which ended
+        after ``compressed_size`` bytes.
+
+        ``crc`` and ``file_size`` are what the decoded data gave, when known. A
+        descriptor whose values disagree with them is still returned, found by its
+        size alone, for the caller to judge.
+        """
         buffer = self.source.read(_DESCRIPTOR_LOOKAHEAD)
         at_end = len(buffer) < _DESCRIPTOR_LOOKAHEAD
         descriptor = match_descriptor(
@@ -1470,10 +1485,15 @@ def missing_end_record_error(
     *,
     whole: bool,
     file_size: int,
+    origin: int = 0,
 ) -> ArchiveyError | None:
     """Why no end record follows the members, from the first four bytes after them
     (at stream offset ``members_end``, ``after`` the walk's last member) and those
     where the step over the directory stopped (``stopped``, ``step_over_directory``).
+
+    ``origin`` is where ``read_at``'s offset 0 sits in the file: nonzero for the
+    seekable reader's region behind a stub. The message names file offsets, as every
+    message does; the forward walk's offsets count from the stream's start already.
 
     The stream ends inside the directory (only when ``whole``: every byte after the
     members was seen), a ZIP64 end record declares a size the stream does not hold,
@@ -1495,12 +1515,13 @@ def missing_end_record_error(
                 if declared > room:
                     return TruncatedError(
                         "ZIP64 end of central directory record at stream offset "
-                        f"{stopped} declares {declared} bytes after its first twelve, "
+                        f"{origin + stopped} declares {declared} bytes after its first twelve, "
                         "and the stream ends inside that record"
                     )
         if len(rest) == 4 and rest not in _STEPPED_OVER:
             return CorruptionError(
-                f"bytes at stream offset {stopped} after the central directory are "
+                f"bytes at stream offset {origin + stopped} after the central "
+                "directory are "
                 "not a ZIP record, and no end of central directory record follows "
                 "them"
             )
@@ -1513,7 +1534,8 @@ def missing_end_record_error(
         return UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
     if head not in _DIRECTORY_STARTS:
         return CorruptionError(
-            f"bytes at stream offset {members_end} {after} are not a ZIP header, and "
+            f"bytes at stream offset {origin + members_end} {after} are not a ZIP "
+            "header, and "
             "no end of central directory record follows them"
         )
     return None

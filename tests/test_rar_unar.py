@@ -77,13 +77,6 @@ _REFUSED: dict[tuple[str, str], str] = {
         for name in ("a*.txt", "aX.txt", "b?.txt", "b1.txt", "only*.dat")
     },
     ("rar15-comment.rar", "FILE1.TXT"): "RAR 1.5",
-    # Follows a link in a RAR5 solid run, which unar 1.10 reads wrongly.
-    ("redirect_unknown_solid__.rar", "b.txt"): "RAR5 solid",
-    # Follow Windows file links in a RAR5 solid run (WinRAR-written).
-    **{
-        ("winlinks_solid__.rar", name): "RAR5 solid"
-        for name in ("z_last.txt", "zz_after.txt")
-    },
 }
 # Members unar 1.10.1 drops, and the members after them in a solid run, whose bytes
 # then go missing or are stale: ``scripts/fixtures/gen_rar_fixtures.py`` ``_build_unar_drop``.
@@ -565,7 +558,7 @@ def test_selected_unar_missing_does_not_fall_back_to_unrar(
 def test_config_accepts_the_name() -> None:
     config = ArchiveyConfig(rar_decompressor="UNAR")  # pyright: ignore[reportArgumentType]
     assert config.rar_decompressor is RarDecompressor.UNAR
-    config = ArchiveyConfig(rar_decompressor="auto")  # pyright: ignore[reportArgumentType]
+    config = ArchiveyConfig(rar_decompressor="auto")
     assert config.rar_decompressor is RarDecompressor.AUTO
     assert ArchiveyConfig().rar_decompressor is RarDecompressor.AUTO
 

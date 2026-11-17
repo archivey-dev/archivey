@@ -181,8 +181,13 @@ When the index gives a single top-level entry whose name already exists in the c
 may be written under another spelling that does (a trailing dot or space stripped, a
 character Windows refuses or a non-printable character escaped), the system SHALL
 instead extract into `./<archive-stem>/` and hoist, as below, so the hoist's rules
-decide what happens to the operator's entry and `--overwrite` never replaces it. A
-single-file/single-stream archive keeps writing into the cwd under `--overwrite`: its
+decide what happens to the operator's entry and `--overwrite` never replaces it. The
+same SHALL apply when the filtered set holds a symlink or hard link and more than one
+member (extracted into the cwd, `top/up -> ..` stays inside the destination and lets
+`top/up/.ssh/authorized_keys` write into the operator's `.ssh`), and when a member name
+starts with a root that a policy other than `strict` drops (`/`, `\`, or a drive letter
+and a separator: `C:/a` and `C:/b` share the stored top `C:` but are written as `a` and
+`b`). A single-file/single-stream archive keeps writing into the cwd under `--overwrite`: its
 one output name comes from the archive name the operator typed, and there is no wrapper
 to hoist out of. When no cheap index is available (plain TAR, an archive read from a
 pipe, …), the destination SHALL initially be `./<archive-stem>/` (always wrap — no
@@ -193,7 +198,10 @@ the wrapper's name before; what the hoist does (flatten in place, or merge under
 overwrite policy) can still depend on it, as described below. The hoist SHALL NOT run
 when the only entry is a symlink (the move changes the directory its target is read
 from), or when a symlink in the entry leaves the entry on the way to its target or part
-of the entry could not be listed (it may hold such a link). Extraction checked those
+of the entry could not be listed (it may hold such a link), or when the entry is a
+directory that would merge into an existing directory of the cwd and holds any symlink
+(a link judged against the wrapper can resolve through the operator's entries once
+merged: `top/l -> e` with the operator's `top/e -> /elsewhere`). Extraction checked those
 links against the wrapper, and a path that climbs above the hoisted entry and back down
 through the wrapper's name (`top/k -> ../../.ssh/authorized_keys`, from `.ssh.tar`)
 climbs out of the cwd after the move. The check SHALL follow the path one component at a
@@ -515,12 +523,15 @@ When the archive path is a pipe (FIFO), a character device or a socket, which ca
 read only once, every verb that opens the archive (`list`, `test`, `extract`, `info`)
 SHALL open it in streaming mode, because the user has no option to choose the mode.
 `list` SHALL list the members in one pass, `test` SHALL verify them in one pass and
-`extract` SHALL extract them in one pass; TAR, ZIP and the single-file formats read
-so. When the format cannot be read in one forward pass (7z, RAR, ISO), the verb SHALL
-exit `1` with a message that names the format by its file extension (`7z`, `rar`,
-`iso`) and tells the user to copy the input to a regular file first. The message MUST
-NOT suggest `streaming=True` or a `BytesIO`, which a CLI user cannot pass. A block
-device rereads the same bytes and opens as a regular file does.
+`extract` SHALL extract them in one pass; every format whose `required_source` is
+`FORWARD_ONLY` (TAR, ZIP, cpio, ar, deb, RPM, makeself, RAR and the single-file formats)
+reads so, RAR only with RARLAB `unrar` 7.00 or later. When the format's
+`required_source` is `SEEKABLE` (7z, ISO, SquashFS, CAB, XAR, LHA, ARJ), the verb SHALL
+exit `1` with a message that names the format by its file extension (for example `7z`,
+`iso`) and tells the user to copy the input to a regular file first. So SHALL a RAR when
+no RARLAB `unrar` 7.00 or later is found. The message MUST NOT suggest `streaming=True`
+or a `BytesIO`, which a CLI user cannot pass. A block device rereads the same bytes and
+opens as a regular file does.
 
 A read-once path includes `/dev/stdin` and `/proc/self/fd/N` when that descriptor is a
 pipe, so an archive piped on stdin is read through this requirement. The `-` token is
@@ -534,7 +545,9 @@ separate: `cat` reads it from stdin, and every other verb refuses it (below).
 | `archivey test <tar-fifo>` (also `<zip-fifo>`) | Verifies every file member in one pass; exit `0` |
 | `archivey extract <tar-fifo> -d out` (also `<zip-fifo>`) | Extracts every member into `out`; exit `0` |
 | `archivey info <tar-fifo>` | Prints the identity and an `access:` line that says the source is forward-only; exit `0` |
-| `archivey list <7z-fifo>` (also `test`, `extract`, `info`; also RAR, ISO) | Exit `1`; message names the format as `7z` (`rar`, `iso`) and says to copy the input to a regular file first |
+| `archivey list <7z-fifo>` (also `test`, `extract`, `info`; also ISO) | Exit `1`; message names the format as `7z` (`iso`) and says to copy the input to a regular file first |
+| `archivey list <rar-fifo>` with RARLAB `unrar` 7.00 or later | Lists every member; exit `0` |
+| `archivey list <rar-fifo>` without it | Exit `1`; message names the format as `rar` and says to copy the input to a regular file first |
 | `cat a.tar \| archivey list /dev/stdin` | Lists every member; exit `0` |
 
 ### Requirement: the stdin token `-` is reserved outside `cat`

@@ -25,7 +25,8 @@ Needs the `Brotli` binding and archivey importable (it imports the real gate, un
 rather than a copy). Read-only apart from the temporary corpus it builds in memory.
 
     python3 scripts/investigations/exploration/brotli_block_chain_survey.py
-    python3 scripts/investigations/exploration/brotli_block_chain_survey.py --scan ~/fonts /usr/share
+    python3 scripts/investigations/exploration/brotli_block_chain_survey.py \\
+        --scan ~/fonts /usr/share
 """
 
 from __future__ import annotations

@@ -1,8 +1,9 @@
-"""The once-per-reader INFO record for an ``open()`` that decodes a solid block again.
+"""``SOLID_OPEN_REDECOMPRESSES``: an ``open()`` that decodes a solid block again.
 
 On a 7z folder or a solid RAR each ``open()`` decodes the member's block from its
 start, so an open whose member sits past bytes an earlier open decoded decodes them
-again. The first such open logs one INFO record on ``archivey.backends``. A compressed
+again. The first such open records the diagnostic once per reader, logged at INFO on
+``archivey.backends``; a policy that raises on it stops every such open. A compressed
 TAR keeps one decoder position across opens, so it never logs (its backward seeks are
 ``STREAM_REWIND_REDECOMPRESSES``), and neither does a ``DIRECT`` reader.
 """
@@ -18,9 +19,17 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, RarDecompressor, open_archive
+from archivey import (
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    RarDecompressor,
+    open_archive,
+)
 from archivey.cli.logging_config import cli_logging, cli_opens_members
 from archivey.cost import AccessCost
+from archivey.diagnostics import SolidReopenContext
+from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from tests.conftest import binary_refusal
 
 _LOGGER = "archivey.backends"
@@ -249,3 +258,120 @@ def test_the_cli_drops_the_advice_for_its_own_opens() -> None:
             reader.read("b.txt")
     assert "INFO: Archive" in err.getvalue()
     assert "is solid" in err.getvalue()
+
+
+def test_the_first_redecode_is_one_recorded_diagnostic() -> None:
+    with open_archive(_SOLID_7Z) as reader:
+        reader.read("a.txt")
+        # c decodes a again: the first, and only, record.
+        reader.read("c.txt")
+        reader.read("b.txt")
+        reader.read("a.txt")
+        assert reader.diagnostics.counts == {
+            DiagnosticCode.SOLID_OPEN_REDECOMPRESSES: 1
+        }
+        (diagnostic,) = reader.diagnostics.retained
+        assert diagnostic.context == SolidReopenContext(
+            archive_name=diagnostic.context.archive_name,
+            member_name="c.txt",
+            member_id=reader.get("c.txt").member_id,
+            bytes_again=50,
+        )
+
+
+def test_raise_on_stops_every_redecoding_open_and_closes_its_stream() -> None:
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.SOLID_OPEN_REDECOMPRESSES})
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with open_archive(_SOLID_7Z, config=config) as reader:
+        assert reader.read("a.txt") == _data("a.txt")
+        # b decodes a again: refused.
+        with pytest.raises(DiagnosticRaisedError):
+            reader.read("b.txt")
+        # The guard does not disarm after the first raise. That this open gets as far
+        # as the policy, rather than an ArchiveyUsageError for a second live stream,
+        # shows the refused open released its slot.
+        with pytest.raises(DiagnosticRaisedError):
+            reader.read("c.txt")
+
+
+def test_a_refused_open_decodes_nothing_and_is_not_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.SOLID_OPEN_REDECOMPRESSES})
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with open_archive(_SOLID_7Z, config=config) as reader:
+        assert reader.read("a.txt") == _data("a.txt")
+        opened: list[str] = []
+        real = type(reader)._open_member_handle
+
+        def spy(self, member):
+            opened.append(member.name)
+            return real(self, member)
+
+        monkeypatch.setattr(type(reader), "_open_member_handle", spy)
+        with pytest.raises(DiagnosticRaisedError):
+            reader.read("b.txt")
+        # Refused before the member's open, which decodes the folder's prefix.
+        assert opened == []
+        # The refused open did not decode, so reading a again decodes nothing again.
+        assert reader.read("a.txt") == _data("a.txt")
+        assert opened == ["a.txt"]
+
+
+def test_an_open_that_fails_is_not_recorded_as_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A member open the backend refuses decoded nothing, so the next open of the
+    run is not reported, or refused under ``raise_on``, for bytes never decoded."""
+    policy = DiagnosticPolicy(raise_on={DiagnosticCode.SOLID_OPEN_REDECOMPRESSES})
+    config = ArchiveyConfig(diagnostic_policy=policy)
+    with open_archive(_SOLID_7Z, config=config) as reader:
+        real = type(reader)._open_member_handle
+        failed: list[str] = []
+
+        def refuse(self, member):
+            failed.append(member.name)
+            raise CorruptionError("refused for the test")
+
+        monkeypatch.setattr(type(reader), "_open_member_handle", refuse)
+        with pytest.raises(CorruptionError):
+            reader.read("a.txt")
+        monkeypatch.setattr(type(reader), "_open_member_handle", real)
+        assert failed == ["a.txt"]
+        # Nothing was decoded, so b decodes nothing again.
+        assert reader.read("b.txt") == _data("b.txt")
+        assert reader.diagnostics.counts == {}
+        # b is recorded: c decodes it again, and is refused.
+        with pytest.raises(DiagnosticRaisedError):
+            reader.read("c.txt")
+
+
+def _concurrent_first_opens(reader) -> None:
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def read(name: str) -> None:
+        try:
+            barrier.wait()
+            reader.read(name)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the main thread
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read, args=(n,)) for n in ("b.txt", "c.txt")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+
+
+def test_concurrent_first_opens_of_a_run_report_each_other() -> None:
+    """Two opens of one run judged while neither has finished both decode the run's
+    prefix, so one of them reports, as it would had the other finished first."""
+    for _ in range(20):
+        with open_archive(_SOLID_7Z, concurrent_operations=True) as reader:
+            _concurrent_first_opens(reader)
+            assert reader.diagnostics.counts == {
+                DiagnosticCode.SOLID_OPEN_REDECOMPRESSES: 1
+            }
+            assert reader._solid_inflight == {}

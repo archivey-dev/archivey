@@ -1,9 +1,18 @@
-"""``test`` / ``t`` verb — full-read integrity check."""
+"""``test`` / ``t`` verb — full-read integrity check.
+
+``main`` calls :func:`run_test`. It reads every selected member's data in one pass,
+which checks each stored digest as the bytes go by, then verifies the symlinks whose
+stored target the pass could not read (:func:`_link_needs_verification`). The summary
+counts members that passed, failed, were not tested, and were read without a digest
+to check them against; any of the last three makes the exit code 1.
+"""
 
 from __future__ import annotations
 
 import sys
-from typing import TextIO, cast
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import BinaryIO, TextIO, cast
 
 from archivey import ArchiveReader, ExtractionProgress
 from archivey.cli.common import open_for_cli, outer_format_for
@@ -26,7 +35,7 @@ from archivey.exceptions import (
 from archivey.types import ArchiveMember, MemberType
 
 # Codes saying a digest went unchecked: the bytes were read but nothing confirmed them,
-# so the run is not a clean verification (X6). Archive-level digests count too, such as
+# so the run is not a clean verification. Archive-level digests count too, such as
 # a gzip trailer past the trailing-data scan bound.
 _UNVERIFIED_CODES = (
     DiagnosticCode.DIGEST_UNVERIFIABLE,
@@ -48,6 +57,7 @@ def run_test(
     out: TextIO | None = None,
     err: TextIO | None = None,
 ) -> int:
+    """Run ``archivey test`` and return its exit code. Every line goes to ``err``."""
     del out  # test writes summaries to stderr only
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
@@ -82,17 +92,12 @@ def run_test(
             selected = selection.settle_from(indexed, err=err)
             if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
-            file_members = [m for m in selected if _has_data(m)]
-            members_total = len(file_members)
-            sizes = [m.size for m in file_members if m.size is not None]
-            if len(sizes) == len(file_members):
-                total_bytes = sum(sizes)
+            members_total, total_bytes = _indexed_totals(selected)
 
         on_progress: ProgressCallback | None = make_progress_callback(
             hide_progress=hide_progress, stream=err
         )
-        bytes_done = 0
-        files_done = 0
+        progress = _PassProgress(members_total=members_total, total_bytes=total_bytes)
         pending_links: list[ArchiveMember] = []
         untested_dirs = 0
         pass_ended_early = False
@@ -107,13 +112,13 @@ def run_test(
         member_error: BaseException | None = None
         try:
             # Manual iteration so open-time failures (wrong password, corrupt header)
-            # count as FAIL and still reach the summary (F4). A member's data error is
+            # count as FAIL and still reach the summary. A member's data error is
             # raised from its own stream read and the pass goes on, solid archives
             # included. Of the damage cases, only damage to the archive's structure (a
             # cut TAR, a failed compressed TAR stream, a pipe ZIP whose local-header
             # walk loses its place) makes the pass raise; so can non-damage errors such
             # as a ListingLimits bound. Further next() then yields StopIteration and
-            # the remaining members are reported "not tested" (P8).
+            # the remaining members are reported "not tested".
             # The ``with`` ends the pass here, deterministically, whatever leaves the
             # loop (Ctrl-C, a broken stderr pipe), rather than leaving a suspended
             # pass for ``reader.close()`` or the garbage collector to end while the
@@ -153,46 +158,20 @@ def run_test(
                         if verbose:
                             print(f"skip {escape_member_name(member.name)}", file=err)
                         continue
-                    member_written = 0
                     try:
-                        with stream:
-                            while True:
-                                chunk = stream.read(1024 * 1024)
-                                if not chunk:
-                                    break
-                                n = len(chunk)
-                                member_written += n
-                                bytes_done += n
-                                if on_progress is not None:
-                                    on_progress(
-                                        ExtractionProgress(
-                                            member=member,
-                                            bytes_written=bytes_done,
-                                            total_bytes_estimated=total_bytes,
-                                            members_done=files_done,
-                                            members_total=members_total,
-                                            member_bytes_written=member_written,
-                                            members_extracted=0,
-                                            members_blocked=0,
-                                        )
-                                    )
-                        ok += 1
-                        files_done += 1
+                        member_bytes = _read_member(
+                            stream, member, progress, on_progress
+                        )
+                        progress.files_done += 1
                         if on_progress is not None:
-                            on_progress(
-                                ExtractionProgress(
-                                    member=member,
-                                    bytes_written=bytes_done,
-                                    total_bytes_estimated=total_bytes,
-                                    members_done=files_done,
-                                    members_total=members_total,
-                                    member_bytes_written=member_written,
-                                    members_extracted=0,
-                                    members_blocked=0,
-                                )
-                            )
+                            on_progress(progress.event(member, member_bytes))
                         if verbose:
                             print(f"OK   {escape_member_name(member.name)}", file=err)
+                        # Counted after the member's last progress event and its -v
+                        # line, the writes in this ``try``: an OSError from either
+                        # fails the member below, and a member is counted only once,
+                        # OK or failed.
+                        ok += 1
                     except BrokenPipeError:
                         # The -v line or the progress bar lost its reader: not a
                         # member failure. main() exits 141 for it, with no message.
@@ -245,26 +224,17 @@ def run_test(
                 print(f"skip {escape_member_name(link.name)}", file=err)
         if members_total is not None:
             members_total += len(unverified)
-        for link in unverified:
-            try:
-                # Only 7z and RAR4 leave a link to verify, and neither opens in the
-                # streaming mode the CLI uses for a pipe, so ``reader`` is open for
-                # random access here. The cast states that for the type checker only.
-                # If that stops holding, ``open()`` on the streaming reader raises
-                # ``ArchiveyUsageError``, which is caught here so the link counts as
-                # a FAIL instead of ending the run with a traceback.
-                with cli_opens_members():
-                    _verify_link(cast(ArchiveReader, reader), link)
-            except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
-                failed += 1
-                print(
-                    f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",
-                    file=err,
-                )
-            else:
-                ok += 1
-                if verbose:
-                    print(f"OK   {escape_member_name(link.name)}", file=err)
+        # Only 7z and RAR4 leave a link to verify, and neither opens in the streaming
+        # mode the CLI uses for a pipe, so ``reader`` is open for random access here.
+        # The cast states that for the type checker only. If that stops holding,
+        # ``open()`` on the streaming reader raises ``ArchiveyUsageError``, which
+        # ``_verify_links`` catches so the link counts as a FAIL instead of ending the
+        # run with a traceback.
+        links_failed = _verify_links(
+            cast(ArchiveReader, reader), unverified, verbose=verbose, err=err
+        )
+        failed += links_failed
+        ok += len(unverified) - links_failed
 
         # Without a complete index, the pass that just ran offered every member to the
         # patterns. Only the generator raising ends that pass early and leaves later
@@ -294,6 +264,94 @@ def run_test(
     # An untested remainder or an unchecked digest is an incomplete verification.
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)
     return EXIT_FAIL if failed or not_tested or not_verified else EXIT_OK
+
+
+def _indexed_totals(selected: Sequence[ArchiveMember]) -> tuple[int, int | None]:
+    """How many of the ``selected`` members the pass will read data for, and their
+    total size, or ``None`` when a size is unknown. They give the progress bar its
+    goal and the summary its "not tested" count."""
+    file_members = [m for m in selected if _has_data(m)]
+    sizes = [m.size for m in file_members if m.size is not None]
+    total_bytes = sum(sizes) if len(sizes) == len(file_members) else None
+    return len(file_members), total_bytes
+
+
+@dataclass
+class _PassProgress:
+    """The running totals the progress bar shows while the pass reads members."""
+
+    members_total: int | None
+    total_bytes: int | None
+    bytes_done: int = 0
+    files_done: int = 0
+
+    def event(self, member: ArchiveMember, member_bytes: int) -> ExtractionProgress:
+        """The progress event for ``member``, with ``member_bytes`` of it read."""
+        return ExtractionProgress(
+            member=member,
+            bytes_written=self.bytes_done,
+            total_bytes_estimated=self.total_bytes,
+            members_done=self.files_done,
+            members_total=self.members_total,
+            member_bytes_written=member_bytes,
+            members_extracted=0,
+            members_blocked=0,
+        )
+
+
+def _read_member(
+    stream: BinaryIO,
+    member: ArchiveMember,
+    progress: _PassProgress,
+    on_progress: ProgressCallback | None,
+) -> int:
+    """Read ``stream`` to its end and close it, raising what the read raises; return
+    the number of bytes read.
+
+    Reading the whole stream is the test: the reader checks the member's digest as
+    the last bytes go by. ``progress`` counts the bytes as they are read; the caller
+    counts the member as done.
+    """
+    member_bytes = 0
+    with stream:
+        while True:
+            chunk = stream.read(1024 * 1024)
+            if not chunk:
+                break
+            n = len(chunk)
+            member_bytes += n
+            progress.bytes_done += n
+            if on_progress is not None:
+                on_progress(progress.event(member, member_bytes))
+    return member_bytes
+
+
+def _verify_links(
+    reader: ArchiveReader,
+    links: Sequence[ArchiveMember],
+    *,
+    verbose: bool,
+    err: TextIO,
+) -> int:
+    """Verify each of ``links`` with :func:`_verify_link`; return how many failed.
+
+    A failure gets a ``FAIL`` line, and under ``verbose`` a pass gets an ``OK`` line.
+    """
+    failed = 0
+    for link in links:
+        try:
+            with cli_opens_members():
+                _verify_link(reader, link)
+        except (ArchiveyError, ArchiveyUsageError, OSError) as exc:
+            failed += 1
+            print(
+                f"FAIL {escape_member_name(link.name)}: {format_error_detail(exc)}",
+                file=err,
+            )
+        else:
+            if verbose:
+                print(f"OK   {escape_member_name(link.name)}", file=err)
+    return failed
 
 
 def _has_data(member: ArchiveMember) -> bool:
@@ -380,7 +438,7 @@ def _is_link_destination_error(exc: ReadError | ArchiveyUsageError) -> bool:
 
 
 def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
-    """Untested remainder of an indexed selection; ``0`` when unknown or none (P8).
+    """Untested remainder of an indexed selection; ``0`` when unknown or none.
 
     The summary line and the exit code both read this, so they cannot disagree.
     """
@@ -392,8 +450,8 @@ def _not_tested(*, ok: int, failed: int, members_total: int | None) -> int:
 def _test_summary(
     *, ok: int, failed: int, members_total: int | None, not_verified: int = 0
 ) -> str:
-    """Format the quiet test summary, with the untested remainder (P8) and unchecked
-    digests (X6) when there are any.
+    """Format the quiet test summary, with the untested remainder and the unchecked
+    digests when there are any.
     """
     summary = f"{ok} OK, {failed} failed"
     not_tested = _not_tested(ok=ok, failed=failed, members_total=members_total)

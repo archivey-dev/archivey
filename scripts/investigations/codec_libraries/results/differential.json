@@ -1,0 +1,1021 @@
+[
+  {
+    "library": "cramjam",
+    "label": "gzip",
+    "kind": "gzip",
+    "counts": {
+      "same_bytes": 3,
+      "both_refuse": 403,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 51364
+  },
+  {
+    "library": "cramjam",
+    "label": "zlib",
+    "kind": "zlib",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 395
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52100
+  },
+  {
+    "library": "cramjam",
+    "label": "deflate",
+    "kind": "deflate",
+    "counts": {
+      "same_bytes": 59,
+      "both_refuse": 332,
+      "candidate_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 51772
+  },
+  {
+    "library": "cramjam",
+    "label": "bzip2",
+    "kind": "bzip2",
+    "counts": {
+      "same_bytes": 2,
+      "both_refuse": 130,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52588
+  },
+  {
+    "library": "cramjam",
+    "label": "xz",
+    "kind": "xz",
+    "counts": {
+      "same_bytes": 3,
+      "both_refuse": 448,
+      "archivey_only_accepts": 1
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 55104
+  },
+  {
+    "library": "cramjam",
+    "label": "lzma_alone",
+    "kind": "lzma_alone",
+    "counts": {
+      "same_bytes": 1,
+      "both_refuse": 403,
+      "archivey_only_accepts": 3
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 69388
+  },
+  {
+    "library": "cramjam",
+    "label": "zstd",
+    "kind": "zstd",
+    "counts": {
+      "same_bytes": 63,
+      "both_refuse": 319,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 51696
+  },
+  {
+    "library": "cramjam",
+    "label": "lz4",
+    "kind": "lz4",
+    "counts": {
+      "same_bytes": 3,
+      "both_refuse": 402,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 53164
+  },
+  {
+    "library": "cramjam",
+    "label": "brotli",
+    "kind": "brotli",
+    "counts": {
+      "same_bytes": 61,
+      "both_refuse": 312
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 53308
+  },
+  {
+    "library": "cramjam",
+    "label": "lz4_block",
+    "kind": "lz4_block",
+    "counts": {
+      "same_bytes": 61,
+      "both_refuse": 316,
+      "candidate_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "cramjam": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 51732
+  },
+  {
+    "library": "unpackio",
+    "label": "zstd",
+    "kind": "zstd",
+    "counts": {
+      "same_bytes": 63,
+      "both_refuse": 319,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 51700
+  },
+  {
+    "library": "unpackio",
+    "label": "lz4",
+    "kind": "lz4",
+    "counts": {
+      "same_bytes": 3,
+      "both_refuse": 402,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52924
+  },
+  {
+    "library": "unpackio",
+    "label": "unix_compress",
+    "kind": "unix_compress",
+    "counts": {
+      "same_bytes": 72,
+      "both_refuse": 12,
+      "candidate_only_accepts": 50
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 53340
+  },
+  {
+    "library": "unpackio",
+    "label": "zip_stored",
+    "kind": "zip_stored",
+    "counts": {
+      "same_bytes": 1,
+      "both_refuse": 130,
+      "archivey_only_accepts": 3
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52192
+  },
+  {
+    "library": "unpackio",
+    "label": "zip_deflate",
+    "kind": "zip_deflate",
+    "counts": {
+      "same_bytes": 5,
+      "both_refuse": 495,
+      "archivey_only_accepts": 11
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 53228
+  },
+  {
+    "library": "unpackio",
+    "label": "zip_bzip2",
+    "kind": "zip_bzip2",
+    "counts": {
+      "same_bytes": 2,
+      "both_refuse": 122,
+      "archivey_only_accepts": 10
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 53380
+  },
+  {
+    "library": "unpackio",
+    "label": "zip_lzma",
+    "kind": "zip_lzma",
+    "counts": {
+      "same_bytes": 9,
+      "both_refuse": 505,
+      "archivey_only_accepts": 6,
+      "candidate_only_accepts": 1
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52780
+  },
+  {
+    "library": "unpackio",
+    "label": "7z",
+    "kind": "7z",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 545
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 54032
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_copy",
+    "kind": "7z_copy",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52916
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_lzma",
+    "kind": "7z_lzma",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 539,
+      "candidate_only_accepts": 1
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 54204
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_deflate",
+    "kind": "7z_deflate",
+    "counts": {
+      "same_bytes": 13,
+      "both_refuse": 520
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 52976
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_bzip2",
+    "kind": "7z_bzip2",
+    "counts": {
+      "same_bytes": 7,
+      "both_refuse": 127
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 54048
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_ppmd",
+    "kind": "7z_ppmd",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 537
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 69668
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_brotli",
+    "kind": "7z_brotli",
+    "counts": {
+      "archivey_only_accepts": 5,
+      "both_refuse": 519
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "FormatError",
+        "message": "invalid 7z format: invalid or truncated Brotli stream"
+      }
+    },
+    "peak_rss_kib": 58548
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_zstd",
+    "kind": "7z_zstd",
+    "counts": {
+      "same_bytes": 11,
+      "both_refuse": 515
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    "peak_rss_kib": 53908
+  },
+  {
+    "library": "unpackio",
+    "label": "rpm_payload-bzip2",
+    "kind": "rpm",
+    "counts": {
+      "different_bytes": 20,
+      "both_refuse": 110,
+      "archivey_only_accepts": 4
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33920,
+        "sha256": "cd94b9acea5ace859afb54cca13e6599bdac2b0dd3cebef571fb8dd1df661b73"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33914,
+        "sha256": "24e3582a1e82c19c864ae7d77f0d6928b4022072bd5bf434309845afcfa89d86"
+      }
+    },
+    "peak_rss_kib": 58664
+  },
+  {
+    "library": "unpackio",
+    "label": "rpm_payload-gzip",
+    "kind": "rpm",
+    "counts": {
+      "different_bytes": 14,
+      "both_refuse": 116,
+      "archivey_only_accepts": 4
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33920,
+        "sha256": "cd94b9acea5ace859afb54cca13e6599bdac2b0dd3cebef571fb8dd1df661b73"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33914,
+        "sha256": "24e3582a1e82c19c864ae7d77f0d6928b4022072bd5bf434309845afcfa89d86"
+      }
+    },
+    "peak_rss_kib": 56388
+  },
+  {
+    "library": "unpackio",
+    "label": "rpm_payload-lzma",
+    "kind": "rpm",
+    "counts": {
+      "different_bytes": 19,
+      "both_refuse": 111,
+      "archivey_only_accepts": 4
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33920,
+        "sha256": "cd94b9acea5ace859afb54cca13e6599bdac2b0dd3cebef571fb8dd1df661b73"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33914,
+        "sha256": "24e3582a1e82c19c864ae7d77f0d6928b4022072bd5bf434309845afcfa89d86"
+      }
+    },
+    "peak_rss_kib": 77072
+  },
+  {
+    "library": "unpackio",
+    "label": "rpm_payload-none",
+    "kind": "rpm",
+    "counts": {
+      "archivey_only_accepts": 14,
+      "both_refuse": 120
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33920,
+        "sha256": "cd94b9acea5ace859afb54cca13e6599bdac2b0dd3cebef571fb8dd1df661b73"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "FormatError",
+        "message": "invalid rpm format: RPM: gzip header or compression method is invalid"
+      }
+    },
+    "peak_rss_kib": 54644
+  },
+  {
+    "library": "unpackio",
+    "label": "rpm_payload-xz",
+    "kind": "rpm",
+    "counts": {
+      "different_bytes": 19,
+      "both_refuse": 111,
+      "archivey_only_accepts": 4
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33920,
+        "sha256": "cd94b9acea5ace859afb54cca13e6599bdac2b0dd3cebef571fb8dd1df661b73"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33914,
+        "sha256": "24e3582a1e82c19c864ae7d77f0d6928b4022072bd5bf434309845afcfa89d86"
+      }
+    },
+    "peak_rss_kib": 62848
+  },
+  {
+    "library": "unpackio",
+    "label": "rpm_payload-zstd",
+    "kind": "rpm",
+    "counts": {
+      "different_bytes": 19,
+      "both_refuse": 112,
+      "archivey_only_accepts": 3
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33920,
+        "sha256": "cd94b9acea5ace859afb54cca13e6599bdac2b0dd3cebef571fb8dd1df661b73"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33914,
+        "sha256": "24e3582a1e82c19c864ae7d77f0d6928b4022072bd5bf434309845afcfa89d86"
+      }
+    },
+    "peak_rss_kib": 58332
+  },
+  {
+    "library": "unpackio",
+    "label": "deb_hello-gzip",
+    "kind": "deb",
+    "counts": {
+      "different_bytes": 1,
+      "both_refuse": 130,
+      "archivey_only_accepts": 3
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 5394,
+        "sha256": "99eadc3af2cafbe8b733e2fcf655ace08192708a37e368176ceb91cb90d46494"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 5373,
+        "sha256": "4b702a0fc35e97a51981fa49d2fd7de527656c2f9131c4144afcd12999c3ba41"
+      }
+    },
+    "peak_rss_kib": 57912
+  },
+  {
+    "library": "unpackio",
+    "label": "deb_hello-xz",
+    "kind": "deb",
+    "counts": {
+      "different_bytes": 1,
+      "both_refuse": 128,
+      "archivey_only_accepts": 5
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 5394,
+        "sha256": "99eadc3af2cafbe8b733e2fcf655ace08192708a37e368176ceb91cb90d46494"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 5373,
+        "sha256": "4b702a0fc35e97a51981fa49d2fd7de527656c2f9131c4144afcd12999c3ba41"
+      }
+    },
+    "peak_rss_kib": 189052
+  },
+  {
+    "library": "unpackio",
+    "label": "deb_hello-zstd",
+    "kind": "deb",
+    "counts": {
+      "different_bytes": 1,
+      "both_refuse": 73,
+      "archivey_only_accepts": 4,
+      "candidate_only_accepts": 56
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 5394,
+        "sha256": "99eadc3af2cafbe8b733e2fcf655ace08192708a37e368176ceb91cb90d46494"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 5373,
+        "sha256": "4b702a0fc35e97a51981fa49d2fd7de527656c2f9131c4144afcd12999c3ba41"
+      }
+    },
+    "peak_rss_kib": 59004
+  },
+  {
+    "library": "unpackio",
+    "label": "cpio_gnu-bin",
+    "kind": "cpio",
+    "counts": {
+      "same_bytes": 66,
+      "both_refuse": 65,
+      "archivey_only_accepts": 3
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33902,
+        "sha256": "a46156ff7647808685a031ae48d7d8243e64628bafcfe34c3a352a911207b024"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33902,
+        "sha256": "a46156ff7647808685a031ae48d7d8243e64628bafcfe34c3a352a911207b024"
+      }
+    },
+    "peak_rss_kib": 53140
+  },
+  {
+    "library": "unpackio",
+    "label": "cpio_gnu-crc",
+    "kind": "cpio",
+    "counts": {
+      "archivey_only_accepts": 5,
+      "both_refuse": 129
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33902,
+        "sha256": "2606266e7c0667882397524b1b8879a1bdf1051dc6b684457e77a55556f21208"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "member checksum mismatch at member 6"
+      }
+    },
+    "peak_rss_kib": 53540
+  },
+  {
+    "library": "unpackio",
+    "label": "cpio_gnu-newc",
+    "kind": "cpio",
+    "counts": {
+      "different_bytes": 67,
+      "both_refuse": 65,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33902,
+        "sha256": "2606266e7c0667882397524b1b8879a1bdf1051dc6b684457e77a55556f21208"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33896,
+        "sha256": "35b95badcdf86a7c2ed85bfdcec32eb7c805b8a84825de450510fd2dc165b258"
+      }
+    },
+    "peak_rss_kib": 52848
+  },
+  {
+    "library": "unpackio",
+    "label": "cpio_gnu-odc",
+    "kind": "cpio",
+    "counts": {
+      "same_bytes": 67,
+      "both_refuse": 65,
+      "archivey_only_accepts": 2
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 33902,
+        "sha256": "a46156ff7647808685a031ae48d7d8243e64628bafcfe34c3a352a911207b024"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 33902,
+        "sha256": "a46156ff7647808685a031ae48d7d8243e64628bafcfe34c3a352a911207b024"
+      }
+    },
+    "peak_rss_kib": 52752
+  },
+  {
+    "library": "unpackio",
+    "label": "arj_method1",
+    "kind": "arj",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      }
+    },
+    "peak_rss_kib": 53844
+  },
+  {
+    "library": "unpackio",
+    "label": "arj_method2",
+    "kind": "arj",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      }
+    },
+    "peak_rss_kib": 53704
+  },
+  {
+    "library": "unpackio",
+    "label": "arj_method3",
+    "kind": "arj",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      }
+    },
+    "peak_rss_kib": 53136
+  },
+  {
+    "library": "unpackio",
+    "label": "arj_method4",
+    "kind": "arj",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 53358,
+        "sha256": "47e5932c4ee3ec1a7a4f7661d73af1fad6c5f8edb230af19dde164eceeb8a7c6"
+      }
+    },
+    "peak_rss_kib": 53332
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_riscv_lzma2",
+    "kind": "7z",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 49155,
+        "sha256": "f400e521f7f241b2c6e2125e5c3347793dae20db81838db15c32e7de2f2554d1"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 49155,
+        "sha256": "f400e521f7f241b2c6e2125e5c3347793dae20db81838db15c32e7de2f2554d1"
+      }
+    },
+    "peak_rss_kib": 54136
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_riscv_offset_lzma2",
+    "kind": "7z",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 49155,
+        "sha256": "f400e521f7f241b2c6e2125e5c3347793dae20db81838db15c32e7de2f2554d1"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 49155,
+        "sha256": "f400e521f7f241b2c6e2125e5c3347793dae20db81838db15c32e7de2f2554d1"
+      }
+    },
+    "peak_rss_kib": 53840
+  },
+  {
+    "library": "unpackio",
+    "label": "7z_riscv_special_lzma2",
+    "kind": "7z",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid": {
+      "archivey": {
+        "accepted": true,
+        "size": 2816,
+        "sha256": "8927dc8e747ae7000ae128f7286db4ab3369cfd2d40a50459f678fe3b2bae0ed"
+      },
+      "unpackio": {
+        "accepted": true,
+        "size": 2816,
+        "sha256": "8927dc8e747ae7000ae128f7286db4ab3369cfd2d40a50459f678fe3b2bae0ed"
+      }
+    },
+    "peak_rss_kib": 53960
+  }
+]
