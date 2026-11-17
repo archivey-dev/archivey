@@ -9,6 +9,17 @@ from tests.conftest import requires_unrar_cli
 from tests.test_audit_outside_rar_sweep_2026_11_15 import _rar5, _rar5_file
 from tests.test_rar_forward import _pipe, rolling_unrar  # noqa: F401
 
+# BLAKE2sp of 6 and 24 MiB of zeros. Hashing them in the test takes about a minute
+# with the pure-Python hasher, past the per-test timeout.
+_ZEROS_BLAKE2SP = {
+    6: bytes.fromhex(
+        "b878b13c60bac85d452f92d71b9ce5cae3cf606242db7c3a6fde70630aa9cedb"
+    ),
+    24: bytes.fromhex(
+        "a83583bd897a0226f97faaf8f95b2bc718e343ce90d85d6ef1cccc13ea8cf681"
+    ),
+}
+
 
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
@@ -27,7 +38,9 @@ def test_a_late_source_cut_fails_the_member_read(
     # Built by hand, as ``rar a -m0`` stores it: CI never installs the RAR writer.
     raw = _rar5(
         _rar5_file("before", b"intact prefix", blake2sp=blake2sp),
-        _rar5_file("zeros", bytes(size << 20), blake2sp=blake2sp),
+        _rar5_file(
+            "zeros", bytes(size << 20), blake2sp=blake2sp and _ZEROS_BLAKE2SP[size]
+        ),
     )[: cut_at << 20]
     config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=limit))
     with (

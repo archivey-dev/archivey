@@ -75,16 +75,23 @@ def _block(body: bytes) -> bytes:
 
 
 def _rar5_file(
-    name: str, payload: bytes, *, padded: bool = False, blake2sp: bool = False
+    name: str,
+    payload: bytes,
+    *,
+    padded: bool = False,
+    blake2sp: bool | bytes = False,
 ) -> bytes:
     """A stored RAR5 FILE header and its data, with a CRC32 or a BLAKE2sp digest.
 
-    With ``padded``, the header's extra area holds one padding byte. The native walk
-    permits this byte, and RARLAB unrar tests the complete member successfully.
+    ``blake2sp`` may be the digest itself: the pure-Python hasher takes about two
+    seconds per MiB. With ``padded``, the header's extra area holds one padding
+    byte. The native walk permits this byte, and RARLAB unrar tests the complete
+    member successfully.
     """
     extra = b""
     if blake2sp:
-        record = _vint(2) + _vint(0) + blake2sp_digest(payload)  # HASH, BLAKE2sp
+        digest = blake2sp if isinstance(blake2sp, bytes) else blake2sp_digest(payload)
+        record = _vint(2) + _vint(0) + digest  # HASH, BLAKE2sp
         extra += _vint(len(record)) + record
     if padded:
         extra += b"\x00"
