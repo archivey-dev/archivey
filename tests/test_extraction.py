@@ -5540,7 +5540,7 @@ def test_a_held_link_over_a_callers_symlink_meets_it_at_its_place(
     for held in (False, True):
         dest = tmp_path / ("held" if held else "made")
         (dest / "e").mkdir(parents=True)
-        (dest / "d").symlink_to("e")
+        (dest / "d").symlink_to("e", target_is_directory=True)
         with open_archive(io.BytesIO(archive)) as reader:
             report = reader.extract_all(
                 dest,
@@ -5731,7 +5731,7 @@ def test_a_held_link_over_a_callers_symlink_is_filled_when_the_run_stops(
     )
     dest = tmp_path / "out"
     (dest / "e").mkdir(parents=True)
-    (dest / "d").symlink_to("e")
+    (dest / "d").symlink_to("e", target_is_directory=True)
     with (
         open_archive(io.BytesIO(archive)) as reader,
         pytest.raises(LinkTargetNotFoundError),

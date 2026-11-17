@@ -303,6 +303,15 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
+def _is_windows_directory_link(st: os.stat_result) -> bool:
+    """Whether ``st`` (from ``lstat``) is a Windows directory symlink:
+    ``os.replace`` cannot move a file over one (access denied), so it is removed
+    first, as a directory is."""
+    return stat.S_ISLNK(st.st_mode) and bool(
+        getattr(st, "st_file_attributes", 0) & 0x10  # FILE_ATTRIBUTE_DIRECTORY
+    )
+
+
 def _file_identity(st: os.stat_result) -> tuple[int, int, int, int]:
     """What says a file is still the one this run wrote: its inode, size and mtime."""
     return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
@@ -4392,7 +4401,7 @@ class ExtractionCoordinator:
         # over an existing file or symlink.
         if moves_links:
             self._note_link_change(dest_path)
-        if not atomic:
+        if not atomic or _is_windows_directory_link(st):
             with self._readonly_cleared(dest_path):
                 os.unlink(long_path(dest_path))
             # A parked copy's result is already SUPERSEDED: nothing to revise.
