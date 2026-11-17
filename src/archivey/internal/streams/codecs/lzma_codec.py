@@ -61,6 +61,7 @@ from archivey.internal.streams.codecs.xz_decoder import (
     lzma_error_to_archivey,
     new_capped_decompressor,
     open_xz_head,
+    xz_filters_off,
 )
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -137,6 +138,7 @@ class XzCodec(_SizedLzmaCodec):
                 config.probe_read_bound,
                 config.natives,
                 config.decoder_limits,
+                filters_off=xz_filters_off(config.excluded_methods),
             )
         return XzDecompressorStream(
             source,
@@ -150,6 +152,7 @@ class XzCodec(_SizedLzmaCodec):
             initial_index=config.seek_index,
             natives=config.natives,
             usage=config.usage,
+            filters_off=xz_filters_off(config.excluded_methods),
             source_origin=config.source_origin,
         )
 

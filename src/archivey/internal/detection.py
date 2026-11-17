@@ -734,6 +734,11 @@ def _decode_inner_head(
                     ),
                     probe_read_bound=INNER_CONTAINER_PROBE_BYTES,
                     excluded_libraries=excluded,
+                    excluded_methods=(
+                        workspace.excluded_methods
+                        if workspace is not None
+                        else frozenset()
+                    ),
                     process_isolation=(
                         workspace.isolation
                         if workspace is not None
@@ -1868,6 +1873,9 @@ def _detect_format_body(
     what was tried. ``receipt`` is shared with a second pass when the caller retries
     on the volume beside a stub.
     """
+    # Imported here, as the inner probe imports the codec layer's config.
+    from archivey.internal.config import methods_off
+
     registry = get_registry()
     candidates = _candidate_tables(registry, formats)
     trailers = registry.trailer_entries()
@@ -1880,6 +1888,7 @@ def _detect_format_body(
         receipt,
         isolation=isolation,
         excluded_libraries=formats._libraries_off,
+        excluded_methods=methods_off(formats.exclude),
         decoder_limits=decoder_limits,
         collector=collector,
         name=name,
