@@ -1541,15 +1541,33 @@ class BaseArchiveReader(ArchiveReader):
         )
         if not excluded:
             return
-        names = ", ".join(f"CompressionAlgorithm.{m.name}" for m in excluded)
         subject = (
             f"{quoted(member.name)} is"
             if decoded is member
             else f"{quoted(member.name)} copies {quoted(decoded.name)}, which is"
         )
+        them = "it" if len({entry for _, entry in excluded}) == 1 else "them"
+        if all(method is entry for method, entry in excluded):
+            names = ", ".join(f"CompressionAlgorithm.{m.name}" for m, _ in excluded)
+            message = (
+                f"{subject} compressed with {names}, which ArchiveyConfig.formats "
+                f"turns off: exclude= lists {them}."
+            )
+        else:
+            # The member's method is not the entry: name both, so the message
+            # matches the member's ``compression``.
+            names = "; and ".join(
+                f"CompressionAlgorithm.{m.name}"
+                if m is entry
+                else (
+                    f"CompressionAlgorithm.{m.name}, which decodes with "
+                    f"CompressionAlgorithm.{entry.name}"
+                )
+                for m, entry in excluded
+            )
+            message = f"{subject} compressed with {names}; exclude= lists {them}."
         raise UnsupportedFeatureError(
-            f"{subject} compressed with {names}, which ArchiveyConfig.formats turns "
-            f"off: exclude= lists {'it' if len(excluded) == 1 else 'them'}.",
+            message,
             source_format=self._format,
             archive_name=self._archive_name,
             member_name=member.name,

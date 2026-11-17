@@ -247,12 +247,15 @@ A [`CompressionAlgorithm`][archivey.CompressionAlgorithm] in `exclude=` reaches 
 that decoder off, for a file compressed with it as a whole and for every member compressed with it.
 `exclude={CompressionAlgorithm.XZ}` refuses a `.xz` or `.tar.xz` file and still lists an
 xz-compressed ZIP member, but opening, reading or extracting that member raises
-`UnsupportedFeatureError` before anything is decoded. A format that compresses data inside itself
-without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM package or
-a SquashFS image, doesn't open at all when you exclude that method. An xz block can run a BCJ or
-Delta filter ahead of LZMA2, and only its header says so, so `exclude={CompressionAlgorithm.BCJ}` or
-`{CompressionAlgorithm.DELTA}` stops a read at the first block that uses that filter, with
-`UnsupportedFeatureError`; xz data whose blocks don't use it reads as usual. `only=` takes no
+`UnsupportedFeatureError` before anything is decoded. Every xz stream holds LZMA2 data, so
+`exclude={CompressionAlgorithm.LZMA2}` refuses all of that too, and a 7z LZMA2 member as well;
+`exclude={CompressionAlgorithm.XZ}` leaves the 7z member open. A format that compresses data inside
+itself without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM
+package or a SquashFS image, doesn't open at all when you exclude that method. An xz block can run
+a BCJ or Delta filter ahead of LZMA2, and only its header says so, so
+`exclude={CompressionAlgorithm.BCJ}` or `{CompressionAlgorithm.DELTA}` stops a read at the first
+block that uses that filter, with `UnsupportedFeatureError`; xz data whose blocks don't use it reads
+as usual. `only=` takes no
 methods. `plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn
 off the code that decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format
 runs in the call, even for a member or an archive inside an archive: reading a member that needs one
