@@ -63,26 +63,28 @@ before the data tar. It SHALL raise `CorruptionError`, with the member's name in
 resolved and `/` and `\` both read as separators, has a first segment that equals
 `DEBIAN` once both are folded as the extraction collision key folds a name (NFC,
 case-folded, a trailing dot or space trimmed), and for a data-tar hard link whose target
-does by the same test. The same test SHALL apply after following the data tar's
-symlinks made so far (each target read from its symlink's directory, or from the root
-when rooted, at most 40 per path) to a data-tar member's path and a hard link's target,
-and to the target of every data-tar symlink made so far, which SHALL raise with
-`member_name` and `link_target`. When a later symlink moves an earlier symlink's target
-into `DEBIAN`, the error SHALL name the later symlink, which completes the crossing,
-before that symlink is listed. A later file, hard link or other non-directory member at
-a symlink's path replaces that symlink, and when that moves an earlier symlink's target
-into `DEBIAN` the error SHALL name that member. A data-tar directory member at a
-symlink's path, and a data-tar symlink at the path of a directory member or of a
-member's parent, SHALL raise `CorruptionError` naming the later of the two: which one
-extraction keeps depends on the overwrite policy. The path steps of resolving earlier
-targets again SHALL count against `ListingLimits.max_members`, and
-`ResourceLimitError` naming `max_members` SHALL be raised when they cross it. It
-SHALL raise `CorruptionError` in the same way for a control-tar member, or hard link
-target, whose `DEBIAN/`-prefixed path, read the same way but not folded, does not have
-exactly `DEBIAN` as its first segment. `dpkg-deb -R` refuses these packages: it will not
-unpack the control tar into a `DEBIAN` path that the data tar made, and GNU tar refuses
-a `..` name. Reading `\` as a separator, dropping a drive root and folding the data side
-are stricter than `dpkg-deb -R`, so that no extraction rewrite and no filesystem moves a
+does by the same test. The same test SHALL apply after following the data tar's symlinks
+made so far (each target read from its symlink's directory, or from the root when
+rooted, at most 40 per path) to a data-tar member's path and a hard link's target, and
+to the target of every data-tar symlink made so far, which SHALL raise with
+`member_name` and `link_target`. A symlink's target SHALL also be refused when, read
+from the symlink's directory with its `..` taken lexically and no symlink followed, it
+lands in `DEBIAN`, as a read of the symlink resolves it. When a later symlink moves an
+earlier symlink's target into `DEBIAN`, the error SHALL name the later symlink, which
+completes the crossing, before that symlink is listed. So that these checks hold for
+every selection of members a caller extracts, it SHALL raise `CorruptionError` naming
+the later member for a data-tar member whose path passes through a data-tar symlink, for
+a data-tar symlink at the path of a directory member, of a member's parent or of another
+data-tar symlink, and for a data-tar directory member at a symlink's path. A file or
+hard link at a symlink's path SHALL leave that symlink in the check. The path steps of
+resolving earlier targets again SHALL count against `ListingLimits.max_members`, and
+`ResourceLimitError` naming `max_members` SHALL be raised when they cross it. It SHALL
+raise `CorruptionError` in the same way for a control-tar member, or hard link target,
+whose `DEBIAN/`-prefixed path, read the same way but not folded, does not have exactly
+`DEBIAN` as its first segment. `dpkg-deb -R` refuses these packages: it will not unpack
+the control tar into a `DEBIAN` path that the data tar made, and GNU tar refuses a `..`
+name. Reading `\` as a separator, dropping a drive root and folding the data side are
+stricter than `dpkg-deb -R`, so that no extraction rewrite and no filesystem moves a
 member from one tar's tree into the other's. It SHALL skip `_` members and read nothing
 after the data tar. `debian-binary`, the control file and `md5sums`, held whole, SHALL
 together count against `ListingLimits.max_metadata_bytes`, each checked by its declared
@@ -101,13 +103,15 @@ size before it is read.
 | A data hard link to `DEBIAN/control` | `CorruptionError` naming the link and its target |
 | A data symlink to `DEBIAN`, `../DEBIAN`, `/DEBIAN/control` or `debian` | `CorruptionError` naming the symlink and its target, stricter than `dpkg-deb -R` |
 | A data symlink `d -> .`, then `d/DEBIAN/control` | `CorruptionError` naming `d/DEBIAN/control` |
+| A data symlink `y -> a/b`, then `y/z` (any type) | `CorruptionError` naming `y/z`, whichever members a caller selects |
+| A data symlink `y -> a/b`, then `x -> y/../DEBIAN/control` | `CorruptionError` naming `x` and its target |
 | A data symlink `x -> y/DEBIAN/control`, then `y -> .` (or `x -> usr/y/DEBIAN/control`, then `usr/y -> ..`) | `CorruptionError` naming `y` (`usr/y`) and its target |
-| A data symlink `y -> a/b`, then `x -> y/../DEBIAN/control`, then a file or hard link `y` | `CorruptionError` naming `y` |
-| A data symlink `y -> a/b`, then a directory `y/` (or a directory `y/`, or `y/f`, then a symlink `y`) | `CorruptionError` naming the later of the two |
-| 600 data symlinks through `p`, then `p` replaced 600 times | `ResourceLimitError` naming `max_members` at the default limits |
+| A data symlink `y -> .`, then a file or hard link `y`, then `w -> y/DEBIAN` | `CorruptionError` naming `w` |
+| A data symlink `y -> a/b`, then a directory `y/` or a symlink `y` (or a directory `y/`, or `y/f`, then a symlink `y`) | `CorruptionError` naming the later of the two |
+| 600 data symlinks through `a0/a1/.../a599`, then `a0 -> .`, ..., `a599 -> .` | `ResourceLimitError` naming `max_members` at the default limits |
 | A data tar holding `usr\..\DEBIAN/postinst`, `C:/DEBIAN/control`, `DEBIAN./postinst`, `DEBIAN /postinst` or `debian/postinst` | `CorruptionError`, stricter than `dpkg-deb -R` |
 | A control tar holding `../usr/x` | `CorruptionError` naming `DEBIAN/../usr/x` |
 | A control hard link to `../usr/a` | `CorruptionError` naming the link and its target |
 | A control tar holding `../debian/x` or `../DEBIAN./x` | `CorruptionError`: the control side is not folded |
-| A data tar holding `debianx/x`, `usr/DEBIAN/x`, a symlink into `usr/`, a symlink loop, or `usr/lib/self -> .` then `usr/lib/self/DEBIAN/x` | Listed and read |
+| A data tar holding `debianx/x`, `usr/DEBIAN/x`, a symlink into `usr/`, a symlink loop, or `usr/lib/self -> .` then `usr/d -> lib/self/DEBIAN` | Listed and read |
 
