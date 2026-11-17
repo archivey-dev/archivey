@@ -2217,24 +2217,27 @@ class BaseArchiveReader(ArchiveReader):
                 for member in unread:
                     was_unread = member._link_target_unread
                     try:
-                        self._resolve_link_target(member)
-                    except UNREADABLE_LINK_TARGET_ERRORS as exc:
-                        self._report_unreadable_link_target(member, exc)
-                        continue
-                    if member.link_target is not None:
                         try:
+                            self._resolve_link_target(member)
+                        except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                            self._report_unreadable_link_target(member, exc)
+                            continue
+                        if member.link_target is not None:
                             self._listing_tracker.account_link_target(
                                 member.link_target
                             )
-                        except ResourceLimitError:
-                            # Not counted, so not kept: a member left holding the
-                            # target would drop out of `unread` on the next call and
-                            # publish the listing over the cap. Put it back as it
-                            # was, so a retry reads and refuses it again.
+                    except BaseException:
+                        # The read set the target, and then the weighing refused it
+                        # or a report about it raised (a control character under
+                        # `raise_on`). Not counted, so not kept: a member left
+                        # holding the target would drop out of `unread` on the next
+                        # call and be published uncounted. Put it back as it was, so
+                        # a retry reads it and raises again.
+                        if member.link_target is not None:
                             member.link_target = None
                             member._link_target_resolved = False
                             member._link_target_unread = was_unread
-                            raise
+                        raise
             # One memo per finalize: every link on a walked chain shares its terminal,
             # so a chain of N links costs O(N) rather than a fresh walk per member.
             terminals: dict[int, ArchiveMember | None] = {}

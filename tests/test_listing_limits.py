@@ -710,6 +710,34 @@ def test_link_target_refused_for_max_metadata_bytes_stays_refused() -> None:
                 reader.members()
 
 
+def test_link_target_whose_report_raises_is_not_kept_unweighed() -> None:
+    """A ZIP symlink target whose control-character report raises (``raise_on``) is
+    set on the member before the listing tracker weighs it. The report's error must
+    not leave it there: the next ``members()`` reads the target again and raises
+    again, and does not publish a listing that holds the target uncounted."""
+    import stat
+
+    from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("l")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        z.writestr(info, "\u202e" + "a" * 800)
+    cfg = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=500),
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on=[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL]
+        ),
+    )
+    with open_archive(io.BytesIO(buf.getvalue()), config=cfg) as reader:
+        for _ in range(2):
+            with pytest.raises(DiagnosticRaisedError):
+                reader.members()
+
+
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
 def test_unlimited_lifts_the_caps_for_a_pass(tmp_path: Path, streaming: bool) -> None:
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)
