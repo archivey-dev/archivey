@@ -2640,6 +2640,14 @@ class ExtractionCoordinator:
             return True
         return self._prepare_destination(member, blocked)
 
+    @staticmethod
+    def _is_real_directory(path: Path) -> bool:
+        """Whether ``path`` is a directory itself, not a symlink to one."""
+        try:
+            return stat.S_ISDIR(os.lstat(long_path(path)).st_mode)
+        except (OSError, ValueError):
+            return False
+
     def _blocks_directory(self, path: Path) -> bool:
         """Whether ``path`` holds an entry that is not a real directory: a file or a
         symlink (to a directory too, as it is never written through), which a directory
@@ -3507,6 +3515,15 @@ class ExtractionCoordinator:
             return ExtractionResult(
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
+        if (
+            self._overwrite is OverwritePolicy.REPLACE
+            and self._reservation_at(dest_path, directory=False) is None
+            and self._is_real_directory(dest_path)
+        ):
+            # A directory at the link's name: the made link replaced it here, or
+            # failed here if it was not empty, before any member under that name
+            # came. Other entries the second pass replaces as it makes the link.
+            self._prepare_destination(transformed, dest_path, atomic=True)
         requested = self._current.requested_path
         orphan = _Orphan(
             result_index,

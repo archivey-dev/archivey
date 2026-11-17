@@ -5273,6 +5273,16 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "d/x", "src2"),
         ("hard", "d", "src3"),
     ],
+    # A held link over an empty directory replaces it at its place under REPLACE, as
+    # the made link does, so the link under it then fails against its name.
+    "held-link-over-a-directory-then-a-link-under-it": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("dir", "d", None),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("file", "d", b"later"),
+    ],
     # A held link under one of the archive's symlinks lands where the symlink led
     # at its place in archive order: a later file at the real directory meets it as
     # not empty, and a later symlink or file at the symlink's name does not move it.
