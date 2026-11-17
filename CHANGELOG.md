@@ -12,6 +12,67 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-17
+
+A patch release: RAR archives read from a pipe, bzip2 and xz blocks checked before
+their bytes are handed out, makeself installers read in more of their forms, faster
+listing and small reads, and fixes from a sweep of the 0.4.0 code.
+
+### Added
+
+- With `streaming=True` and RARLAB `unrar` 7.00 or later, `stream_members()` and
+  `extract_all()` read a single-volume RAR archive from a pipe, a socket or any other
+  source that cannot seek. Before, RAR was refused there.
+- makeself installers written with `--ssl-encrypt` are decrypted with `password=`
+  instead of refused.
+- A compressed TAR (gzip, bzip2, xz, zstd, LZ4 or lzip) behind a `#!` shell script,
+  such as a CPack STGZ installer, is found and read.
+
+### Changed
+
+- RAR reads from a stream source no longer copy a whole member or archive to a
+  temporary file, and are no longer refused when that copy would pass
+  `SpoolLimits.max_bytes`. With `unrar` 7.00 or later, archivey feeds `unrar` rolling
+  16 MiB volumes, so the disk use peaks at one volume.
+- bzip2 hands out a block's bytes only after the block's CRC passes, so a damaged block
+  gives none of its bytes, where before up to about 900 kB of it came out before the
+  error. Each block is also a seek point. A block held back for its check counts
+  against `DecoderLimits.max_decoder_memory`.
+- A file in a `.tar.bz2`, a `.tar.bz3` or a `.tar.xz` written in several blocks reaches
+  `verified == CHECKSUM` once every block its data lies in passes its check, instead of
+  when the whole stream ends. A `.tar.bz2` read through the bzip2 accelerator still
+  waits for the end.
+- A single-file member (`.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, zlib, zstd, LZ4, Brotli,
+  lzop) lists its stream's method in `member.compression`, the same method a ZIP or 7z
+  member compressed that way lists. `.Z`, bzip3, uuencode and base64 still list `()`.
+- `seek(0, SEEK_END)` on a member whose recorded size is small is held to the ratio
+  limit, as a read is.
+- When no format is detected, the error names every format the leading-bytes scan
+  looked for.
+
+### Security
+
+- `FormatPolicy(exclude={CompressionAlgorithm.LZMA2})` also refuses xz, which always
+  holds LZMA2 data, and `exclude={BCJ}` or `exclude={DELTA}` stops an xz read at the
+  first block that declares that filter. Before, both were decoded.
+- A symlink target stored as member data (ZIP, 7z, RAR4) that went over
+  `ListingLimits.max_metadata_bytes`, or failed the control-character check, stayed on
+  the member uncounted, so a later listing could pass the cap.
+- A Debian package whose data symlinks lead into `DEBIAN/` is refused, as a data name
+  that extracts there already was.
+
+### Fixed
+
+- About fifteen bugs found by a sweep of the 0.4.0 code, among them hard links whose
+  source `members=` leaves out now made in archive order and at the place a link made
+  there would land, cue sheets with a `FILE` that holds no `TRACK` refused, and a
+  long uuencode line or a MacLHA member no longer costing far more time than its size.
+
+### Performance
+
+PENDING: filled from two benchmark-compare runs on the release branch, against v0.4.0
+and against v0.3.0, once every patch PR is on main.
+
 ## [0.4.0] - 2026-11-15
 
 A minor release: more formats built in, archives read by range from fsspec URLs and
