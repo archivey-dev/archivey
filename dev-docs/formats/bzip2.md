@@ -309,14 +309,15 @@ bzip2-specific only; the shared items are [`single-file.md`](single-file.md) §4
 - **A held block costs its whole output.** The standard library engine holds a block's
   output until its CRC passes: up to 46.6 MB for a crafted block of runs a few hundred
   bytes long. It counts against `DecoderLimits.max_decoder_memory` as it grows.
-- **Many tiny blocks cost calls, not bytes.** The block decoder makes at least three `bz2`
-  calls a block, so a stream of one-byte blocks costs about 4 s a MB under
-  `ProcessIsolation.NATIVE_DECODERS`, where each call is a round trip to the child. It is
-  linear and no limit bounds it (threat-model "No CPU or wall-clock bound"). Dropping the
-  empty drain call when a call returns less than asked and `needs_input` is true was
-  rejected: `bz2` can say both with output still held. Fed level-1 streams in steps of
-  1 to 1 000 bytes, CPython 3.11 and 3.13 each did so in 12 of 56 712 calls (each time
-  32 768 bytes of a 1 MiB call), and the next empty call returned more.
+- **Many tiny blocks cost calls, not bytes.** The block decoder makes at least two `bz2`
+  calls a block (the feed up to the marker, which returns the block, and one empty drain
+  call), so a stream of one-byte blocks costs about 4 s a MB under
+  `ProcessIsolation.NATIVE_DECODERS`, where each call is a round trip to the child. It
+  is linear and no limit bounds it (threat-model "No CPU or wall-clock bound"). Dropping
+  the empty drain call when a call returns less than asked and `needs_input` is true was
+  rejected: `bz2` can say both with output still held. Fed level-1 streams in steps of 1
+  to 1 000 bytes, CPython 3.11 and 3.13 each did so in 12 of 56 712 calls (each time 32
+  768 bytes of a 1 MiB call), and the next empty call returned more.
 - **Garbage must not read as empty.** Covered by `_Bzip2EmptyStreamCheck` (§2.3). Without
   it a corrupt file would pass a read as a valid empty member.
 
