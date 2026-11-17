@@ -180,6 +180,14 @@ class StreamConfig:
     from ``exclude_libraries`` and ``only_libraries``): a codec whose package it names
     opens as if the package were not installed."""
 
+    source_origin: int = field(default=0, compare=False)
+    """Where the codec's source starts in the file, for messages only. A stream found
+    behind a ``#!`` script is decoded from a source rebased to its first byte
+    (:meth:`~archivey.internal.source.ArchiveSource.start_at`); a codec adds this to
+    every compressed offset it names in an error or a diagnostic, so the offset counts
+    from the file's first byte as every other message's does. It is 0 for any other
+    source. It changes no decode, so equality leaves it out."""
+
     @property
     def natives(self) -> Natives:
         """The native decoders ``process_isolation`` selects: in a child process

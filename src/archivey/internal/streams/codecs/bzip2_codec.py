@@ -67,6 +67,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _translate_rapidgzip_shared,
     _warn_child_fallback,
 )
+from archivey.internal.streams.codecs.script_payload import check_bzip2
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
     _seek_reached_end,
@@ -483,7 +484,9 @@ class _Bzip2EmptyStreamCheck(DelegatingStream):
             takeover.switch_to_stdlib()
             return True
         if self._config.report_trailing_data:
-            report_trailing_data(self._config.collector, "bzip2", offset)
+            report_trailing_data(
+                self._config.collector, "bzip2", self._config.source_origin + offset
+            )
         return False
 
     def _first_trailing_byte(self, end: int) -> tuple[int, bool] | None:
@@ -873,6 +876,7 @@ class Bzip2Codec(StreamCodec):
     checks_content = True
     stream_format = StreamFormat.BZIP2
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
+    script_payload_check = staticmethod(check_bzip2)
 
     @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:

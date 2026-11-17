@@ -9,6 +9,7 @@ import hashlib
 import io
 import lzma
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -499,21 +500,554 @@ def test_a_data_hard_link_to_a_control_file_is_refused() -> None:
 
 def test_debian_elsewhere_in_the_data_tar_is_an_ordinary_name() -> None:
     """dpkg-deb -R accepts each of these, and so does archivey: a longer first segment
-    is another directory, only the first segment counts, and a symlink's target is a
-    path, not a member."""
+    is another directory, only the first segment counts, and a symlink whose target
+    lands elsewhere is an ordinary symlink."""
     data = [
         ("./debianx/", None),
         ("./debianx/x", b"longer"),
         ("./usr/", None),
         ("./usr/DEBIAN/", None),
         ("./usr/DEBIAN/x", b"nested"),
-        ("./usr/c@symlink", b"../DEBIAN/control"),
+        ("./usr/c@symlink", b"DEBIAN/x"),
     ]
     with open_archive(io.BytesIO(_deb(data=data))) as reader:
         assert reader.read("debianx/x") == b"longer"
         assert reader.read("usr/DEBIAN/x") == b"nested"
-        assert reader.get("usr/c").link_target == "../DEBIAN/control"
+        assert reader.get("usr/c").link_target == "DEBIAN/x"
         assert reader.read("DEBIAN/control") == CONTROL
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [
+        pytest.param("foo", "DEBIAN", id="directory"),
+        pytest.param("x", "DEBIAN/control", id="file"),
+        pytest.param("usr/l", "../DEBIAN", id="dotdot"),
+        pytest.param("usr/c", "../DEBIAN/control", id="dotdot-file"),
+        pytest.param("x", "/DEBIAN/control", id="rooted"),
+        pytest.param("x", "debian", id="lower-case"),
+        # Through an earlier symlink: up is the package root.
+        pytest.param("x", "up/DEBIAN", id="through-a-symlink"),
+    ],
+)
+def test_a_data_symlink_into_debian_is_refused(
+    name: str, target: str, pipe: bool
+) -> None:
+    """Extraction writes through such a symlink into DEBIAN/, and a read of it returns
+    a control file. dpkg-deb -R unpacks the data tar first, where the symlink names
+    nothing; refusing it is stricter, as for the spellings above."""
+    data = [
+        ("./usr/", None),
+        ("./usr/a", b"alpha"),
+        ("./up@symlink", b"."),
+        (f"./{name}@symlink", target.encode()),
+    ]
+    seen = []
+    with (
+        pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
+    assert caught.value.member_name == name
+    assert caught.value.link_target == target
+    assert seen[-2:] == ["usr/a", "up"]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("data", "culprit"),
+    [
+        pytest.param(
+            [("./x@symlink", b"y/DEBIAN/control"), ("./y@symlink", b".")],
+            ("y", "."),
+            id="root",
+        ),
+        pytest.param(
+            [
+                ("./usr/", None),
+                ("./x@symlink", b"usr/y/DEBIAN/control"),
+                ("./usr/y@symlink", b".."),
+            ],
+            ("usr/y", ".."),
+            id="nested",
+        ),
+        pytest.param(
+            [
+                ("./x@symlink", b"a/DEBIAN"),
+                ("./a@symlink", b"b/c"),
+                ("./b@symlink", b"."),
+                ("./c@symlink", b"."),
+            ],
+            ("c", "."),
+            id="chain",
+        ),
+    ],
+)
+def test_a_later_data_symlink_that_sends_an_earlier_one_into_debian_is_refused(
+    data: list[tuple[str, bytes | None]], culprit: tuple[str, str], pipe: bool
+) -> None:
+    """``x -> y/DEBIAN/control`` names a data path until ``y -> .`` arrives; then
+    extraction would leave a data symlink to the control file. The symlink that
+    completes the crossing is refused, before it is listed or extracted."""
+    seen = []
+    with (
+        pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for member, _stream in reader.stream_members():
+            seen.append(member.name)
+    assert (caught.value.member_name, caught.value.link_target) == culprit
+    assert "x" in seen
+    earlier = [n.removeprefix("./").removesuffix("@symlink") for n, _ in data[:-1]]
+    assert seen.count(culprit[0]) == earlier.count(culprit[0])
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_a_data_symlink_into_debian_by_its_lexical_target_is_refused(
+    pipe: bool,
+) -> None:
+    """A read of ``x`` resolves ``y/../DEBIAN/control`` lexically, to the control
+    file, while the filesystem follows ``y`` to ``a/DEBIAN/control``. Both readings
+    are checked."""
+    data = [("./y@symlink", b"a/b"), ("./x@symlink", b"y/../DEBIAN/control")]
+    with (
+        pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    assert (caught.value.member_name, caught.value.link_target) == (
+        "x",
+        "y/../DEBIAN/control",
+    )
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize("replacement", [("./y", b"f"), ("./y@link", b"t")])
+def test_a_file_over_a_data_symlink_keeps_it_in_the_tree(
+    replacement: tuple[str, bytes], pipe: bool
+) -> None:
+    """A file or hard link ``y`` replaces ``y -> .`` when both are extracted, but
+    not when the file is left out of the selection. So ``w -> y/DEBIAN`` is
+    checked through the symlink, and refused."""
+    data = [
+        ("./t", b"t"),
+        ("./y@symlink", b"."),
+        replacement,
+        ("./w@symlink", b"y/DEBIAN"),
+    ]
+    with (
+        pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    assert caught.value.member_name == "w"
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(
+    ("data", "culprit", "message"),
+    [
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./y/", None),
+                ("./y/z@symlink", b"../DEBIAN"),
+                ("./y/z/control", b"EVIL\n"),
+            ],
+            "y/",
+            "a symlink at the path of a directory",
+            id="directory-replaces-symlink",
+        ),
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./y", b"f"),
+                ("./y/", None),
+                ("./y/z@symlink", b"../DEBIAN"),
+                ("./y/z/control", b"EVIL\n"),
+            ],
+            "y/",
+            "a symlink at the path of a directory",
+            id="file-then-directory",
+        ),
+        pytest.param(
+            [("./y@symlink", b"."), ("./y/", None), ("./y/c@symlink", b"DEBIAN")],
+            "y/",
+            "a symlink at the path of a directory",
+            id="directory-over-dot",
+        ),
+        pytest.param(
+            [("./y/", None), ("./y@symlink", b"a/b"), ("./y/z@symlink", b"../DEBIAN")],
+            "y",
+            "a symlink at the path of a directory",
+            id="symlink-over-directory",
+        ),
+        pytest.param(
+            [("./y/f", b"f"), ("./y@symlink", b"a/b"), ("./y/z@symlink", b"../DEBIAN")],
+            "y",
+            "a symlink at the path of a directory",
+            id="symlink-over-parent",
+        ),
+        pytest.param(
+            [
+                ("./y@symlink", b"."),
+                ("./y@symlink", b"a/b"),
+                ("./w@symlink", b"y/DEBIAN"),
+            ],
+            "y",
+            "of another symlink",
+            id="symlink-over-symlink",
+        ),
+    ],
+)
+def test_a_data_symlink_sharing_its_path_is_refused(
+    data: list[tuple[str, bytes | None]], culprit: str, message: str, pipe: bool
+) -> None:
+    """Which of a symlink and a directory at one path extraction keeps depends on
+    the overwrite policy: ``replace`` keeps the second, ``skip`` and ``rename`` the
+    first. Of two symlinks, the second wins, unless the selection leaves it out.
+    The later members land through whichever is kept, so ``y/z -> ../DEBIAN``
+    reaches ``DEBIAN`` one way or the other. The second of the two is refused. A
+    file between a symlink and a directory leaves the symlink in the tree, so the
+    directory is refused there too."""
+    with (
+        pytest.raises(CorruptionError, match=message) as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    assert caught.value.member_name == culprit
+
+
+@pytest.mark.parametrize("overwrite", ["replace", "skip", "rename"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            [
+                ("./y@symlink", b"a/b"),
+                ("./y/", None),
+                ("./y/z@symlink", b"../DEBIAN"),
+                ("./y/z/control", b"EVIL\n"),
+            ],
+            id="directory-replaces-symlink",
+        ),
+        pytest.param(
+            [("./y@symlink", b"."), ("./y/", None), ("./y/c@symlink", b"DEBIAN")],
+            id="directory-over-dot",
+        ),
+        pytest.param(
+            [("./y/", None), ("./y@symlink", b"a/b"), ("./y/z@symlink", b"../DEBIAN")],
+            id="symlink-over-directory",
+        ),
+    ],
+)
+def test_extraction_leaves_nothing_into_debian_under_any_overwrite_policy(
+    data: list[tuple[str, bytes | None]], overwrite: str, tmp_path: Path
+) -> None:
+    """The extraction side of the cases above: the package is refused, the control
+    file keeps its bytes, and no data symlink leads into ``DEBIAN``."""
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(io.BytesIO(_deb(data=[("./", None), *data]))) as reader,
+    ):
+        reader.extract_all(tmp_path, overwrite=overwrite)
+    assert (tmp_path / "DEBIAN" / "control").read_bytes() == CONTROL
+    debian = (tmp_path / "DEBIAN").resolve()
+    for path in tmp_path.rglob("*"):
+        if path.is_symlink():
+            resolved = path.resolve()
+            assert resolved != debian and debian not in resolved.parents, path
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize("overwrite", ["error", "skip", "rename", "replace"])
+def test_a_data_member_under_a_data_symlink_is_refused_whatever_is_selected(
+    overwrite: str, pipe: bool, tmp_path: Path
+) -> None:
+    """``y/z`` is checked at ``a/b/z``, where it lands through ``y -> a/b``. A
+    selection that leaves ``y`` out makes ``y`` a directory instead, and then
+    ``y/z -> ../DEBIAN`` names ``DEBIAN``, and ``y/z/control`` overwrote the
+    control file under ``replace``. A member under a symlink of the same tar is
+    refused, so where every member lands does not depend on the selection."""
+    data = [
+        ("./", None),
+        ("./y@symlink", b"a/b"),
+        ("./y/z@symlink", b"../DEBIAN"),
+        ("./y/z/control", b"EVIL\n"),
+    ]
+    raw = _deb(data=data)
+    with (
+        pytest.raises(CorruptionError, match="under a symlink") as caught,
+        open_archive(_source(raw, pipe), streaming=pipe) as reader,
+    ):
+        reader.extract_all(
+            tmp_path, members=lambda m: m.name != "y", overwrite=overwrite
+        )
+    assert caught.value.member_name == "y/z"
+    assert (tmp_path / "DEBIAN" / "control").read_bytes() == CONTROL
+    assert not (tmp_path / "y" / "z").is_symlink()
+
+
+_HARD_LINKS_TO_SYMLINKS = [
+    pytest.param(
+        [("./s@symlink", b"."), ("./h@link", b"./s"), ("./h/DEBIAN/postinst", b"x")],
+        "h/DEBIAN/postinst",
+        id="dot",
+    ),
+    pytest.param(
+        [
+            ("./a/", None),
+            ("./a/b/", None),
+            ("./a/b/x@symlink", b"../DEBIAN"),
+            ("./q/", None),
+            ("./q/h@link", b"./a/b/x"),
+        ],
+        "q/h",
+        id="shallower",
+    ),
+    pytest.param(
+        [
+            ("./a/", None),
+            ("./a/b/", None),
+            ("./a/b/x@symlink", b"../DEBIAN"),
+            ("./a/b/g@link", b"./a/b/x"),
+            ("./q/", None),
+            ("./q/h@link", b"./a/b/g"),
+        ],
+        "q/h",
+        id="chain",
+    ),
+]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+@pytest.mark.parametrize(("data", "culprit"), _HARD_LINKS_TO_SYMLINKS)
+def test_a_hard_link_to_a_data_symlink_is_checked_as_a_symlink(
+    data: list[tuple[str, bytes | None]], culprit: str, pipe: bool
+) -> None:
+    """Extraction writes a hard link to a symlink, through any number of hard
+    links, as a symlink with the same target text, read from the hard link's own
+    directory: ``q/h -> ../DEBIAN`` names ``DEBIAN`` where ``a/b/x`` did not, and
+    ``h/DEBIAN/postinst`` lands in ``DEBIAN`` through ``h -> .``."""
+    with (
+        pytest.raises(CorruptionError, match="DEBIAN/") as caught,
+        open_archive(_source(_deb(data=data), pipe), streaming=pipe) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+    assert caught.value.member_name == culprit
+
+
+@pytest.mark.parametrize("overwrite", ["error", "replace"])
+@pytest.mark.parametrize(("data", "culprit"), _HARD_LINKS_TO_SYMLINKS)
+def test_extraction_of_a_hard_link_to_a_symlink_leaves_debian_alone(
+    data: list[tuple[str, bytes | None]],
+    culprit: str,
+    overwrite: str,
+    tmp_path: Path,
+) -> None:
+    with (
+        pytest.raises(CorruptionError) as caught,
+        open_archive(io.BytesIO(_deb(data=[("./", None), *data]))) as reader,
+    ):
+        reader.extract_all(tmp_path, overwrite=overwrite)
+    assert caught.value.member_name == culprit
+    assert sorted(p.name for p in (tmp_path / "DEBIAN").iterdir()) == [
+        "control",
+        "md5sums",
+    ]
+    debian = (tmp_path / "DEBIAN").resolve()
+    for path in tmp_path.rglob("*"):
+        if path.is_symlink():
+            assert path.resolve() != debian, path
+
+
+def _redirected(links: int, redirects: int) -> list[tuple[str, bytes | None]]:
+    """``links`` symlinks through ``a1/a2/.../aN``, then ``a1 -> .``, ``a2 -> .``
+    and so on, ``redirects`` of them: each new symlink moves every one of the
+    earlier ones, so each is rechecked."""
+    route = "/".join(f"a{j}" for j in range(redirects))
+    return [(f"./x{i}@symlink", f"{route}/{i}".encode()) for i in range(links)] + [
+        (f"./a{j}@symlink", b".") for j in range(redirects)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("max_members", "links"),
+    [pytest.param(300, 40, id="small-limit"), pytest.param(None, 600, id="default")],
+)
+def test_symlink_rechecks_count_against_max_members(
+    max_members: int | None, links: int
+) -> None:
+    """Rechecking costs up to links x redirects resolutions; their path steps count
+    against max_members, so a crafted data tar stops at the limit, in about a second
+    at the default, rather than running for minutes."""
+    raw = _deb(data=_redirected(links, links))
+    limits = archivey.ListingLimits()
+    if max_members is not None:
+        limits = archivey.ListingLimits(max_members=max_members)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match=f"Symlink resolution limit reached: max_members={limits.max_members}",
+        ),
+        open_archive(io.BytesIO(raw), config=config) as reader,
+    ):
+        reader.members()
+
+
+def _long_routes(width: int, links: int) -> list[tuple[str, bytes | None]]:
+    """40 symlinks ``r{i} -> d/.../d/../.../../r{i+1}``, each ``width`` deep and
+    back, added last first so nothing is rechecked, then ``links`` symlinks
+    ``l{j} -> r0/x`` that each follow all 40. A few kilobytes of xz cost
+    ``links`` x 40 x ``width`` steps."""
+    hops = 40
+    route = [
+        (
+            f"./r{i}@symlink",
+            ("d/" * width + "../" * width + f"r{i + 1}").encode(),
+        )
+        for i in reversed(range(hops))
+    ]
+    return route + [(f"./l{j}@symlink", b"r0/x") for j in range(links)]
+
+
+@pytest.mark.parametrize("pipe", [False, True], ids=["file", "pipe"])
+def test_steps_inside_followed_targets_count_against_max_members(pipe: bool) -> None:
+    """Without the charge, the first resolution of each symlink was free, and an
+    11 KB package listed for 49 s."""
+    limits = archivey.ListingLimits(max_members=2_000)
+    config = archivey.ArchiveyConfig(listing_limits=limits)
+    with (
+        pytest.raises(
+            ResourceLimitError,
+            match="Symlink resolution limit reached: max_members=2000",
+        ),
+        open_archive(
+            _source(_deb(data=_long_routes(20, 20)), pipe),
+            streaming=pipe,
+            config=config,
+        ) as reader,
+    ):
+        for _member, _stream in reader.stream_members():
+            pass
+
+
+def test_a_long_symlink_target_lists_in_linear_time() -> None:
+    """The lexical check of a symlink target copied its path once per segment, so
+    one 200,000-segment target (an 11 KB package) took about 30 s to list."""
+    data = [("./s@symlink", ("d/" * 200_000).encode())]
+    start = time.perf_counter()
+    with open_archive(io.BytesIO(_deb(data=data))) as reader:
+        assert [m.name for m in reader.members()][-1] == "s"
+    # Linear work takes well under a second; the bound only has to catch the
+    # quadratic walk.
+    assert time.perf_counter() - start < 10
+
+
+def test_symlinks_that_follow_short_ones_stay_within_max_members() -> None:
+    """A usrmerge-style package: 10,000 symlinks that each follow ``lib ->
+    usr/lib`` list at the default limits."""
+    data = [("./usr/", None), ("./usr/lib/", None), ("./lib@symlink", b"usr/lib")]
+    data += [
+        (f"./usr/share/l{i}@symlink", f"../../lib/l{i}.so".encode())
+        for i in range(10_000)
+    ]
+    with open_archive(io.BytesIO(_deb(data=data, data_kind=""))) as reader:
+        assert len(reader.members()) > 10_000
+
+
+def test_symlink_rechecks_within_max_members_list_the_package() -> None:
+    raw = _deb(data=_redirected(4, 4))
+    limits = archivey.ListingLimits(max_members=300)
+    with open_archive(
+        io.BytesIO(raw), config=archivey.ArchiveyConfig(listing_limits=limits)
+    ) as reader:
+        names = [member.name for member in reader.members()]
+    assert {"a0", "a3", "x0", "x3"} <= set(names)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            [("./d@symlink", b"."), ("./d/DEBIAN/control", b"EVIL")], id="dot"
+        ),
+        pytest.param(
+            [("./usr/", None), ("./d@symlink", b"usr/.."), ("./d/debian/x", b"x")],
+            id="dotdot-folded",
+        ),
+        pytest.param(
+            [("./a@symlink", b"b"), ("./b@symlink", b"/"), ("./a/DEBIAN/x", b"x")],
+            id="chain",
+        ),
+        pytest.param(
+            [("./usr/", None), ("./usr/d@symlink", b".."), ("./usr/d/DEBIAN/x", b"x")],
+            id="nested",
+        ),
+    ],
+)
+def test_a_data_member_in_debian_through_a_symlink_is_refused(
+    data: list[tuple[str, bytes | None]],
+) -> None:
+    with (
+        pytest.raises(CorruptionError, match="extracts into DEBIAN/") as caught,
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.members()
+    assert caught.value.member_name == data[-1][0].removeprefix("./")
+
+
+def test_a_data_hard_link_into_debian_through_a_symlink_is_refused() -> None:
+    data = [
+        ("./d@symlink", b"."),
+        ("./usr/", None),
+        ("./usr/h@link", b"d/DEBIAN/md5sums"),
+    ]
+    with (
+        pytest.raises(CorruptionError, match="hard link") as caught,
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.members()
+    assert caught.value.member_name == "usr/h"
+
+
+@pytest.mark.parametrize("overwrite", ["replace", "error"])
+def test_extraction_cannot_write_a_control_file_through_a_symlink(
+    overwrite: str, tmp_path: Path
+) -> None:
+    data = [("./usr/", None), ("./foo@symlink", b"DEBIAN"), ("./foo/control", b"EVIL")]
+    with (
+        pytest.raises(CorruptionError, match="symlink to a path in DEBIAN/"),
+        open_archive(io.BytesIO(_deb(data=data))) as reader,
+    ):
+        reader.extract_all(tmp_path, overwrite=overwrite)
+    assert (tmp_path / "DEBIAN" / "control").read_bytes() == CONTROL
+
+
+def test_data_symlinks_that_stay_out_of_debian_are_listed() -> None:
+    """A symlink into the data tree, a loop, a symlink to a DEBIAN directory below
+    the root, and one whose target passes through another symlink are ordinary."""
+    data = [
+        ("./usr/", None),
+        ("./usr/lib/", None),
+        ("./usr/lib/DEBIAN/", None),
+        ("./usr/lib/self@symlink", b"."),
+        ("./usr/d@symlink", b"lib/self/DEBIAN"),
+        ("./a@symlink", b"b"),
+        ("./b@symlink", b"a"),
+        ("./bin@symlink", b"usr/lib"),
+        ("./x@symlink", b"bin/../usr/lib"),
+    ]
+    with open_archive(io.BytesIO(_deb(data=data))) as reader:
+        names = [m.name for m in reader.members()]
+    assert {"usr/d", "a", "b", "x"} <= set(names)
 
 
 def test_held_control_files_count_against_max_metadata_bytes() -> None:

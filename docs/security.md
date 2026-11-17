@@ -360,7 +360,10 @@ totals from the outermost reader's config:
 - `DecoderLimits.max_nest_decoded_bytes`, if you set it: a fixed amount of decoding work for the
   whole upload, whatever its size. It counts every byte decoded, again each time it is decoded
   again, including bytes decoded only to get past a member, and it never refills. It is off by
-  default.
+  default. The read that goes over it can pass it by the bytes the outer archives decode to
+  fill that read. On one thread, a nest decodes at most about twice the cap, however deep it
+  goes. A cap set on an inner reader stops that reader's reads, but the outer readers decode
+  for it up to their own cap.
 
 Going over a total raises `ResourceLimitError`, and an extraction stops there. The parent can
 already be closed, so you can extract an upload first and open what you find afterwards. With no

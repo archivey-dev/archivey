@@ -2019,11 +2019,19 @@ decodes, summed across its levels and its threads; `None` disables it.
   furthest offset reached, and the byte a compressed single file's open-time check
   decodes. A seek whose target is known SHALL be refused before the decoder moves when
   the gap does not fit; a seek to an end the stream cannot size SHALL read to it,
-  counted. A read that would cross the cap SHALL decode at most one byte past what is
-  left, then raise the always-stop `ResourceLimitError`, so an extraction stops at that
-  member. This holds for a buffer's read-ahead over a source that cannot seek too.
-  Readers on several threads MAY each overshoot by one read. Once spent, the
-  nest SHALL refuse every later read before it decodes.
+  counted. A read that would cross the cap SHALL ask its decoder for at most one byte
+  past what is left, then raise the always-stop `ResourceLimitError`, so an extraction
+  stops at that member. A buffer's read-ahead over a source that cannot seek SHALL be
+  capped the same way. In a nest of one level, the crossing read SHALL decode at most
+  one byte past the cap. In a deeper nest, the bytes an outer level decodes to fill an
+  inner read count too, after the inner read has sized itself, so the crossing read
+  MAY pass the cap by those bytes. Every read SHALL be sized against what is left when
+  it starts, so on one thread the count SHALL stay at or under about twice the cap at
+  any depth. That cap is the one the outer readers size their reads against: a child
+  that sets a stricter cap SHALL stop its own reads at it, and the bytes its outer
+  readers decode for it MAY reach their own cap. Readers on several threads MAY each
+  overshoot by one read. Once spent, the nest SHALL refuse every later read before it
+  decodes.
 - **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
   count where they are decoded, in every format (a compressed TAR's listing included): a
   compressed TAR's, cpio's or RPM payload's skipped members and headers, a CAB folder's
@@ -2054,3 +2062,5 @@ decodes, summed across its levels and its threads; `None` disables it.
 | `max_nest_decoded_bytes=10**12`, `.tar.gz` of three 100 000-byte members, `stream_members()` reads only the third | At least 300 000 bytes counted; reading all three counts no more than the decoded tar's size |
 | `max_nest_decoded_bytes=2 * 100_000 + 10`, `extract_all` on the ZIP | Raises; two members written whole, no later member opened |
 | One config, two separate `open_archive` calls with no `parent=` | Each counts from zero |
+| `max_nest_decoded_bytes=500_000`, a deflated ZIP holding a stored ZIP of one 4 000 000-byte member, the inner member read in 65 536-byte steps with `parent=outer` | Raises `ResourceLimitError` naming `max_nest_decoded_bytes=500000`; more than 500 000 and at most 500 000 + 65 536 + 1 bytes counted |
+| `max_nest_decoded_bytes=500_000`, a deflated ZIP holding a stored ZIP holding a stored ZIP of one 8 000 000-byte member, each opened with `parent=` and `streaming=True`, the innermost member read with one `read()` | Raises `ResourceLimitError`; more than 500 000 and at most 2 × 500 000 + 1 bytes counted |

@@ -1243,7 +1243,8 @@ other members because of a member's name any more. Setting it to `True` warns.
   when they disagree, the address is searched for. A `FILE` that is not a plain name beside the
   sheet (a path, `..`) or not a regular file (a FIFO, a device) is refused; a symlink is followed.
   A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
-  for `disc.bin`), and a missing one is `TruncatedError`. Without a `.cue`, a
+  for `disc.bin`), and a missing one is `TruncatedError`. A sheet with a `FILE` that holds no
+  `TRACK`, or with track numbers that do not go up, is `CorruptionError`. Without a `.cue`, a
   `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
   an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
   is recognised by its name, and only from a path, since its tracks are files beside it.
@@ -1499,6 +1500,19 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
 - As `dpkg-deb` does, a package whose format version is not 2.x raises `UnsupportedFeatureError`,
   members whose names start with `_` (a signature, for example) are skipped, any other member
   before the data tar raises `CorruptionError`, and nothing after the data tar is read.
+- A file of the data tar that would land in `DEBIAN/`, whatever its spelling, raises
+  `CorruptionError`, and so does a symlink or hard link of the data tar that points there, or a
+  file that reaches `DEBIAN/` through such a symlink. A later symlink that makes an earlier one
+  point there (`x -> y/DEBIAN/control`, then `y -> .`) raises it too, and so does a symlink whose
+  target reaches `DEBIAN/` once its `..` are taken literally (`x -> y/../DEBIAN/control`). The
+  control files are always the control tar's.
+- So that this holds whichever members you extract and whatever `overwrite` says, a data file
+  under a data symlink (`y -> a/b`, then `y/z`) raises `CorruptionError`, and so does a data
+  symlink at the path of a directory or of another symlink. Packages built by `dpkg-deb` have
+  neither. A hard link to a data symlink is checked as the symlink extraction writes for it.
+- Following one data symlink through another, and checking earlier symlinks again when a later
+  symlink moves them, count against `ListingLimits.max_members`, one per path step, and raise
+  `ResourceLimitError` past it. A symlink that follows no other costs nothing.
 - The control file and `md5sums` are held whole while the package is read, and together may be
   no larger than `ListingLimits.max_metadata_bytes`.
 
@@ -1905,7 +1919,13 @@ they open at once. Close the sending side when the file is done.
   Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR, LHA, ARJ) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA, ARJ) are searched for, and so are gzip, bzip2, xz, zstd, LZ4 and lzip
+  streams whose header fields pass their checks: a CPack `.sh` installer, or another shell
+  installer, is a script followed by a compressed TAR. That stream is reported as the TAR inside
+  it (`TAR_GZ`), or as the bare stream (`GZ`) when it holds nothing archivey recognizes, and is
+  read from where it starts, from a pipe too. An uncompressed TAR behind a script is not found,
+  and `format=TAR_GZ` on such a script fails, as on any file that does not start with the
+  stream. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
