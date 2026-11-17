@@ -127,17 +127,11 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.scope.outputs.full != 'false') }}
-    # `ubuntu-latest` runs on ubuntu-24.04 in the four matrix jobs (`test`, `test-queue`,
-    # `test-lowest`, `test-daily`), and `pypy` is pinned for its own reason (see there);
-    # the label stays in the matrix, so check names stay
-    # `ubuntu-latest / pyX / install`. On ubuntu-26.04 the unar source build fails at
-    # two points. The runner stops at the first: Makefile.linux looks for
-    # Foundation/Foundation.h under /usr/include/GNUstep, and 26.04 installs it under
-    # /usr/include/<multiarch>/GNUstep. The second was seen only in an ubuntu:26.04
-    # container with that header path added: GCC 15 makes -Wint-conversion and
-    # -Wincompatible-pointer-types errors in unar's own source. Lift the pin once
-    # install-unar-from-source.sh gets past both on 26.04.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    # Linux runs on ubuntu-latest (26.04), except the two 3.11 [all] legs, `test` here and
+    # `test-lowest`, which run on ubuntu-24.04: the min Python and the dependency floor
+    # also keep the older LTS image (GCC 13, libarchive 3.7, rpm 4) covered. Their check
+    # names say ubuntu-24.04.
+    runs-on: ${{ matrix.os }}
     # Backstop for a hang outside a test (install/sync). A hung *test* fails much sooner via
     # pytest's per-test --timeout; this just bounds the whole job so it can't run for hours.
     # Windows gets 30: on 2026-11-16 the 3.15 [all] job here took 15m34s in all, and
@@ -164,7 +158,7 @@ jobs:
           # Python because it differs most from Linux. The rest are in `test-queue`,
           # `test-lowest` and `test-daily`.
           - { os: ubuntu-latest, python-version: "3.11", install: core-only }
-          - { os: ubuntu-latest, python-version: "3.11", install: all }
+          - { os: ubuntu-24.04, python-version: "3.11", install: all }
           # The one leg that measures coverage. Nothing reads the result (there is no
           # upload and no threshold, see CONTRIBUTING.md), and tracing doubled the run on
           # 3.11 (measured 2026-10-02), where coverage uses the C tracer: every other leg
@@ -199,8 +193,9 @@ jobs:
       # read on a core install; the ``core-only`` legs get it too, so the claim is
       # exercised on the leg where it is made rather than skipped there. Both steps run
       # before the first test step, core-only included, so no test runs without ``7z``.
-      # ``p7zip-full`` is transitional on Ubuntu 24.04 (-> ``7zip``) but still provides
-      # ``/usr/bin/7z``, which is the name the builder invokes.
+      # ``p7zip-full`` is transitional on Ubuntu 24.04 (-> ``7zip``) and a name the
+      # ``7zip`` package provides on 26.04; both give ``/usr/bin/7z``, which is the name
+      # the builder invokes.
       - name: Install p7zip (encrypted-ZIP corpus builder and BCJ2 oracle, Linux)
         if: runner.os == 'Linux'
         uses: ./.github/actions/apt-install
@@ -421,7 +416,8 @@ jobs:
           uv run --python ${{ matrix.python-version }} --no-sync python -c \
             "from archivey.internal.external.unar import find_unar; print(find_unar(purpose='in CI'))"
 
-      # EXPECTED TO FAIL THE CHECK. Ubuntu's unar (24.04: 1.10.7+ds1+really1.10.1)
+      # EXPECTED TO FAIL THE CHECK. Ubuntu's unar (24.04: 1.10.7+ds1+really1.10.1,
+      # 26.04: 1.10.8+ds1-9build1)
       # carries Debian's CSInputBuffer-bit-string-reading.patch and drops some
       # compressed RAR5 members; this step asserts that archivey's unar check still
       # catches it. If it starts failing because the check PASSES, Ubuntu's unar now
@@ -556,8 +552,7 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
-    # ubuntu-24.04 pin: see `test`.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
@@ -597,15 +592,14 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.lowest != 'false' }}
-    # ubuntu-24.04 pin: see `test`.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env: *test-env
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, python-version: "3.11", install: all-lowest }
+          - { os: ubuntu-24.04, python-version: "3.11", install: all-lowest }
     steps: *test-steps
 
   # Linux [all] on the Pythons between min and max, and macOS and Windows on the min, on
@@ -618,8 +612,7 @@ jobs:
   test-daily:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    # ubuntu-24.04 pin: see `test`.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    runs-on: ${{ matrix.os }}
     # Windows timeout: see `test`.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
     env: *test-env
@@ -814,11 +807,7 @@ jobs:
     name: ${{ matrix.python }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
-    # ubuntu-24.04 pin, as in `test`. On ubuntu-26.04 lz4 4.4.5 does not build for PyPy
-    # (GCC 15 makes -Wincompatible-pointer-types an error in lz4/frame/_frame.c), and the
-    # "with what installed" suite fails test_benchmark_peers (libarchive: "Unrecognized
-    # archive format"); neither happens on 24.04. Lift it with the `test` pin.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       UV_PYTHON: ${{ matrix.python }}
@@ -863,6 +852,11 @@ jobs:
         run: python3 scripts/ci/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
+        # lz4 4.4.5 has no PyPy wheel, and its lz4/frame/_frame.c assigns the PyObject *
+        # a capsule destructor receives to a struct pointer without a cast. GCC 14+
+        # (ubuntu-26.04 has 15) makes that an error; the code is correct, so demote it.
+        env:
+          CFLAGS: -Wno-error=incompatible-pointer-types
         run: |
           {
             echo "### ${{ matrix.python }}: optional packages"

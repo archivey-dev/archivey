@@ -166,7 +166,10 @@ Not shipped.
 - **rpmbuild** (rpm 4.x) writes newc payloads compressed with zstd (Fedora since 31), xz
   (RHEL 8, openSUSE) or gzip, and the stripped form for a file of 4 GiB or more.
 - **rpm 6.0** (2025) writes v6 packages: the stripped form always, `LONGFILESIZES`
-  always, SHA-256 or stronger file digests, and `RPMFORMAT` = 6.
+  always, SHA-256 or stronger file digests, and `RPMFORMAT` = 6. Ubuntu 26.04's
+  rpmbuild (6.0.1) does so by default; archivey reads its packages, and libarchive 3.8.5
+  (the same image) refuses them with "Unrecognized archive format" (checked 2026-11-17).
+  `--define=_rpmformat 4` makes rpm 6 write v4 again.
 - **rpm < 4.11** sometimes stored a ghost file in the payload; rpm skips it, and so does
   archivey.
 - **Source packages** hold the spec file and sources with relative names, and no
