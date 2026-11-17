@@ -417,3 +417,46 @@ def test_study_raw_repros(decode: Callable[[bytes, int], bytes], name: str) -> N
             decode_raw_chunk(decode, block)
     else:
         assert decode_raw_chunk(decode, block) == expected
+
+
+# --- "auto" backend selection -----------------------------------------------------------
+
+
+def test_auto_prefers_compress_utils_then_cramjam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from importlib import util
+
+    from archivey.internal.streams.codecs import snappy_framed
+
+    real = util.find_spec
+
+    def only(*present: str) -> None:
+        def find_spec(name: str, *args: object) -> object:
+            if name in {"cramjam", "compress_utils"}:
+                return real("json") if name in present else None
+            return real(name, *args)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(snappy_framed.importlib.util, "find_spec", find_spec)
+
+    only("cramjam", "compress_utils")
+    assert snappy_framed.resolve_backend("auto").name == "compress-utils"
+    only("cramjam")
+    assert snappy_framed.resolve_backend("auto").name == "cramjam"
+    only("compress_utils")
+    assert snappy_framed.resolve_backend("auto").name == "compress-utils"
+    only()
+    handler = snappy_handler()
+    assert handler.requires == ("cramjam",)
+    assert handler.install_hint == "pip install cramjam or compress-utils"
+
+
+def test_auto_reads_with_whichever_backend_is_installed() -> None:
+    cramjam = importorskip("cramjam")
+    data = _sample(100_000)
+    with registration_scope():
+        register_codec(snappy_handler())
+        with open_stream(
+            io.BytesIO(bytes(cramjam.snappy.compress(data))), format="sz"
+        ) as stream:
+            assert stream.read() == data

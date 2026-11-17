@@ -5,7 +5,7 @@ Nothing registers it by default::
     from archivey.formats import register_codec
     from archivey.internal.snappy_plugin import snappy_handler
 
-    register_codec(snappy_handler("cramjam"))  # or "compress-utils"
+    register_codec(snappy_handler())  # or "cramjam" / "compress-utils"
 
 archivey then reads ``.sz`` files and ``.tar.sz`` through the ordinary plugin-codec
 path. The framing, sizes and CRCs are checked by
@@ -19,11 +19,12 @@ from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.formats import CodecCall, CodecHandler, Magic
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.snappy_framed import (
-    BACKENDS,
+    AUTO_ORDER,
     STREAM_IDENTIFIER,
     SnappyFormatError,
     SnappyFramedDecompressor,
     crc32c_function,
+    resolve_backend,
 )
 from archivey.types import PluginStream
 
@@ -32,11 +33,14 @@ class SnappyStream(PluginStream):
     SZ = "sz"
 
 
-def snappy_handler(backend: str = "cramjam", crc: str = "auto") -> type[CodecHandler]:
+def snappy_handler(backend: str = "auto", crc: str = "auto") -> type[CodecHandler]:
     """A ``CodecHandler`` class for Snappy framed streams whose raw blocks ``backend``
-    decodes (a key of ``BACKENDS``). ``crc`` picks the CRC-32C implementation
+    decodes: a key of ``BACKENDS``, or ``"auto"`` for the first installed one in
+    ``AUTO_ORDER`` (chosen when this is called). ``crc`` picks the CRC-32C
+    implementation
     (``"auto"``, ``"python"`` or ``"google-crc32c"``)."""
-    chosen = BACKENDS[backend]
+    chosen = resolve_backend(backend)
+    auto = backend == "auto"
 
     class SnappyHandler(CodecHandler):
         stream_format = SnappyStream.SZ
@@ -46,7 +50,11 @@ def snappy_handler(backend: str = "cramjam", crc: str = "auto") -> type[CodecHan
         concatenated = False
         checks_content = True
         requires = (chosen.module,)
-        install_hint = f"pip install {chosen.package}"
+        install_hint = (
+            "pip install " + " or ".join(reversed(AUTO_ORDER))
+            if auto
+            else f"pip install {chosen.package}"
+        )
 
         @override
         def decompressor(self, call: CodecCall) -> SnappyFramedDecompressor:

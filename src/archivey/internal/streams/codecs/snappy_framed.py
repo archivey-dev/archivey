@@ -25,9 +25,10 @@ for ``DecoderLimits.max_decoder_memory`` to cap.
 
 **Backends.** The raw Snappy decode is the only native step: :data:`BACKENDS` maps a
 name to a small adapter for ``cramjam`` (Rust ``snap``) or ``compress-utils`` (its own C
-decoder). Every check of the framing, the sizes and the CRC is done here, the same for
-both, so a backend can differ only in which raw blocks it accepts and what bytes it
-returns. The decoded length must equal the length the block declares.
+decoder); ``"auto"`` picks the first installed one in :data:`AUTO_ORDER`. Every check of
+the framing, the sizes and the CRC is done here, the same for both, so a backend can
+differ only in which raw blocks it accepts and what bytes it returns. The decoded length
+must equal the length the block declares.
 
 **CRC-32C.** The standard library has no CRC-32C (``zlib.crc32`` is a different
 polynomial). ``google-crc32c`` is used when installed; otherwise a table-driven Python
@@ -37,6 +38,7 @@ CRC runs at about 17 MB/s, which then bounds the whole decode.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -204,6 +206,32 @@ BACKENDS: dict[str, Backend] = {
         "compress-utils", "compress_utils", "compress-utils", _compress_utils
     ),
 }
+
+
+# The order ``"auto"`` tries the backends in. compress-utils first: it matched Google
+# Snappy on every input measured, while cramjam refuses three valid but unusual raw
+# encodings (dev-docs/investigations/snappy-framing-backends.md). cramjam second: it has
+# wheels for more interpreters, PyPy included.
+AUTO_ORDER = ("compress-utils", "cramjam")
+
+
+def installed_backends() -> list[str]:
+    """The backends whose module is installed, in ``AUTO_ORDER``. Does not import."""
+    return [
+        name
+        for name in AUTO_ORDER
+        if importlib.util.find_spec(BACKENDS[name].module) is not None
+    ]
+
+
+def resolve_backend(name: str) -> Backend:
+    """The backend ``name`` names; ``"auto"`` is the first installed one in
+    ``AUTO_ORDER``, or the last of them when none is installed (so the missing-package
+    report names it)."""
+    if name != "auto":
+        return BACKENDS[name]
+    found = installed_backends()
+    return BACKENDS[found[0] if found else AUTO_ORDER[-1]]
 
 
 def decode_raw_chunk(decode: Callable[[bytes, int], bytes], block: bytes) -> bytes:

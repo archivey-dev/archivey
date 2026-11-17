@@ -9,8 +9,11 @@ unusual raw encodings that Google Snappy and compress-utils accept. No standard 
 writes them. The real speed question is CRC-32C, not the backend: with the Python CRC a
 read runs at about 20 MB/s, with `google-crc32c` at 480 to 930 MB/s.
 
-The maintainer picks the backend; this report does not. The facts that bear on it are
-under [Choosing](#choosing).
+**Ruling (maintainer, 2026-11-17): keep both, selectable.** `snappy_handler()` defaults
+to `"auto"`: compress-utils when it is installed, since it matched Google Snappy on every
+input, else cramjam, which has wheels for more interpreters. A caller can still name one.
+Consequence: a cramjam-only install refuses the three unusual encodings below that a
+compress-utils install reads. The facts behind the choice are under [Choosing](#choosing).
 
 ## What was built
 
@@ -99,7 +102,7 @@ would give up the checks this module owns.
 
 ## Choosing
 
-Facts for the maintainer's choice, not a recommendation:
+The facts the choice was made on:
 
 - **Correctness.** Equal on everything measured except cramjam's three refusals above.
 - **Speed.** Equal within noise. A CRC-32C accelerator is what matters. Options:
@@ -118,7 +121,6 @@ Facts for the maintainer's choice, not a recommendation:
 
 ## Before this could ship
 
-- Pick a backend, and whether the other stays as an alternative.
 - Make it a built-in codec (a `StreamFormat`, an `OptionalLibrary`, an extra, docs,
   format lists, detection tests) instead of an opt-in plugin, or keep it a plugin.
 - Decide the CRC-32C dependency.
