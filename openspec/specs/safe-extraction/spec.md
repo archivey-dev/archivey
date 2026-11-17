@@ -522,7 +522,7 @@ the archive made. The `archivey://` tree leaves such a member out. Tests:
 | `e/`, SYMLINK `s -> e`, then `s/x` | `s` `EXTRACTED`; `s/x` `BLOCKED`; nothing written in `e` |
 | `e/`, SYMLINK `s -> e`, then `e/x` | `e/x` `EXTRACTED` |
 | `d/x`, SYMLINK `s -> d`, then SYMLINK `t -> s/x` | Both links `EXTRACTED` |
-| `TRUSTED`; SYMLINK `etc -> /etc`, then `etc/passwd` | `etc/passwd` `BLOCKED` |
+| `TRUSTED`; SYMLINK `etc -> /etc`, then `etc/passwd` | `etc/passwd` `BLOCKED` as an escape ("Member resolves outside the destination root") |
 | `e/`, SYMLINK `s -> e`, then HARDLINK `s/h` to a source left out of the selection | `s/h` `BLOCKED`; no placeholder |
 | The caller's `s -> e` in `dest`; `e/`, `f/`, SYMLINK `s -> f` under `REPLACE`, then `s/x` | `s` `EXTRACTED`; `s/x` `BLOCKED` |
 | The caller's `s -> e` in `dest`, then `s/x` | Written at `e/x` |
