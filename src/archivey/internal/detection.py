@@ -2438,11 +2438,11 @@ def _leading_bytes_scan(
     The SFX scan's window and validators without its executable cue, as 7-Zip, unrar
     and unzip find one. Last, so only a source every other step declined pays for the
     window. An executable cue already ran the scan. A known non-archive signature is
-    not a prefix, and a name that names a format keeps its guess: the ZIP, 7z, RAR and LHA
-    readers find a prefixed archive themselves, and the ZIP reader from the end, where
-    the first local header the scan meets may belong to a later member (a ZIP missing
-    its first bytes). An unnamed ZIP missing its first bytes is knowingly left to
-    that: the scan opens it at a later member's header, and the reader's
+    not a prefix, and a name that names a format keeps its guess: the ZIP, 7z, RAR, LHA
+    and ARJ readers find a prefixed archive themselves, and the ZIP reader from the end,
+    where the first local header the scan meets may belong to a later member (a ZIP
+    missing its first bytes). An unnamed ZIP missing its first bytes is knowingly left
+    to that: the scan opens it at a later member's header, and the reader's
     missing-bytes message counts from there.
 
     Returns the answer, or ``None``, and the window a budget-bounded scan searched in
@@ -2490,6 +2490,22 @@ def _leading_bytes_scan(
     return None, 0
 
 
+# How an error message names a format the leading-bytes scan looks for, where its
+# display name is not the name users know.
+_SCAN_NAMES = {ArchiveFormat.SEVEN_Z: "7z"}
+
+
+def _leading_scan_formats(registry: BackendRegistry) -> str:
+    """The formats the leading-bytes scan looks for, as a message lists them: each
+    format with an SFX hit validator, since the scan runs ``restrict_to_validated``."""
+    names = sorted(
+        _SCAN_NAMES.get(fmt, fmt.display_name) for fmt in registry.sfx_hit_validators()
+    )
+    if len(names) < 2:
+        return "".join(names)
+    return f"{', '.join(names[:-1])} or {names[-1]}"
+
+
 def _undetected_error(
     detection: _DetectionPass,
     *,
@@ -2534,8 +2550,9 @@ def _undetected_error(
         )
     if leading_scan_window:
         message += (
-            f" No ZIP, 7z or RAR archive starts in the first {leading_scan_window} "
-            "bytes behind other data either; for one further in, pass format=."
+            f" No {_leading_scan_formats(detection.registry)} archive starts in the "
+            f"first {leading_scan_window} bytes behind other data either; for one "
+            "further in, pass format=."
         )
     if off_formats:
         # Added to the advice above, not in its place: the file may be one of the

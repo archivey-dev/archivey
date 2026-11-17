@@ -1781,6 +1781,19 @@ def test_empty_source_says_it_is_empty(tmp_path: Path) -> None:
         detect_format(io.BytesIO(b"plain text, not an archive"))
 
 
+def test_the_leading_scan_error_names_every_format_it_searched_for() -> None:
+    # The scan looks for every format with an SFX hit validator, not ZIP, 7z and
+    # RAR alone.
+    from archivey.internal.registry import get_registry
+
+    with pytest.raises(FormatDetectionError) as caught:
+        detect_format(io.BytesIO(b"hello world " * 400))
+    message = str(caught.value)
+    assert " No 7z, ARJ, LHA, RAR or ZIP archive starts in the first " in message
+    validators = get_registry().sfx_hit_validators()
+    assert {ArchiveFormat.LHA, ArchiveFormat.ARJ} <= set(validators)
+
+
 def test_mutable_receipt_freezes_every_public_counter() -> None:
     """The mutable receipt and ``freeze()`` agree with the public receipt's counters.
 

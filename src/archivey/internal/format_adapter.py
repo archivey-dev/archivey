@@ -301,7 +301,6 @@ class _PluginAdapter(BaseArchiveReader):
             open_nested=self._open_nested,
             usage=self._usage,
         )
-        context._usage = self._usage
         context._nest = self._nest
         context._spanning_check = self._new_spanning_check
         context._decompress_coder = self._decompress_coder

@@ -626,8 +626,9 @@ class ReaderContext:
     ) -> None:
         self._encoding = encoding
         # The open reader's resource-usage recorder, for a built-in reader that checks
-        # a declared allocation itself (``check_decoder_memory``). Not part of the
-        # plugin interface.
+        # a declared allocation itself (``check_decoder_memory``), or that calls a
+        # package itself (SquashFS's lz4) and records it for
+        # ``ArchiveReader.backends_used``. Not part of the plugin interface.
         self._usage = usage
         self._archive_name = archive_name
         self._config = config
@@ -637,9 +638,6 @@ class ReaderContext:
         self._hold = hold
         self._charge_metadata = charge_metadata
         self._open_nested = open_nested
-        # Set by archivey's adapter: where a built-in reader that calls a package
-        # itself (SquashFS's lz4) records it for ``ArchiveReader.backends_used``.
-        self._usage: ResourceUsageRecorder | None = None
 
     @property
     def encoding(self) -> str | None:

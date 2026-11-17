@@ -807,12 +807,14 @@ def format_availability(
     and RAR reports as it would with ``unrar`` installed.
 
     Without ``config`` the answer is what this environment provides. With it, three
-    fields of ``config.formats`` change it, and no other: a package that
-    ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as absent,
-    listed in ``missing`` with the policy as its ``reason``, and a container in
+    fields of ``config.formats`` change it, and no other field of ``config.formats``: a
+    package that ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as
+    absent, listed in ``missing`` with the policy as its ``reason``, and a container in
     ``replace`` is answered for the plugin that reads it, whose ``requires`` count as a
-    registered plugin's do. Whether the format may open is
-    another question, answered by ``config.formats.allows(fmt)``; a caller needs both.
+    registered plugin's do. With ``check_programs=True``, a setting that names a program
+    (``unrar_path``) is used too, to look for that program. Whether the format may open
+    is another question, answered by ``config.formats.allows(fmt)``; a caller needs
+    both.
     """
     # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat
     # or a stray string would otherwise reach the method and fail with an untranslated
