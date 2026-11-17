@@ -68,11 +68,15 @@ The header is read in 16 KiB chunks until `skip` lines are in, bounded by
 inside a value (a license holding `skip="3"`) is never taken for a variable. It goes on
 from where the last chunk stopped (`_LineCounter` likewise for the `skip` lines), so a
 hostile header costs time linear in its length, and it keeps only the variables in
-`_USED`, so memory does not grow with it. A used variable assigned twice, text with a
-quote after a value, numbers that are not numbers, digests of the wrong length or count,
-`totalsize` not the sum of `filesizes`, old offset lines that disagree, and payload
-commands that differ are `CorruptionError`. A command archivey does not know is
-`UnsupportedFeatureError` naming it.
+`_USED`, so memory does not grow with it. A used variable assigned twice, or assigned
+where the parse does not read it (an indented line, after a `;` or `export`, after
+another value on its line: the shell runs those lines, so the value there is the one
+makeself uses), text with a quote after a value, numbers that are not numbers, digests
+of the wrong length or count, `totalsize` not the sum of `filesizes`, old offset lines
+that disagree, and payload commands that differ are `CorruptionError`. A command
+archivey does not know is `UnsupportedFeatureError` naming it. More payloads than
+`max_members` is `ResourceLimitError`: each payload builds a TAR reader, which costs far
+more than the bytes of header that list it, and an empty one adds no member to count.
 
 ### 2.3 Read the payloads
 

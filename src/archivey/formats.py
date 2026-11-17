@@ -771,6 +771,8 @@ class ReaderContext:
         :attr:`MemberSpan.data` (``None`` for a member with no data). The inner reader
         works for this archive: what it reports goes into this archive's diagnostics,
         under the caller's ``DiagnosticPolicy``, and its errors raise from the walk.
+        An inner archive with no members does not report ``EMPTY_ARCHIVE``; this
+        archive's listing reports whether it is empty.
         It shares this archive's limits rather than getting its own: what it keeps
         counts toward the same ``max_metadata_bytes``, its decoders get the
         ``max_decoder_memory`` this archive's decoders left, and its ``max_ratio`` is

@@ -105,6 +105,13 @@ _USED = frozenset(
         b"SIGNATURE",
     }
 )
+# An assignment to a used variable anywhere in a line: indented, after a ``;``, after
+# ``export``, unquoted. The shell runs such a line, but the parse reads only an
+# assignment at the start of a line, so the value the parse kept may not be the one
+# makeself uses.
+_HIDDEN_ASSIGNMENT = re.compile(
+    rb"(?<![A-Za-z0-9_])(" + b"|".join(sorted(_USED)) + rb")="
+)
 # The escapes the shell undoes inside double quotes, and a backslash-newline.
 _ESCAPE = re.compile(rb'\\([$`"\\\n])')
 # makeself 2.2.0 to 2.4.0: the header's line count, written into the script.
@@ -340,6 +347,15 @@ class MakeselfReader(SequentialReader):
         sizes = [_number(t, "filesizes") for t in _required(variables, b"filesizes")]
         if not sizes:
             raise CorruptionError("makeself header: filesizes lists no payload")
+        # Each payload builds a TAR reader, which costs far more than the few bytes
+        # of header that list it, and an empty one adds nothing to the member count.
+        # So the payloads count against max_members too.
+        max_members = self._context.config.listing_limits.max_members
+        if max_members is not None and len(sizes) > max_members:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} (the makeself "
+                f"header lists {len(sizes)} payloads)"
+            )
         total = variables.get(b"totalsize")
         if (
             total is not None
@@ -443,6 +459,8 @@ class _VariableParser:
     ``if ...``) are skipped. Only the variables in ``_USED`` are kept, so memory does
     not grow with the header. One of those assigned twice is damage: the shell would
     take the last, and a reader should not have to guess which one makeself wrote.
+    So is one assigned where the parse does not read it, on a skipped line or after
+    another value on its line: makeself writes each at the start of its own line.
 
     ``feed`` goes on from where the last call stopped and reads each byte about once:
     a newline is looked for only past where the last search ended, a line is matched
@@ -481,6 +499,7 @@ class _VariableParser:
                     return True
                 match = _ASSIGNMENT.match(buffer, self._pos, eol)
                 if match is None:
+                    _refuse_hidden(buffer, self._pos, eol)
                     self._pos = eol + 1
                     continue
                 self._name = bytes(match.group(1))
@@ -521,11 +540,23 @@ class _VariableParser:
             raise CorruptionError(
                 f"makeself header: a quote after the value of {_shown(name)}"
             )
+        _refuse_hidden(after, 0, len(after))
         if name not in _USED:
             return
         if name in self.variables:
             raise CorruptionError(f"makeself header assigns {_shown(name)} twice")
         self.variables[name] = _ESCAPE.sub(_unescape_one, bytes(raw))
+
+
+def _refuse_hidden(line: bytes | bytearray, start: int, end: int) -> None:
+    """Refuse ``line[start:end]``, text the parse skips, when it assigns a variable
+    the reader uses."""
+    found = _HIDDEN_ASSIGNMENT.search(line, start, end)
+    if found is not None:
+        raise CorruptionError(
+            f"makeself header assigns {_shown(found.group(1))} where this reader "
+            "does not read it"
+        )
 
 
 # The header's newline searches, each over ``buffer[start:]``.

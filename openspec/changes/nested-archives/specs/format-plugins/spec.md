@@ -16,7 +16,9 @@ caller's config and `encoding`; what it reports SHALL go into the outer reader's
 diagnostics with `member_id` as the outer listing numbers the member, when the walk
 yields each span in order, and SHALL be attached to that member, while its data is read
 too; its errors SHALL raise from the walk. Name checks SHALL run once, on the members the
-outer listing lists. An archive nested more than 8 deep (`MAX_NESTED_DEPTH`) SHALL be
+outer listing lists. An inner archive that lists no members SHALL NOT report
+`EMPTY_ARCHIVE`: its members are the outer archive's, and the outer listing reports
+whether it is empty. An archive nested more than 8 deep (`MAX_NESTED_DEPTH`) SHALL be
 refused with `UnsupportedFeatureError`.
 
 The levels of one nest SHALL share one budget for each limit, not one each. What an
@@ -37,6 +39,7 @@ from it so far when that size is unknown.
 | The same with random access, members opened out of order | The same bytes |
 | An inner TAR header with an unknown type, third member listed | One `MEMBER_TYPE_UNKNOWN`, `member_id` 2, attached to that member |
 | The same name twice across two inner archives | One `MEMBER_NAME_DUPLICATE` |
+| An empty inner TAR beside one with a member | No `EMPTY_ARCHIVE` |
 | An inner archive shorter than its `take` | The walk resumes after the taken bytes |
 | A ZIP inside, read from a pipe | Its members |
 | A 7z inside | `UnsupportedFeatureError` |

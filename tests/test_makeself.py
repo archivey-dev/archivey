@@ -228,6 +228,41 @@ def test_a_variable_set_twice_is_damage() -> None:
 
 
 @pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'  filesizes="10"', id="indented"),
+        pytest.param(b'\tfilesizes="10"', id="tab"),
+        pytest.param(b': ; filesizes="10"', id="after-semicolon"),
+        pytest.param(b'export filesizes="10"', id="export"),
+        pytest.param(b"if true; then skip=3; fi", id="unquoted-in-if"),
+        pytest.param(b'quiet="n"; label=x', id="after-another-value"),
+    ],
+)
+def test_a_used_variable_set_where_the_parse_does_not_look_is_damage(
+    line: bytes,
+) -> None:
+    # The shell runs these lines, so the value they set is the one makeself uses;
+    # the parse does not read them as assignments, so it must refuse them.
+    data = _edited(b'totalsize="224"', b'totalsize="224"\n' + line)
+    with pytest.raises(CorruptionError, match="where this reader does not read it"):
+        open_archive(io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'    print_cmd="printf"', id="indented-other-variable"),
+        pytest.param(b"echo filesizes and skip", id="names-without-equals"),
+        pytest.param(b'scriptargs="$script"', id="longer-name"),
+    ],
+)
+def test_other_lines_in_the_variables_still_read(line: bytes) -> None:
+    data = _edited(b'totalsize="224"', b'totalsize="224"\n' + line)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert _contents(reader) == FILES
+
+
+@pytest.mark.parametrize(
     ("old", "new", "error", "match"),
     [
         (b'filesizes="224"', b'filesizes="22x"', CorruptionError, "not a number"),
@@ -496,6 +531,68 @@ def test_payload_commands(
     command: bytes, decrypt: bytes, expected: tuple[StreamFormat, str | None]
 ) -> None:
     assert makeself_reader._decoders(command, decrypt) == expected
+
+
+def _empty_tar_gz() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w"):
+        pass
+    return gzip.compress(buffer.getvalue(), mtime=0)
+
+
+def _one_file_tar_gz() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo("x.txt")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"xyz"))
+    return gzip.compress(buffer.getvalue(), mtime=0)
+
+
+def _with_payloads(payloads: list[bytes]) -> bytes:
+    """The 2.7.1 fixture's header over ``payloads``, its sizes and digests listed for
+    each (all-zero digests: makeself writes those where it computed none)."""
+    header, _ = _split((DATA / "gzip-2.7.1.run").read_bytes())
+    lists = {
+        b"CRCsum": b" ".join(b"0" for _ in payloads),
+        b"MD5": b" ".join(b"0" * 32 for _ in payloads),
+        b"SHA": b"",
+        b"filesizes": b" ".join(b"%d" % len(p) for p in payloads),
+        b"totalsize": b"%d" % sum(len(p) for p in payloads),
+    }
+    for name, value in lists.items():
+        header, count = re.subn(
+            rb'^%s="[^"]*"$' % name,
+            lambda _, n=name, v=value: b'%s="%s"' % (n, v),
+            header,
+            flags=re.MULTILINE,
+        )
+        assert count == 1, name
+    return header + b"".join(payloads)
+
+
+def test_payloads_count_against_max_members() -> None:
+    # Each payload builds a TAR reader, which costs far more than its few bytes of
+    # header, and an empty one lists nothing for max_members to count.
+    data = _with_payloads([_empty_tar_gz()] * 11)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(data), config=config)
+    with open_archive(
+        io.BytesIO(_with_payloads([_empty_tar_gz()] * 10)), config=config
+    ):
+        pass
+
+
+def test_an_empty_payload_is_not_reported_as_an_empty_archive() -> None:
+    data = _with_payloads([_empty_tar_gz(), _one_file_tar_gz(), _empty_tar_gz()])
+    with open_archive(io.BytesIO(data)) as reader:
+        assert [m.name for m in reader.members()] == ["x.txt"]
+        assert DiagnosticCode.EMPTY_ARCHIVE not in reader.diagnostics.counts
+    # With nothing in any payload, the archive itself is empty, and says so once.
+    with open_archive(io.BytesIO(_with_payloads([_empty_tar_gz()] * 3))) as reader:
+        assert reader.members() == []
+        assert reader.diagnostics.counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
 
 
 def test_a_payload_built_here_reads() -> None:
