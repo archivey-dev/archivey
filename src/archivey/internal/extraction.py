@@ -3640,47 +3640,74 @@ class ExtractionCoordinator:
     def _fill_held_source(self, held: _HeldSource, stream: BinaryIO | None) -> None:
         """Fill the placeholders of ``held`` with the source's bytes from ``stream``.
 
-        The first name still holding the placeholder gets the content, written as
-        any file is (a temp sibling, then a rename onto the placeholder), with that
-        link's metadata. The other names are then linked to it, each by its own
-        rename. A failure up to the first landing is the source's: every name fails,
-        as one group (``_fail_held_source``). A failure linking another name is that
-        link's own."""
+        The first name still holding the placeholder that takes the content gets it,
+        written as any file is (a temp sibling, then a rename onto the placeholder),
+        with that link's metadata. The other names are then linked to it, each by its
+        own rename. Two kinds of failure are the source's, and fail every name not yet
+        made as one group (``_fail_held_source``): the refusal of the source's recorded
+        size, and any failure once the copy into the temp file begins. A failure
+        before the copy (a directory that refuses the temp file) is that link's own,
+        and the content moves to the next name. So is a failure linking another name."""
         live = [link for link in held.links if self._holds_placeholder(link)]
         if not live:
             return
         source = held.source
-        first = live[0]
-        current = self._current = _MemberState(
-            requested_path=first.physical, spelled_from=first.spelled_from
-        )
-        # A placeholder counts as free, as a parked copy does, so the landings
-        # replace it under every overwrite policy.
-        current.parked = {link.physical: link.result_index for link in live}
+        pending = list(live)
         source_error: ArchiveyError | OSError | None = None
+        # The recorded-size check runs first; from the first read of the stream on,
+        # a failure is the source's too.
+        began = True
+
+        def copy_begins() -> None:
+            nonlocal began
+            began = True
 
         def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
             nonlocal source_error
             # Nothing the second pass runs raises FilterRejectionError.
             assert failed.status is ExtractionStatus.FAILED
-            source_error = error
-            return True  # stopped on or logged below, under the source's name
+            if began:
+                source_error = error
+                return True  # stopped on or logged below, under the source's name
+            link = pending.pop(0)
+            self._revise_result(link.result_index, failed)
+            self._remove_placeholder(link)
+            return False  # this link's own failure, stopped on or logged as one
 
         try:
             # The links were counted as entries when their placeholders were placed;
             # the source itself is not an entry on disk.
             self._state.tracker.start_member(source, entry=False)
-            with self._handling(first.original, kind="hardlink", record=record):
-                for link in live:
-                    self._forget_source_path(link.path)
-                landed = self._write_file_atomic(
-                    stream, first.physical, first.transformed
+            self._current = _MemberState(
+                requested_path=live[0].physical, spelled_from=live[0].spelled_from
+            )
+            with self._handling(live[0].original, kind="hardlink", record=record):
+                self._state.tracker.check_recorded_size()
+            began = False
+            for link in pending:
+                self._forget_source_path(link.path)
+            landed: Path | None = None
+            while landed is None and pending and source_error is None:
+                first = pending[0]
+                current = self._current = _MemberState(
+                    requested_path=first.physical, spelled_from=first.spelled_from
                 )
-                self._record_source_path(source.member_id, landed)
+                # A placeholder counts as free, as a parked copy does, so the
+                # landings replace it under every overwrite policy.
+                current.parked = {link.physical: link.result_index for link in pending}
+                with self._handling(first.original, kind="hardlink", record=record):
+                    landed = self._write_file_atomic(
+                        stream,
+                        first.physical,
+                        first.transformed,
+                        copy_begins=copy_begins,
+                    )
+                    self._record_source_path(source.member_id, landed)
+                    pending.pop(0)
             if source_error is not None:
-                self._fail_held_source(held, source_error, live=live)
+                self._fail_held_source(held, source_error, live=pending)
                 return
-            for link in live[1:]:
+            for link in pending:
                 self._link_held(source.member_id, link)
         except BaseException:
             # An error ``_handling`` lets through (a stop on a link's failure, an
@@ -4381,6 +4408,7 @@ class ExtractionCoordinator:
         member: ArchiveMember,
         *,
         staged: Path | None = None,
+        copy_begins: Callable[[], None] | None = None,
     ) -> Path:
         """Write a FILE by streaming into a temp sibling, applying ``member``'s metadata,
         then moving it onto ``dest_path`` (``_swap_into_place``: ``os.replace``, or a
@@ -4404,9 +4432,15 @@ class ExtractionCoordinator:
         cannot rename it (another filesystem mounted inside the destination), it is
         copied, uncounted, as any stream is.
 
+        ``copy_begins`` is called once the temp file exists, just before the first
+        read of ``stream``: the hard-link fill blames a failure from then on on the
+        source, not the link (``_fill_held_source``). A staged write copies nothing, so
+        the two are never passed together.
+
         Returns the name the file landed on: ``dest_path``, or under RENAME another
         free name when another writer took ``dest_path`` first (``_land_on_free_name``).
         Under SKIP, such a name raises ``_NameTakenSince``."""
+        assert copy_begins is None or staged is None
         if staged is not None:
             return self._land_staged(staged, dest_path, member)
         # Every check that could still skip the member has passed, so a member whose
@@ -4422,6 +4456,8 @@ class ExtractionCoordinator:
             fd, tmp = self._new_temp_file(self._parent(dest_path))
         try:
             with os.fdopen(fd, "wb") as dst:
+                if copy_begins is not None:
+                    copy_begins()
                 # A dry run reads and verifies the body like a real one; only the bytes
                 # go nowhere, and the file is left empty.
                 self._copy_to_fileobj(

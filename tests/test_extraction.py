@@ -3050,6 +3050,53 @@ def _orphan_tar(tmp_path: Path, links: list[str]) -> Path:
     return src
 
 
+@pytest.mark.parametrize("copy_began", [False, True], ids=["temp-refused", "read"])
+def test_a_fill_failure_before_the_copy_is_the_links_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, copy_began: bool
+) -> None:
+    # The fill's first landing fails. Before the copy into its temp file begins
+    # (the directory refuses the temp file), the failure is L1's own: L1 fails
+    # alone and the content goes to L2. From the copy on, it is the source's: both
+    # links fail as one group.
+    src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
+    dest = tmp_path / "out"
+    write = ExtractionCoordinator._write_file_atomic
+    calls: list[str] = []
+
+    def failing_write(
+        self: ExtractionCoordinator,
+        stream: object,
+        path: Path,
+        *args: object,
+        **kw: object,
+    ) -> Path:
+        calls.append(path.name)
+        if len(calls) == 1:
+            began = kw.get("copy_begins")
+            if copy_began and callable(began):
+                began()
+            raise PermissionError(errno.EACCES, "temp refused", str(path))
+        return write(self, stream, path, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", failing_write)
+    with open_archive(src) as r:
+        results = r.extract_all(
+            dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
+        ).results
+    by_name = {res.member.name: res for res in results}
+    assert by_name["L1.txt"].status is ExtractionStatus.FAILED
+    assert not (dest / "L1.txt").exists()
+    if copy_began:
+        assert by_name["L2.txt"].status is ExtractionStatus.FAILED
+        assert by_name["L1.txt"].failure_group_id is not None
+        assert by_name["L1.txt"].failure_group_size == 2
+        assert not (dest / "L2.txt").exists()
+    else:
+        assert by_name["L1.txt"].failure_group_id is None
+        assert by_name["L2.txt"].status is ExtractionStatus.EXTRACTED
+        assert (dest / "L2.txt").read_bytes() == b"hello world"
+
+
 def test_orphan_first_link_skipped_writes_to_next(tmp_path: Path) -> None:
     # Regression: with the excluded source's FIRST link skipped (OverwritePolicy.SKIP over
     # an existing destination), the coordinator crashed with a raw KeyError when linking
