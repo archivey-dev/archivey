@@ -1643,8 +1643,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
     `begin-base64` variant (`uuencode -m`) ends at `====`. A file is recognised by its `begin`
     line at the start, whatever its name. With a `.uu` or `.uue` name, text before `begin` (a
-    mail or news post) is skipped, up to 64 KiB. Only the first file is read, and text after its
-    end line is reported as `ARCHIVE_TRAILING_DATA`. The stored name is
+    mail or news post) is skipped, up to 64 KiB. A line over 4 096 bytes, before `begin` or
+    after it, is an error. Only the first file is read, and text after its end line is
+    reported as `ARCHIVE_TRAILING_DATA`. The stored name is
     `extra["uu.original_filename"]` and `raw_name`, and the stored mode is `mode`; the member
     keeps the name it gets from the file's own name, so the stored name never picks a path.
   - **base64** (`.b64`, `.base64`): bare base64 text, in lines of one length or one long line,
