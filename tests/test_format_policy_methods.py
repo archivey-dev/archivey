@@ -296,6 +296,9 @@ def test_the_common_preset_refuses_legacy_zip_members() -> None:
     [
         (A.XZ, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)),
         (A.XZ, ArchiveFormat(ContainerFormat.TAR, StreamFormat.XZ)),
+        # Every xz stream is LZMA2 inside, so turning LZMA2 off refuses xz too.
+        (A.LZMA2, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.XZ)),
+        (A.LZMA2, ArchiveFormat(ContainerFormat.TAR, StreamFormat.XZ)),
         (A.DEFLATE, ArchiveFormat.TAR_GZ),
         (A.DEFLATE, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.ZLIB)),
         (A.LZMA, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)),
@@ -323,10 +326,29 @@ def test_a_method_entry_leaves_other_compressions_open() -> None:
     assert policy.allows(ArchiveFormat.SEVEN_Z)
 
 
-def test_opening_a_file_compressed_with_an_excluded_method_is_refused() -> None:
-    config = ArchiveyConfig(formats=FormatPolicy(exclude={A.XZ}))
-    with pytest.raises(UnsupportedFeatureError, match=r"CompressionAlgorithm\.XZ"):
+@pytest.mark.parametrize("method", [A.XZ, A.LZMA2])
+def test_opening_a_file_compressed_with_an_excluded_method_is_refused(
+    method: CompressionAlgorithm,
+) -> None:
+    config = ArchiveyConfig(formats=FormatPolicy(exclude={method}))
+    with pytest.raises(
+        UnsupportedFeatureError, match=rf"CompressionAlgorithm\.{method.name}"
+    ):
         open_archive(io.BytesIO(lzma.compress(_DATA)), config=config)
+
+
+def test_lzma2_off_refuses_an_xz_member() -> None:
+    """A ZIP member compressed with xz (method 95) decodes LZMA2 too."""
+    xz = LegacyEntry("x.txt", _DATA, 95, lzma.compress(_DATA))
+    config = ArchiveyConfig(formats=FormatPolicy(exclude={A.LZMA2}))
+    with open_archive(io.BytesIO(build_zip([xz])), config=config) as reader:
+        assert reader.members()[0].compression[0].algo is A.XZ
+        with pytest.raises(
+            UnsupportedFeatureError, match=r"CompressionAlgorithm\.LZMA2"
+        ):
+            reader.read("x.txt")
+    with open_archive(io.BytesIO(build_zip([xz]))) as reader:
+        assert reader.read("x.txt") == _DATA
 
 
 # -- review round 1: data decoded elsewhere than the member's own chain ----------------
