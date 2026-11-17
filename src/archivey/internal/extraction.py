@@ -3654,19 +3654,19 @@ class ExtractionCoordinator:
         source = held.source
         pending = list(live)
         source_error: ArchiveyError | OSError | None = None
-        # The recorded-size check runs first; from the first read of the stream on,
-        # a failure is the source's too.
-        began = True
+        # Whether a failure now is the source's rather than the current link's: the
+        # recorded-size check runs first, and so does the copy from its first read.
+        source_fails = True
 
         def copy_begins() -> None:
-            nonlocal began
-            began = True
+            nonlocal source_fails
+            source_fails = True
 
         def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
             nonlocal source_error
             # Nothing the second pass runs raises FilterRejectionError.
             assert failed.status is ExtractionStatus.FAILED
-            if began:
+            if source_fails:
                 source_error = error
                 return True  # stopped on or logged below, under the source's name
             link = pending.pop(0)
@@ -3683,7 +3683,7 @@ class ExtractionCoordinator:
             )
             with self._handling(live[0].original, kind="hardlink", record=record):
                 self._state.tracker.check_recorded_size()
-            began = False
+            source_fails = False
             for link in pending:
                 self._forget_source_path(link.path)
             landed: Path | None = None

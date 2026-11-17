@@ -3060,25 +3060,39 @@ def test_a_fill_failure_before_the_copy_is_the_links_own(
     # links fail as one group.
     src = _orphan_tar(tmp_path, ["L1.txt", "L2.txt"])
     dest = tmp_path / "out"
-    write = ExtractionCoordinator._write_file_atomic
-    calls: list[str] = []
+    if copy_began:
+        write = ExtractionCoordinator._write_file_atomic
 
-    def failing_write(
-        self: ExtractionCoordinator,
-        stream: object,
-        path: Path,
-        *args: object,
-        **kw: object,
-    ) -> Path:
-        calls.append(path.name)
-        if len(calls) == 1:
+        def failing_write(
+            self: ExtractionCoordinator, *args: object, **kw: object
+        ) -> Path:
             began = kw.get("copy_begins")
-            if copy_began and callable(began):
+            if callable(began):
                 began()
-            raise PermissionError(errno.EACCES, "temp refused", str(path))
-        return write(self, stream, path, *args, **kw)  # type: ignore[arg-type]
+                raise OSError(errno.EIO, "read failed")
+            return write(self, *args, **kw)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", failing_write)
+        monkeypatch.setattr(ExtractionCoordinator, "_write_file_atomic", failing_write)
+    else:
+        # The real fill runs; only its first temp file is refused. The first pass
+        # makes its placeholders with temp files of its own, so the refusal waits
+        # for the second pass.
+        new_temp = ExtractionCoordinator._new_temp_file
+        fill = ExtractionCoordinator._fill_held_sources
+        refuse: list[bool] = []
+
+        def refusing_temp(self: ExtractionCoordinator, parent: Path) -> object:
+            if refuse == [True]:
+                refuse.append(False)
+                raise PermissionError(errno.EACCES, "temp refused", str(parent))
+            return new_temp(self, parent)
+
+        def filling(self: ExtractionCoordinator, *args: object) -> None:
+            refuse.append(True)
+            fill(self, *args)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(ExtractionCoordinator, "_new_temp_file", refusing_temp)
+        monkeypatch.setattr(ExtractionCoordinator, "_fill_held_sources", filling)
     with open_archive(src) as r:
         results = r.extract_all(
             dest, members=["L1.txt", "L2.txt"], on_error=OnError.CONTINUE
