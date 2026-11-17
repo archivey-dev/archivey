@@ -79,8 +79,22 @@ listing and small reads, and fixes from a sweep of the 0.4.0 code.
 
 ### Performance
 
-PENDING: filled from two benchmark-compare runs on the release branch, against v0.4.0
-and against v0.3.0, once every patch PR is on main.
+From two benchmark runs on 2026-11-17 at commit `ed7e9313`, archivey takes 1.2 to 3.6
+times as long as the standard library or reference reader to read, and 1.5 to 11.6 times
+as long to list; the ratios above 4 are archives that list in under 2 ms. Against 0.4.0:
+
+- Listing a 7z archive takes 16 to 19% less time, and reading a `.Z` file of highly
+  repetitive data about 30% less. The other cases are within about 5%.
+
+Against 0.3.0, timed beside 0.4.1 in the second run, this recovers most of what 0.4.0
+lost:
+
+- Listing a 7z archive takes 4 to 6% longer, against 10 to 15% in 0.4.0. Reading a `.Z`
+  file of highly repetitive data takes about 7% less time, where 0.4.0 took 40% longer.
+- Listing a RAR archive still takes 16 to 20% longer, and reading a `.gz` file about 20%
+  longer. Both slowdowns came with 0.4.0. The other cases are within about 7%.
+
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full tables.
 
 ## [0.4.0] - 2026-11-15
 

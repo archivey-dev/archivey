@@ -46,15 +46,68 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-## Release figures for 0.4.0, 0.3.0 and 0.2.1
+## Release figures for 0.4.1, 0.4.0, 0.3.0 and 0.2.1
 
-The figures quoted in the CHANGELOG entries for 0.4.0, 0.3.0 and 0.2.1. Each comes from
+The figures quoted in the CHANGELOG entries for 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each comes from
 a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs, Python
 3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
 three rounds per side. A cell is the fastest of the three rounds, for archivey and for
 its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator on are
 left out, because the default does not use one at this corpus size. The rows are the
 same cases as in [0.2.0 release figures](#020-release-figures-2026-10-21).
+
+### 0.4.1 against 0.4.0 and 0.3.0 (2026-11-17)
+
+Two runs, each with the 0.4.1 release branch at `ed7e9313` as the candidate. Each run
+pairs its own baseline with the candidate on the same runner, so compare within a table,
+not across them: the second run's runner was about 1.5 times slower throughout.
+
+Run 44190090067, baseline the `v0.4.0` tag (`5baeb00c`):
+
+| Case | archivey 0.4.0 | ratio 0.4.0 | archivey 0.4.1 | ratio 0.4.1 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 26.9 ms | 1.13× | 26.9 ms | 1.15× |
+| `tar_read_all` | 5.3 ms | 3.66× | 5.4 ms | 3.57× |
+| `tarbz2_read_all_accel_off` | 91.2 ms | 1.16× | 95.8 ms | 1.22× |
+| `targz_read_all_accel_off` | 13.5 ms | 1.84× | 13.5 ms | 1.87× |
+| `zip_extract` | 26.5 ms | 2.24× | 27.2 ms | 2.27× |
+| `zip_read_all` | 14.5 ms | 2.35× | 14.1 ms | 2.30× |
+| `rar_many_open_list` | 17.3 ms | 2.21× | 17.1 ms | 2.21× |
+| `rar_nonsolid_open_list` | 5.0 ms | 2.55× | 4.9 ms | 2.48× |
+| `rar_open_list` | 0.8 ms | 11.31× | 0.8 ms | 11.57× |
+| `sevenzip_many_open_list` | 111.2 ms | 2.13× | 91.8 ms | 1.80× |
+| `sevenzip_nonsolid_open_list` | 17.8 ms | 2.05× | 14.4 ms | 1.46× |
+| `sevenzip_open_list` | 1.2 ms | 2.97× | 1.1 ms | 2.77× |
+| `tar_open_list` | 2.1 ms | 2.43× | 2.1 ms | 2.39× |
+| `zip_open_list` | 1.1 ms | 11.51× | 1.0 ms | 10.60× |
+
+Run 44190097482, baseline the `v0.3.0` tag (`f013eec9`):
+
+| Case | archivey 0.3.0 | ratio 0.3.0 | archivey 0.4.1 | ratio 0.4.1 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 34.7 ms | 0.97× | 42.3 ms | 1.17× |
+| `tar_read_all` | 9.7 ms | 3.83× | 9.3 ms | 3.69× |
+| `tarbz2_read_all_accel_off` | 205.2 ms | 1.08× | 217.1 ms | 1.14× |
+| `targz_read_all_accel_off` | 22.4 ms | 1.80× | 23.5 ms | 1.89× |
+| `zip_extract` | 45.0 ms | 2.50× | 44.0 ms | 2.46× |
+| `zip_read_all` | 25.8 ms | 2.47× | 24.4 ms | 2.33× |
+| `rar_many_open_list` | 26.6 ms | 2.03× | 30.9 ms | 2.36× |
+| `rar_nonsolid_open_list` | 7.4 ms | 2.18× | 8.7 ms | 2.58× |
+| `rar_open_list` | 1.1 ms | 6.34× | 1.3 ms | 10.59× |
+| `sevenzip_many_open_list` | 137.2 ms | 1.52× | 145.8 ms | 1.64× |
+| `sevenzip_nonsolid_open_list` | 20.1 ms | 1.47× | 20.9 ms | 1.51× |
+| `sevenzip_open_list` | 1.8 ms | 2.40× | 1.9 ms | 2.77× |
+| `tar_open_list` | 3.5 ms | 2.59× | 3.7 ms | 2.86× |
+| `zip_open_list` | 2.0 ms | 10.05× | 2.1 ms | 12.92× |
+
+Against 0.4.0, 7z listing is 16–19% faster in archivey's own time (#1580 and #1579), and
+the rest moved within noise. Outside the tables, `z_zeros_read_all` went from 141 to
+98 ms (#1574). Against 0.3.0, 7z listing is now 4–6% slower (10–14% in 0.4.0), and
+`z_zeros_read_all` is 7% faster (159 to 148 ms) where 0.4.0 was 40% slower. RAR listing
+is still 16–20% slower. `gzip_read_all` is 22% slower in all three rounds (34.7–35.6 ms
+against 42.3–42.8 ms); in the 0.4.0 release run this showed as 29.5 against 32.7 ms
+inside noisier rounds, and 0.4.1 reads it in the same time as 0.4.0, so the slowdown came
+with 0.4.0.
 
 ### 0.4.0 and 0.3.0 (2026-11-15)
 
