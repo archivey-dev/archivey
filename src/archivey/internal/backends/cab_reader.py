@@ -340,8 +340,9 @@ class CabReader(IndexedReader[_Location]):
 
     @override
     def iter_members(self) -> Iterator[MemberRecord[_Location]]:
-        """One member per file record, in table order, or in data order where table
-        order would decode a block twice.
+        """One member per file record, in table order, or, where table order would
+        decode a block twice, in data order (the entries a later record supersedes
+        first).
 
         A member stream goes on from the folder decoder the last one left behind
         (``_folder_stream``) only when it is in the same folder, at or after where
@@ -356,10 +357,13 @@ class CabReader(IndexedReader[_Location]):
         their order does not count. Members whose bytes overlap still start their
         folder again in any order.
 
-        A cabinet that lists one name twice keeps table order, which says which entry
-        is current, and each later entry of the name reports
-        ``MEMBER_NAME_DUPLICATE_UNEXPECTED``: a cabinet has no way to update a file,
-        so no writer repeats a name.
+        A cabinet that lists one name twice is sorted too, but the table still says
+        which entry is current: the one it lists last. Sorted, the entries a later
+        record supersedes come first, in data order, then the others in data order,
+        so the current entry still comes after the entries it supersedes, and each
+        block decodes at most twice. Each later entry of the name, by table
+        position, reports ``MEMBER_NAME_DUPLICATE_UNEXPECTED``: a cabinet has no way
+        to update a file, so no writer repeats a name.
 
         A damaged table yields the members before the damage, then the error, as when
         each record is read as it is reached; those members are sorted by the same
@@ -379,10 +383,17 @@ class CabReader(IndexedReader[_Location]):
             self._read_records(records)
         except ArchiveyError as exc:
             failure = exc
-        repeated = self._repeated_names(records)
+        repeated, superseded = self._repeated_names(records)
         order: Sequence[int] = range(len(records))
-        if not repeated and _decodes_twice(self._folders, records, order):
-            order = sorted(order, key=lambda i: (records[i].folder, records[i].offset))
+        if _decodes_twice(self._folders, records, order):
+            order = sorted(
+                order,
+                key=lambda i: (
+                    i not in superseded,
+                    records[i].folder,
+                    records[i].offset,
+                ),
+            )
         for index in order:
             yield self._record(records[index], repeated=index in repeated)
         if failure is not None:
@@ -411,20 +422,24 @@ class CabReader(IndexedReader[_Location]):
                 _Record(size, offset, folder, date << 16 | time, attribs, raw)
             )
 
-    def _repeated_names(self, records: list[_Record]) -> set[int]:
-        """The positions of the records whose name, normalized as the listing
-        presents it, an earlier record has."""
+    def _repeated_names(self, records: list[_Record]) -> tuple[set[int], set[int]]:
+        """The table positions of the records whose name, normalized as the listing
+        presents it, an earlier record has, and of those a later record has (the
+        superseded ones)."""
         context = self._context
-        seen: set[str] = set()
+        last: dict[str, int] = {}
         repeated: set[int] = set()
+        superseded: set[int] = set()
         for index, record in enumerate(records):
             name = context.normalize_name(
                 context.decode_name(record.raw).replace("\\", "/"), MemberType.FILE
             )
-            if name in seen:
+            earlier = last.get(name)
+            if earlier is not None:
                 repeated.add(index)
-            seen.add(name)
-        return repeated
+                superseded.add(earlier)
+            last[name] = index
+        return repeated, superseded
 
     def _record(self, record: _Record, *, repeated: bool) -> MemberRecord[_Location]:
         member = ArchiveMember(
@@ -455,9 +470,10 @@ class CabReader(IndexedReader[_Location]):
         if repeated:
             self._context.report(
                 DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
-                f"File {quoted(member.name)} has the name of an earlier file. A "
-                "cabinet has no way to update or append a file, so no writer makes "
-                "this: the later file supersedes the earlier one.",
+                f"File {quoted(member.name)} has the name of a file listed before it "
+                "in the file table. A cabinet has no way to update or append a file, "
+                "so no writer makes this: the file listed later supersedes the "
+                "earlier one.",
                 UnexpectedNameDuplicateContext(format="cab"),
                 member=member,
             )
