@@ -43,7 +43,7 @@ from archivey.internal.streams.streamtools import (
     read_exact,
     source_byte_size,
 )
-from archivey.types import OptionalLibrary
+from archivey.types import CompressionAlgorithm, OptionalLibrary
 
 if TYPE_CHECKING:
     from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -93,6 +93,7 @@ class PrefixWorkspace:
         *,
         isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
         excluded_libraries: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
+        excluded_methods: frozenset[CompressionAlgorithm] = frozenset(),
         decoder_limits: DecoderLimits = DecoderLimits(),
         collector: DiagnosticCollector | None = None,
         name: str | None = None,
@@ -112,6 +113,9 @@ class PrefixWorkspace:
         # The caller's ``FormatPolicy._libraries_off``: a probe does not decode with
         # a package it names.
         self.excluded_libraries = excluded_libraries
+        # The caller's ``FormatPolicy`` method entries: a probe does not run a filter
+        # one names, such as BCJ in an xz block (``StreamConfig.excluded_methods``).
+        self.excluded_methods = excluded_methods
         # A caller-supplied receipt accumulates across workspaces: ``detect_format``
         # passes one to both the stub pass and the sibling-volume pass.
         self._receipt = (

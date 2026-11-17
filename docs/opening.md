@@ -246,7 +246,11 @@ that decoder off, for a file compressed with it as a whole and for every member 
 xz-compressed ZIP member, but opening, reading or extracting that member raises
 `UnsupportedFeatureError` before anything is decoded. A format that compresses data inside itself
 without naming the method on each member, such as a `.deb` with a `data.tar.xz`, an RPM package or
-a SquashFS image, doesn't open at all when you exclude that method. `only=` takes no methods.
+a SquashFS image, doesn't open at all when you exclude that method. An xz block can run a BCJ or
+Delta filter ahead of LZMA2, and only its header says so, so `exclude={CompressionAlgorithm.BCJ}`
+or `{CompressionAlgorithm.DELTA}` stops a read at the first block that uses that filter, with
+`UnsupportedFeatureError`; xz data whose blocks don't use it reads as usual. `only=` takes no
+methods.
 `plugins=False`, `exclude_libraries=` and `only_libraries=` are different, since they turn off the
 code that decodes, wherever it runs. Under `plugins=False`, no plugin codec or plugin format runs in
 the call, even for a member or an archive inside an archive: reading a member that needs one raises

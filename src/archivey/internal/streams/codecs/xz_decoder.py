@@ -55,6 +55,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
 from archivey.internal.streams.decompressor_stream import (
     TRAILING_DATA_CANDIDATES,
@@ -74,6 +75,7 @@ from archivey.internal.streams.decompressor_stream import (
     truncated_message,
 )
 from archivey.terminal import quoted
+from archivey.types import CompressionAlgorithm
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
@@ -945,6 +947,209 @@ class _XzBlockWalker:
         )
 
 
+# The xz filter IDs that run a decoder of their own ahead of LZMA2 (xz spec §5.3), as
+# the method a ``FormatPolicy`` entry names: Delta, and the branch filters x86,
+# PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64 and RISC-V, which the 7z reader lists as
+# BCJ too.
+_XZ_FILTER_METHODS: dict[int, CompressionAlgorithm] = {
+    0x03: CompressionAlgorithm.DELTA,
+    **dict.fromkeys(range(0x04, 0x0C), CompressionAlgorithm.BCJ),
+}
+_NO_FILTERS_OFF: frozenset[int] = frozenset()
+
+
+def xz_filters_off(excluded: frozenset[CompressionAlgorithm]) -> frozenset[int]:
+    """The xz filter IDs whose method ``excluded`` (``StreamConfig.excluded_methods``)
+    lists; empty, and so no block header walk, when it lists none of them."""
+    if not excluded:
+        return _NO_FILTERS_OFF
+    return frozenset(i for i, m in _XZ_FILTER_METHODS.items() if m in excluded)
+
+
+def _filter_refusal(filter_id: int) -> ArchiveyError:
+    """The policy's refusal of a block that runs ``filter_id``. It is no verdict on
+    the data: a seek that resumes at the block raises it, rather than doubt the index
+    and decode again from the start to the same refusal."""
+    method = _XZ_FILTER_METHODS[filter_id]
+    return mark_no_verdict(
+        UnsupportedFeatureError(
+            f"ArchiveyConfig.formats does not allow CompressionAlgorithm.{method.name}: "
+            f"exclude= lists it, and an xz block runs it (filter {filter_id:#04x})"
+        )
+    )
+
+
+def _block_filter_ids(header: bytes) -> list[int]:
+    """The filter IDs a whole block header declares, in chain order.
+
+    ``header`` is hostile: each field is bounds-checked against the header's own size,
+    and a header that does not parse raises ``CorruptionError``. Its CRC32 is checked
+    first, as liblzma checks it before it uses the header.
+    """
+    (stored,) = struct.unpack_from("<I", header, len(header) - 4)
+    if zlib.crc32(memoryview(header)[:-4]) & 0xFFFFFFFF != stored:
+        raise CorruptionError("XZ block header CRC32 mismatch")
+    body = header[:-4]
+    flags = body[1]
+    if flags & 0x3C:
+        raise CorruptionError("XZ block header has reserved flags set")
+    pos = 2
+    for size_present in (flags & 0x40, flags & 0x80):
+        if size_present:  # compressed, then uncompressed size
+            pos += _decode_mbi(iter(body[pos : pos + 9]))[1]
+    ids: list[int] = []
+    for _ in range((flags & 0x03) + 1):
+        filter_id, n = _decode_mbi(iter(body[pos : pos + 9]))
+        pos += n
+        props_size, n = _decode_mbi(iter(body[pos : pos + 9]))
+        pos += n + props_size
+        if pos > len(body):
+            raise CorruptionError("XZ block header filter properties are truncated")
+        ids.append(filter_id)
+    return ids
+
+
+class _XzFilterGuard:
+    """Reads each block header of one xz stream before liblzma is fed its bytes, and
+    stops the stream at a block whose filter chain holds a filter in ``filters_off``.
+
+    A ``FormatPolicy`` method entry names BCJ or Delta, but whether an xz stream runs
+    them is in each block's header, and any block of a stream may declare its own
+    chain. So every header is read, not only the first. Finding the next header takes
+    the LZMA2 chunk headers in between (as :class:`_XzBlockWalker` reads them): one
+    Python step per chunk, and an encoder writes a chunk per 64 KiB of input at most.
+    The guard exists only while the policy names one of these filters.
+
+    :meth:`feed` sees every byte before liblzma does and says how many of them liblzma
+    may take: all of them, or, with :attr:`error` set, none past the start of the
+    refused block's header. A header that arrives over several calls has its first
+    part with liblzma already, but never its last byte, so liblzma never reads the
+    chain. The engine raises ``error`` once liblzma has decoded what it
+    was given, so the blocks before the refused one still read. The walk follows the
+    stream as liblzma does for any data liblzma accepts. Where the structure is one
+    liblzma refuses too (a header CRC, an LZMA2 chunk control byte), ``error`` is a
+    ``CorruptionError`` rather than a walk that loses its place. It stops at the
+    index, and at a header whose chain does not end in LZMA2, which liblzma refuses
+    before it decodes the block.
+    """
+
+    __slots__ = (
+        "_buf",
+        "_check_size",
+        "_fed",
+        "_field_at",
+        "_filters_off",
+        "_head",
+        "_mark",
+        "_need",
+        "_pos",
+        "_skip",
+        "_step",
+        "done",
+        "error",
+    )
+
+    def __init__(self, filters_off: frozenset[int], check: int, *, pos: int) -> None:
+        """``pos`` is the offset of the first byte fed, from a 4-byte-aligned point
+        of the stream (the stream header, or a block's start)."""
+        self._filters_off = filters_off
+        self._check_size = _check_size(check)
+        self._pos = pos
+        self._skip = 0
+        self._buf = bytearray()
+        self._need = 1
+        self._step: Callable[[bytes], None] = self._block_start
+        self._head = b""
+        # Bytes fed so far; where the field being parsed, and the structure an error
+        # stops before (a block header or a chunk header), start among them.
+        self._fed = 0
+        self._field_at = 0
+        self._mark = 0
+        self.done = False
+        self.error: ArchiveyError | None = None
+
+    def feed(self, data: bytes) -> int:
+        """Walk ``data``; return how many of its bytes liblzma may be fed."""
+        n = len(data)
+        if self.done:
+            return 0 if self.error is not None else n
+        base = self._fed
+        view = memoryview(data)
+        i = 0
+        while i < n and not self.done:
+            if self._skip:
+                take = min(self._skip, n - i)
+                self._skip -= take
+                self._pos += take
+                i += take
+                continue
+            if not self._buf:
+                self._field_at = base + i
+            take = min(self._need - len(self._buf), n - i)
+            self._buf += view[i : i + take]
+            self._pos += take
+            i += take
+            if len(self._buf) == self._need:
+                field = bytes(self._buf)
+                self._buf.clear()
+                try:
+                    self._step(field)
+                except ArchiveyError as e:
+                    self.error = e
+                    self.done = True
+                    return max(0, self._mark - base)
+        self._fed = base + n
+        return n
+
+    def _expect(self, need: int, step: Callable[[bytes], None], skip: int = 0) -> None:
+        self._need = need
+        self._step = step
+        self._skip = skip
+
+    def _block_start(self, field: bytes) -> None:
+        if field[0] == 0:
+            # The index indicator: the stream has no more blocks. The index and the
+            # footer run no filter; liblzma checks them.
+            self.done = True
+            return
+        self._mark = self._field_at
+        self._head = field
+        self._expect(field[0] * 4 + 3, self._block_header)
+
+    def _block_header(self, rest: bytes) -> None:
+        ids = _block_filter_ids(self._head + rest)
+        for filter_id in ids:
+            if filter_id in self._filters_off:
+                raise _filter_refusal(filter_id)
+        if ids[-1] != lzma.FILTER_LZMA2:
+            # liblzma refuses the header and decodes nothing more of the stream.
+            self.done = True
+            return
+        self._expect(1, self._chunk)
+
+    def _chunk(self, field: bytes) -> None:
+        control = field[0]
+        if control == 0:
+            # The block's end: padding to four bytes, then its check.
+            self._expect(1, self._block_start, skip=-self._pos % 4 + self._check_size)
+        elif control in (1, 2):
+            self._expect(2, self._uncompressed_chunk)
+        elif control >= 0x80:
+            # Unpacked size, packed size, then a properties byte from 0xC0 up.
+            self._expect(5 if control >= 0xC0 else 4, self._lzma_chunk)
+        else:
+            self._mark = self._field_at
+            raise CorruptionError(
+                f"XZ LZMA2 chunk control byte {control:#04x} is invalid"
+            )
+
+    def _uncompressed_chunk(self, field: bytes) -> None:
+        self._expect(1, self._chunk, skip=int.from_bytes(field, "big") + 1)
+
+    def _lzma_chunk(self, field: bytes) -> None:
+        self._expect(1, self._chunk, skip=int.from_bytes(field[2:4], "big") + 1)
+
+
 @dataclass(slots=True, frozen=True)
 class _StreamUnit:
     """A stream ``_XzState`` decoded to its end."""
@@ -971,6 +1176,7 @@ class _XzState:
         natives: Natives = IN_PROCESS,
         walk_blocks: bool = False,
         usage: ResourceUsageRecorder | None = None,
+        filters_off: frozenset[int] = _NO_FILTERS_OFF,
     ) -> None:
         """``after_stream``: start just past a stream decoded elsewhere, where padding,
         more streams or the end of the data may follow, as after any stream here.
@@ -979,8 +1185,14 @@ class _XzState:
         ``walk_blocks``: find each stream's blocks as it decodes
         (:class:`_XzBlockWalker`) and report them with the stream.
         ``usage`` is noted the dictionary each stream's first block header declares
-        (``_note_block_head``)."""
+        (``_note_block_head``).
+        ``filters_off``: xz filter IDs a block may not run (:class:`_XzFilterGuard`)."""
         self._walk_blocks = walk_blocks
+        self._filters_off = filters_off
+        self._guard: _XzFilterGuard | None = None
+        # What the guard stopped the stream on, raised once liblzma has decoded the
+        # bytes before it.
+        self._stopped: ArchiveyError | None = None
         self._walker: _XzBlockWalker | None = None
         # The output of this engine before the current stream's first byte.
         self._out_before_stream = 0
@@ -1175,6 +1387,10 @@ class _XzState:
                     self._walker = _XzBlockWalker(check)
                     self._walker.checks_only = not self._walk_blocks
                     self._walk_checks = _runs_check(check)
+                if self._filters_off:
+                    self._guard = _XzFilterGuard(
+                        self._filters_off, check, pos=_STREAM_HEADER_SIZE
+                    )
                 self._unchecked.clear()
                 self._bytes_fed = _STREAM_HEADER_SIZE
                 self._stream_decomp_bytes = len(plain)
@@ -1185,10 +1401,20 @@ class _XzState:
 
             elif self._state == self._IN_STREAM:
                 assert self._dec is not None
+                if self._stopped is not None and self._dec.needs_input:
+                    raise self._stopped
                 if not self._buf and self._dec.needs_input:
                     break
                 chunk = bytes(self._buf)
                 self._buf.clear()
+                guard = self._guard
+                if guard is not None:
+                    # Before liblzma takes the bytes: it decodes a block as soon as
+                    # it has them. Past a refused block, it takes none.
+                    allowed = guard.feed(chunk)
+                    if guard.error is not None:
+                        chunk = chunk[:allowed]
+                        self._stopped = guard.error
                 if self._block_head is not None:
                     self._note_block_head(chunk)
                 try:
@@ -1227,6 +1453,7 @@ class _XzState:
                     self._buf[0:0] = unused
                     self._state = self._NEED_HEADER
                     self._walker = None
+                    self._guard = None
                     continue
                 self._note_checked(stream_end=False)
                 if not self._dec.needs_input:
@@ -1312,8 +1539,14 @@ class _XzBlockResume:
         limits: DecoderLimits,
         on_check: Callable[[int], None],
         natives: Natives = IN_PROCESS,
+        filters_off: frozenset[int] = _NO_FILTERS_OFF,
     ) -> None:
         self._limits = limits
+        # A block starts 4-byte aligned, so the guard counts from it.
+        self._guard = (
+            _XzFilterGuard(filters_off, start.check, pos=0) if filters_off else None
+        )
+        self._stopped: ArchiveyError | None = None
         self._to_feed = start.blocks_end - start.compressed_start
         self._to_output = start.stream_decompressed_end - start.decompressed_start
         self._finished = False
@@ -1339,8 +1572,16 @@ class _XzBlockResume:
             return b"", []
         # Bytes past the blocks (the index, the footer, later streams) are dropped;
         # XzDecoder repositions inner once this engine has finished.
+        if self._stopped is not None and self._dec.needs_input:
+            raise self._stopped
         chunk = data[: self._to_feed]
         self._to_feed -= len(chunk)
+        guard = self._guard
+        if guard is not None:
+            allowed = guard.feed(chunk)
+            if guard.error is not None:
+                chunk = chunk[:allowed]
+                self._stopped = guard.error
         try:
             plain = self._dec.decompress(chunk, max_length)
         except lzma.LZMAError as e:
@@ -1348,6 +1589,9 @@ class _XzBlockResume:
                 e, "XZ block decompression error", self._limits
             ) from e
         self._to_output -= len(plain)
+        if self._stopped is not None:
+            # The blocks' end checks no longer apply: the refusal is raised instead.
+            return plain, []
         if self._to_output < 0:
             raise CorruptionError(
                 "XZ blocks decode to more than the stream index declares"
@@ -1426,8 +1670,10 @@ class XzDecoder(BaseDecoder):
         frame_checks: FrameChecks | None = None,
         walk_blocks: bool = False,
         usage: ResourceUsageRecorder | None = None,
+        filters_off: frozenset[int] = _NO_FILTERS_OFF,
     ) -> None:
         self._engine = engine
+        self._filters_off = filters_off
         self._walk_blocks = walk_blocks
         self._usage = usage
         # Each stream's check, as its header (or a resumed block's footer) gives it.
@@ -1459,13 +1705,15 @@ class XzDecoder(BaseDecoder):
         natives: Natives = IN_PROCESS,
         walk_blocks: bool = False,
         usage: ResourceUsageRecorder | None = None,
+        filters_off: frozenset[int] = _NO_FILTERS_OFF,
     ) -> XzDecoder:
         """``reported_checks`` is shared by every decoder of one file (see
         :func:`_report_unverifiable_check`). ``walk_blocks``: make block points from
         the blocks a decode passes (:class:`_XzBlockWalker`), for a stream that keeps
         restart points but does not read the file's index. ``usage`` is noted each
         stream's dictionary (:meth:`_XzState._note_block_head`); a block resume notes
-        none."""
+        none. ``filters_off``: xz filter IDs a block may not run, on both engines
+        (:class:`_XzFilterGuard`)."""
 
         frame_checks = FrameChecks()
 
@@ -1482,10 +1730,13 @@ class XzDecoder(BaseDecoder):
                 natives=natives,
                 walk_blocks=walk_blocks,
                 usage=usage,
+                filters_off=filters_off,
             )
         else:
             start: _XzBlockBounds = point.state
-            engine = _XzBlockResume(start, inner, limits, on_check, natives)
+            engine = _XzBlockResume(
+                start, inner, limits, on_check, natives, filters_off
+            )
             handoff = SeekPoint(
                 start.stream_decompressed_end, start.stream_compressed_end
             )
@@ -1504,6 +1755,7 @@ class XzDecoder(BaseDecoder):
             frame_checks=frame_checks,
             walk_blocks=walk_blocks,
             usage=usage,
+            filters_off=filters_off,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -1518,6 +1770,7 @@ class XzDecoder(BaseDecoder):
             natives=self._natives,
             walk_blocks=self._walk_blocks,
             usage=self._usage,
+            filters_off=self._filters_off,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -1577,6 +1830,7 @@ class XzDecoder(BaseDecoder):
             natives=self._natives,
             walk_blocks=self._walk_blocks,
             usage=self._usage,
+            filters_off=self._filters_off,
         )
         self._comp_cursor = point.compressed_offset
         self._decomp_cursor = point.decompressed_offset
@@ -1741,12 +1995,15 @@ def XzDecompressorStream(
     natives: Natives = IN_PROCESS,
     file_index: bool = True,
     usage: ResourceUsageRecorder | None = None,
+    filters_off: frozenset[int] = _NO_FILTERS_OFF,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
     ``decoder_limits`` caps the dictionary each block header declares (see
     :func:`new_capped_decompressor`); it defaults to the public default, not to no cap.
     ``usage`` is the reader's recorder, noted each stream's dictionary.
+    ``filters_off`` (:func:`xz_filters_off`): a block whose header declares one of
+    these filters raises ``UnsupportedFeatureError`` before liblzma decodes it.
     ``initial_index`` is an index scan already made over the same source, used in
     place of a second one (see :class:`PrebuiltIndex`).
 
@@ -1778,6 +2035,7 @@ def XzDecompressorStream(
             reported_checks=reported_checks,
             natives=natives,
             usage=usage,
+            filters_off=filters_off,
         )
 
     stream = DecompressorStream(
@@ -1843,7 +2101,10 @@ def _block_dictionary(header: bytes) -> int | None:
 
 
 def _head_filter_chain(
-    header: bytes, read_bound: int | None, limits: DecoderLimits | None
+    header: bytes,
+    read_bound: int | None,
+    limits: DecoderLimits | None,
+    filters_off: frozenset[int] = _NO_FILTERS_OFF,
 ) -> list[dict[str, int]]:
     """The raw filter chain a block header declares, its LZMA2 dictionary clamped.
 
@@ -1854,6 +2115,8 @@ def _head_filter_chain(
     ``UnsupportedFeatureError``, which the probe reads as "can't tell". The clamped
     dictionary, which is what liblzma reserves, is checked against ``limits``; with no
     ``limits`` (reading a declaration, not building a decoder) it is not checked.
+    A filter in ``filters_off`` raises the policy's ``UnsupportedFeatureError``, which
+    the probe reads as "can't tell" too.
     """
     body = header[:-4]
     flags = body[1]
@@ -1874,6 +2137,8 @@ def _head_filter_chain(
         pos += props_size
         if len(props) != props_size:
             raise CorruptionError("XZ block header filter properties are truncated")
+        if filter_id in filters_off:
+            raise _filter_refusal(filter_id)
         if index == last and filter_id == lzma.FILTER_LZMA2 and props_size == 1:
             declared = _lzma2_dictionary(props[0])
             dict_size = probe_lzma_dictionary(declared, read_bound)
@@ -2018,6 +2283,7 @@ def _decode_xz_head(
     size: int,
     natives: Natives = IN_PROCESS,
     limits: DecoderLimits = DecoderLimits(),
+    filters_off: frozenset[int] = _NO_FILTERS_OFF,
 ) -> bytes:
     """Up to ``size`` bytes of the xz data ``read`` returns, its dictionaries clamped.
 
@@ -2044,7 +2310,8 @@ def _decode_xz_head(
         if zlib.crc32(header[:-4]) & 0xFFFFFFFF != stored:
             raise CorruptionError("XZ block header CRC32 mismatch")
         dec = natives.lzma_decompressor(
-            format=lzma.FORMAT_RAW, filters=_head_filter_chain(header, size, limits)
+            format=lzma.FORMAT_RAW,
+            filters=_head_filter_chain(header, size, limits, filters_off),
         )
         fed = 0
         try:
@@ -2070,6 +2337,8 @@ def open_xz_head(
     size: int,
     natives: Natives = IN_PROCESS,
     limits: DecoderLimits = DecoderLimits(),
+    *,
+    filters_off: frozenset[int] = _NO_FILTERS_OFF,
 ) -> BinaryIO:
     """The first ``size`` bytes an xz source decodes to, for a detection probe.
 
@@ -2080,4 +2349,4 @@ def open_xz_head(
     at ``size``. ``source`` is the probe's bounded reader: nothing here limits how
     much input a block reads to reach ``size`` bytes.
     """
-    return io.BytesIO(_decode_xz_head(source.read, size, natives, limits))
+    return io.BytesIO(_decode_xz_head(source.read, size, natives, limits, filters_off))
