@@ -588,14 +588,16 @@ class FormatPolicy:
 
     def _excluded_methods(
         self, compression: tuple[CompressionMethod, ...]
-    ) -> tuple[CompressionAlgorithm, ...]:
-        """The methods of a member's ``compression`` chain that :attr:`exclude` lists,
-        in chain order and once each; empty when the member may decode."""
-        hits: list[CompressionAlgorithm] = []
+    ) -> tuple[tuple[CompressionAlgorithm, CompressionAlgorithm], ...]:
+        """The methods of a member's ``compression`` chain that :attr:`exclude` turns
+        off, as ``(method, entry)`` pairs in chain order and once each: ``entry`` is
+        the :attr:`exclude` entry, ``method`` itself or a method it decodes with
+        (``_DECODES_WITH``). Empty when the member may decode."""
+        hits: list[tuple[CompressionAlgorithm, CompressionAlgorithm]] = []
         for method in compression:
             listed = self._listed_method(method.algo)
-            if listed is not None and listed not in hits:
-                hits.append(listed)
+            if listed is not None and (method.algo, listed) not in hits:
+                hits.append((method.algo, listed))
         return tuple(hits)
 
     def _listed_method(

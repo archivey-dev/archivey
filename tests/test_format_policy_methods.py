@@ -344,7 +344,11 @@ def test_lzma2_off_refuses_an_xz_member() -> None:
     with open_archive(io.BytesIO(build_zip([xz])), config=config) as reader:
         assert reader.members()[0].compression[0].algo is A.XZ
         with pytest.raises(
-            UnsupportedFeatureError, match=r"CompressionAlgorithm\.LZMA2"
+            UnsupportedFeatureError,
+            match=(
+                r"'x\.txt' is compressed with CompressionAlgorithm\.XZ, which decodes "
+                r"with CompressionAlgorithm\.LZMA2; exclude= lists it\."
+            ),
         ):
             reader.read("x.txt")
     with open_archive(io.BytesIO(build_zip([xz]))) as reader:
@@ -397,11 +401,16 @@ def test_a_compressed_rar3_comment_is_not_decoded_when_rar_is_excluded(
         ("rpm/payload-bzip2.rpm", A.BZIP2),
         ("rpm/payload-lzma.rpm", A.LZMA),
         ("rpm/payload-xz.rpm", A.XZ),
+        ("rpm/payload-xz.rpm", A.LZMA2),
         ("squashfs/gzip.sqfs", A.DEFLATE),
         ("squashfs/lz4.sqfs", A.LZ4),
+        ("squashfs/xz.sqfs", A.XZ),
+        ("squashfs/xz.sqfs", A.LZMA2),
         ("deb/hello-gzip.deb", A.DEFLATE),
         ("deb/hello-xz.deb", A.XZ),
+        ("deb/hello-xz.deb", A.LZMA2),
         ("makeself/xz-2.7.1.run", A.XZ),
+        ("makeself/xz-2.7.1.run", A.LZMA2),
     ],
 )
 def test_a_format_compressing_inside_itself_is_refused_at_open(

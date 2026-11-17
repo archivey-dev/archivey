@@ -1236,6 +1236,30 @@ def test_decompress_refuses_a_method_the_policy_excludes(
         reader.read("m.bin")
 
 
+def test_decompress_refuses_xz_when_the_policy_excludes_lzma2(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """xz data decodes with LZMA2, so ``exclude={LZMA2}`` refuses a plugin's
+    decompress call for ``CompressionAlgorithm.XZ`` before the codec runs."""
+    register_format(_compressed_plugin(CompressionAlgorithm.XZ))
+    config = archivey.ArchiveyConfig(
+        formats=archivey.FormatPolicy(exclude={CompressionAlgorithm.LZMA2})
+    )
+    with (
+        open_archive(
+            _compressed_archive(tmp_path, lzma.compress(_PLAIN)), config=config
+        ) as reader,
+        pytest.raises(
+            archivey.UnsupportedFeatureError,
+            match=(
+                r"does not allow CompressionAlgorithm\.XZ: exclude= lists "
+                r"CompressionAlgorithm\.LZMA2, which it decodes with"
+            ),
+        ),
+    ):
+        reader.read("m.bin")
+
+
 def test_decompress_second_bzip2_stream_is_corrupt(
     clean_registry: None, tmp_path: Path
 ) -> None:
