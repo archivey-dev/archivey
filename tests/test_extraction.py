@@ -1237,10 +1237,11 @@ def test_a_directory_this_run_made_is_ours_under_a_case_variant(
 def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
     tmp_path: Path,
 ) -> None:
-    """``a/b/c/s/u/`` is written through the archive's own ``a/b/c/s -> ../../../t``,
-    so it is the directory ``t/u``. ``a/b/c`` is stored ``0o000`` and is deeper, so
-    its mode is applied first. ``t/u`` still gets its stored mode and mtime: it is
-    opened as ``t/u``, not through ``a/b/c``, which the owner can no longer search."""
+    """``s/u/`` is written through the caller's ``s -> a/b/c/../../../t``, so it is
+    the directory ``t/u``, reached through ``a/b/c``. ``a/b/c`` is stored ``0o000``
+    and is deeper, so its mode is applied first. ``t/u`` still gets its stored mode
+    and mtime: it is opened as ``t/u``, not through ``a/b/c``, which the owner can no
+    longer search."""
     probe = tmp_path / "probe"
     probe.mkdir(mode=0o000)
     try:
@@ -1253,20 +1254,23 @@ def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
         [
             ("t/", 0o755, 0),
             ("a/b/c/", 0o000, _SUB_MTIME),
-            ("a/b/c/s->../../../t", None, 0),
-            ("a/b/c/s/u/", 0o750, _DIR_MTIME),
+            ("s/u/", 0o750, _DIR_MTIME),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "a/b/c/../../../t")
     try:
         report = open_and_extract(
             io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
         )
-        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
         st = (dest / "t" / "u").stat()
         assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _DIR_MTIME)
         assert (dest / "a" / "b" / "c").stat().st_mode & 0o7777 == 0o000
     finally:
+        # The link resolves through the locked ``a/b/c``: removed before the walk
+        # that unlocks, which would stat through it.
+        (dest / "s").unlink()
         _restore_modes(dest)
 
 
