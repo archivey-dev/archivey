@@ -1555,33 +1555,55 @@ _DEFLATE = (CompressionMethod(CompressionAlgorithm.DEFLATE),)
 
 
 @pytest.mark.parametrize(
-    ("data", "config", "expected"),
+    ("make", "config", "expected"),
     [
-        pytest.param(gzip.compress(b"x"), None, CompressionAlgorithm.DEFLATE, id="gz"),
-        pytest.param(bz2.compress(b"x"), None, CompressionAlgorithm.BZIP2, id="bz2"),
-        pytest.param(lzma.compress(b"x"), None, CompressionAlgorithm.XZ, id="xz"),
         pytest.param(
-            lzma.compress(b"x", format=lzma.FORMAT_ALONE),
+            lambda: gzip.compress(b"x"), None, CompressionAlgorithm.DEFLATE, id="gz"
+        ),
+        pytest.param(
+            lambda: bz2.compress(b"x"), None, CompressionAlgorithm.BZIP2, id="bz2"
+        ),
+        pytest.param(
+            lambda: lzma.compress(b"x"), None, CompressionAlgorithm.XZ, id="xz"
+        ),
+        pytest.param(
+            lambda: lzma.compress(b"x", format=lzma.FORMAT_ALONE),
             _ALWAYS_PROBE,
             CompressionAlgorithm.LZMA,
             id="lzma-alone",
         ),
         pytest.param(
-            make_lzip_member(b"x"), None, CompressionAlgorithm.LZMA, id="lzip"
+            lambda: make_lzip_member(b"x"),
+            None,
+            CompressionAlgorithm.LZMA,
+            id="lzip",
         ),
         pytest.param(
-            zlib.compress(b"x"), _ALWAYS_PROBE, CompressionAlgorithm.DEFLATE, id="zlib"
+            lambda: zlib.compress(b"x"),
+            _ALWAYS_PROBE,
+            CompressionAlgorithm.DEFLATE,
+            id="zlib",
         ),
         # No CompressionAlgorithm member names LZW or an encoding, so .Z and
         # uuencode list nothing: UNKNOWN would say archivey cannot decode them.
-        pytest.param(make_unix_compress(b"x"), None, None, id="Z"),
-        pytest.param(_uu_encode(b"x"), None, None, id="uu"),
+        # Built inside the test: ncompress is absent from the core-only legs.
+        pytest.param(
+            lambda: make_unix_compress(b"x"),
+            None,
+            None,
+            id="Z",
+            marks=requires("ncompress"),
+        ),
+        pytest.param(lambda: _uu_encode(b"x"), None, None, id="uu"),
     ],
 )
 def test_the_member_names_the_stream_codec(
-    data: bytes, config: ArchiveyConfig | None, expected: CompressionAlgorithm | None
+    make: Callable[[], bytes],
+    config: ArchiveyConfig | None,
+    expected: CompressionAlgorithm | None,
 ) -> None:
     """The listed method is the one a ZIP or 7z member compressed the same way lists."""
+    data = make()
     want = () if expected is None else (CompressionMethod(expected),)
     with open_archive(io.BytesIO(data), config=config) as ar:
         assert ar.members()[0].compression == want
