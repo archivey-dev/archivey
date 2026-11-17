@@ -468,8 +468,8 @@ class MakeselfReader(SequentialReader):
             raise CorruptionError("makeself header: filesizes lists no payload")
         # makeself writes one CRC and one MD5 per payload, zeros where it computed
         # none. 2.4.0's --append leaves SHA at one entry; an entry there that is not
-        # zeros could be any payload's, so only a list of zeros may be short. Each
-        # count is checked before its list is built.
+        # zeros could be any payload's, so only a list of zeros may be another length
+        # (and is then not used). Each count is checked before its list is built.
         for name in (b"CRCsum", b"MD5"):
             listed = _token_count(_required(variables, name))
             if listed != payloads:
