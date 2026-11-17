@@ -1,0 +1,934 @@
+[
+  {
+    "package": "py-snappy",
+    "kind": "raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "python-snappy",
+    "kind": "raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "python-snappy-pure",
+    "kind": "raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "candidate_only_accepts": 4,
+      "both_refuse": 389
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "pysnappy",
+    "kind": "raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "cramjam",
+    "kind": "raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "raw",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "raw",
+    "mode": "bounded-raw",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 393
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "python-snappy",
+    "kind": "framed",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 3,
+      "candidate_only_accepts": 402,
+      "both_refuse": 64
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "pysnappy",
+    "kind": "framed",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 3,
+      "candidate_only_accepts": 1,
+      "both_refuse": 465
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "cramjam",
+    "kind": "framed",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 3,
+      "candidate_only_accepts": 1,
+      "both_refuse": 465
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "python-snappy",
+    "kind": "hadoop",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 63,
+      "candidate_only_accepts": 66,
+      "both_refuse": 5
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 4096,
+      "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 4096,
+      "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+    }
+  },
+  {
+    "package": "pysnappy",
+    "kind": "hadoop",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 62,
+      "both_refuse": 71,
+      "reference_only_accepts": 1
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 4096,
+      "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 4096,
+      "sha256": "9a661545fe584d2d2e64b9bee567353d38723666f92b3b539c879651ad1e3692"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "gzip",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 403,
+      "reference_only_accepts": 1
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "gzip",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 403,
+      "reference_only_accepts": 1
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "gzip",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 5,
+      "both_refuse": 403
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zlib",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 1,
+      "both_refuse": 395,
+      "reference_only_accepts": 3
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zlib",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 1,
+      "both_refuse": 395,
+      "reference_only_accepts": 3
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zlib",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 395
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "deflate",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 59,
+      "both_refuse": 334
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "deflate",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 59,
+      "both_refuse": 334
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "deflate",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 59,
+      "both_refuse": 334
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "bzip2",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 1,
+      "both_refuse": 130,
+      "reference_only_accepts": 3
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "bzip2",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 1,
+      "both_refuse": 130,
+      "reference_only_accepts": 3
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "bzip2",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 130
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "xz",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 3,
+      "both_refuse": 448,
+      "reference_only_accepts": 1
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "xz",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 3,
+      "both_refuse": 448,
+      "reference_only_accepts": 1
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "xz",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 448
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzma_alone",
+    "mode": "one-shot",
+    "counts": {
+      "reference_only_accepts": 4,
+      "both_refuse": 403
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": false,
+      "error": "CompressError",
+      "message": "compression failed: xz: lzma_ret 7"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzma_alone",
+    "mode": "stream",
+    "counts": {
+      "reference_only_accepts": 4,
+      "both_refuse": 403
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": false,
+      "error": "CompressError",
+      "message": "compression failed: xz: lzma_ret 7"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zstd",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 2,
+      "both_refuse": 383,
+      "reference_only_accepts": 2
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zstd",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 2,
+      "both_refuse": 383,
+      "reference_only_accepts": 2
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zstd",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 383
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 2,
+      "both_refuse": 402,
+      "reference_only_accepts": 2
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 2,
+      "both_refuse": 402,
+      "reference_only_accepts": 2
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 4,
+      "both_refuse": 402
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "brotli",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 312,
+      "reference_only_accepts": 3
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "brotli",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 58,
+      "both_refuse": 312,
+      "reference_only_accepts": 3
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "brotli",
+    "mode": "bounded-framed",
+    "counts": {
+      "same_bytes": 61,
+      "both_refuse": 312
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4_raw",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 66,
+      "both_refuse": 309
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4_raw",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 66,
+      "both_refuse": 309
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4_raw",
+    "mode": "bounded-raw",
+    "counts": {
+      "same_bytes": 66,
+      "both_refuse": 309
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 64,
+      "both_refuse": 70
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 64,
+      "both_refuse": 70
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "mode": "bounded-raw",
+    "counts": {
+      "same_bytes": 64,
+      "both_refuse": 70
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "mode": "one-shot",
+    "counts": {
+      "same_bytes": 64,
+      "both_refuse": 70
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "mode": "stream",
+    "counts": {
+      "same_bytes": 64,
+      "both_refuse": 70
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    }
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "mode": "bounded-raw",
+    "counts": {
+      "same_bytes": 64,
+      "both_refuse": 70
+    },
+    "valid_reference": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    },
+    "valid_candidate": {
+      "accepted": true,
+      "size": 32768,
+      "sha256": "42b5ff07bc29f1281b8ffd560fa5c48c0505f4d807dacd961310c8f18ab9f8c8"
+    }
+  }
+]

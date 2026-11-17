@@ -1,0 +1,289 @@
+[
+  {
+    "package": "py-snappy",
+    "kind": "raw",
+    "before_kib": 45952,
+    "first_bytes": 16777216,
+    "peak_kib": 508624
+  },
+  {
+    "package": "python-snappy",
+    "kind": "raw",
+    "before_kib": 47476,
+    "first_bytes": 16777216,
+    "peak_kib": 80308
+  },
+  {
+    "package": "python-snappy-pure",
+    "kind": "raw",
+    "before_kib": 45896,
+    "first_bytes": 16777216,
+    "peak_kib": 78580
+  },
+  {
+    "package": "pysnappy",
+    "kind": "raw",
+    "before_kib": 47000,
+    "first_bytes": 16777216,
+    "peak_kib": 63212
+  },
+  {
+    "package": "compress-utils",
+    "kind": "raw",
+    "before_kib": 47356,
+    "first_bytes": 0,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: snappy: decompressed output exceeds limit 128",
+    "peak_kib": 65112
+  },
+  {
+    "package": "bounded",
+    "kind": "raw",
+    "before_kib": 47360,
+    "first_bytes": 0,
+    "needs_input": true,
+    "eof": false,
+    "finish_bytes": 128,
+    "peak_kib": 64888
+  },
+  {
+    "package": "baseline",
+    "kind": "gzip",
+    "before_kib": 44860,
+    "first_bytes": 128,
+    "peak_kib": 45004
+  },
+  {
+    "package": "compress-utils",
+    "kind": "gzip",
+    "before_kib": 46540,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: gzip: decompressed output exceeds limit 128",
+    "peak_kib": 47124
+  },
+  {
+    "package": "bounded",
+    "kind": "gzip",
+    "before_kib": 46728,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47020
+  },
+  {
+    "package": "baseline",
+    "kind": "xz",
+    "before_kib": 45012,
+    "first_bytes": 128,
+    "peak_kib": 45176
+  },
+  {
+    "package": "compress-utils",
+    "kind": "xz",
+    "before_kib": 46680,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: xz: decompressed output exceeds limit 128",
+    "peak_kib": 47444
+  },
+  {
+    "package": "bounded",
+    "kind": "xz",
+    "before_kib": 46752,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47244
+  },
+  {
+    "package": "baseline",
+    "kind": "zstd",
+    "before_kib": 45116,
+    "first_bytes": 128,
+    "peak_kib": 45488
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zstd",
+    "before_kib": 46596,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: zstd: decompressed output exceeds limit 128",
+    "peak_kib": 47668
+  },
+  {
+    "package": "bounded",
+    "kind": "zstd",
+    "before_kib": 46660,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47432
+  },
+  {
+    "package": "baseline",
+    "kind": "lz4",
+    "before_kib": 45136,
+    "first_bytes": 128,
+    "peak_kib": 45672
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4",
+    "before_kib": 46792,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: lz4: decompressed output exceeds limit 128",
+    "peak_kib": 47544
+  },
+  {
+    "package": "bounded",
+    "kind": "lz4",
+    "before_kib": 46880,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47688
+  },
+  {
+    "package": "baseline",
+    "kind": "brotli",
+    "before_kib": 45056,
+    "first_bytes": 128,
+    "peak_kib": 49456
+  },
+  {
+    "package": "compress-utils",
+    "kind": "brotli",
+    "before_kib": 46696,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: brotli: decompressed output exceeds limit 128",
+    "peak_kib": 51376
+  },
+  {
+    "package": "bounded",
+    "kind": "brotli",
+    "before_kib": 46680,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 50968
+  },
+  {
+    "package": "baseline",
+    "kind": "zlib",
+    "before_kib": 45072,
+    "first_bytes": 128,
+    "peak_kib": 45100
+  },
+  {
+    "package": "compress-utils",
+    "kind": "zlib",
+    "before_kib": 46780,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: zlib: decompressed output exceeds limit 128",
+    "peak_kib": 47368
+  },
+  {
+    "package": "bounded",
+    "kind": "zlib",
+    "before_kib": 46788,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47132
+  },
+  {
+    "package": "baseline",
+    "kind": "deflate",
+    "before_kib": 45088,
+    "first_bytes": 128,
+    "peak_kib": 45180
+  },
+  {
+    "package": "compress-utils",
+    "kind": "deflate",
+    "before_kib": 46768,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: deflate: decompressed output exceeds limit 128",
+    "peak_kib": 47288
+  },
+  {
+    "package": "bounded",
+    "kind": "deflate",
+    "before_kib": 46852,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47228
+  },
+  {
+    "package": "baseline",
+    "kind": "bzip2",
+    "before_kib": 45004,
+    "first_bytes": 128,
+    "peak_kib": 63472
+  },
+  {
+    "package": "compress-utils",
+    "kind": "bzip2",
+    "before_kib": 46648,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: bz2: decompressed output exceeds limit 128",
+    "peak_kib": 48436
+  },
+  {
+    "package": "bounded",
+    "kind": "bzip2",
+    "before_kib": 46648,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 48292
+  },
+  {
+    "package": "baseline",
+    "kind": "lz4_raw",
+    "before_kib": 45060,
+    "first_bytes": 16777216,
+    "peak_kib": 77732
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lz4_raw",
+    "before_kib": 46736,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: lz4_raw: decompressed output exceeds limit 128",
+    "peak_kib": 47208
+  },
+  {
+    "package": "bounded",
+    "kind": "lz4_raw",
+    "before_kib": 46844,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47240
+  },
+  {
+    "package": "baseline",
+    "kind": "lzo",
+    "before_kib": 45112,
+    "first_bytes": 16777216,
+    "peak_kib": 78284
+  },
+  {
+    "package": "compress-utils",
+    "kind": "lzo",
+    "before_kib": 46660,
+    "error": "CompressError",
+    "message": "decompressed size exceeds configured limit: lzo: decompressed output exceeds limit 128",
+    "peak_kib": 47140
+  },
+  {
+    "package": "bounded",
+    "kind": "lzo",
+    "before_kib": 46772,
+    "first_bytes": 128,
+    "needs_input": false,
+    "eof": false,
+    "peak_kib": 47128
+  }
+]
