@@ -60,13 +60,20 @@ listing and small reads, and fixes from a sweep of the 0.4.0 code.
   the member uncounted, so a later listing could pass the cap.
 - A Debian package whose data symlinks lead into `DEBIAN/` is refused, as a data name
   that extracts there already was.
+- A makeself header that sets a variable the reader uses on a line the reader skips, so
+  that the shell and the listing would disagree on where the payloads are, is refused.
+  A header that lists more payloads than `ListingLimits.max_members` is refused before
+  any payload is read.
 
 ### Fixed
 
-- About fifteen bugs found by a sweep of the 0.4.0 code, among them hard links whose
-  source `members=` leaves out now made in archive order and at the place a link made
-  there would land, cue sheets with a `FILE` that holds no `TRACK` refused, and a
-  long uuencode line or a MacLHA member no longer costing far more time than its size.
+- A hard link whose source is not extracted is made at its place in archive order as
+  an empty file, then filled from the source in a second pass, as GNU tar does. Later
+  members meet it on disk as they would meet the link, which fixes the cases where a
+  held-back link landed somewhere other than where the link would have been made.
+- About fifteen other bugs found by a sweep of the 0.4.0 code, among them cue sheets
+  with a `FILE` that holds no `TRACK` refused, and a long uuencode line or a MacLHA
+  member no longer costing far more time than its size.
 
 ### Performance
 
