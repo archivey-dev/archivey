@@ -33,8 +33,10 @@ the folder start through its end all carry one as `Verification.CHECKSUM` once r
 end. The listing SHALL estimate `verifiable` as `CHECKSUM` for a non-empty member of a
 stored, MSZIP or LZX folder, settled at `LENGTH` on the first open when one of its blocks
 has no checksum. A file whose name, normalized, an earlier file has SHALL report
-`MEMBER_NAME_DUPLICATE_UNEXPECTED`, since a cabinet has no way to repeat a name.
-`ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
+`MEMBER_NAME_DUPLICATE_UNEXPECTED`, since a cabinet has no way to repeat a name. The
+file the table lists last under a name SHALL be the current one; when the table is
+sorted, the files a later record supersedes SHALL come first, so each block decodes at
+most twice. `ArchiveInfo.format_version` SHALL be `major.minor` from the header, and
 `ArchiveInfo.is_solid` SHALL be true when any folder is compressed. A pipe SHALL be refused
 with `StreamNotSeekableError`.
 
@@ -45,14 +47,15 @@ with `StreamNotSeekableError`.
 | A cabinet with a stored, MSZIP or LZX folder (verbatim, aligned and uncompressed blocks, E8 translation, every window size) | The same members and bytes; each member `CHECKSUM` |
 | `makecab.exe` cabinets, stored, MSZIP and LZX (libarchive's test files) | The same members and bytes |
 | A cp932 name opened with `encoding="cp932"` | The Japanese name, whole |
-| Members streamed from a table in data order, reversed, or with folders interleaved | Table order kept unless it would decode a block twice, then by folder and offset unless a name is listed twice; each block decoded once when sorted |
+| Members streamed from a table in data order, reversed, or with folders interleaved | Table order kept unless it would decode a block twice, then by folder and offset; each block decoded once when sorted |
 | A member in the middle of a stored folder | The blocks before it not read |
 | Header, folder and data reserve areas | Skipped |
 | A block whose checksum is 0 | The member read, `LENGTH` |
 | A checksummed folder, listed | Each non-empty member `verifiable == CHECKSUM` before any read |
 | File records listed out of offset order, laid back to back | Listed in data order when table order would decode a block twice; every member reads |
 | An invalid DOS date | `modified is None`; `MEMBER_TIMESTAMP_INVALID` |
-| A name listed twice, compared after normalization | Table order kept; the later entry reports `MEMBER_NAME_DUPLICATE_UNEXPECTED` and `MEMBER_NAME_DUPLICATE`; `STRICT` refuses the cabinet |
+| A name listed twice, compared after normalization, in a table that would decode a block twice | The superseded entries first, then the rest, each group by folder and offset; the entry listed last in the table comes after every entry it supersedes and is current; each block decoded at most twice |
+| A name listed twice, compared after normalization | Each entry after the first in the table reports `MEMBER_NAME_DUPLICATE_UNEXPECTED`; each entry after the first in the listing reports `MEMBER_NAME_DUPLICATE`; the current entry reports both; `STRICT` refuses the cabinet |
 | Attributes `0xE1` | `windows_attrs == 0x21` |
 
 ### Requirement: Refuse damaged and unsupported cabinets

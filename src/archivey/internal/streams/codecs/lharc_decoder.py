@@ -60,7 +60,7 @@ class Lh1Decoder(LhaBitDecoder):
     """``-lh1-``: LZHUF's adaptive Huffman tree and a 4 KiB window."""
 
     def __init__(self, size: int, more: Callable[[], bytes | None]) -> None:
-        super().__init__("-lh1-", size, more, b" " * _LH1_WINDOW)
+        super().__init__("-lh1-", size, more, _LH1_WINDOW)
         n, t = _LH1_CODES, _LH1_NODES
         freq = [0] * (t + 1)
         son = [0] * t
