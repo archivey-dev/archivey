@@ -731,10 +731,10 @@ class DecoderLimits:
     nobody reads (a compressed TAR's listing, a solid RAR's prefix, a CAB folder, a 7z
     header stored compressed). A byte decoded again counts again. The read that crosses
     it raises :exc:`~archivey.exceptions.ResourceLimitError`, which stops an
-    extraction. That read can decode past the cap by at most one read per nesting
-    level: the bytes an outer reader decodes to feed an inner reader's read come out
-    of the same budget, after the inner read has sized itself against it. With the
-    current read sizes, that is about 1 MiB per level.
+    extraction. In an archive opened alone, that read decodes one byte past the cap.
+    In a nested archive it can go further: to fill an inner reader's read, the outer
+    reader decodes bytes that count too, after the inner read has sized itself
+    against what is left. The crossing read can pass the cap by those bytes.
 
     The count never refills while the nest lives, so on a reader kept open for long
     (an :class:`~archivey.fsspec.ArchiveyFileSystem`, a reader a server shares) this

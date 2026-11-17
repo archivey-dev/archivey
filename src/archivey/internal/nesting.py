@@ -178,14 +178,14 @@ class NestDraws:
     members against ``max_members``, and this reader's part of the nest ratio.
 
     A read that could cross the byte cap asks the decoder for at most one byte past
-    what is left. In a nest of one level, the read that crosses the cap decodes one
-    byte more than the cap. It does not hold across levels: to fill an inner reader's
+    what is left; a buffer's read-ahead over a source that cannot seek is capped the
+    same way. In a nest of one level, the read that crosses the cap decodes one byte
+    more than the cap. Across levels the bound is looser: to fill an inner reader's
     read, its decoder reads through the outer reader's member stream, which draws on
     the same account after the inner read sized itself. So the crossing read can go
-    past the cap by at most one read per nesting level (about 1 MiB with the current
-    read sizes). The same holds for a buffer's read-ahead over a source that cannot
-    seek. Readers on other threads size their reads against the same room, so each
-    can overshoot by one read.
+    past the cap by the bytes the outer levels decode to fill it. Readers on other
+    threads size their reads against the same room, so each can overshoot by one
+    read.
     """
 
     __slots__ = (

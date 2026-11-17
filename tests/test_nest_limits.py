@@ -252,6 +252,29 @@ def test_a_nested_reader_given_the_budget_draws_from_it() -> None:
                 nested.read("m1.bin")
 
 
+def test_a_nested_crossing_read_passes_the_cap_by_its_own_bytes() -> None:
+    """An inner reader whose source is the outer reader's member stream: to fill an
+    inner read, the outer decoder decodes bytes that count after the inner read sized
+    itself. The crossing read passes the cap by at most what it asked for, plus the
+    one byte an outer read may take, not by one byte."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("inner.zip", _stored_zip({"payload.bin": bytes(4_000_000)}))
+    cap, step = 500_000, 65_536
+    budget = _Nest(max_decoded_bytes=cap)
+    with (
+        _open(buf.getvalue(), budget) as outer,
+        outer.open("inner.zip") as member,
+        budget.open(member, streaming=True) as inner,
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes=500000"),
+    ):
+        for _, stream in inner.stream_members():
+            assert stream is not None
+            while stream.read(step):
+                pass
+    assert cap < budget.decoded_bytes <= cap + step + 1
+
+
 def test_threads_share_one_count() -> None:
     data = _zip(4, size=50_000)
     budget = _Nest()
