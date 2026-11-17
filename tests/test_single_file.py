@@ -1584,16 +1584,23 @@ _DEFLATE = (CompressionMethod(CompressionAlgorithm.DEFLATE),)
             CompressionAlgorithm.DEFLATE,
             id="zlib",
         ),
-        # No CompressionAlgorithm member names LZW or an encoding, so .Z and
-        # uuencode list nothing: UNKNOWN would say archivey cannot decode them.
         # Built inside the test: ncompress is absent from the core-only legs.
         pytest.param(
             lambda: make_unix_compress(b"x"),
             None,
-            None,
+            CompressionAlgorithm.LZW,
             id="Z",
             marks=requires("ncompress"),
         ),
+        pytest.param(
+            lambda: _bzip3_compress(b"x"),
+            None,
+            CompressionAlgorithm.BZIP3,
+            id="bz3",
+            marks=requires("bz3"),
+        ),
+        # No CompressionAlgorithm member names an encoding, so uuencode lists
+        # nothing: UNKNOWN would say archivey cannot decode it.
         pytest.param(lambda: _uu_encode(b"x"), None, None, id="uu"),
     ],
 )

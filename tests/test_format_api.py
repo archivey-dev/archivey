@@ -1147,6 +1147,15 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         return lz4.frame.compress(data)
     if method is CompressionAlgorithm.XZ:
         return lzma.compress(data)
+    if method is CompressionAlgorithm.LZW:
+        from tests.streams_util import make_unix_compress
+
+        return make_unix_compress(data)
+    if method is CompressionAlgorithm.BZIP3:
+        from bz3.backends import BZ3Compressor
+
+        compressor = BZ3Compressor(1 << 20)
+        return compressor.compress(data) + compressor.flush()
     assert method is CompressionAlgorithm.BROTLI
     import brotli
 
@@ -1166,6 +1175,8 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
         pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
         pytest.param(CompressionAlgorithm.BROTLI, marks=requires("brotli")),
+        pytest.param(CompressionAlgorithm.LZW, marks=requires("ncompress")),
+        pytest.param(CompressionAlgorithm.BZIP3, marks=requires("bz3")),
     ],
 )
 def test_decompress_methods(

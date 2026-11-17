@@ -58,10 +58,9 @@ _DECODES_WITH: dict[CompressionAlgorithm, tuple[CompressionAlgorithm, ...]] = {
 }
 
 # The method each whole-file compression decodes with, so a method in ``exclude``
-# refuses a file compressed with it as a whole too. ``.Z`` and bzip3 have no
-# CompressionAlgorithm member: only their StreamFormat refuses them. The single-file
-# reader lists the same method in its member's ``compression``, so ``exclude=`` and
-# the listing agree.
+# refuses a file compressed with it as a whole too. The encodings (uuencode, base64)
+# compress nothing and have no entry. The single-file reader lists the same method in
+# its member's ``compression``, so ``exclude=`` and the listing agree.
 _STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
     StreamFormat.GZIP: CompressionAlgorithm.DEFLATE,
     StreamFormat.ZLIB: CompressionAlgorithm.DEFLATE,
@@ -74,6 +73,8 @@ _STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
     StreamFormat.MOZLZ4: CompressionAlgorithm.LZ4,
     StreamFormat.BROTLI: CompressionAlgorithm.BROTLI,
     StreamFormat.LZOP: CompressionAlgorithm.LZO,
+    StreamFormat.UNIX_COMPRESS: CompressionAlgorithm.LZW,
+    StreamFormat.BZIP3: CompressionAlgorithm.BZIP3,
 }
 
 

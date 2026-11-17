@@ -238,6 +238,8 @@ value archivey.CompressionAlgorithm.LZH = 'lzh'
 value archivey.CompressionAlgorithm.ARJ_FAST = 'arj_fast'
 value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
 value archivey.CompressionAlgorithm.RAR = 'rar'
+value archivey.CompressionAlgorithm.LZW = 'lzw'
+value archivey.CompressionAlgorithm.BZIP3 = 'bzip3'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
 init archivey.CompressionMethod(algo: CompressionAlgorithm, level: int | None = None, properties: bytes | None = None) -> None

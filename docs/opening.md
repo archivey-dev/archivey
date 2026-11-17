@@ -60,7 +60,7 @@ not the grade.
 A file that's compressed but not an archive, such as `notes.txt.gz`, opens as an archive of one
 member, named after the file without its extension (`notes.txt`). The member's `compression` names
 the file's method, as a ZIP member compressed the same way does: `DEFLATE` for a `.gz`, `XZ` for a
-`.xz`. It's empty for a format no method names, such as `.Z` or uuencode. A `.tar.gz` is different:
+`.xz`. It's empty for a format no method names, such as a uuencoded file. A `.tar.gz` is different:
 there the gzip belongs to the archive, and each member is `STORED`. If you only want the contents,
 `open_stream` returns them as a file object:
 
