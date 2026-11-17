@@ -3526,10 +3526,9 @@ class ExtractionCoordinator:
         names, so a later member that re-points one of the archive's symlinks on its
         way or replaces it does not make the second pass write elsewhere."""
         physical = self._physical_path(landed)
-        try:
-            st = os.lstat(long_path(physical))
-        except OSError:
-            return
+        # The file was landed a moment ago: a failure here propagates, so
+        # ``_handling`` fails the link rather than reporting an empty file as made.
+        st = os.lstat(long_path(physical))
         held = self._state.held.setdefault(source.member_id, _HeldSource(source))
         link = _HeldLink(
             result_index,
@@ -3658,25 +3657,29 @@ class ExtractionCoordinator:
             source_error = error
             return True  # stopped on or logged below, under the source's name
 
-        self._state.tracker.start_member(source)
-        with self._handling(first.original, kind="hardlink", record=record):
-            for link in live:
-                self._forget_source_path(link.path)
-            landed = self._write_file_atomic(stream, first.physical, first.transformed)
-            self._record_source_path(source.member_id, landed)
-        if source_error is not None:
-            self._fail_held_source(held, source_error, live=live)
-            return
-        rest = live[1:]
         try:
-            while rest:
-                self._link_held(source.member_id, rest[0])
-                rest.pop(0)
-        finally:
-            # A stop on one link's failure leaves the others: their placeholders were
-            # forgotten as sources above, so they are removed here.
-            for link in rest:
+            self._state.tracker.start_member(source)
+            with self._handling(first.original, kind="hardlink", record=record):
+                for link in live:
+                    self._forget_source_path(link.path)
+                landed = self._write_file_atomic(
+                    stream, first.physical, first.transformed
+                )
+                self._record_source_path(source.member_id, landed)
+            if source_error is not None:
+                self._fail_held_source(held, source_error, live=live)
+                return
+            for link in live[1:]:
+                self._link_held(source.member_id, link)
+        except BaseException:
+            # An error ``_handling`` lets through (a stop on a link's failure, an
+            # always-stop limit, an interrupt) leaves placeholders that are no longer
+            # ``live``, as they were forgotten as sources above, so the run's own
+            # clean-up skips them. Each name that still holds its empty placeholder is
+            # removed here; a filled or linked name no longer matches and stays.
+            for link in live:
                 self._remove_placeholder(link)
+            raise
         self._current.parked = {}
 
     def _link_held(self, source_id: int, link: _HeldLink) -> None:

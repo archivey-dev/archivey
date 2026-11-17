@@ -5578,6 +5578,32 @@ def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
     assert (dest / "f" / "X").read_bytes() == b""
 
 
+@pytest.mark.parametrize("stopped_first", [False, True], ids=["fill", "after-a-stop"])
+def test_a_fill_that_meets_an_always_stop_limit_leaves_no_empty_link(
+    tmp_path: Path, stopped_first: bool
+) -> None:
+    # The byte cap stops the run while the second pass fills `h` and `h2`. Their
+    # empty placeholders are removed: no empty file stands for a link not made.
+    # With `big` after `h`, the first pass stops there and the fill meets the cap.
+    specs = [("file", "s", b"s" * 1000), ("file", "a", b"a" * 1000)]
+    specs.append(("hard", "h", "s"))
+    if stopped_first:
+        specs.append(("file", "big", b"b" * 1000))
+    else:
+        specs.append(("hard", "h2", "s"))
+    dest = tmp_path / "out"
+    with (
+        open_archive(io.BytesIO(_tar_bytes(specs))) as reader,
+        pytest.raises(AlwaysStopResourceLimitError),
+    ):
+        reader.extract_all(
+            dest,
+            limits=ExtractionLimits(max_extracted_bytes=1500),
+            members=lambda m: m.name != "s",
+        )
+    assert sorted(p.name for p in dest.iterdir()) == ["a"]
+
+
 def test_a_held_link_over_a_callers_symlink_is_filled_when_the_run_stops(
     tmp_path: Path,
 ) -> None:
