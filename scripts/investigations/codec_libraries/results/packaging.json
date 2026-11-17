@@ -1,0 +1,3575 @@
+{
+  "cramjam": {
+    "version": "2.14.0",
+    "info": {
+      "author": null,
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Python :: 3.15",
+        "Programming Language :: Python :: Implementation :: CPython",
+        "Programming Language :: Python :: Implementation :: PyPy",
+        "Typing :: Typed"
+      ],
+      "description": "# cramjam\n\n---\n\n[![CI](https://github.com/milesgranger/cramjam/actions/workflows/CI.yml/badge.svg)](https://github.com/milesgranger/cramjam/actions/workflows/CI.yml)\n[![Downloads](https://pepy.tech/badge/cramjam/month)](https://pepy.tech/project/cramjam)\n[![PyPI](https://img.shields.io/pypi/v/cramjam.svg)](https://pypi.org/project/cramjam)\n[![Conda Version](https://img.shields.io/conda/vn/conda-forge/cramjam.svg)](https://anaconda.org/conda-forge/cramjam)\n[![NPM Version](https://img.shields.io/npm/v/cramjam)](https://www.npmjs.com/package/cramjam)\n\n[API Documentation](https://milesgranger.github.io/cramjam/cramjam.html)\n\n### Install (Python)\n\n```commandline\npip install --upgrade cramjam  # Requires no Python or system dependencies!\n```\n\n#### Pure-Rust backend\n\nBy default zstd, lz4, bzip2, xz and deflate/gzip/zlib use their C libraries.\nTo use [libcramjam](https://github.com/cramjam/libcramjam)'s pure-Rust\nimplementations instead (same API, no C), install the add-on and select it\nbefore `cramjam` is imported:\n\n```commandline\npip install --upgrade \"cramjam[pure-rust]\"\nexport CRAMJAM_BACKEND=pure-rust  # `cramjam.backend` reports which is active\n```\n\nOutput is interchangeable between backends, but the compressed bytes may differ.\n\n## Development\n\nInstall the locked development dependencies, build the extension, and run the\ntest suite:\n\n```bash\nmake dev-setup\nmake test\n```\n\nRust checks can be run separately with `cargo test`.\n\n### Install (JavaScript / TypeScript)\n\n```commandline\nnpm install cramjam\n```\n\n### CLI\n\nA CLI interface is available as [`cramjam-cli`](https://github.com/cramjam/cramjam-cli)\n\n### libcramjam\n\nA Rust crate and C friendly library available at [libcramjam](https://github.com/cramjam/libcramjam)\n\n---\n\nExtremely thin and easy-to-install Python bindings to de/compression algorithms in Rust.\nAllows for using algorithms such as Snappy, without any system or other python dependencies.\n\n---\n\n##### Benchmarks\n\nSome basic benchmarks are available [in the benchmarks directory](./benchmarks/README.md)\n\n---\n\nAvailable algorithms:\n\n- [x] Snappy&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.snappy`\n- [x] Brotli&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.brotli`\n- [x] Bzip2&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.bzip2`\n- [x] Lz4&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.lz4`\n- [x] Gzip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.gzip`\n- [x] Zlib&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.zlib`\n- [x] Deflate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.deflate`\n- [x] ZSTD&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.zstd`\n- [x] XZ / LZMA&nbsp;&nbsp;`cramjam.xz`\n\nExperimental (Requires build from source enabling each feature):\n\n- [x] Blosc2&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.experimental.blosc2`\n- [x] ISA-L backend _(only on 64-bit targets)_\n  - [x] igzip&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.experimental.igzip`\n  - [x] ideflate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.experimental.ideflate`\n  - [x] izlib&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`cramjam.experimental.izlib`\n\nAll available for use as:\n\n```python\n>>> import cramjam\n>>> import numpy as np\n>>> compressed = cramjam.snappy.compress(b\"bytes here\")\n>>> decompressed = cramjam.snappy.decompress(compressed)\n>>> decompressed\ncramjam.Buffer(len=10)  # an object which implements the buffer protocol\n>>> bytes(decompressed)\nb\"bytes here\"\n>>> np.frombuffer(decompressed, dtype=np.uint8)\narray([ 98, 121, 116, 101, 115,  32, 104, 101, 114, 101], dtype=uint8)\n```\n\nWhere the API is `cramjam.<compression-variant>.compress/decompress` and accepts\n`bytes`/`bytearray`/`numpy.array`/`cramjam.File`/`cramjam.Buffer` / `memoryview` objects.\n\n**de/compress_into**\nAdditionally, all variants support `decompress_into` and `compress_into`.\nEx.\n\n```python\n>>> import numpy as np\n>>> from cramjam import snappy, Buffer\n>>>\n>>> data = np.frombuffer(b'some bytes here', dtype=np.uint8)\n>>> data\narray([115, 111, 109, 101,  32,  98, 121, 116, 101, 115,  32, 104, 101,\n       114, 101], dtype=uint8)\n>>>\n>>> compressed = Buffer()\n>>> snappy.compress_into(data, compressed)\n33  # 33 bytes written to compressed buffer\n>>>\n>>> compressed.tell()  # Where is the buffer position?\n33  # goodie!\n>>>\n>>> compressed.seek(0)  # Go back to the start of the buffer so we can prepare to decompress\n>>> decompressed = b'0' * len(data)  # let's write to `bytes` as output\n>>> decompressed\nb'000000000000000'\n>>>\n>>> snappy.decompress_into(compressed, decompressed)\n15  # 15 bytes written to decompressed\n>>> decompressed\nb'some bytes here'\n```\n\n[TypeScript](./cramjam-js/README.md):\n\n```typescript\nimport {Compress, Decompress} from 'cramjam';\n\nconst decoder = new TextDecoder();\nconst encoder = new TextEncoder();\n\nconst str = 'hello, world';\nconst encoded = encoder.encode(str);\n\nconst compressed = Compress.brotli(encoded);\nconst decompressed = Decompress.brotli(compressed);\n\nconst decoded = decoder.decode(decompressed);\n```\n\n",
+      "description_content_type": "text/markdown; charset=UTF-8; variant=GFM",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": null,
+      "keywords": "compression, decompression, snappy, zstd, bz2, gzip, lz4, brotli, deflate, blosc2",
+      "license": null,
+      "license_expression": "MIT",
+      "license_files": [
+        "LICENSE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "cramjam",
+      "package_url": "https://pypi.org/project/cramjam/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/cramjam/",
+      "project_urls": {
+        "documentation": "https://docs.rs/cramjam/latest/cramjam",
+        "homepage": "https://github.com/milesgranger/pyrus-cramjam",
+        "repository": "https://github.com/milesgranger/pyrus-cramjam"
+      },
+      "provides_extra": [
+        "dev",
+        "pure-rust"
+      ],
+      "release_url": "https://pypi.org/project/cramjam/2.14.0/",
+      "requires_dist": [
+        "black==26.3.1; extra == \"dev\"",
+        "numpy; extra == \"dev\"",
+        "pytest>=9.0.3; extra == \"dev\"",
+        "pytest-xdist; extra == \"dev\"",
+        "pytest-benchmark; extra == \"dev\"",
+        "hypothesis>=6.165.10; extra == \"dev\"",
+        "cramjam-pure-rust==2.14.0; extra == \"pure-rust\""
+      ],
+      "requires_python": ">=3.11",
+      "summary": null,
+      "version": "2.14.0",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "files": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "15dac741a1d7d813eff6270edb82f8878a066dd4065562a7e84228af8b12fb05",
+          "md5": "ee5bce66b2317bcf70cf2e73f3020f99",
+          "sha256": "22c17cbd9f0fba846161706ca7c0d91d995bb1280cde8d8b7060d565f550c3d7"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-macosx_10_12_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "ee5bce66b2317bcf70cf2e73f3020f99",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 3435546,
+        "upload_time": "2026-10-13T08:35:55",
+        "upload_time_iso_8601": "2026-10-13T08:35:55.251416Z",
+        "url": "https://files.pythonhosted.org/packages/15/da/c741a1d7d813eff6270edb82f8878a066dd4065562a7e84228af8b12fb05/cramjam-2.14.0-cp311-cp311-macosx_10_12_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "a98b2cd03f48ec523084c982ce8fb7020319d3182965b01df17a797f03b4c34f",
+          "md5": "208dde076c985737cb758b1996c70f1f",
+          "sha256": "67cba7fe5f13fceda24e3e080eaa806842d90fee30031e10b79c8c1f2203015d"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "208dde076c985737cb758b1996c70f1f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1814859,
+        "upload_time": "2026-10-13T08:35:57",
+        "upload_time_iso_8601": "2026-10-13T08:35:57.960908Z",
+        "url": "https://files.pythonhosted.org/packages/a9/8b/2cd03f48ec523084c982ce8fb7020319d3182965b01df17a797f03b4c34f/cramjam-2.14.0-cp311-cp311-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "cfb9e827b091f74b269f6dcc9472b5f9dccf59b375aea63cef88477ec310a51a",
+          "md5": "1b376c64cbefec0e98202a74f271d2e7",
+          "sha256": "88c4cbb4ef6163223f42fc4e7e19b436ea93257e5a9d84b89a54cdcc85cdac0f"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "1b376c64cbefec0e98202a74f271d2e7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1638593,
+        "upload_time": "2026-10-13T08:35:59",
+        "upload_time_iso_8601": "2026-10-13T08:35:59.723172Z",
+        "url": "https://files.pythonhosted.org/packages/cf/b9/e827b091f74b269f6dcc9472b5f9dccf59b375aea63cef88477ec310a51a/cramjam-2.14.0-cp311-cp311-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "0a535972c9fc7eedf0656d687a8a57abfb4e526a00f54ee7d8b5ec38892c74cb",
+          "md5": "3637c01354f3a5aa0e565ca545b1eb6d",
+          "sha256": "4b2d3c9cf0f1aaa35e23145fd1fff1d98182b1a77156648926b88e45a4a9aaae"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3637c01354f3a5aa0e565ca545b1eb6d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1856194,
+        "upload_time": "2026-10-13T08:36:01",
+        "upload_time_iso_8601": "2026-10-13T08:36:01.676386Z",
+        "url": "https://files.pythonhosted.org/packages/0a/53/5972c9fc7eedf0656d687a8a57abfb4e526a00f54ee7d8b5ec38892c74cb/cramjam-2.14.0-cp311-cp311-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "f3fce018238c7c33403d96cf428b6f50432f06d5e599adb3b441ce1e1703f4b7",
+          "md5": "7a63660e2c6b74b4ad87426803fb4162",
+          "sha256": "6819bf231ab0f0faf962229d0c729ce89831c4d5cd0b2a2cd1908083dd501a4c"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "7a63660e2c6b74b4ad87426803fb4162",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1988314,
+        "upload_time": "2026-10-13T08:36:03",
+        "upload_time_iso_8601": "2026-10-13T08:36:03.405554Z",
+        "url": "https://files.pythonhosted.org/packages/f3/fc/e018238c7c33403d96cf428b6f50432f06d5e599adb3b441ce1e1703f4b7/cramjam-2.14.0-cp311-cp311-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "8d019cd77c1dfd6bf32e442e2aa6776ab938eeb95a138b3dc598cf5421d53548",
+          "md5": "873b7b7866a9522d8b82737fb1f0fcf4",
+          "sha256": "ebfad4ca1086782f4b98dbc2a9080e73d741ca70dba6baf9479704a402e59ff6"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "873b7b7866a9522d8b82737fb1f0fcf4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 2170508,
+        "upload_time": "2026-10-13T08:36:05",
+        "upload_time_iso_8601": "2026-10-13T08:36:05.035319Z",
+        "url": "https://files.pythonhosted.org/packages/8d/01/9cd77c1dfd6bf32e442e2aa6776ab938eeb95a138b3dc598cf5421d53548/cramjam-2.14.0-cp311-cp311-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "28a9e3349e0e9b137020c6ab3f8630eff3314ce0f25cd2a247ee88c02089fbe0",
+          "md5": "38047ba61c594cff694f42fdd1bf0bf4",
+          "sha256": "905933c85cb1e38520b6dca6442e39aef3389aa9f8b8579a2f304c5438764f74"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "38047ba61c594cff694f42fdd1bf0bf4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 2390801,
+        "upload_time": "2026-10-13T08:36:06",
+        "upload_time_iso_8601": "2026-10-13T08:36:06.763297Z",
+        "url": "https://files.pythonhosted.org/packages/28/a9/e3349e0e9b137020c6ab3f8630eff3314ce0f25cd2a247ee88c02089fbe0/cramjam-2.14.0-cp311-cp311-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "8c8be2b14321e68dd9030117f9ce9883f698098bb1ea313609b48b71eb4e1869",
+          "md5": "7cf4cc3f1e1324e335a3c181d4b25eee",
+          "sha256": "401bf7e11cf3775ee4af0fb487027adcbee61f68bbd1944ae9f6fcafb8b160fc"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "7cf4cc3f1e1324e335a3c181d4b25eee",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1961119,
+        "upload_time": "2026-10-13T08:36:08",
+        "upload_time_iso_8601": "2026-10-13T08:36:08.390214Z",
+        "url": "https://files.pythonhosted.org/packages/8c/8b/e2b14321e68dd9030117f9ce9883f698098bb1ea313609b48b71eb4e1869/cramjam-2.14.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "6243aee91361b10265fa0abc6bfd0b2f8af92b35c6796d6156b31cf0b12281f2",
+          "md5": "44aaf1161fa45c0cd0734f9277dabbe7",
+          "sha256": "d326ecb4e3c825697c8910fcb8bbdaaba9bb4c586180acce4e306cf4f5525cb6"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "44aaf1161fa45c0cd0734f9277dabbe7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1833533,
+        "upload_time": "2026-10-13T08:36:09",
+        "upload_time_iso_8601": "2026-10-13T08:36:09.949922Z",
+        "url": "https://files.pythonhosted.org/packages/62/43/aee91361b10265fa0abc6bfd0b2f8af92b35c6796d6156b31cf0b12281f2/cramjam-2.14.0-cp311-cp311-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "478d4fd3ec053d1148a415aafc63d58f29b744d34293d47557f596c35f3a1416",
+          "md5": "a4d4a42e7bbe60b00edd52111a5ccf32",
+          "sha256": "4fe4284ff5e63f561c3033e2f584566521f94f2b09fd51d658a91108a0980a6c"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "a4d4a42e7bbe60b00edd52111a5ccf32",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 2113381,
+        "upload_time": "2026-10-13T08:36:11",
+        "upload_time_iso_8601": "2026-10-13T08:36:11.660062Z",
+        "url": "https://files.pythonhosted.org/packages/47/8d/4fd3ec053d1148a415aafc63d58f29b744d34293d47557f596c35f3a1416/cramjam-2.14.0-cp311-cp311-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "764b3536e9ee698211ac9228eb824366de40bf2bb1ec2974535d62e7d0cd3fb6",
+          "md5": "2f309f3b00eddcfe7b96a7a4762abc60",
+          "sha256": "aba07006c9961a6dd25f04cbcd8bbcd9ccc47c75f59b98d8792229f37f8f86a3"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "2f309f3b00eddcfe7b96a7a4762abc60",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1930865,
+        "upload_time": "2026-10-13T08:36:13",
+        "upload_time_iso_8601": "2026-10-13T08:36:13.681966Z",
+        "url": "https://files.pythonhosted.org/packages/76/4b/3536e9ee698211ac9228eb824366de40bf2bb1ec2974535d62e7d0cd3fb6/cramjam-2.14.0-cp311-cp311-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "e9eab2d3b555136509f347554e2262ef8bd4fb5701b522f58f1a66d0679885f9",
+          "md5": "930b8de20a724be02b89c535c1a3ba40",
+          "sha256": "6e1473c073f9cdbceb017a0fd11bcf07a826ee1e22723499e4d950f5d5047a01"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "930b8de20a724be02b89c535c1a3ba40",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1777092,
+        "upload_time": "2026-10-13T08:36:15",
+        "upload_time_iso_8601": "2026-10-13T08:36:15.274787Z",
+        "url": "https://files.pythonhosted.org/packages/e9/ea/b2d3b555136509f347554e2262ef8bd4fb5701b522f58f1a66d0679885f9/cramjam-2.14.0-cp311-cp311-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "4e162fe487ca8599f1a247dbca79228117ec3850226a1a826913fc7e0ce11295",
+          "md5": "1b1f1d3f5d23869988643ccdbed17ef4",
+          "sha256": "65d385a0c4ecd7ed8c159b87fb09f60a6eb69e667e315f3c9dbc86cf3a2e28bf"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "1b1f1d3f5d23869988643ccdbed17ef4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 2126374,
+        "upload_time": "2026-10-13T08:36:17",
+        "upload_time_iso_8601": "2026-10-13T08:36:17.051720Z",
+        "url": "https://files.pythonhosted.org/packages/4e/16/2fe487ca8599f1a247dbca79228117ec3850226a1a826913fc7e0ce11295/cramjam-2.14.0-cp311-cp311-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "768c78aa49eac25cae2471c7e9f6c5ffe6957f2fb663ae590cfac2437b407761",
+          "md5": "f893f2fd8114160a01a0192e6166f5d4",
+          "sha256": "a1d151e50f88a8f92d761edfea524ab9d902d92039ffae37f2cf4cc33c7434e9"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f893f2fd8114160a01a0192e6166f5d4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 2047275,
+        "upload_time": "2026-10-13T08:36:18",
+        "upload_time_iso_8601": "2026-10-13T08:36:18.783847Z",
+        "url": "https://files.pythonhosted.org/packages/76/8c/78aa49eac25cae2471c7e9f6c5ffe6957f2fb663ae590cfac2437b407761/cramjam-2.14.0-cp311-cp311-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "3b3ae125d085142f5a3b0e7c2691ae8e362812eefac4d15129f4e6f938e6423b",
+          "md5": "98b56c19f9cfec1143766c4773ee9cfc",
+          "sha256": "3a34531db308cd0dfb4af8574895d78f83ad899381c9ce75a2cf50de51ec9f68"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-win32.whl",
+        "has_sig": false,
+        "md5_digest": "98b56c19f9cfec1143766c4773ee9cfc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1676971,
+        "upload_time": "2026-10-13T08:36:20",
+        "upload_time_iso_8601": "2026-10-13T08:36:20.585540Z",
+        "url": "https://files.pythonhosted.org/packages/3b/3a/e125d085142f5a3b0e7c2691ae8e362812eefac4d15129f4e6f938e6423b/cramjam-2.14.0-cp311-cp311-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "3cc0dd85ef6f831125598ca6346e79edb9156f2808b3337baf373c7fc2e095c7",
+          "md5": "df7bbaf575785b76be159e3ace76fc89",
+          "sha256": "68a3958c5725de6add9b0c9d367fc75b7ba5cfa5eb13763c4245fb6643a7bc10"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "df7bbaf575785b76be159e3ace76fc89",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1799719,
+        "upload_time": "2026-10-13T08:36:22",
+        "upload_time_iso_8601": "2026-10-13T08:36:22.591802Z",
+        "url": "https://files.pythonhosted.org/packages/3c/c0/dd85ef6f831125598ca6346e79edb9156f2808b3337baf373c7fc2e095c7/cramjam-2.14.0-cp311-cp311-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "185e7f3525760c8439bf1a5f2348f382ba36415dfd60b10b759905a848b49a23",
+          "md5": "fddfa6bc8ba2188850cf7492cbae7a77",
+          "sha256": "7908e0a96eff42067a56146ed28a043e49a410691a3ba7ee7c0529d41bf8c80e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp311-cp311-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "fddfa6bc8ba2188850cf7492cbae7a77",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp311",
+        "requires_python": ">=3.11",
+        "size": 1728958,
+        "upload_time": "2026-10-13T08:36:24",
+        "upload_time_iso_8601": "2026-10-13T08:36:24.328163Z",
+        "url": "https://files.pythonhosted.org/packages/18/5e/7f3525760c8439bf1a5f2348f382ba36415dfd60b10b759905a848b49a23/cramjam-2.14.0-cp311-cp311-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "2e9805b018bdf60057976d3ee654a6ee6229fa2771841ef5ea554edd9446c266",
+          "md5": "e84d6edeadf1558d33f707b799706b4c",
+          "sha256": "1f4ffa3ea49d003e4612aa6afc838ca7d3457a2914d3f57ad80d9ea68008df1f"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "e84d6edeadf1558d33f707b799706b4c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 3436814,
+        "upload_time": "2026-10-13T08:36:26",
+        "upload_time_iso_8601": "2026-10-13T08:36:26.252142Z",
+        "url": "https://files.pythonhosted.org/packages/2e/98/05b018bdf60057976d3ee654a6ee6229fa2771841ef5ea554edd9446c266/cramjam-2.14.0-cp312-cp312-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "6ffb0fa74e5b6cab5d1dc409e8b2f46166d1a6b5fe58f582f54e26aceda0ead9",
+          "md5": "308df44625a9dd46363670d90a4b1f9c",
+          "sha256": "d84c449297d4b9b0d1678af8638cf533d27e4b5131a50bc8de1f37a3c40a5ef9"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "308df44625a9dd46363670d90a4b1f9c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1821322,
+        "upload_time": "2026-10-13T08:36:27",
+        "upload_time_iso_8601": "2026-10-13T08:36:27.877524Z",
+        "url": "https://files.pythonhosted.org/packages/6f/fb/0fa74e5b6cab5d1dc409e8b2f46166d1a6b5fe58f582f54e26aceda0ead9/cramjam-2.14.0-cp312-cp312-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "a9d4d855ad850030a435fd893fe41007e6c462bb0be1b7cdc82959357ca6fa77",
+          "md5": "16991eecc430c69e68f0c14a6c771e06",
+          "sha256": "9e36b184993f10d88f7fc52a84b1af50cae4d8d217bb32986d54bf2f441794d1"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "16991eecc430c69e68f0c14a6c771e06",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1633503,
+        "upload_time": "2026-10-13T08:36:29",
+        "upload_time_iso_8601": "2026-10-13T08:36:29.816821Z",
+        "url": "https://files.pythonhosted.org/packages/a9/d4/d855ad850030a435fd893fe41007e6c462bb0be1b7cdc82959357ca6fa77/cramjam-2.14.0-cp312-cp312-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "25f182e593de6d360a48629254ebf319b9bc9a9dc8033fbc74cec430082a5485",
+          "md5": "5d95d170470ec5f3eedeab6a1b6589d0",
+          "sha256": "c4663a6b0256928fda740606aad23792dc8db0754ba2718ca96d517414e31528"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "5d95d170470ec5f3eedeab6a1b6589d0",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1851680,
+        "upload_time": "2026-10-13T08:36:31",
+        "upload_time_iso_8601": "2026-10-13T08:36:31.568776Z",
+        "url": "https://files.pythonhosted.org/packages/25/f1/82e593de6d360a48629254ebf319b9bc9a9dc8033fbc74cec430082a5485/cramjam-2.14.0-cp312-cp312-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "00a067a04bea9106ebb76ec5ef9c7dc22bf605d8d27287f3922e51456cdd5c04",
+          "md5": "ed88031d4b8b0cfc5d30d330eb8ba219",
+          "sha256": "b2e29903c4d0200bdc64e234bc958e664e815a72e820feba08bffe2a966c1c65"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "ed88031d4b8b0cfc5d30d330eb8ba219",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1984162,
+        "upload_time": "2026-10-13T08:36:34",
+        "upload_time_iso_8601": "2026-10-13T08:36:34.004492Z",
+        "url": "https://files.pythonhosted.org/packages/00/a0/67a04bea9106ebb76ec5ef9c7dc22bf605d8d27287f3922e51456cdd5c04/cramjam-2.14.0-cp312-cp312-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "e3585450208c70740705a4aa28acc3d934f4814d3659c332f2005c71eb6d2f7b",
+          "md5": "574c5cad45df33cbef4c40963d89ab83",
+          "sha256": "46a3c62714b2c14b0305eb9073808024e2bcfa75690759b4576559f1623d991b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "574c5cad45df33cbef4c40963d89ab83",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 2170524,
+        "upload_time": "2026-10-13T08:36:36",
+        "upload_time_iso_8601": "2026-10-13T08:36:36.125918Z",
+        "url": "https://files.pythonhosted.org/packages/e3/58/5450208c70740705a4aa28acc3d934f4814d3659c332f2005c71eb6d2f7b/cramjam-2.14.0-cp312-cp312-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7570988215e6773e1ffa9306957469d6dc2c738548571f55f203227c62cc0d58",
+          "md5": "668307b239dd312e3d9d4966d2bb7358",
+          "sha256": "1b934a7abf0b506d361d213f7c57c0ed4d4411fd4d991ff3eb351a93acbc4033"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "668307b239dd312e3d9d4966d2bb7358",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 2393577,
+        "upload_time": "2026-10-13T08:36:38",
+        "upload_time_iso_8601": "2026-10-13T08:36:38.088496Z",
+        "url": "https://files.pythonhosted.org/packages/75/70/988215e6773e1ffa9306957469d6dc2c738548571f55f203227c62cc0d58/cramjam-2.14.0-cp312-cp312-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "9e86cb81ea12aebc6141f12680cfd1d492a7f52a7ad882a7d2d32b8d23f9dc39",
+          "md5": "76a116a60897f2471881bd6dcdeeb4ed",
+          "sha256": "d42ed4ab609a46f407fa647c9f3b73473113c848ec007825b6ee25183033323b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "76a116a60897f2471881bd6dcdeeb4ed",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1960580,
+        "upload_time": "2026-10-13T08:36:40",
+        "upload_time_iso_8601": "2026-10-13T08:36:40.279783Z",
+        "url": "https://files.pythonhosted.org/packages/9e/86/cb81ea12aebc6141f12680cfd1d492a7f52a7ad882a7d2d32b8d23f9dc39/cramjam-2.14.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "1165f48b1b70f9cdc12379276414da1b1e72b06c976be2580d2d6dbd7353c46e",
+          "md5": "39cd397585dae0f541fa586255c40064",
+          "sha256": "644d8c11a97e4db7288accdb6d046c43e4fd92f92ac777321241fad70cfcdc56"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "39cd397585dae0f541fa586255c40064",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1830160,
+        "upload_time": "2026-10-13T08:36:42",
+        "upload_time_iso_8601": "2026-10-13T08:36:42.281385Z",
+        "url": "https://files.pythonhosted.org/packages/11/65/f48b1b70f9cdc12379276414da1b1e72b06c976be2580d2d6dbd7353c46e/cramjam-2.14.0-cp312-cp312-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "ed1d7a360f3a5465113bdc646736bbc392083d652ca4681431c4d68b35b4d76a",
+          "md5": "11e19ada91fb040be4ba54535479d4f8",
+          "sha256": "3813d67b47fd242ff5f03c0eb26860917abeb5776cc79ca8bbcc99d895d037c9"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "11e19ada91fb040be4ba54535479d4f8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 2108645,
+        "upload_time": "2026-10-13T08:36:43",
+        "upload_time_iso_8601": "2026-10-13T08:36:43.982819Z",
+        "url": "https://files.pythonhosted.org/packages/ed/1d/7a360f3a5465113bdc646736bbc392083d652ca4681431c4d68b35b4d76a/cramjam-2.14.0-cp312-cp312-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "f367a802b37c231534bab31aceabe9b68be4de8a369732e9d57678fe142320c7",
+          "md5": "1c1def51980927e977602d4c280b3252",
+          "sha256": "555d2949231d8ac670367386a3bb9fa59a8d9542238bb935da9d354e2c0f0464"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "1c1def51980927e977602d4c280b3252",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1934622,
+        "upload_time": "2026-10-13T08:36:45",
+        "upload_time_iso_8601": "2026-10-13T08:36:45.696071Z",
+        "url": "https://files.pythonhosted.org/packages/f3/67/a802b37c231534bab31aceabe9b68be4de8a369732e9d57678fe142320c7/cramjam-2.14.0-cp312-cp312-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "75c2757e6ebd444b47b90890640daf8c82e84dbc28cb3d248b76a266715fb3ba",
+          "md5": "9d31d067040528b51523e7f90b1dd6e2",
+          "sha256": "9b32e8f9dfde0401d50bb7ec880b8ed8829ff1d43ffa36655a94a203f06745d7"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "9d31d067040528b51523e7f90b1dd6e2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1778546,
+        "upload_time": "2026-10-13T08:36:47",
+        "upload_time_iso_8601": "2026-10-13T08:36:47.411301Z",
+        "url": "https://files.pythonhosted.org/packages/75/c2/757e6ebd444b47b90890640daf8c82e84dbc28cb3d248b76a266715fb3ba/cramjam-2.14.0-cp312-cp312-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "e675dcde007c11d58fbc8b2191b4b9c7d36f86ae7013fbaae41a218ae777ddc0",
+          "md5": "0c95acda76ea6b311f9e06be120ad2b7",
+          "sha256": "10fa4be9b3a7cfc63b500f5d9170d652a45ea828e7ad89065d79d6553148987f"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "0c95acda76ea6b311f9e06be120ad2b7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 2121448,
+        "upload_time": "2026-10-13T08:36:49",
+        "upload_time_iso_8601": "2026-10-13T08:36:49.129101Z",
+        "url": "https://files.pythonhosted.org/packages/e6/75/dcde007c11d58fbc8b2191b4b9c7d36f86ae7013fbaae41a218ae777ddc0/cramjam-2.14.0-cp312-cp312-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "589dc30d717563d6c0215d015b5f05e9d8420e0e2e6ac680b300028a94667f24",
+          "md5": "c60dd414937d06ea1e054891517cc201",
+          "sha256": "a9c7279afa1ea63b07126e90aa9b9fb0c81289848f92e5df0b33e0b96a0da172"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "c60dd414937d06ea1e054891517cc201",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 2046815,
+        "upload_time": "2026-10-13T08:36:50",
+        "upload_time_iso_8601": "2026-10-13T08:36:50.832613Z",
+        "url": "https://files.pythonhosted.org/packages/58/9d/c30d717563d6c0215d015b5f05e9d8420e0e2e6ac680b300028a94667f24/cramjam-2.14.0-cp312-cp312-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "8d58c224397d2647c5136a1f30ef0ab6e45611c703ca206115c6129409722d8c",
+          "md5": "d67c5eb44c93d5fc103cd7540b8f6712",
+          "sha256": "76b378aa6c6ac82a5963cd4adff05e0b9126d2f5a4b7dcc4013134252a2f0860"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-win32.whl",
+        "has_sig": false,
+        "md5_digest": "d67c5eb44c93d5fc103cd7540b8f6712",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1674237,
+        "upload_time": "2026-10-13T08:36:52",
+        "upload_time_iso_8601": "2026-10-13T08:36:52.503327Z",
+        "url": "https://files.pythonhosted.org/packages/8d/58/c224397d2647c5136a1f30ef0ab6e45611c703ca206115c6129409722d8c/cramjam-2.14.0-cp312-cp312-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "07e6b6ffdddc2a72812996238c063dae79d545c0e84f3e9c2463f2a00ce8834a",
+          "md5": "34abc148d8f0cbab555e6f482ab49394",
+          "sha256": "e4d4de4904712bb15f6b726bbe92a8e62b340c6df832c9f310b8d66c0baa8220"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "34abc148d8f0cbab555e6f482ab49394",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1794029,
+        "upload_time": "2026-10-13T08:36:54",
+        "upload_time_iso_8601": "2026-10-13T08:36:54.238522Z",
+        "url": "https://files.pythonhosted.org/packages/07/e6/b6ffdddc2a72812996238c063dae79d545c0e84f3e9c2463f2a00ce8834a/cramjam-2.14.0-cp312-cp312-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "4433dd04c2ceb7537562e1ca90de8f2d6c3f03f40f5d72e1d9dd82337ebda942",
+          "md5": "279dc89850a928679175ff315566c814",
+          "sha256": "2d99d9c2c3865d020181716cc837987c9a76298a8dadab370e6f4b2f5e77885b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp312-cp312-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "279dc89850a928679175ff315566c814",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp312",
+        "requires_python": ">=3.11",
+        "size": 1722540,
+        "upload_time": "2026-10-13T08:36:56",
+        "upload_time_iso_8601": "2026-10-13T08:36:56.575666Z",
+        "url": "https://files.pythonhosted.org/packages/44/33/dd04c2ceb7537562e1ca90de8f2d6c3f03f40f5d72e1d9dd82337ebda942/cramjam-2.14.0-cp312-cp312-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b4d5886b9a4c0ee00a4fa337d2856b88248b017d03c55ce6437f2c3b7326e86b",
+          "md5": "869828cfc1b5cc331f293dfa02ad91d9",
+          "sha256": "fdec3c775b0ad18eda9154b25a386de09ce26a6a2f3eea764b107b4864cd008e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-macosx_10_13_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "869828cfc1b5cc331f293dfa02ad91d9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 3437409,
+        "upload_time": "2026-10-13T08:36:58",
+        "upload_time_iso_8601": "2026-10-13T08:36:58.729177Z",
+        "url": "https://files.pythonhosted.org/packages/b4/d5/886b9a4c0ee00a4fa337d2856b88248b017d03c55ce6437f2c3b7326e86b/cramjam-2.14.0-cp313-cp313-macosx_10_13_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "436d1da721ff7683b428e4498bf8a16a9a938a90d522f7bc721983381844f512",
+          "md5": "65a8753529d28cba5753e59b706ff019",
+          "sha256": "2ec755fefcd26eca939a4308b9c38645f01f159eb86333686bba8aee6e65b9e4"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-macosx_10_13_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "65a8753529d28cba5753e59b706ff019",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1821565,
+        "upload_time": "2026-10-13T08:37:00",
+        "upload_time_iso_8601": "2026-10-13T08:37:00.824484Z",
+        "url": "https://files.pythonhosted.org/packages/43/6d/1da721ff7683b428e4498bf8a16a9a938a90d522f7bc721983381844f512/cramjam-2.14.0-cp313-cp313-macosx_10_13_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "6e49d0ec65b2d07313fcb13e6d2ea1a2fcd6522255fdf3f7cf660ce6452d2194",
+          "md5": "57d4001f24f0c1c006a90f6edcdbc57a",
+          "sha256": "a813213ae673621212847336f445cda1bd08a67c2d066a82862eb2a66e254d1e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "57d4001f24f0c1c006a90f6edcdbc57a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1633621,
+        "upload_time": "2026-10-13T08:37:02",
+        "upload_time_iso_8601": "2026-10-13T08:37:02.640277Z",
+        "url": "https://files.pythonhosted.org/packages/6e/49/d0ec65b2d07313fcb13e6d2ea1a2fcd6522255fdf3f7cf660ce6452d2194/cramjam-2.14.0-cp313-cp313-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "e6d89d7d4ef62a62a664b2dfc0e47badb1a6c28fd83fb251a0d77168ee8982d2",
+          "md5": "3967ac0212b46d4234092a512410fada",
+          "sha256": "4cfa1e7530b721bd06720418594f79ba3ca3047bffd5bca44ea39b517d7b2ad4"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "3967ac0212b46d4234092a512410fada",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1851141,
+        "upload_time": "2026-10-13T08:37:04",
+        "upload_time_iso_8601": "2026-10-13T08:37:04.486546Z",
+        "url": "https://files.pythonhosted.org/packages/e6/d8/9d7d4ef62a62a664b2dfc0e47badb1a6c28fd83fb251a0d77168ee8982d2/cramjam-2.14.0-cp313-cp313-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b9e7d479ddda69e946eb31a2191d29baa9e45d0587b534fe009de3d4abc49788",
+          "md5": "d9c7f2b6696052836f3c0e59bdda07c2",
+          "sha256": "69391a3e48ba042b81e2e73395a40de4ad488e000ac80620e9d15a45c79d67da"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "d9c7f2b6696052836f3c0e59bdda07c2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1983702,
+        "upload_time": "2026-10-13T08:37:06",
+        "upload_time_iso_8601": "2026-10-13T08:37:06.216611Z",
+        "url": "https://files.pythonhosted.org/packages/b9/e7/d479ddda69e946eb31a2191d29baa9e45d0587b534fe009de3d4abc49788/cramjam-2.14.0-cp313-cp313-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "3302b47c68e6fa9fdf4f34e700c5f601694df4fc68420395f04989d12a29cf14",
+          "md5": "0ce84730e192f517f56b4cbd5797b903",
+          "sha256": "a7b97febf597c1830755807a6dfb148eea1f6fc56dce4db4c7f2e069fc5cdc44"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "0ce84730e192f517f56b4cbd5797b903",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 2170536,
+        "upload_time": "2026-10-13T08:37:08",
+        "upload_time_iso_8601": "2026-10-13T08:37:08.001019Z",
+        "url": "https://files.pythonhosted.org/packages/33/02/b47c68e6fa9fdf4f34e700c5f601694df4fc68420395f04989d12a29cf14/cramjam-2.14.0-cp313-cp313-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "df9fd70f99bc5e32a4437c07a508519baa382554ba899e0af64d62436c5ab33d",
+          "md5": "137d22d31e628850cf1c35fc7bcedc3d",
+          "sha256": "83776e5ac5fd2446d247fced50b8edc3d83245ea058ec56f29711d41185a88fc"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "137d22d31e628850cf1c35fc7bcedc3d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 2392338,
+        "upload_time": "2026-10-13T08:37:09",
+        "upload_time_iso_8601": "2026-10-13T08:37:09.934452Z",
+        "url": "https://files.pythonhosted.org/packages/df/9f/d70f99bc5e32a4437c07a508519baa382554ba899e0af64d62436c5ab33d/cramjam-2.14.0-cp313-cp313-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "5e8e3a888df0ef44fe5238934207e3a92e729dc2314f790db1b6393eb9481efc",
+          "md5": "f69c8a1646f94e7de94368dea2bfff1d",
+          "sha256": "e1d752b565818735410b577c219be003d6a5b8ac9a2b7989010940d294a2333e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "f69c8a1646f94e7de94368dea2bfff1d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1960786,
+        "upload_time": "2026-10-13T08:37:12",
+        "upload_time_iso_8601": "2026-10-13T08:37:12.209620Z",
+        "url": "https://files.pythonhosted.org/packages/5e/8e/3a888df0ef44fe5238934207e3a92e729dc2314f790db1b6393eb9481efc/cramjam-2.14.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7eda24e847ab5ea77ab63d83f31cb499d34618f480e9deab5540ad7e0cb82ac0",
+          "md5": "7ceaca4d025b1ffd8e49e1b9650f9675",
+          "sha256": "913320378bb7e9959a9c69b9fcb772d2c2d8db2930945748c2c8519bec8a554d"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "7ceaca4d025b1ffd8e49e1b9650f9675",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1829806,
+        "upload_time": "2026-10-13T08:37:14",
+        "upload_time_iso_8601": "2026-10-13T08:37:14.756460Z",
+        "url": "https://files.pythonhosted.org/packages/7e/da/24e847ab5ea77ab63d83f31cb499d34618f480e9deab5540ad7e0cb82ac0/cramjam-2.14.0-cp313-cp313-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "27b640616f0260898ba788b4158b6b9f85fb8d0406cb6373ede32043f9c9d019",
+          "md5": "4ddcc7fcb9662b7b1170778cecf47ac2",
+          "sha256": "9944ea8c2b14cf15c49e3d75494256dd244a7b3e13efa564ecfc986fdde5de9c"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "4ddcc7fcb9662b7b1170778cecf47ac2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 2108793,
+        "upload_time": "2026-10-13T08:37:16",
+        "upload_time_iso_8601": "2026-10-13T08:37:16.596547Z",
+        "url": "https://files.pythonhosted.org/packages/27/b6/40616f0260898ba788b4158b6b9f85fb8d0406cb6373ede32043f9c9d019/cramjam-2.14.0-cp313-cp313-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "5aaea4b3488655fdc19e98b4402fa030434acdae16e6cb112fda3528682ef646",
+          "md5": "93e0b2100749bad92039fd4b9d177aa8",
+          "sha256": "78db3e5c7983be47b0602f4a1a7a8b5675375347f1b7a3f399d2a1f1bb1601cb"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "93e0b2100749bad92039fd4b9d177aa8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1927197,
+        "upload_time": "2026-10-13T08:37:18",
+        "upload_time_iso_8601": "2026-10-13T08:37:18.401191Z",
+        "url": "https://files.pythonhosted.org/packages/5a/ae/a4b3488655fdc19e98b4402fa030434acdae16e6cb112fda3528682ef646/cramjam-2.14.0-cp313-cp313-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "c2929a55c9a6f8c9d12463e5a400709e64f34de69bd561af07fa805f12b9f25d",
+          "md5": "e5d1855974accf1c7e5fae5ee909d544",
+          "sha256": "6bd5ae72915ef414d73f09a3b6216e386acfa40432d5bf9bfd8e3a553a999041"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "e5d1855974accf1c7e5fae5ee909d544",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1778404,
+        "upload_time": "2026-10-13T08:37:20",
+        "upload_time_iso_8601": "2026-10-13T08:37:20.195963Z",
+        "url": "https://files.pythonhosted.org/packages/c2/92/9a55c9a6f8c9d12463e5a400709e64f34de69bd561af07fa805f12b9f25d/cramjam-2.14.0-cp313-cp313-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "257681948b424cd599899389bdb28a6ef7aff2108ad1e9aa4aa93923761f9c79",
+          "md5": "f25a163a36dc7e2a2b3589d85069af04",
+          "sha256": "eda8ec9164e2d306c89ca291fe956c4e117d0604c97a105401208358774858d2"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f25a163a36dc7e2a2b3589d85069af04",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 2121255,
+        "upload_time": "2026-10-13T08:37:21",
+        "upload_time_iso_8601": "2026-10-13T08:37:21.988976Z",
+        "url": "https://files.pythonhosted.org/packages/25/76/81948b424cd599899389bdb28a6ef7aff2108ad1e9aa4aa93923761f9c79/cramjam-2.14.0-cp313-cp313-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "fa69deabbd2b16963d6c0f9ee8c35cecad06bd9178881e81ce3e3caf1ea01851",
+          "md5": "0e42e5e51f258fc1df7f487b03e049c8",
+          "sha256": "f8ef6760bda6a0b69b380421043485b5ff2359ec9df603cae93bf6054a98c50d"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "0e42e5e51f258fc1df7f487b03e049c8",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 2047142,
+        "upload_time": "2026-10-13T08:37:23",
+        "upload_time_iso_8601": "2026-10-13T08:37:23.804244Z",
+        "url": "https://files.pythonhosted.org/packages/fa/69/deabbd2b16963d6c0f9ee8c35cecad06bd9178881e81ce3e3caf1ea01851/cramjam-2.14.0-cp313-cp313-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "0fe77af1cc0f298535aeddf428f6ed4de1f0959dba04f636f73511a938a795b7",
+          "md5": "f397c24c5f34e4ab6016d3e2594f3bed",
+          "sha256": "c354e24d831321fa799c4e6c72c1aa7cf7360d1d148f99c7f6ff4f218e44b4b5"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "has_sig": false,
+        "md5_digest": "f397c24c5f34e4ab6016d3e2594f3bed",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1186299,
+        "upload_time": "2026-10-13T08:37:25",
+        "upload_time_iso_8601": "2026-10-13T08:37:25.672498Z",
+        "url": "https://files.pythonhosted.org/packages/0f/e7/7af1cc0f298535aeddf428f6ed4de1f0959dba04f636f73511a938a795b7/cramjam-2.14.0-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "2d1f42e3a1dfb4c6c01f3c783327f1a234434b668dfd9588bd62ffb0dbd977e7",
+          "md5": "e5a5447f80e2660bdeeb55c1b6250896",
+          "sha256": "45af11b0183111501fa6ae178b0ee7dff8b3df349a0347445b9313e5cf759e7e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-win32.whl",
+        "has_sig": false,
+        "md5_digest": "e5a5447f80e2660bdeeb55c1b6250896",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1673970,
+        "upload_time": "2026-10-13T08:37:27",
+        "upload_time_iso_8601": "2026-10-13T08:37:27.387707Z",
+        "url": "https://files.pythonhosted.org/packages/2d/1f/42e3a1dfb4c6c01f3c783327f1a234434b668dfd9588bd62ffb0dbd977e7/cramjam-2.14.0-cp313-cp313-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "a2aec78271f4df9cfd60dff25807d523dd503c01e66dc7a711aa6ecfddf13f2b",
+          "md5": "fac948b83d5c512ad4b591ed3787ee7b",
+          "sha256": "7108e7739628b2b25af5dc14532e7c67a074ae5b9f4166630236ffb00c55a483"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "fac948b83d5c512ad4b591ed3787ee7b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1793615,
+        "upload_time": "2026-10-13T08:37:29",
+        "upload_time_iso_8601": "2026-10-13T08:37:29.700683Z",
+        "url": "https://files.pythonhosted.org/packages/a2/ae/c78271f4df9cfd60dff25807d523dd503c01e66dc7a711aa6ecfddf13f2b/cramjam-2.14.0-cp313-cp313-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "f5a18e894bbc6b0bf0df7626ddf7e7d61e3ae9966073bd96a11703dc09a9722f",
+          "md5": "703578eaac77b6ebb1821c5e14d0a86c",
+          "sha256": "dddb6476f3eb507ed11217675529a62ad9d5fd7f6b0409e116b461302b67e30d"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp313-cp313-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "703578eaac77b6ebb1821c5e14d0a86c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp313",
+        "requires_python": ">=3.11",
+        "size": 1721781,
+        "upload_time": "2026-10-13T08:37:31",
+        "upload_time_iso_8601": "2026-10-13T08:37:31.629463Z",
+        "url": "https://files.pythonhosted.org/packages/f5/a1/8e894bbc6b0bf0df7626ddf7e7d61e3ae9966073bd96a11703dc09a9722f/cramjam-2.14.0-cp313-cp313-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "82c030fae769283aa144bb59056d90cb06c505338f8f821670365927747a91be",
+          "md5": "3c6f82d2b3555d3ad0dd75183a766e21",
+          "sha256": "b727cc29b1cef3152572f6e199a3e75d0433eeccff4c3217af1802f6a8fac9f7"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "3c6f82d2b3555d3ad0dd75183a766e21",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 3430215,
+        "upload_time": "2026-10-13T08:37:33",
+        "upload_time_iso_8601": "2026-10-13T08:37:33.702909Z",
+        "url": "https://files.pythonhosted.org/packages/82/c0/30fae769283aa144bb59056d90cb06c505338f8f821670365927747a91be/cramjam-2.14.0-cp314-cp314-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "fb87f9de8dce5f1536b3385995d4a0667d9ff52cdcda152bfd1acfedfd738abf",
+          "md5": "49724cb1588cb60da55f4d23b53b7f67",
+          "sha256": "cc6f50ddb752b80adaf7a7612fb233c126011bf6245ea59887a266261767f204"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "49724cb1588cb60da55f4d23b53b7f67",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1818625,
+        "upload_time": "2026-10-13T08:37:35",
+        "upload_time_iso_8601": "2026-10-13T08:37:35.701515Z",
+        "url": "https://files.pythonhosted.org/packages/fb/87/f9de8dce5f1536b3385995d4a0667d9ff52cdcda152bfd1acfedfd738abf/cramjam-2.14.0-cp314-cp314-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7545df0656b567d4b0f0f3646e80ff27ea6061978d2a604fe8523a3e31c07973",
+          "md5": "08c43dde9488a7811a8e5fa28dbe0184",
+          "sha256": "99845b540c9fe62f4cae50414a60195da88cd9f9c70d5cdb030d66d45cd42353"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "08c43dde9488a7811a8e5fa28dbe0184",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1631387,
+        "upload_time": "2026-10-13T08:37:37",
+        "upload_time_iso_8601": "2026-10-13T08:37:37.541540Z",
+        "url": "https://files.pythonhosted.org/packages/75/45/df0656b567d4b0f0f3646e80ff27ea6061978d2a604fe8523a3e31c07973/cramjam-2.14.0-cp314-cp314-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "e96f378a27c091c9554a23da87d1e862166b0cd92d7b20cf5309b7d7bfb1ab51",
+          "md5": "ec405d9004293227ea5e60e5e9c676b9",
+          "sha256": "8d177f2f07a5ea1d5ec39188f0f9174ff2fbf90fa1f5e76953416212e9089b03"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "ec405d9004293227ea5e60e5e9c676b9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1846075,
+        "upload_time": "2026-10-13T08:37:39",
+        "upload_time_iso_8601": "2026-10-13T08:37:39.831794Z",
+        "url": "https://files.pythonhosted.org/packages/e9/6f/378a27c091c9554a23da87d1e862166b0cd92d7b20cf5309b7d7bfb1ab51/cramjam-2.14.0-cp314-cp314-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "25bc7c4d1103c56d55ef600617cbe7f5aa6ad5172aa1730fb68dec724aa324c5",
+          "md5": "cd1ef77ed27842f9f5b7f093bb160db7",
+          "sha256": "ed490fb0d11653f91209c0ab02ec775064fc189cc85b87608894c8676c3dc653"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "cd1ef77ed27842f9f5b7f093bb160db7",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1981603,
+        "upload_time": "2026-10-13T08:37:42",
+        "upload_time_iso_8601": "2026-10-13T08:37:42.159299Z",
+        "url": "https://files.pythonhosted.org/packages/25/bc/7c4d1103c56d55ef600617cbe7f5aa6ad5172aa1730fb68dec724aa324c5/cramjam-2.14.0-cp314-cp314-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "70352be7595068e382687a6cd49c3248b43f6ea8279300d3139e7a177f45d339",
+          "md5": "e88a288e45e8707bb4bdeb161143e083",
+          "sha256": "c9a50c1fe6501fc886cba56448b6037ae5bbe008c8b66fedca4a973266b8d24d"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "e88a288e45e8707bb4bdeb161143e083",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2163677,
+        "upload_time": "2026-10-13T08:37:44",
+        "upload_time_iso_8601": "2026-10-13T08:37:44.093775Z",
+        "url": "https://files.pythonhosted.org/packages/70/35/2be7595068e382687a6cd49c3248b43f6ea8279300d3139e7a177f45d339/cramjam-2.14.0-cp314-cp314-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "cf330634fbc6ef6001097bbde91cce7e809402c0f6a25fb7342d87532d3dbd5e",
+          "md5": "40f99b1fb0041ca79a6accedf03d6dfb",
+          "sha256": "88de2e0578ea3019e628c09e86f104eb9fd2eda135f6a74aaf4f9d83e474d35b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "40f99b1fb0041ca79a6accedf03d6dfb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2388527,
+        "upload_time": "2026-10-13T08:37:45",
+        "upload_time_iso_8601": "2026-10-13T08:37:45.893772Z",
+        "url": "https://files.pythonhosted.org/packages/cf/33/0634fbc6ef6001097bbde91cce7e809402c0f6a25fb7342d87532d3dbd5e/cramjam-2.14.0-cp314-cp314-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "c3a66c58f2115802dd3ef538d2bd5d4ec5559b6b4ffeab27d3b72ff1422ea3e1",
+          "md5": "22f9a9977f040e8e7ec3276fb4f35f69",
+          "sha256": "5f466ca401b7051cda37206c284fedd1ee20e1194fb7af41092aad96e16c75d6"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "22f9a9977f040e8e7ec3276fb4f35f69",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1955144,
+        "upload_time": "2026-10-13T08:37:47",
+        "upload_time_iso_8601": "2026-10-13T08:37:47.723336Z",
+        "url": "https://files.pythonhosted.org/packages/c3/a6/6c58f2115802dd3ef538d2bd5d4ec5559b6b4ffeab27d3b72ff1422ea3e1/cramjam-2.14.0-cp314-cp314-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "1830198a42c282933af214de23a4305806286b57ca0250b8fcea5676ec037244",
+          "md5": "967029abf6a1011ab1ccd3967b2abbab",
+          "sha256": "64feac08073fe902c355b359ea2815051c21f17eb514137b6f76d607dcbb0b04"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "967029abf6a1011ab1ccd3967b2abbab",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1828028,
+        "upload_time": "2026-10-13T08:37:49",
+        "upload_time_iso_8601": "2026-10-13T08:37:49.831905Z",
+        "url": "https://files.pythonhosted.org/packages/18/30/198a42c282933af214de23a4305806286b57ca0250b8fcea5676ec037244/cramjam-2.14.0-cp314-cp314-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7a404423c8852a208804dbfea8797f89a53d933b05ee36b285fad240c8546b62",
+          "md5": "109db0e6f580c1a6845486b4fe46df59",
+          "sha256": "c5df9f1299bc2bc78fe582c40463491d2ae3b5463d1e3910bab357dbcf5cd054"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "109db0e6f580c1a6845486b4fe46df59",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2104731,
+        "upload_time": "2026-10-13T08:37:52",
+        "upload_time_iso_8601": "2026-10-13T08:37:52.259448Z",
+        "url": "https://files.pythonhosted.org/packages/7a/40/4423c8852a208804dbfea8797f89a53d933b05ee36b285fad240c8546b62/cramjam-2.14.0-cp314-cp314-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "10b7bdc2d47aed3954954607e1b831806dad854d03a8fdc41eade4a9fab37c83",
+          "md5": "4cf476fc764c4c934aa32d061fd3193a",
+          "sha256": "16a9e456fd45c6872ff2afab61cbc50a9d6dde2252b180e818736c20e4dc6df9"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "4cf476fc764c4c934aa32d061fd3193a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1923272,
+        "upload_time": "2026-10-13T08:37:54",
+        "upload_time_iso_8601": "2026-10-13T08:37:54.314284Z",
+        "url": "https://files.pythonhosted.org/packages/10/b7/bdc2d47aed3954954607e1b831806dad854d03a8fdc41eade4a9fab37c83/cramjam-2.14.0-cp314-cp314-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "2eb0f36f08a847baf90f8f79c6cbddb5ceb8eb555fb9bb9f14401f913273d39e",
+          "md5": "505f31007147c11204c35f0717c63134",
+          "sha256": "b414d84b51d0472f18d00bb574b96bc484895c24034ed7ec0c16cb1b3d5d7ac9"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "505f31007147c11204c35f0717c63134",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1774921,
+        "upload_time": "2026-10-13T08:37:56",
+        "upload_time_iso_8601": "2026-10-13T08:37:56.072291Z",
+        "url": "https://files.pythonhosted.org/packages/2e/b0/f36f08a847baf90f8f79c6cbddb5ceb8eb555fb9bb9f14401f913273d39e/cramjam-2.14.0-cp314-cp314-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "000f918e1a8fa5eb6bc22c61a4e43ce782672fa9b795bb2ca967a3c7ee372799",
+          "md5": "3d4810d9005c14c1099a1bb0ab0730f5",
+          "sha256": "f7bae0a56b01110a3e68ef3f704f22518b4b9e612224f9310027824bfb3040a7"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "3d4810d9005c14c1099a1bb0ab0730f5",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2119506,
+        "upload_time": "2026-10-13T08:37:57",
+        "upload_time_iso_8601": "2026-10-13T08:37:57.793018Z",
+        "url": "https://files.pythonhosted.org/packages/00/0f/918e1a8fa5eb6bc22c61a4e43ce782672fa9b795bb2ca967a3c7ee372799/cramjam-2.14.0-cp314-cp314-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "88bb178d1ff5125b6885c5de80eb7e48f8a19e96d64da51555f9877621da5806",
+          "md5": "9bfea876a969e3be7fbdf00c022a385f",
+          "sha256": "1596138b908dd03fc5c97f7497e1ec7d6ac6501d8f2e810528684456daec3414"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "9bfea876a969e3be7fbdf00c022a385f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2042174,
+        "upload_time": "2026-10-13T08:37:59",
+        "upload_time_iso_8601": "2026-10-13T08:37:59.833674Z",
+        "url": "https://files.pythonhosted.org/packages/88/bb/178d1ff5125b6885c5de80eb7e48f8a19e96d64da51555f9877621da5806/cramjam-2.14.0-cp314-cp314-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "ac2bcd981245f6d0396e5bec71694f829322cad1d48ebee3daeb6a8394776e4d",
+          "md5": "e19e18477f59dc341df78e5f22d80865",
+          "sha256": "0ae43177080310657833e30785a1cfbc7ab61a069e4ec526e515b65e259154bb"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-pyemscripten_2026_0_wasm32.whl",
+        "has_sig": false,
+        "md5_digest": "e19e18477f59dc341df78e5f22d80865",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1128435,
+        "upload_time": "2026-10-13T08:38:01",
+        "upload_time_iso_8601": "2026-10-13T08:38:01.528027Z",
+        "url": "https://files.pythonhosted.org/packages/ac/2b/cd981245f6d0396e5bec71694f829322cad1d48ebee3daeb6a8394776e4d/cramjam-2.14.0-cp314-cp314-pyemscripten_2026_0_wasm32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "57d7287b95a715fc12d7ea36af88df04504b957efc0349ece6874822044fc357",
+          "md5": "dd4ff18f1501c349f9b93b965db6e159",
+          "sha256": "6ad12789597924e899aeca78544df793556555d59d5b320116e4e79a4ae684cc"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "dd4ff18f1501c349f9b93b965db6e159",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 3445587,
+        "upload_time": "2026-10-13T08:38:09",
+        "upload_time_iso_8601": "2026-10-13T08:38:09.579161Z",
+        "url": "https://files.pythonhosted.org/packages/57/d7/287b95a715fc12d7ea36af88df04504b957efc0349ece6874822044fc357/cramjam-2.14.0-cp314-cp314t-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "0bb4a50e0886da478fe8d612bb0d0d34e20e79d3a0831bdde2ae0d0a48d0076f",
+          "md5": "90e650fb83bc95f5119d578748f0125a",
+          "sha256": "533fb8832bed9f1cc50acc382bf2c05d04584ce7c704f4261c1dde3a8caa8226"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "90e650fb83bc95f5119d578748f0125a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1829303,
+        "upload_time": "2026-10-13T08:38:11",
+        "upload_time_iso_8601": "2026-10-13T08:38:11.684675Z",
+        "url": "https://files.pythonhosted.org/packages/0b/b4/a50e0886da478fe8d612bb0d0d34e20e79d3a0831bdde2ae0d0a48d0076f/cramjam-2.14.0-cp314-cp314t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7e13da1c35d95ed82c3ddd8c96b4e152bbce5dd63d3fc480ffde6cc29e579c72",
+          "md5": "5b37c8ad390a1386e7db2c495bbdb8b3",
+          "sha256": "12ff4a0f380443cd3a7360d3cfcf7689067acbcee38b44eaa787776a761a5df3"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "5b37c8ad390a1386e7db2c495bbdb8b3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1634106,
+        "upload_time": "2026-10-13T08:38:13",
+        "upload_time_iso_8601": "2026-10-13T08:38:13.900402Z",
+        "url": "https://files.pythonhosted.org/packages/7e/13/da1c35d95ed82c3ddd8c96b4e152bbce5dd63d3fc480ffde6cc29e579c72/cramjam-2.14.0-cp314-cp314t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "5b3d3107c2f0a104d06d55a7f51f3c9f2d7c85a02d0f316b12e1e14dc189c39c",
+          "md5": "92944eef994764fe16014070bc4b63fc",
+          "sha256": "9b84a9be9166c9afa8e7d68c83bd434c1ddeb43ee7568cdf1541f0929d7fabfd"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "92944eef994764fe16014070bc4b63fc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1850924,
+        "upload_time": "2026-10-13T08:38:15",
+        "upload_time_iso_8601": "2026-10-13T08:38:15.953682Z",
+        "url": "https://files.pythonhosted.org/packages/5b/3d/3107c2f0a104d06d55a7f51f3c9f2d7c85a02d0f316b12e1e14dc189c39c/cramjam-2.14.0-cp314-cp314t-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "5a31db33b965245e886e2b9b7061fe97c898147a1eee3cf30b4fbcea05a5b04f",
+          "md5": "4e724375d66fb2e02b73214bb72a6f4f",
+          "sha256": "14024b18a70e2546890ec9cd9eae5b549c6bc40c0fb6462c695e2697975796f2"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "4e724375d66fb2e02b73214bb72a6f4f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1985041,
+        "upload_time": "2026-10-13T08:38:18",
+        "upload_time_iso_8601": "2026-10-13T08:38:18.108317Z",
+        "url": "https://files.pythonhosted.org/packages/5a/31/db33b965245e886e2b9b7061fe97c898147a1eee3cf30b4fbcea05a5b04f/cramjam-2.14.0-cp314-cp314t-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "37dd12e9700eabe3bbe5c9ec35df8b85b88ebb9312a0e01c516dc6e35b3fea37",
+          "md5": "2434488c1cc1250edd674ec640d7655d",
+          "sha256": "49eed230ce67ea6f0e236eed255338f0de6bf94438eb37734abd7d0a99fc4813"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "2434488c1cc1250edd674ec640d7655d",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2168632,
+        "upload_time": "2026-10-13T08:38:19",
+        "upload_time_iso_8601": "2026-10-13T08:38:19.986543Z",
+        "url": "https://files.pythonhosted.org/packages/37/dd/12e9700eabe3bbe5c9ec35df8b85b88ebb9312a0e01c516dc6e35b3fea37/cramjam-2.14.0-cp314-cp314t-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "10d77441cee6369cd0f843f4a9834ea8091aff7f5844ce92385c378f41aeadc8",
+          "md5": "38da71cf6ac8e0578944d401c9985105",
+          "sha256": "8e501f7383782691cbcc10d28f87985e4f4b83d4ea2b8e8cc6ba0be1cbd4f1ac"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "38da71cf6ac8e0578944d401c9985105",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2374028,
+        "upload_time": "2026-10-13T08:38:21",
+        "upload_time_iso_8601": "2026-10-13T08:38:21.966372Z",
+        "url": "https://files.pythonhosted.org/packages/10/d7/7441cee6369cd0f843f4a9834ea8091aff7f5844ce92385c378f41aeadc8/cramjam-2.14.0-cp314-cp314t-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "aef1910ec26ddc4dc922d0146d9f469f237b5ccff70f73fdf6b5c5b5b6c0826b",
+          "md5": "910619bc6a88e64d6ae891f524022e2f",
+          "sha256": "6606ec8231d7544da99f9f50275252ef8632ac4960f1f88b4f63843f28ef593b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "910619bc6a88e64d6ae891f524022e2f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1960763,
+        "upload_time": "2026-10-13T08:38:24",
+        "upload_time_iso_8601": "2026-10-13T08:38:24.005521Z",
+        "url": "https://files.pythonhosted.org/packages/ae/f1/910ec26ddc4dc922d0146d9f469f237b5ccff70f73fdf6b5c5b5b6c0826b/cramjam-2.14.0-cp314-cp314t-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "2b7046a7dbfc146b8395eb3ae487ad0be299d3d5b8b3dbda686143c5f811ae45",
+          "md5": "56b8b4d4ef1fdd758d498e87bf91c580",
+          "sha256": "f6d7d968d1e05cbfceb59c5b171a792481372291739ae11b18289c6320d98c5c"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "56b8b4d4ef1fdd758d498e87bf91c580",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1827788,
+        "upload_time": "2026-10-13T08:38:25",
+        "upload_time_iso_8601": "2026-10-13T08:38:25.790013Z",
+        "url": "https://files.pythonhosted.org/packages/2b/70/46a7dbfc146b8395eb3ae487ad0be299d3d5b8b3dbda686143c5f811ae45/cramjam-2.14.0-cp314-cp314t-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "703a2229cdf1cc41ac3ec2b0e6ecaa797cea9f20f73e794cc6fdc58cf6a855b5",
+          "md5": "ea7affdf5c0056772ee2650390ead990",
+          "sha256": "0a2687683db9c42752ff96d6080b53dba0fe714147d41fa3dfc6d6272058885a"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "ea7affdf5c0056772ee2650390ead990",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2108084,
+        "upload_time": "2026-10-13T08:38:27",
+        "upload_time_iso_8601": "2026-10-13T08:38:27.647129Z",
+        "url": "https://files.pythonhosted.org/packages/70/3a/2229cdf1cc41ac3ec2b0e6ecaa797cea9f20f73e794cc6fdc58cf6a855b5/cramjam-2.14.0-cp314-cp314t-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7bc5fa090bb68af65a373935691a5662bb44b49947a999c2c071a11b601ab576",
+          "md5": "5f98197da55d8a012382ef7214ce8c41",
+          "sha256": "2b48b71c447d94c781767c95e7632a8a4c77ae3135dbb6a2e3fc06178fbf4a5b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "5f98197da55d8a012382ef7214ce8c41",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1926871,
+        "upload_time": "2026-10-13T08:38:29",
+        "upload_time_iso_8601": "2026-10-13T08:38:29.979272Z",
+        "url": "https://files.pythonhosted.org/packages/7b/c5/fa090bb68af65a373935691a5662bb44b49947a999c2c071a11b601ab576/cramjam-2.14.0-cp314-cp314t-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b4eb3192e9c49d83d1137a31a8eb714e7f4cba42c8a7d2ebaefdd888a5431d16",
+          "md5": "dca800c9abecf59b5f3205605879c82f",
+          "sha256": "4015cc3c3797290c0a2a2efd6808d6eb0a0f07243edd5808bfe79be2bd128f13"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "dca800c9abecf59b5f3205605879c82f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1773577,
+        "upload_time": "2026-10-13T08:38:31",
+        "upload_time_iso_8601": "2026-10-13T08:38:31.980220Z",
+        "url": "https://files.pythonhosted.org/packages/b4/eb/3192e9c49d83d1137a31a8eb714e7f4cba42c8a7d2ebaefdd888a5431d16/cramjam-2.14.0-cp314-cp314t-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "5c3533708302ad9c83e7fc06cce96d19ca90bfdd63430187837457621c540956",
+          "md5": "f741c4f98d4a5909da42730a0f4584cd",
+          "sha256": "4e6d29c63b5708a2fbdc0a75d3452baf41a15317f22d6865f9615b07365f8728"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "f741c4f98d4a5909da42730a0f4584cd",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2114657,
+        "upload_time": "2026-10-13T08:38:33",
+        "upload_time_iso_8601": "2026-10-13T08:38:33.999937Z",
+        "url": "https://files.pythonhosted.org/packages/5c/35/33708302ad9c83e7fc06cce96d19ca90bfdd63430187837457621c540956/cramjam-2.14.0-cp314-cp314t-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "1ef9453367ba48c5ff5de778ce04caa67a7838c4daebaa552c64224af6261cd6",
+          "md5": "b781c3c2d5fda3acdea6d6d48ea2c3f6",
+          "sha256": "bda0d8887fba858563c5d2644418e14f53f88a6430b8e221a12db497a39e7cbd"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "b781c3c2d5fda3acdea6d6d48ea2c3f6",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 2047589,
+        "upload_time": "2026-10-13T08:38:36",
+        "upload_time_iso_8601": "2026-10-13T08:38:36.207501Z",
+        "url": "https://files.pythonhosted.org/packages/1e/f9/453367ba48c5ff5de778ce04caa67a7838c4daebaa552c64224af6261cd6/cramjam-2.14.0-cp314-cp314t-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "4142d750eb29090f3a867b34c1ef67225bebad850bb3e64a56db5a591e304c6b",
+          "md5": "1957c3c7e651a64d7a9b91e94b9f0a52",
+          "sha256": "1daa367fda8272d4c25c42593ee34bd64a42b09b389c91a11c3c9164da902c93"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-win32.whl",
+        "has_sig": false,
+        "md5_digest": "1957c3c7e651a64d7a9b91e94b9f0a52",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1668368,
+        "upload_time": "2026-10-13T08:38:38",
+        "upload_time_iso_8601": "2026-10-13T08:38:38.269666Z",
+        "url": "https://files.pythonhosted.org/packages/41/42/d750eb29090f3a867b34c1ef67225bebad850bb3e64a56db5a591e304c6b/cramjam-2.14.0-cp314-cp314t-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "7e349da52c8a747ef1be3fb3cf09a463b08f74b83cd0cedc412b12679ec02fcc",
+          "md5": "77f0bd2b16b8615a4f94e0cf2a5884ce",
+          "sha256": "d5c475044bb61649ddb9b711a09cec60dfe1b182dffaa5ac0bcac033efa8fcc0"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "77f0bd2b16b8615a4f94e0cf2a5884ce",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1788829,
+        "upload_time": "2026-10-13T08:38:40",
+        "upload_time_iso_8601": "2026-10-13T08:38:40.042191Z",
+        "url": "https://files.pythonhosted.org/packages/7e/34/9da52c8a747ef1be3fb3cf09a463b08f74b83cd0cedc412b12679ec02fcc/cramjam-2.14.0-cp314-cp314t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "8f3c9534af797dfec373647d6f51b218f5041fa6d509ade0fc0d8abc93cc1f78",
+          "md5": "675aa08f593159b5c65744d3d31d14d4",
+          "sha256": "fe6986118f5c0d0ab9b92f1ce2e793b6d35d85eb029cfebbfeb981a5874cd86e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "675aa08f593159b5c65744d3d31d14d4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1717042,
+        "upload_time": "2026-10-13T08:38:41",
+        "upload_time_iso_8601": "2026-10-13T08:38:41.825708Z",
+        "url": "https://files.pythonhosted.org/packages/8f/3c/9534af797dfec373647d6f51b218f5041fa6d509ade0fc0d8abc93cc1f78/cramjam-2.14.0-cp314-cp314t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "d1a8ff192246a2e310bcbea0b5d5e2fd052e5ea865819f1e61b3c4ba1db9a378",
+          "md5": "cf7f6b6dd31c294ccb0e0606fc97c193",
+          "sha256": "cd7368030043813cbb81c2ad74d0af9e7df887c561b6ecf41992d458f0bff74a"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-win32.whl",
+        "has_sig": false,
+        "md5_digest": "cf7f6b6dd31c294ccb0e0606fc97c193",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1672360,
+        "upload_time": "2026-10-13T08:38:03",
+        "upload_time_iso_8601": "2026-10-13T08:38:03.211880Z",
+        "url": "https://files.pythonhosted.org/packages/d1/a8/ff192246a2e310bcbea0b5d5e2fd052e5ea865819f1e61b3c4ba1db9a378/cramjam-2.14.0-cp314-cp314-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "dfbd7e98b8ab09264878848eb289ae05490ec7307737b29f5df333e7512b5503",
+          "md5": "402ce70ece128c26a3aef5f965f4d8ff",
+          "sha256": "f0a1b6bd8c931a4913713f7bc227b71f45627803dd372075fe2ebffc1d493da6"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "402ce70ece128c26a3aef5f965f4d8ff",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1790005,
+        "upload_time": "2026-10-13T08:38:05",
+        "upload_time_iso_8601": "2026-10-13T08:38:05.074945Z",
+        "url": "https://files.pythonhosted.org/packages/df/bd/7e98b8ab09264878848eb289ae05490ec7307737b29f5df333e7512b5503/cramjam-2.14.0-cp314-cp314-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "ccf24d7efb3399bca89955491c147b06d21827d887a24aded899d3d098e59fb2",
+          "md5": "05e3ae2a0a54fd1cf1c0270f7149e29c",
+          "sha256": "e41433d63db92041bf31bee341865a14dfbd163c2fc9649f83c657ff5763426b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp314-cp314-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "05e3ae2a0a54fd1cf1c0270f7149e29c",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp314",
+        "requires_python": ">=3.11",
+        "size": 1716800,
+        "upload_time": "2026-10-13T08:38:07",
+        "upload_time_iso_8601": "2026-10-13T08:38:07.060632Z",
+        "url": "https://files.pythonhosted.org/packages/cc/f2/4d7efb3399bca89955491c147b06d21827d887a24aded899d3d098e59fb2/cramjam-2.14.0-cp314-cp314-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b6057bf92f8b17d94747b9fda5cf41cb226f36f37a82011eb33fab3f062641f1",
+          "md5": "3ac47ee5b43fc173d1804974e78580c3",
+          "sha256": "cdb8d9e58977e6da4ef4d6aa3b70181958f03002763f70d3ed0eea563f5349cc"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "3ac47ee5b43fc173d1804974e78580c3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 3431068,
+        "upload_time": "2026-10-13T08:38:43",
+        "upload_time_iso_8601": "2026-10-13T08:38:43.863024Z",
+        "url": "https://files.pythonhosted.org/packages/b6/05/7bf92f8b17d94747b9fda5cf41cb226f36f37a82011eb33fab3f062641f1/cramjam-2.14.0-cp315-cp315-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7a304bf34773d8d245a0fd5975eb7095e01e257e6d8bc3e467b0d4edf35b790f",
+          "md5": "33792f330eb60f621acfaab1c8dc7d00",
+          "sha256": "dc5624aece52d72e20f1033ebe43f297e5b5b738e8c43f73b7c333ffe200dd19"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "33792f330eb60f621acfaab1c8dc7d00",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1819054,
+        "upload_time": "2026-10-13T08:38:46",
+        "upload_time_iso_8601": "2026-10-13T08:38:46.259044Z",
+        "url": "https://files.pythonhosted.org/packages/7a/30/4bf34773d8d245a0fd5975eb7095e01e257e6d8bc3e467b0d4edf35b790f/cramjam-2.14.0-cp315-cp315-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "5d8c90276c1295eba2fac57a93536bdbc023f9a770dbfa2d42dc18fcd9eefc1b",
+          "md5": "41313e22bde90adf61e3353ab5c9aa81",
+          "sha256": "29e88a39903528b8b6c37dd7730c13521fc82beebc02d7c41f7e47b11c4d1992"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "41313e22bde90adf61e3353ab5c9aa81",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1631981,
+        "upload_time": "2026-10-13T08:38:48",
+        "upload_time_iso_8601": "2026-10-13T08:38:48.111629Z",
+        "url": "https://files.pythonhosted.org/packages/5d/8c/90276c1295eba2fac57a93536bdbc023f9a770dbfa2d42dc18fcd9eefc1b/cramjam-2.14.0-cp315-cp315-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "dbeabb29494b483b29f45fac6cf7b2fb5ebb2d3cd8a2afbc3b854b8f4080ab57",
+          "md5": "8030017e1a08b8af8c0f41a748b4ccfa",
+          "sha256": "97ff1abf4aa1c6029592c3f9964724e947b5aee3c439c50a4090865c0d320430"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "8030017e1a08b8af8c0f41a748b4ccfa",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1847276,
+        "upload_time": "2026-10-13T08:38:49",
+        "upload_time_iso_8601": "2026-10-13T08:38:49.960298Z",
+        "url": "https://files.pythonhosted.org/packages/db/ea/bb29494b483b29f45fac6cf7b2fb5ebb2d3cd8a2afbc3b854b8f4080ab57/cramjam-2.14.0-cp315-cp315-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "06002b6f6df866d455130cc11121d97e80b0d6bc96c2a34b1f2a321a993dc105",
+          "md5": "32194a446dcf63f3e87e0cf19ddb9fc3",
+          "sha256": "60dec08c61ef38decd35ec2ab36a1bbfaa13aa4cc722a68d02a106b7bf53cc5e"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "32194a446dcf63f3e87e0cf19ddb9fc3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1982917,
+        "upload_time": "2026-10-13T08:38:51",
+        "upload_time_iso_8601": "2026-10-13T08:38:51.776161Z",
+        "url": "https://files.pythonhosted.org/packages/06/00/2b6f6df866d455130cc11121d97e80b0d6bc96c2a34b1f2a321a993dc105/cramjam-2.14.0-cp315-cp315-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "a1aeba32015235b489fd532dc3cad4d93407749c97bdcb282f6cfcd4a553c397",
+          "md5": "097648bba1e145fa7e185ad1037189ac",
+          "sha256": "289b5f543ec76e101afc2baabb4b5b46c7638199c6c8b904bb4c0a8b83c686ec"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "097648bba1e145fa7e185ad1037189ac",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2164387,
+        "upload_time": "2026-10-13T08:38:53",
+        "upload_time_iso_8601": "2026-10-13T08:38:53.954036Z",
+        "url": "https://files.pythonhosted.org/packages/a1/ae/ba32015235b489fd532dc3cad4d93407749c97bdcb282f6cfcd4a553c397/cramjam-2.14.0-cp315-cp315-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "3a274d8e873b5fd3d981d6b6324a5ce600b8a33c7fdd4004fe48510a4f2c9552",
+          "md5": "527f82c465b62cb0461ce01df95a6a49",
+          "sha256": "9d94293d1b132e9691bc721831ed2ee36c704beef47f9827e55a7f96857e5ee1"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "527f82c465b62cb0461ce01df95a6a49",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2389325,
+        "upload_time": "2026-10-13T08:38:56",
+        "upload_time_iso_8601": "2026-10-13T08:38:56.114179Z",
+        "url": "https://files.pythonhosted.org/packages/3a/27/4d8e873b5fd3d981d6b6324a5ce600b8a33c7fdd4004fe48510a4f2c9552/cramjam-2.14.0-cp315-cp315-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "92eab2288b90a5d87b36654239c0e3397d6ab085bff521564c93b4c718568391",
+          "md5": "95d604c526bb6521b22d4bd7bde4155a",
+          "sha256": "f66b38d88f7e211aee7459e367e0c33e0cef2fd53fc9fe6737de11415d739edc"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "95d604c526bb6521b22d4bd7bde4155a",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1955711,
+        "upload_time": "2026-10-13T08:38:58",
+        "upload_time_iso_8601": "2026-10-13T08:38:58.499165Z",
+        "url": "https://files.pythonhosted.org/packages/92/ea/b2288b90a5d87b36654239c0e3397d6ab085bff521564c93b4c718568391/cramjam-2.14.0-cp315-cp315-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "91c6235e2b5b4d5514b416f48b1b065f21ac75a77c46f8b9c0d9bb3e3f1f4285",
+          "md5": "a38f09e7aadb93e5f6030df2a6b012a3",
+          "sha256": "b2c593e5a4e5a36c00b189405707ec2e279d10ecf9c2795589a0a0a974f12e09"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "a38f09e7aadb93e5f6030df2a6b012a3",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1828462,
+        "upload_time": "2026-10-13T08:39:01",
+        "upload_time_iso_8601": "2026-10-13T08:39:01.472003Z",
+        "url": "https://files.pythonhosted.org/packages/91/c6/235e2b5b4d5514b416f48b1b065f21ac75a77c46f8b9c0d9bb3e3f1f4285/cramjam-2.14.0-cp315-cp315-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "883639e1ec6c6c052de2cecea8ac9c75e2b653c1b21a4690f2af59721164dc9a",
+          "md5": "ac900da0a8be607b39a89709f6cc75dc",
+          "sha256": "6c1051f9646a82c2f8ed7ec7a56e57b8fb93103a63a259d94c9caf2b264373b5"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "ac900da0a8be607b39a89709f6cc75dc",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2105655,
+        "upload_time": "2026-10-13T08:39:03",
+        "upload_time_iso_8601": "2026-10-13T08:39:03.490379Z",
+        "url": "https://files.pythonhosted.org/packages/88/36/39e1ec6c6c052de2cecea8ac9c75e2b653c1b21a4690f2af59721164dc9a/cramjam-2.14.0-cp315-cp315-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "aebc39c0ae23a9ace877819a3947f8323a1bedaf4c9f782f6bbe6d18c7374fef",
+          "md5": "80e81d7a254afcfa9ba0f49d0e1cb915",
+          "sha256": "240376c779b88db5870d65f1c57ce57c92d352f8361695dcd547d5b9b00ebaa4"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "80e81d7a254afcfa9ba0f49d0e1cb915",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1923806,
+        "upload_time": "2026-10-13T08:39:05",
+        "upload_time_iso_8601": "2026-10-13T08:39:05.345391Z",
+        "url": "https://files.pythonhosted.org/packages/ae/bc/39c0ae23a9ace877819a3947f8323a1bedaf4c9f782f6bbe6d18c7374fef/cramjam-2.14.0-cp315-cp315-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "99935920cb6a19192232ef102ffb071df01fa696f9d85af9eba99df8d774cf7e",
+          "md5": "35bd878bbe119f5ed04dd1fa90580b61",
+          "sha256": "c2a5bef35d778ad024b40e0fbd94534883bfdbbbd796ab34d3dc2ed5dc51855b"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "35bd878bbe119f5ed04dd1fa90580b61",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1775592,
+        "upload_time": "2026-10-13T08:39:07",
+        "upload_time_iso_8601": "2026-10-13T08:39:07.211759Z",
+        "url": "https://files.pythonhosted.org/packages/99/93/5920cb6a19192232ef102ffb071df01fa696f9d85af9eba99df8d774cf7e/cramjam-2.14.0-cp315-cp315-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "950f0be857fbd37084a764802ebb8cdc696371f64bfbcae8ee070343adc168ae",
+          "md5": "52e1c8ae9e10b5d3cae7e81f59401797",
+          "sha256": "3f4101dc833a164bbe8d3cd0baaaafbf31d2943ef00bd4bfa87ed54fa1f14c33"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "52e1c8ae9e10b5d3cae7e81f59401797",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2120352,
+        "upload_time": "2026-10-13T08:39:08",
+        "upload_time_iso_8601": "2026-10-13T08:39:08.975761Z",
+        "url": "https://files.pythonhosted.org/packages/95/0f/0be857fbd37084a764802ebb8cdc696371f64bfbcae8ee070343adc168ae/cramjam-2.14.0-cp315-cp315-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "59af77bfa7eb6314c500fee620a0b3acc1e73802e7f5197c8ae05a031014b9d6",
+          "md5": "e4a3fffd0522dd97f518829e46ff727b",
+          "sha256": "37df0eb6203bdd90d7edfe34ded3a33f5766c51e54a3709efebbe918c7d42a13"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "e4a3fffd0522dd97f518829e46ff727b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2042619,
+        "upload_time": "2026-10-13T08:39:10",
+        "upload_time_iso_8601": "2026-10-13T08:39:10.911076Z",
+        "url": "https://files.pythonhosted.org/packages/59/af/77bfa7eb6314c500fee620a0b3acc1e73802e7f5197c8ae05a031014b9d6/cramjam-2.14.0-cp315-cp315-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "056f557c49bb0f7fc7fe7f0f25304a037087fa98333e18dbec6ebc67437410e4",
+          "md5": "050d35c947364b39fd7cd5e5aebf3292",
+          "sha256": "6dc4414ef361061f549f044977f354a0388791a13d92191bb059c94559106edb"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-macosx_10_15_universal2.whl",
+        "has_sig": false,
+        "md5_digest": "050d35c947364b39fd7cd5e5aebf3292",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 3446652,
+        "upload_time": "2026-10-13T08:39:19",
+        "upload_time_iso_8601": "2026-10-13T08:39:19.219560Z",
+        "url": "https://files.pythonhosted.org/packages/05/6f/557c49bb0f7fc7fe7f0f25304a037087fa98333e18dbec6ebc67437410e4/cramjam-2.14.0-cp315-cp315t-macosx_10_15_universal2.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "12e78e430e9fe2a577dbd5bd556a6466b5a97bf457f33c8d0a8f358f71b1a8b8",
+          "md5": "47976274402db9f5714d18b1d5f2203f",
+          "sha256": "ba2e22731850434132990dfde6cfc753bc291283dbfd77ce87ffbd02fe649c87"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "47976274402db9f5714d18b1d5f2203f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1829745,
+        "upload_time": "2026-10-13T08:39:21",
+        "upload_time_iso_8601": "2026-10-13T08:39:21.697278Z",
+        "url": "https://files.pythonhosted.org/packages/12/e7/8e430e9fe2a577dbd5bd556a6466b5a97bf457f33c8d0a8f358f71b1a8b8/cramjam-2.14.0-cp315-cp315t-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b012e0a0d68183d5bee83dcbd24c4f6caf8891b192315dc2e391a1113404bd50",
+          "md5": "02a3cfdd67f7e987bef9c572bb443463",
+          "sha256": "0bcbb1a88e0d5d940fc8cf7d2525246ec61c03a127528364cdd26c7fc2345b18"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "02a3cfdd67f7e987bef9c572bb443463",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1634687,
+        "upload_time": "2026-10-13T08:39:23",
+        "upload_time_iso_8601": "2026-10-13T08:39:23.735780Z",
+        "url": "https://files.pythonhosted.org/packages/b0/12/e0a0d68183d5bee83dcbd24c4f6caf8891b192315dc2e391a1113404bd50/cramjam-2.14.0-cp315-cp315t-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "e30c57576c5e0b2b63bdadda973e1f462fb7b39b6d40484aafa228146a0f9a16",
+          "md5": "5abcad772d31c28bad7894466ab8e537",
+          "sha256": "67e709631ec10de76f768dde3fff909fad1f09fe5c4de254e054e7d0c68d2cfc"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "5abcad772d31c28bad7894466ab8e537",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1851963,
+        "upload_time": "2026-10-13T08:39:26",
+        "upload_time_iso_8601": "2026-10-13T08:39:26.203500Z",
+        "url": "https://files.pythonhosted.org/packages/e3/0c/57576c5e0b2b63bdadda973e1f462fb7b39b6d40484aafa228146a0f9a16/cramjam-2.14.0-cp315-cp315t-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "c44b984e1a5ab2edc9a896eb5b88dd4f9f3aae575fa2735895c8aba3e9b2cd8d",
+          "md5": "88a3603472249a280b5af355fecbb4a1",
+          "sha256": "f69b9745c25b7cdae8c31ca5341aef8c028a1ea690e553107f7deac5bdd0c292"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_28_i686.whl",
+        "has_sig": false,
+        "md5_digest": "88a3603472249a280b5af355fecbb4a1",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1986088,
+        "upload_time": "2026-10-13T08:39:28",
+        "upload_time_iso_8601": "2026-10-13T08:39:28.328263Z",
+        "url": "https://files.pythonhosted.org/packages/c4/4b/984e1a5ab2edc9a896eb5b88dd4f9f3aae575fa2735895c8aba3e9b2cd8d/cramjam-2.14.0-cp315-cp315t-manylinux_2_28_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "cd406cfd6bd00c37198100dfc4bc132f4f1ecca7b12a73591a88bcbd792a14c2",
+          "md5": "9e2c8bb25acc673b9486f96ad6896ce9",
+          "sha256": "342c27b6127c4e8aef1f914e580e9e8e711701a61d19980ba97f62ae61e091ad"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_28_ppc64le.whl",
+        "has_sig": false,
+        "md5_digest": "9e2c8bb25acc673b9486f96ad6896ce9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2169472,
+        "upload_time": "2026-10-13T08:39:30",
+        "upload_time_iso_8601": "2026-10-13T08:39:30.177325Z",
+        "url": "https://files.pythonhosted.org/packages/cd/40/6cfd6bd00c37198100dfc4bc132f4f1ecca7b12a73591a88bcbd792a14c2/cramjam-2.14.0-cp315-cp315t-manylinux_2_28_ppc64le.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b683a6597fbc2ddbfe6c8a29b6c1ad26a70dcb9895ba2634573c9648da8f571a",
+          "md5": "065a286000f1ad45b1e822eec6287014",
+          "sha256": "d7b714819299a977e79f228d683240784da8fac125c1fdc2145cd0f331a228ff"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_28_s390x.whl",
+        "has_sig": false,
+        "md5_digest": "065a286000f1ad45b1e822eec6287014",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2374705,
+        "upload_time": "2026-10-13T08:39:32",
+        "upload_time_iso_8601": "2026-10-13T08:39:32.186760Z",
+        "url": "https://files.pythonhosted.org/packages/b6/83/a6597fbc2ddbfe6c8a29b6c1ad26a70dcb9895ba2634573c9648da8f571a/cramjam-2.14.0-cp315-cp315t-manylinux_2_28_s390x.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "3caf2235e3d04c7005a350b101796c11e9f9724a74462053a36dd52255baf05e",
+          "md5": "5353ad8ad225b934559f570b649af3e4",
+          "sha256": "b575e386122f2c98a68633584417f328090b94cdbbf99cea27d64d38c4a27b4a"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5353ad8ad225b934559f570b649af3e4",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1961294,
+        "upload_time": "2026-10-13T08:39:34",
+        "upload_time_iso_8601": "2026-10-13T08:39:34.169850Z",
+        "url": "https://files.pythonhosted.org/packages/3c/af/2235e3d04c7005a350b101796c11e9f9724a74462053a36dd52255baf05e/cramjam-2.14.0-cp315-cp315t-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7a26c951167f6d1c99df3c4e708b7d7973f881904919cfa2392a7358fa0bb43b",
+          "md5": "72bce07155c65f2358efa604c87495da",
+          "sha256": "fff3e1ab1a1202d4e5e2ee289c5f8bc85ee83351fb90a65cb5f48f6662f4cd95"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_31_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "72bce07155c65f2358efa604c87495da",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1828038,
+        "upload_time": "2026-10-13T08:39:36",
+        "upload_time_iso_8601": "2026-10-13T08:39:36.186564Z",
+        "url": "https://files.pythonhosted.org/packages/7a/26/c951167f6d1c99df3c4e708b7d7973f881904919cfa2392a7358fa0bb43b/cramjam-2.14.0-cp315-cp315t-manylinux_2_31_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "8d022e282753773bbbc855766223266d8ebdd71b5a4618530399b4687913a890",
+          "md5": "e5075214d82a81b071c17cb1090090b2",
+          "sha256": "332dd340df814fae4cacb8b7e20cfe53a40bb54a1f4fc4bb69f6b18f7e1a1727"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "has_sig": false,
+        "md5_digest": "e5075214d82a81b071c17cb1090090b2",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2108630,
+        "upload_time": "2026-10-13T08:39:37",
+        "upload_time_iso_8601": "2026-10-13T08:39:37.946915Z",
+        "url": "https://files.pythonhosted.org/packages/8d/02/2e282753773bbbc855766223266d8ebdd71b5a4618530399b4687913a890/cramjam-2.14.0-cp315-cp315t-manylinux_2_34_riscv64.manylinux_2_39_riscv64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "8e3700c1ba29982263e6395b9c61e818b974f330cf1b072ca6302710280af33e",
+          "md5": "603b922294f2dd2128d533caae972dca",
+          "sha256": "8867bc59b9c0018c4283778b7ab1a7984dfb6a170a8886a361b1fd86453dfe73"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-musllinux_1_2_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "603b922294f2dd2128d533caae972dca",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1927558,
+        "upload_time": "2026-10-13T08:39:40",
+        "upload_time_iso_8601": "2026-10-13T08:39:40.105665Z",
+        "url": "https://files.pythonhosted.org/packages/8e/37/00c1ba29982263e6395b9c61e818b974f330cf1b072ca6302710280af33e/cramjam-2.14.0-cp315-cp315t-musllinux_1_2_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "d9581871ba42253749803dfe2c39fcd7dc8392a8472d49cd81ada1445033f1d6",
+          "md5": "048d943821913d93f2f26a5cb6e22303",
+          "sha256": "2631bb7fc3165da40b20b651cbac57fd70a83d94d724505b4c3bd922c5d0ecf2"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-musllinux_1_2_armv7l.whl",
+        "has_sig": false,
+        "md5_digest": "048d943821913d93f2f26a5cb6e22303",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1774263,
+        "upload_time": "2026-10-13T08:39:41",
+        "upload_time_iso_8601": "2026-10-13T08:39:41.944655Z",
+        "url": "https://files.pythonhosted.org/packages/d9/58/1871ba42253749803dfe2c39fcd7dc8392a8472d49cd81ada1445033f1d6/cramjam-2.14.0-cp315-cp315t-musllinux_1_2_armv7l.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "7b1ccd645feba241959e76d27d4160d3cf6560a648d2b42b6e08b8a96b5f7e69",
+          "md5": "8d1af9680e850bb5d35a28e3e8e15535",
+          "sha256": "66dc13867c28cf54d2dbf3cddc72adba52ec8543b3dce5ea7b56cbc45edba56a"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-musllinux_1_2_i686.whl",
+        "has_sig": false,
+        "md5_digest": "8d1af9680e850bb5d35a28e3e8e15535",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2115648,
+        "upload_time": "2026-10-13T08:39:44",
+        "upload_time_iso_8601": "2026-10-13T08:39:44.044004Z",
+        "url": "https://files.pythonhosted.org/packages/7b/1c/cd645feba241959e76d27d4160d3cf6560a648d2b42b6e08b8a96b5f7e69/cramjam-2.14.0-cp315-cp315t-musllinux_1_2_i686.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "006451953ac668a252c7999be3662f783d77744b0e25b7ab872988ea3ed59ecf",
+          "md5": "ae3c2f4dc27bc672adbe0177fe17335f",
+          "sha256": "fc4ba65c7c614b3a01b4a3c81792f88d5e91a23851543f1a79901f3c0114bbfe"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-musllinux_1_2_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "ae3c2f4dc27bc672adbe0177fe17335f",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 2048573,
+        "upload_time": "2026-10-13T08:39:46",
+        "upload_time_iso_8601": "2026-10-13T08:39:46.413505Z",
+        "url": "https://files.pythonhosted.org/packages/00/64/51953ac668a252c7999be3662f783d77744b0e25b7ab872988ea3ed59ecf/cramjam-2.14.0-cp315-cp315t-musllinux_1_2_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "89aa3ee0b56e67e6ec8ddbca92efddfafbb396844d7da6d68db50a3f70415168",
+          "md5": "9b67d9f05368240d77615cd467d1fa74",
+          "sha256": "5a4fbbbb3dd2f7da092e1726466b384b88223f5de694a8f84bb80eddf8efcd4a"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-win32.whl",
+        "has_sig": false,
+        "md5_digest": "9b67d9f05368240d77615cd467d1fa74",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1669169,
+        "upload_time": "2026-10-13T08:39:48",
+        "upload_time_iso_8601": "2026-10-13T08:39:48.476059Z",
+        "url": "https://files.pythonhosted.org/packages/89/aa/3ee0b56e67e6ec8ddbca92efddfafbb396844d7da6d68db50a3f70415168/cramjam-2.14.0-cp315-cp315t-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "748ae2ed9776374dce8e5bbdbeca6ae907f8147db96117880c6fd22e57305a54",
+          "md5": "722385f3f473cbf5f215650cf8580482",
+          "sha256": "e050a0096c97e2a9bb49b048206332cbda3c7007fbb81c9a2ecd5eaf383faebf"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "722385f3f473cbf5f215650cf8580482",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1789329,
+        "upload_time": "2026-10-13T08:39:50",
+        "upload_time_iso_8601": "2026-10-13T08:39:50.960410Z",
+        "url": "https://files.pythonhosted.org/packages/74/8a/e2ed9776374dce8e5bbdbeca6ae907f8147db96117880c6fd22e57305a54/cramjam-2.14.0-cp315-cp315t-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "17b093529a90708458ce8d41df71e94db4e3f99988b81a8dc91fc3af43012239",
+          "md5": "de3561db052ee8c016373ca94fd21f63",
+          "sha256": "f76bfe445a2d5f17505af8fc18e7cc5cee6fd54988508a1fac3974b2ec3e0b13"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315t-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "de3561db052ee8c016373ca94fd21f63",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1717609,
+        "upload_time": "2026-10-13T08:39:52",
+        "upload_time_iso_8601": "2026-10-13T08:39:52.821993Z",
+        "url": "https://files.pythonhosted.org/packages/17/b0/93529a90708458ce8d41df71e94db4e3f99988b81a8dc91fc3af43012239/cramjam-2.14.0-cp315-cp315t-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "cd0551fa407e3ca04b8c5adb25861fd99e0361e100cd9b6b4f92a84afe9d7c2b",
+          "md5": "ecbe8e466f5b76c96231748a5e0ab330",
+          "sha256": "976bccb4c69224e6a0080c8364ad2054a6109ce15aa7cc1c31e9b6fe832dda9d"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-win32.whl",
+        "has_sig": false,
+        "md5_digest": "ecbe8e466f5b76c96231748a5e0ab330",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1673179,
+        "upload_time": "2026-10-13T08:39:12",
+        "upload_time_iso_8601": "2026-10-13T08:39:12.755224Z",
+        "url": "https://files.pythonhosted.org/packages/cd/05/51fa407e3ca04b8c5adb25861fd99e0361e100cd9b6b4f92a84afe9d7c2b/cramjam-2.14.0-cp315-cp315-win32.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "12bc737ac4403e98490a8ccdb66bbc76366b28899cdb86e3b6d5fe5cb3cc658b",
+          "md5": "8db74c7435da43b0ab41aaafc54d1322",
+          "sha256": "d48623c4911977610dd5234d37b8f0840e06c216a98f737f4253ab28f635f840"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "8db74c7435da43b0ab41aaafc54d1322",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1790430,
+        "upload_time": "2026-10-13T08:39:14",
+        "upload_time_iso_8601": "2026-10-13T08:39:14.969626Z",
+        "url": "https://files.pythonhosted.org/packages/12/bc/737ac4403e98490a8ccdb66bbc76366b28899cdb86e3b6d5fe5cb3cc658b/cramjam-2.14.0-cp315-cp315-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "f19e88fdefa95859e1dc151de45c6cb948448888c8b55c4d4e43cf57d32a0bf6",
+          "md5": "a5853bb9fa45bb2f6a607d6ce7de98fb",
+          "sha256": "9505bd2ec235b2c198869bda335b73994b06f000c32ee22f3da56b4d0c236c5f"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-cp315-cp315-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "a5853bb9fa45bb2f6a607d6ce7de98fb",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp315",
+        "requires_python": ">=3.11",
+        "size": 1717492,
+        "upload_time": "2026-10-13T08:39:16",
+        "upload_time_iso_8601": "2026-10-13T08:39:16.957719Z",
+        "url": "https://files.pythonhosted.org/packages/f1/9e/88fdefa95859e1dc151de45c6cb948448888c8b55c4d4e43cf57d32a0bf6/cramjam-2.14.0-cp315-cp315-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "af7ba4c91ad7fc950f1a48268fed5ef231c2f93ede0f13d4b75b7b29f9a11b60",
+          "md5": "5e442b96defbf8d449cbb59bd2e9eefc",
+          "sha256": "708db59018d0f8aad022c0d86012656e890f7b0e49bab0809c168882b87f6672"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-pp311-pypy311_pp73-macosx_10_15_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "5e442b96defbf8d449cbb59bd2e9eefc",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.11",
+        "size": 1842511,
+        "upload_time": "2026-10-13T08:39:55",
+        "upload_time_iso_8601": "2026-10-13T08:39:55.005177Z",
+        "url": "https://files.pythonhosted.org/packages/af/7b/a4c91ad7fc950f1a48268fed5ef231c2f93ede0f13d4b75b7b29f9a11b60/cramjam-2.14.0-pp311-pypy311_pp73-macosx_10_15_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "30da908e7d295acf7c82b72fb99711c017989ced6d42d62b24681a6ae6f4a9a5",
+          "md5": "e1c8bbd42b95ab580464580845f35c40",
+          "sha256": "176a51a64d03b55893e074484d90721059bc1fa4c2b9ddba7ce488c61d0bc896"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "e1c8bbd42b95ab580464580845f35c40",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.11",
+        "size": 1661763,
+        "upload_time": "2026-10-13T08:39:57",
+        "upload_time_iso_8601": "2026-10-13T08:39:57.270530Z",
+        "url": "https://files.pythonhosted.org/packages/30/da/908e7d295acf7c82b72fb99711c017989ced6d42d62b24681a6ae6f4a9a5/cramjam-2.14.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "b3320147a157929a5b4d892c61bb66f2e8a9cc1f9137343b56f3367341963e4f",
+          "md5": "465fd26bf850ad8128693150363f2da7",
+          "sha256": "d400f91916fdbfea94a2cd7427871089c62176e2f3ab33c617693a8e2e39d189"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-pp311-pypy311_pp73-manylinux_2_28_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "465fd26bf850ad8128693150363f2da7",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.11",
+        "size": 1879740,
+        "upload_time": "2026-10-13T08:39:59",
+        "upload_time_iso_8601": "2026-10-13T08:39:59.261654Z",
+        "url": "https://files.pythonhosted.org/packages/b3/32/0147a157929a5b4d892c61bb66f2e8a9cc1f9137343b56f3367341963e4f/cramjam-2.14.0-pp311-pypy311_pp73-manylinux_2_28_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "efb417f96c03c7bb67b26a28ac86045286fd8bf3051c030a86459b07c3e42bfa"
+        },
+        "digests": {
+          "blake2b_256": "58133f76db3b64d5d76a88b7a0416fec5c8a870a86603df619b2ce813b1f5f24",
+          "md5": "dc410945ff6d99c04292668a3b6c5441",
+          "sha256": "fe9b1c80661e07bd8758bdb9cdf03ef0f5ecea478222f0d125cb097d104a65b3"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-pp311-pypy311_pp73-manylinux_2_28_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "dc410945ff6d99c04292668a3b6c5441",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.11",
+        "size": 1987975,
+        "upload_time": "2026-10-13T08:40:01",
+        "upload_time_iso_8601": "2026-10-13T08:40:01.312117Z",
+        "url": "https://files.pythonhosted.org/packages/58/13/3f76db3b64d5d76a88b7a0416fec5c8a870a86603df619b2ce813b1f5f24/cramjam-2.14.0-pp311-pypy311_pp73-manylinux_2_28_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "20567b31bc67b2d9558cfce2706bd1e5af0bed644dbadca71c358ddee4e30ea2"
+        },
+        "digests": {
+          "blake2b_256": "504169ea111c2bda7fbc0a29fd71dccc7907014753aa084fd05d549aa6f6a72f",
+          "md5": "dbbdec3966ea1394e2e66df38bffd77b",
+          "sha256": "6110089e46645e759d0027584e7477801b98751172d64172bf1893887317b50f"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0-pp311-pypy311_pp73-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "dbbdec3966ea1394e2e66df38bffd77b",
+        "packagetype": "bdist_wheel",
+        "python_version": "pp311",
+        "requires_python": ">=3.11",
+        "size": 1826779,
+        "upload_time": "2026-10-13T08:40:03",
+        "upload_time_iso_8601": "2026-10-13T08:40:03.582751Z",
+        "url": "https://files.pythonhosted.org/packages/50/41/69ea111c2bda7fbc0a29fd71dccc7907014753aa084fd05d549aa6f6a72f/cramjam-2.14.0-pp311-pypy311_pp73-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "2178bfb048f7fcf70192081ad834e7bbde59af716bbdd4d2410ffd39357db068",
+          "md5": "bf953ecba166567b5905e4a82e1f5765",
+          "sha256": "050095380dc01a7f3dc2b8bcd9de2cbf4a208a8aab32301c760ea3c280d641bd"
+        },
+        "downloads": -1,
+        "filename": "cramjam-2.14.0.tar.gz",
+        "has_sig": false,
+        "md5_digest": "bf953ecba166567b5905e4a82e1f5765",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.11",
+        "size": 97944,
+        "upload_time": "2026-10-13T08:43:52",
+        "upload_time_iso_8601": "2026-10-13T08:43:52.052900Z",
+        "url": "https://files.pythonhosted.org/packages/21/78/bfb048f7fcf70192081ad834e7bbde59af716bbdd4d2410ffd39357db068/cramjam-2.14.0.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "release_dates": [
+      [
+        "2020-03-08T13:43:45.733480Z",
+        "1.0.0"
+      ],
+      [
+        "2020-03-08T17:05:39.051058Z",
+        "1.0.1"
+      ],
+      [
+        "2020-05-03T04:57:29.469678Z",
+        "1.1.0"
+      ],
+      [
+        "2020-06-25T17:45:39.698143Z",
+        "1.2.0"
+      ],
+      [
+        "2020-07-18T13:21:10.086404Z",
+        "1.3.0"
+      ],
+      [
+        "2021-01-10T18:56:34.891447Z",
+        "1.3.2"
+      ],
+      [
+        "2021-02-15T20:01:41.530837Z",
+        "2.0.0-rc1"
+      ],
+      [
+        "2021-02-18T14:55:39.192734Z",
+        "2.0.0_rc2"
+      ],
+      [
+        "2021-02-18T15:11:13.762705Z",
+        "2.0.0"
+      ],
+      [
+        "2021-02-19T13:48:51.616308Z",
+        "2.0.1"
+      ],
+      [
+        "2021-02-22T21:35:22.764330Z",
+        "2.0.2"
+      ],
+      [
+        "2021-03-18T21:25:42.453468Z",
+        "2.1.0"
+      ],
+      [
+        "2021-03-30T18:42:35.197088Z",
+        "2.2.0"
+      ],
+      [
+        "2021-04-14T21:23:13.187384Z",
+        "2.3.0"
+      ],
+      [
+        "2021-05-16T19:30:23.347146Z",
+        "2.3.1"
+      ],
+      [
+        "2021-05-31T08:31:26.307978Z",
+        "2.3.2"
+      ],
+      [
+        "2021-09-06T19:21:22.314780Z",
+        "2.4.0_rc1"
+      ],
+      [
+        "2021-09-08T07:25:47.910318Z",
+        "2.4.0_rc2"
+      ],
+      [
+        "2021-09-10T06:54:27.446628Z",
+        "2.4.0"
+      ],
+      [
+        "2021-11-07T08:49:22.040540Z",
+        "2.5.0"
+      ],
+      [
+        "2022-10-28T05:05:53.205966Z",
+        "2.6.0"
+      ],
+      [
+        "2022-10-29T06:59:18.691662Z",
+        "2.6.1"
+      ],
+      [
+        "2022-11-09T14:45:48.773775Z",
+        "2.6.2"
+      ],
+      [
+        "2023-04-26T04:34:22.136258Z",
+        "2.7.0rc1"
+      ],
+      [
+        "2023-04-29T05:17:29.202638Z",
+        "2.7.0rc2"
+      ],
+      [
+        "2023-05-07T10:15:42.681676Z",
+        "2.7.0rc3"
+      ],
+      [
+        "2023-07-29T05:39:35.440109Z",
+        "2.7.0"
+      ],
+      [
+        "2024-01-15T05:35:39.552101Z",
+        "2.8.0"
+      ],
+      [
+        "2024-01-22T07:00:41.371029Z",
+        "2.8.1.dev1"
+      ],
+      [
+        "2024-01-26T16:38:06.042889Z",
+        "2.8.1"
+      ],
+      [
+        "2024-03-02T20:22:00.729947Z",
+        "2.8.2"
+      ],
+      [
+        "2024-03-09T13:26:55.444324Z",
+        "2.8.3rc1"
+      ],
+      [
+        "2024-03-21T12:20:58.455826Z",
+        "2.8.3"
+      ],
+      [
+        "2024-04-28T20:01:38.677408Z",
+        "2.8.4rc1"
+      ],
+      [
+        "2024-05-03T09:36:42.634509Z",
+        "2.8.4rc2"
+      ],
+      [
+        "2024-09-05T15:45:44.874790Z",
+        "2.8.4rc3"
+      ],
+      [
+        "2024-09-24T13:16:08.797024Z",
+        "2.8.4rc4"
+      ],
+      [
+        "2024-09-24T15:39:43.090114Z",
+        "2.8.4"
+      ],
+      [
+        "2024-10-05T13:39:36.224438Z",
+        "2.9.0rc1"
+      ],
+      [
+        "2024-10-16T07:03:19.813593Z",
+        "2.9.0"
+      ],
+      [
+        "2024-12-12T13:36:52.443750Z",
+        "2.9.1"
+      ],
+      [
+        "2025-03-01T15:33:25.987602Z",
+        "2.10.0rc1"
+      ],
+      [
+        "2025-04-12T17:56:47.464038Z",
+        "2.10.0"
+      ],
+      [
+        "2025-04-24T05:28:50.183185Z",
+        "2.11.0rc1"
+      ],
+      [
+        "2025-04-25T07:16:18.668912Z",
+        "2.11.0rc2"
+      ],
+      [
+        "2025-06-01T07:39:15.426575Z",
+        "2.11.0rc3"
+      ],
+      [
+        "2025-07-27T07:40:09.404036Z",
+        "2.11.0rc4"
+      ],
+      [
+        "2025-07-27T21:21:34.105996Z",
+        "2.11.0"
+      ],
+      [
+        "2026-04-13T13:48:13.805548Z",
+        "2.12.0rc1"
+      ],
+      [
+        "2026-08-22T07:19:00.366137Z",
+        "2.12.0"
+      ],
+      [
+        "2026-08-25T13:11:42.441525Z",
+        "2.12.1"
+      ],
+      [
+        "2026-09-29T14:24:36.079619Z",
+        "2.13.0"
+      ],
+      [
+        "2026-10-13T08:35:55.251416Z",
+        "2.14.0"
+      ]
+    ]
+  },
+  "unpackio": {
+    "version": "0.1.1",
+    "info": {
+      "author": null,
+      "author_email": null,
+      "bugtrack_url": null,
+      "classifiers": [
+        "Development Status :: 2 - Pre-Alpha",
+        "Intended Audience :: Developers",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: MacOS",
+        "Operating System :: Microsoft :: Windows",
+        "Operating System :: POSIX :: Linux",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
+        "Programming Language :: Rust",
+        "Topic :: System :: Archiving :: Compression"
+      ],
+      "description": "# unpackio for Python\n\n`unpackio` is the Python distribution for the repository's security-focused,\nunpack-only Rust 7z, ZIP, RPM, CPIO, Debian-package, and ARJ readers and its\nseparate LZ4/Zstandard/Unix `.Z` stream readers. The package imports as\n`unpackio`; its implementation module is `unpackio._native`.\n\nThe binding delegates all parsing, graph validation, decoding, cryptography,\nCRC verification, limits, and path classification to the stable Rust core. It\ndoes not create archives and does not automatically extract archive names to\nthe filesystem.\n\nZIP and RPM use concrete APIs rather than pretending to be 7z archives:\n\n```python\nimport io\nimport unpackio\n\nzip_archive = unpackio.open_zip_path(\"input.zip\", password=b\"zip-password\")\nfor entry in zip_archive.entries():\n    print(entry.index, entry.name, entry.compression_method, entry.encryption)\n\nrpm = unpackio.open_rpm_path(\"package.rpm\")\nprint(rpm.payload_compression, rpm.header.value(1000))\n\noutput = io.BytesIO()\nrpm.extract_entry_to(0, output)\n```\n\nUse `open_zip_bytes`/`open_zip_path` and\n`open_rpm_bytes`/`open_rpm_path`. ZIP passwords are `bytes` and remain scoped\nto one `ZipArchive`; RPM accepts no password. Both formats preserve raw names\nas `bytes`, duplicate order, metadata, and safe-path classification. Neither\nAPI writes a name to disk or returns all decoded payloads as one object.\n\n## Format-specific data model\n\nApplications consume the native, format-specific unpackio objects directly:\n\n```python\nimport io\nimport unpackio\n\narchive = unpackio.open_zip_path(\"sample.zip\", password=b\"infected\")\nentry = archive.entries()[0]\nverified = io.BytesIO()\narchive.extract_entry_to(entry.index, verified)\n\npackage = unpackio.open_rpm_path(\"sample.rpm\")\nprint(package.header.as_named_dict().get(\"name\"))\npayload = io.BytesIO()\npackage.extract_entry_to(package.entries()[0].index, payload)\n```\n\n`ZipEntry` exposes decoded/raw names, comments, extras, sizes, CRC, DOS\ntimestamp, method, flags, creator/extractor versions, attributes, local-header\noffset, encryption kind, and directory metadata.\nPasswords are supplied when opening a `ZipArchive`; trying another password\ncreates another per-archive session. Even a zero-length encrypted member must\nbe extracted so its password verifier and authentication data are checked.\n\n`RpmArchive.header` and `.signature_header` retain ordered typed tags.\n`as_named_dict()` adds a complete symbolic projection, preserves unknown tags\nunder numeric keys, returns scalar integers for single-value numeric tags, and\nselects the first locale for I18N values. RPM opening validates the complete\nsupported package, including applicable digests, before member data is\nexposed.\n\nThese APIs contain no writer, `extractall`, automatic path use, or runtime\nfallback. Callers must apply their own policy before using a metadata name as\na path.\n\n`ZipArchive.extract_entries_to` and `RpmArchive.extract_entries_to` use the\nsame three callbacks as the 7z batch protocol, with `ZipEntry` or `RpmEntry`\npassed to `begin_entry`. One work budget and cancellation token cover the\ncomplete call, chunks are bounded, callback exceptions retain their identity,\nand `finish_entry` is the integrity-verified boundary. ZIP verifies\nauthentication/size/applicable CRC before finalization; RPM has already\nverified supported package digests and rechecks applicable CRC-newc member\nchecksums. A caller should still stage output if callback failure must be\natomic.\n\nRPM typed headers use numeric tags. `RpmHeader.entries()` retains order and\nduplicates; `.value(tag)` returns the last effective value and `.as_dict()` is\na convenience projection. OpenPGP blobs are exposed but not authenticated.\nThe current RPM object retains the bounded decoded CPIO payload, reported by\n`retained_payload_bytes`.\n\nStandalone CPIO, Debian packages, and ARJ likewise use concrete APIs:\n\n```python\nimport io\nimport unpackio\n\ncpio = unpackio.open_cpio_path(\"payload.cpio\")\ndeb = unpackio.open_deb_path(\"package.deb\")\narj = unpackio.open_arj_path(\"archive.arj\")\n\nfor entry in cpio.entries():\n    print(entry.index, entry.format, entry.raw_name, entry.mode)\nfor entry in deb.entries():\n    print(entry.index, entry.section, entry.raw_name, entry.kind)\nfor entry in arj.entries():\n    print(entry.index, entry.compression_method, entry.raw_name, entry.crc32)\n\nverified = io.BytesIO()\ndeb.extract_entry_to(0, verified)\n```\n\nUse the corresponding `open_cpio_bytes`, `open_deb_bytes`, or\n`open_arj_bytes` function for owned byte input. `DebArchive.members()` lists\nthe outer ar members, while `entries()` lists the indexed control/data tar\nentries; `extract_member_to` exposes an outer member to a caller-selected\nwriter. CPIO symlink targets are returned as raw bytes by `symlink_target`.\nAll three preserve raw names and safe-path classification without applying\npaths, modes, ownership, devices, or links.\n\nTheir `extract_entries_to` methods use the same begin/write/finish protocol\nwith `CpioEntry`, `DebEntry`, or `ArjEntry`. A successful `finish_entry` is the\nintegrity boundary for every checksum the format provides: CRC-newc for CPIO,\nthe already validated tar header for Debian, and member CRC-32 for ARJ. Layouts\nwithout a payload checksum do not gain one. Writer/sink exceptions and\ncancellation retain their original Python identity, and chunks remain bounded.\nFor atomic publication, stage output until the operation succeeds.\n\nThe current Debian object retains both bounded decoded tar images. ARJ supports\nsingle-volume methods 0--4 and empty no-data methods 8/9; encrypted entries\nremain listable but extraction raises `PasswordRequired`, while split volumes\nand security envelopes are typed unsupported. Standalone CPIO accepts raw\nnewc, CRC-newc, odc, and historical binary inputs but does not automatically\nunwrap a compression stream.\n\nDecoded output is delivered to a Python writer or bounded callback. A writer\nor callback can observe bytes before a trailing archive CRC is checked, so the\noperation's successful return is the integrity boundary. Use a temporary\ndestination when output must be published atomically.\n\nPython retains ownership of any 7z password `str` or ZIP password `bytes`\npassed by the caller and cannot erase that Python object. Every Rust-side\npassword copy is zeroized and kept only in the corresponding archive session.\n\nStandalone inputs never become synthetic archives. Use `open_stream_bytes` or\n`open_stream_path`, inspect `.info`, and select a writer or callback yourself:\n\n```python\nimport io\nimport unpackio\n\nstream = unpackio.open_stream_path(\"payload.zst\")\nprint(stream.info.format, stream.info.uncompressed_size)\n\noutput = io.BytesIO()\ndecoded_bytes = stream.extract_to(output)\n```\n\nThe optional `format=` value accepts `lz4`, `zstd`/`zstandard`, or\n`z`/`compress`/`unix-compress`; omit it for magic detection. The binding never\nremoves an input suffix or opens a derived output path. `stream(callback)`\nsends bounded chunks and preserves Python exceptions or `False` cancellation.\n`verify()` decodes to a discard sink. There is intentionally no Python method\nthat returns the complete output as one object.\n\nFor LZ4 and Zstandard, successful return means every checksum declared by the\nframes was finalized. A writer/callback may have observed earlier unverified\nchunks, so atomic publication still requires caller-managed staging. Unix `.Z`\ncontains no checksum or declared decoded size; successful return means the LZW\ndecoder reached a valid EOF under the configured bounds, not that the bytes\nare authenticated or protected against clean-boundary truncation.\n\n```python\nimport unpackio\n\narchive = unpackio.open_path(\"example.7z\")\nfor entry in archive.entries():\n    print(entry.index, entry.name, entry.size, entry.crc32)\n\nwith open(\"caller-selected-output.bin\", \"wb\") as output:\n    verified_bytes = archive.extract_entry_to(0, output)\n```\n\n`stream_entry(index, callback)` sends the same bounded chunks without first\nforming a complete Python output object. Return `None` or `True` to continue,\nor `False` to cancel.\n\n`extract_entries_to(sink)` is the natural-order batch surface for solid\narchives. It uses one core work budget and cancellation token for the entire\noperation and decodes each solid folder at most once. The sink is structural;\narchive names remain metadata and are never opened as filesystem paths:\n\n```python\nclass Sink:\n    def begin_entry(self, entry: unpackio.Entry, size: int) -> None:\n        # Select a destination by entry.index and caller policy, not entry.name.\n        ...\n\n    def write_entry(self, index: int, chunk: bytes) -> None:\n        # Chunks are bounded (currently at most 4 KiB).\n        ...\n\n    def finish_entry(self, index: int) -> None:\n        # This callback is the CRC-verified success boundary for the entry.\n        ...\n\nverified_bytes = archive.extract_entries_to(Sink())\n```\n\nEach sink method returns `None` or `True` to continue, or `False` to cancel.\nPython exceptions are re-raised unchanged. `begin_entry` and `write_entry` may\nbe observed before a later member CRC failure; only `finish_entry` means that\nthe core verified the applicable member and folder CRCs. A Python exception\nraised by `finish_entry` still makes the overall operation fail. Duplicate\nnames remain separate index-addressed entries, and empty files receive\n`begin_entry` followed by `finish_entry` without a write call. Streamless\ndirectories and anti-items intentionally produce no sink event; callers that\nneed to materialize those records must use `archive.entries()` metadata and\ntheir own validated policy.\n\n`open_volumes` accepts a callable or an object with\n`open_volume(index, expected_name)` returning `bytes` or `None`; all returned\nparts remain subject to the core volume and aggregate-input limits.\n\nPublished releases use six optimized `cp39-abi3` wheels covering Linux,\nmacOS, and Windows on x86-64 and ARM64. Each exact wheel must pass this binding\nsuite on Python 3.12, 3.13, and 3.14 before the separately protected manual\nPyPI publication step is available. The wheel adds no Python runtime\ndependency or command-line entry point. See the repository `RELEASING.md` for\nthe release and Trusted Publisher procedure.\n\nFor a local development build:\n\n```text\npython -m pip install 'maturin==1.13.3'\nmaturin develop --manifest-path bindings/python/Cargo.toml\npython -m unittest discover -s bindings/python/tests -v\n```\n\nSee the repository `API.md`, `SECURITY.md`, `COMPATIBILITY.md`, and\n`bindings/python/AGENTS.md` for the complete contracts and current support\nevidence.\n\n",
+      "description_content_type": "text/markdown; charset=UTF-8; variant=GFM",
+      "docs_url": null,
+      "download_url": null,
+      "downloads": {
+        "last_day": -1,
+        "last_month": -1,
+        "last_week": -1
+      },
+      "dynamic": null,
+      "home_page": "https://github.com/bwhitn/unpackio",
+      "keywords": null,
+      "license": null,
+      "license_expression": "MIT",
+      "license_files": [
+        "LICENSE",
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/BSD-3-Clause-bodgit-sevenzip.txt",
+        "LICENSES/BSD-3-Clause-netbsd-zopen.txt",
+        "LICENSES/BSD-3-Clause-ulikunitz-xz.txt",
+        "LICENSES/MIT-rpmfile.txt",
+        "LICENSES/MIT-stangelandcl-ppmd.txt",
+        "LICENSES/README.md",
+        "NOTICE"
+      ],
+      "maintainer": null,
+      "maintainer_email": null,
+      "name": "unpackio",
+      "package_url": "https://pypi.org/project/unpackio/",
+      "platform": null,
+      "project_url": "https://pypi.org/project/unpackio/",
+      "project_urls": {
+        "Documentation": "https://github.com/bwhitn/unpackio/blob/main/API.md",
+        "Homepage": "https://github.com/bwhitn/unpackio",
+        "Repository": "https://github.com/bwhitn/unpackio"
+      },
+      "provides_extra": null,
+      "release_url": "https://pypi.org/project/unpackio/0.1.1/",
+      "requires_dist": null,
+      "requires_python": ">=3.9",
+      "summary": "Security-focused, unpack-only multi-format archive and compressed-stream reader",
+      "version": "0.1.1",
+      "yanked": false,
+      "yanked_reason": null
+    },
+    "files": [
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "91ff5eb73d29fdd875a5d47dc7e5f85509d2b66ec487bcb64d5c0ff2ca0ff898"
+        },
+        "digests": {
+          "blake2b_256": "9c9d569a9f1c3a81e28f7d9465a8a27bab427d91623bd4fac1e91b89160619e3",
+          "md5": "74916b0a93ccf5c76968226fa755dddf",
+          "sha256": "817bc22e39b500b2b23e3e08fa13ea8e596f18103dc8ac2d2d88710124e51b59"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1-cp39-abi3-macosx_10_12_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "74916b0a93ccf5c76968226fa755dddf",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 966952,
+        "upload_time": "2026-07-23T20:58:22",
+        "upload_time_iso_8601": "2026-07-23T20:58:22.746855Z",
+        "url": "https://files.pythonhosted.org/packages/9c/9d/569a9f1c3a81e28f7d9465a8a27bab427d91623bd4fac1e91b89160619e3/unpackio-0.1.1-cp39-abi3-macosx_10_12_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "91ff5eb73d29fdd875a5d47dc7e5f85509d2b66ec487bcb64d5c0ff2ca0ff898"
+        },
+        "digests": {
+          "blake2b_256": "d53de3d7433bb88f7faa7ea989ad99eb91631c00e0225ef2286219d7cef5408c",
+          "md5": "4488070c5475aa8877fe61c8ca8fff38",
+          "sha256": "b82a798cfb917e898976188f166cdea7e2839ca5456a64ca2da3d90b68b05ee9"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1-cp39-abi3-macosx_11_0_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "4488070c5475aa8877fe61c8ca8fff38",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 921642,
+        "upload_time": "2026-07-23T20:58:24",
+        "upload_time_iso_8601": "2026-07-23T20:58:24.574394Z",
+        "url": "https://files.pythonhosted.org/packages/d5/3d/e3d7433bb88f7faa7ea989ad99eb91631c00e0225ef2286219d7cef5408c/unpackio-0.1.1-cp39-abi3-macosx_11_0_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "91ff5eb73d29fdd875a5d47dc7e5f85509d2b66ec487bcb64d5c0ff2ca0ff898"
+        },
+        "digests": {
+          "blake2b_256": "edc84f3951dd47116521b46b2c0cd72f43cabbe6393439ed6381df544832e7f5",
+          "md5": "0a46cc6c722d0eb544d249687627a974",
+          "sha256": "0f405d5bb401febfd930f7ac26f3a2a0003248933e1189bbbf32f4a6627a19bd"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "has_sig": false,
+        "md5_digest": "0a46cc6c722d0eb544d249687627a974",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 985450,
+        "upload_time": "2026-07-23T20:58:26",
+        "upload_time_iso_8601": "2026-07-23T20:58:26.291186Z",
+        "url": "https://files.pythonhosted.org/packages/ed/c8/4f3951dd47116521b46b2c0cd72f43cabbe6393439ed6381df544832e7f5/unpackio-0.1.1-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "91ff5eb73d29fdd875a5d47dc7e5f85509d2b66ec487bcb64d5c0ff2ca0ff898"
+        },
+        "digests": {
+          "blake2b_256": "ff5a7b573ffadaf891367ac330f31fb3c22e2d82ee767a1b4fad8a9d9c99e747",
+          "md5": "04bfa6aad11bb2089b574b0863b43209",
+          "sha256": "22894777632a132c26c88769a02537d029e9edeb5895ee9f677a04f08e0c2255"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "has_sig": false,
+        "md5_digest": "04bfa6aad11bb2089b574b0863b43209",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 1009675,
+        "upload_time": "2026-07-23T20:58:28",
+        "upload_time_iso_8601": "2026-07-23T20:58:28.026166Z",
+        "url": "https://files.pythonhosted.org/packages/ff/5a/7b573ffadaf891367ac330f31fb3c22e2d82ee767a1b4fad8a9d9c99e747/unpackio-0.1.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "068962ad39e72f13360cf51a90e6ac4ef6ab42ed52d3634c17c3ec47c4dec3aa"
+        },
+        "digests": {
+          "blake2b_256": "56b3d3113a45e844d8b25f03eb3cbddb9f51ca5593773371343aa7109dd61586",
+          "md5": "0c100395800a794993332c105a614ed9",
+          "sha256": "20b1aa8e0484d6ea6a10d78bd45553b9c888005f20d2d3b109481614425683dd"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1-cp39-abi3-win_amd64.whl",
+        "has_sig": false,
+        "md5_digest": "0c100395800a794993332c105a614ed9",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 969884,
+        "upload_time": "2026-07-23T20:58:30",
+        "upload_time_iso_8601": "2026-07-23T20:58:30.036842Z",
+        "url": "https://files.pythonhosted.org/packages/56/b3/d3113a45e844d8b25f03eb3cbddb9f51ca5593773371343aa7109dd61586/unpackio-0.1.1-cp39-abi3-win_amd64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": {
+          "sha256": "068962ad39e72f13360cf51a90e6ac4ef6ab42ed52d3634c17c3ec47c4dec3aa"
+        },
+        "digests": {
+          "blake2b_256": "c6d27042446fbdcb3e1db36274d7e6dad9e2a5ad0b4f9968f6ee0ba75c7fb9a5",
+          "md5": "469315c08d566a6da55511fc6d111a9b",
+          "sha256": "d6fe0b956d69b3737b55f809893a934b3ab0266bd81cb911bc394bd2f8e5045c"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1-cp39-abi3-win_arm64.whl",
+        "has_sig": false,
+        "md5_digest": "469315c08d566a6da55511fc6d111a9b",
+        "packagetype": "bdist_wheel",
+        "python_version": "cp39",
+        "requires_python": ">=3.9",
+        "size": 924687,
+        "upload_time": "2026-07-23T20:58:31",
+        "upload_time_iso_8601": "2026-07-23T20:58:31.547482Z",
+        "url": "https://files.pythonhosted.org/packages/c6/d2/7042446fbdcb3e1db36274d7e6dad9e2a5ad0b4f9968f6ee0ba75c7fb9a5/unpackio-0.1.1-cp39-abi3-win_arm64.whl",
+        "yanked": false,
+        "yanked_reason": null
+      },
+      {
+        "comment_text": null,
+        "core-metadata": false,
+        "digests": {
+          "blake2b_256": "31c1ae2be4573a1cd725d64dc7f2e38b3e2c9e5808170e2125697c25b162139e",
+          "md5": "b2df47e06a6fbdefc93de256b7c6af1d",
+          "sha256": "f33409bfa0c782845d8ae12c33536005e340d64dd24c682528e42f07c8145eac"
+        },
+        "downloads": -1,
+        "filename": "unpackio-0.1.1.tar.gz",
+        "has_sig": false,
+        "md5_digest": "b2df47e06a6fbdefc93de256b7c6af1d",
+        "packagetype": "sdist",
+        "python_version": "source",
+        "requires_python": ">=3.9",
+        "size": 341359,
+        "upload_time": "2026-07-23T20:58:33",
+        "upload_time_iso_8601": "2026-07-23T20:58:33.004406Z",
+        "url": "https://files.pythonhosted.org/packages/31/c1/ae2be4573a1cd725d64dc7f2e38b3e2c9e5808170e2125697c25b162139e/unpackio-0.1.1.tar.gz",
+        "yanked": false,
+        "yanked_reason": null
+      }
+    ],
+    "release_dates": [
+      [
+        "2026-07-22T04:34:43.677903Z",
+        "0.1.0"
+      ],
+      [
+        "2026-07-23T20:58:22.746855Z",
+        "0.1.1"
+      ]
+    ]
+  }
+}
