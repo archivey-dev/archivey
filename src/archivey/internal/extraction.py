@@ -3536,9 +3536,11 @@ class ExtractionCoordinator:
         # fails the link at a directory that is not empty. A directory that holds
         # held-back links is not empty in the made run, so the link cannot get the
         # name: it holds none, and the second pass makes those links first and
-        # then meets the directory, so OnError.STOP stops with them on disk as the
-        # made run does. Other entries (a file, a symlink to one) have nothing
-        # under them, and the second pass meets them as it makes the link.
+        # then meets the directory, so they are on disk when it fails, as in the
+        # made run. (Under OnError.STOP, the members after it in the first pass
+        # are written first, as for any link the second pass fails.) Other
+        # entries (a file, a symlink to one) have nothing under them, and the
+        # second pass meets them as it makes the link.
         holds_name = True
         if self._reservation_at(dest_path, directory=False) is None:
             if self._is_real_directory(dest_path):
