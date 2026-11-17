@@ -122,7 +122,8 @@ def work(args):
         )
         r = {k: outcome(f, d, n) for k, f in DECODERS.items()}
         if r["cu"][0] == "err" and r["py"][0] == "ok":
-            # Is it only the end marker? Rewrite the last 3 bytes to the canonical 11 00 00.
+            # Is it only the end marker? Rewrite the last 3 bytes to the canonical 11
+            # 00 00.
             fixed = (
                 d[:-3] + b"\x11\x00\x00"
                 if len(d) >= 3 and 0x10 <= d[-3] <= 0x17

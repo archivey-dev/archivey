@@ -48,8 +48,8 @@ case as `lzo-0.bin` to `lzo-3.bin` in the earlier study. python-lzo agreed with 
 on every case, accepting and refusing.
 
 Neither library returned more bytes than the limit. Edge cases: both refuse empty input;
-both accept `11 00 00` with a limit of 0. python-lzo raises `OverflowError` for a limit of
-2 GiB or more; archivey never asks for one (lzop blocks are capped at 64 MiB).
+both accept `11 00 00` with a limit of 0. python-lzo raises `OverflowError` for a limit
+of 2 GiB or more; archivey never asks for one (lzop blocks are capped at 64 MiB).
 
 Error types: compress-utils raises `CompressError` for every refusal seen, python-lzo
 `lzo.error`. Both map to archivey's `LzoError` in one place.
@@ -80,15 +80,16 @@ difference in who can install them.
 | | python-lzo 1.15 | compress-utils 0.12.1 |
 | --- | --- | --- |
 | License | GPL-2.0 (liblzo2 GPL-2.0+) | MIT; bundled codecs BSD/0BSD/MIT; lzokay MIT |
-| Wheels | Windows x86-64, macOS x86-64 only; no Linux, no macOS arm64 | CPython 3.11 to 3.15, Linux x86-64/aarch64 (glibc 2.28+), macOS arm64, Windows x86-64; 3.14t and 3.15t |
+| Wheels | for archivey's Pythons (3.11+), only CPython 3.11 on Windows x86-64; the others are 3.7 to 3.10 or macOS x86-64 for 3.7/3.8; none for Linux, macOS arm64 or PyPy | CPython 3.11 to 3.15, Linux x86-64/aarch64 (glibc 2.28+), macOS arm64, Windows x86-64; 3.14t and 3.15t |
 | Without a wheel | builds from source, needs liblzo2 headers | sdist |
 | Free-threaded | re-enables the GIL on import (measured 2026-10-30, 3.14t) | free-threaded wheels; GIL behaviour not measured here |
 | Not covered | | PyPy, musl, macOS x86-64 |
 | Maturity | liblzo2 is 2017 and widely used | young (0.x); lzokay-derived decoder adapted by the project |
 
-In practice python-lzo is absent on most Linux and Apple-silicon installs, so most
-users decode LZO in Python today. archivey never depends on python-lzo (it is only
-detected), so GPL is a cost to users who install it, not to archivey.
+In practice python-lzo installs without a compiler and liblzo2 headers only on Windows
+with CPython 3.11, so almost every user decodes LZO in Python today. archivey never
+depends on python-lzo (it is only detected), so GPL is a cost to users who install it,
+not to archivey.
 
 compress-utils is also what the parked Snappy experiment uses, so one optional
 package would serve both codecs.
@@ -103,7 +104,8 @@ package would serve both codecs.
    message archivey's. The retry costs a Python decode of one block only on refusal,
    which is damaged data in every case seen except the end markers.
 3. A decision on python-lzo: remove it (one kernel, less code, no GPL path) or keep it
-   as a second choice for PyPy and the few platforms without a compress-utils wheel.
+   as a second choice where compress-utils has no wheel (PyPy, musl, macOS x86-64);
+   python-lzo has no wheel there either, so it would only help users who build it.
 4. Isolation: python-lzo runs in-process by default and only in a child under
    `NATIVE_DECODERS`. compress-utils would follow the same rule; this needs the child
    bridge entry that `Natives.lzo_decompress` has for python-lzo.
