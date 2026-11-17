@@ -180,6 +180,7 @@ def _count_track_files(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     return opened
 
 
+@requires("pycdlib")
 def test_a_sheet_of_file_lines_opens_no_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
