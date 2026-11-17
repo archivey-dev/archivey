@@ -542,8 +542,12 @@ first the same way, so under `REPLACE` it replaces the first. A directory, and a
 that a later member implies, meets the held-back link only where the filesystem would
 find the made link: at its own path, or under another case on a filesystem that folds
 case. A directory there meets the overwrite policy, and a member under the link's name
-fails, as a non-directory already extracted is in the way. If the second pass cannot
-make the link, no other member gets the name, as with any refused member.
+fails, as a non-directory already extracted is in the way. The held-back link's parent
+directories SHALL be created at its place in archive order, as the made link's are, so
+a later member at one of them meets a directory: a symlink there does not redirect the
+link, and under `REPLACE` a directory that holds only held-back links counts as not
+empty. If the second pass cannot make the link, no other member gets the name, as with
+any refused member.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
@@ -602,6 +606,7 @@ refuses its links; any other is recovered as above.
 | Directory `H/` after a held-back HARDLINK `h`, case-sensitive filesystem | Both written |
 | Directory `H/` after a held-back HARDLINK `h`, case-insensitive filesystem | `H/` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)/` under `RENAME` |
 | File `h/x` after a held-back HARDLINK `h` | `h/x` `FAILED`, as `h` is a non-directory already extracted; `h` written in the second pass |
+| Directory `e/`, HARDLINK `d/X` to an excluded source (held back), then SYMLINK `d` → `e` | `d/X` creates the directory `d` at its place; the symlink `d` meets it (`FAILED` under `ERROR` and `REPLACE`, `NOT_OVERWRITTEN` under `SKIP`, `d (1)` under `RENAME`); `d/X` is made in `d`, never through a symlink |
 | HARDLINKs `ab` then `AB` to an excluded source (both held back), then a file `Ab`, `REPLACE` | `ab` and `AB` `OVERWRITTEN`, neither made; `Ab` `EXTRACTED` |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 

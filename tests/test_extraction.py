@@ -5243,6 +5243,24 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "d/x", "src2"),
         ("hard", "d", "src1"),
     ],
+    # A later symlink at a held link's parent: the made link creates the directory
+    # `d` at its place, so the symlink `d` meets a directory, and the held link must
+    # not be sent through the symlink into `e/` (it would replace `e/x`).
+    "symlink-at-a-parent": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("dir", "e", None),
+        ("hard", "d/X", "src2"),
+        ("sym", "d", "e"),
+        ("hard", "e/x", "src1"),
+    ],
+    # The same with no symlink: the held link's parent is there before the later
+    # file under it, as the made link's is.
+    "file-under-a-parent": [
+        ("file", "src", b"d"),
+        ("hard", "d/h", "src"),
+        ("file", "d", b"later"),
+    ],
 }
 
 

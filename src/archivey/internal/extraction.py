@@ -669,6 +669,13 @@ class _RunState:
     # key (``_reserve_orphan``): a later member meets the name as taken, as it would
     # had the link been made at its place in archive order.
     reservations: dict[str, _Orphan] = field(default_factory=dict)
+    # The held-back links that hold a name, by the collision key of each of their
+    # parent directories, in archive order (``_index_held_parents``). The first pass
+    # creates those directories, as the made links would; a directory that holds
+    # only held-back links is empty on disk, but not in the made run
+    # (``_holds_held_link``). Entries whose link no longer holds its name are
+    # dropped when met.
+    held_under: dict[str, collections.deque[_Orphan]] = field(default_factory=dict)
     # In the second pass, the result index of the held-back link it attempts now, or
     # attempted last (``_begin_orphan_attempt``): a name that a later link holds is not
     # seen (``_reservation_at``), as that link would not be made yet. ``None`` outside
@@ -3466,7 +3473,20 @@ class ExtractionCoordinator:
                 link_target=source.name,
                 member_name=transformed.name,
             )
-        # Re-readable: resolve in the second pass.
+        # Re-readable: resolve in the second pass. The made link would create its
+        # parent directories here, at its place in archive order, so the held one does
+        # too: a later member at a parent (a symlink, a file) then meets a directory,
+        # as it would meet the made link's, instead of redirecting the link when the
+        # second pass makes it. A parent that reaches an earlier held link's name is
+        # left to the second pass, which fails the link there as the made run does
+        # (``_orphan_blocker``, ``_makedirs``).
+        if not self._make_room_for_parents(transformed, dest_path):
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
+        parent = self._parent(dest_path)
+        if self._reserved_component(parent) is None:
+            self._makedirs(parent, transformed)
         orphan = _Orphan(
             result_index,
             original,
@@ -3506,10 +3526,39 @@ class ExtractionCoordinator:
             orphan.previous_claim = previous.previous_claim
             self._claim(orphan.dest_path, orphan.result_index)
             state.reservations[key] = orphan
+            self._index_held_parents(orphan)
             return
         orphan.previous_claim = state.collision_map.get(key)
         self._claim(orphan.dest_path, orphan.result_index)
         state.reservations[key] = orphan
+        self._index_held_parents(orphan)
+
+    def _index_held_parents(self, orphan: _Orphan) -> None:
+        """Record ``orphan`` under the collision key of each of its parent
+        directories (``held_under``)."""
+        held_under = self._state.held_under
+        for parent in self._parents_in_dest(orphan.dest_path):
+            held_under.setdefault(
+                self._collision_key(parent), collections.deque()
+            ).append(orphan)
+
+    def _holds_held_link(self, path: Path) -> bool:
+        """Whether a held-back link that still holds its name lies under the
+        directory ``path`` and would be on disk in the made run: in the second pass,
+        only a link earlier than the one attempted now (``_reservation_at``)."""
+        state = self._state
+        links = state.held_under.get(self._collision_key(path))
+        if not links:
+            return False
+        reservations = state.reservations
+        while links and (
+            links[0].key is None or reservations.get(links[0].key) is not links[0]
+        ):
+            links.popleft()
+        if not links:
+            return False
+        # In archive order, so the first link that holds its name is the earliest.
+        return state.attempting is None or links[0].result_index <= state.attempting
 
     def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
         """Apply the overwrite policy to a held-back link's name that ``member`` lands
@@ -4552,6 +4601,23 @@ class ExtractionCoordinator:
             make_dirs(dest)
         return True
 
+    def _reserved_component(self, path: Path) -> Path | None:
+        """The first component of the directory ``path`` not on disk yet that reaches
+        a held-back link's name (``_reserve_orphan``), or ``None``. The link holds its
+        name as the made link would, so no directory can be created there. Checked
+        before anything is created."""
+        if not self._state.reservations:
+            return None
+        missing: list[Path] = []
+        probe = path
+        while probe != probe.parent and not os.path.lexists(long_path(probe)):
+            missing.append(probe)
+            probe = probe.parent
+        for component in reversed(missing):
+            if self._reservation_at(component, directory=True) is not None:
+                return component
+        return None
+
     def _makedirs(self, path: Path, member: ArchiveMember) -> None:
         """``os.makedirs(path, exist_ok=True)`` for ``member``, typed when the archive
         itself is in the way.
@@ -4573,24 +4639,15 @@ class ExtractionCoordinator:
                 return
         except OSError:
             pass
-        if self._state.reservations:
-            # A held-back link (``_reserve_orphan``) holds its name as the made link
-            # would: a directory cannot be created there, and the member fails as
-            # it would against the made link, with the error below. Checked before
-            # anything is created, on the components that do not exist yet.
-            missing: list[Path] = []
-            probe = path
-            while probe != probe.parent and not os.path.lexists(long_path(probe)):
-                missing.append(probe)
-                probe = probe.parent
-            for component in reversed(missing):
-                if self._reservation_at(component, directory=True) is not None:
-                    raise ExtractionError(
-                        f"Cannot create {quoted(member.name)}: "
-                        f"{quoted(self._rel_name(component))} is a "
-                        "non-directory already extracted from this archive",
-                        member_name=member.name,
-                    )
+        component = self._reserved_component(path)
+        if component is not None:
+            # The member fails as it would against the made link.
+            raise ExtractionError(
+                f"Cannot create {quoted(member.name)}: "
+                f"{quoted(self._rel_name(component))} is a "
+                "non-directory already extracted from this archive",
+                member_name=member.name,
+            )
         try:
             # The directories this run creates, nearest the root first: a directory
             # member naming one later is not the caller's (``_is_callers_directory``).
@@ -4723,7 +4780,10 @@ class ExtractionCoordinator:
                 # into it, which would then still report EXTRACTED, and the caller's
                 # own files when the directory was already there.
                 with os.scandir(long_path(dest_path)) as entries:
-                    if next(entries, None) is not None:
+                    # A held-back link under it counts: the made link would be there.
+                    if next(entries, None) is not None or self._holds_held_link(
+                        dest_path
+                    ):
                         raise ExtractionError(
                             f"Destination is a directory that is not empty: "
                             f"{display_path(self._shown(dest_path))}",
