@@ -545,9 +545,10 @@ only while its name still holds that empty file (the same device, inode and size
 writes it where it was physically made, so a later member that re-points one of the
 archive's symlinks on its way does not move it. A placeholder that the second pass cannot
 fill is removed: no empty file stands for a link that failed, and the run stops or goes
-on as `OnError` says. If the first pass stops (`OnError.STOP`), the placeholders made
-before the stop are filled, as the links made there would have been, and the error is
-raised after.
+on as `OnError` says. If the first pass stops on an error (not an interrupt), the
+placeholders made before the stop are filled, as the links made there would have been,
+and the error is raised after; a failure of that fill is attached to the error as a
+note, and any placeholder left empty is removed.
 
 A forward-only stream SHALL apply the overwrite policy at a held link's name before it
 fails the link for its unrecoverable source, except under `REPLACE`: a link that random
@@ -612,7 +613,7 @@ refuses its links; any other is recovered as above.
 | Directory `H/` after a held-back HARDLINK `h` | `H/` meets `h` as it meets the made link, under every policy and on either kind of filesystem |
 | Directory `b/`, SYMLINK `a` → `b`, HARDLINK `a/x/y` to an excluded source, then directory `a/`, `REPLACE` | `a/x/y` made at `b/x/y` at its place and filled there; `a/` replaces the symlink |
 | A held-back HARDLINK's source fails in the second pass | Its placeholders are removed; its links `FAILED` as one failure group |
-| `OnError.STOP` after a held-back HARDLINK was placed | The placeholder is filled before the error is raised |
+| The first pass stops on an error (`OnError.STOP`, a limit, an abort) after a held-back HARDLINK was placed | The placeholder is filled before the error is raised |
 | Directory `b/`, file `b`, HARDLINK `b` → `b`, forward-only stream, `SKIP` | The link `NOT_OVERWRITTEN`, as in random access, not `FAILED` for its source |
 | HARDLINKs `ab` then `AB` to an excluded source (both held back), then a file `Ab`, `REPLACE` | `ab` and `AB` `OVERWRITTEN`, neither made; `Ab` `EXTRACTED` |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
