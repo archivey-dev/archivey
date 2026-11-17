@@ -2149,10 +2149,8 @@ class BaseArchiveReader(ArchiveReader):
         _settle_listing(members, sizes_too=self._streaming)
         if error is not None:
             self._stamp_error_context(error)
-        elif not members and not self._nested_depth:
+        elif not members:
             # Emitted before the snapshot below so it appears on the published report.
-            # Not for an inner archive (``ReaderContext.open_nested``): its members
-            # are the outer archive's, whose listing says whether it is empty.
             self._emit_empty_listing_diagnostics()
         holder = _Materialized(
             report=MemberListReport(

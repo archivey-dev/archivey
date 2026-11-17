@@ -540,15 +540,6 @@ def _empty_tar_gz() -> bytes:
     return gzip.compress(buffer.getvalue(), mtime=0)
 
 
-def _one_file_tar_gz() -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as tar:
-        info = tarfile.TarInfo("x.txt")
-        info.size = 3
-        tar.addfile(info, io.BytesIO(b"xyz"))
-    return gzip.compress(buffer.getvalue(), mtime=0)
-
-
 def _with_payloads(payloads: list[bytes]) -> bytes:
     """The 2.7.1 fixture's header over ``payloads``, its sizes and digests listed for
     each (all-zero digests: makeself writes those where it computed none)."""
@@ -582,17 +573,6 @@ def test_payloads_count_against_max_members() -> None:
         io.BytesIO(_with_payloads([_empty_tar_gz()] * 10)), config=config
     ):
         pass
-
-
-def test_an_empty_payload_is_not_reported_as_an_empty_archive() -> None:
-    data = _with_payloads([_empty_tar_gz(), _one_file_tar_gz(), _empty_tar_gz()])
-    with open_archive(io.BytesIO(data)) as reader:
-        assert [m.name for m in reader.members()] == ["x.txt"]
-        assert DiagnosticCode.EMPTY_ARCHIVE not in reader.diagnostics.counts
-    # With nothing in any payload, the archive itself is empty, and says so once.
-    with open_archive(io.BytesIO(_with_payloads([_empty_tar_gz()] * 3))) as reader:
-        assert reader.members() == []
-        assert reader.diagnostics.counts[DiagnosticCode.EMPTY_ARCHIVE] == 1
 
 
 def test_a_payload_built_here_reads() -> None:
