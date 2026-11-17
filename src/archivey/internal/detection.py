@@ -734,6 +734,11 @@ def _decode_inner_head(
                     ),
                     probe_read_bound=INNER_CONTAINER_PROBE_BYTES,
                     excluded_libraries=excluded,
+                    excluded_methods=(
+                        workspace.excluded_methods
+                        if workspace is not None
+                        else frozenset()
+                    ),
                     process_isolation=(
                         workspace.isolation
                         if workspace is not None
@@ -1868,6 +1873,9 @@ def _detect_format_body(
     what was tried. ``receipt`` is shared with a second pass when the caller retries
     on the volume beside a stub.
     """
+    # Imported here, as the inner probe imports the codec layer's config.
+    from archivey.internal.config import methods_off
+
     registry = get_registry()
     candidates = _candidate_tables(registry, formats)
     trailers = registry.trailer_entries()
@@ -1880,6 +1888,7 @@ def _detect_format_body(
         receipt,
         isolation=isolation,
         excluded_libraries=formats._libraries_off,
+        excluded_methods=methods_off(formats.exclude),
         decoder_limits=decoder_limits,
         collector=collector,
         name=name,
@@ -2209,18 +2218,30 @@ def _sfx_behind_executable(detection: _DetectionPass) -> FormatInfo | None:
     data = detection.data
     scan_limit = min(SFX_MAX, budget.max_scan_bytes)
     head = _executable_head(data, detection.peek_more, workspace)
+    script = data.startswith(b"#!")
+    entries = registry.sfx_magic_entries()
+    validators = registry.sfx_hit_validators()
+    if script:
+        # A shell installer (CPack ``.sh``, a conda installer, a hand-rolled one)
+        # carries a compressed TAR after the script: its stream's magic joins the
+        # needles, each with its codec's header check.
+        streams, checks = registry.script_payload_entries()
+        entries = [*entries, *streams]
+        validators = {**validators, **checks}
     sfx_info = _scan_for_sfx_payload(
-        registry.sfx_magic_entries(),
+        entries,
         detection.peek_more,
         workspace,
         scan_limit=scan_limit,
         peek_allowance=validator_allowance(budget),
-        validators=registry.sfx_hit_validators(),
+        validators=validators,
         capped_formats=registry.sfx_parser_scanned_formats(),
         # Shebang is text; ``WEAK`` alone is also unconfirmed MZ/ELF.
-        restrict_to_validated=data.startswith(b"#!"),
+        restrict_to_validated=script,
         leading=head,
     )
+    if sfx_info is not None and sfx_info.format.container is ContainerFormat.RAW_STREAM:
+        sfx_info = _script_stream_payload(detection, sfx_info)
     if sfx_info is not None:
         return detection.conclude(sfx_info, _ConflictEvidence.SFX_SCAN)
     # A ZIP far behind a PE stub, found from its end record (the install4j
@@ -2235,6 +2256,32 @@ def _sfx_behind_executable(detection: _DetectionPass) -> FormatInfo | None:
     if tail_info is not None:
         return detection.conclude(tail_info, _ConflictEvidence.SFX_SCAN)
     return None
+
+
+def _script_stream_payload(detection: _DetectionPass, found: FormatInfo) -> FormatInfo:
+    """A compressed stream found behind a ``#!`` script, as what it holds.
+
+    The inner-container probe decodes its first 512 bytes from the payload offset,
+    charged to the budget's ``max_decode_input`` as for a ``.gz`` at byte 0, and names
+    the TAR (``TAR_GZ``) or sequential plugin archive inside. A stream with nothing
+    recognised inside stays the bare stream. Either way the answer keeps the scan's
+    ``sfx_scan`` / ``PROBABLE`` and the payload offset: the offset is where the
+    evidence is.
+    """
+    workspace = detection.workspace
+    offset = found.payload_offset or 0
+    arrived = workspace.forward_only
+    resolved = _resolve_single_file_or_tar(
+        found.format,
+        found.confidence,
+        found.detected_by,
+        workspace.candidate_view(offset, arrived=arrived),
+        workspace=workspace,
+        view_arrived=arrived,
+        always_probe=detection.always_probe,
+        formats=detection.formats,
+    )
+    return replace(found, format=resolved.format)
 
 
 def _far_magic(

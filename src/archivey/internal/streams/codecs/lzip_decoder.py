@@ -28,6 +28,7 @@ Spec: https://www.nongnu.org/lzip/manual/lzip_manual.html#File-format
 
 from __future__ import annotations
 
+import functools
 import itertools
 import lzma
 import os
@@ -145,8 +146,10 @@ def _member_ends_at(
     return header == _MAGIC
 
 
-def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
+def _data_end(stream: BinaryIO, file_size: int, stop_at: int, origin: int = 0) -> int:
     """Where the lzip data ends: ``file_size``, or the last member before trailing data.
+
+    ``origin`` is where ``stream`` starts in the file, added to the offsets errors name.
 
     The lzip manual allows data after the last member (§7), and ``lzip`` finds the
     last member the same way: the latest trailer, within the final
@@ -188,13 +191,13 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
     for end in itertools.islice(candidate_ends(), TRAILING_DATA_CANDIDATES):
         if _member_ends_at(stream, base + end, stop_at, window, base):
             if window[end : end + len(_MAGIC)] == _MAGIC:
-                _check_version(window[end : end + _HEADER_SIZE], base + end)
+                _check_version(window[end : end + _HEADER_SIZE], origin + base + end)
                 raise CorruptionError(
-                    f"Lzip member starting at offset {base + end} has no valid "
+                    f"Lzip member starting at offset {origin + base + end} has no valid "
                     "trailer at the end of the file"
                 )
             if near_stream_magic(window[end : end + len(_MAGIC)], _MAGIC):
-                raise damaged_stream_error(base + end)
+                raise damaged_stream_error(origin + base + end)
             return base + end
     raise CorruptionError(
         "Lzip trailer not found at the end of the file or in the "
@@ -204,7 +207,7 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
 
 
 def _iter_trailers_backwards(
-    stream: BinaryIO, file_size: int, stop_at: int = 0
+    stream: BinaryIO, file_size: int, stop_at: int = 0, origin: int = 0
 ) -> Iterator[tuple[int, int, int, int]]:
     """Yield ``(compressed_start, data_size, member_size, crc32)`` from the last member back.
 
@@ -223,12 +226,14 @@ def _iter_trailers_backwards(
     (:func:`build_index_backwards`), so a seek falls back to the sequential read, and
     the forward decoder refuses the member. A seek therefore never skips it, but the
     error from this walk is corruption, not the version.
+
+    ``origin`` is where ``stream`` starts in the file, added to the offsets errors name.
     """
     stream.seek(stop_at)
     header = stream.read(_HEADER_SIZE)
     if header[:4] == _MAGIC:
-        _check_version(header, stop_at)
-    compressed_end = _data_end(stream, file_size, stop_at)
+        _check_version(header, origin + stop_at)
+    compressed_end = _data_end(stream, file_size, stop_at, origin)
     while compressed_end > stop_at:
         if compressed_end < _TRAILER_SIZE:
             raise CorruptionError("Lzip file is too small to contain a valid trailer")
@@ -250,11 +255,12 @@ def _iter_trailers_backwards(
         header = stream.read(_HEADER_SIZE)
         if header[:4] != _MAGIC:
             raise CorruptionError(
-                f"Lzip magic not found at expected member start {compressed_start} "
+                "Lzip magic not found at expected member start "
+                f"{origin + compressed_start} "
                 f"(got {quoted(header[:4].decode('ascii', 'surrogateescape'))}); "
                 "member_size in trailer may be corrupt"
             )
-        _check_version(header, compressed_start)
+        _check_version(header, origin + compressed_start)
         yield compressed_start, int(data_size), int(member_size), int(crc32)
         compressed_end = compressed_start
 
@@ -265,8 +271,12 @@ def _read_index_backwards(
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
     on_thinned: Callable[[], None] | None = None,
+    origin: int = 0,
 ) -> list[_MemberBounds]:
     """Build the member index by scanning trailers backwards (no decompression).
+
+    ``origin`` is where ``stream`` starts in the file, added to the offsets errors name
+    (``StreamConfig.source_origin``).
 
     A member can be as small as 26 bytes, so the members kept are thinned
     (:class:`SpacedCollector`) once there are more than the seek-table cap; the last
@@ -279,7 +289,7 @@ def _read_index_backwards(
         lambda e: e[0]
     )
     total = 0
-    for entry in _iter_trailers_backwards(stream, file_size, stop_at):
+    for entry in _iter_trailers_backwards(stream, file_size, stop_at, origin):
         total += entry[1]
         kept.add((total, entry))
     if kept.thinned and on_thinned is not None:
@@ -362,7 +372,7 @@ class _LzipState:
         self._read_bound = read_bound
         self._natives = natives
         self._usage = usage
-        # Source offset of the current member's header, for error messages.
+        # File offset of the current member's header, for error messages.
         self._comp_offset = offset
         self._state = self._NEED_HEADER
         self._buf = bytearray()
@@ -594,8 +604,11 @@ class LzipDecoder(BaseDecoder):
         read_bound: int | None = None,
         natives: Natives = IN_PROCESS,
         usage: ResourceUsageRecorder | None = None,
+        origin: int = 0,
     ) -> None:
         self._state = state
+        # Where the source starts in the file, added to offsets errors name.
+        self._origin = origin
         self._limits = limits
         self._read_bound = read_bound
         self._natives = natives
@@ -609,7 +622,7 @@ class LzipDecoder(BaseDecoder):
         return LzipDecoder(
             _LzipState(
                 self._limits,
-                point.compressed_offset,
+                self._origin + point.compressed_offset,
                 self._read_bound,
                 self._natives,
                 self._usage,
@@ -621,6 +634,7 @@ class LzipDecoder(BaseDecoder):
             read_bound=self._read_bound,
             natives=self._natives,
             usage=self._usage,
+            origin=self._origin,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -665,7 +679,7 @@ class LzipDecoder(BaseDecoder):
         return build_index_backwards(
             inner,
             last_known,
-            _read_index_backwards,
+            functools.partial(_read_index_backwards, origin=self._origin),
             lambda m: SeekPoint(m.decompressed_start, m.compressed_start),
             "Lzip backwards index scan failed; falling back to sequential "
             "decompression. Reason: %s",
@@ -686,13 +700,15 @@ def LzipDecompressorStream(
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
     file_index: bool = True,
+    source_origin: int = 0,
 ) -> DecompressorStream:
     """Seekable lzip decompressor backed by stdlib ``lzma``.
 
     ``decoder_limits`` caps each member header's dictionary size; it defaults to the
     public default, not to no cap. ``probe_read_bound`` is
     ``StreamConfig.probe_read_bound``: each member decodes with only the dictionary
-    that read needs.
+    that read needs. ``source_origin`` is ``StreamConfig.source_origin``: where
+    ``path`` starts in the file, added to every offset a message names.
     """
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> LzipDecoder:
@@ -700,7 +716,7 @@ def LzipDecompressorStream(
         return LzipDecoder(
             _LzipState(
                 decoder_limits,
-                point.compressed_offset,
+                source_origin + point.compressed_offset,
                 probe_read_bound,
                 natives,
                 usage,
@@ -712,6 +728,7 @@ def LzipDecompressorStream(
             read_bound=probe_read_bound,
             natives=natives,
             usage=usage,
+            origin=source_origin,
         )
 
     return DecompressorStream(
@@ -722,4 +739,5 @@ def LzipDecompressorStream(
         seekable=seekable,
         report_trailing_data=report_trailing_data,
         file_index=file_index,
+        source_origin=source_origin,
     )

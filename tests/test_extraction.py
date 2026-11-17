@@ -5219,14 +5219,190 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "h", "src"),
         ("file", "H", b"later-H"),
     ],
+    # Two links of one key whose sources come in the other order: the second pass
+    # reaches the later link first, and the earlier one still keeps the name.
+    "sources-in-the-other-order": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "X", "src2"),
+        ("hard", "x", "src1"),
+    ],
+    # A link under the name of a later link, whose source comes second: the later
+    # link's held name does not stop the earlier link's parent directory.
+    "under-a-later-name": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d/x", "src1"),
+        ("hard", "d", "src2"),
+    ],
+    # The same, with the sources in the other order: the later link `d` waits
+    # until the earlier `d/x` has been attempted.
+    "under-a-later-name-sources-in-the-other-order": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d/x", "src2"),
+        ("hard", "d", "src1"),
+    ],
+    # A later symlink at a held link's parent: the made link creates the directory
+    # `d` at its place, so the symlink `d` meets a directory, and the held link must
+    # not be sent through the symlink into `e/` (it would replace `e/x`).
+    "symlink-at-a-parent": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("dir", "e", None),
+        ("hard", "d/X", "src2"),
+        ("sym", "d", "e"),
+        ("hard", "e/x", "src1"),
+    ],
+    # A held link under an earlier held link's name, then a directory that replaces
+    # that link under REPLACE: the made link `d/x` failed at its place, as `d` was a
+    # file there.
+    "dir-replaces-a-held-parent": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("dir", "d", None),
+    ],
+    # The same when a later copy of the held link's name supersedes it.
+    "held-parent-superseded-by-a-later-copy": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("file", "src3", b"three"),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("hard", "d", "src3"),
+    ],
+    # A held link over an empty directory replaces it at its place under REPLACE, as
+    # the made link does, so the link under it then fails against its name.
+    "held-link-over-a-directory-then-a-link-under-it": [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("dir", "d", None),
+        ("hard", "d", "src1"),
+        ("hard", "d/x", "src2"),
+        ("file", "d", b"later"),
+    ],
+    # A held link under one of the archive's symlinks lands where the symlink led
+    # at its place in archive order: a later file at the real directory meets it as
+    # not empty, and a later symlink or file at the symlink's name does not move it.
+    "under-a-symlink-then-a-file-at-its-directory": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("file", "e", b"later"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("sym", "s", "f"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed-and-a-link-there": [
+        ("file", "src", b"d"),
+        ("file", "src2", b"t"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("sym", "s", "f"),
+        ("hard", "f/X", "src2"),
+    ],
+    "under-a-symlink-then-a-file-at-the-symlink": [
+        ("file", "src", b"d"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src"),
+        ("file", "s", b"later"),
+    ],
+    # A link spelled through a symlink holds its name where it physically is: a
+    # later member spelled without the symlink meets it there, as it would the made
+    # link, and does not make a directory at its name.
+    "under-a-symlink-then-a-link-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+    ],
+    "under-a-symlink-then-the-symlink-re-pointed-then-a-link-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("sym", "s", "f"),
+        ("hard", "e/d/x", "src2"),
+    ],
+    "under-a-symlink-then-a-link-and-a-file-under-its-name": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+        ("file", "e/d", b"later"),
+    ],
+    "dir-then-a-link-over-it-under-a-symlink-then-a-link-under-it": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("sym", "s", "e"),
+        ("dir", "e/d", None),
+        ("hard", "s/d", "src1"),
+        ("hard", "e/d/x", "src2"),
+        ("file", "e/d", b"later"),
+    ],
+    # The same with no symlink: the held link's parent is there before the later
+    # file under it, as the made link's is.
+    "file-under-a-parent": [
+        ("file", "src", b"d"),
+        ("hard", "d/h", "src"),
+        ("file", "d", b"later"),
+    ],
 }
+
+
+@pytest.mark.parametrize("re_point", [False, True])
+@pytest.mark.parametrize("overwrite", list(OverwritePolicy))
+def test_a_file_written_through_a_symlink_is_the_runs_own(
+    tmp_path: Path, overwrite: OverwritePolicy, re_point: bool
+) -> None:
+    # `s/f` written through the archive's own `s -> e` is the file at `e/f`: a later
+    # `e/f/x` fails against it as it would against `e/f` written by that name, under
+    # every policy, rather than meeting it as the caller's file. It still does after
+    # `s` is re-pointed, when `s/f` no longer leads there.
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("dir", "f", None),
+            ("sym", "s", "e"),
+            ("file", "s/f", b"mine"),
+            *([("sym", "s", "f")] if re_point else []),
+            ("file", "e/f/x", b"later"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, overwrite=overwrite, on_error=OnError.CONTINUE
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["s/f"] is ExtractionStatus.EXTRACTED
+    assert statuses["e/f/x"] is ExtractionStatus.FAILED
+    assert (dest / "e" / "f").read_bytes() == b"mine"
 
 
 def _extracted(dest: Path) -> dict[str, bytes | None]:
     return {
         p.relative_to(dest).as_posix(): None if p.is_dir() else p.read_bytes()
         for p in sorted(dest.rglob("*"))
-        if p.name != "src"
+        if not p.name.startswith("src")
     }
 
 
@@ -5246,14 +5422,145 @@ def test_a_held_back_link_extracts_as_a_made_one(
                 dest,
                 overwrite=overwrite,
                 on_error=OnError.CONTINUE,
-                members=(lambda m: m.name != "src") if held else None,
+                members=(lambda m: not m.name.startswith("src")) if held else None,
             )
         statuses = [
-            (r.member.name, r.status.name)
+            (
+                r.member.name,
+                r.status.name,
+                None if r.path is None else r.path.relative_to(dest).as_posix(),
+            )
             for r in report.results
-            if r.member.name != "src"
+            if not r.member.name.startswith("src")
         ]
         runs[held] = (statuses, _extracted(dest))
+    assert runs[True] == runs[False]
+
+
+def _held_and_made(
+    tmp_path: Path,
+    entries: list,
+    *,
+    on_error: OnError,
+    existing: dict[str, bytes] | None = None,
+) -> dict[bool, tuple[object, dict[str, bytes | None]]]:
+    """Extract ``entries`` with every ``src*`` member excluded (held) and selected
+    (made), each into a destination that holds ``existing``, under ``ERROR``. Each
+    run gives its statuses, or the error and the member it names, and what is on
+    disk."""
+    archive = _tar_bytes(entries)
+    runs: dict[bool, tuple[object, dict[str, bytes | None]]] = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        dest.mkdir()
+        for name, data in (existing or {}).items():
+            (dest / name).write_bytes(data)
+        outcome: object
+        with open_archive(io.BytesIO(archive)) as reader:
+            try:
+                report = reader.extract_all(
+                    dest,
+                    overwrite=OverwritePolicy.ERROR,
+                    on_error=on_error,
+                    members=(
+                        (lambda m: not m.name.startswith("src")) if held else None
+                    ),
+                )
+            except ExtractionError as exc:
+                outcome = ("raised", exc.member_name)
+            else:
+                outcome = [
+                    (r.member.name, r.status.name)
+                    for r in report.results
+                    if not r.member.name.startswith("src")
+                ]
+        runs[held] = (outcome, _extracted(dest))
+    return runs
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("hard", "X", "src2"),
+            ("hard", "x", "src1"),
+        ],
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("hard", "d", "src2"),
+            ("hard", "d/x", "src1"),
+        ],
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("hard", "d/x", "src1"),
+            ("hard", "d", "src2"),
+        ],
+    ],
+    ids=["same-key", "under-the-name", "under-a-later-name"],
+)
+def test_a_held_back_link_stops_where_a_made_one_does(
+    tmp_path: Path, entries: list
+) -> None:
+    # Under OnError.STOP the run stops at the same member as the made run, and the
+    # links that interact with it are made as in archive order, whatever order
+    # their sources come in. A later link that does not interact with that member
+    # can already be made when the run stops, so each shape here holds only links
+    # that interact.
+    runs = _held_and_made(tmp_path, entries, on_error=OnError.STOP)
+    assert runs[True] == runs[False]
+    assert runs[True][0][0] == "raised"
+
+
+def test_a_superseded_held_back_link_frees_its_renamed_name(tmp_path: Path) -> None:
+    # Under RENAME the first copy of `a` is given `a (1)`, then a later copy of `a`
+    # supersedes it. The name it took is free again, so the later copy gets
+    # `a (1)` too, as when the first copy was made.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"one"),
+            ("file", "src2", b"two"),
+            ("file", "A", b"A"),
+            ("hard", "a", "src2"),
+            ("hard", "a", "src1"),
+        ]
+    )
+    runs = {}
+    for held in (False, True):
+        dest = tmp_path / ("held" if held else "made")
+        with open_archive(io.BytesIO(archive)) as reader:
+            report = reader.extract_all(
+                dest,
+                overwrite=OverwritePolicy.RENAME,
+                members=(lambda m: not m.name.startswith("src")) if held else None,
+            )
+        paths = [
+            (r.member.name, r.status.name, r.path and r.path.name)
+            for r in report.results
+            if not r.member.name.startswith("src")
+        ]
+        runs[held] = (paths, _extracted(dest))
+    assert runs[True] == runs[False]
+    assert runs[True][1] == {"A": b"A", "a (1)": b"one"}
+
+
+def test_a_held_back_link_that_fails_gives_its_name_back(tmp_path: Path) -> None:
+    # The earliest link of a name fails on a file already there. The later
+    # spellings of the name are then tried as they are after a made link fails.
+    entries = [
+        ("file", "src1", b"one"),
+        ("file", "src2", b"two"),
+        ("file", "src3", b"three"),
+        ("hard", "Readme", "src3"),
+        ("hard", "readme", "src2"),
+        ("hard", "README", "src1"),
+    ]
+    runs = _held_and_made(
+        tmp_path, entries, on_error=OnError.CONTINUE, existing={"Readme": b"mine"}
+    )
     assert runs[True] == runs[False]
 
 

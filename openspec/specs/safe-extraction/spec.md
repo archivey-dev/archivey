@@ -542,8 +542,15 @@ first the same way, so under `REPLACE` it replaces the first. A directory, and a
 that a later member implies, meets the held-back link only where the filesystem would
 find the made link: at its own path, or under another case on a filesystem that folds
 case. A directory there meets the overwrite policy, and a member under the link's name
-fails, as a non-directory already extracted is in the way. If the second pass cannot
-make the link, no other member gets the name, as with any refused member.
+fails, as a non-directory already extracted is in the way. The held-back link's parent
+directories SHALL be created at its place in archive order, as the made link's are, and
+the link SHALL be made where they physically were then, so a later member at one of them
+meets a directory: a symlink there, or one of the archive's symlinks on the way that a
+later member re-points or replaces, does not move the link, and under `REPLACE` a
+directory that holds only held-back links counts as not empty. A held-back link under
+the name of an earlier held-back link that a later member replaced fails, as the made
+link did at its place. If the second pass cannot make the link, no other member gets the
+name, as with any refused member.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
@@ -602,6 +609,7 @@ refuses its links; any other is recovered as above.
 | Directory `H/` after a held-back HARDLINK `h`, case-sensitive filesystem | Both written |
 | Directory `H/` after a held-back HARDLINK `h`, case-insensitive filesystem | `H/` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)/` under `RENAME` |
 | File `h/x` after a held-back HARDLINK `h` | `h/x` `FAILED`, as `h` is a non-directory already extracted; `h` written in the second pass |
+| Directory `e/`, HARDLINK `d/X` to an excluded source (held back), then SYMLINK `d` → `e` | `d/X` creates the directory `d` at its place; the symlink `d` meets it (`FAILED` under `ERROR` and `REPLACE`, `NOT_OVERWRITTEN` under `SKIP`, `d (1)` under `RENAME`); `d/X` is made in `d`, never through a symlink |
 | HARDLINKs `ab` then `AB` to an excluded source (both held back), then a file `Ab`, `REPLACE` | `ab` and `AB` `OVERWRITTEN`, neither made; `Ab` `EXTRACTED` |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
@@ -747,7 +755,9 @@ members inside an explicit DIRECTORY entry that `ERROR` or `SKIP` left out. The 
 not a collision event, so `collided_with` stays `None`. A symlink of the caller's that
 resolves to a directory is a directory here and is followed, subject to the parent
 resolution check. A parent that is a non-directory this run wrote is not covered: the
-member fails as the `OnError` matrix states.
+member fails as the `OnError` matrix states. That holds however the archive spelled the
+earlier member: `s/f` written through the archive's own symlink `s -> e` is the run's
+file at `e/f`, so a later `e/f/x` fails against it under every policy.
 
 Replacing an existing directory with any member type removes the directory first, and
 only an **empty** one: a directory that holds entries SHALL NOT be removed, and the
@@ -2011,11 +2021,19 @@ decodes, summed across its levels and its threads; `None` disables it.
   furthest offset reached, and the byte a compressed single file's open-time check
   decodes. A seek whose target is known SHALL be refused before the decoder moves when
   the gap does not fit; a seek to an end the stream cannot size SHALL read to it,
-  counted. A read that would cross the cap SHALL decode at most one byte past what is
-  left, then raise the always-stop `ResourceLimitError`, so an extraction stops at that
-  member. This holds for a buffer's read-ahead over a source that cannot seek too.
-  Readers on several threads MAY each overshoot by one read. Once spent, the
-  nest SHALL refuse every later read before it decodes.
+  counted. A read that would cross the cap SHALL ask its decoder for at most one byte
+  past what is left, then raise the always-stop `ResourceLimitError`, so an extraction
+  stops at that member. A buffer's read-ahead over a source that cannot seek SHALL be
+  capped the same way. In a nest of one level, the crossing read SHALL decode at most
+  one byte past the cap. In a deeper nest, the bytes an outer level decodes to fill an
+  inner read count too, after the inner read has sized itself, so the crossing read
+  MAY pass the cap by those bytes. Every read SHALL be sized against what is left when
+  it starts, so on one thread the count SHALL stay at or under about twice the cap at
+  any depth. That cap is the one the outer readers size their reads against: a child
+  that sets a stricter cap SHALL stop its own reads at it, and the bytes its outer
+  readers decode for it MAY reach their own cap. Readers on several threads MAY each
+  overshoot by one read. Once spent, the nest SHALL refuse every later read before it
+  decodes.
 - **Skipped bytes.** Bytes a decoder produces to get past a member nobody reads SHALL
   count where they are decoded, in every format (a compressed TAR's listing included): a
   compressed TAR's, cpio's or RPM payload's skipped members and headers, a CAB folder's
@@ -2046,3 +2064,5 @@ decodes, summed across its levels and its threads; `None` disables it.
 | `max_nest_decoded_bytes=10**12`, `.tar.gz` of three 100 000-byte members, `stream_members()` reads only the third | At least 300 000 bytes counted; reading all three counts no more than the decoded tar's size |
 | `max_nest_decoded_bytes=2 * 100_000 + 10`, `extract_all` on the ZIP | Raises; two members written whole, no later member opened |
 | One config, two separate `open_archive` calls with no `parent=` | Each counts from zero |
+| `max_nest_decoded_bytes=500_000`, a deflated ZIP holding a stored ZIP of one 4 000 000-byte member, the inner member read in 65 536-byte steps with `parent=outer` | Raises `ResourceLimitError` naming `max_nest_decoded_bytes=500000`; more than 500 000 and at most 500 000 + 65 536 + 1 bytes counted |
+| `max_nest_decoded_bytes=500_000`, a deflated ZIP holding a stored ZIP holding a stored ZIP of one 8 000 000-byte member, each opened with `parent=` and `streaming=True`, the innermost member read with one `read()` | Raises `ResourceLimitError`; more than 500 000 and at most 2 × 500 000 + 1 bytes counted |

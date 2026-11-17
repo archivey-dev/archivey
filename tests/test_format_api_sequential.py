@@ -90,6 +90,8 @@ class ToysContainer(PluginContainer):
     YIELDS_NONE = "toys-yields-none"
     REPORTS_LATE = "toys-reports-late"
     REPORTING_DECODED = "toys-reporting-decoded"
+    HOLDING_WRONG_TYPE = "toys-holding-wrong-type"
+    NESTING_WRONG_TYPE = "toys-nesting-wrong-type"
 
 
 TOYS = ArchiveFormat(ToysContainer.TOYS, StreamFormat.UNCOMPRESSED)
@@ -833,6 +835,53 @@ def test_a_charge_outside_a_walk_or_of_a_bad_size_is_a_plugin_bug(
     fmt = _variant(_ChargingBadSize, ToysContainer.CHARGING_BAD_SIZE)
     with pytest.raises(ArchiveyUsageError, match="size of 0 or more"):
         open_archive(path, format=fmt).close()
+
+
+class _TranslatesTypeError(ToysReader):
+    """A translator that maps every TypeError to corruption."""
+
+    def translate_exception(self, exc: Exception) -> ArchiveyError | None:
+        if isinstance(exc, TypeError):
+            return CorruptionError(f"translated: {exc}")
+        return None
+
+
+class _HoldingWrongType(_TranslatesTypeError):
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        self._context.hold("not a member")  # type: ignore[arg-type]
+        yield from super().walk(stream)
+
+
+class _NestingWrongType(_TranslatesTypeError):
+    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+        yield from self._context.open_nested(stream.take(0), "tar")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("reader", "container", "match"),
+    [
+        (_HoldingWrongType, ToysContainer.HOLDING_WRONG_TYPE, "takes an ArchiveMember"),
+        (_NestingWrongType, ToysContainer.NESTING_WRONG_TYPE, "takes an ArchiveFormat"),
+    ],
+    ids=["hold", "open_nested"],
+)
+def test_a_wrong_argument_type_is_not_offered_to_the_plugin_translator(
+    toys: ArchiveFormat,
+    tmp_path: Path,
+    reader: Callable[[ReaderContext], SequentialReader],
+    container: ToysContainer,
+    match: str,
+) -> None:
+    """``hold()`` given something other than a member and ``open_nested()`` given
+    something other than an ``ArchiveFormat`` are plugin bugs: the TypeError reaches
+    the caller, not the plugin's translator, which would call it corruption."""
+    path = _write(tmp_path, build_toys(_ENTRIES))
+    fmt = _variant(reader, container)
+    with (
+        pytest.raises(TypeError, match=match),
+        open_archive(path, format=fmt) as opened,
+    ):
+        opened.members()
 
 
 class _Sum16:
@@ -1899,16 +1948,16 @@ def test_a_decoded_member_keeps_its_ratio_guard(
     """A member the plugin decodes itself (``MemberSpan.data``) can expand past its
     stored bytes, so it is held to the ratio, unlike a ``data_length`` member. Fails
     if the adapter answers ``_member_data_is_stream_bytes`` for every span."""
-    from archivey.internal.bomb_tracker import MemberRatioGuard
+    from archivey.internal.bomb_tracker import MemberRatioCheck
 
     built: list[str] = []
-    init = MemberRatioGuard.__init__
+    init = MemberRatioCheck.__init__
 
-    def counting(self: MemberRatioGuard, *args: object, **kwargs: object) -> None:
+    def counting(self: MemberRatioCheck, *args: object, **kwargs: object) -> None:
         built.append(kwargs["member"].name)  # type: ignore[union-attr]
         init(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(MemberRatioGuard, "__init__", counting)
+    monkeypatch.setattr(MemberRatioCheck, "__init__", counting)
     fmt, _ = decoded
     path = _write(tmp_path, build_decoded(_DECODED_ENTRIES))
     with open_archive(path, format=fmt) as reader:
