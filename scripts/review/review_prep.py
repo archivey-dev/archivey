@@ -362,7 +362,6 @@ DEEP_SECURITY = (
     "src/archivey/internal/extraction.py",
     "src/archivey/internal/file_copy_pass.py",
     "src/archivey/internal/link_watch.py",
-    "src/archivey/internal/dependency_index.py",
     "src/archivey/internal/long_paths.py",
     "src/archivey/internal/naming.py",
     "src/archivey/internal/unix_mode.py",
