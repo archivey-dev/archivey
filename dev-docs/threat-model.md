@@ -1541,7 +1541,7 @@ the nest ratio: their bytes are in the outer reader's number. Code:
 `read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
 `extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
 hold reads: each member stream is held to the per-member and archive-wide ratios
-(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
+(`bomb_tracker.MemberRatioCheck`, one `ReadRatioTally` per reader), so a scan or hash of a
 bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
 stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
 and a compressed stream is held as a whole. It counts toward the archive-wide total at its

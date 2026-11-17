@@ -1,5 +1,5 @@
 """A member read through ``open()``, ``read()`` or ``stream_members()`` is held to
-``max_ratio`` as extraction holds what it writes (``MemberRatioGuard``)."""
+``max_ratio`` as extraction holds what it writes (``MemberRatioCheck``)."""
 
 from __future__ import annotations
 
@@ -8,9 +8,11 @@ import functools
 import gzip
 import io
 import os
+import struct
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import BinaryIO, cast
 
 import pytest
 
@@ -26,7 +28,7 @@ from archivey import (
 from archivey.internal import bomb_tracker
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
-    MemberRatioGuard,
+    MemberRatioCheck,
     ReadRatioTally,
 )
 from archivey.types import MemberType
@@ -399,7 +401,7 @@ def _guard(
     limits: DecoderLimits | None = None,
     tally: ReadRatioTally | None = None,
     consumed: int | None = None,
-) -> MemberRatioGuard:
+) -> MemberRatioCheck:
     member = ArchiveMember(
         type=MemberType.FILE,
         name="m",
@@ -407,8 +409,7 @@ def _guard(
         compressed_size=compressed_size,
         _member_id=1,
     )
-    return MemberRatioGuard(
-        decoder,
+    check = MemberRatioCheck(
         limits=limits or DecoderLimits(),
         member=member,
         tally_key=1,
@@ -417,6 +418,8 @@ def _guard(
         static_size=None,
         consumed=None if consumed is None else lambda: consumed,
     )
+    check.attach(cast("BinaryIO", decoder))
+    return check
 
 
 def test_a_seek_to_the_end_of_an_unsized_member_stops_within_a_step() -> None:
@@ -426,7 +429,39 @@ def test_a_seek_to_the_end_of_an_unsized_member_stops_within_a_step() -> None:
     with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
         guard.seek(0, io.SEEK_END)
     floor = DecoderLimits().ratio_activation_threshold
-    assert decoder.furthest <= floor + 16 * _MIB
+    assert decoder.furthest <= floor + bomb_tracker._GUARD_STEP
+
+
+def test_a_seek_to_the_end_past_a_small_recorded_size_stops_within_a_step() -> None:
+    # The recorded size is under the ratio line, but the body decodes far past it. The
+    # decoder serves SEEK_END by decoding to its real end, so the check reads to it a
+    # step at a time and judges what was decoded, not the recorded size.
+    decoder = _Decoder(bytes(64 * _MIB))
+    guard = _guard(decoder, size=1000, compressed_size=100)
+    with pytest.raises(ResourceLimitError, match="max_ratio=800:1"):
+        guard.seek(0, io.SEEK_END)
+    floor = DecoderLimits().ratio_activation_threshold
+    assert decoder.furthest <= floor + bomb_tracker._GUARD_STEP
+
+
+def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "lying.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("z.bin", bytes(24 * _MIB))
+    data = bytearray(path.read_bytes())
+    # The uncompressed size, in the local header and in the central directory.
+    struct.pack_into("<I", data, 22, 1000)
+    central = data.find(b"PK\x01\x02")
+    struct.pack_into("<I", data, central + 24, 1000)
+    path.write_bytes(data)
+    with (
+        open_archive(path, seekable_members=True) as reader,
+        reader.open("z.bin") as stream,
+        pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
+    ):
+        stream.seek(0, io.SEEK_END)
 
 
 def test_a_seek_to_the_end_under_the_ratio_lands_there() -> None:
@@ -482,13 +517,13 @@ def _tar_member(name: str, data: bytes) -> bytes:
 
 def _count_guards(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     built: list[str] = []
-    init = MemberRatioGuard.__init__
+    init = MemberRatioCheck.__init__
 
-    def counting(self: MemberRatioGuard, *args: object, **kwargs: object) -> None:
+    def counting(self: MemberRatioCheck, *args: object, **kwargs: object) -> None:
         built.append(kwargs["member"].name)  # type: ignore[union-attr]
         init(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(MemberRatioGuard, "__init__", counting)
+    monkeypatch.setattr(MemberRatioCheck, "__init__", counting)
     return built
 
 

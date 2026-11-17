@@ -1633,7 +1633,7 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
         ``decoder_limits.max_ratio``, as extraction holds what it writes
-        (:class:`MemberRatioGuard`). ``member`` is the member whose data it reads;
+        (:class:`MemberRatioCheck`). ``member`` is the member whose data it reads;
         ``counted_as`` is the member the caller asked for, which the archive-wide
         total counts the output under.
 
@@ -1675,20 +1675,17 @@ class BaseArchiveReader(ArchiveReader):
             self._nest.report_pass(total)
             return
         # Imported here, as in ``_open_outer_codec_stream``.
-        from archivey.internal.bomb_tracker import MemberRatioGuard
+        from archivey.internal.bomb_tracker import MemberRatioCheck
 
-        static_size = self._trusted_source_size()
-        consumed = self._live_consumed()
-        stream._hold_inner(
-            lambda inner: MemberRatioGuard(
-                inner,
+        stream._hold_ratio(
+            MemberRatioCheck(
                 limits=limits,
                 member=member,
                 tally_key=key,
                 member_name=counted_as.name,
                 tally=tally,
-                static_size=static_size,
-                consumed=consumed,
+                static_size=self._trusted_source_size(),
+                consumed=self._live_consumed(),
                 nest=self._nest,
             )
         )
