@@ -534,8 +534,10 @@ class _SecondPass:
     """What the second pass (``_resolve_orphans``) knows about the held-back links
     while it makes them. ``by_index``, ``by_key`` and ``by_source``: the links that
     are not cancelled, in archive order, by result index, by first-pass collision
-    key and by source. ``under``: by the first-pass collision key of each of their
-    parent directories. ``done``: the result indexes attempted. ``waiting_on``: the
+    key and by source. ``under``: by the collision key of each of their parent
+    directories, computed when the second pass starts (if a parent's key changed
+    since the first pass, the lookup misses and the link is attempted as its
+    source arrives). ``done``: the result indexes attempted. ``waiting_on``: the
     links that wait for the link of a result index. ``ready``: a heap of the result
     indexes whose wait ended. ``stash``: a source's content kept in the staging
     directory for links that wait."""
