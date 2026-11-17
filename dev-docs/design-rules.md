@@ -171,7 +171,9 @@ excuse.
 5. **Consistent behaviour between formats and libraries** (DR-5). This can be relaxed a
    little for malformed data, particularly for a corner case so specific that only
    crafted archives hit it (DR-5a).
-6. **Follow the official tool's behaviour** (DR-6). When this and principle 5 conflict,
+6. **Follow the official tool's behaviour** (DR-6), for every well-intentioned, correct
+   input; a shape only crafted archives make may be refused (DR-6 scope). When this and
+   principle 5 conflict,
    that needs a real decision. The factors below settle the clear cases; the rest go to
    the maintainer.
 7. **Generalise fixes and approaches across all formats** (DR-0).
@@ -493,6 +495,17 @@ does and match it: `unrar` for RAR (over `unar`), GNU `tar` for TAR, 7-Zip for 7
 `bzip2`, `xz`, `lzip` and `zstd` for their streams. Before refusing an input as junk,
 check whether a real tool produces it.
 
+**Scope.** The match is owed to every well-intentioned, correct input. A shape that only
+a crafted archive makes may be refused, though the tool accepts it, when all four hold:
+- no real archive has it: check real-world data, such as the scans of release tarballs
+  in tar-minefield's `contrib/data`, and the corpus case for the shape;
+- refusing it makes the code simpler;
+- another major tool already refuses it (bsdtar, for example);
+- refusing it is the safer option.
+
+Say in the pull request how each one was checked. When one of them fails, match the
+tool, or ask the maintainer (maintainer ruling, 2026-11-17).
+
 **Why.** It is a tie-breaker that avoids relitigating each case, and it is what users
 already expect from their tools (2026-10-02, extraction re-audit).
 
@@ -508,7 +521,12 @@ and no writer produces the shape (2026-10-10; `formats/bzip2.md` and `formats/gz
 there too; xz keeps reading past the Stream Padding its format defines. Zeros at the end
 stay silent for every codec, although `zstd`, `lz4` and `xz --format=lzma` refuse them:
 one cross-codec rule, after the tape and block padding GNU `gzip` and `bzip2` accept
-(`formats/single-file.md` §6).
+(`formats/single-file.md` §6). Under the scope above, a member written through a symlink
+the same extraction created (`s -> e`, then `s/x`) is refused under every policy from
+the next minor release, though
+GNU `tar` and Python's `tarfile` write through it: tar-minefield's scans found the shape
+in none of 82,635 release tarballs, bsdtar refuses it, and a link that a later member
+re-points can no longer move where earlier members went (2026-11-17).
 
 **Limits.** When this rule and DR-5 disagree, that is a
 [real decision](#when-consistency-and-the-official-tool-disagree): weigh the factors,
