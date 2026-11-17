@@ -43,7 +43,8 @@ detector's first window, reported as ``PROBABLE`` from a content test:
 **Size.** Decoding shrinks the data (by a quarter for base64, a bit more for
 uuencode), and the decoders hold at most one line or one 4-character group of input
 beyond what they return, so neither needs a memory check. A uuencode line is capped
-at :data:`_MAX_LINE` bytes.
+at :data:`_MAX_LINE` bytes: the decoder refuses a longer one, and detection does not
+look past it for a ``begin`` line.
 """
 
 from __future__ import annotations
@@ -78,7 +79,11 @@ MAX_LEADING_TEXT = 64 * 1024
 # length, 60 data characters and the checksum character some old encoders add); base64
 # lines in ``begin-base64`` are 76 at most. This is generous.
 _MAX_LINE = 4096
-_HEADER = re.compile(rb"\Abegin(-base64)? +([0-7]{3,6}) +(\S.*?)[ \t]*\r?\Z")
+# Matched after _header_match strips trailing whitespace, so the name needs no lazy
+# group: a lazy name followed by a whitespace class backtracks over a run of spaces
+# once per character, which is quadratic in the run.
+_HEADER = re.compile(rb"\Abegin(-base64)? +([0-7]{3,6}) +(\S.*)\Z")
+_LINE_END_SPACE = b" \t\r"
 _WHITESPACE = b" \t\r\n"
 # What the base64 decoder skips between groups: line breaks only. A space or a tab is
 # outside the alphabet, so prose after unpadded base64 fails instead of decoding.
@@ -102,15 +107,21 @@ class _UuHeader:
         self.end = end  # offset just past the header line's newline
 
 
+def _header_match(line: bytes) -> re.Match[bytes] | None:
+    """``line`` (no newline, at most :data:`_MAX_LINE` bytes) as a ``begin`` line."""
+    return _HEADER.match(line.rstrip(_LINE_END_SPACE))
+
+
 def _find_header(data: bytes, *, leading: bool) -> _UuHeader | None:
     """The first ``begin`` line in ``data``: at offset 0, or anywhere when ``leading``.
-    Only whole lines (ending in a newline) are looked at."""
+    Only whole lines (ending in a newline) are looked at. A line over
+    :data:`_MAX_LINE` bytes ends the search, as the decoder refuses it."""
     pos = 0
     while True:
         nl = data.find(b"\n", pos)
-        if nl < 0:
+        if nl < 0 or nl - pos > _MAX_LINE:
             return None
-        match = _HEADER.match(data[pos:nl])
+        match = _header_match(data[pos:nl])
         if match is not None:
             return _UuHeader(match, nl + 1)
         if not leading:
@@ -263,11 +274,9 @@ class UuDecompressor:
     def _consume(self) -> None:
         while not self._done:
             nl = self._input.find(b"\n")
+            if (nl if nl >= 0 else len(self._input)) > _MAX_LINE:
+                raise CorruptionError(f"uuencoded line longer than {_MAX_LINE} bytes")
             if nl < 0:
-                if len(self._input) > _MAX_LINE:
-                    raise CorruptionError(
-                        f"uuencoded line longer than {_MAX_LINE} bytes"
-                    )
                 return
             line = bytes(self._input[:nl]).rstrip(b"\r")
             del self._input[: nl + 1]
@@ -279,7 +288,7 @@ class UuDecompressor:
     def _line(self, line: bytes, length: int) -> None:
         header = self._header
         if header is None:
-            match = _HEADER.match(line)
+            match = _header_match(line)
             if match is not None:
                 self._header = _UuHeader(match, 0)
                 return
