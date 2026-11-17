@@ -43,8 +43,10 @@ listing and small reads, and fixes from a sweep of the 0.4.0 code.
   when the whole stream ends. A `.tar.bz2` read through the bzip2 accelerator still
   waits for the end.
 - A single-file member (`.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, zlib, zstd, LZ4, Brotli,
-  lzop) lists its stream's method in `member.compression`, the same method a ZIP or 7z
-  member compressed that way lists. `.Z`, bzip3, uuencode and base64 still list `()`.
+  lzop, `.Z`, bzip3) lists its stream's method in `member.compression`, the same method a
+  ZIP or 7z member compressed that way lists. The new `CompressionAlgorithm.LZW` and
+  `CompressionAlgorithm.BZIP3` name the methods of `.Z` and bzip3, and `exclude=` takes
+  them too. uuencode and base64 are encodings and still list `()`.
 - `seek(0, SEEK_END)` on a member whose recorded size is small is held to the ratio
   limit, as a read is.
 - When no format is detected, the error names every format the leading-bytes scan
