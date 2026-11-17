@@ -523,7 +523,9 @@ class _DeflateEndCheckStream(DelegatingStream):
         return result
 
     def decode_to(self, target: int) -> int:
-        # As ``seek``: a move that stops short of ``target`` met the end, and checks it.
+        # As ``seek``: a move that stops short of ``target`` met the end, and the end
+        # check runs there, so this layer never reports an end its seek would refuse.
+        # (A member's ratio check also seeks to the end afterwards, which checks too.)
         result = decode_to(self._inner, target)
         if result < target and self._hands_over_at_end():
             return decode_to(self._inner, target)

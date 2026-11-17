@@ -11,6 +11,7 @@ import os
 import struct
 import tarfile
 import zipfile
+import zlib
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -36,6 +37,7 @@ from archivey.internal.streams.codecs import rapidgzip_child
 from archivey.internal.streams.codecs.rapidgzip_child import (
     rapidgzip_child_unavailable_reason,
 )
+from archivey.internal.streams.decompressor_stream import DataAfterEndError
 from archivey.internal.streams.streamtools.binaryio import decode_to
 from archivey.types import MemberType
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO, SizedNonSeekable
@@ -477,6 +479,36 @@ def test_a_zip_member_that_lies_about_its_size_is_refused_on_seek_to_end(
         open_archive(path, seekable_members=True, config=_accelerated(mode)) as reader,
         reader.open("z.bin") as stream,
         pytest.raises(ResourceLimitError, match="max_ratio=800:1"),
+    ):
+        stream.seek(0, io.SEEK_END)
+
+
+@pytest.mark.parametrize("mode", [AcceleratorMode.OFF, AcceleratorMode.ON])
+def test_a_zip_member_with_input_after_its_end_is_refused_on_seek_to_end(
+    tmp_path: Path, mode: AcceleratorMode
+) -> None:
+    """The ratio check's way to the end meets rapidgzip's error on the bytes after the
+    DEFLATE stream; the switch to the standard library gives the error the
+    accelerator off gives."""
+    payload = os.urandom(2 * _MIB) + bytes(2 * _MIB)
+    compressor = zlib.compressobj(6, zlib.DEFLATED, -15)
+    body = compressor.compress(payload) + compressor.flush() + b"\x00junkjunk"
+    path = tmp_path / "junk.zip"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("j.bin", body)
+    data = bytearray(path.read_bytes())
+    # Make the stored member a deflated one of the payload, its junk included in the
+    # compressed size: the method, the CRC and the uncompressed size, in both headers.
+    crc = zlib.crc32(payload)
+    for at in (0, data.find(b"PK\x01\x02") + 2):
+        struct.pack_into("<H", data, at + 8, zipfile.ZIP_DEFLATED)
+        struct.pack_into("<I", data, at + 14, crc)
+        struct.pack_into("<I", data, at + 22, len(payload))
+    path.write_bytes(data)
+    with (
+        open_archive(path, seekable_members=True, config=_accelerated(mode)) as reader,
+        reader.open("j.bin") as stream,
+        pytest.raises(DataAfterEndError),
     ):
         stream.seek(0, io.SEEK_END)
 
