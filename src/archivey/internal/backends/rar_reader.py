@@ -4651,6 +4651,7 @@ class RarReader(BaseArchiveReader):
         costs: dict[int, _DictionaryCost] | None = None,
         on_pipe: Callable[[Callable[[], SolidBlockReader]], None] | None = None,
         wrap_member: Callable[[ArchiveMember, BinaryIO], BinaryIO] | None = None,
+        on_member_error: Callable[[ArchiveMember, ArchiveyError], None] | None = None,
     ) -> Iterator[tuple[ArchiveMember, ArchiveStreamImpl | None]]:
         """The solid pass over one process's output, demultiplexed by offset.
 
@@ -4665,6 +4666,8 @@ class RarReader(BaseArchiveReader):
 
         ``wrap_member`` wraps the slice of a member placed by offset, before the
         password watch and outer verifier, for checks on the source as it is read.
+        ``on_member_error`` is given each error the stream of a member placed by
+        offset raises, the verifier's included.
 
         ``spawn`` starts the process and returns its output stream. ``plan`` gets each
         payload member, its stream size and whether it has a digest to check, and
@@ -4778,6 +4781,11 @@ class RarReader(BaseArchiveReader):
 
             else:
                 open_fn = slot
+            on_error = (
+                (lambda exc: on_member_error(member, exc))
+                if on_member_error is not None and isinstance(slot, int)
+                else None
+            )
             # Not registered, as the base class's pass streams are not: the pass holds
             # the live-stream slot for all of them (``_iter_stream_members``).
             return self._wrap_member_stream(
@@ -4791,6 +4799,7 @@ class RarReader(BaseArchiveReader):
                 digest_transforms=transforms,
                 verify_member=verify_member,
                 fill_size=vsize is None,
+                on_error=on_error,
             )
 
         def _cleanup() -> None:
@@ -5186,6 +5195,27 @@ class RarReader(BaseArchiveReader):
         # are plaintext where they sit, even inside a solid stream (``rar -s -ms``),
         # and its parts, when split across volumes, are joined in order.
         return info.is_stored and _data_is_reachable(info)
+
+    def _stored_sizes_error(
+        self, member: ArchiveMember, info: RarMemberInfo
+    ) -> CorruptionError | None:
+        """The refusal of a member read by :meth:`_can_direct_read` whose two sizes
+        differ, or ``None``.
+
+        A plaintext stored member packs exactly its own bytes; only encryption
+        (padding to the AES block) makes the two sizes differ, and encrypted members
+        are not read this way. ``unrar`` writes the smaller of the two sizes, the
+        size check trusts the unpacked one, and neither is the member.
+        """
+        if info.compress_size == info.file_size:
+            return None
+        return CorruptionError(
+            f"This stored RAR member declares {info.file_size} bytes but packs "
+            f"{info.compress_size}; a stored member's two sizes must match.",
+            archive_name=self._archive_name,
+            member_name=member.name,
+            source_format=ArchiveFormat.RAR,
+        )
 
     def _can_direct_read(self, info: RarMemberInfo) -> bool:
         # ``encryption_unknown`` is excluded here rather than refused: slicing the
@@ -5723,18 +5753,9 @@ class RarReader(BaseArchiveReader):
                 source_format=ArchiveFormat.RAR,
             )
         if self._can_direct_read(raw):
-            if raw.compress_size != raw.file_size:
-                # A plaintext stored member packs exactly its own bytes; only encryption
-                # (padding to the AES block) makes the two sizes differ, and encrypted
-                # members never take this path. ``unrar`` trusts the packed size here,
-                # the size check trusts the unpacked one, and neither is the member.
-                raise CorruptionError(
-                    f"This stored RAR member declares {raw.file_size} bytes but packs "
-                    f"{raw.compress_size}; a stored member's two sizes must match.",
-                    archive_name=self._archive_name,
-                    member_name=member.name,
-                    source_format=ArchiveFormat.RAR,
-                )
+            mismatch = self._stored_sizes_error(member, raw)
+            if mismatch is not None:
+                raise mismatch
             inner: BinaryIO = self._direct_view(raw)
             return self._payload_parts(inner, member)
 
