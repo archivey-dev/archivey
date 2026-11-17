@@ -92,23 +92,24 @@ def _round_up_4(n: int) -> int:
     return (n + 3) & ~3
 
 
-def _decode_mbi(data: Iterator[int]) -> tuple[int, int]:
-    """Decode a multi-byte integer from ``data``; return ``(value, bytes_consumed)``."""
+def _decode_mbi(data: Iterator[int], what: str) -> tuple[int, int]:
+    """Decode a multi-byte integer from ``data``; return ``(value, bytes_consumed)``.
+    ``what`` names the structure it is read from, for an error (``"index"``)."""
     value = 0
     shift = 0
     for i in range(9):  # XZ spec: max 9 bytes per MBI
         byte = next(data, None)
         if byte is None:
-            raise CorruptionError("XZ index MBI truncated")
+            raise CorruptionError(f"XZ {what} MBI truncated")
         value |= (byte & 0x7F) << shift
         if not (byte & 0x80):
             if byte == 0 and i > 0:
                 # XZ spec §1.2 requires the shortest encoding; liblzma rejects a
-                # trailing 0x00 byte, so the seek index does too.
-                raise CorruptionError("XZ index MBI is not minimally encoded")
+                # trailing 0x00 byte, so this does too.
+                raise CorruptionError(f"XZ {what} MBI is not minimally encoded")
             return value, i + 1
         shift += 7
-    raise CorruptionError("XZ index MBI exceeds 9 bytes")
+    raise CorruptionError(f"XZ {what} MBI exceeds 9 bytes")
 
 
 @dataclass(slots=True)
@@ -209,12 +210,12 @@ def _walk_xz_index(data: Iterator[int], length: int) -> Iterator[tuple[int, int]
             else "XZ index is empty"
         )
     offset = 1
-    num_records, consumed = _decode_mbi(data)
+    num_records, consumed = _decode_mbi(data, "index")
     offset += consumed
     for _ in range(num_records):
-        unpadded_size, consumed = _decode_mbi(data)
+        unpadded_size, consumed = _decode_mbi(data, "index")
         offset += consumed
-        uncompressed_size, consumed = _decode_mbi(data)
+        uncompressed_size, consumed = _decode_mbi(data, "index")
         offset += consumed
         if unpadded_size == 0:
             raise CorruptionError("XZ index: unpadded_size must be > 0")
@@ -979,6 +980,17 @@ def _filter_refusal(filter_id: int) -> ArchiveyError:
     )
 
 
+def _unread_header() -> ArchiveyError:
+    """The guard's stop at a block header it cannot follow, raised only if liblzma
+    accepts that header; it is no verdict on the data, as :func:`_filter_refusal`."""
+    return mark_no_verdict(
+        UnsupportedFeatureError(
+            "XZ block header is not one the check for the filters "
+            "ArchiveyConfig.formats excludes can read"
+        )
+    )
+
+
 def _block_filters(header: bytes) -> list[tuple[int, bytes]]:
     """The filters a whole block header declares, in chain order, as ``(filter ID,
     properties)``. The header's CRC32 is not checked here.
@@ -995,12 +1007,12 @@ def _block_filters(header: bytes) -> list[tuple[int, bytes]]:
     pos = 2
     for size_present in (flags & 0x40, flags & 0x80):
         if size_present:  # compressed, then uncompressed size: not needed here
-            pos += _decode_mbi(iter(body[pos : pos + 9]))[1]
+            pos += _decode_mbi(iter(body[pos : pos + 9]), "block header")[1]
     filters: list[tuple[int, bytes]] = []
     for _ in range((flags & 0x03) + 1):
-        filter_id, n = _decode_mbi(iter(body[pos : pos + 9]))
+        filter_id, n = _decode_mbi(iter(body[pos : pos + 9]), "block header")
         pos += n
-        props_size, n = _decode_mbi(iter(body[pos : pos + 9]))
+        props_size, n = _decode_mbi(iter(body[pos : pos + 9]), "block header")
         pos += n
         props = body[pos : pos + props_size]
         pos += props_size
@@ -1020,8 +1032,12 @@ class _XzFilterGuard:
     them is in each block's header, and any block of a stream may declare its own
     chain. So every header is read, not only the first. Finding the next header takes
     the LZMA2 chunk headers in between (as :class:`_XzBlockWalker` reads them): one
-    Python step per chunk, and an encoder writes a chunk per 64 KiB of input at most.
-    The guard exists only while the policy names one of these filters.
+    Python step per chunk. An encoder writes a full chunk per 64 KiB of input, but a
+    hostile stream can hold one chunk per few bytes, and the guard does not give up on
+    it as the check walk does, since a guard that stopped would let a later block
+    through. That is the cost of the block-point walk too (threat model, "No CPU or
+    wall-clock bound"). The guard exists only while the policy names one of these
+    filters.
 
     :meth:`feed` sees every byte before liblzma does and says how many of them liblzma
     may take: all of them, or, with :attr:`error` set, none past the start of the
@@ -1029,11 +1045,15 @@ class _XzFilterGuard:
     part with liblzma already, but never its last byte, so liblzma never reads the
     chain. The engine raises ``error`` once liblzma has decoded what it
     was given, so the blocks before the refused one still read. The walk follows the
-    stream as liblzma does for any data liblzma accepts. It stops at the index, and at
-    a block header that liblzma refuses before it decodes the block: one whose CRC32
-    does not match, that :func:`_block_filters` cannot parse, or whose chain does not
-    end in LZMA2. liblzma's own error then stands, so the policy never changes the
-    error for a header it does not refuse. An LZMA2 chunk control byte that liblzma
+    stream as liblzma does for any data liblzma accepts. It stops at the index.
+
+    A block header the guard cannot follow (its CRC32 does not match,
+    :func:`_block_filters` cannot parse it, or its chain does not end in LZMA2) is one
+    liblzma refuses before it decodes the block. liblzma is given that header whole,
+    and nothing after it: its own error then stands, so the policy does not change the
+    error for a header it does not refuse. Should a liblzma accept such a header,
+    ``error`` (:func:`_unread_header`) is raised before it gets any of the block, so
+    no later block runs unchecked either. An LZMA2 chunk control byte that liblzma
     refuses too makes ``error`` a ``CorruptionError``, rather than a walk that loses
     its place.
     """
@@ -1128,17 +1148,16 @@ class _XzFilterGuard:
                 raise CorruptionError("XZ block header CRC32 mismatch")
             ids = [filter_id for filter_id, _ in _block_filters(header)]
         except ArchiveyError:
-            # liblzma refuses this header with its own error before it decodes the
-            # block, so the error is the same with the policy as without it.
-            self.done = True
-            return
-        for filter_id in ids:
-            if filter_id in self._filters_off:
-                raise _filter_refusal(filter_id)
-        if ids[-1] != lzma.FILTER_LZMA2:
-            # liblzma refuses the header and decodes nothing more of the stream.
-            self.done = True
-            return
+            ids = None
+        if ids is not None:
+            for filter_id in ids:
+                if filter_id in self._filters_off:
+                    raise _filter_refusal(filter_id)
+        if ids is None or ids[-1] != lzma.FILTER_LZMA2:
+            # liblzma refuses this header with its own error, the same with the
+            # policy as without it: it gets the whole header, and none of the block.
+            self._mark = self._field_at + len(rest)
+            raise _unread_header()
         self._expect(1, self._chunk)
 
     def _chunk(self, field: bytes) -> None:

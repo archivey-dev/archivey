@@ -663,28 +663,47 @@ def _block_header(body: bytes) -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("header", "error"),
+    ("header", "error", "message"),
     [
         # Reserved flag bits: liblzma reads them as options it does not know.
-        (_block_header(b"\x04\x21\x01\x16"), UnsupportedFeatureError),
+        (_block_header(b"\x04\x21\x01\x16"), UnsupportedFeatureError, "reserved"),
         # A VLI that runs past the header.
-        (_block_header(b"\x00" + b"\xff" * 3), CorruptionError),
+        (
+            _block_header(b"\x00" + b"\xff" * 3),
+            CorruptionError,
+            "block header MBI",
+        ),
+        # A filter ID that is not minimally encoded (0x21 as 0xA1 0x00).
+        (
+            _block_header(b"\x00\xa1\x00\x01\x16"),
+            CorruptionError,
+            "block header MBI is not minimally encoded",
+        ),
         # Properties longer than the header.
-        (_block_header(b"\x00\x21\x7f"), CorruptionError),
+        (_block_header(b"\x00\x21\x7f"), CorruptionError, "properties"),
         # Four filters, the header holds one.
-        (_block_header(b"\x03\x21\x01\x16"), CorruptionError),
+        (
+            _block_header(b"\x03\x21\x01\x16"),
+            CorruptionError,
+            "block header MBI truncated",
+        ),
         # A size field that never ends.
-        (_block_header(b"\x40" + b"\x80" * 9 + b"\x00"), CorruptionError),
+        (
+            _block_header(b"\x40" + b"\x80" * 9 + b"\x00"),
+            CorruptionError,
+            "block header MBI exceeds 9 bytes",
+        ),
         # Padding that is not zero.
-        (_block_header(b"\x00\x21\x01\x16\x00\x01"), CorruptionError),
+        (_block_header(b"\x00\x21\x01\x16\x00\x01"), CorruptionError, "padding"),
     ],
 )
 def test_a_hostile_xz_block_header_does_not_parse(
-    header: bytes, error: type[Exception]
+    header: bytes, error: type[Exception], message: str
 ) -> None:
-    """Each field is bounds-checked against the header's own size. The guard and the
-    detection probe both read a header through this one parser."""
-    with pytest.raises(error):
+    """Each field is bounds-checked against the header's own size, and an error names
+    the block header. The guard and the detection probe both read a header through
+    this one parser."""
+    with pytest.raises(error, match=message):
         xz_decoder._block_filters(header)
 
 
@@ -737,6 +756,29 @@ _HOSTILE_XZ = [
     ),
     pytest.param(_xz(_DATA)[:24] + b"\x03" + _xz(_DATA)[25:], id="chunk-control"),
 ]
+
+
+@pytest.mark.parametrize("piece", [1, 5, 1 << 20])
+def test_the_xz_filter_guard_gives_liblzma_an_unread_header_and_nothing_after(
+    piece: int,
+) -> None:
+    """A header the guard cannot read (reserved flag bits here) goes to liblzma whole,
+    so liblzma's own error stands. Nothing past it does: a liblzma that accepted the
+    header would get the guard's error before any of the block, so no later block
+    runs unchecked."""
+    data = _HOSTILE_XZ[0].values[0]
+    assert isinstance(data, bytes)
+    off = xz_decoder.xz_filters_off(frozenset({A.BCJ}))
+    guard = xz_decoder._XzFilterGuard(off, data[7], pos=12)
+    allowed = 0
+    for at in range(12, len(data), piece):
+        allowed += guard.feed(data[at : at + piece])
+        if guard.error is not None:
+            break
+    assert isinstance(guard.error, UnsupportedFeatureError)
+    assert "CompressionAlgorithm" not in str(guard.error)
+    assert allowed == 12  # the 12-byte block header, whole
+    assert guard.feed(data[24:]) == 0
 
 
 @pytest.mark.parametrize("data", _HOSTILE_XZ)
