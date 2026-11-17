@@ -558,6 +558,7 @@ OPENSSL = [
 ]
 
 
+@_requires("cryptography")
 @pytest.mark.parametrize("name", OPENSSL)
 def test_openssl_payloads_read_with_the_password(name: str) -> None:
     with open_archive(DATA / name, password="secret") as reader:
@@ -566,6 +567,7 @@ def test_openssl_payloads_read_with_the_password(name: str) -> None:
         assert reader.info.extra["makeself.encryption"] == "openssl"
 
 
+@_requires("cryptography")
 @pytest.mark.parametrize("name", OPENSSL)
 def test_openssl_payloads_read_from_a_pipe(name: str) -> None:
     data = (DATA / name).read_bytes()
@@ -576,17 +578,20 @@ def test_openssl_payloads_read_from_a_pipe(name: str) -> None:
     assert {k: v for k, v in got.items() if k in FILES} == FILES
 
 
+@_requires("cryptography")
 @pytest.mark.parametrize("name", OPENSSL)
 def test_a_wrong_password_is_named(name: str) -> None:
     with pytest.raises(EncryptionError, match="Wrong password for makeself"):
         open_archive(DATA / name, password="wrong")
 
 
+@_requires("cryptography")
 def test_no_password_asks_for_one() -> None:
     with pytest.raises(EncryptionError, match="pass password= to read it"):
         open_archive(DATA / "openssl-2.7.1.run")
 
 
+@_requires("cryptography")
 def test_candidates_are_tried_in_turn() -> None:
     with open_archive(
         DATA / "openssl-2.4.5.run", password=["wrong", "secret"]
@@ -667,6 +672,7 @@ def test_the_tar_check_needs_a_valid_header_checksum() -> None:
     assert not starts(bytes(512), StreamFormat.UNCOMPRESSED)
 
 
+@_requires("cryptography")
 def test_pbkdf2_is_charged_to_the_key_derivation_budget() -> None:
     config = ArchiveyConfig(
         decoder_limits=DecoderLimits(max_key_derivation_rounds=9999)
@@ -682,6 +688,7 @@ def test_pbkdf2_is_charged_to_the_key_derivation_budget() -> None:
         assert _contents(r) == FILES
 
 
+@_requires("cryptography")
 @pytest.mark.parametrize("name", ["openssl-2.7.1.run", "openssl-2.4.5.run"])
 def test_ciphertext_cut_mid_block_is_truncated(name: str) -> None:
     """Sizes and digests match the cut payload; the cut must still be seen even
@@ -705,6 +712,7 @@ def test_base64_cut_mid_group_is_corruption() -> None:
         reader.members()
 
 
+@_requires("cryptography")
 def test_a_provider_that_gives_nothing_asks_for_a_password() -> None:
     with pytest.raises(EncryptionError, match="pass password= to read it"):
         open_archive(DATA / "openssl-2.7.1.run", password=lambda _member: None)
