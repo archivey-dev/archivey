@@ -508,6 +508,7 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         rar_reader._UnrarOwnedStream,
         rar_reader._RollingUnrarStream,  # the unrar pipe fed rolling volumes
         rar_forward_reader._ForwardUnrarStream,  # the same, for a pipe source
+        rar_forward_reader._ForwardMemberStream,  # forward-only decoded member slice
         # A pipe RAR walk's archive source: archive offsets under the header walk
         # and the rolling volumes, never under a member's decompressed chain.
         rar_forward.ForwardSource,
@@ -754,6 +755,7 @@ def test_delegating_stream_close_inventory() -> None:
         password_confirm.UnverifiedPasswordReadWatch,
         rar_copy_sources._TeeBlock,
         rar_reader._ClosesSyntheticFile,
+        rar_forward_reader._ForwardMemberStream,
         sparse.SparseStream,
         readahead.ReadAheadStream,
         walk_handoff.MemberDataView,

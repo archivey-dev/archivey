@@ -1,6 +1,7 @@
 """Correctness regressions from the outside RAR sweep of 2026-11-15.
 
-Each strict xfail asserts the expected result on the unmodified main branch.
+Each test asserts the expected reading behavior. Unresolved findings carry strict
+xfail markers whose reasons identify the defects.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from archivey import (
     TruncatedError,
     open_archive,
 )
+from archivey.internal.hashing.blake2sp import blake2sp as blake2sp_digest
 from tests.conftest import requires_unrar_cli, unrar_reads_from_pipes
 from tests.test_rar_forward import _pipe
 
@@ -29,14 +31,10 @@ pytestmark = pytest.mark.skipif(
 
 
 @requires_unrar_cli()
-@pytest.mark.xfail(
-    strict=True,
-    reason="R1: A truncated pipe member returns invented zero bytes and passes its digest",
-)
 def test_a_truncated_pipe_member_never_verifies_zero_padding(tmp_path: Path) -> None:
     payload = bytes(6 << 20)
     # Built by hand, as ``rar a -ma5 -m0`` stores it: CI never installs the RAR writer.
-    cut = _rar5(payload)[: 5 << 20]
+    cut = _rar5(_rar5_file("a", payload))[: 5 << 20]
     path = tmp_path / "cut.rar"
     path.write_bytes(cut)
     oracle = subprocess.run(
@@ -58,7 +56,7 @@ def test_a_truncated_pipe_member_never_verifies_zero_padding(tmp_path: Path) -> 
         member, stream = next(members)
         assert member.size == len(payload)
         assert stream is not None
-        with pytest.raises((TruncatedError, CorruptionError)):
+        with pytest.raises(TruncatedError, match="cut short"):
             stream.read()
 
 
@@ -76,33 +74,52 @@ def _block(body: bytes) -> bytes:
     return struct.pack("<I", zlib.crc32(framed)) + framed
 
 
-def _rar5(payload: bytes, *, padded: bool = False) -> bytes:
-    """A stored RAR5 archive with one member ``a`` and a CRC32.
+def _rar5_file(
+    name: str,
+    payload: bytes,
+    *,
+    padded: bool = False,
+    blake2sp: bool | bytes = False,
+) -> bytes:
+    """A stored RAR5 FILE header and its data, with a CRC32 or a BLAKE2sp digest.
 
-    With ``padded``, the FILE header has an extra area holding one padding byte. The
-    native walk permits this byte, and RARLAB unrar tests the complete member
-    successfully.
+    ``blake2sp`` may be the digest itself: the pure-Python hasher takes about two
+    seconds per MiB. With ``padded``, the header's extra area holds one padding
+    byte. The native walk permits this byte, and RARLAB unrar tests the complete
+    member successfully.
     """
+    extra = b""
+    if blake2sp:
+        digest = blake2sp if isinstance(blake2sp, bytes) else blake2sp_digest(payload)
+        record = _vint(2) + _vint(0) + digest  # HASH, BLAKE2sp
+        extra += _vint(len(record)) + record
+    if padded:
+        extra += b"\x00"
     fields = (
-        _vint(4)  # file flags: CRC32
+        _vint(0 if blake2sp else 4)  # file flags: CRC32 unless BLAKE2sp
         + _vint(len(payload))
         + _vint(0o100644)
-        + struct.pack("<I", zlib.crc32(payload))
+        + (b"" if blake2sp else struct.pack("<I", zlib.crc32(payload)))
         + _vint(0)  # stored
         + _vint(1)  # Unix
-        + _vint(1)
-        + b"a"
+        + _vint(len(name.encode()))
+        + name.encode()
     )
+    header = (
+        (b"\x02\x03" + _vint(len(extra)) if extra else b"\x02\x02")  # type, flags
+        + _vint(len(payload))
+        + fields
+        + extra
+    )
+    return _block(header) + payload
+
+
+def _rar5(*files: bytes) -> bytes:
+    """A RAR5 archive holding ``files`` built by :func:`_rar5_file`."""
     return (
         b"Rar!\x1a\x07\x01\x00"
         + _block(b"\x01\x00\x00")  # MAIN
-        + _block(
-            (b"\x02\x03\x01" if padded else b"\x02\x02")  # type, flags, extra size
-            + _vint(len(payload))
-            + fields
-            + (b"\x00" if padded else b"")
-        )
-        + payload
+        + b"".join(files)
         + _block(b"\x05\x00\x00")  # ENDARC
     )
 
@@ -115,7 +132,7 @@ def _rar5(payload: bytes, *, padded: bool = False) -> bytes:
 )
 def test_extra_area_padding_survives_a_rolling_volume_split(tmp_path: Path) -> None:
     payload = bytes(range(251)) * 40
-    raw = _rar5(payload, padded=True)
+    raw = _rar5(_rar5_file("a", payload, padded=True))
     path = tmp_path / "padded.rar"
     path.write_bytes(raw)
     subprocess.run(

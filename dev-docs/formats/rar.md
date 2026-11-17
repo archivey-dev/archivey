@@ -1208,7 +1208,9 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   refused, as is every member after one whose output did not line up. A member cut short
   is refused as `TruncatedError` when the source ends inside the 4 MiB the forward
   source reads ahead; a longer one is padded with zeros so the members before it in its
-  volume still decode, and fails its own digest check.
+  volume still decode. The feeder sets the cut flag before writing any padding. The
+  member's stream checks that flag after each read and raises `TruncatedError` before
+  those zeros can pass a size or digest check.
 - **Closing** sets a flag the walk checks before each read of the source, closes
   `unrar`'s stdin (it ignores a terminate signal while it waits for a volume prompt's
   answer, but exits at the end of its input), and waits up to a second for the feeder

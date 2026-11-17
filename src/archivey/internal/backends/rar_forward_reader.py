@@ -92,7 +92,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
 )
 from archivey.internal.streams.crypto import note_crypto_use
-from archivey.internal.streams.streamtools import SolidBlockReader
+from archivey.internal.streams.streamtools import DelegatingStream, SolidBlockReader
 from archivey.internal.streams.streamtools.shared import SharedSource, SharedView
 from archivey.terminal import quoted
 from archivey.types import ArchiveInfo, ArchiveInfoExtra, ArchiveMember, MemberType
@@ -211,6 +211,25 @@ class _PaddedSpan:
 
     def close(self) -> None:
         self._span.close()
+
+
+class _ForwardMemberStream(DelegatingStream):
+    """Check the real source after each read, before padding can pass verification."""
+
+    readinto_passthrough = False
+
+    def __init__(self, inner: BinaryIO, check_cut: Callable[[], None]) -> None:
+        self._check_cut = check_cut
+        super().__init__(inner)
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        if n != 0:
+            # _PaddedSpan marks the cut before returning any padding, so this
+            # check sees the mark before padded bytes can reach the verifier.
+            self._check_cut()
+        return data
 
 
 class _ForwardPass:
@@ -896,6 +915,7 @@ class RarForwardReader(RarReader):
                 self._plan,
                 costs=self._pass_costs,
                 on_pipe=_on_pipe,
+                wrap_member=self._wrap_forward_member,
             )
         finally:
             fpass.close()
@@ -942,6 +962,18 @@ class RarForwardReader(RarReader):
         offset = self._pipe_end
         self._pipe_end = offset + size
         return offset
+
+    def _wrap_forward_member(self, member: ArchiveMember, stream: BinaryIO) -> BinaryIO:
+        """Keep a late source cut from verifying through a synthetic member slice."""
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+
+        def check_cut() -> None:
+            if id(raw) in self._cut:
+                self._pipe_end = None
+                raise self._cut_error(member)
+
+        return _ForwardMemberStream(stream, check_cut)
 
     def _password_refusal(
         self, member: ArchiveMember, raw: RarMemberInfo
