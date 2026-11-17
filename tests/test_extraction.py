@@ -5358,6 +5358,29 @@ _HELD_BACK_LINK_SHAPES = {
         ("hard", "e/d/x", "src2"),
         ("file", "e/d", b"later"),
     ],
+    # A held link superseded by a later copy of its name after the symlink on its
+    # way was re-pointed: the earlier copy, made where the symlink first led, is
+    # taken back as the made one is.
+    "under-a-symlink-superseded-after-a-re-point": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "e", None),
+        ("dir", "f", None),
+        ("sym", "s", "e"),
+        ("hard", "s/X", "src1"),
+        ("sym", "s", "f"),
+        ("hard", "s/X", "src2"),
+    ],
+    # A held link over an empty directory, then the same directory again, then a
+    # link under it.
+    "over-a-directory-then-the-directory-again-then-a-link-under-it": [
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("dir", "d", None),
+        ("hard", "d", "src1"),
+        ("dir", "d", None),
+        ("hard", "d/x", "src2"),
+    ],
     # The same with no symlink: the held link's parent is there before the later
     # file under it, as the made link's is.
     "file-under-a-parent": [
@@ -5396,6 +5419,29 @@ def test_a_file_written_through_a_symlink_is_the_runs_own(
     assert statuses["s/f"] is ExtractionStatus.EXTRACTED
     assert statuses["e/f/x"] is ExtractionStatus.FAILED
     assert (dest / "e" / "f").read_bytes() == b"mine"
+
+
+def test_a_copy_superseded_after_a_re_point_is_taken_back(tmp_path: Path) -> None:
+    # A later copy of `s/X` supersedes the earlier one, which was written through
+    # `s -> e`. `s` now leads to `f`, so the later copy lands at `f/X`; the earlier
+    # copy is still removed from `e/X`, as it is when nothing is re-pointed.
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("dir", "f", None),
+            ("sym", "s", "e"),
+            ("file", "s/X", b"first"),
+            ("sym", "s", "f"),
+            ("file", "s/X", b"second"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE)
+    statuses = [(r.member.name, r.status) for r in report.results]
+    assert ("s/X", ExtractionStatus.SUPERSEDED) in statuses
+    assert not (dest / "e" / "X").exists()
+    assert (dest / "f" / "X").read_bytes() == b"second"
 
 
 def _extracted(dest: Path) -> dict[str, bytes | None]:

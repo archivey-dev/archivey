@@ -1865,6 +1865,12 @@ class ExtractionCoordinator:
             and path is not None
             and path in state.written_paths
         ):
+            claim = state.collision_map.get(self._claimed_key(path))
+            # Where the copy was written: ``path`` no longer leads there once a later
+            # member re-pointed one of the archive's symlinks on its way.
+            physical = (
+                claim.physical if claim is not None and claim.path == path else path
+            )
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             on_disk = long_path(path)
@@ -1877,6 +1883,11 @@ class ExtractionCoordinator:
                     state.written_paths.discard(path)
             else:
                 state.written_paths.discard(path)
+                if physical != path and physical != self._physical_path(path):
+                    # The later copy lands where ``path`` leads now, so it does not
+                    # replace this one: the copy is parked where it is, and removed
+                    # with the other parked copies (``_drop_parked_copies``).
+                    path = physical
                 self._current.parked[path] = index
         if index in state.counted:
             member_bytes = state.counted.pop(index)
@@ -3520,14 +3531,22 @@ class ExtractionCoordinator:
                 original, None, ExtractionStatus.NOT_OVERWRITTEN, None
             )
         if (
-            self._overwrite is OverwritePolicy.REPLACE
-            and self._reservation_at(dest_path, directory=False) is None
+            self._reservation_at(dest_path, directory=False) is None
             and self._is_real_directory(dest_path)
+            and not self._holds_held_link(dest_path)
+            and not self._prepare_destination(transformed, dest_path, atomic=True)
         ):
-            # A directory at the link's name: the made link replaced it here, or
-            # failed here if it was not empty, before any member under that name
-            # came. Other entries the second pass replaces as it makes the link.
-            self._prepare_destination(transformed, dest_path, atomic=True)
+            # A directory at the link's name meets the policy here, as the made
+            # link meets it, before any member under that name comes: ERROR fails
+            # the link, SKIP leaves the directory, and REPLACE removes it, or fails
+            # the link if it is not empty. A directory that holds held-back links
+            # is left to the second pass, which makes them first and then fails
+            # this link against it, so OnError.STOP stops with them on disk as the
+            # made run does. Other entries the second pass meets as it makes the
+            # link: no member can be under them.
+            return ExtractionResult(
+                original, None, ExtractionStatus.NOT_OVERWRITTEN, None
+            )
         requested = self._current.requested_path
         orphan = _Orphan(
             result_index,
