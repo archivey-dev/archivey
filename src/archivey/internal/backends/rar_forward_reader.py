@@ -242,10 +242,12 @@ class _ForwardPass:
         #: The members the walk released before it read the header after them
         #: (``_release_early``), by ``id`` of the parsed member.
         self.early: set[int] = set()
-        #: Set once the caller has listed the member released early last: the walk
-        #: reads the header after it only then, so nothing changes the parsed
-        #: header while the member is built from it.
-        self.listed = threading.Event()
+        #: Held by the caller while it builds a member released early, and by the
+        #: walk while it reads the header after that member, which may write into
+        #: it. The walk never waits for the caller to list the member: the caller
+        #: may be inside the read of an earlier member, waiting for output that
+        #: ``unrar`` writes only once the walk's thread has written its next volume.
+        self.building = threading.Lock()
         #: Set when the reader closes: the walk stops at its next read of the source.
         self.stopping = False
         self._charge = _rolling_volume_bytes(reader._config.spool_limits)
@@ -292,21 +294,11 @@ class _ForwardPass:
         if not splitting or held is None:
             return
         self.early.add(id(held.member))
-        self.listed.clear()
         self._release_held()
 
-    def _wait_listed(self) -> None:
-        """Wait until the caller has listed the member released early."""
-        while not self.listed.wait(_WAIT_SECONDS):
-            if self.stopping:
-                break
-        if self.stopping:
-            raise _Closed()
-
     def stop(self) -> None:
-        """Stop the walk at its next read of the source or wait."""
+        """Stop the walk at its next read of the source."""
         self.stopping = True
-        self.listed.set()
 
     def _entries(self) -> Iterator[SyntheticMember]:
         """The synthetic members of the volumes, made as the walk reaches them."""
@@ -324,10 +316,11 @@ class _ForwardPass:
                     position += 1
                     yield entry
                 if id(found.member) in self.early:
-                    # Only on the thread that answers ``unrar``: volume 1, the one
-                    # the caller's thread may write, ends before the walk gets here.
-                    self._wait_listed()
-                found = reader._next_found()
+                    # The caller may be building that member now.
+                    with self.building:
+                        found = reader._next_found()
+                else:
+                    found = reader._next_found()
         except Exception as exc:  # noqa: BLE001 - handed to the listing
             # The volume being written ends here, so the members already in it are
             # still decoded; the listing raises this after them, and so does the
@@ -758,14 +751,13 @@ class RarForwardReader(RarReader):
             if id(raw) not in fpass.early:
                 yield self._list_member(item)
                 continue
-            try:
+            with fpass.building:
+                # The walk reads the header after ``raw`` only outside this block,
+                # so the member and the snapshot both show what ``raw`` holds here.
+                # A header the walk read before is in both; one it reads after is
+                # what ``_add_late_records`` adds.
                 member = self._list_member(item)
-                # Before the walk is let go: after it, the next header may already
-                # be in ``raw``, and the snapshot would hide what it adds.
                 early = (member, raw.owner, raw.comment, raw.skipped_header_records)
-            finally:
-                # The walk waits for this before it reads the next header.
-                fpass.listed.set()
             yield member
 
     def _add_late_records(
@@ -838,7 +830,7 @@ class RarForwardReader(RarReader):
         """The member the walk found, typed and priced, as it is listed."""
         raw = found.member
         # The walk adds nothing to ``raw`` while it is built: a member released
-        # early waits for it (``_ForwardPass.listed``), any other is behind the walk.
+        # early is built under ``_ForwardPass.building``, any other is behind the walk.
         raw.comment = self._resolve_rar3_comment(raw.comment)
         if self._archive.is_solid and self._seen_encrypted:
             self._behind_encryption.add(id(raw))
