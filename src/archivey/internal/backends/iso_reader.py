@@ -990,6 +990,9 @@ _FIRST_DESCRIPTOR = 16 * _DESCRIPTOR_SECTOR
 # on an open that already failed. Real images put it first, or after one boot record; a
 # crafted image that puts it later keeps the plain ``CorruptionError`` label, cut or not.
 _MAX_DESCRIPTORS_SEARCHED = 64
+# The first bytes of a primary volume descriptor: type 1, standard identifier
+# ``CD001``, version 1.
+_PVD_PREFIX = b"\x01CD001\x01"
 
 
 def _declared_length(fp: BinaryIO, image_length: int) -> int | None:
@@ -1802,17 +1805,21 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         ``stop`` of a raw image read without its ``.cue`` sheet; True when one is
         there.
 
-        ``ARCHIVE_UNREAD_SESSION``: a disc with a later data session holds it there,
-        and its sheet would choose that session, so a read of the same file by its
-        path beside the sheet lists other files. The listing stays the first
-        track's. A primary volume descriptor starts a sector with ``1``, ``CD001``
-        and version ``1``, which is all that is checked. It stands for the trailing
-        data those sectors are, which is not reported as well.
+        ``ARCHIVE_UNREAD_SESSION``: a disc with a later data session holds a volume
+        there, and a ``.cue`` sheet beside the file would choose that session, so a
+        read of the same file by its path beside the sheet can list other files. The
+        listing stays the first track's. Another ISO appended to the image, or a
+        sector that starts with the same bytes by chance, gets the same report. A
+        primary volume descriptor starts a sector with ``1``, ``CD001`` and version
+        ``1`` (:data:`_PVD_PREFIX`), which is all that is checked. That trade-off is
+        deliberate: a false match only changes which integrity code names bytes that
+        are reported either way. The report stands for the trailing data those
+        sectors are, which is not reported as well.
         """
         sector = -(-start // USER_DATA_SIZE)
-        while sector * USER_DATA_SIZE + 7 <= stop:
+        while sector * USER_DATA_SIZE + len(_PVD_PREFIX) <= stop:
             self._iso_fp.seek(sector * USER_DATA_SIZE)
-            if self._iso_fp.read(7) == b"\x01CD001\x01":
+            if self._iso_fp.read(len(_PVD_PREFIX)) == _PVD_PREFIX:
                 break
             sector += 1
         else:
@@ -1820,10 +1827,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         self._context.report(
             DiagnosticCode.ARCHIVE_UNREAD_SESSION,
             (
-                "Raw CD image holds another ISO 9660 volume, at sector "
-                f"{sector}, after the one listed: a later session of the disc, which "
-                "is not read without the image's .cue sheet. Read with its sheet, "
-                "the image lists its last session."
+                "Raw CD image holds another ISO 9660 volume descriptor at sector "
+                f"{sector}, after the one listed, as a later session of a disc does. "
+                "Only the first track is read without a .cue sheet; a sheet beside "
+                "the file would choose its last session."
             ),
             UnreadSessionContext(
                 archive_name=self._archive_name, format="iso", sector=sector
