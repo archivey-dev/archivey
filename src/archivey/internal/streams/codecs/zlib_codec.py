@@ -96,6 +96,7 @@ def _stdlib_zlib(
         index=config.records_restart_points,
         file_index=config.seekable,
         natives=config.natives,
+        source_origin=config.source_origin,
     )
 
 

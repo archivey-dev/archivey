@@ -367,8 +367,8 @@ class BackendRegistry:
         """Format-owned checks the SFX scan calls on a candidate-relative view.
 
         Collected from ``ReadBackend.SFX_HIT_VALIDATOR`` next to ``SFX_MAGIC``. A
-        missing validator means a needle match is enough. ZIP, 7z, and RAR each
-        supply one so ``detection.py`` does not parse those formats.
+        missing validator means a needle match is enough. Each format that reads a
+        prefixed archive supplies one, so ``detection.py`` parses none of them.
         """
         mapping: dict[ArchiveFormat, HitValidator] = {}
         for cls in self._reader_classes:
@@ -378,6 +378,28 @@ class BackendRegistry:
             for sig in cls.SFX_MAGIC:
                 mapping[sig.format] = validator
         return mapping
+
+    def script_payload_entries(
+        self,
+    ) -> tuple[list[MagicSignature], dict[ArchiveFormat, HitValidator]]:
+        """The compressed streams the SFX scan also looks for behind a ``#!`` script,
+        and their header checks.
+
+        From the single-file codecs that set ``script_payload_check``: a shell
+        installer carries a compressed TAR, and the inner-container probe then names
+        the TAR. Only for a script: an executable stub never carries a bare stream.
+        """
+        entries: list[MagicSignature] = []
+        validators: dict[ArchiveFormat, HitValidator] = {}
+        for codec in single_file_codecs():
+            check = codec.script_payload_check
+            fmt = codec.single_file_format
+            if check is None or fmt is None:
+                continue
+            for sig in codec.magic:
+                entries.append(MagicSignature(sig.offset, sig.magic, fmt))
+            validators[fmt] = check
+        return entries, validators
 
     def sfx_parser_scanned_formats(self) -> frozenset[ArchiveFormat]:
         """Formats whose parser runs its own capped SFX scan.
@@ -807,12 +829,14 @@ def format_availability(
     and RAR reports as it would with ``unrar`` installed.
 
     Without ``config`` the answer is what this environment provides. With it, three
-    fields of ``config.formats`` change it, and no other: a package that
-    ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as absent,
-    listed in ``missing`` with the policy as its ``reason``, and a container in
+    fields of ``config.formats`` change it, and no other field of ``config.formats``: a
+    package that ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as
+    absent, listed in ``missing`` with the policy as its ``reason``, and a container in
     ``replace`` is answered for the plugin that reads it, whose ``requires`` count as a
-    registered plugin's do. Whether the format may open is
-    another question, answered by ``config.formats.allows(fmt)``; a caller needs both.
+    registered plugin's do. With ``check_programs=True``, ``config.unrar_path`` changes
+    it too: it picks the ``unrar`` binary to look for. ``unar_path`` and
+    ``rar_decompressor`` do not. Whether the format may open is another question,
+    answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
     # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat
     # or a stray string would otherwise reach the method and fail with an untranslated

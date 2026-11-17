@@ -83,6 +83,7 @@ class BrotliCodec(StreamCodec):
             report_trailing_data=config.report_trailing_data,
             refuse_input_after_end=config.refuse_input_after_end,
             natives=natives,
+            source_origin=config.source_origin,
         )
 
     @override

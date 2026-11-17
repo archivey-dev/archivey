@@ -20,7 +20,7 @@ hook, for the payload digests (§3).
 | Encryption | openssl AES-256-CBC read with `password=` (PBKDF2 since 2.6.0, `EVP_BytesToKey` before; `cryptography`); gpg refused by name |
 | Checksums | The header's CRC (POSIX `cksum`), MD5 and SHA-256 of each payload's stored bytes, all that are stated, as a check over the payload's files |
 | Name encoding | The TAR's: UTF-8 first, then `encoding=`, then escaped |
-| Spec | `openspec/changes/makeself-format/` (rulings in its `design.md`) |
+| Spec | `openspec/specs/format-makeself/`; rulings in `openspec/changes/archive/2026-11-17-makeself-format/design.md` |
 
 Not here: the startup script is reported (`makeself.script`), never run; the gpg
 signature (`--sign`) is reported (`makeself.signed`), not checked; the license text and
@@ -129,7 +129,8 @@ walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 
 ## 5. Decisions
 
-The maintainer's rulings of 2026-11-08 are in `openspec/changes/makeself-format/design.md`:
-a format of its own rather than the inner `TAR_GZ` with `prefixed=True`; the header
-parsed, not scanned; every payload listed; a forced other format refused, naming
-makeself; every stated digest checked; makeself 2.2.0 and later.
+The maintainer's rulings of 2026-11-08 are in
+`openspec/changes/archive/2026-11-17-makeself-format/design.md`: a format of its own
+rather than the inner `TAR_GZ` with `prefixed=True`; the header parsed, not scanned;
+every payload listed; a forced other format refused, naming makeself; every stated
+digest checked; makeself 2.2.0 and later.

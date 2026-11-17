@@ -44,3 +44,8 @@ content probes (only for a name that claims the format):
 - A uuencoded line is decoded only as far as its length character declares, so the checksum
   character some old encoders add after it is ignored, as libarchive does.
 - A zero-byte `.b64` file is the encoding of an empty file and reads as one.
+- A uuencode line over 4 096 bytes (`_MAX_LINE`), in the text before `begin` or after
+  it, is `CorruptionError`, and detection stops looking for a `begin` line at one. An
+  encoded line is at most 76 bytes, and RFC 5322 limits a mail line to 998 characters
+  (news follows it), so only a file that is not mail or news reaches the cap. The cap
+  bounds each line the decoder buffers and every line the `begin` pattern sees.

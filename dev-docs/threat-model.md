@@ -1224,8 +1224,12 @@ member as fact.
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the
 next census. A fabricated listing is [accepted](#a-probe-can-fabricate-a-member).
-The aggregate bound [re-opens](#detection-decoding-scan-candidates) when a tier starts
-decoding scan candidates.
+One tier decodes a scan candidate: the compressed-stream needles behind a `#!` script
+([prefixed archives](topics/prefixed-archives.md) §5). It decodes one, the hit the scan
+chooses after header checks of at most 12 bytes, once, through the inner-container probe
+and its `max_decode_input` charge, so the aggregate bound above holds. Measured on a 2
+MiB script carpeted with gzip headers that pass the check, each followed by junk: the
+probe reads 64 KiB of input and fails, and detection answers `GZ` in 3 ms.
 
 **Tests.** `tests/test_brotli_framing_gate.py`, `tests/test_detection_workspace.py` (the
 `*budget*` and receipt tests), the Atheris `detect_format` target. Investigation:
@@ -1328,12 +1332,7 @@ commands and full tables does the same, at about 2 µs an input byte
 chunks costs about 360 ns an input byte where a forward read walks its blocks for block
 points (restart points, random access), one Python step per chunk header, against
 liblzma's near-instant decode; a walk kept only to raise members from block checks gives
-up on such a stream (`_XzBlockWalker._chunk`). A cabinet whose file table is out of
-data order is listed in data order, so each folder decodes once, unless a name is listed
-twice: then table order is kept, and each member can decode its folder again from the
-start (150 members of 32 KiB in one LZX folder, reversed: 58 s against under 1 s;
-`STRICT` refuses such a cabinet at listing with `MEMBER_NAME_DUPLICATE_UNEXPECTED`)
-([CAB §6](formats/cab.md#6-decisions)). On declared seek demand,
+up on such a stream (`_XzBlockWalker._chunk`). On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one
@@ -1677,13 +1676,6 @@ with 4 or more zero padding bytes, about three folders in four from 7-Zip or py7
 leaves: the writer chooses the last block, so a crafted archive can make a wrong
 candidate pass it. Those still walk once per candidate.
 
-### Detection decoding scan candidates
-
-No detection tier decodes scan candidates today, so the 683-fold amplification in
-[detection](#detection-is-bounded-and-says-when-it-guessed) is not reachable. A tier
-that does (makeself compressor needles after a `#!` stub, planned after 0.2.0) must draw
-on the shared `max_decode_input` allowance and be measured before this is settled.
-
 ### OSS-Fuzz
 
 Onboarding waits until archivey has more users, since OSS-Fuzz expects a project with a
@@ -1722,7 +1714,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O8 | 7z wrong header password gives an empty archive | [Integrity verdicts](#integrity-verdicts-come-from-reads) |
 | O9 | Attacker bytes reaching the terminal | [Terminal](#attacker-bytes-reaching-a-terminal-are-inert) |
 | O10 | Content probe fabricates a member | [Detection](#detection-is-bounded-and-says-when-it-guessed), [A probe can fabricate a member](#a-probe-can-fabricate-a-member) |
-| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed), [Detection decoding scan candidates](#detection-decoding-scan-candidates) |
+| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed) |
 | O12 | 7z password confirmation | [7z password confirmation](#7z-password-confirmation), [late CRC gap](#7z-password-confirmation-on-a-late-crc) |
 | O13 | 7z `NumUnpackStreams` allocation | [Listing](#listing) |
 | O14 | 7z encoded-header nesting | [Listing](#listing) |

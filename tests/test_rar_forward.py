@@ -415,9 +415,9 @@ def test_an_owner_header_read_after_a_split_member_that_names_none_is_reported()
 def test_the_walk_waits_while_a_member_released_early_is_built(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The walk reads the header after a split member on its own thread; it waits
-    until the caller's thread has built the member, so the owner is in the member
-    either way. A pause after each member is built is where it would land."""
+    """The walk reads the header after a split member on its own thread; it does
+    not read it while the caller's thread builds the member, so the owner is in the
+    member either way. A pause after each member is built is where it would land."""
     real = rar_forward_reader.RarForwardReader._list_member
 
     def slow(self: rar_forward_reader.RarForwardReader, found: object) -> object:
@@ -433,11 +433,18 @@ def test_the_walk_waits_while_a_member_released_early_is_built(
     ]
 
 
-class _SlowListed(threading.Event):
-    """An event whose ``set`` returns late: the walk it lets go runs first."""
+class _SlowBuilding:
+    """``_ForwardPass.building``, released late by the caller: once the caller lets
+    go of it, the walk it held back runs first."""
 
-    def set(self) -> None:
-        super().set()
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self._lock.release()
         if threading.current_thread() is threading.main_thread():
             time.sleep(0.3)
 
@@ -453,7 +460,7 @@ def test_a_member_released_early_keeps_what_the_walk_reads_once_let_go(
 
     def init(self: rar_forward_reader._ForwardPass, reader: object) -> None:
         real(self, reader)  # type: ignore[arg-type]
-        self.listed = _SlowListed()
+        self.building = _SlowBuilding()  # type: ignore[assignment]
 
     monkeypatch.setattr(rar_forward_reader._ForwardPass, "__init__", init)
     data = _owner_archive(*(30_000,) * 5, comment=b"c")
@@ -534,9 +541,9 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
             _member, stream = next(it)
             assert stream is not None
             assert len(stream.read()) == 3000
-        # The third, listed and not read: the walk waits for that before it reads
-        # on. The thread now reads ahead into the last member, where the source
-        # stops sending, to finish the volume that ends the third.
+        # The third, listed and not read. The thread now reads ahead into the last
+        # member, where the source stops sending, to finish the volume that ends
+        # the third.
         next(it)
         assert source.stalled.wait(10)
         started = time.monotonic()
@@ -597,6 +604,59 @@ def test_a_failed_source_read_raises_its_own_error(
         for _member, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
+
+
+_DAMAGED = Path(__file__).parent / "fixtures" / "damaged_member"
+
+
+def _pass_on_a_thread(
+    data: bytes, config: ArchiveyConfig, timeout: float = 30
+) -> list[tuple[str, object]]:
+    """Each member's name and its bytes' digest, or what its read raised, from a pipe
+    pass run on a thread. A pass still running after ``timeout`` seconds fails the
+    test; the reader is closed then, which ends ``unrar`` and lets the thread go."""
+    got: list[tuple[str, object]] = []
+    reader = open_archive(_pipe(data), streaming=True, config=config)
+
+    def run() -> None:
+        try:
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                try:
+                    digest: object = hashlib.sha256(stream.read()).hexdigest()
+                except ArchiveyError as exc:
+                    digest = _outcome(exc)
+                got.append((member.name, digest))
+        except ArchiveyError as exc:
+            got.append(("pass", _outcome(exc)))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    hung = thread.is_alive()
+    try:
+        reader.close()
+    finally:
+        thread.join(10)
+        assert not hung, f"the pipe pass hung after {got}"
+    return got
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("name", ["rar5_nonsolid.rar", "rar5_solid.rar"])
+def test_a_member_that_decodes_short_does_not_stop_the_pass(name: str) -> None:
+    """``b.txt`` decodes to fewer bytes than its header says, and ``c.txt`` after it
+    is split across volumes (600-byte spool limit, 300-byte volumes). The read of
+    ``b.txt`` waits for output that ``unrar`` writes only after the next volume; the
+    thread that writes it must not wait for the caller to list ``c.txt`` first."""
+    data = (_DAMAGED / name).read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        expected = hashlib.sha256(reader.read("a.txt")).hexdigest()
+    got = _pass_on_a_thread(data, _config(600))
+    assert [name for name, _ in got] == ["a.txt", "b.txt", "c.txt"]
+    assert got[0][1] == expected
+    assert got[1][1] == ("raises", "CorruptionError")
 
 
 def _rar(tmp_path: Path, files: dict[str, bytes], *switches: str) -> bytes:

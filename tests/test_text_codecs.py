@@ -25,9 +25,12 @@ from archivey import (
     open_archive,
     open_stream,
 )
+from archivey.internal.streams.codecs import text_codecs
 from archivey.internal.streams.codecs.text_codecs import (
+    _MAX_LINE,
     MAX_LEADING_TEXT,
     Base64Decompressor,
+    UuCodec,
     UuDecompressor,
     _b64_lines_check,
     _decoded_has_magic,
@@ -197,6 +200,67 @@ def test_too_much_text_before_begin_is_refused() -> None:
     decoder = UuDecompressor()
     with pytest.raises(CorruptionError, match="no uuencode 'begin' line"):
         decoder.decompress((b"x" * 80 + b"\n") * (MAX_LEADING_TEXT // 81 + 2))
+
+
+def test_a_line_over_the_cap_is_refused_when_it_ends_in_a_newline() -> None:
+    # The cap held only for a line still waiting for its newline: one that arrived
+    # whole in a chunk reached the header regex at any length.
+    decoder = UuDecompressor()
+    line = b"begin 644 a" + b" " * _MAX_LINE + b"x\n"
+    with pytest.raises(CorruptionError, match="longer than"):
+        decoder.decompress(line + b"#86)C\n`\nend\n")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b"Subject: " + b"x" * _MAX_LINE, id="leading-text"),
+        pytest.param(b"begin 644 a" + b" " * _MAX_LINE + b"x", id="begin"),
+    ],
+)
+def test_no_line_over_the_cap_reaches_the_header_regex(
+    line: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The cap bounds the regex's work on every caller: detection, metadata and the
+    # decoder.
+    lengths: list[int] = []
+    real = text_codecs._HEADER
+
+    class Recording:
+        def match(self, data: bytes) -> object:
+            lengths.append(len(data))
+            return real.match(data)
+
+    monkeypatch.setattr(text_codecs, "_HEADER", Recording())
+    data = line + b"\n" + _uu(b"x")
+    UuCodec().content_probe(data)
+    with pytest.raises(CorruptionError, match="longer than"):
+        UuDecompressor().decompress(data)
+    assert all(length <= _MAX_LINE for length in lengths)
+
+
+@pytest.mark.parametrize(
+    ("line", "name"),
+    [
+        (b"begin 644 a b", b"a b"),
+        (b"begin 644 a \t ", b"a"),
+        (b"begin 644 a\r", b"a"),
+        (b"begin 644 a \t\r", b"a"),
+        # A CR inside the trailing whitespace is dropped too.
+        (b"begin 644 a \r ", b"a"),
+        (b"begin-base64 600   x.bin", b"x.bin"),
+        (
+            b"begin 644 a" + b" " * (_MAX_LINE - 20) + b"b",
+            b"a" + b" " * (_MAX_LINE - 20) + b"b",
+        ),
+    ],
+)
+def test_the_begin_line_names_its_file(line: bytes, name: bytes) -> None:
+    decoder = UuDecompressor()
+    decoder.decompress(line + b"\n")
+    header = decoder._header
+    assert header is not None
+    assert header.name == name
 
 
 def test_a_uuencoded_member_seeks(tmp_path: Path) -> None:

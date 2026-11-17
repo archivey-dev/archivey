@@ -385,8 +385,10 @@ def _ends_with_footer(stream: BinaryIO, end: int, stop_at: int) -> bool:
     return True
 
 
-def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
+def _data_end(stream: BinaryIO, file_size: int, stop_at: int, origin: int = 0) -> int:
     """Where the xz data ends: ``file_size``, or the last footer before trailing data.
+
+    ``origin`` is where ``stream`` starts in the file, added to the offsets errors name.
 
     A file with something appended does not end with a footer. The footer's magic,
     its CRC-32 and the 4-byte alignment every stream keeps (XZ spec §2.1) find the last
@@ -426,11 +428,12 @@ def _data_end(stream: BinaryIO, file_size: int, stop_at: int) -> int:
                 header = window[after : after + 6]
                 if header == _XZ_STREAM_MAGIC:
                     raise CorruptionError(
-                        f"XZ stream starting at offset {start + after} has no valid "
+                        f"XZ stream starting at offset {origin + start + after} has "
+                        "no valid "
                         "footer at the end of the file"
                     )
                 if near_stream_magic(header, _XZ_STREAM_MAGIC):
-                    raise damaged_stream_error(start + after)
+                    raise damaged_stream_error(origin + start + after)
                 return end
         at -= 1
         if at < 0:
@@ -468,6 +471,7 @@ def _read_xz_index_backwards(
     start_decompressed_offset: int = 0,
     on_thinned: Callable[[], None] | None = None,
     last_stream_only: bool = False,
+    origin: int = 0,
 ) -> list[_XzBlockBounds]:
     """Walk XZ streams from EOF toward ``stop_at``, building a block index.
 
@@ -482,13 +486,16 @@ def _read_xz_index_backwards(
 
     With ``last_stream_only``, the walk raises ``_MoreStreams`` when the last stream
     does not start at ``stop_at``, before reading that stream's header.
+
+    ``origin`` is where ``stream`` starts in the file, added to the offsets errors name
+    (``StreamConfig.source_origin``).
     """
     # Keyed on decompressed distance from the block's start to the end of the scan,
     # which only grows as the walk goes back.
     kept: SpacedCollector[tuple[int, _XzBlockBounds]] = SpacedCollector(lambda e: e[0])
     thinned = False
     total = 0
-    compressed_end = _data_end(stream, file_size, stop_at)
+    compressed_end = _data_end(stream, file_size, stop_at, origin)
 
     while compressed_end > stop_at:
         compressed_end = _skip_stream_padding_backwards(stream, compressed_end, stop_at)
@@ -498,7 +505,7 @@ def _read_xz_index_backwards(
 
         if compressed_end < _STREAM_FOOTER_SIZE:
             raise CorruptionError(
-                f"Not enough bytes for XZ footer at offset {compressed_end}"
+                f"Not enough bytes for XZ footer at offset {origin + compressed_end}"
             )
         stream.seek(compressed_end - _STREAM_FOOTER_SIZE)
         footer_data = stream.read(_STREAM_FOOTER_SIZE)
@@ -975,7 +982,7 @@ class _XzState:
         """``after_stream``: start just past a stream decoded elsewhere, where padding,
         more streams or the end of the data may follow, as after any stream here.
         ``on_check`` is given each stream's check ID once its header has decoded.
-        ``start_offset`` is the source offset of the first byte fed, for errors.
+        ``start_offset`` is the file offset of the first byte fed, for errors.
         ``walk_blocks``: find each stream's blocks as it decodes
         (:class:`_XzBlockWalker`) and report them with the stream.
         ``usage`` is noted the dictionary each stream's first block header declares
@@ -1113,7 +1120,7 @@ class _XzState:
             self._usage.note_decoder_memory(declared, "an xz block's LZMA2 dictionary")
 
     def _header_offset(self) -> int:
-        """The source offset of ``_buf[0]`` while a stream header is awaited."""
+        """The file offset of ``_buf[0]`` while a stream header is awaited."""
         return self._stream_offset + self._padding_before_stream
 
     def is_finished(self) -> bool:
@@ -1426,8 +1433,11 @@ class XzDecoder(BaseDecoder):
         frame_checks: FrameChecks | None = None,
         walk_blocks: bool = False,
         usage: ResourceUsageRecorder | None = None,
+        origin: int = 0,
     ) -> None:
         self._engine = engine
+        # Where the source starts in the file, added to offsets errors name.
+        self._origin = origin
         self._walk_blocks = walk_blocks
         self._usage = usage
         # Each stream's check, as its header (or a resumed block's footer) gives it.
@@ -1459,13 +1469,15 @@ class XzDecoder(BaseDecoder):
         natives: Natives = IN_PROCESS,
         walk_blocks: bool = False,
         usage: ResourceUsageRecorder | None = None,
+        origin: int = 0,
     ) -> XzDecoder:
         """``reported_checks`` is shared by every decoder of one file (see
         :func:`_report_unverifiable_check`). ``walk_blocks``: make block points from
         the blocks a decode passes (:class:`_XzBlockWalker`), for a stream that keeps
         restart points but does not read the file's index. ``usage`` is noted each
         stream's dictionary (:meth:`_XzState._note_block_head`); a block resume notes
-        none."""
+        none. ``origin`` is where ``inner`` starts in the file
+        (``StreamConfig.source_origin``), added to every offset an error names."""
 
         frame_checks = FrameChecks()
 
@@ -1478,7 +1490,7 @@ class XzDecoder(BaseDecoder):
             engine: _XzState | _XzBlockResume = _XzState(
                 limits,
                 on_check,
-                start_offset=point.compressed_offset,
+                start_offset=origin + point.compressed_offset,
                 natives=natives,
                 walk_blocks=walk_blocks,
                 usage=usage,
@@ -1504,6 +1516,7 @@ class XzDecoder(BaseDecoder):
             frame_checks=frame_checks,
             walk_blocks=walk_blocks,
             usage=usage,
+            origin=origin,
         )
 
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> XzDecoder:
@@ -1518,6 +1531,7 @@ class XzDecoder(BaseDecoder):
             natives=self._natives,
             walk_blocks=self._walk_blocks,
             usage=self._usage,
+            origin=self._origin,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -1573,7 +1587,7 @@ class XzDecoder(BaseDecoder):
             self._limits,
             on_check,
             after_stream=True,
-            start_offset=point.compressed_offset,
+            start_offset=self._origin + point.compressed_offset,
             natives=self._natives,
             walk_blocks=self._walk_blocks,
             usage=self._usage,
@@ -1642,6 +1656,7 @@ class XzDecoder(BaseDecoder):
                         stop_at=stream_comp_start,
                         start_decompressed_offset=stream_decomp_start,
                         on_thinned=functools.partial(thinned.append, True),
+                        origin=self._origin,
                     )
                     if thinned:
                         emit_index_thinned(
@@ -1717,7 +1732,7 @@ class XzDecoder(BaseDecoder):
         return build_index_backwards(
             inner,
             last_known,
-            _read_xz_index_backwards,
+            functools.partial(_read_xz_index_backwards, origin=self._origin),
             lambda b: SeekPoint(b.decompressed_start, b.compressed_start, state=b),
             "XZ backwards index scan failed; falling back to sequential decompression. "
             "Reason: %s",
@@ -1741,6 +1756,7 @@ def XzDecompressorStream(
     natives: Natives = IN_PROCESS,
     file_index: bool = True,
     usage: ResourceUsageRecorder | None = None,
+    source_origin: int = 0,
 ) -> DecompressorStream:
     """Seekable XZ decompressor backed by stdlib ``lzma``.
 
@@ -1778,6 +1794,7 @@ def XzDecompressorStream(
             reported_checks=reported_checks,
             natives=natives,
             usage=usage,
+            origin=source_origin,
         )
 
     stream = DecompressorStream(
@@ -1790,6 +1807,7 @@ def XzDecompressorStream(
         refuse_input_after_end=refuse_input_after_end,
         initial_index=initial_index,
         file_index=file_index,
+        source_origin=source_origin,
     )
     stream_cell[0] = stream
     return stream

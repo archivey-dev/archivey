@@ -1322,9 +1322,9 @@ what `makecab` and `gcab` write.
 - **Member order:** the order of the cabinet's file table, which writers keep in the order
   the files' bytes are stored. When reading the files in table order would decode part of a
   folder twice (a table that is crafted or edited, for example reversed), the files are
-  listed by folder and by position in the folder instead, so each folder is decoded once,
-  unless a name is listed twice: then the table's order is kept, because the entry listed
-  last is the one that counts, and reading can be much slower.
+  listed by folder and by position in the folder instead, so each folder is decoded once.
+  When a name is listed twice, the entries that a later entry replaces come first, so each
+  folder is decoded at most twice and the entry listed last is still the one that counts.
 - **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
   `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
   name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
@@ -1644,8 +1644,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
     `begin-base64` variant (`uuencode -m`) ends at `====`. A file is recognised by its `begin`
     line at the start, whatever its name. With a `.uu` or `.uue` name, text before `begin` (a
-    mail or news post) is skipped, up to 64 KiB. Only the first file is read, and text after its
-    end line is reported as `ARCHIVE_TRAILING_DATA`. The stored name is
+    mail or news post) is skipped, up to 64 KiB. A line over 4 096 bytes, before `begin` or
+    after it, is an error. Only the first file is read, and text after its end line is
+    reported as `ARCHIVE_TRAILING_DATA`. The stored name is
     `extra["uu.original_filename"]` and `raw_name`, and the stored mode is `mode`; the member
     keeps the name it gets from the file's own name, so the stored name never picks a path.
   - **base64** (`.b64`, `.base64`): bare base64 text, in lines of one length or one long line,
@@ -1905,7 +1906,13 @@ they open at once. Close the sending side when the file is done.
   Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR, LHA, ARJ) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA, ARJ) are searched for, and so are gzip, bzip2, xz, zstd, LZ4 and lzip
+  streams whose header fields pass their checks: a CPack `.sh` installer, or another shell
+  installer, is a script followed by a compressed TAR. That stream is reported as the TAR inside
+  it (`TAR_GZ`), or as the bare stream (`GZ`) when it holds nothing archivey recognizes, and is
+  read from where it starts, from a pipe too. An uncompressed TAR behind a script is not found,
+  and `format=TAR_GZ` on such a script fails, as on any file that does not start with the
+  stream. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
