@@ -10,7 +10,8 @@ It is the top of a member's stream stack, the object the caller reads. Under it 
 from the top down: the member's checks (a ``MemberVerifier`` from ``verify.py``, held
 on this handle in most cases; a ``VerifyingStream`` layer of its own holds it over an
 accelerated codec, as a length backstop, and under ZIP's wrapper, for a ZipCrypto
-member's CRC); the codec stream, most often a
+member's CRC; and the ``MemberRatioCheck`` of a member a caller reads, which this
+handle drives under the verifier, as no layer of its own); the codec stream, most often a
 :class:`~archivey.internal.streams.decompressor_stream.DecompressorStream`, and none
 for a stored member; a decrypt stage for an encrypted member (``crypto.py``); and the
 member's bytes in the archive source, most often a slice of it (``streamtools``). A
@@ -77,6 +78,7 @@ from archivey.types import HashAlgorithm, Verification
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
+    from archivey.internal.bomb_tracker import MemberRatioCheck
     from archivey.internal.diagnostics_collector import (
         DiagnosticCollector,
         DiagnosticScope,
@@ -337,6 +339,9 @@ class ArchiveStreamImpl(ArchiveStream):
     # The type of a ``BaseException`` (``KeyboardInterrupt``) that stopped the lazy
     # open. Not the stream's error, so it is not raised again; a retry names it.
     _open_interrupted_by: type[BaseException] | None = None
+    # Reads, seeks and tells of the member's data go through ``_data(inner)``: a direct
+    # call skips the ratio check (``_ratio``). Queries (proofs, resume offsets, size,
+    # seekability) use ``_inner`` itself.
     _inner: BinaryIO | None = None
     _rewind_warned = False
     # Set while ``verify()`` seeks: its own rewinds are not the caller's access pattern.
@@ -375,6 +380,9 @@ class ArchiveStreamImpl(ArchiveStream):
     _on_close: CloseHook | None = None
     # Set by ``_hold_inner``: wraps the inner stream when a lazy handle opens it.
     _inner_wrap: Callable[[BinaryIO], BinaryIO] | None = None
+    # Set by ``_hold_ratio``: the ratio check every read and seek of the inner goes
+    # through (``_data``), attached to the inner when it opens.
+    _ratio: MemberRatioCheck | None = None
     # The reader's own member this stream reads, set by ``open()`` and
     # ``stream_members()``: ``verified`` and ``verifiable`` mirror it, and what this
     # stream proves raises it (``raise_member_level``). ``None`` for a stream of no
@@ -637,6 +645,9 @@ class ArchiveStreamImpl(ArchiveStream):
                 raise ValueError("I/O operation on closed file.")
             wrap = self._inner_wrap
             inner = self._inner = opened if wrap is None else wrap(opened)
+            ratio = self._ratio
+            if ratio is not None:
+                ratio.attach(inner)
         # An open can prove the password (a reliable check value): tell the member.
         # Outside ``_open_lock``: the level lock is a leaf.
         self._sync_member_level()
@@ -747,6 +758,7 @@ class ArchiveStreamImpl(ArchiveStream):
         # Only the handle returned to the caller gets a lease hook; a nested wrapper
         # is backend-internal and never registered, so there is nothing to drop.
         assert nested._on_close is None, "collapse would discard a nested lease hook"
+        assert nested._ratio is None, "collapse would discard a nested ratio check"
         nested._on_close = None  # keeps the clear under ``python -O``
         # Mark closed without touching stolen opener/inner.
         super(ArchiveStreamImpl, nested).close()
@@ -830,10 +842,11 @@ class ArchiveStreamImpl(ArchiveStream):
         """
         if n < 0 or len(data) < n:
             return True
-        if self._size is None or self._inner is None:
+        inner = self._inner
+        if self._size is None or inner is None:
             return False
         try:
-            return self._inner.tell() >= self._size
+            return self._data(inner).tell() >= self._size
         except Exception:  # noqa: BLE001 - an unknown position leaves the short rule
             return False
 
@@ -892,6 +905,10 @@ class ArchiveStreamImpl(ArchiveStream):
         if verdict is not None and not self._verdict_rewound:
             self._raise_verdict()
         verifier = self._verifier
+        # ``_data(inner)``, inlined: this is the hot path of every member read.
+        ratio = self._ratio
+        if ratio is not None:
+            inner = cast("BinaryIO", ratio)
         try:
             if verifier is not None:
                 data = verifier.read(inner, n)
@@ -947,7 +964,9 @@ class ArchiveStreamImpl(ArchiveStream):
         try:
             # Only a reader's buffer over a codec stream on a source that cannot seek
             # calls this, and that codec stream's inner is a ``DecompressorStream``.
-            data = cast("DecompressorStream", inner).read_ahead(need, n)
+            # No member stream with a ratio check held gets here today; ``_data`` is
+            # kept so one would still be checked.
+            data = cast("DecompressorStream", self._data(inner)).read_ahead(need, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
         if not data and self._uninterrupted:
@@ -1018,7 +1037,7 @@ class ArchiveStreamImpl(ArchiveStream):
         # and resolving a SEEK_END here would make a decompressor decode to its end for
         # a size this layer does not need.
         offset, whence = check_seek_args(offset, whence)
-        inner = self._ensure_open()  # outside the try, same as read()
+        inner = self._data(self._ensure_open())  # outside the try, same as read()
         before: int | None = None
         verifier = self._verifier
         try:
@@ -1344,18 +1363,23 @@ class ArchiveStreamImpl(ArchiveStream):
     def tell(self, /) -> int:
         if self.closed:
             raise ValueError("I/O operation on closed file.")
-        if self._inner is None:
+        inner = self._inner
+        if inner is None:
             return 0
+        inner = self._data(inner)
         if self._verifier is not None:
-            return self._verifier.tell(self._inner)
-        return self._inner.tell()
+            return self._verifier.tell(inner)
+        return inner.tell()
 
     def _hold_inner(self, wrap: Callable[[BinaryIO], BinaryIO]) -> None:
-        """Serve the member through ``wrap(inner)`` (a ratio guard), before any read.
+        """Serve the member through ``wrap(inner)`` (a budget draw, or the ratio guard of
+        ``open_stream()``), before any read. A member's ratio check is no layer
+        (``_hold_ratio``).
 
         A lazy handle wraps the inner stream when it opens it; an open one wraps it now.
         A second hold wraps outside the first.
         """
+        assert self._ratio is None, "the ratio check reads the inner the caller reads"
         if self._inner is not None:
             self._inner = wrap(self._inner)
             return
@@ -1364,6 +1388,24 @@ class ArchiveStreamImpl(ArchiveStream):
             self._inner_wrap = wrap
         else:
             self._inner_wrap = lambda inner: wrap(first(inner))
+
+    def _hold_ratio(self, ratio: MemberRatioCheck) -> None:
+        """Send every read and seek of the inner stream through ``ratio``, before any
+        read: this stream's own, and its verifier's.
+
+        Held last, as the outermost check: it sees what the caller reads. Unlike a
+        wrapper stream from ``_hold_inner``, it is not a layer: what this stream asks
+        of the data (proofs, resume offsets, size, seekability) goes to the inner.
+        """
+        assert self._ratio is None, "a member stream has one ratio check"
+        if self._inner is not None:
+            ratio.attach(self._inner)
+        self._ratio = ratio
+
+    def _data(self, inner: BinaryIO) -> BinaryIO:
+        """What reads and seeks of ``inner`` go through: the ratio check, if held."""
+        ratio = self._ratio
+        return inner if ratio is None else cast("BinaryIO", ratio)
 
     def _make_forward_only(self) -> None:
         """Refuse ``seek()`` on this handle from now on, whatever it was built with.
@@ -1429,6 +1471,7 @@ class ArchiveStreamImpl(ArchiveStream):
             inner = self._inner
             verifier = self._verifier
             if inner is not None:
+                inner = self._data(inner)
                 try:
                     if verifier is not None:
                         # Teardown only: finish_on_close just closes the inner — every

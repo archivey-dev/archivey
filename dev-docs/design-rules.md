@@ -694,7 +694,7 @@ field would be false for most members of an ordinary read.
   past the first 5 MiB no longer lists by default (800:1 since 2026-10-30). Reopen if a real archive class
   (not a test of zeros) is refused there.
 - `max_ratio` holds every member read (`open()`, `read()`, `stream_members()`), by the
-  per-member and archive-wide rules extraction applies (`MemberRatioGuard`): scanning
+  per-member and archive-wide rules extraction applies (`MemberRatioCheck`): scanning
   or hashing members pays for the decode as extracting does, and holding only the
   compressed-tar spelling of a bzip2 bomb left the ZIP, 7z and bare `.bz2` spellings
   open (davi, 2026-10-30, after PR 1138). Cost: an honest member over 1000:1 past
