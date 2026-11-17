@@ -23,6 +23,7 @@ from archivey import (
     DecoderLimits,
     DiagnosticCode,
     DiagnosticPolicy,
+    ExtractionStatus,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -1111,25 +1112,56 @@ def test_a_table_that_decodes_each_block_once_keeps_its_order(
 
 def _name_twice() -> tuple[list[CabFile], bytes]:
     """Four files of one LZX folder, then ``f0-0`` again, in reverse table order: an
-    order that would decode a block twice, so the sort is on but for the name."""
+    order that would decode a block twice. The table lists the second ``f0-0`` first
+    and the first ``f0-0`` last, so the first one, by data, is current."""
     files = [*_spans(1, 4), CabFile("f0-0", b"second")]
     return files, _with_table_order(
         write_cab(files, [CabFolder("lzx")]), [4, 3, 2, 1, 0]
     )
 
 
-def test_a_name_listed_twice_keeps_table_order() -> None:
-    # The entry listed last is the current one, so the order that says which stays.
+def test_a_name_listed_twice_keeps_the_entry_listed_last_current(
+    tmp_path: Path,
+) -> None:
+    # The members come in data order, the superseded entries first, so the entry
+    # the table lists last still comes after the other one and stays current.
     files, raw = _name_twice()
     with open_archive(io.BytesIO(raw)) as reader:
-        assert [m.name for m in reader.members()] == [
-            "f0-0",
-            "f0-3",
-            "f0-2",
-            "f0-1",
-            "f0-0",
-        ]
+        members = reader.members()
+        assert [m.name for m in members] == ["f0-0", "f0-0", "f0-1", "f0-2", "f0-3"]
+        assert [m.is_current for m in members] == [False, True, True, True, True]
         assert reader.read("f0-0") == files[0].data
+        results = reader.extract_all(tmp_path)
+    assert (tmp_path / "f0-0").read_bytes() == files[0].data
+    assert [r.status for r in results if r.member.name == "f0-0"] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+    ]
+
+
+@pytest.mark.parametrize("method", ["mszip", "lzx"])
+def test_a_name_listed_twice_does_not_turn_the_sort_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, method: str
+) -> None:
+    # One repeated name in a reversed table must not bring back a folder decode per
+    # member: each block decodes at most twice, once for the superseded entries and
+    # once for the rest.
+    files = [*_spans(2, 6), CabFile("f1-5", b"second", folder=1)]
+    raw = _with_table_order(
+        write_cab(files, [CabFolder(method), CabFolder(method)]),
+        list(range(len(files)))[::-1],
+    )
+    reads = _count_block_reads(monkeypatch)
+    with open_archive(io.BytesIO(raw)) as reader:
+        for member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+        assert max(reads.count(read) for read in reads) <= 2
+        reads.clear()
+        reader.extract_all(tmp_path)
+        assert max(reads.count(read) for read in reads) <= 2
+    # The table lists the stored "f1-5" last, so it is current.
+    assert (tmp_path / "f1-5").read_bytes() == files[11].data
 
 
 def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
@@ -1141,6 +1173,57 @@ def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
     codes = [sorted(d.code for d in m.diagnostics) for m in members]
     assert codes == [
         [],
+        [
+            DiagnosticCode.MEMBER_NAME_DUPLICATE,
+            DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
+        ],
+        [],
+        [],
+        [],
+    ]
+    (report,) = (
+        d
+        for d in members[1].diagnostics
+        if d.code is DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
+    )
+    assert report.context == UnexpectedNameDuplicateContext(
+        member_name="f0-0", member_id=1, format="cab"
+    )
+
+
+def test_a_name_listed_three_times_keeps_the_last_current() -> None:
+    # Three copies of "dup" after four LZX spans, by data: one, two, three. The table
+    # lists two, then one, then three, so three is current. The superseded copies
+    # come in data order among themselves, so the generic code (walk order) and the
+    # CAB code (table order) land on different superseded copies.
+    files = [
+        *_spans(1, 4),
+        CabFile("dup", b"one"),
+        CabFile("dup", b"two"),
+        CabFile("dup", b"three"),
+    ]
+    raw = _with_table_order(write_cab(files, [CabFolder("lzx")]), [3, 2, 1, 0, 5, 4, 6])
+    with open_archive(io.BytesIO(raw)) as reader:
+        members = reader.members()
+        data = [reader.read(m) if m.name == "dup" else None for m in members]
+        current = reader.read("dup")
+    assert [m.name for m in members] == [
+        "dup",
+        "dup",
+        "f0-0",
+        "f0-1",
+        "f0-2",
+        "f0-3",
+        "dup",
+    ]
+    assert [data[i] for i in (0, 1, 6)] == [b"one", b"two", b"three"]
+    assert [m.is_current for m in members] == [False, False, *[True] * 5]
+    assert current == b"three"
+    codes = [sorted(d.code for d in m.diagnostics) for m in members]
+    assert codes == [
+        [DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED],  # one: listed second
+        [DiagnosticCode.MEMBER_NAME_DUPLICATE],  # two: listed first, walked second
+        [],
         [],
         [],
         [],
@@ -1149,14 +1232,6 @@ def test_a_name_listed_twice_is_reported_as_unexpected() -> None:
             DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED,
         ],
     ]
-    (report,) = (
-        d
-        for d in members[4].diagnostics
-        if d.code is DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED
-    )
-    assert report.context == UnexpectedNameDuplicateContext(
-        member_name="f0-0", member_id=4, format="cab"
-    )
 
 
 def test_a_name_listed_twice_after_normalization_is_reported() -> None:

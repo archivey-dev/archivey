@@ -124,8 +124,8 @@ class FormatInfo:
     nothing else matched and the name has no known extension. So an answer from the
     name (``detected_by="extension"``) did no search on a file whose first bytes give
     no such cue, and on an executable it comes only after a search that was turned
-    off or found nothing. The ZIP, 7z and RAR readers then find an archive behind a
-    prefix themselves."""
+    off or found nothing. The ZIP, 7z, RAR, LHA and ARJ readers then find an archive
+    behind a prefix themselves."""
 
     payload_end: int | None = None
     """Where the archive's region of the source ends, when detection identified what
