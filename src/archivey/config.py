@@ -361,7 +361,7 @@ class ListingLimits:
     RPM refuses a header that lists more files than ``max_members`` at open, before it
     builds the file list.
     makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
-    open.
+    open, and refuses a header that lists more payloads than ``max_members``.
     TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
     more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
     header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
