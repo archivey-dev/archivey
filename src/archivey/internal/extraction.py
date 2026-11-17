@@ -512,9 +512,12 @@ class _Orphan:
     dest_path: Path
     source: ArchiveMember
     spelled_from: ArchiveMember | None = None
-    # The claim this link's reservation (``_reserve_orphan``) took the key from, put
-    # back when the second pass releases it; and whether a later member replaced the
-    # link before the second pass made it.
+    # The collision key this link's reservation (``_reserve_orphan``) holds, as the
+    # first pass computed it: the second pass releases it under that key, since a
+    # link made in between can change what the path resolves to. The claim the
+    # reservation took the key from, put back when it is released; and whether a
+    # later member replaced the link before the second pass made it.
+    reserved_key: str | None = None
     previous_claim: _Claim | None = None
     cancelled: bool = False
 
@@ -3455,10 +3458,12 @@ class ExtractionCoordinator:
             self._revise_to_overwritten(previous.result_index)
             orphan.previous_claim = previous.previous_claim
             self._claim(orphan.dest_path, orphan.result_index)
+            orphan.reserved_key = key
             state.reservations[key] = orphan
             return
         orphan.previous_claim = state.collision_map.get(key)
         self._claim(orphan.dest_path, orphan.result_index)
+        orphan.reserved_key = key
         state.reservations[key] = orphan
 
     def _meet_reservation(self, member: ArchiveMember, dest_path: Path) -> bool:
@@ -3569,8 +3574,8 @@ class ExtractionCoordinator:
         (``_meet_reservation``), so the earlier link keeps the name, as in archive
         order."""
         state = self._state
-        key = self._collision_key(orphan.dest_path)
-        if state.reservations.get(key) is orphan:
+        key = orphan.reserved_key
+        if key is not None and state.reservations.get(key) is orphan:
             del state.reservations[key]
             self._give_back_name(key, orphan)
 
