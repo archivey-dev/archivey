@@ -744,11 +744,14 @@ class LhaReader(_Headers, IndexedReader[_Location]):
             stream = self._decode(locator)
         except ArchiveyError:
             return locator
+        # A decoded member's probe decodes only the header, not a whole chunk: the
+        # listing makes it for every MacLHA member.
+        read = stream.read_head if isinstance(stream, _LzhStream) else stream.read
         with stream:
             head = b""
             try:
                 while len(head) < _MACBINARY_SIZE:
-                    data = stream.read(_MACBINARY_SIZE - len(head))
+                    data = read(_MACBINARY_SIZE - len(head))
                     if not data:
                         break
                     head += data
@@ -869,6 +872,10 @@ class _LzhStream(io.RawIOBase):
         assert self._view is not None
         data = self._view.read(_DATA_CHUNK)
         return data or None
+
+    def read_head(self, n: int) -> bytes:
+        """Up to ``n`` bytes, decoding no more than they need."""
+        return self._decoder.read_head(n)
 
     @override
     def readable(self) -> bool:

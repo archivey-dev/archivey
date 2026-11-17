@@ -91,8 +91,9 @@ class LhaBitDecoder:
 
     ``size`` bytes are decoded from the runs of input ``more`` returns (``None`` at
     their end); :meth:`read` returns them in order, and ``b""`` once all have been
-    returned. The output buffer starts with ``history``, the window as it stands
-    before the first byte, and keeps that many bytes behind the output it hands over.
+    returned. The output buffer starts with ``history`` spaces, the window as it
+    stands before the first byte (every method starts its window filled with spaces),
+    and keeps that many bytes behind the output it hands over.
     Input bits are read most significant first. Subclasses decode in
     :meth:`_decode`.
     """
@@ -102,15 +103,18 @@ class LhaBitDecoder:
         method: str,
         size: int,
         more: Callable[[], bytes | None],
-        history: bytes = b"",
+        history: int = 0,
     ) -> None:
         self._method = method
         self._more = more
         self._left = size  # output bytes not yet decoded
         # History, then output not yet handed over from ``_start``.
-        self._history = len(history)
-        self._out = bytearray(history)
-        self._start = len(history)
+        self._history = history
+        # Repeating a one-byte bytearray fills it in place, with no bytes object of
+        # the window's size built first: a listing builds a decoder for each MacLHA
+        # member, and -lhx-'s window is 1 MiB.
+        self._out = bytearray(b" ") * history
+        self._start = history
         # Input: unread bytes from ``_pos``, and a bit buffer of ``_nbits`` bits.
         self._buf = b""
         self._pos = 0
@@ -164,6 +168,15 @@ class LhaBitDecoder:
         """Decode at least ``want`` more bytes, or to the member's end."""
         raise NotImplementedError
 
+    def read_head(self, n: int) -> bytes:
+        """The next ``n`` bytes, or fewer at the member's end, decoding only what they
+        need. :meth:`read` decodes a whole chunk for speed; a probe that reads a
+        header and stops (the MacBinary check in a listing) would pay for the chunk
+        on every member."""
+        if len(self._out) - self._start < n and self._left > 0:
+            self._decode(n)
+        return self.read(n)
+
     def read(self, n: int) -> bytes:
         if n <= 0:
             return b""
@@ -189,7 +202,7 @@ class LzhDecoder(LhaBitDecoder):
         params = METHODS[method]
         self._params = params
         self._ring = 1 << params.window_bits
-        super().__init__(method, size, more, b" " * self._ring)
+        super().__init__(method, size, more, self._ring)
         self._block_left = 0
         self._commands: Tree = _EMPTY
         self._offsets: Tree = _EMPTY
