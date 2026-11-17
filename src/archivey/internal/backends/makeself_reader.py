@@ -96,11 +96,14 @@ _READ_SIZE = 64 * 1024
 _FUNCTION = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*")
 _ASSIGNMENT = re.compile(rb'([A-Za-z_][A-Za-z0-9_]*)="')
 # A double-quoted value's text up to its closing quote, or up to the end of what is
-# read; it never stops between a backslash and the byte it escapes.
-_VALUE = re.compile(rb'(?:[^"\\]|\\.)*', re.DOTALL)
+# read; it never stops between a backslash and the byte it escapes. The repeats are
+# possessive here and in the two patterns below: a repeated group with an alternation
+# otherwise keeps backtracking state for each repetition, about 150 bytes for each
+# byte of the value, and a value may be most of a 64 MiB header.
+_VALUE = re.compile(rb'(?:[^"\\]++|\\.)*+', re.DOTALL)
 # An assignment whose value closes on its line, the common case, matched at once.
 _LINE_ASSIGNMENT = re.compile(
-    rb'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\\n]|\\.)*)"([^\n]*)\n'
+    rb'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\\n]++|\\.)*+)"([^\n]*)\n'
 )
 # The variables the reader uses; the others (licensetxt, the long one) are passed
 # over, not kept.
@@ -119,12 +122,15 @@ _USED = frozenset(
         b"SIGNATURE",
     }
 )
-# An assignment to a used variable anywhere in a line: indented, after a ``;``, after
-# ``export``, unquoted. The shell runs such a line, but the parse reads only an
-# assignment at the start of a line, so the value the parse kept may not be the one
-# makeself uses.
+# A plain ``NAME=`` for a used variable where the parse does not read assignments:
+# indented, after a ``;`` or ``export``, unquoted. makeself writes each used variable
+# at the start of its own line, so this catches a header edited by hand or by a
+# careless tool. It is not every way the shell sets a variable (``for``, ``read``,
+# ``eval``, ``${NAME:=...}`` are not refused): the script may still read its payload
+# another way than archivey does, as threat model §4 says of every stub. Not after
+# ``$`` (an expansion) or ``-`` (an option such as ``--skip=``).
 _HIDDEN_ASSIGNMENT = re.compile(
-    rb"(?<![A-Za-z0-9_])(" + b"|".join(sorted(_USED)) + rb")="
+    rb"(?<![A-Za-z0-9_$-])(" + b"|".join(sorted(_USED)) + rb")="
 )
 # The escapes the shell undoes inside double quotes, and a backslash-newline.
 _ESCAPE = re.compile(rb'\\([$`"\\\n])')
@@ -135,7 +141,9 @@ _OLD_OFFSET = re.compile(
 )
 # The command a payload is piped through, quoted for ``eval``: after a ``|``, or alone
 # on its line (``MS_Decompress`` with no ``decrypt_cmd``).
-_PAYLOAD_EVAL = re.compile(rb'(?:\| |^[ \t]+)eval "((?:[^"\\\n]|\\.)*)"', re.MULTILINE)
+_PAYLOAD_EVAL = re.compile(
+    rb'(?:\| |^[ \t]+)eval "((?:[^"\\\n]++|\\.)*+)"', re.MULTILINE
+)
 # ``eval`` of the script's own variables (``"$script" $scriptargs``), not a command.
 _VARIABLE_EVAL = (b"$", b"\\$", b'\\"')
 
@@ -445,18 +453,36 @@ class MakeselfReader(SequentialReader):
         decrypt = variables.get(b"decrypt_cmd", b"")
         compressor, encoding = _decoders(command, decrypt)
         cipher = _cipher(command, decrypt) if encoding == "openssl" else None
-        sizes = [_number(t, "filesizes") for t in _required(variables, b"filesizes")]
-        if not sizes:
-            raise CorruptionError("makeself header: filesizes lists no payload")
         # Each payload builds a TAR reader, which costs far more than the few bytes
         # of header that list it, and an empty one adds nothing to the member count.
-        # So the payloads count against max_members too.
+        # So the payloads count against max_members too, counted before the list of
+        # sizes is built: each entry is an object.
+        payloads = _token_count(_required(variables, b"filesizes"))
         max_members = self._context.config.listing_limits.max_members
-        if max_members is not None and len(sizes) > max_members:
+        if max_members is not None and payloads > max_members:
             raise ResourceLimitError(
                 f"Listing limit reached: max_members={max_members} (the makeself "
-                f"header lists {len(sizes)} payloads)"
+                f"header lists {payloads} payloads)"
             )
+        if not payloads:
+            raise CorruptionError("makeself header: filesizes lists no payload")
+        # makeself writes one CRC and one MD5 per payload, zeros where it computed
+        # none. 2.4.0's --append leaves SHA at one entry; an entry there that is not
+        # zeros could be any payload's, so only a list of zeros may be short. Each
+        # count is checked before its list is built.
+        for name in (b"CRCsum", b"MD5"):
+            listed = _token_count(_required(variables, name))
+            if listed != payloads:
+                raise CorruptionError(_count_mismatch(name, listed, payloads))
+        sha = variables.get(b"SHA", b"")
+        listed = _token_count(sha)
+        if listed not in (0, payloads) and any(
+            token.group() != _ZERO_SHA for token in _TOKEN.finditer(sha)
+        ):
+            raise CorruptionError(_count_mismatch(b"SHA", listed, payloads))
+        sizes = [
+            _number(t, "filesizes") for t in _required(variables, b"filesizes").split()
+        ]
         total = variables.get(b"totalsize")
         if (
             total is not None
@@ -467,17 +493,9 @@ class MakeselfReader(SequentialReader):
                 f"makeself header: totalsize {_shown(total)} is not the sum of "
                 f"filesizes {' '.join(str(s) for s in sizes)}"
             )
-        crcs = [_number(t, "CRCsum") for t in _required(variables, b"CRCsum")]
-        md5s = [_hex(t, "MD5", 32) for t in _required(variables, b"MD5")]
-        shas = [_hex(t, "SHA", 64) for t in variables.get(b"SHA", b"").split()]
-        # makeself writes one CRC and one MD5 per payload, zeros where it computed
-        # none. 2.4.0's --append leaves SHA at one entry; an entry there that is not
-        # zeros could be any payload's, so only a list of zeros may be short.
-        for name, listed in ((b"CRCsum", crcs), (b"MD5", md5s)):
-            if len(listed) != len(sizes):
-                raise CorruptionError(_count_mismatch(name, len(listed), len(sizes)))
-        if len(shas) not in (0, len(sizes)) and any(v != _ZERO_SHA for v in shas):
-            raise CorruptionError(_count_mismatch(b"SHA", len(shas), len(sizes)))
+        crcs = [_number(t, "CRCsum") for t in _required(variables, b"CRCsum").split()]
+        md5s = [_hex(t, "MD5", 32) for t in _required(variables, b"MD5").split()]
+        shas = [_hex(t, "SHA", 64) for t in sha.split()]
         header = _Header(
             version=version,
             sizes=sizes,
@@ -560,8 +578,9 @@ class _VariableParser:
     ``if ...``) are skipped. Only the variables in ``_USED`` are kept, so memory does
     not grow with the header. One of those assigned twice is damage: the shell would
     take the last, and a reader should not have to guess which one makeself wrote.
-    So is one assigned where the parse does not read it, on a skipped line or after
-    another value on its line: makeself writes each at the start of its own line.
+    So is a plain ``NAME=`` for one of them where the parse does not read it, on a
+    skipped line or after another value on its line (``_HIDDEN_ASSIGNMENT``, which
+    says what it does not catch).
 
     ``feed`` goes on from where the last call stopped and reads each byte about once:
     a newline is looked for only past where the last search ended, a line is matched
@@ -732,11 +751,20 @@ def _decoders(command: bytes, decrypt: bytes) -> tuple[StreamFormat, str | None]
     )
 
 
-def _required(variables: dict[bytes, bytes], name: bytes) -> list[bytes]:
+def _required(variables: dict[bytes, bytes], name: bytes) -> bytes:
     value = variables.get(name)
     if value is None:
         raise CorruptionError(f"makeself header has no {name.decode()} variable")
-    return value.split()
+    return value
+
+
+# One whitespace-separated entry of a list variable, as ``bytes.split()`` splits.
+_TOKEN = re.compile(rb"[^ \t\n\r\f\v]++")
+
+
+def _token_count(value: bytes) -> int:
+    """How many entries ``value.split()`` would give, without building them."""
+    return sum(1 for _ in _TOKEN.finditer(value))
 
 
 def _number(raw: bytes, what: str) -> int:

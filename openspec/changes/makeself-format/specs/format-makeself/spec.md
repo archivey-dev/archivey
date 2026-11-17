@@ -24,12 +24,12 @@ before the first function definition, and after them the whole lines that state 
 payload command and, before makeself 2.4.2, the line count. The header SHALL end after
 `skip` lines, and the payloads SHALL follow it back to back with the sizes `filesizes`
 lists. It SHALL refuse with `CorruptionError` a header where a variable is assigned twice,
-a variable it reads is assigned anywhere but at the start of a line of the block,
-a number is not a number, a digest is not hexadecimal of its length, `CRCsum` or `MD5`
-does not list one value per payload (or `SHA`, unless its values are all zeros),
-`totalsize` is not the sum of `filesizes`, the old offset lines disagree, or the payload
-command is not one command. It SHALL refuse with `UnsupportedFeatureError` a payload
-command or `decrypt_cmd` it does not read. The header SHALL count against
+a variable it reads is assigned with a plain `NAME=` anywhere but at the start of a line
+of the block, a number is not a number, a digest is not hexadecimal of its length,
+`CRCsum` or `MD5` does not list one value per payload (or `SHA`, unless its values are
+all zeros), `totalsize` is not the sum of `filesizes`, the old offset lines disagree, or
+the payload command is not one command. It SHALL refuse with `UnsupportedFeatureError` a
+payload command or `decrypt_cmd` it does not read. The header SHALL count against
 `max_metadata_bytes` (`ResourceLimitError`), the only bound on its length, and SHALL be
 parsed in one pass, in time linear in its length. A header that lists more payloads than
 `max_members` SHALL be refused with `ResourceLimitError`.

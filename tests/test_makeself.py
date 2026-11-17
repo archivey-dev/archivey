@@ -38,6 +38,7 @@ from archivey.internal.backends import makeself_reader
 from archivey.internal.backends.makeself_reader import MakeselfReader
 from archivey.internal.streams import crypto
 from tests.conftest import requires_zstd
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 
 MAKESELF = archivey.ArchiveFormat.MAKESELF
@@ -263,6 +264,8 @@ def test_a_used_variable_set_where_the_parse_does_not_look_is_damage(
         pytest.param(b'    print_cmd="printf"', id="indented-other-variable"),
         pytest.param(b"echo filesizes and skip", id="names-without-equals"),
         pytest.param(b'scriptargs="$script"', id="longer-name"),
+        pytest.param(b"# see --skip=3 in the help", id="option-in-comment"),
+        pytest.param(b"echo $skip=x", id="expansion"),
     ],
 )
 def test_other_lines_in_the_variables_still_read(line: bytes) -> None:
@@ -569,6 +572,54 @@ def _with_payloads(payloads: list[bytes]) -> bytes:
         )
         assert count == 1, name
     return header + b"".join(payloads)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(b"Terms of use.\n" * 70_000, id="lines"),
+        pytest.param(b"a" * 1_000_000, id="one-line"),
+        # An escape every 3 bytes, across many chunk ends: the value's read stops
+        # before an escape that a chunk end cuts and resumes there.
+        pytest.param(b'a\\"' * 330_000, id="escapes"),
+    ],
+)
+def test_a_long_value_is_read_in_memory_linear_in_it(value: bytes) -> None:
+    # A regex that repeats a group with an alternation keeps state for each
+    # repetition: about 150 bytes per byte of the value.
+    data = _edited(b'licensetxt=""', b'licensetxt="' + value + b'"')
+
+    def read() -> None:
+        with open_archive(io.BytesIO(data)) as reader:
+            assert _contents(reader) == FILES
+
+    read()
+    assert traced_peak(read) < 8 * len(data)
+
+
+def test_the_payload_count_is_checked_before_the_lists_are_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each listed value becomes an object, so a long list costs memory before any
+    # check on its length could run.
+    parsed: list[str] = []
+    real = makeself_reader._number
+
+    def number(raw: bytes, what: str) -> int:
+        parsed.append(what)
+        return real(raw, what)
+
+    monkeypatch.setattr(makeself_reader, "_number", number)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(_with_payloads([_empty_tar_gz()] * 11)), config=config)
+    assert "filesizes" not in parsed
+    parsed.clear()
+    data = _with_payloads([_empty_tar_gz()] * 2)
+    data = re.sub(rb'^CRCsum="0 0"$', b'CRCsum="0 0 0"', data, flags=re.MULTILINE)
+    with pytest.raises(CorruptionError, match="CRCsum lists 3 values for 2 payloads"):
+        open_archive(io.BytesIO(data))
+    assert "CRCsum" not in parsed
 
 
 def test_payloads_count_against_max_members() -> None:
