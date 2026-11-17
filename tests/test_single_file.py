@@ -1572,17 +1572,17 @@ _DEFLATE = (CompressionMethod(CompressionAlgorithm.DEFLATE),)
         pytest.param(
             zlib.compress(b"x"), _ALWAYS_PROBE, CompressionAlgorithm.DEFLATE, id="zlib"
         ),
-        # No CompressionAlgorithm member names LZW, so .Z reports UNKNOWN.
-        pytest.param(
-            make_unix_compress(b"x"), None, CompressionAlgorithm.UNKNOWN, id="Z"
-        ),
+        # No CompressionAlgorithm member names LZW or an encoding, so .Z and
+        # uuencode list nothing: UNKNOWN would say archivey cannot decode them.
+        pytest.param(make_unix_compress(b"x"), None, None, id="Z"),
+        pytest.param(_uu_encode(b"x"), None, None, id="uu"),
     ],
 )
 def test_the_member_names_the_stream_codec(
-    data: bytes, config: ArchiveyConfig | None, expected: CompressionAlgorithm
+    data: bytes, config: ArchiveyConfig | None, expected: CompressionAlgorithm | None
 ) -> None:
     """The listed method is the one a ZIP or 7z member compressed the same way lists."""
-    want = (CompressionMethod(expected),)
+    want = () if expected is None else (CompressionMethod(expected),)
     with open_archive(io.BytesIO(data), config=config) as ar:
         assert ar.members()[0].compression == want
     with open_archive(NonSeekableBytesIO(data), streaming=True, config=config) as ar:

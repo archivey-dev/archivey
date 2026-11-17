@@ -91,7 +91,6 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
-    CompressionAlgorithm,
     CompressionMethod,
     MemberStreams,
     MemberType,
@@ -177,13 +176,15 @@ class _IndexReportRecorder(DiagnosticCollector):
         )
 
 
-def _stream_method(stream: StreamFormat | PluginStream) -> CompressionAlgorithm:
-    """The method the one member is compressed with: the one a ZIP or 7z member
-    compressed the same way lists. ``UNKNOWN`` for a stream with no
-    ``CompressionAlgorithm`` member (``.Z``, bzip3, uu, base64, a plugin codec)."""
-    if isinstance(stream, StreamFormat):
-        return _STREAM_METHODS.get(stream, CompressionAlgorithm.UNKNOWN)
-    return CompressionAlgorithm.UNKNOWN
+def _stream_compression(
+    stream: StreamFormat | PluginStream,
+) -> tuple[CompressionMethod, ...]:
+    """The one member's ``compression``: the method a ZIP or 7z member compressed the
+    same way lists. Empty for a stream no ``CompressionAlgorithm`` member names
+    (``.Z``, bzip3, uu, base64, a plugin codec): ``UNKNOWN`` means a method archivey
+    cannot decode, and these decode."""
+    method = _STREAM_METHODS.get(stream) if isinstance(stream, StreamFormat) else None
+    return () if method is None else (CompressionMethod(method),)
 
 
 def _infer_member_name(archive_name: str | None) -> str:
@@ -366,7 +367,7 @@ class SingleFileReader(BaseArchiveReader):
             size=None,  # filled per-codec below where cheaply known
             compressed_size=self._probe_compressed_size(),
             modified=None,
-            compression=(CompressionMethod(_stream_method(self._format.stream)),),
+            compression=_stream_compression(self._format.stream),
         )
         # Per-codec metadata extraction lives on the codec object (gzip FNAME/mtime, xz/lzip
         # decompressed size); the reader stays codec-agnostic and just supplies the
