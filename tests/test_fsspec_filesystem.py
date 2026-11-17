@@ -574,12 +574,12 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
     end: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A walk that ends on a missing name or on a file, or is refused, is held until
-    a member makes a name it found missing. Here 2000 names and 2000 links go
-    through a chain of 20 links, each 2400 components long (``d/..`` cannot be
-    skipped unwalked: ``d`` could be a link), which ends on ``end``.
+    a member makes a name it found missing. Here 2000 links go through a chain of
+    20 links, each 2400 components long (``d/..`` cannot be skipped unwalked: ``d``
+    could be a link), which ends on ``end``.
 
     Counted, not timed: a walk of a link's target is one ``_Tree._walk`` call with
-    ``from_link``. The held walks take about 2100 of them; walking every link's
+    ``hops`` above 0. The held walks take about 2100 of them; walking every link's
     target again for each of the 2000 links through the chain takes over 40 000.
     A wall-time bound (2 s against 0.3 s measured) failed on a slow Windows runner."""
     walks = 0
@@ -587,7 +587,7 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
 
     def counting_walk(self: Any, *args: Any, **kwargs: Any) -> Any:
         nonlocal walks
-        if kwargs.get("from_link"):
+        if kwargs.get("hops"):
             walks += 1
         return real_walk(self, *args, **kwargs)
 
@@ -597,7 +597,6 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
     ]
     entries += [("sym", f"l{n}", "d/../" * 800 + f"l{n + 1}") for n in range(19)]
     entries.append(("sym", "l19", "d/../" * 800 + end))
-    entries += [("file", f"l0/{n}", b"") for n in range(2000)]
     entries += [("sym", f"x{n}", "l0") for n in range(2000)]
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
@@ -605,8 +604,7 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
         monkeypatch.setattr(fsspec_module._Tree, "_walk", counting_walk)
         assert fs.info("x1999")["type"] == ("file" if end == "f" else "other")
         monkeypatch.undo()
-        assert not fs.exists("l0/0")
-    # Measured: 2250 (missing) and 2060 (file).
+    assert walks > 0
     assert walks < 5000
 
 
@@ -622,26 +620,23 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
             ("sym", "A", "J/z"),
             ("file", "p/z", b"Z"),
         ],
-        # K/a is refused while p is missing; K/b is written once p/z made p.
-        [("sym", "K", "p"), ("file", "K/a", b""), ("file", "p/z", b"Z")],
     ],
-    ids=["made-later", "through-a-held-link", "names-under-it"],
+    ids=["made-later", "through-a-held-link"],
 )
 def test_a_held_walk_is_dropped_when_its_missing_name_is_made(
     entries: list[tuple[str, str, bytes | str]],
 ) -> None:
-    data = _tar_entries([*entries, ("sym", "M", "K/z"), ("file", "K/b", b"B")])
+    data = _tar_entries([*entries, ("sym", "M", "K/z")])
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         assert fs.cat("M") == b"Z"
-        assert fs.cat("p/b") == b"B"
         if any(name == "A" for _, name, _ in entries):
             assert fs.cat("A") == b"Z"
 
 
 def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
-    """A link's walk is kept once it met no missing component: 2000 names under a
-    link to a directory 400 deep, and 2000 links through it, took 5 s to list when
-    each walked the target again.
+    """A link's walk is kept once it met no missing component: 2000 links through a
+    link to a directory 400 deep took 5 s to list when each walked the target
+    again.
 
     400 deep, not deeper: the strict check resolves the link's target as a path,
     and on macOS (``PATH_MAX`` 1024) a longer one cannot be looked up, so
@@ -651,15 +646,15 @@ def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
         ("dir", deep, ""),
         ("sym", "l", deep),
     ]
-    entries += [("file", f"l/{n}", b"%d" % n) for n in range(2000)]
-    entries += [("sym", f"x{n}", "l") for n in range(2000)]
+    entries += [("file", f"{deep}{n}", b"%d" % n) for n in range(2000)]
+    entries += [("sym", f"x{n}", f"l/{n}") for n in range(2000)]
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
         start = time.perf_counter()
-        assert fs.info("x1999")["type"] == "directory"
+        assert fs.info("x1999")["type"] == "file"
         elapsed = time.perf_counter() - start
-        assert fs.cat("x7/7") == b"7"
+        assert fs.cat("x7") == b"7"
         assert fs.cat(deep + "1999") == b"1999"
     # Measured: under 0.15 s.
     assert elapsed < 2.0

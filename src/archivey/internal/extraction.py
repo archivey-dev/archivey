@@ -595,6 +595,13 @@ class _RunState:
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
     links: LinkWatch
+    # Every symlink this run created, at its physical path, with its
+    # ``(st_dev, st_ino)``: a member whose path goes through one is refused
+    # (``_refuse_through_run_link``). A link kept as stored under TRUSTED is here too.
+    run_symlinks: dict[Path, tuple[int, int]] = field(default_factory=dict)
+    # Parent directory (as spelled) -> whether its path goes through one of
+    # ``run_symlinks``; cleared with ``resolved_parents``.
+    through_run_link: dict[str, bool] = field(default_factory=dict)
     # Progress totals; see ``_run``.
     members_total: int | None = None
     total_estimate: int | None = None
@@ -2193,6 +2200,7 @@ class ExtractionCoordinator:
         target = self._follow_renamed_dirs(
             requested, is_dir=transformed.type == MemberType.DIRECTORY
         )
+        self._refuse_through_run_link(transformed, target)
 
         if original.is_anti:
             return copy_with(
@@ -2316,6 +2324,7 @@ class ExtractionCoordinator:
                 transformed.type == MemberType.SYMLINK
                 and transformed.link_target is not None
             ):
+                self._record_run_symlink(result.path)
                 on_disk = self._link_target_on_disk(transformed.link_target)
                 if not self._keeps_rooted_target(transformed.link_target):
                     self._state.links.track(result.path, on_disk, result_index)
@@ -2852,6 +2861,75 @@ class ExtractionCoordinator:
         """The key ``path`` was claimed under, or its current key if it was not."""
         key = self._state.claim_keys.get(path)
         return key if key is not None else self._collision_key(path)
+
+    def _record_run_symlink(self, path: Path) -> None:
+        """Record the symlink this run just created at ``path``
+        (``_refuse_through_run_link``)."""
+        physical = self._physical_path(path)
+        try:
+            st = os.lstat(long_path(physical))
+        except OSError:
+            return
+        self._state.run_symlinks[physical] = (st.st_dev, st.st_ino)
+        self._state.through_run_link.clear()
+
+    def _refuse_through_run_link(self, member: ArchiveMember, path: Path) -> None:
+        """Refuse ``member`` when its path goes through a symlink this run created:
+        ``s -> e``, then ``s/x``. Under every policy (maintainer decision,
+        2026-11-17): no real archive does this, bsdtar refuses it too, and a link a
+        later member re-points would otherwise move where earlier members went. A
+        symlink the caller had in the destination is followed as before."""
+        if not self._state.run_symlinks:
+            return
+        if self._goes_through_run_link(os.path.dirname(os.fspath(path))):
+            raise FilterRejectionError(
+                "Path goes through a symlink this extraction created",
+                member_name=member.name,
+            )
+
+    def _goes_through_run_link(self, parent: str) -> bool:
+        """Whether the directory ``parent`` (as spelled under the destination) is, or
+        is under, a symlink this run created. Cached per directory, so each new
+        directory costs one lookup. A loop, not recursion: a name can be thousands of
+        components deep."""
+        state = self._state
+        cache = state.through_run_link
+        dest = os.fspath(state.dest)
+        # The directories from ``parent`` up to the first one already known.
+        unknown: list[str] = []
+        answer = False
+        current = parent
+        while True:
+            known = cache.get(current)
+            if known is not None:
+                answer = known
+                break
+            if current == dest or len(current) <= len(dest):
+                break
+            unknown.append(current)
+            head = os.path.dirname(current)
+            if head == current:
+                break
+            current = head
+        # Down again: once one is under a run link, every directory below it is.
+        for directory in reversed(unknown):
+            if not answer:
+                answer = self._is_run_symlink(Path(directory))
+            cache[directory] = answer
+        return answer
+
+    def _is_run_symlink(self, path: Path) -> bool:
+        """Whether ``path``, with its parent resolved, is still a symlink this run
+        created: the same entry, not one put in its place since."""
+        physical = self._physical_path(path)
+        identity = self._state.run_symlinks.get(physical)
+        if identity is None:
+            return False
+        try:
+            st = os.lstat(long_path(physical))
+        except OSError:
+            return False
+        return stat.S_ISLNK(st.st_mode) and (st.st_dev, st.st_ino) == identity
 
     def _physical_rel(self, path: Path) -> str | None:
         """Where ``path`` is, relative to the destination root and ``/``-separated, with
@@ -3993,6 +4071,7 @@ class ExtractionCoordinator:
     def _resolutions_changed(self) -> None:
         """Forget the cached parent resolutions: a symlink was created or removed."""
         self._state.resolved_parents.clear()
+        self._state.through_run_link.clear()
 
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""
