@@ -2,7 +2,7 @@
 decoding far more data than it is worth.
 
 Three users share one archive-wide ratio rule (:func:`archive_ratio_refusal`).
-:class:`BombTracker` and :class:`MemberRatioGuard` also check a per-member ratio, each
+:class:`BombTracker` and :class:`MemberRatioCheck` also check a per-member ratio, each
 with its own code:
 
 - :class:`BombTracker`: the byte and entry-count limits one extraction enforces as it
@@ -12,7 +12,7 @@ with its own code:
 - :class:`DecodeRatioGuard`: the archive-wide ratio a compressed container's decode
   (a ``.tar.gz``) is held to in every use, listing included. The reader wraps the
   decoded stream in it.
-- :class:`MemberRatioGuard`: the ratio member reads are held to outside extraction
+- :class:`MemberRatioCheck`: the ratio member reads are held to outside extraction
   (``open()``, ``stream_members()``). The reader wraps each member stream in it.
 """
 
@@ -371,9 +371,13 @@ _GUARD_STEP = 1 << 20
 _READ_TO_END_STEP = _GUARD_STEP * 16
 
 
-class _RatioGuard(DelegatingStream):
-    """A decoded stream refused once the furthest offset it has decoded breaks a ratio
-    rule (:meth:`_judge`).
+class _RatioCheck:
+    """The reads and seeks of a decoded stream, refused once the furthest offset it has
+    decoded breaks a ratio rule (:meth:`_judge`).
+
+    Not a stream itself: :class:`DecodeRatioGuard` is one that runs these checks, and
+    a member stream drives :class:`MemberRatioCheck` from its own reads and seeks, with
+    no wrapper stream between them (``ArchiveStreamImpl._hold_ratio``).
 
     The measure is the furthest offset decoded, so a backward seek that decodes again
     costs nothing here. Near the limit, reads and seeks forward go to the decoder in
@@ -383,17 +387,11 @@ class _RatioGuard(DelegatingStream):
     call (``_READ_TO_END_STEP``).
     """
 
-    # Changes no bytes and no positions: verification and resume offsets look
-    # through, and so do a cheap size and seek cost (``source_byte_size``,
-    # ``seek_is_expensive``), which are the decoder's.
-    forwards_verification = True
-    peel_for_source_size = True
-    readinto_passthrough = False
     # Whether the decoder's error after a whole step is held for the next call.
     _holds_errors = True
+    _inner: BinaryIO
 
-    def __init__(self, inner: BinaryIO, *, max_ratio: float | None) -> None:
-        super().__init__(inner)
+    def _start_checks(self, *, max_ratio: float | None) -> None:
         self._max_ratio = max_ratio
         self._pos = 0  # over a decoder that has not started
         self._decoded = 0  # the furthest offset decoded
@@ -454,7 +452,6 @@ class _RatioGuard(DelegatingStream):
             err, self._held = self._held, None
             raise err
 
-    @override
     def read(self, n: int = -1, /) -> bytes:
         self._raise_held()
         # The bound is at least a step, so a read of at most a step needs no ``_room``.
@@ -490,7 +487,6 @@ class _RatioGuard(DelegatingStream):
                 left -= len(data)
         return b"".join(parts)
 
-    @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A seek drops the held error, as ReadAheadStream's does: it describes the
         # position the caller is leaving, and a rewind re-decodes from a resume point.
@@ -524,7 +520,6 @@ class _RatioGuard(DelegatingStream):
         self._check(self._pos)
         return self._pos
 
-    @override
     def tell(self, /) -> int:
         return self._pos
 
@@ -538,7 +533,7 @@ class _RatioGuard(DelegatingStream):
         return data
 
 
-class DecodeRatioGuard(_RatioGuard):
+class DecodeRatioGuard(_RatioCheck, DelegatingStream):
     """A compressed container's decoded stream (a ``.tar.gz``), refused once it has
     decoded past :attr:`~archivey.DecoderLimits.max_ratio` of the archive's size.
 
@@ -557,6 +552,13 @@ class DecodeRatioGuard(_RatioGuard):
     ``counted="the stream decoded"`` for its message (see ``__init__``).
     """
 
+    # Changes no bytes and no positions: verification and resume offsets look
+    # through, and so do a cheap size and seek cost (``source_byte_size``,
+    # ``seek_is_expensive``), which are the decoder's.
+    forwards_verification = True
+    peel_for_source_size = True
+    readinto_passthrough = False
+
     def __init__(
         self,
         inner: BinaryIO,
@@ -570,11 +572,12 @@ class DecodeRatioGuard(_RatioGuard):
         holds_errors: bool = True,
         counted: str = "the archive decoded",
     ) -> None:
-        super().__init__(inner, max_ratio=limits.max_ratio)
+        DelegatingStream.__init__(self, inner)
+        self._start_checks(max_ratio=limits.max_ratio)
         # A container's decode holds the decoder's error after a whole step for the
         # next call, so the members before the damage are not lost with the step. A
         # stream handed to the caller raises it from the call that meets it, as a
-        # member stream does (MemberRatioGuard): a single ``read()`` must not return
+        # member stream does (MemberRatioCheck): a single ``read()`` must not return
         # damaged data without an error.
         self._holds_errors = holds_errors
         self._counted = counted
@@ -624,7 +627,7 @@ class ReadRatioTally:
 
     def others(self, key: int) -> int:
         """The total, less member ``key``'s part of it. Read without the lock: it only
-        sizes a step (``MemberRatioGuard._room``), and ``advance`` judges."""
+        sizes a step (``MemberRatioCheck._room``), and ``advance`` judges."""
         return self._total - self._furthest.get(key, 0)
 
     def advance(self, key: int, position: int) -> int:
@@ -638,9 +641,15 @@ class ReadRatioTally:
             return self._total
 
 
-class MemberRatioGuard(_RatioGuard):
-    """A member's decoded stream on ``open()`` or ``stream_members()``, held to
-    :attr:`~archivey.DecoderLimits.max_ratio` as extraction holds what it writes.
+class MemberRatioCheck(_RatioCheck):
+    """The reads and seeks of a member's decoded stream on ``open()`` or
+    ``stream_members()``, held to :attr:`~archivey.DecoderLimits.max_ratio` as
+    extraction holds what it writes.
+
+    The member stream (``ArchiveStreamImpl``) drives it: its reads, seeks and its
+    verifier's go through this check to the decoder, and every question about the
+    data (proofs, resume offsets, size, seekability) goes to the decoder directly. It
+    is not a stream, so building one per member costs no ``IOBase``.
 
     Two rules, the same two ``BombTracker`` applies on write. The member's own output
     against its recorded compressed size (where the archive records one) fails this
@@ -658,7 +667,6 @@ class MemberRatioGuard(_RatioGuard):
 
     def __init__(
         self,
-        inner: BinaryIO,
         *,
         limits: DecoderLimits,
         member: ArchiveMember,
@@ -669,7 +677,9 @@ class MemberRatioGuard(_RatioGuard):
         consumed: Callable[[], int | None] | None,
         nest: NestDraws | None = None,
     ) -> None:
-        super().__init__(inner, max_ratio=limits.max_ratio)
+        # The decoder, set when the member stream opens it (``attach``).
+        self._inner = cast("BinaryIO", None)
+        self._start_checks(max_ratio=limits.max_ratio)
         self._limits = limits
         self._nest = nest
         # The member the caller asked for, which errors name.
@@ -698,7 +708,15 @@ class MemberRatioGuard(_RatioGuard):
             elif consumed is not None:
                 self._archive_safe = max(floor, limits.live_ratio_activation_threshold)
 
+    def attach(self, inner: BinaryIO) -> None:
+        """Check the reads of ``inner``, the decoder the member stream opened."""
+        self._inner = inner
+
+    def close(self) -> None:
+        self._inner.close()
+
     def nearest_resume_offset(self, target: int) -> int | None:
+        # Asked by the verifier as it plans a seek through this check.
         return ask_resume_offset(self._inner, target)
 
     @override
@@ -745,7 +763,7 @@ class MemberRatioGuard(_RatioGuard):
         """The target of ``seek(offset, SEEK_END)`` on a member of unrecorded size.
 
         The decoder serves that seek by decoding to its end in one call. Where a rule
-        could refuse on the way, the end is found the way ``_RatioGuard.seek`` finds
+        could refuse on the way, the end is found the way ``_RatioCheck.seek`` finds
         it: from the decoder's cheap size, else by reading to it a step at a time.
         ``None`` leaves the seek to the decoder whole.
         """

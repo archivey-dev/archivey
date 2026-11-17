@@ -1,5 +1,5 @@
 """A member read through ``open()``, ``read()`` or ``stream_members()`` is held to
-``max_ratio`` as extraction holds what it writes (``MemberRatioGuard``)."""
+``max_ratio`` as extraction holds what it writes (``MemberRatioCheck``)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import os
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import BinaryIO, cast
 
 import pytest
 
@@ -26,7 +27,7 @@ from archivey import (
 from archivey.internal import bomb_tracker
 from archivey.internal.bomb_tracker import (
     AlwaysStopResourceLimitError,
-    MemberRatioGuard,
+    MemberRatioCheck,
     ReadRatioTally,
 )
 from archivey.types import MemberType
@@ -399,7 +400,7 @@ def _guard(
     limits: DecoderLimits | None = None,
     tally: ReadRatioTally | None = None,
     consumed: int | None = None,
-) -> MemberRatioGuard:
+) -> MemberRatioCheck:
     member = ArchiveMember(
         type=MemberType.FILE,
         name="m",
@@ -407,8 +408,7 @@ def _guard(
         compressed_size=compressed_size,
         _member_id=1,
     )
-    return MemberRatioGuard(
-        decoder,
+    check = MemberRatioCheck(
         limits=limits or DecoderLimits(),
         member=member,
         tally_key=1,
@@ -417,6 +417,8 @@ def _guard(
         static_size=None,
         consumed=None if consumed is None else lambda: consumed,
     )
+    check.attach(cast("BinaryIO", decoder))
+    return check
 
 
 def test_a_seek_to_the_end_of_an_unsized_member_stops_within_a_step() -> None:
@@ -482,13 +484,13 @@ def _tar_member(name: str, data: bytes) -> bytes:
 
 def _count_guards(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     built: list[str] = []
-    init = MemberRatioGuard.__init__
+    init = MemberRatioCheck.__init__
 
-    def counting(self: MemberRatioGuard, *args: object, **kwargs: object) -> None:
+    def counting(self: MemberRatioCheck, *args: object, **kwargs: object) -> None:
         built.append(kwargs["member"].name)  # type: ignore[union-attr]
         init(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(MemberRatioGuard, "__init__", counting)
+    monkeypatch.setattr(MemberRatioCheck, "__init__", counting)
     return built
 
 
