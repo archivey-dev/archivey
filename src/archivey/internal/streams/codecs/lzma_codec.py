@@ -55,6 +55,7 @@ from archivey.internal.streams.codecs.isolated import (
     Natives,
 )
 from archivey.internal.streams.codecs.lzip_decoder import LzipDecompressorStream
+from archivey.internal.streams.codecs.script_payload import check_lzip, check_xz
 from archivey.internal.streams.codecs.xz_decoder import (
     XzDecompressorStream,
     lzma_error_to_archivey,
@@ -122,6 +123,7 @@ class XzCodec(_SizedLzmaCodec):
     checks_frames = True
     stream_format = StreamFormat.XZ
     magic = (MagicSignature(0, b"\xfd7zXZ\x00", ArchiveFormat.XZ),)
+    script_payload_check = staticmethod(check_xz)
 
     @override
     def open(
@@ -156,6 +158,7 @@ class LzipCodec(_SizedLzmaCodec):
     checks_content = True
     stream_format = StreamFormat.LZIP
     magic = (MagicSignature(0, b"LZIP", ArchiveFormat.LZIP),)
+    script_payload_check = staticmethod(check_lzip)
 
     @override
     def open(

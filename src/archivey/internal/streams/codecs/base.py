@@ -66,6 +66,7 @@ from archivey.types import (
 
 if TYPE_CHECKING:
     from archivey.formats import Decompressor
+    from archivey.internal.sfx import HitValidator
 
 CodecSource = str | os.PathLike[str] | BinaryIO
 
@@ -409,6 +410,12 @@ class StreamCodec:
     # Whether a further stream after the first one continues the output, for the
     # default :meth:`stream_start`.
     concatenated: ClassVar[bool] = True
+    # The check a ``magic`` hit behind a ``#!`` script must pass before detection
+    # claims the stream there (a CPack ``.sh`` installer, a hand-rolled one): the
+    # header fields past the magic, enough that a script's text cannot pass by chance.
+    # ``None`` keeps the codec out of that scan (a two-byte magic such as Unix
+    # compress, or a format no installer writes). Wrap it in ``staticmethod``.
+    script_payload_check: ClassVar[HitValidator | None] = None
 
     @property
     def stream_name(self) -> str:

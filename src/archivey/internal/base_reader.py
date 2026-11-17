@@ -138,6 +138,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     ResourceUnavailableError,
+    TruncatedError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -484,9 +485,10 @@ def reject_start_offset(
     ``program_resources``, for a format that cannot honour it.
 
     Only the self-extracting formats (RAR / 7z / ZIP / LHA / ARJ) are ever handed a nonzero
-    offset, because only they can carry an executable stub and only they are scanned for
-    one by ``detect_format``. Reaching here with an offset means a caller invented one,
-    and reading from byte 0 instead would answer with the wrong bytes rather than say so.
+    offset behind an executable stub, and a compressed TAR or single-file stream behind
+    a ``#!`` script (:func:`open_at_script_payload`), because only those are scanned for
+    by ``detect_format``. Reaching here with an offset means a caller invented one, and
+    reading from byte 0 instead would answer with the wrong bytes rather than say so.
     """
     if start_offset:
         raise UnsupportedFeatureError(
@@ -509,6 +511,54 @@ def reject_start_offset(
             source_format=fmt,
             archive_name=archive_name,
         )
+
+
+def open_at_script_payload(
+    source: ArchiveSource,
+    start_offset: int,
+    fmt: ArchiveFormat,
+    archive_name: str | None,
+    end_offset: int | None = None,
+    program_resources: ProgramResources | None = None,
+) -> None:
+    """Move ``source`` to a compressed stream that starts ``start_offset`` bytes in,
+    behind a ``#!`` script, so the reader sees that byte as its first.
+
+    Detection hands a compressed TAR or a single-file stream a start offset only when
+    it found the stream behind a script launcher (a CPack ``.sh`` installer, a
+    hand-rolled one). A script ends where the stream starts, so an ``end_offset`` or
+    a program's resources, which only an executable stub has, are refused as for any
+    format without a stub, and so is any offset for an uncompressed TAR, which the
+    scan never claims there. On a seekable source the offset becomes the source's
+    offset 0 (:meth:`ArchiveSource.start_at`); on a pipe the script's bytes are read
+    and dropped.
+    """
+    # Detection claims only a compressed stream behind a script. An uncompressed TAR
+    # would also name its header offsets from the payload, not the file.
+    uncompressed = fmt.stream is StreamFormat.UNCOMPRESSED
+    reject_start_offset(
+        start_offset if uncompressed else 0,
+        fmt,
+        archive_name,
+        end_offset,
+        program_resources,
+    )
+    if not start_offset:
+        return
+    if source.seekable():
+        source.start_at(start_offset)
+        return
+    left = start_offset
+    while left:
+        chunk = source.read(min(left, 1 << 16))
+        if not chunk:
+            raise TruncatedError(
+                f"The source ends {left} bytes before the {fmt.display_name} stream "
+                f"it should hold at offset {start_offset}",
+                source_format=fmt,
+                archive_name=archive_name,
+            )
+        left -= len(chunk)
 
 
 class ReadBackend(ABC):

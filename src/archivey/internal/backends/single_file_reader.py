@@ -42,7 +42,7 @@ from archivey.exceptions import ArchiveyError, StreamNotSeekableError
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
-    reject_start_offset,
+    open_at_script_payload,
 )
 from archivey.internal.config import (
     stream_config_from_archivey,
@@ -815,8 +815,9 @@ class SingleFileBackend(ReadBackend):
         end_offset: int | None = None,
         program_resources: ProgramResources | None = None,
     ) -> SingleFileReader:
-        reject_start_offset(
-            start_offset, format, archive_name, end_offset, program_resources
+        # A stream behind a ``#!`` script starts past it (detection's payload offset).
+        open_at_script_payload(
+            source, start_offset, format, archive_name, end_offset, program_resources
         )
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.

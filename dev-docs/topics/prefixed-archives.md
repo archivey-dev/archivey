@@ -23,7 +23,7 @@ conventions, which are ZIP's and nobody else's.
 | Shape | Example | What is in front |
 | --- | --- | --- |
 | Self-extracting archive | `rar a -sfx`, `7z -sfx7zCon.sfx`, Windows installer stubs | A real executable that unpacks the payload |
-| Script launcher | `zipapp` / `.pyz`, pex, shiv, Spring Boot executable JAR, makeself `.run` | A `#!` line and usually a few lines of shell or Python |
+| Script launcher | `zipapp` / `.pyz`, pex, shiv, Spring Boot executable JAR, CPack `.sh`, makeself `.run` | A `#!` line and usually a few lines of shell or Python |
 | Concatenation / polyglot | `cat stub payload.zip`, a JPEG with a ZIP appended | Anything at all |
 | Embedded | An archive inside a firmware or disk image | Anything at all, usually far in |
 | Program resource | Squirrel's `Setup.exe` (GitHub Desktop, Slack, Discord): the app's ZIP is a resource in `.rsrc` | The program's image; other resources, `.reloc` and the certificate follow |
@@ -41,7 +41,7 @@ The cued forward scan and the uncued scan that runs last are shipped today.
 | **Cued forward scan** | Leading bytes look like a prefix → search forward for each backend's declared needle. For a PE, ELF or Mach-O program whose layout parses (`sfx.executable_layout`), the candidate at its overlay start is judged first, and a `VALID` or `VALID_SHORT` hit there wins over every other needle; the RAR and 7z parsers' scans and the forward ZIP walk do the same, up to `SFX_MAX` whatever the budget: past the window, one seek reads the candidate's first 512 bytes (a longer header costs a read for each further peek), and a source that cannot seek gives up rather than answer from the image. | `min(size, SFX_MAX)`, `SFX_MAX` = 2 MiB | **Shipped** |
 | **Uncued scan, last** | Every other detection step declined, the leading bytes raise no cue and carry no known non-archive signature, and the name has no known extension → the same scan, every needle held to its validator. | Same window; on a forward-only source, only the bytes detection already holds | **Shipped** (2026-10-29) |
 | **Exhaustive scan** | Search the whole source, for a caller who knows they are holding a firmware image. | Caller's `max_scan_bytes` | Designed, not shipped |
-| **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | An idea in [`IDEAS.md`](../IDEAS.md) |
+| **Prefix analysis** | Do not search at all: read the stub, which for some families states where the payload begins and what made it. | None — one seek to the stated offset | **Shipped for makeself**, as its own format read from byte 0 ([`formats/makeself.md`](../formats/makeself.md)); an idea for other families in [`IDEAS.md`](../IDEAS.md) |
 
 **Prefix analysis is not a tier, which is why it is last.** A makeself `.run` is a shell
 script that exports `SKIP` (the header's line count) and `COMPRESS`, so the payload offset is
@@ -207,10 +207,21 @@ reaches the parser. A 7z hit whose declared end falls short of the source is gra
 that ends exactly at EOF, so a CRC-valid decoy in a stub loses to the real payload
 behind it.
 
-**Compressed streams are a different search.** A makeself-style `.run` wraps a compressed
-*stream*, not a container, so there is no container magic to find — the needle has to be a
-codec header. Those needles are searched under the `#!` cue only, because a stub plus a bare
-compressed stream is a real shape for script launchers and not for executable ones.
+**Compressed streams are a different search.** A shell installer (CPack STGZ, a
+hand-rolled `tail -n +N "$0" | tar xz`) wraps a compressed *stream*, not a container, so
+there is no container magic to find: the needle is a codec header. Those needles are
+searched under the `#!` cue only, because a script plus a bare compressed stream is a
+real shape and an executable plus one is not. Each codec that sets
+`StreamCodec.script_payload_check` (`streams/codecs/script_payload.py`: gzip, bzip2, xz,
+zstd, LZ4 frame, lzip) adds its magic with a check of the header fields after it, so
+script text passes by chance less often than once in 2**32; the registry collects them
+(`script_payload_entries`). A stream hit is then probed for an inner container from its
+offset (`detection._script_stream_payload`), charged to `max_decode_input` like a stream
+at byte 0, and answers `TAR_GZ` or the bare `GZ`. The TAR and single-file backends open
+at that offset (`base_reader.open_at_script_payload`): a seekable source becomes the
+stream from there and drops its path (`ArchiveSource.start_at`), a pipe reads past the
+script. makeself is not this path: its header names the payloads, and it is its own
+format at byte 0 ([`formats/makeself.md`](../formats/makeself.md)).
 
 ## 6. Sharp edges
 
@@ -222,6 +233,9 @@ compressed stream is a real shape for script launchers and not for executable on
 | An unrecognised extension-less file of 2 MiB of `PK\x03\x04` decoys takes about 2.4 s to reject | **archivey** | The uncued scan with ZIP uncapped (§3, §7) |
 | `detected_by="sfx_scan"` on a `zipapp`, a JPEG polyglot, or junk prepended to a tar | **archivey** | The name asserts intent the tier cannot know. `prefix_kind` is the field designed to report what the prefix actually is, and it is not shipped; `FormatInfo.prefixed` (`pe-aware-sfx-location`) ships its yes-or-no part. Resolved 2026-09-25: kept, not renamed; `detected_by` is documented as an open set and `sfx_scan` as covering every prefixed hit |
 | Under a budget below 2 MiB, an executable read from a pipe whose overlay starts past the window is not detected, even when the window holds an archive | **archivey** | Reading on to the overlay start would pass the budget, and answering from the image would list what the default budget and a forced `format=` do not (§2). A seekable source reads the overlay start by seeking to it. Ruled 2026-11-08 (#1335): give up; this pipe-only difference between budgets is accepted |
+| An uncompressed TAR behind a `#!` script is not found | **archivey** | `ustar` is five bytes of text; it waits for a TAR header check as a scan validator (§5) |
+| `format=TAR_GZ` on a script installer fails at byte 0, where detection finds the stream | **archivey** | The TAR backend declares no SFX magic, so the forced-format locator does not run for it |
+| A codec message that names a compressed offset (an xz or lzip stream start, a seek-index point) counts from the stream behind a script, not from the file | **archivey** | The codecs see the stream alone and take no origin; the ruling in §7 holds for every container reader |
 | A prefixed archive on a non-seekable source may be missed entirely | **format** | The tail probe needs a seek; the cued scan needs a cue in the first bytes, and the uncued one sees only the bytes detection already read |
 
 A defect worth remembering because it shows what the cue gate is really protecting: before

@@ -67,6 +67,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _translate_rapidgzip_shared,
     _warn_child_fallback,
 )
+from archivey.internal.streams.codecs.script_payload import check_bzip2
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
     _seek_reached_end,
@@ -873,6 +874,7 @@ class Bzip2Codec(StreamCodec):
     checks_content = True
     stream_format = StreamFormat.BZIP2
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
+    script_payload_check = staticmethod(check_bzip2)
 
     @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
