@@ -187,6 +187,14 @@ def _view(data: bytes):
             gzip.compress(b"x", mtime=0),
             [(3, 0x20), (8, 0x01), (9, 0x20)],
         ),
+        # The OS byte zlib 1.2.12 and later writes on macOS, whatever this host is.
+        (
+            script_payload.check_gzip,
+            gzip.compress(b"x", mtime=0)[:9]
+            + b"\x13"
+            + gzip.compress(b"x", mtime=0)[10:],
+            [(9, 0x20), (9, 0x08)],
+        ),
         (
             script_payload.check_bzip2,
             bz2.compress(b"x"),
