@@ -379,6 +379,28 @@ class BackendRegistry:
                 mapping[sig.format] = validator
         return mapping
 
+    def script_payload_entries(
+        self,
+    ) -> tuple[list[MagicSignature], dict[ArchiveFormat, HitValidator]]:
+        """The compressed streams the SFX scan also looks for behind a ``#!`` script,
+        and their header checks.
+
+        From the single-file codecs that set ``script_payload_check``: a shell
+        installer carries a compressed TAR, and the inner-container probe then names
+        the TAR. Only for a script: an executable stub never carries a bare stream.
+        """
+        entries: list[MagicSignature] = []
+        validators: dict[ArchiveFormat, HitValidator] = {}
+        for codec in single_file_codecs():
+            check = codec.script_payload_check
+            fmt = codec.single_file_format
+            if check is None or fmt is None:
+                continue
+            for sig in codec.magic:
+                entries.append(MagicSignature(sig.offset, sig.magic, fmt))
+            validators[fmt] = check
+        return entries, validators
+
     def sfx_parser_scanned_formats(self) -> frozenset[ArchiveFormat]:
         """Formats whose parser runs its own capped SFX scan.
 

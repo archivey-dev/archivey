@@ -99,9 +99,98 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   extraction collision key folds a name (NFC, case-folded, a trailing dot or space
   trimmed), with the folded `DEBIAN`. The control side is not folded, because folding
   would accept a control `../debian/x`, which is a data path on Linux. Only the first
-  segment counts: `usr/DEBIAN/x` and `debianx/x` are ordinary data names. A data
-  symlink whose target points into `DEBIAN/` is listed: its target is a path, not a
-  member, and `dpkg-deb -R` writes it.
+  segment counts: `usr/DEBIAN/x` and `debianx/x` are ordinary data names.
+
+  **Data symlinks are followed too** (maintainer's call, 2026-11-17, on a sweep finding
+  against #1531: "Refuse those symlinks too"). Extraction writes a member through a
+  symlink the archive made, so `foo -> DEBIAN` then `foo/control` overwrote
+  `DEBIAN/control` under `overwrite="replace"`, and a read of `x -> DEBIAN/control`
+  returned the control file. `deb_reader._DataTree` keeps the data tar's symlinks in a
+  trie of folded names and resolves each path one segment at a time: `..` climbs, a
+  segment that names a symlink is replaced by its target (from the symlink's directory,
+  or from the root when the target is rooted), and at most 40 targets are followed, as
+  Linux does. A data symlink whose target lands in `DEBIAN` is refused
+  (`member_name` and `link_target`), and so is a member or a hard link target that lands
+  there through an earlier symlink (`d -> .`, then `d/DEBIAN/control`).
+
+  A later symlink can move an earlier one's target: `x -> y/DEBIAN/control` names a
+  data path until `y -> .` arrives. As extraction's `LinkWatch` does, the tree keeps a
+  dependency index (`internal/dependency_index.py`, shared with `LinkWatch`) of the
+  paths each target's resolution looked up, and a new symlink resolves again only the
+  targets that looked up its path. The new symlink, the one that completes the crossing,
+  is refused: re-checking at the end of the data tar would be too late, because
+  extraction has already written `x`. Each later symlink can move every earlier one, so
+  a crafted tar makes this links x links resolutions; the path steps count against
+  `ListingLimits.max_members` and the walk raises `ResourceLimitError` when they cross
+  it (maintainer's call on #1607: a re-check with a work cap, following `LinkWatch`,
+  which bounds its rechecks by `ExtractionLimits.max_entries`). The unit is a path step,
+  not a resolution as in `LinkWatch`: one resolution here can follow 40 symlinks, so
+  counting resolutions would allow 40 times the work. Since a symlink may not replace
+  another, the hostile shape is N symlinks through `a0/a1/.../aR`, then `a0 -> .`,
+  `a1 -> .` and so on. Measured on the tree alone at the default limit (2026-11-17):
+  600 x 600 stops in 0.98 s (21.9 s with no limit), 1,000 x 1,000 in 2.9 s. 20,000
+  ordinary `usr/lib` symlinks list in 0.26 s with no recheck. No real package comes
+  near the limit: a recheck happens only when a later symlink sits on an earlier
+  target's path.
+
+  Any resolution, not only a recheck, is charged for the steps it takes inside a target
+  it follows (review K5 on #1607). Each of 40 follows pushes the whole target it
+  follows, and every symlink routed through it walks it again, so N short symlinks
+  through 40 long ones cost N x 40 x K steps from a tar of N + 40 K segments, which xz
+  shrinks to almost nothing: an 11 KB package listed for 49 s. The walk over a path's
+  own segments stays free, so `libfoo.so -> libfoo.so.1` costs nothing and a symlink
+  that follows `lib -> usr/lib` costs 2. Measured (2026-11-17, `reader.members()`,
+  default limits): that 11 KB package is refused in 0.25 s; 100,000 symlinks that each
+  follow `lib -> usr/lib` list in 11.8 s, most of it tar parsing, using 200,000 of the
+  262,144 steps. The index still costs memory per recorded path step, which is linear in
+  the stored target text: 50,000 symlinks through a 40-symlink route take 4.9 s and 293
+  MiB before the cap stops the rechecks.
+
+  This is stricter than `dpkg-deb -R`, which unpacks the data tar first, so there such a
+  symlink points at nothing and `DEBIAN` is made after it only if nothing is there. The
+  other option, leaving symlinks alone and narrowing "the two tars stay apart" to names
+  and hard links, was rejected: the bypass writes a control file on disk. Reopen if a
+  real package ships a data symlink into `DEBIAN`.
+
+  **Every selection, not only the whole tar.** A caller can extract a subset of the
+  members, so the tree's verdict has to hold for each subset. Two review findings on
+  #1607 showed it did not:
+  - K2: `y -> a/b`, then `y/`, then `y/z -> ../DEBIAN`, then `y/z/control` was listed,
+    and `y/z/control` overwrote `DEBIAN/control` under `overwrite="replace"`. Which of
+    a directory and a symlink at one path extraction keeps depends on the policy:
+    `replace` keeps the second, and `skip` and `rename` keep the first (measured
+    2026-11-17, file and pipe sources).
+  - The same tar without the directory, extracted with `members=` leaving `y` out:
+    extraction makes `y` a directory for `y/z`, which then points at `DEBIAN`, and
+    `replace` wrote `y/z/control` into `DEBIAN/control`.
+
+  So the reader keeps every path's meaning independent of the selection and the
+  policy. It refuses a member under a symlink of the same tar (real packages have
+  none: `dpkg-deb` builds the tar from a tree, and tar records a symlinked directory
+  as the symlink), and it refuses a symlink at the path of a directory, a member's
+  parent or another symlink, and a directory at a symlink's path. A symlink left out
+  of a selection then leaves nothing at its path, and the kernel fails a path through
+  it rather than sending it elsewhere. A file or hard link at a symlink's path
+  replaces the symlink under every policy when both are extracted, but not when the
+  file is left out, so the tree keeps the symlink; a path through a file fails on disk
+  too. A symlink's target is checked twice: through the tree, as the filesystem
+  follows it, and lexically from the symlink's directory, as a read of the symlink
+  resolves it (`resolve_link_target_name`). `y -> a/b`, then `x -> y/../DEBIAN/control`
+  is refused on the second: the read returned the control file.
+
+  A hard link whose target is a symlink, through any number of hard links, extracts as
+  a symlink with the same target text, read from the hard link's own directory
+  (`extraction.py` `_as_written`, as GNU tar does). The tree records it as that
+  symlink, through the same `add_symlink` and recheck path (review K4 on #1607: `q/h`
+  linked to `a/b/x -> ../DEBIAN` left `q/h -> ../DEBIAN`, and `s -> .`, `h` linked to
+  `s`, then `h/DEBIAN/postinst` wrote a maintainer script under the default policy).
+
+  The other option was to track each view in its own tree and refuse when any lands
+  in `DEBIAN`. A caller's selection is any subset, so the views multiply, and nothing
+  real needs them. To see a symlink over a directory that only a member's parent made
+  (`y/f`, then `y -> a/b`), the tree keeps a node for every directory and member
+  parent, not only for symlinks: on 10,000 directories of 10 files each that costs 1.9
+  MiB and 0.49 s against 0.35 s for the walk alone (the tree only, 2026-11-17).
 
   Some data names are refused that `dpkg-deb -R` unpacks, because GNU tar on Linux
   writes them byte for byte, under a literal directory:

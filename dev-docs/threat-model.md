@@ -230,8 +230,11 @@ end-of-run sweep and not a refusal of `a/../x` targets.
 `resolve()` already costs, so a `node_modules`-shaped tree stays linear in link count.
 Measured on that shape at 2,000 and 4,000 links: 94,013 and 188,013 `lstat` calls for
 the whole extraction, against 73,013 and 146,013 with the index disabled, so about 29%
-more, and exactly linear. Memory is one index node per distinct path visited plus one
-entry per path per link, so it is proportional to the walk work already done. A hostile
+more, and exactly linear. Memory is one index node per distinct path that a live link's
+last walk visited plus one entry per path per link, so it is proportional to the walk
+work already done. The index (`internal/dependency_index.py`, shared with the Debian
+reader's data tree) drops the nodes a recheck leaves behind, so a path changed many
+times does not keep the nodes of every abandoned route. A hostile
 archive can still make work quadratic: many links through one path, then many members
 changing that path (a streaming pass does that with repeated copies of one name, under
 the default policy). Rechecks are therefore bounded by `ExtractionLimits.max_entries`,
@@ -1223,8 +1226,12 @@ member as fact.
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the
 next census. A fabricated listing is [accepted](#a-probe-can-fabricate-a-member).
-The aggregate bound [re-opens](#detection-decoding-scan-candidates) when a tier starts
-decoding scan candidates.
+One tier decodes a scan candidate: the compressed-stream needles behind a `#!` script
+([prefixed archives](topics/prefixed-archives.md) §5). It decodes one, the hit the scan
+chooses after header checks of at most 12 bytes, once, through the inner-container probe
+and its `max_decode_input` charge, so the aggregate bound above holds. Measured on a 2
+MiB script carpeted with gzip headers that pass the check, each followed by junk: the
+probe reads 64 KiB of input and fails, and detection answers `GZ` in 3 ms.
 
 **Tests.** `tests/test_brotli_framing_gate.py`, `tests/test_detection_workspace.py` (the
 `*budget*` and receipt tests), the Atheris `detect_format` target. Investigation:
@@ -1671,13 +1678,6 @@ with 4 or more zero padding bytes, about three folders in four from 7-Zip or py7
 leaves: the writer chooses the last block, so a crafted archive can make a wrong
 candidate pass it. Those still walk once per candidate.
 
-### Detection decoding scan candidates
-
-No detection tier decodes scan candidates today, so the 683-fold amplification in
-[detection](#detection-is-bounded-and-says-when-it-guessed) is not reachable. A tier
-that does (makeself compressor needles after a `#!` stub, planned after 0.2.0) must draw
-on the shared `max_decode_input` allowance and be measured before this is settled.
-
 ### OSS-Fuzz
 
 Onboarding waits until archivey has more users, since OSS-Fuzz expects a project with a
@@ -1716,7 +1716,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O8 | 7z wrong header password gives an empty archive | [Integrity verdicts](#integrity-verdicts-come-from-reads) |
 | O9 | Attacker bytes reaching the terminal | [Terminal](#attacker-bytes-reaching-a-terminal-are-inert) |
 | O10 | Content probe fabricates a member | [Detection](#detection-is-bounded-and-says-when-it-guessed), [A probe can fabricate a member](#a-probe-can-fabricate-a-member) |
-| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed), [Detection decoding scan candidates](#detection-decoding-scan-candidates) |
+| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed) |
 | O12 | 7z password confirmation | [7z password confirmation](#7z-password-confirmation), [late CRC gap](#7z-password-confirmation-on-a-late-crc) |
 | O13 | 7z `NumUnpackStreams` allocation | [Listing](#listing) |
 | O14 | 7z encoded-header nesting | [Listing](#listing) |

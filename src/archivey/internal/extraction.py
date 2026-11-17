@@ -49,9 +49,12 @@ comments mark its sections):
 from __future__ import annotations
 
 import bisect
+import collections
 import contextlib
 import errno
+import heapq
 import io
+import itertools
 import os
 import posixpath
 import stat
@@ -512,11 +515,41 @@ class _Orphan:
     dest_path: Path
     source: ArchiveMember
     spelled_from: ArchiveMember | None = None
-    # The claim this link's reservation (``_reserve_orphan``) took the key from, put
-    # back when the second pass releases it; and whether a later member replaced the
-    # link before the second pass made it.
+    # The path the link asked for, before the first pass routed it onto the path of
+    # an earlier member of the same name (``_resolve_collision``).
+    requested: Path | None = None
+    # The collision key of this link's name, as the first pass computed it
+    # (``_reserve_orphan``): the second pass releases the reservation under it and
+    # orders the links of one key by it, since a link made in between can change
+    # what the path resolves to. The claim the reservation took the key from, put
+    # back when it is released; and whether a later member replaced the link before
+    # the second pass made it.
+    key: str | None = None
     previous_claim: _Claim | None = None
     cancelled: bool = False
+
+
+@dataclass
+class _SecondPass:
+    """What the second pass (``_resolve_orphans``) knows about the held-back links
+    while it makes them. ``by_index``, ``by_key`` and ``by_source``: the links that
+    are not cancelled, in archive order, by result index, by first-pass collision
+    key and by source. ``under``: by the collision key of each of their parent
+    directories, computed when the second pass starts (if a parent's key changed
+    since the first pass, the lookup misses and the link is attempted as its
+    source arrives). ``done``: the result indexes attempted. ``waiting_on``: the
+    links that wait for the link of a result index. ``ready``: a heap of the result
+    indexes whose wait ended. ``stash``: a source's content kept in the staging
+    directory for links that wait."""
+
+    by_index: dict[int, _Orphan] = field(default_factory=dict)
+    by_key: dict[str | None, collections.deque[_Orphan]] = field(default_factory=dict)
+    by_source: dict[int, list[_Orphan]] = field(default_factory=dict)
+    under: dict[str | None, collections.deque[_Orphan]] = field(default_factory=dict)
+    done: set[int] = field(default_factory=set)
+    waiting_on: dict[int, list[_Orphan]] = field(default_factory=dict)
+    ready: list[int] = field(default_factory=list)
+    stash: dict[int, Path] = field(default_factory=dict)
 
 
 @dataclass
@@ -636,6 +669,11 @@ class _RunState:
     # key (``_reserve_orphan``): a later member meets the name as taken, as it would
     # had the link been made at its place in archive order.
     reservations: dict[str, _Orphan] = field(default_factory=dict)
+    # In the second pass, the result index of the held-back link it attempts now, or
+    # attempted last (``_begin_orphan_attempt``): a name that a later link holds is not
+    # seen (``_reservation_at``), as that link would not be made yet. ``None`` outside
+    # the second pass.
+    attempting: int | None = None
     # Whether the destination's filesystem folds case, probed the first time a
     # directory lands on a held-back link's key under another spelling
     # (``_folds_case``); ``None`` until then.
@@ -1571,7 +1609,17 @@ class ExtractionCoordinator:
         emit_progress: Callable[[], None] | None,
     ) -> Path:
         """Write a member's data from ``stream`` to the staging directory, under its
-        position in the pass, and return where; on any failure nothing of it stays.
+        position in the pass (``_write_to_staging``)."""
+        return self._write_to_staging(stream, str(position), emit_progress)
+
+    def _write_to_staging(
+        self,
+        stream: BinaryIO | None,
+        name: str,
+        emit_progress: Callable[[], None] | None,
+    ) -> Path:
+        """Write data from ``stream`` to the staging directory under ``name``, and
+        return where; on any failure nothing of it stays.
 
         The directory is ``.archivey-tmp-`` and a random suffix, directly under the
         destination, created private on the first call. Each file is created at the
@@ -1586,7 +1634,7 @@ class ExtractionCoordinator:
         # Every check that could still skip the member has passed, so a member whose
         # recorded size is already over the ratio is refused before its data is read.
         state.tracker.check_recorded_size()
-        path = state.staging / str(position)
+        path = state.staging / name
         fd = _open_new_file(path, 0o666)
         try:
             with os.fdopen(fd, "wb") as dst:
@@ -3426,6 +3474,7 @@ class ExtractionCoordinator:
             dest_path,
             source,
             spelled_from=self._current.spelled_from,
+            requested=self._current.requested_path,
         )
         self._state.orphans.append(orphan)
         self._reserve_orphan(orphan)
@@ -3441,6 +3490,7 @@ class ExtractionCoordinator:
         took the name and the link, made after it, was the one refused."""
         state = self._state
         key = self._collision_key(orphan.dest_path)
+        orphan.key = key
         previous = state.reservations.get(key)
         if previous is not None:
             if self._overwrite is not OverwritePolicy.REPLACE:
@@ -3490,19 +3540,33 @@ class ExtractionCoordinator:
                 self._revise_to_overwritten(orphan.previous_claim.result_index)
         return True
 
-    def _reservation_at(self, path: Path, *, directory: bool) -> _Orphan | None:
+    def _reservation_at(
+        self, path: Path, *, directory: bool, seen_by: int | None = None
+    ) -> _Orphan | None:
         """The held-back link whose name ``path`` reaches (``_reserve_orphan``), or
         ``None``. A non-directory reaches it by collision key, as it would reach the
         made link's claim. A directory, or a parent a member implies, reaches it only
         where an ``lstat`` would find the made link: at its own path, or under
         another case on a filesystem that folds case (``_folds_case``). On a
         case-sensitive filesystem ``H/`` beside the link ``h`` is another entry, as it
-        is beside a made one."""
-        reservations = self._state.reservations
+        is beside a made one.
+
+        In the second pass, a link later in archive order than the held-back link of
+        result index ``seen_by`` (by default the one attempted now,
+        ``state.attempting``) is not reached: made in archive order, it would not be
+        on disk yet."""
+        state = self._state
+        reservations = state.reservations
         if not reservations:
             return None
         orphan = reservations.get(self._collision_key(path))
-        if orphan is None or not directory or orphan.dest_path == path:
+        if orphan is None:
+            return None
+        if seen_by is None:
+            seen_by = state.attempting
+        if seen_by is not None and orphan.result_index > seen_by:
+            return None
+        if not directory or orphan.dest_path == path:
             return orphan
         return orphan if self._folds_case() else None
 
@@ -3544,22 +3608,40 @@ class ExtractionCoordinator:
 
     def _give_back_name(self, key: str, orphan: _Orphan) -> None:
         """Put back the claim ``orphan``'s reservation took ``key`` from, unless a
-        later member has claimed ``key`` since (``REPLACE``)."""
-        collision_map = self._state.collision_map
+        later member has claimed ``key`` since (``REPLACE``). The rename counters
+        start over, as ``_release_claim`` starts them: the name the link held, or one
+        it was renamed to, can be the first free one for a later RENAME again."""
+        state = self._state
+        collision_map = state.collision_map
         claim = collision_map.get(key)
         if claim is not None and claim.result_index == orphan.result_index:
             del collision_map[key]
             if orphan.previous_claim is not None:
                 collision_map[key] = orphan.previous_claim
+            state.rename_next.clear()
 
     def _release_reservations(self) -> None:
-        """Give each held-back link's name back to the claim it took it from, so the
-        second pass resolves the link as the first pass would have."""
+        """Give each held-back link's name back to the claim it took it from: the
+        second pass has ended, and the links it did not make hold no name."""
         state = self._state
         for key, orphan in state.reservations.items():
             self._give_back_name(key, orphan)
         state.reservations.clear()
-        state.rename_next.clear()
+
+    def _begin_orphan_attempt(self, orphan: _Orphan) -> None:
+        """Start the second pass's attempt of ``orphan``: give its name back to the
+        claim it took it from, so the link is resolved as the first pass would have
+        resolved it, and record it as the link attempted (``state.attempting``).
+        The names of the links not made yet stay held. An earlier link's name is
+        met as the made link would be (``_meet_reservation``, ``_makedirs``); a
+        later link's name is not seen, as that link would not be made yet
+        (``_reservation_at``)."""
+        state = self._state
+        state.attempting = orphan.result_index
+        key = orphan.key
+        if key is not None and state.reservations.get(key) is orphan:
+            del state.reservations[key]
+            self._give_back_name(key, orphan)
 
     # --- orphan (second pass) ------------------------------------------------------
 
@@ -3567,41 +3649,87 @@ class ExtractionCoordinator:
         """The second pass: complete each hardlink the first pass queued as an orphan,
         and revise its placeholder result.
 
+        Each link is attempted with the outcome a link made at its place in archive
+        order gives. Two links interact when they have the same name, or when the
+        name of one is a parent of the other's path (``_orphan_blocker``): the later
+        one waits until the earlier one has been attempted, whatever order their
+        sources come in, and it does not see a name that a later link holds
+        (``_reservation_at``). Links that do not interact are attempted as their
+        sources arrive. So under ``OnError.STOP`` the run stops at the member where
+        the made run stops, but a later link that does not interact with that
+        member can already be made.
+
         The links of a source the first pass wrote after them are linked against it.
-        For each other source, one more pass over the archive writes its content at the
-        first of its links that takes it (``_materialize_orphan_source``), and the rest
-        are linked against that.
+        For each other source, one more pass over the archive writes its content at
+        the first of its links that takes it and is not waiting
+        (``_materialize_orphan_source``), and the others are linked against that.
+        When no such link takes it and links are waiting, the content is kept in the
+        staging directory until one of them lands it.
         """
-        self._release_reservations()
-        orphans_by_source: dict[int, list[_Orphan]] = {}
-        for orphan in self._state.orphans:
+        self._state.rename_next.clear()
+        second = _SecondPass()
+        try:
+            self._resolve_orphans_in_order(reader, second)
+        finally:
+            for stashed in second.stash.values():
+                with contextlib.suppress(OSError):
+                    os.unlink(long_path(stashed))
+            self._state.attempting = None
+            self._release_reservations()
+
+    def _resolve_orphans_in_order(
+        self, reader: BaseArchiveReader, second: _SecondPass
+    ) -> None:
+        """:meth:`_resolve_orphans`, while the links not made yet hold their names
+        (``_begin_orphan_attempt``)."""
+        state = self._state
+        for orphan in state.orphans:
             if orphan.cancelled:
                 continue
-            orphans_by_source.setdefault(orphan.source.member_id, []).append(orphan)
-        if not orphans_by_source:
+            second.by_index[orphan.result_index] = orphan
+            second.by_key.setdefault(orphan.key, collections.deque()).append(orphan)
+            second.by_source.setdefault(orphan.source.member_id, []).append(orphan)
+            for parent in self._parents_in_dest(orphan.dest_path):
+                second.under.setdefault(
+                    self._collision_key(parent), collections.deque()
+                ).append(orphan)
+        if not second.by_index:
             return
 
         # A source that was written LATER in the first pass (a link preceding its source in
         # archive order) is already on disk: just link against it — re-reading its bytes
         # here would create an independent inode and double-count against the bomb limits.
-        needed: set[int] = set()
-        for source_id, group in orphans_by_source.items():
-            if source_id in self._state.source_paths:
-                self._link_orphan_group(group, source_id)
-            else:
-                needed.add(source_id)
-        if not needed:
-            return
+        needed = [
+            source_id
+            for source_id in second.by_source
+            if source_id not in state.source_paths
+        ]
+        for orphan in second.by_index.values():
+            if orphan.source.member_id in state.source_paths:
+                self._try_orphan(second, orphan)
+                self._drain_orphans(second)
+        if needed:
+            self._materialize_orphan_sources(reader, second, needed)
+        # Every link is attempted by now: a waiting link waits on one not attempted
+        # yet, and the earliest of those never waits. This is the backstop.
+        for orphan in second.by_index.values():
+            if orphan.result_index not in second.done:
+                self._attempt_orphan(second, orphan)
 
-        # One second forward pass over the (re-readable) source; write each needed source's
-        # content to the first writable link path and os.link the rest. Driven through the
+    def _materialize_orphan_sources(
+        self, reader: BaseArchiveReader, second: _SecondPass, needed: list[int]
+    ) -> None:
+        """One more pass over the archive for the sources ``needed``: each one's
+        content goes to its links (``_materialize_orphan_source``)."""
+        # One second forward pass over the (re-readable) source. Driven through the
         # public stream_members() with the needed sources as an identity selector, so
         # unneeded members are never surfaced (or opened — the streams are lazy).
         # Built here for the same reason as the first pass's identity selector:
         # these entries are the coordinator's, so an unmatched one is not reported
         # as MEMBER_SELECTOR_UNMATCHED.
+        left = set(needed)
         needed_sources = CollectionSelector(
-            [orphans_by_source[source_id][0].source for source_id in needed],
+            [second.by_source[source_id][0].source for source_id in needed],
             record=False,
         )
         # Closed on the way out, so an error out of the loop body closes the open
@@ -3609,27 +3737,33 @@ class ExtractionCoordinator:
         passing = reader.stream_members(needed_sources)
         with _closing_pass(passing):
             for member, stream in passing:
-                group = orphans_by_source[member.member_id]
+                links = [
+                    orphan
+                    for orphan in second.by_source[member.member_id]
+                    if orphan.result_index not in second.done
+                ]
                 try:
-                    remaining = self._materialize_orphan_source(member, stream, group)
+                    self._materialize_orphan_source(member, stream, links, second)
                 finally:
                     self._close(stream)
-                # Each link after the one that took the content is its own attempt: its
-                # failure is that link's, not the source's.
-                self._link_orphan_group(remaining, member.member_id)
-                needed.discard(member.member_id)
-                if not needed:
+                self._drain_orphans(second)
+                left.discard(member.member_id)
+                if not left:
                     break  # every orphaned source is materialized; stop opening members
 
         # Any orphan whose source never reappeared (should not happen for a re-readable
         # source) is a per-member failure.
         for source_id in needed:
-            group = orphans_by_source[source_id]
+            if source_id not in left:
+                continue
+            group = second.by_source[source_id]
             name = group[0].source.name
             err = ExtractionError(
                 "Hardlink source was not found on the second pass", member_name=name
             )
             self._record_failure_group(group, err)
+            for orphan in group:
+                self._orphan_done(second, orphan)
             self._stop_or_log(
                 err,
                 err,
@@ -3637,6 +3771,99 @@ class ExtractionCoordinator:
                 kind="orphaned hardlink source",
                 name=name,
             )
+            self._drain_orphans(second)
+
+    def _orphan_request(self, orphan: _Orphan) -> Path:
+        """The path the second pass resolves ``orphan`` from. Under ERROR and SKIP
+        that is the path it asked for: the first pass routed it onto an earlier
+        member of its name only to refuse it there, and that member may have failed
+        since, so the name is resolved again against what the run holds now. Under
+        REPLACE and RENAME it is the path the first pass gave it: the spelling it
+        replaces, or the name that pass already claimed for it."""
+        if orphan.requested is None or self._overwrite not in (
+            OverwritePolicy.ERROR,
+            OverwritePolicy.SKIP,
+        ):
+            return orphan.dest_path
+        return orphan.requested
+
+    def _orphan_blocker(self, second: _SecondPass, orphan: _Orphan) -> _Orphan | None:
+        """The earlier held-back link that ``orphan`` has to wait for, or ``None``.
+        Made in archive order, that link would be on disk when ``orphan`` is made.
+
+        It is the earliest link not attempted yet of one of these:
+        - the links of the same name;
+        - the links whose path has a parent of that name (``under``), as ``orphan``
+          made first would be in the way of their parent directory;
+        - a link that holds the name of a parent of ``orphan``
+          (``_reservation_at``, as ``_makedirs`` meets it).
+        A link later in archive order never blocks ``orphan``, so no link waits on
+        itself through another."""
+        for queue in (second.by_key[orphan.key], second.under.get(orphan.key)):
+            if not queue:
+                continue
+            while queue and queue[0].result_index in second.done:
+                queue.popleft()
+            if queue and queue[0].result_index < orphan.result_index:
+                return queue[0]
+        if not self._state.reservations:
+            return None
+        for parent in self._parents_in_dest(orphan.dest_path):
+            holder = self._reservation_at(
+                parent, directory=True, seen_by=orphan.result_index
+            )
+            if holder is not None and holder is not orphan:
+                return holder
+        return None
+
+    def _parents_in_dest(self, path: Path) -> list[Path]:
+        """The parents of ``path`` below the destination root, nearest first; none
+        for a path outside it."""
+        dest = self._state.dest
+        if not path.is_relative_to(dest):
+            return []
+        return list(itertools.takewhile(lambda p: p != dest, path.parents))
+
+    def _try_orphan(self, second: _SecondPass, orphan: _Orphan) -> None:
+        """Attempt ``orphan`` if no earlier link holds it back and its source's
+        content is at hand; else leave it to wait for that link, or for its source."""
+        blocker = self._orphan_blocker(second, orphan)
+        if blocker is not None:
+            second.waiting_on.setdefault(blocker.result_index, []).append(orphan)
+            return
+        source_id = orphan.source.member_id
+        if source_id in self._state.source_paths or source_id in second.stash:
+            self._attempt_orphan(second, orphan)
+
+    def _attempt_orphan(self, second: _SecondPass, orphan: _Orphan) -> None:
+        """Make ``orphan`` from its source's content on disk, or from the content the
+        second pass keeps for it, and record it as attempted."""
+        source_id = orphan.source.member_id
+        stashed = second.stash.pop(source_id, None)
+        if source_id in self._state.source_paths or stashed is None:
+            if stashed is not None:
+                second.stash[source_id] = stashed
+            self._link_orphan(orphan, source_id)
+        else:
+            _placed, stashed = self._materialize_at(
+                orphan.source, None, [orphan], 0, stashed
+            )
+            if stashed is not None:
+                second.stash[source_id] = stashed
+        self._orphan_done(second, orphan)
+
+    def _orphan_done(self, second: _SecondPass, orphan: _Orphan) -> None:
+        """Record ``orphan`` as attempted: the links waiting on it are tried again."""
+        second.done.add(orphan.result_index)
+        for waiting in second.waiting_on.pop(orphan.result_index, ()):
+            heapq.heappush(second.ready, waiting.result_index)
+
+    def _drain_orphans(self, second: _SecondPass) -> None:
+        """Try again, in archive order, each link whose wait has ended."""
+        while second.ready:
+            orphan = second.by_index[heapq.heappop(second.ready)]
+            if orphan.result_index not in second.done:
+                self._try_orphan(second, orphan)
 
     def _record_failure_group(
         self, group: list[_Orphan], error: ArchiveyError | OSError
@@ -3716,14 +3943,22 @@ class ExtractionCoordinator:
         self,
         source_member: ArchiveMember,
         stream: BinaryIO | None,
-        group: list[_Orphan],
-    ) -> list[_Orphan]:
-        """Write the source's content at the first link of ``group`` that takes it, and
-        return the links after that one, for the caller to link against it. None remain
-        when no link took the content: every link was skipped or failed on its own, or
-        the source itself failed."""
+        links: list[_Orphan],
+        second: _SecondPass,
+    ) -> None:
+        """Write the source's content at the first of ``links`` that takes it and is
+        not waiting on an earlier link, and link the others that are not waiting
+        against it. When none of them takes it and some links wait, the content is
+        kept in the staging directory (``second.stash``) for them. A failure of the
+        source fails every link in ``links`` from the one that met it."""
         # Count the recovered source bytes toward the cumulative/ratio guards too.
         self._state.tracker.start_member(source_member)
+        ready: list[_Orphan] = []
+        waiting: list[_Orphan] = []
+        for orphan in links:
+            (waiting if self._orphan_blocker(second, orphan) else ready).append(orphan)
+        group = ready + waiting
+        source_id = source_member.member_id
 
         # The excluded source's content is written to the FIRST link whose destination the
         # OverwritePolicy allows writing, never to the source's own name. A link the
@@ -3738,20 +3973,81 @@ class ExtractionCoordinator:
         # offered it, as a staged file, rather than the spent stream.
         leftover: Path | None = None
         try:
-            for index in range(len(group)):
+            for index, orphan in enumerate(ready):
                 placed, leftover = self._materialize_at(
                     source_member, stream, group, index, leftover
                 )
                 if placed is None:
                     # The source failed: every link from this one on is in its group.
-                    return []
+                    for failed in group[index:]:
+                        self._orphan_done(second, failed)
+                    return
+                self._orphan_done(second, orphan)
                 if placed:
-                    return group[index + 1 :]
-            return []
+                    # Each link after the one that took the content is its own
+                    # attempt: its failure is that link's, not the source's.
+                    rest = ready[index + 1 :]
+                    self._link_orphan_group(rest, source_id)
+                    for linked in rest:
+                        self._orphan_done(second, linked)
+                    break
+            else:
+                if waiting:
+                    if leftover is None:
+                        leftover = self._stash_orphan_source(
+                            source_member, stream, waiting, second
+                        )
+                    if leftover is not None:
+                        second.stash[source_id] = leftover
+                        leftover = None
         finally:
             if leftover is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(long_path(leftover))
+        for orphan in waiting:
+            if orphan.result_index not in second.done:
+                self._try_orphan(second, orphan)
+
+    def _stash_orphan_source(
+        self,
+        source_member: ArchiveMember,
+        stream: BinaryIO | None,
+        waiting: list[_Orphan],
+        second: _SecondPass,
+    ) -> Path | None:
+        """Keep the source's content in the staging directory for the links that
+        wait (``_materialize_orphan_source``); ``None`` when the source failed, which
+        fails every one of them as one group."""
+        source_error: ArchiveyError | OSError | None = None
+
+        def record(error: ArchiveyError | OSError, failed: ExtractionResult) -> bool:
+            nonlocal source_error
+            assert failed.status is ExtractionStatus.FAILED
+            self._record_failure_group(waiting, error)
+            source_error = error
+            return True  # stopped on or logged below, under the source's name
+
+        first = waiting[0]
+        self._current = _MemberState(
+            requested_path=first.dest_path, spelled_from=first.spelled_from
+        )
+        stashed: Path | None = None
+        with self._handling(first.original, kind="hardlink", record=record):
+            stashed = self._write_to_staging(
+                stream, f"orphan-{source_member.member_id}", None
+            )
+        if source_error is None:
+            return stashed
+        for orphan in waiting:
+            self._orphan_done(second, orphan)
+        self._stop_or_log(
+            source_error,
+            source_error,
+            ExtractionStatus.FAILED,
+            kind="orphaned hardlink source",
+            name=source_member.name,
+        )
+        return None
 
     def _materialize_at(
         self,
@@ -3786,6 +4082,7 @@ class ExtractionCoordinator:
         failure (collision resolution, ``_make_room``, creating the temp file) is
         this link's own, as for any other link (``_link_orphan``)."""
         orphan = group[index]
+        self._begin_orphan_attempt(orphan)
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )
@@ -3816,7 +4113,7 @@ class ExtractionCoordinator:
         placed = False
         with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
-                orphan.original, orphan.transformed, orphan.dest_path
+                orphan.original, orphan.transformed, self._orphan_request(orphan)
             )
             current.collided_with = collided_with
             result = self._make_room(
@@ -3888,6 +4185,7 @@ class ExtractionCoordinator:
 
     def _link_orphan(self, orphan: _Orphan, source_id: int) -> None:
         """One link of ``_link_orphan_group``."""
+        self._begin_orphan_attempt(orphan)
         current = self._current = _MemberState(
             requested_path=orphan.dest_path, spelled_from=orphan.spelled_from
         )
@@ -3901,7 +4199,7 @@ class ExtractionCoordinator:
 
         with self._handling(orphan.original, kind="hardlink", record=record):
             resolved, prior, collided_with = self._resolve_collision(
-                orphan.original, orphan.transformed, orphan.dest_path
+                orphan.original, orphan.transformed, self._orphan_request(orphan)
             )
             current.collided_with = collided_with
             # Taken before ``_make_room``, as in ``_write_hardlink``. An earlier link

@@ -59,7 +59,9 @@ _DECODES_WITH: dict[CompressionAlgorithm, tuple[CompressionAlgorithm, ...]] = {
 
 # The method each whole-file compression decodes with, so a method in ``exclude``
 # refuses a file compressed with it as a whole too. ``.Z`` and bzip3 have no
-# CompressionAlgorithm member: only their StreamFormat refuses them.
+# CompressionAlgorithm member: only their StreamFormat refuses them. The single-file
+# reader lists the same method in its member's ``compression``, so ``exclude=`` and
+# the listing agree.
 _STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
     StreamFormat.GZIP: CompressionAlgorithm.DEFLATE,
     StreamFormat.ZLIB: CompressionAlgorithm.DEFLATE,
@@ -77,6 +79,16 @@ _STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
 
 def _entry_name(entry: _ExcludeEntry) -> str:
     return f"{type(entry).__name__}.{entry.name}"
+
+
+def excluded_method_refusal(method: CompressionAlgorithm) -> str:
+    """The refusal text for data that runs ``method`` when ``exclude=`` lists it. A
+    decoder that finds the method inside a stream, where no member names it, adds
+    where it found it."""
+    return (
+        f"ArchiveyConfig.formats does not allow {_entry_name(method)}: "
+        "exclude= lists it"
+    )
 
 
 def _coerce_entries(
@@ -632,10 +644,7 @@ class FormatPolicy:
         if isinstance(codec, CompressionAlgorithm):
             listed = self._listed_method(codec)
             if listed is codec:
-                return (
-                    f"ArchiveyConfig.formats does not allow {_entry_name(codec)}: "
-                    "exclude= lists it"
-                )
+                return excluded_method_refusal(codec)
             if listed is not None:
                 return (
                     f"ArchiveyConfig.formats does not allow {_entry_name(codec)}: "

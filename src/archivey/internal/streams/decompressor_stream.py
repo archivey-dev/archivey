@@ -1058,6 +1058,11 @@ class DecompressorStream(ReadOnlyIOStream):
     next read returns them. ``seek`` and a size query raise after they finish, with the
     position where they left it. Either way the handle stays usable.
 
+    ``source_origin`` is where the source starts in the file
+    (:attr:`~archivey.internal.config.StreamConfig.source_origin`): every compressed
+    offset this stream names in a message adds it. The codec's decoder adds it to its
+    own messages.
+
     ``refuse_input_after_end`` marks a source that is exactly one container coder's
     compressed data (a ZIP member's, a 7z coder's declared input). Any byte the decoder is fed
     after the end of its data, a zero byte too, is then :class:`DataAfterEndError`,
@@ -1078,9 +1083,13 @@ class DecompressorStream(ReadOnlyIOStream):
         refuse_input_after_end: bool = False,
         initial_index: PrebuiltIndex | None = None,
         file_index: bool = True,
+        source_origin: int = 0,
     ) -> None:
         super().__init__()
         self._owned_inner: BinaryIO | None = None
+        # Where the source starts in the file (StreamConfig.source_origin): added to
+        # each compressed offset a message names.
+        self._source_origin = source_origin
         # Whether the file's own index may be read (``_ensure_index_built``): on
         # declared seek demand only. Restart points alone
         # (``StreamConfig.restart_points``) keep only the points a decode finds, so a
@@ -1266,7 +1275,8 @@ class DecompressorStream(ReadOnlyIOStream):
                     (held.decompressed_offset, point.decompressed_offset)
                 )
                 self._drop_index(
-                    f"Compressed offset {point.compressed_offset} starts at output "
+                    "Compressed offset "
+                    f"{self._source_origin + point.compressed_offset} starts at output "
                     f"offset {low} and also at output offset {high}."
                 )
                 if point.from_index:
@@ -1504,9 +1514,10 @@ class DecompressorStream(ReadOnlyIOStream):
         raise CorruptionError(
             f"The {self._index_source()} and the data do not agree. Output offset "
             f"{point.decompressed_offset} starts at compressed offset "
-            f"{existing.compressed_offset} and also at compressed offset "
-            f"{point.compressed_offset}. The file is damaged or was made to "
-            f"mislead a seek. Seek points: {existing!r} and {point!r}"
+            f"{self._source_origin + existing.compressed_offset} and also at "
+            f"compressed offset {self._source_origin + point.compressed_offset}. "
+            "The file is damaged or was made to mislead a seek. "
+            f"Seek points: {existing!r} and {point!r}"
         )
 
     def _find_best_seek_point(self, pos: int) -> SeekPoint:
@@ -1939,7 +1950,8 @@ class DecompressorStream(ReadOnlyIOStream):
             return False
         self._fresh_index_point = None
         self._drop_index(
-            f"Decoding from its point at compressed offset {point.compressed_offset} "
+            "Decoding from its point at compressed offset "
+            f"{self._source_origin + point.compressed_offset} "
             f"(output offset {point.decompressed_offset}) failed, so the index is "
             f"wrong there or the data is damaged: {exc}",
             lead=f"The {self._index_source()} may not match the data.",
@@ -2004,7 +2016,9 @@ class DecompressorStream(ReadOnlyIOStream):
 
     def _report_trailing(self, offset: int) -> None:
         report_trailing_data(
-            self._diagnostics_collector, self._codec_name or "compressed", offset
+            self._diagnostics_collector,
+            self._codec_name or "compressed",
+            self._source_origin + offset,
         )
 
     def _deferring_raises(
@@ -2649,8 +2663,9 @@ def near_stream_magic(data: bytes, magic: bytes | Sequence[Container[int]]) -> b
 def damaged_stream_error(offset: int | None = None) -> CorruptionError:
     """The error for bytes after a stream that :func:`near_stream_magic` matches.
 
-    ``offset`` is where the damaged stream starts in the source. The xz and lzip
-    decoders and their index searches know it and pass it. ``FramedDecoder`` (zstd, LZ4,
+    ``offset`` is where the damaged stream starts in the file: the caller adds the
+    source's origin (``StreamConfig.source_origin``). The xz and lzip decoders and their
+    index searches know it and pass it. ``FramedDecoder`` (zstd, LZ4,
     bzip2) does not: it sees only the bytes it is fed, and only the
     ``DecompressorStream`` that feeds it knows their source offset. Its error still
     names the archive, member and format, from the error context.
@@ -2666,6 +2681,9 @@ def report_trailing_data(
     collector: DiagnosticCollector | None, codec_name: str, offset: int
 ) -> None:
     """Report non-zero bytes at compressed ``offset``, past the end of a codec's data.
+
+    ``offset`` counts from the file's first byte: the caller adds the source's origin
+    (``StreamConfig.source_origin``).
 
     Shared by :class:`DecompressorStream` and the accelerator wrappers that find the
     same thing another way, so every path says it identically.

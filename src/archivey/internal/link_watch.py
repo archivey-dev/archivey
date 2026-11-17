@@ -28,7 +28,9 @@ re-enters there). So a change at ``d`` is enough to find every link whose walk w
 through ``d/x``: it went through ``d`` too. A change to an ancestor of the link itself
 needs no entry, because removing that ancestor removes the link.
 
-The dependency index keys paths by component, normalized to NFC and case-folded. On a
+The index is :class:`~archivey.internal.dependency_index.DependencyIndex`, shared with
+the Debian reader's data tree, which drops the nodes a recheck leaves behind. This
+module keys paths by component, normalized to NFC and case-folded. On a
 case-sensitive filesystem a change can then reach a link that did not depend on it;
 the recheck finds nothing, and costs one resolution. The opposite mistake would miss
 an escape on a case-insensitive one. That argument covers the index only: the map from
@@ -46,6 +48,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
+from archivey.internal.dependency_index import DependencyIndex, IndexNode
 from archivey.internal.filters import resolve_or_raise_on_loop
 from archivey.internal.long_paths import long_path, plain
 
@@ -67,24 +70,6 @@ def _key(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-class _Node:
-    """One destination path in the dependency index, and the links that visited it."""
-
-    __slots__ = ("children", "dependents")
-
-    def __init__(self) -> None:
-        self.children: dict[str, _Node] = {}
-        # A dict used as an ordered set, so rechecks run in a reproducible order.
-        self.dependents: dict[WatchedLink, None] = {}
-
-    def child(self, name: str) -> _Node:
-        key = _key(name)
-        node = self.children.get(key)
-        if node is None:
-            node = self.children[key] = _Node()
-        return node
-
-
 @dataclass(eq=False)
 class WatchedLink:
     """A symlink this extraction created, with what its resolution depended on.
@@ -101,7 +86,6 @@ class WatchedLink:
     dest_path: Path
     result_index: int
     identity: tuple[int, int]
-    nodes: list[_Node] = field(default_factory=list)
 
 
 @dataclass
@@ -129,7 +113,7 @@ class LinkWatch:
         # Folded like the index, so a walk that reaches the root by another spelling
         # (``/TMP/out`` on a case-insensitive filesystem) still knows it is inside.
         self._root_parts = tuple(_key(part) for part in dest_root.parts)
-        self._root = _Node()
+        self._index: DependencyIndex[WatchedLink] = DependencyIndex()
         # The link recorded at each physical path. Keyed on the exact path, unlike the
         # index: two links whose names differ only by case or normalization are two
         # entries on a filesystem that keeps them apart, and forgetting one when the
@@ -230,13 +214,7 @@ class LinkWatch:
         own = self._by_path.get(path)
         if own is not None and not self._is_live(own):
             self._forget(own)
-        node = self._root
-        for part in key:
-            child = node.children.get(part)
-            if child is None:
-                return
-            node = child
-        for link in node.dependents:
+        for link in self._index.dependents(key):
             queue[link] = None
 
     @staticmethod
@@ -265,21 +243,23 @@ class LinkWatch:
             del self._by_path[link.path]
 
     def _register(self, link: WatchedLink) -> None:
-        link.nodes = self._walk(link.path, link.target)
-        for node in link.nodes:
-            node.dependents[link] = None
+        visited, starts = self._walk(link.path, link.target)
+        self._index.record(link, visited)
+        # The nodes the walk started from stay only if a link looked them up.
+        for start in starts:
+            self._index.prune(start)
 
-    @staticmethod
-    def _unregister(link: WatchedLink) -> None:
-        for node in link.nodes:
-            node.dependents.pop(link, None)
-        link.nodes = []
+    def _unregister(self, link: WatchedLink) -> None:
+        self._index.forget(link)
 
     # --- the walk ----------------------------------------------------------------
 
-    def _walk(self, link: Path, target: str) -> list[_Node]:
+    def _walk(
+        self, link: Path, target: str
+    ) -> tuple[list[IndexNode[WatchedLink]], list[IndexNode[WatchedLink]]]:
         """The index nodes of every destination path that resolving ``target`` from
-        ``link``'s directory ``lstat``-s.
+        ``link``'s directory ``lstat``-s, and the nodes each part of the walk started
+        from.
 
         It follows ``os.path.realpath``: a missing component is kept as a name, a
         ``..`` drops the last component of the path resolved so far, and a symlink is
@@ -293,8 +273,9 @@ class LinkWatch:
         # Index nodes for ``cur`` from the root down, or ``None`` while ``cur`` is not
         # inside the destination.
         nodes = self._nodes_for(cur)
+        starts = [nodes[-1]] if nodes is not None else []
         pending: list[str] = []
-        visited: dict[int, _Node] = {}
+        visited: dict[int, IndexNode[WatchedLink]] = {}
         follows = 0
 
         def push(target: str) -> None:
@@ -310,6 +291,8 @@ class LinkWatch:
                 # read it as ``/``, and the root comparison needs the same spelling.
                 cur = ["/" if joined.anchor == "//" else joined.anchor]
                 nodes = self._nodes_for(cur)
+                if nodes is not None:
+                    starts.append(nodes[-1])
                 pending.extend(reversed(joined.parts[1:]))
             else:
                 pending.extend(_components(target))
@@ -329,11 +312,11 @@ class LinkWatch:
                 continue
             cur.append(comp)
             if nodes is not None:
-                node = nodes[-1].child(comp)
+                node = nodes[-1].child(_key(comp))
                 nodes.append(node)
                 visited[id(node)] = node
             elif len(cur) == n and self._under_root(cur):
-                nodes = [self._root]
+                nodes = [self._index.root]
             path = os.path.join(*cur)
             try:
                 if not stat.S_ISLNK(os.lstat(long_path(path)).st_mode):
@@ -352,18 +335,15 @@ class LinkWatch:
                 if not nodes:
                     nodes = None
             push(link_target)
-        return list(visited.values())
+        return list(visited.values()), starts
 
-    def _nodes_for(self, parts: list[str]) -> list[_Node] | None:
+    def _nodes_for(self, parts: list[str]) -> list[IndexNode[WatchedLink]] | None:
         """The index nodes from the root down to the path ``parts``, created where
         missing, or ``None`` when that path is not inside the destination."""
         n = len(self._root_parts)
         if not self._under_root(parts):
             return None
-        nodes = [self._root]
-        for part in parts[n:]:
-            nodes.append(nodes[-1].child(part))
-        return nodes
+        return self._index.path([_key(part) for part in parts[n:]])
 
     # --- paths -------------------------------------------------------------------
 

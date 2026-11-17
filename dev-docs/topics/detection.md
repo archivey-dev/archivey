@@ -95,7 +95,7 @@ extension is the last step, and it is used only when every content signal declin
 | Step | Evidence | `confidence` | `detected_by` | Bound under `BALANCED` |
 | --- | --- | --- | --- | --- |
 | 1. Near magic | Exact magic inside the first 4 KiB (`DETECTION_LIMIT`) | `CERTAIN` | `magic` | 4 KiB read |
-| 2. SFX scan | Leading bytes look like a prefix; a validated archive needle behind it | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
+| 2. SFX scan | Leading bytes look like a prefix; a validated archive needle behind it (behind `#!`, also a compressed stream whose header passes its check, then probed for an inner TAR) | `PROBABLE` | `sfx_scan` | `min(size, 2 MiB)` read |
 | 3. Far magic | Exact magic past 4 KiB (ISO `CD001` at 32 769) | `CERTAIN` | `magic` | 32 774 bytes, once |
 | 4. Trailer magic | Exact magic at the start of a fixed block at EOF (UDIF `koly`, 512 bytes) | `CERTAIN` | `magic` | 512 bytes, on a cheap seek |
 | 5. Self-checking header | A first block that proves its format with no magic (a v7 TAR header's checksum) | `PROBABLE` | `content_probe` | nothing more read |
@@ -416,10 +416,11 @@ and give two answers depending on the entry point.
 decode, the completion re-check and the inner-TAR probe all draw on it, and a step the rest cannot cover does not
 run. A per-candidate cap cannot bound the total: with 2 MiB of back-to-back gzip headers,
 decoding each to a 64 KiB cap is hundreds of times more work than the input. Threat-model
-O11 has the measurement. No step decodes scan candidates today, so that case is not
-reachable yet. A step that does, such as compressor needles for makeself installers, must
-draw on the same allowance. Decode output is charged only by the inner-TAR probe. A content
-probe's output is bounded by the codec's own drain.
+O11 has the measurement. The one step that decodes a scan candidate, the
+compressed-stream needles behind a `#!` script, decodes only the hit the scan chooses,
+through the inner-TAR probe and this allowance, so that case stays out of reach. Decode
+output is charged only by the inner-TAR probe. A content probe's output is bounded by
+the codec's own drain.
 
 **Steps size their reads from the budget fields.** Each step in `detection.py` computes
 its own request from the budget (`min(SFX_MAX, max_scan_bytes)`, the far window, what is
@@ -590,10 +591,6 @@ is RAR's, for `unrar`, bounded by `SpoolLimits` and made after detection.
 
 ## 7. Open questions
 
-- **Is one decode allowance enough once a step decodes scan candidates?** It would change
-  whether makeself support needs its own cap. A measurement on a window packed with
-  compressor needles, run with that step in place, would answer it. Threat-model O11 stays
-  open until then.
 - **What does a wasted tail read cost on a cold cache or over a network?** It decides
   whether the ZIP tail probe can ever be on by default.
   [`prefixed-archives.md`](prefixed-archives.md) §3 has the argument.
