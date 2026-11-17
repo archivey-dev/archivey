@@ -599,6 +599,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ubuntu-24.04 keeps the older LTS image covered; see `test`.
           - { os: ubuntu-24.04, python-version: "3.11", install: all-lowest }
     steps: *test-steps
 
@@ -852,11 +853,6 @@ jobs:
         run: python3 scripts/ci/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
         if: ${{ !cancelled() }}
-        # lz4 4.4.5 has no PyPy wheel, and its lz4/frame/_frame.c assigns the PyObject *
-        # a capsule destructor receives to a struct pointer without a cast. GCC 14+
-        # (ubuntu-26.04 has 15) makes that an error; the code is correct, so demote it.
-        env:
-          CFLAGS: -Wno-error=incompatible-pointer-types
         run: |
           {
             echo "### ${{ matrix.python }}: optional packages"
@@ -864,7 +860,11 @@ jobs:
             echo "| package | result |"
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          for pkg in pyppmd inflate64 brotli lz4 cryptography pycdlib tqdm \
+          # No lz4: archivey does not use it under PyPy (deps._UNUSED_UNDER_PYPY), and
+          # 4.4.5 has no PyPy wheel. PyPy defines PyCapsule_Type, so lz4/frame/_frame.c
+          # compiles its capsulethunk destructors, which free the capsule object as if it
+          # were the context; GCC 14+ (ubuntu-26.04 has 15) refuses that assignment.
+          for pkg in pyppmd inflate64 brotli cryptography pycdlib tqdm \
               backports.zstd rapidgzip \
               pytest pytest-timeout pytest-xdist hypothesis py7zr rarfile \
               libarchive-c ncompress urllib3 fsspec pyzstd; do
