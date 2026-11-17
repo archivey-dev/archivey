@@ -7361,3 +7361,31 @@ def test_a_run_link_is_refused_where_the_filesystem_reports_inode_0(
         "EXTRACTED",
     ]
     assert sorted(os.listdir(dest / "e")) == ["y"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_a_run_link_made_where_a_parent_was_looked_up_before_is_refused(
+    tmp_path: Path,
+) -> None:
+    # `p/y` looks `p` up while `p` is a file (`q` makes the run have a link, so the
+    # look happens). The link that replaces that file is still found: no answer
+    # about a file's name is kept.
+    specs = [
+        ("dir", "e", None),
+        ("sym", "q", "e"),
+        ("file", "p", b"p"),
+        ("file", "p/y", b"y"),
+        ("sym", "p", "e"),
+        ("file", "p/x", b"x"),
+    ]
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(_tar_bytes(specs))) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["p/x"] is ExtractionStatus.BLOCKED
+    assert not (dest / "e" / "x").exists()

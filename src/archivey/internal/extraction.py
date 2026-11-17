@@ -935,7 +935,10 @@ class ExtractionCoordinator:
         ``dest`` (``DryRun.target_on_disk``) and is not affected. And everything is
         written to one filesystem, so a hardlink never falls back to a copy: the bytes
         such a copy counts against ``max_extracted_bytes`` in a ``dest`` that spans a
-        mount point are not counted.
+        mount point are not counted. That filesystem is the temp directory's: where it
+        folds case and ``dest``'s does not, or the other way round, a name in another
+        case meets a different entry, so a case variant of a symlink the run created is
+        refused in only one of the two runs (``_is_run_symlink`` asks the disk).
         """
         dest = Path(dest)
         if not self._dry_run:
@@ -2876,7 +2879,9 @@ class ExtractionCoordinator:
             self._state.run_symlinks.add((st.st_dev, st.st_ino))
         else:
             self._state.run_symlink_keys.add(self._physical_key(path))
-        self._state.through_run_link.clear()
+        # No cached answer changes: only a name that is on disk is cached
+        # (``_goes_through_run_link``), and a new link's name held nothing, or what
+        # it held was removed first, which clears the cache (``_note_link_change``).
 
     def _refuse_through_run_link(self, member: ArchiveMember, path: Path) -> None:
         """Refuse ``member`` when its path goes through a symlink this run created:
@@ -2895,9 +2900,12 @@ class ExtractionCoordinator:
 
     def _goes_through_run_link(self, parent: str) -> bool:
         """Whether the directory ``parent`` (as spelled under the destination) is, or
-        is under, a symlink this run created. Cached per directory, so each new
-        directory costs one ``lstat``. A loop, not recursion: a name can be thousands of
-        components deep."""
+        is under, a symlink this run created. A loop, not recursion: a name can be
+        thousands of components deep.
+
+        Cached per directory or link on disk, so each costs one ``lstat`` until one
+        is removed or replaced (``_resolutions_changed``). Any other name is not
+        cached: a later member may make a link there."""
         state = self._state
         cache = state.through_run_link
         dest = os.fspath(state.dest)
@@ -2917,25 +2925,33 @@ class ExtractionCoordinator:
             if head == current:
                 break
             current = head
-        # Down again: once one is under a run link, every directory below it is.
+        # Down again: once one is under a run link, every directory below it is. Below
+        # a name that is not a directory or link on disk, nothing is.
         for directory in reversed(unknown):
             if not answer:
-                answer = self._is_run_symlink(Path(directory))
+                found = self._is_run_symlink(Path(directory))
+                if found is None:
+                    return False
+                answer = found
             cache[directory] = answer
         return answer
 
-    def _is_run_symlink(self, path: Path) -> bool:
+    def _is_run_symlink(self, path: Path) -> bool | None:
         """Whether the entry at ``path`` is a symlink this run created, the same
         entry and not one put in its place since. Decided by identity, not by
         spelling, so a case variant, a name Windows trims or an 8.3 short name that
         reaches the link is caught too. Where the filesystem reports inode 0, by
-        ``_physical_key``, which folds case and trims a trailing dot or space."""
+        ``_physical_key``, which folds case and trims a trailing dot or space. ``None``
+        when nothing, or a file, is at ``path``: a later member may put a link there
+        without removing a directory or link, which is what clears the cache."""
         try:
             st = os.lstat(long_path(path))
         except OSError:
+            return None
+        if stat.S_ISDIR(st.st_mode):
             return False
         if not stat.S_ISLNK(st.st_mode):
-            return False
+            return None
         if st.st_ino:
             return (st.st_dev, st.st_ino) in self._state.run_symlinks
         return self._physical_key(path) in self._state.run_symlink_keys
@@ -3320,7 +3336,7 @@ class ExtractionCoordinator:
             if not self._taken_after_check(dest_path, atomic=False):
                 raise
             raise self._refusal(dest_path, transformed) from exc
-        self._resolutions_changed()
+        self._resolutions_changed(created=True)
 
         # Resolve the link now that it exists, through the real filesystem, and remove
         # it if it escapes. check_universal checked the target against the tree as it
@@ -4077,10 +4093,13 @@ class ExtractionCoordinator:
         del state.source_paths[source_id]
         return False
 
-    def _resolutions_changed(self) -> None:
-        """Forget the cached parent resolutions: a symlink was created or removed."""
+    def _resolutions_changed(self, *, created: bool = False) -> None:
+        """Forget the cached parent resolutions: a symlink was created or removed.
+        A symlink created at a free name changes no ``through_run_link`` answer,
+        which holds only names that are on disk."""
         self._state.resolved_parents.clear()
-        self._state.through_run_link.clear()
+        if not created:
+            self._state.through_run_link.clear()
 
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""

@@ -1997,7 +1997,11 @@ not create there is copied as an empty file; an entry that cannot be copied (the
 scratch filesystem is full, or the name is too long there) is left out; and a path
 whose links expand past `PATH_MAX` cannot be resolved and is refused, so where the
 scratch directory's path and `dest`'s differ in length, a member whose resolution
-passes that limit in only one of them MAY be refused in only one of the two runs. A
+passes that limit in only one of them MAY be refused in only one of the two runs. The
+scratch directory is on the temp directory's filesystem, so where that filesystem folds
+case and `dest`'s does not, or the other way round, a name in another case MAY meet a
+different entry in the two runs: under `TRUSTED` another member's name, and under every
+policy a symlink the run created, whose refusal then holds in only one of them. A
 `dest` that exists and is not a directory SHALL be refused as a real extraction
 refuses it. A `dest` that does not exist SHALL be refused with the error a real
 extraction gets creating it when the nearest part of its path that exists cannot be
