@@ -122,8 +122,9 @@ empty: `size` is that fork's length, and `lha.mac_type` and `lha.mac_creator` (4
 each) join `extra`. A member that fails reads whole, so an archived MacBinary file, which
 rarely matches the name and the time, keeps its wrapper. Level 0 has no OS id, so its
 members keep their wrapper, as in lhasa. The check costs one decode of 128 bytes per
-such member at listing; a member that fails to decode is left as it is, and its read
-fails as before.
+such member at listing (`LhaBitDecoder.read_head`), plus the decoder's window, filled
+with spaces before the first byte: 1 MiB for `-lhx-`, 128 KiB or less for the other
+methods. A member that fails to decode is left as it is, and its read fails as before.
 
 ### 2.3 Read
 
