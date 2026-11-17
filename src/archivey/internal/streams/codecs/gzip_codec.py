@@ -35,6 +35,7 @@ from archivey.internal.streams.codecs.base import (
 from archivey.internal.streams.codecs.deflate_decoder import GzipDecompressorStream
 from archivey.internal.streams.codecs.deflate_family_codec import _DeflateFamilyCodec
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
+from archivey.internal.streams.codecs.script_payload import check_gzip
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _DRAIN_CHUNK,
     _drain_into,
@@ -156,6 +157,7 @@ def _stdlib_gzip(source: CodecSource, config: StreamConfig) -> BinaryIO:
         index=config.records_restart_points,
         # A BGZF or mgzip walk reads the file's own sizes: declared seek demand only.
         file_index=config.seekable,
+        source_origin=config.source_origin,
     )
 
 
@@ -928,6 +930,7 @@ class GzipCodec(_DeflateFamilyCodec):
     checks_content = True
     stream_format = StreamFormat.GZIP
     magic = (MagicSignature(0, GZIP_MAGIC, ArchiveFormat.GZ),)
+    script_payload_check = staticmethod(check_gzip)
     # gzip is only a standalone stream format, never a 7z or ZIP coder, so no container
     # declares a pack size to clip it to and no AES pad follows its data.
     _bounds_source = False

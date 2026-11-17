@@ -25,6 +25,7 @@ Spec: https://github.com/facebook/zstd/blob/dev/contrib/seekable_format/zstd_see
 
 from __future__ import annotations
 
+import functools
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ def read_seek_table(
     stop_at: int = 0,
     start_decompressed_offset: int = 0,
     on_thinned: Callable[[], None] | None = None,
+    origin: int = 0,
 ) -> list[_FrameBounds]:
     """The frames the seek table at the end of ``stream`` lists, first to last.
 
@@ -83,6 +85,8 @@ def read_seek_table(
 
     The table covers the file from offset 0, so ``stop_at`` and
     ``start_decompressed_offset`` (the backward scans' resume arguments) must be 0.
+    ``origin`` is where ``stream`` starts in the file (``StreamConfig.source_origin``),
+    added to the offsets an error names.
     """
     assert stop_at == 0 and start_decompressed_offset == 0
     if file_size < _HEADER.size + _FOOTER.size:
@@ -135,8 +139,8 @@ def read_seek_table(
             decompressed += frame_decompressed
     if compressed != table_start:
         raise CorruptionError(
-            f"zstd seek table frames end at offset {compressed}, but the table "
-            f"starts at {table_start}"
+            f"zstd seek table frames end at offset {origin + compressed}, but the "
+            f"table starts at {origin + table_start}"
         )
     if kept.thinned and on_thinned is not None:
         on_thinned()
@@ -148,9 +152,14 @@ def read_seek_table(
 
 
 def build_seek_table_index(
-    inner: BinaryIO, last_known: SeekPoint, collector: DiagnosticCollector | None
+    inner: BinaryIO,
+    last_known: SeekPoint,
+    collector: DiagnosticCollector | None,
+    origin: int = 0,
 ) -> tuple[list[SeekPoint], int | None]:
     """Seek points at the frames the seek table lists, and the total size.
+
+    ``origin`` is where ``inner`` starts in the file, for the offsets errors name.
 
     ``([], None)`` for a file with no seek table. A table that does not match the file
     is reported as ``SEEK_INDEX_DEGRADED`` and gives the same, so reads decode from the
@@ -159,7 +168,7 @@ def build_seek_table_index(
     return build_index_backwards(
         inner,
         last_known,
-        read_seek_table,
+        functools.partial(read_seek_table, origin=origin),
         lambda f: SeekPoint(f.decompressed_start, f.compressed_start),
         "zstd seek table unreadable; falling back to sequential decompression. "
         "Reason: %s",

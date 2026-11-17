@@ -18,7 +18,7 @@ stops after the data tar. It also keeps the two tars apart, as ``dpkg-deb -R`` d
 data-tar member that can extract to ``DEBIAN`` or under it, in any spelling or through a
 data-tar symlink, is refused, and so is a control-tar member that extracts outside
 ``DEBIAN/``, a hard link in either tar whose target crosses to the other, and a data-tar
-symlink whose target lands in ``DEBIAN``, at once or once a later member moves it.
+symlink whose target lands in ``DEBIAN``, at once or once a later symlink moves it.
 ``dpkg-deb -R`` unpacks the data tar first, then fails on a ``DEBIAN`` path the data tar
 made, and GNU tar refuses a ``..`` name. ``DEBIAN/md5sums`` lists an MD5 per installed
 file: the walk holds it (it is part of the control tar, so it arrives first) and gives
@@ -60,6 +60,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -106,14 +107,16 @@ def _segments(path: str) -> list[str]:
 class _Link:
     """A recorded symlink: what resolving its target needs."""
 
-    __slots__ = ("directory", "rooted", "target")
+    __slots__ = ("directory", "rooted", "target", "text")
 
-    def __init__(self, directory: list[str], target: list[str], rooted: bool) -> None:
-        # The folded segments of the symlink's directory, its target's segments, and
-        # whether the target is rooted.
+    def __init__(self, directory: list[str], text: str) -> None:
+        # The folded segments of the symlink's directory, its target's segments,
+        # whether the target is rooted, and the target as stored: a hard link to the
+        # symlink extracts as a symlink with this text.
         self.directory = directory
-        self.target = target
-        self.rooted = rooted
+        self.target = _segments(text)
+        self.rooted = is_rooted(text)
+        self.text = text
 
 
 class _Node:
@@ -142,35 +145,50 @@ class _DataTree:
     a path costs one dictionary step per segment, and at most
     ``_MAX_SYMLINK_STEPS`` targets are followed.
 
+    The check has to hold for every selection of members a caller extracts, not only for
+    the whole tar, so the caller keeps every path's meaning independent of the
+    selection: a member under a symlink of the tar is refused (``locate``), and so is a
+    symlink at the path of a directory or of another symlink, and a directory at a
+    symlink's path. Then a symlink left out of a selection leaves nothing at its path,
+    and a path through it fails on disk instead of landing elsewhere. A file at a
+    symlink's path replaces the symlink only when both are extracted, so the tree keeps
+    the symlink: a path through a file fails too. A hard link to a symlink, through any
+    number of hard links, extracts as a symlink with the same target text, read from the
+    hard link's directory, so the tree records it as one. To see a directory that only a
+    member's parent makes, the trie holds a node for every directory, not only for the
+    symlinks.
+
     A symlink stays on disk, so a later symlink can change where an earlier one's
     target lands: ``x -> y/DEBIAN/control``, then ``y -> .``. As extraction's
     ``LinkWatch`` does, the tree keeps a :class:`DependencyIndex` of the paths each
     symlink's target resolution looked up, and ``add_symlink`` resolves again the
     targets of the symlinks that looked up the new symlink's path, and only those.
-    A file, hard link or other non-directory at a symlink's path replaces the
-    symlink in extraction under every overwrite policy, so ``add_entry`` forgets it
-    and rechecks the same way. A directory and a symlink at one path are refused
-    instead: which one extraction keeps depends on the overwrite policy, so the
-    tree cannot know where later members land. To see a directory that only a
-    member's parent makes, the trie holds a node for every directory, not only for
-    the symlinks.
 
-    Each later member can redirect every earlier symlink, so the rechecks can cost
-    links x links resolutions. Their segment steps count against ``budget``
-    (``ListingLimits.max_members``), and ``ResourceLimitError`` is raised when it is
-    spent. The unit is a step, not a resolution as in ``LinkWatch``: one resolution
-    here can follow 40 symlinks, so a count of resolutions would allow 40 times the
+    Two kinds of work grow faster than the tar, and both count against ``budget``
+    (``ListingLimits.max_members``), one per path step, with ``ResourceLimitError``
+    once it is spent:
+
+    - Every step taken inside a target the walk follows, in any resolution. Each
+      of 40 follows can push a long target again, and every symlink that routes
+      through it walks it again, so N short symlinks through 40 long ones cost
+      N x 40 x their length. A walk over the resolved path's own segments is free,
+      so an ordinary ``libfoo.so -> libfoo.so.1`` costs nothing.
+    - Every step of a recheck. Each later symlink can redirect every earlier one,
+      so the rechecks can cost links x links resolutions.
+
+    The unit is a step, not a resolution as in ``LinkWatch``: one resolution here
+    can follow 40 symlinks, so a count of resolutions would allow 40 times the
     work.
     """
 
     def __init__(self, budget: int | None) -> None:
         self._root = _Node()
         self._index: DependencyIndex[_Link] = DependencyIndex()
-        # Recheck steps left (None: no bound), and the limit they came from.
+        # Steps left (None: no bound), and the limit they came from.
         self._budget = budget
         self._limit = budget
-        # Segment steps taken by every resolution so far, to charge rechecks.
-        self._steps = 0
+        # Steps over the resolved paths' own segments, which only a recheck pays.
+        self._own_steps = 0
 
     def resolve(
         self, path: str, *, follow_last: bool, base: list[str] | None = None
@@ -178,10 +196,8 @@ class _DataTree:
         """The folded segments of where ``path`` lands, read from ``base`` (folded
         segments of a directory; the package root when ``None``).
 
-        With ``follow_last`` false, the last segment is not followed: the member
-        at ``path`` replaces a symlink there, as extraction does. That only reads
-        the tree; ``add_symlink``, ``add_directory`` and ``add_entry`` record the
-        member there."""
+        With ``follow_last`` false, the last segment is not followed, as for a
+        member's own name. This only reads the tree."""
         return self._resolve(_segments(path), follow_last, base, None)
 
     def _resolve(
@@ -203,8 +219,15 @@ class _DataTree:
         starts = [indexed[-1]] if indexed else []
         visited: list[IndexNode[_Link]] = []
         follows = 0
+        # The pending segments that are the path's own: the bottom of the stack,
+        # under every target a follow pushed.
+        own = len(pending)
         while pending:
-            self._steps += 1
+            if len(pending) <= own:
+                own -= 1
+                self._own_steps += 1
+            else:
+                self._spend(1)
             segment = pending.pop()
             if segment == "..":
                 if out:
@@ -271,37 +294,85 @@ class _DataTree:
         node.directory = True
         return node
 
+    def locate(self, path: str) -> tuple[list[str], bool]:
+        """The folded segments of ``path`` with its ``..`` taken lexically, as
+        ``sanitize_names`` takes them, and whether a segment before the last names
+        a symlink of the tree. When none does, extraction writes the member at that
+        path, whichever members were selected."""
+        out: list[str] = []
+        nodes: list[_Node | None] = [self._root]
+        crossed = False
+        for segment in _segments(path):
+            if segment == "..":
+                if out:
+                    out.pop()
+                    nodes.pop()
+                continue
+            parent = nodes[-1]
+            if parent is not None and parent.link is not None:
+                crossed = True
+            key = _fold(segment)
+            out.append(key)
+            nodes.append(parent.children.get(key) if parent is not None else None)
+        return out, crossed
+
+    def lands_in_control_lexically(self, where: list[str], target: str) -> bool:
+        """Whether ``target``, read from the directory of the symlink at ``where``
+        with every ``..`` taken lexically and no symlink followed, lands in
+        ``DEBIAN``. A read of the symlink resolves its target this way
+        (``resolve_link_target_name``)."""
+        # Built in place: a copy per segment would make one long target cost
+        # the square of its length.
+        out = [] if is_rooted(target) else list(where[:-1])
+        for segment in _segments(target):
+            if segment == "..":
+                if out:
+                    out.pop()
+            else:
+                out.append(_fold(segment))
+        return out[:1] == [_CONTROL_KEY]
+
+    def has_symlink(self, where: list[str]) -> bool:
+        """Whether the tree holds a symlink at ``where``."""
+        return self.symlink_text(where) is not None
+
+    def symlink_text(self, where: list[str]) -> str | None:
+        """The stored target of the symlink at ``where``, or ``None`` when the tree
+        holds none there."""
+        node = self._find(where)
+        return None if node is None or node.link is None else node.link.text
+
     def is_directory(self, where: list[str]) -> bool:
         """Whether a directory member, or a parent of a member, landed at ``where``."""
+        node = self._find(where)
+        return node is not None and node.directory
+
+    def _find(self, where: list[str]) -> _Node | None:
         node = self._root
         for key in where:
             child = node.children.get(key)
             if child is None:
-                return False
+                return None
             node = child
-        return node.directory
+        return node
 
     def add_symlink(self, where: list[str], target: str) -> bool:
-        """Record a symlink at ``where`` (``resolve`` of its name, ``follow_last``
-        false) and say whether a symlink's target lands in ``DEBIAN``: this one's,
-        or an earlier one's that this one redirects. The caller refuses a symlink at
-        a directory first (``is_directory``)."""
+        """Record a symlink at ``where`` (``locate`` of its name) and say whether a
+        symlink's target lands in ``DEBIAN``: this one's, or an earlier one's that
+        this one redirects. The caller refuses a symlink where the tree holds a
+        directory or a symlink first."""
         if not where:
             return self.resolve(target, follow_last=True)[:1] == [_CONTROL_KEY]
         node = self._parent(where).children.setdefault(where[-1], _Node())
-        if node.link is not None:
-            # The new symlink replaces this one, whose target no longer matters.
-            self._index.forget(node.link)
         # The symlinks whose targets looked up this path: a symlink here moves them.
         affected = self._index.dependents(where)
-        link = _Link(where[:-1], _segments(target), is_rooted(target))
+        link = _Link(where[:-1], target)
         node.link = link
         return self._lands_in_control(link) or self._recheck(affected)
 
     def add_directory(self, where: list[str]) -> bool:
         """Record a directory member at ``where`` and say whether the tree holds a
-        symlink there. Then which of the two extraction keeps depends on the overwrite
-        policy, and the caller refuses the package."""
+        symlink there, which the caller refuses."""
         if not where:
             return False
         node = self._parent(where).children.setdefault(where[-1], _Node())
@@ -310,41 +381,41 @@ class _DataTree:
         node.directory = True
         return False
 
-    def add_entry(self, where: list[str]) -> bool:
+    def add_entry(self, where: list[str]) -> None:
         """Record a member that is neither a directory nor a symlink (a file, a hard
-        link, a device) at ``where``, and say whether it sends an earlier symlink's
-        target into ``DEBIAN``.
+        link to one, a device) at ``where``: its parent is a directory. A hard link
+        to a symlink extracts as a symlink, and goes to ``add_symlink``.
 
-        Extraction replaces a symlink there with the member under every overwrite
-        policy, so the tree forgets the symlink, and resolves again the targets that
-        looked up ``where``: ``y`` becoming a file moves ``x -> y/../DEBIAN``."""
-        if not where:
-            return False
-        node = self._parent(where).children.get(where[-1])
-        if node is None or node.link is None:
-            return False
-        # Forgotten first, so a symlink whose own target looked up its path is not
-        # rechecked, and recorded again, after it is gone.
-        self._index.forget(node.link)
-        node.link = None
-        return self._recheck(self._index.dependents(where))
+        A symlink at ``where`` stays in the tree. Extraction replaces it with the
+        member when both are extracted, and then a path through ``where`` names no
+        directory; it stays when the member is not selected. The tree keeps the one
+        view under which such a path resolves."""
+        if where:
+            self._parent(where)
+
+    def _spend(self, steps: int) -> None:
+        """Charge ``steps`` path steps to the budget."""
+        if self._budget is None:
+            return
+        self._budget -= steps
+        if self._budget < 0:
+            raise ResourceLimitError(
+                f"Symlink resolution limit reached: max_members={self._limit} (the "
+                "symlinks of the Debian package data tar follow each other, or later "
+                "ones redirect earlier ones, and resolving them took more path steps "
+                "than that)"
+            )
 
     def _recheck(self, affected: list[_Link]) -> bool:
         """Resolve ``affected`` again, the symlinks whose targets looked up a path
-        that changed, and say whether one of them lands in ``DEBIAN`` now. The steps
-        count against the budget."""
+        that changed, and say whether one of them lands in ``DEBIAN`` now. Every
+        step counts against the budget: the followed ones as they are taken, the
+        target's own ones here, at least one per recheck."""
         for earlier in affected:
-            if self._budget is not None and self._budget <= 0:
-                raise ResourceLimitError(
-                    f"Symlink recheck limit reached: max_members={self._limit} (later "
-                    "members of the Debian package data tar redirect earlier symlinks, "
-                    "and rechecking those took more path steps than that)"
-                )
-            before = self._steps
+            before = self._own_steps
             if self._lands_in_control(earlier):
                 return True
-            if self._budget is not None:
-                self._budget -= max(1, self._steps - before)
+            self._spend(max(1, self._own_steps - before))
         return False
 
 
@@ -563,31 +634,41 @@ class DebReader(SequentialReader):
         ``DEBIAN/control`` would replace the real control file in the listing and in
         extraction, and a hard link would read a control file's bytes.
 
-        The same holds through the data tar's symlinks (``_DataTree``): a symlink
-        whose target lands in ``DEBIAN`` is refused (``foo -> DEBIAN``,
+        The same holds through the data tar's symlinks (``_DataTree``): a symlink whose
+        target lands in ``DEBIAN`` is refused (``foo -> DEBIAN``,
         ``usr/l -> ../DEBIAN``, ``x -> /DEBIAN/control``), and so is a member or a
-        hard-link target that lands there through an earlier symlink (``d -> .``,
-        then ``d/DEBIAN/control``). A later symlink that sends an earlier one's
-        target there is refused too (``x -> y/DEBIAN/control``, then ``y -> .``
-        refuses ``y``), and so is a later file or hard link that replaces a
-        symlink and sends an earlier one there. A directory and a symlink at one
-        path are refused, as extraction keeps the one the overwrite policy picks.
-        Otherwise extraction writes through the symlink
-        into a control file, and a read of the symlink returns one. ``dpkg-deb -R``
-        unpacks the data tar first, so there such a symlink names nothing; refusing
-        it is stricter, as the spellings above are.
+        hard-link target that lands there through an earlier symlink (``d -> .``, then
+        ``d/DEBIAN/control``). A later symlink that sends an earlier one's target there
+        is refused too (``x -> y/DEBIAN/control``, then ``y -> .`` refuses ``y``), and
+        so is one whose target lands there lexically, as a read of the symlink resolves
+        it (``x -> y/../DEBIAN/control``). So that this holds for every selection of
+        members, a member under a data symlink is refused, and so is a symlink at the
+        path of a directory or another symlink (``_DataTree``). A hard link to a symlink
+        is checked as the symlink extraction makes of it (``q/h`` linked to
+        ``a/b/x -> ../DEBIAN`` names ``DEBIAN``). Otherwise extraction writes through
+        the symlink into a control file, and a read of the symlink returns one.
+        ``dpkg-deb -R`` unpacks the data tar first, so there such a symlink names
+        nothing; refusing it is stricter, as the spellings above are.
         """
         context = self._context
         tree = _DataTree(context.config.listing_limits.max_members)
         for span in context.open_nested(data, fmt):
             member = span.member
-            where = tree.resolve(member.name, follow_last=False)
-            if extracted_top_key(member.name) == _CONTROL_KEY or where[:1] == [
-                _CONTROL_KEY
-            ]:
+            where, crossed = tree.locate(member.name)
+            if extracted_top_key(member.name) == _CONTROL_KEY or (
+                tree.resolve(member.name, follow_last=False) if crossed else where
+            )[:1] == [_CONTROL_KEY]:
                 raise CorruptionError(
                     "Debian package data tar has a member that extracts into DEBIAN/, "
                     "the directory of the control files",
+                    member_name=member.name,
+                )
+            if crossed:
+                raise CorruptionError(
+                    "Debian package data tar has a member under a symlink it made; "
+                    "extraction writes it through the symlink, or into a directory "
+                    "there when the symlink is not extracted, so where it lands, "
+                    "DEBIAN/ included, depends on the members selected",
                     member_name=member.name,
                 )
             if (
@@ -605,26 +686,37 @@ class DebReader(SequentialReader):
                     member_name=member.name,
                     link_target=member.link_target,
                 )
-            if member.type is MemberType.SYMLINK and member.link_target is not None:
-                if tree.is_directory(where):
+            # Extraction makes a hard link to a symlink a symlink with the same
+            # target text, read from the hard link's own directory.
+            text = (
+                member.link_target
+                if member.type is MemberType.SYMLINK
+                else tree.symlink_text(tree.locate(member.link_target)[0])
+                if member.type is MemberType.HARDLINK and member.link_target
+                else None
+            )
+            if text is not None:
+                if tree.is_directory(where) or tree.has_symlink(where):
                     raise self._shared_path(member.name)
-                if tree.add_symlink(where, member.link_target):
+                if tree.lands_in_control_lexically(where, text) or tree.add_symlink(
+                    where, text
+                ):
                     raise CorruptionError(
                         "Debian package data tar has a symlink to a path in DEBIAN/, "
-                        "the directory of the control files",
+                        "the directory of the control files"
+                        + (
+                            ""
+                            if member.type is MemberType.SYMLINK
+                            else f" (a hard link to a symlink, extracted as -> {quoted(text)})"
+                        ),
                         member_name=member.name,
                         link_target=member.link_target,
                     )
             elif member.type is MemberType.DIRECTORY:
                 if tree.add_directory(where):
                     raise self._shared_path(member.name)
-            elif member.type is not MemberType.SYMLINK and tree.add_entry(where):
-                raise CorruptionError(
-                    "Debian package data tar has a member that replaces a symlink, "
-                    "which sends an earlier symlink to a path in DEBIAN/, the "
-                    "directory of the control files",
-                    member_name=member.name,
-                )
+            elif member.type is not MemberType.SYMLINK:
+                tree.add_entry(where)
             if member.type is MemberType.FILE:
                 digest = self._md5.get(member.name)
                 if digest is not None:
@@ -634,9 +726,10 @@ class DebReader(SequentialReader):
     @staticmethod
     def _shared_path(name: str) -> CorruptionError:
         return CorruptionError(
-            "Debian package data tar has a directory and a symlink at one path; which "
-            "one extraction keeps depends on the overwrite policy, so where the later "
-            "members land, DEBIAN/ included, cannot be checked",
+            "Debian package data tar has a symlink at the path of a directory or of "
+            "another symlink; which one ends up on disk depends on the overwrite "
+            "policy and on the members selected, so where the later members land, "
+            "DEBIAN/ included, cannot be checked",
             member_name=name,
         )
 

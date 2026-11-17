@@ -28,6 +28,7 @@ from archivey.internal.streams.codecs.framed_decoder import (
     stream_magic,
 )
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
+from archivey.internal.streams.codecs.script_payload import check_lz4
 from archivey.internal.streams.decompressor_stream import StreamChecksumError
 from archivey.types import (
     ArchiveFormat,
@@ -82,6 +83,7 @@ class Lz4Codec(StreamCodec):
         # The legacy stream ``lz4 -l`` writes, and Linux kernel images use.
         MagicSignature(0, LEGACY_MAGIC, ArchiveFormat.LZ4),
     )
+    script_payload_check = staticmethod(check_lz4)
     requirement = LZ4_REQUIREMENT
 
     @override

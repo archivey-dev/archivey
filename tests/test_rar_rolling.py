@@ -410,6 +410,26 @@ def test_the_feeder_answers_a_translated_prompt_by_the_volume_name() -> None:
         volumes.close()
 
 
+def test_the_feeder_stops_quietly_when_the_reader_closed_unrar_s_input() -> None:
+    """A reader that closes ``unrar``'s stdin while the feeder writes the volume a
+    prompt asked for: ``unrar`` ends at the end of its input, so the answer is not
+    needed, and the closed stdin is no failure of the feeder that a close reports."""
+    data = b"z" * 10
+    volumes = rl.RollingVolumes(
+        5, [_member(_rar5_header(10), data)] * 3, solid=False, volume_bytes=80
+    )
+    try:
+        volumes.write_next()
+        proc = _FakeProc(b"\nInsert disk with /t/v.part000002.rar [C]ontinue ")
+        proc.stdin.close()
+        feeder = rl.VolumeFeeder(proc, volumes)  # type: ignore[arg-type]
+        feeder.join()
+        assert feeder.error is None
+        assert not proc.killed
+    finally:
+        volumes.close()
+
+
 # --- The reader ------------------------------------------------------------------
 
 

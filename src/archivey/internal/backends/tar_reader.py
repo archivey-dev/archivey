@@ -110,8 +110,8 @@ from archivey.internal.backends.tar_parser import (
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
+    open_at_script_payload,
     pass_has_data,
-    reject_start_offset,
 )
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
@@ -2255,8 +2255,9 @@ class TarReadBackend(ReadBackend):
         end_offset: int | None = None,
         program_resources: ProgramResources | None = None,
     ) -> TarReader:
-        reject_start_offset(
-            start_offset, format, archive_name, end_offset, program_resources
+        # A stream behind a ``#!`` script starts past it (detection's payload offset).
+        open_at_script_payload(
+            source, start_offset, format, archive_name, end_offset, program_resources
         )
         # `format` carries the concrete (TAR, <stream>) variant the detector/caller resolved;
         # the backend uses its stream to pick the codec to decompress with.

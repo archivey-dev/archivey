@@ -591,6 +591,7 @@ def ZlibDecompressorStream(
     index: bool = False,
     file_index: bool = True,
     natives: Natives = IN_PROCESS,
+    source_origin: int = 0,
 ) -> DecompressorStream:
     """Inflate a raw-deflate or zlib-wrapped stream.
 
@@ -607,6 +608,7 @@ def ZlibDecompressorStream(
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
         file_index=file_index,
+        source_origin=source_origin,
     )
 
 
@@ -618,6 +620,7 @@ def GzipDecompressorStream(
     index: bool = False,
     file_index: bool = True,
     natives: Natives = IN_PROCESS,
+    source_origin: int = 0,
 ) -> DecompressorStream:
     """Inflate a gzip stream with multi-member chaining.
 
@@ -633,4 +636,5 @@ def GzipDecompressorStream(
         codec_name="gzip",
         report_trailing_data=report_trailing_data,
         file_index=file_index,
+        source_origin=source_origin,
     )

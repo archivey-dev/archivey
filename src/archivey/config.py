@@ -369,10 +369,11 @@ class ListingLimits:
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``
-    the path steps of resolving again the data tar's symlinks that a later member
-    moves, one per step, and refuses the package when they cross it.
-    SquashFS walks the whole directory tree before it lists a member, and weighs the
-    paths it finds, and the symlink targets it keeps for later, against
+    the path steps of the data tar's symlink resolutions that grow faster than the tar:
+    every step inside a symlink target that a resolution follows, and every step of
+    resolving again the symlinks that a later symlink moves. It refuses the package when
+    they cross it. SquashFS walks the whole directory tree before it lists a member, and
+    weighs the paths it finds, and the symlink targets it keeps for later, against
     ``max_metadata_bytes`` as it goes: a listing whose names and kept targets cross the
     limit raises before its first member. Other symlink targets are weighed as each
     member is made. For names that are valid UTF-8 or use a one-byte ``encoding``, the
@@ -732,8 +733,14 @@ class DecoderLimits:
     gap a forward seek skips, and the bytes a decoder produces to get past members
     nobody reads (a compressed TAR's listing, a solid RAR's prefix, a CAB folder, a 7z
     header stored compressed). A byte decoded again counts again. The read that crosses
-    it decodes at most one byte past it and raises
-    :exc:`~archivey.exceptions.ResourceLimitError`, which stops an extraction.
+    it raises :exc:`~archivey.exceptions.ResourceLimitError`, which stops an
+    extraction. In an archive opened alone, that read decodes one byte past the cap.
+    In a nested archive it can go further: to fill an inner reader's read, the outer
+    reader decodes bytes that count too, after the inner read has sized itself
+    against what is left. Each read is sized against what is left when it starts, so
+    on one thread a nest decodes at most about twice the cap, at any depth. A child
+    whose cap is stricter than its outer readers' stops its own reads at its cap,
+    but the bytes the outer readers decode for it are held only by their cap.
 
     The count never refills while the nest lives, so on a reader kept open for long
     (an :class:`~archivey.fsspec.ArchiveyFileSystem`, a reader a server shares) this

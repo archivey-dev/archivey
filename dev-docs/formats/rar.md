@@ -1192,9 +1192,12 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   volume is split (`RollingVolumes`), so this is rare at the default 16 MiB volume. A
   `UOW` or `CMT` after such a member is written into it when the next member is listed
   or the pass ends (`_add_late_records`); the member is not final until then
-  (`member_state_final`), and extraction places it after the pass. The walk waits for
-  the caller to build a member listed early before it reads the next header
-  (`_ForwardPass.listed`), so nothing changes the parsed header during the build. While
+  (`member_state_final`), and extraction places it after the pass. The caller builds a
+  member listed early, and the walk reads the next header, each under one lock
+  (`_ForwardPass.building`), so nothing changes the parsed header during the build. The
+  walk never waits for the caller to list a member: the caller may be inside the read
+  of an earlier member that decoded short, waiting for output that `unrar` writes only
+  after the volume the walk is writing. A wait there was a deadlock, fixed 2026-11. While
   waiting for the next member, the caller reads past `unrar`'s output of the members it
   was given, so `unrar` never blocks on a full pipe while the walk waits for its prompt.
 - **Listing without a pass** (`members_report()`) walks with the data skipped and writes
