@@ -1242,7 +1242,7 @@ def _scan_for_sfx_payload(
 
     ``restrict_to_validated`` is the shebang cue: a script is text, so magics appear
     as literals. Search only formats that have a hit validator — derived from
-    ``validators``, so 7z/RAR join automatically when they register theirs. Do not
+    ``validators``, so a format joins when it registers one. Do not
     key this off :attr:`ExecutableCue.WEAK` alone: an unconfirmed ``MZ`` / ELF stub
     is the live 7z/RAR SFX path and keeps the full needle set.
 

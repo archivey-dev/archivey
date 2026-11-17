@@ -367,8 +367,8 @@ class BackendRegistry:
         """Format-owned checks the SFX scan calls on a candidate-relative view.
 
         Collected from ``ReadBackend.SFX_HIT_VALIDATOR`` next to ``SFX_MAGIC``. A
-        missing validator means a needle match is enough. ZIP, 7z, and RAR each
-        supply one so ``detection.py`` does not parse those formats.
+        missing validator means a needle match is enough. Each format that reads a
+        prefixed archive supplies one, so ``detection.py`` parses none of them.
         """
         mapping: dict[ArchiveFormat, HitValidator] = {}
         for cls in self._reader_classes:
@@ -811,10 +811,10 @@ def format_availability(
     package that ``exclude_libraries`` lists or ``only_libraries`` leaves out counts as
     absent, listed in ``missing`` with the policy as its ``reason``, and a container in
     ``replace`` is answered for the plugin that reads it, whose ``requires`` count as a
-    registered plugin's do. With ``check_programs=True``, a setting that names a program
-    (``unrar_path``) is used too, to look for that program. Whether the format may open
-    is another question, answered by ``config.formats.allows(fmt)``; a caller needs
-    both.
+    registered plugin's do. With ``check_programs=True``, ``config.unrar_path`` changes
+    it too: it picks the ``unrar`` binary to look for. ``unar_path`` and
+    ``rar_decompressor`` do not. Whether the format may open is another question,
+    answered by ``config.formats.allows(fmt)``; a caller needs both.
     """
     # Anything that is not a format is refused here: a StreamFormat, a ContainerFormat
     # or a stray string would otherwise reach the method and fail with an untranslated
