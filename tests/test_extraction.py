@@ -5604,6 +5604,43 @@ def test_a_fill_that_meets_an_always_stop_limit_leaves_no_empty_link(
     assert sorted(p.name for p in dest.iterdir()) == ["a"]
 
 
+def test_a_placeholder_whose_stat_fails_fails_its_link_and_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The stat of `h`'s fresh placeholder fails (injected). `h` fails, its empty
+    # file is removed, and `h2` is not linked to it: `h2` gets the placeholder that
+    # the second pass fills.
+    archive = _tar_bytes(
+        [("file", "s", b"0123456789"), ("hard", "h", "s"), ("hard", "h2", "s")]
+    )
+    hold = ExtractionCoordinator._hold
+
+    def failing_hold(self: ExtractionCoordinator, *args: object) -> None:
+        if cast(Path, args[-1]).name != "h":
+            return hold(self, *args)  # type: ignore[arg-type]
+
+        def lstat(path: object, *a: object, **kw: object) -> os.stat_result:
+            raise OSError(errno.EIO, "injected")
+
+        with monkeypatch.context() as m:
+            m.setattr(extraction_module.os, "lstat", lstat)
+            return hold(self, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ExtractionCoordinator, "_hold", failing_hold)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, on_error=OnError.CONTINUE, members=lambda m: m.name != "s"
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses == {
+        "h": ExtractionStatus.FAILED,
+        "h2": ExtractionStatus.EXTRACTED,
+    }
+    assert sorted(p.name for p in dest.iterdir()) == ["h2"]
+    assert (dest / "h2").read_bytes() == b"0123456789"
+
+
 def test_a_held_link_over_a_callers_symlink_is_filled_when_the_run_stops(
     tmp_path: Path,
 ) -> None:

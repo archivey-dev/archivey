@@ -3526,9 +3526,18 @@ class ExtractionCoordinator:
         names, so a later member that re-points one of the archive's symlinks on its
         way or replaces it does not make the second pass write elsewhere."""
         physical = self._physical_path(landed)
-        # The file was landed a moment ago: a failure here propagates, so
-        # ``_handling`` fails the link rather than reporting an empty file as made.
-        st = os.lstat(long_path(physical))
+        try:
+            st = os.lstat(long_path(physical))
+        except OSError:
+            # The file was landed a moment ago, so this is rare. The link fails
+            # (``_handling``): the empty file it landed is removed and no longer
+            # offered as the source's path, so no empty file stands for it and no
+            # later link is made to it unfilled.
+            self._forget_source_path(landed)
+            with contextlib.suppress(OSError):
+                os.unlink(long_path(physical))
+            self._state.written_paths.discard(landed)
+            raise
         held = self._state.held.setdefault(source.member_id, _HeldSource(source))
         link = _HeldLink(
             result_index,
