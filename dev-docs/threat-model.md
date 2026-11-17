@@ -798,7 +798,10 @@ no password matches, which costs 4.4 s per member per candidate (0.013 s at the 
 derivation runs in `hashlib` and cannot be interrupted. The caches
 (`internal/backends/sevenzip_aes.py` `SevenZipKeyCache`, `rar_parser.py` `RarKdfCache`)
 make an honest archive cost one or two derivations. RAR3 is charged its fixed `2**18`;
-ZIP AES's fixed 1000 rounds are not counted. The budget is in rounds, not derivations,
+makeself openssl's fixed 10 000 PBKDF2 rounds are charged per payload, salt and
+candidate, cached on the reader (`makeself_reader.py` `_derive`), because a crafted
+header can name many payloads. ZIP AES's fixed 1000 rounds and makeself's one
+`EVP_BytesToKey` round are not counted. The budget is in rounds, not derivations,
 because a derivation count would either refuse honest per-member salting or admit
 hostile archives depending on declared cost. A spent budget raises `ResourceLimitError`,
 which the RAR header walks let through so candidate iteration stops rather than reading
