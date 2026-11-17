@@ -72,6 +72,16 @@ def _entry_name(entry: _ExcludeEntry) -> str:
     return f"{type(entry).__name__}.{entry.name}"
 
 
+def excluded_method_refusal(method: CompressionAlgorithm) -> str:
+    """The refusal text for data that runs ``method`` when ``exclude=`` lists it. A
+    decoder that finds the method inside a stream, where no member names it, adds
+    where it found it."""
+    return (
+        f"ArchiveyConfig.formats does not allow {_entry_name(method)}: "
+        "exclude= lists it"
+    )
+
+
 def _coerce_entries(
     values: object, *, param: str, methods: bool = False
 ) -> frozenset[_ExcludeEntry]:
@@ -601,10 +611,7 @@ class FormatPolicy:
         """
         if isinstance(codec, CompressionAlgorithm):
             if codec in self.exclude:
-                return (
-                    f"ArchiveyConfig.formats does not allow {_entry_name(codec)}: "
-                    "exclude= lists it"
-                )
+                return excluded_method_refusal(codec)
             return None
         method = _STREAM_METHODS.get(codec) if isinstance(codec, StreamFormat) else None
         if method is not None and method in self.exclude:

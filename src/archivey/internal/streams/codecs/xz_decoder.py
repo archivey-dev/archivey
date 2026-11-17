@@ -43,6 +43,7 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.format_policy import excluded_method_refusal
 from archivey.internal.config import (
     DecoderLimits,
     check_decoder_memory,
@@ -970,43 +971,45 @@ def _filter_refusal(filter_id: int) -> ArchiveyError:
     """The policy's refusal of a block that runs ``filter_id``. It is no verdict on
     the data: a seek that resumes at the block raises it, rather than doubt the index
     and decode again from the start to the same refusal."""
-    method = _XZ_FILTER_METHODS[filter_id]
     return mark_no_verdict(
         UnsupportedFeatureError(
-            f"ArchiveyConfig.formats does not allow CompressionAlgorithm.{method.name}: "
-            f"exclude= lists it, and an xz block runs it (filter {filter_id:#04x})"
+            f"{excluded_method_refusal(_XZ_FILTER_METHODS[filter_id])}, and an xz "
+            f"block runs it (filter {filter_id:#04x})"
         )
     )
 
 
-def _block_filter_ids(header: bytes) -> list[int]:
-    """The filter IDs a whole block header declares, in chain order.
+def _block_filters(header: bytes) -> list[tuple[int, bytes]]:
+    """The filters a whole block header declares, in chain order, as ``(filter ID,
+    properties)``. The header's CRC32 is not checked here.
 
-    ``header`` is hostile: each field is bounds-checked against the header's own size,
-    and a header that does not parse raises ``CorruptionError``. Its CRC32 is checked
-    first, as liblzma checks it before it uses the header.
+    ``header`` is hostile: each field is bounds-checked against the header's own size.
+    Reserved flag bits raise ``UnsupportedFeatureError``, as liblzma reads them as
+    options it does not know; any other header that does not parse raises
+    ``CorruptionError``.
     """
-    (stored,) = struct.unpack_from("<I", header, len(header) - 4)
-    if zlib.crc32(memoryview(header)[:-4]) & 0xFFFFFFFF != stored:
-        raise CorruptionError("XZ block header CRC32 mismatch")
     body = header[:-4]
     flags = body[1]
     if flags & 0x3C:
-        raise CorruptionError("XZ block header has reserved flags set")
+        raise UnsupportedFeatureError("XZ block header has reserved flags set")
     pos = 2
     for size_present in (flags & 0x40, flags & 0x80):
-        if size_present:  # compressed, then uncompressed size
+        if size_present:  # compressed, then uncompressed size: not needed here
             pos += _decode_mbi(iter(body[pos : pos + 9]))[1]
-    ids: list[int] = []
+    filters: list[tuple[int, bytes]] = []
     for _ in range((flags & 0x03) + 1):
         filter_id, n = _decode_mbi(iter(body[pos : pos + 9]))
         pos += n
         props_size, n = _decode_mbi(iter(body[pos : pos + 9]))
-        pos += n + props_size
-        if pos > len(body):
+        pos += n
+        props = body[pos : pos + props_size]
+        pos += props_size
+        if len(props) != props_size:
             raise CorruptionError("XZ block header filter properties are truncated")
-        ids.append(filter_id)
-    return ids
+        filters.append((filter_id, props))
+    if any(body[pos:]):
+        raise CorruptionError("XZ block header padding is not zero")
+    return filters
 
 
 class _XzFilterGuard:
@@ -1026,11 +1029,13 @@ class _XzFilterGuard:
     part with liblzma already, but never its last byte, so liblzma never reads the
     chain. The engine raises ``error`` once liblzma has decoded what it
     was given, so the blocks before the refused one still read. The walk follows the
-    stream as liblzma does for any data liblzma accepts. Where the structure is one
-    liblzma refuses too (a header CRC, an LZMA2 chunk control byte), ``error`` is a
-    ``CorruptionError`` rather than a walk that loses its place. It stops at the
-    index, and at a header whose chain does not end in LZMA2, which liblzma refuses
-    before it decodes the block.
+    stream as liblzma does for any data liblzma accepts. It stops at the index, and at
+    a block header that liblzma refuses before it decodes the block: one whose CRC32
+    does not match, that :func:`_block_filters` cannot parse, or whose chain does not
+    end in LZMA2. liblzma's own error then stands, so the policy never changes the
+    error for a header it does not refuse. An LZMA2 chunk control byte that liblzma
+    refuses too makes ``error`` a ``CorruptionError``, rather than a walk that loses
+    its place.
     """
 
     __slots__ = (
@@ -1117,7 +1122,16 @@ class _XzFilterGuard:
         self._expect(field[0] * 4 + 3, self._block_header)
 
     def _block_header(self, rest: bytes) -> None:
-        ids = _block_filter_ids(self._head + rest)
+        header = self._head + rest
+        try:
+            if zlib.crc32(header[:-4]) != int.from_bytes(header[-4:], "little"):
+                raise CorruptionError("XZ block header CRC32 mismatch")
+            ids = [filter_id for filter_id, _ in _block_filters(header)]
+        except ArchiveyError:
+            # liblzma refuses this header with its own error before it decodes the
+            # block, so the error is the same with the policy as without it.
+            self.done = True
+            return
         for filter_id in ids:
             if filter_id in self._filters_off:
                 raise _filter_refusal(filter_id)
@@ -2118,27 +2132,13 @@ def _head_filter_chain(
     A filter in ``filters_off`` raises the policy's ``UnsupportedFeatureError``, which
     the probe reads as "can't tell" too.
     """
-    body = header[:-4]
-    flags = body[1]
-    if flags & 0x3C:
-        raise UnsupportedFeatureError("XZ block header has reserved flags set")
-    pos = 2
-    for size_present in (flags & 0x40, flags & 0x80):
-        if size_present:  # compressed, then uncompressed size: not needed here
-            pos += _decode_mbi(iter(body[pos : pos + 9]))[1]
-    last = flags & 0x03
+    filters = _block_filters(header)
+    last = len(filters) - 1
     chain: list[dict[str, int]] = []
-    for index in range(last + 1):
-        filter_id, n = _decode_mbi(iter(body[pos : pos + 9]))
-        pos += n
-        props_size, n = _decode_mbi(iter(body[pos : pos + 9]))
-        pos += n
-        props = body[pos : pos + props_size]
-        pos += props_size
-        if len(props) != props_size:
-            raise CorruptionError("XZ block header filter properties are truncated")
+    for index, (filter_id, props) in enumerate(filters):
         if filter_id in filters_off:
             raise _filter_refusal(filter_id)
+        props_size = len(props)
         if index == last and filter_id == lzma.FILTER_LZMA2 and props_size == 1:
             declared = _lzma2_dictionary(props[0])
             dict_size = probe_lzma_dictionary(declared, read_bound)
@@ -2162,8 +2162,6 @@ def _head_filter_chain(
                 f"XZ filter {filter_id:#x} at position {index} of the chain is not "
                 "decoded by the detection probe"
             )
-    if any(body[pos:]):
-        raise CorruptionError("XZ block header padding is not zero")
     return chain
 
 

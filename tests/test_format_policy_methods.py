@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import lzma
+import re
 import tarfile
 import zlib
 from pathlib import Path
@@ -19,6 +20,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    ArchiveyError,
     ArchiveyUsageError,
     CompressionAlgorithm,
     CompressionMethod,
@@ -31,6 +33,7 @@ from archivey import (
     UnsupportedFeatureError,
     open_archive,
 )
+from archivey.format_policy import excluded_method_refusal
 from archivey.internal.streams.codecs import lzma_codec, xz_decoder, zip_legacy_codec
 from tests.streams_util import NonSeekableBytesIO
 from tests.zip_legacy_build import (
@@ -586,11 +589,11 @@ def test_a_tar_xz_or_deb_with_an_excluded_filter_is_refused(
         (b"data.tar.xz", tar_xz),
     )
     config = ArchiveyConfig(formats=FormatPolicy(exclude={method}))
+    # The policy's own refusal text, as every other excluded method gets.
+    refusal = re.escape(excluded_method_refusal(method))
     for data in (tar_xz, deb):
         _read_all(data, ArchiveyConfig())
-        with pytest.raises(
-            UnsupportedFeatureError, match=rf"CompressionAlgorithm\.{method.name}"
-        ):
+        with pytest.raises(UnsupportedFeatureError, match=refusal):
             _read_all(data, config)
 
 
@@ -660,33 +663,96 @@ def _block_header(body: bytes) -> bytes:
 
 
 @pytest.mark.parametrize(
-    "header",
+    ("header", "error"),
     [
-        # The CRC32 does not match.
-        _block_header(b"\x00\x21\x01\x16")[:-1] + b"\x00",
-        # Reserved flag bits.
-        _block_header(b"\x04\x21\x01\x16"),
+        # Reserved flag bits: liblzma reads them as options it does not know.
+        (_block_header(b"\x04\x21\x01\x16"), UnsupportedFeatureError),
         # A VLI that runs past the header.
-        _block_header(b"\x00" + b"\xff" * 3),
+        (_block_header(b"\x00" + b"\xff" * 3), CorruptionError),
         # Properties longer than the header.
-        _block_header(b"\x00\x21\x7f"),
+        (_block_header(b"\x00\x21\x7f"), CorruptionError),
         # Four filters, the header holds one.
-        _block_header(b"\x03\x21\x01\x16"),
+        (_block_header(b"\x03\x21\x01\x16"), CorruptionError),
         # A size field that never ends.
-        _block_header(b"\x40" + b"\x80" * 9 + b"\x00"),
+        (_block_header(b"\x40" + b"\x80" * 9 + b"\x00"), CorruptionError),
+        # Padding that is not zero.
+        (_block_header(b"\x00\x21\x01\x16\x00\x01"), CorruptionError),
     ],
 )
-def test_a_hostile_xz_block_header_is_corruption(header: bytes) -> None:
-    """Each field is bounds-checked against the header's own size."""
-    with pytest.raises(CorruptionError):
-        xz_decoder._block_filter_ids(header)
+def test_a_hostile_xz_block_header_does_not_parse(
+    header: bytes, error: type[Exception]
+) -> None:
+    """Each field is bounds-checked against the header's own size. The guard and the
+    detection probe both read a header through this one parser."""
+    with pytest.raises(error):
+        xz_decoder._block_filters(header)
 
 
 def test_an_xz_block_header_lists_its_filters() -> None:
-    assert xz_decoder._block_filter_ids(_block_header(b"\x01\x04\x00\x21\x01\x16")) == [
-        0x04,
-        0x21,
+    assert xz_decoder._block_filters(_block_header(b"\x01\x04\x00\x21\x01\x16")) == [
+        (0x04, b""),
+        (0x21, b"\x16"),
     ]
+
+
+def _with_first_header(body: bytes) -> bytes:
+    """A one-block xz of ``_DATA`` whose 12-byte block header holds ``body`` (flags
+    onward, seven bytes) under a matching CRC32; the block's data is unchanged."""
+    data = _xz(_DATA)
+    assert data[12] == 0x02  # a 12-byte header
+    head = b"\x02" + body
+    return data[:12] + head + zlib.crc32(head).to_bytes(4, "little") + data[24:]
+
+
+_DICT = _xz(_DATA)[16]  # the LZMA2 properties byte lzma.compress writes
+
+_HOSTILE_XZ = [
+    pytest.param(
+        _with_first_header(bytes([0x04, 0x21, 0x01, _DICT, 0, 0, 0])),
+        id="reserved-flags",
+    ),
+    pytest.param(
+        _with_first_header(bytes([0x05, 0x04, 0x00, 0x21, 0x01, _DICT, 0])),
+        id="reserved-flags-bcj",
+    ),
+    pytest.param(
+        _with_first_header(bytes([0x00, 0x21, 0x01, _DICT, 0, 1, 0])),
+        id="padding",
+    ),
+    pytest.param(
+        _with_first_header(bytes([0x00, 0x21, 0x7F, 0, 0, 0, 0])), id="properties"
+    ),
+    pytest.param(
+        _with_first_header(bytes([0x03, 0x21, 0x01, _DICT, 0, 0, 0])),
+        id="four-filters",
+    ),
+    pytest.param(_with_first_header(b"\x00" + b"\xff" * 6), id="vli-past-header"),
+    pytest.param(
+        _with_first_header(bytes([0x00, 0xA1, 0x00, 0x01, _DICT, 0, 0])),
+        id="vli-not-minimal",
+    ),
+    pytest.param(
+        _xz(_DATA)[:20] + bytes([_xz(_DATA)[20] ^ 1]) + _xz(_DATA)[21:],
+        id="header-crc",
+    ),
+    pytest.param(_xz(_DATA)[:24] + b"\x03" + _xz(_DATA)[25:], id="chunk-control"),
+]
+
+
+@pytest.mark.parametrize("data", _HOSTILE_XZ)
+@pytest.mark.parametrize("method", [A.BCJ, A.DELTA])
+def test_the_policy_does_not_change_the_error_for_a_hostile_xz(
+    data: bytes, method: CompressionAlgorithm
+) -> None:
+    """A policy that names BCJ or Delta refuses only a block that runs the filter. A
+    block header it cannot read is liblzma's to refuse, with the exception type it
+    gets without the policy."""
+    with pytest.raises(ArchiveyError) as plain:
+        _read_all(data, ArchiveyConfig())
+    with pytest.raises(ArchiveyError) as policed:
+        _read_all(data, ArchiveyConfig(formats=FormatPolicy(exclude={method})))
+    assert type(policed.value) is type(plain.value)
+    assert "CompressionAlgorithm" not in str(policed.value)
 
 
 def test_detection_does_not_probe_through_an_excluded_xz_filter(

@@ -21,7 +21,9 @@ x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64 and RISC-V as BCJ) SHALL raise
 header, wherever the xz stream is decoded (a file, a member, a nested payload, a
 SquashFS block, a resume from the stream's index, the detection probe). The blocks
 before it SHALL still decode, and an xz stream none of whose blocks declares such a
-filter SHALL NOT be refused. A member
+filter SHALL NOT be refused. A block header that liblzma refuses on its own (a CRC32
+mismatch, reserved flags, a field that does not parse) SHALL raise the error it raises
+without the entry. A member
 whose `compression` chain lists an excluded method SHALL still be listed; opening,
 reading or extracting it SHALL raise `UnsupportedFeatureError` that names the method
 and `exclude=`, before the member's decoder is created, on every path that hands out
