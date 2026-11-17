@@ -181,7 +181,7 @@ def _stream_compression(
 ) -> tuple[CompressionMethod, ...]:
     """The one member's ``compression``: the method a ZIP or 7z member compressed the
     same way lists. Empty for a stream no ``CompressionAlgorithm`` member names
-    (``.Z``, bzip3, uu, base64, a plugin codec): ``UNKNOWN`` means a method archivey
+    (uu, base64, a plugin codec): ``UNKNOWN`` means a method archivey
     cannot decode, and these decode."""
     method = _STREAM_METHODS.get(stream) if isinstance(stream, StreamFormat) else None
     return () if method is None else (CompressionMethod(method),)

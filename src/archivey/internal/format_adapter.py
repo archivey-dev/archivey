@@ -2919,6 +2919,8 @@ _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.LZMA2: Codec.LZMA2,
     CompressionAlgorithm.XZ: Codec.XZ,
     CompressionAlgorithm.LZO: Codec.LZO,
+    CompressionAlgorithm.LZW: Codec.UNIX_COMPRESS,
+    CompressionAlgorithm.BZIP3: Codec.BZIP3,
 }
 
 
