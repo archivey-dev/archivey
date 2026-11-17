@@ -13,7 +13,8 @@ with its own code:
   (a ``.tar.gz``) is held to in every use, listing included. The reader wraps the
   decoded stream in it.
 - :class:`MemberRatioCheck`: the ratio member reads are held to outside extraction
-  (``open()``, ``stream_members()``). The reader wraps each member stream in it.
+  (``open()``, ``stream_members()``). The reader builds one per member stream, which
+  drives it from its own reads and seeks (``ArchiveStreamImpl._hold_ratio``).
 """
 
 from __future__ import annotations
@@ -658,8 +659,8 @@ class MemberRatioCheck(_RatioCheck):
     (:class:`ReadRatioTally`) against the archive's size raises
     ``AlwaysStopResourceLimitError``.
 
-    The decoder's error raises from the call that meets it, as it did without the
-    guard: a ``read()`` of the whole member that reaches damage raises rather than
+    The decoder's error raises from the call that meets it, as it would with no check
+    in between: a ``read()`` of the whole member that reaches damage raises rather than
     returning the steps before it.
     """
 
@@ -677,7 +678,9 @@ class MemberRatioCheck(_RatioCheck):
         consumed: Callable[[], int | None] | None,
         nest: NestDraws | None = None,
     ) -> None:
-        # The decoder, set when the member stream opens it (``attach``).
+        # The decoder, set when the member stream opens it (``attach``). Every caller
+        # attaches before the first read: ``_hold_ratio`` when the stream is already
+        # open, ``_ensure_open`` otherwise.
         self._inner = cast("BinaryIO", None)
         self._start_checks(max_ratio=limits.max_ratio)
         self._limits = limits

@@ -339,6 +339,9 @@ class ArchiveStreamImpl(ArchiveStream):
     # The type of a ``BaseException`` (``KeyboardInterrupt``) that stopped the lazy
     # open. Not the stream's error, so it is not raised again; a retry names it.
     _open_interrupted_by: type[BaseException] | None = None
+    # Reads, seeks and tells of the member's data go through ``_data(inner)``: a direct
+    # call skips the ratio check (``_ratio``). Queries (proofs, resume offsets, size,
+    # seekability) use ``_inner`` itself.
     _inner: BinaryIO | None = None
     _rewind_warned = False
     # Set while ``verify()`` seeks: its own rewinds are not the caller's access pattern.
@@ -902,6 +905,7 @@ class ArchiveStreamImpl(ArchiveStream):
         if verdict is not None and not self._verdict_rewound:
             self._raise_verdict()
         verifier = self._verifier
+        # ``_data(inner)``, inlined: this is the hot path of every member read.
         ratio = self._ratio
         if ratio is not None:
             inner = cast("BinaryIO", ratio)
@@ -960,6 +964,8 @@ class ArchiveStreamImpl(ArchiveStream):
         try:
             # Only a reader's buffer over a codec stream on a source that cannot seek
             # calls this, and that codec stream's inner is a ``DecompressorStream``.
+            # No member stream with a ratio check held gets here today; ``_data`` is
+            # kept so one would still be checked.
             data = cast("DecompressorStream", self._data(inner)).read_ahead(need, n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
