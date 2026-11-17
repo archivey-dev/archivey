@@ -99,9 +99,24 @@ members, and hands each tar to `open_nested` through `stream.take(size)`:
   extraction collision key folds a name (NFC, case-folded, a trailing dot or space
   trimmed), with the folded `DEBIAN`. The control side is not folded, because folding
   would accept a control `../debian/x`, which is a data path on Linux. Only the first
-  segment counts: `usr/DEBIAN/x` and `debianx/x` are ordinary data names. A data
-  symlink whose target points into `DEBIAN/` is listed: its target is a path, not a
-  member, and `dpkg-deb -R` writes it.
+  segment counts: `usr/DEBIAN/x` and `debianx/x` are ordinary data names.
+
+  **Data symlinks are followed too** (maintainer's call, 2026-11-17, on a sweep finding
+  against #1531: "Refuse those symlinks too"). Extraction writes a member through a
+  symlink the archive made, so `foo -> DEBIAN` then `foo/control` overwrote
+  `DEBIAN/control` under `overwrite="replace"`, and a read of `x -> DEBIAN/control`
+  returned the control file. `deb_reader._DataTree` keeps the data tar's symlinks in a
+  trie of folded names and resolves each path one segment at a time: `..` climbs, a
+  segment that names a symlink is replaced by its target (from the symlink's directory,
+  or from the root when the target is rooted), and at most 40 targets are followed, as
+  Linux does. A data symlink whose target lands in `DEBIAN` is refused
+  (`member_name` and `link_target`), and so is a member or a hard link target that lands
+  there through an earlier symlink (`d -> .`, then `d/DEBIAN/control`). This is
+  stricter than `dpkg-deb -R`, which unpacks the data tar first, so there such a symlink
+  points at nothing and `DEBIAN` is made after it only if nothing is there. The other
+  option, leaving symlinks alone and narrowing "the two tars stay apart" to names and
+  hard links, was rejected: the bypass writes a control file on disk. Reopen if a real
+  package ships a data symlink into `DEBIAN`.
 
   Some data names are refused that `dpkg-deb -R` unpacks, because GNU tar on Linux
   writes them byte for byte, under a literal directory:

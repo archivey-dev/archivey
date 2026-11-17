@@ -15,9 +15,10 @@ are read through :meth:`ReaderContext.open_nested`, in the one forward pass, so 
 As ``dpkg-deb`` does, the walk refuses a version other than ``2.x``, skips members
 whose name starts with ``_`` before the data tar, refuses any other member there, and
 stops after the data tar. It also keeps the two tars apart, as ``dpkg-deb -R`` does: a
-data-tar member that can extract to ``DEBIAN`` or under it, in any spelling, is refused,
-and so is a control-tar member that extracts outside ``DEBIAN/`` and a hard link in
-either tar whose target crosses to the other. ``dpkg-deb -R`` unpacks the data tar
+data-tar member that can extract to ``DEBIAN`` or under it, in any spelling or through
+a data-tar symlink, is refused, and so is a control-tar member that extracts outside
+``DEBIAN/``, a hard link in either tar whose target crosses to the other, and a data-tar
+symlink whose target lands in ``DEBIAN``. ``dpkg-deb -R`` unpacks the data tar
 first, then fails on a ``DEBIAN`` path the data tar made, and GNU tar refuses a ``..``
 name. ``DEBIAN/md5sums`` lists an MD5 per installed file: the walk
 holds it (it is part of the control tar, so it arrives first) and gives each data file
@@ -30,6 +31,7 @@ Handbook page: ``dev-docs/formats/deb.md``.
 from __future__ import annotations
 
 import io
+import re
 from collections.abc import Iterator
 from typing import BinaryIO
 
@@ -47,13 +49,20 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
-from archivey.internal.filters import extracted_top_key, extracted_top_segment
+from archivey.internal.filters import (
+    collision_key,
+    extracted_top_key,
+    extracted_top_segment,
+    is_rooted,
+    strip_absolute_root,
+)
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
     ContainerFormat,
+    ExtractionPolicy,
     HashAlgorithm,
     MemberType,
     StreamFormat,
@@ -72,6 +81,123 @@ CONTROL_DIR = "DEBIAN/"
 # this segment; a data member must not extract under any spelling of it (_CONTROL_KEY).
 _CONTROL_TOP = CONTROL_DIR.rstrip("/")
 _CONTROL_KEY = extracted_top_key(_CONTROL_TOP)
+# Both separators split a path, as in ``extracted_top_segment``.
+_SEPARATORS = re.compile(r"[\\/]")
+# How many symlinks one path may pass through, as Linux allows (ELOOP after 40). A
+# path that needs more is left where the last one put it: no system resolves it.
+_MAX_SYMLINK_STEPS = 40
+
+
+def _fold(segment: str) -> str:
+    """A segment as ``extracted_top_key`` folds one: two that fold alike can be one
+    directory."""
+    return collision_key(segment, ExtractionPolicy.STANDARD)
+
+
+def _segments(path: str) -> list[str]:
+    """The segments of ``path`` without its root, ``""`` and ``"."`` dropped."""
+    return [
+        s for s in _SEPARATORS.split(strip_absolute_root(path)) if s not in ("", ".")
+    ]
+
+
+class _Node:
+    """A directory of the data tree, in a trie of the data tar's symlinks: the
+    children by folded name, and the target when this path is a symlink."""
+
+    __slots__ = ("children", "link")
+
+    def __init__(self) -> None:
+        self.children: dict[str, _Node] = {}
+        # (the folded segments of the symlink's directory, its target's segments,
+        # whether the target is rooted)
+        self.link: tuple[list[str], list[str], bool] | None = None
+
+
+class _DataTree:
+    """The data tar's symlinks, to say where a path lands once they are followed.
+
+    A data member extracts through the symlinks the data tar made before it, so
+    ``foo -> DEBIAN`` then ``foo/control`` writes ``DEBIAN/control``. Each path is
+    resolved one segment at a time: ``..`` climbs, as ``sanitize_names`` resolves it,
+    and a segment that names a symlink is replaced by its target, read from the
+    symlink's own directory, or from the package root when the target is rooted.
+    Names are compared folded, as a case-insensitive filesystem would. The walk of
+    a path costs one dictionary step per segment, and at most
+    ``_MAX_SYMLINK_STEPS`` targets are followed.
+    """
+
+    def __init__(self) -> None:
+        self._root = _Node()
+
+    def resolve(
+        self, path: str, *, follow_last: bool, base: list[str] | None = None
+    ) -> list[str]:
+        """The folded segments of where ``path`` lands, read from ``base`` (folded
+        segments of a directory; the package root when ``None``).
+
+        With ``follow_last`` false, the last segment is not followed: the member
+        at ``path`` replaces a symlink there, as extraction does."""
+        pending = _segments(path)
+        pending.reverse()  # popped from the end
+        out = list(base) if base else []
+        nodes = self._walk(out)
+        steps = 0
+        while pending:
+            segment = pending.pop()
+            if segment == "..":
+                if out:
+                    out.pop()
+                    nodes.pop()
+                continue
+            key = _fold(segment)
+            parent = nodes[-1]
+            node = parent.children.get(key) if parent is not None else None
+            if (
+                node is not None
+                and node.link is not None
+                and (pending or follow_last)
+                and steps < _MAX_SYMLINK_STEPS
+            ):
+                steps += 1
+                directory, target, rooted = node.link
+                pending.extend(reversed(target))
+                if rooted:
+                    out = []
+                    nodes = self._walk(out)
+                elif out != directory:
+                    out = list(directory)
+                    nodes = self._walk(out)
+                continue
+            out.append(key)
+            nodes.append(node)
+        return out
+
+    def _walk(self, folded: list[str]) -> list[_Node | None]:
+        """The trie nodes along ``folded``, from the root."""
+        nodes: list[_Node | None] = [self._root]
+        for key in folded:
+            parent = nodes[-1]
+            nodes.append(parent.children.get(key) if parent is not None else None)
+        return nodes
+
+    def add_symlink(self, name: str, target: str) -> list[str]:
+        """Record the symlink ``name`` and return the folded segments of where its
+        target lands."""
+        where = self.resolve(name, follow_last=False)
+        if not where:
+            return self.resolve(target, follow_last=True)
+        directory = where[:-1]
+        node = self._root
+        for key in where:
+            node = node.children.setdefault(key, _Node())
+        rooted = is_rooted(target)
+        node.link = (directory, _segments(target), rooted)
+        return self.resolve(
+            target, follow_last=True, base=None if rooted else directory
+        )
+
+
 # dpkg-deb accepts these compressions for each tar.
 _CONTROL_STREAMS = {
     b"": StreamFormat.UNCOMPRESSED,
@@ -286,11 +412,23 @@ class DebReader(SequentialReader):
         The control files are listed under ``DEBIAN/``, so a data copy of
         ``DEBIAN/control`` would replace the real control file in the listing and in
         extraction, and a hard link would read a control file's bytes.
+
+        The same holds through the data tar's symlinks (``_DataTree``): a symlink
+        whose target lands in ``DEBIAN`` is refused (``foo -> DEBIAN``,
+        ``usr/l -> ../DEBIAN``, ``x -> /DEBIAN/control``), and so is a member or a
+        hard-link target that lands there through an earlier symlink (``d -> .``,
+        then ``d/DEBIAN/control``). Otherwise extraction writes through the symlink
+        into a control file, and a read of the symlink returns one. ``dpkg-deb -R``
+        unpacks the data tar first, so there such a symlink names nothing; refusing
+        it is stricter, as the spellings above are.
         """
         context = self._context
+        tree = _DataTree()
         for span in context.open_nested(data, fmt):
             member = span.member
-            if extracted_top_key(member.name) == _CONTROL_KEY:
+            if extracted_top_key(member.name) == _CONTROL_KEY or tree.resolve(
+                member.name, follow_last=False
+            )[:1] == [_CONTROL_KEY]:
                 raise CorruptionError(
                     "Debian package data tar has a member that extracts into DEBIAN/, "
                     "the directory of the control files",
@@ -299,11 +437,27 @@ class DebReader(SequentialReader):
             if (
                 member.type is MemberType.HARDLINK
                 and member.link_target
-                and extracted_top_key(member.link_target) == _CONTROL_KEY
+                and (
+                    extracted_top_key(member.link_target) == _CONTROL_KEY
+                    or tree.resolve(member.link_target, follow_last=True)[:1]
+                    == [_CONTROL_KEY]
+                )
             ):
                 raise CorruptionError(
                     "Debian package data tar has a hard link to a path in DEBIAN/, "
                     "the directory of the control files",
+                    member_name=member.name,
+                    link_target=member.link_target,
+                )
+            if (
+                member.type is MemberType.SYMLINK
+                and member.link_target is not None
+                and tree.add_symlink(member.name, member.link_target)[:1]
+                == [_CONTROL_KEY]
+            ):
+                raise CorruptionError(
+                    "Debian package data tar has a symlink to a path in DEBIAN/, the "
+                    "directory of the control files",
                     member_name=member.name,
                     link_target=member.link_target,
                 )
