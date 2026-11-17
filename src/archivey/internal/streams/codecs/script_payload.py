@@ -21,8 +21,9 @@ from collections.abc import Callable
 from archivey.internal.sfx import HitOutcome
 
 _GZIP_HEADER = 10
-# gzip OS byte (RFC 1952): 0 to 13 named, 255 unknown.
-_GZIP_OS = frozenset(range(14)) | {255}
+# gzip OS byte: RFC 1952 names 0 to 13, and 255 is unknown. zlib also writes 16 (BeOS),
+# 18 (OS/400) and 19 (macOS, since zlib 1.2.12), so gzip.compress on macOS writes 19.
+_GZIP_OS = frozenset(range(14)) | {16, 18, 19, 255}
 # The block magic (pi) after a bzip2 stream header, or the end-of-stream magic
 # (sqrt(pi)) of an empty stream.
 _BZIP2_BLOCK = bytes.fromhex("314159265359")
