@@ -527,10 +527,10 @@ class _ForwardUnrarStream(_RollingUnrarStream):
     def _raise_for_returncode(self, rc: int) -> None:
         stop = self._fpass.cut_stop
         if stop is not None and self.feeder.error is stop:
-            # The output ends after the volume the source cut is in. The cut
-            # member's read raises its own error, and the listing raises this one
-            # after the members before it: a read past the end, or the close of
-            # the pass, has nothing to add.
+            # The output ends after the volume the source cut is in. A read of the
+            # cut member that reaches that end raises the member's own error
+            # (``check_cut``, after the read returns), and the listing raises this
+            # one after the members before it, so this read has nothing to add.
             return
         super()._raise_for_returncode(rc)
 
@@ -1061,7 +1061,9 @@ class RarForwardReader(RarReader):
                 # after it starts there.
                 self._pipe_end = offset + min(raw.compress_size, raw.file_size)
                 return refuse(mismatch)
-        if self._pipe_doubt is not None:
+        # An empty slice has no output to place wrongly, and it matches its CRC32
+        # wherever it starts, so it is read with no check and leaves the doubt set.
+        if self._pipe_doubt is not None and size != 0:
             matches = self._crc32_check(member)
             if matches is None:
                 self._pipe_end = None
@@ -1096,11 +1098,11 @@ class RarForwardReader(RarReader):
     def _on_member_error(self, member: ArchiveMember, error: ArchiveyError) -> None:
         """A member placed in the output failed its read. A damaged compressed or
         encrypted member can decode to another length than its header says, and then
-        every later member's output starts somewhere else. Each member placed after
-        it is checked against its CRC32 (``_LineCheck``) until one matches; one that
-        does not, or that has no CRC32, is refused, and so is every member after it.
-        A plain stored member's output is a copy of its packed bytes, so its length
-        is known even when its digest fails."""
+        every later member's output starts somewhere else. Each member with output
+        placed after it is checked against its CRC32 (``_LineCheck``) until one
+        matches; one that does not, or that has no CRC32, is refused, and so is every
+        member after it. A plain stored member's output is a copy of its packed bytes,
+        so its length is known even when its digest fails."""
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
         if (

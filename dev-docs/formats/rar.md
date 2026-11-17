@@ -1211,20 +1211,22 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   refused, as is every member after one whose output did not line up. A compressed or
   encrypted member whose read fails a check (`CorruptionError`) may have decoded to
   another length than its header says, and the next member would then be read from the
-  wrong place and reported as cut short. So each member placed after it is checked
-  against its CRC32 before the verifier sees its last bytes (`_LineCheck`): a match
-  ends the doubt, and a mismatch, a slice that ends early, or a member with no CRC32 is
-  refused (`UnsupportedFeatureError`), and every member after it too. A member the
-  caller does not read is not checked, so its failure is not seen. A stored member
-  whose two sizes differ is refused as the seekable reader refuses it, and its output
-  is placed by the smaller size, which is what `unrar` copies. A stored member's failed
-  digest leaves no doubt: its output is a copy of its packed bytes.
-  A member cut short is refused as `TruncatedError` when the source ends inside the
-  4 MiB the forward source reads ahead. A longer one is padded with zeros to the end of
-  the volume being written, so the members before it in that volume still decode. The
-  next volume is not written: the feeder stops `unrar`, and the listing raises
-  `TruncatedError` after the members before the cut. Padding the whole declared size
-  cost time in proportion to a size the archive chooses (a 63-byte stream that
+  wrong place and reported as cut short. So each member with output placed after it is
+  checked against its CRC32 before the verifier sees its last bytes (`_LineCheck`): a
+  match ends the doubt, and a mismatch, a slice that ends early, or a member with no
+  CRC32 is refused (`UnsupportedFeatureError`), and every member after it too. An empty
+  member is read with no check and leaves the doubt, since an empty slice matches its
+  CRC32 wherever it starts. A member the caller does not read is not checked, so its
+  failure is not seen, and a later member may then raise the error of a member read from
+  the wrong place. A stored member whose two sizes differ is refused as the seekable
+  reader refuses it, and its output is placed by the smaller size, which is what `unrar`
+  copies. A stored member's failed digest leaves no doubt: its output is a copy of its
+  packed bytes. A member cut short is refused as `TruncatedError` when the source ends
+  inside the 4 MiB the forward source reads ahead. A longer one is padded with zeros to
+  the end of the volume being written, so the members before it in that volume still
+  decode. The next volume is not written: the feeder stops `unrar`, and the listing
+  raises `TruncatedError` after the members before the cut. Padding the whole declared
+  size cost time in proportion to a size the archive chooses (a 63-byte stream that
   declares 16 GiB ran for minutes), fixed 2026-11. The feeder sets the cut flag before
   writing any padding. The member's stream checks that flag after each read and raises
   `TruncatedError` before those zeros can pass a size or digest check.

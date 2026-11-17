@@ -968,6 +968,29 @@ def test_a_member_after_one_that_decoded_short_is_refused() -> None:
 
 @requires_unrar_cli()
 @pytest.mark.usefixtures("rolling_unrar")
+def test_an_empty_member_after_one_that_decoded_short_does_not_end_the_doubt() -> None:
+    """An empty ``e.txt`` between ``b.txt``, which decodes short, and ``c.txt``. Its
+    output matches its CRC32 wherever it starts, so it does not show that the output
+    lines up again: ``e.txt`` reads empty and ``c.txt`` is still refused."""
+    blocks = _rar5_parse(
+        (
+            Path(__file__).parent / "fixtures" / "damaged_member" / "rar5_nonsolid.rar"
+        ).read_bytes()
+    )
+    files = _rar5_file_blocks(blocks)
+    assert [block["name"] for block in files] == [b"a.txt", b"b.txt", b"c.txt"]
+    empty = dict(files[2], name=b"e.txt", unpacked=0, crc=bytes(4), cinfo=0, data=b"")
+    blocks.insert(blocks.index(files[2]), empty)
+    got = _pass(_pipe(_rar5_build(blocks)), None, config=_config(None))
+    assert [(entry[0][0], entry[1]) for entry in got[1:4]] == [  # type: ignore[index]
+        ("b.txt", ("raises", "CorruptionError")),
+        ("e.txt", hashlib.sha256(b"").hexdigest()),
+        ("c.txt", ("raises", "UnsupportedFeatureError")),
+    ]
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
 def test_a_cut_member_writes_no_volume_after_the_one_the_cut_is_in(
     volumes_made: list[rl.RollingVolumes],
 ) -> None:
