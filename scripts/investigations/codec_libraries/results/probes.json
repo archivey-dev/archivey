@@ -1,0 +1,405 @@
+{
+  "incremental": [
+    {
+      "kind": "gzip",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "incomplete deflate stream"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "zlib",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "deflate: truncated stream"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "deflate",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "deflate: truncated stream"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "bzip2",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "decompression not finished but EOF reached"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "xz",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "premature eof"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "lzma_alone",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "premature eof"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "zstd",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "incomplete frame"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "lz4",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "lz4: truncated frame"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "brotli",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "Invalid Data"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    },
+    {
+      "kind": "snappy",
+      "split": {
+        "accepted": false,
+        "error": "OSError",
+        "message": "failed to fill whole buffer"
+      },
+      "output_len_8": {
+        "accepted": true,
+        "size": 2048,
+        "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+      }
+    }
+  ],
+  "checksums": [
+    {
+      "kind": "gzip",
+      "input": "bad-check-gzip.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "corrupt gzip stream does not have a matching checksum"
+      },
+      "archivey": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading gzip stream: Error -3 while decompressing data: incorrect data check"
+      }
+    },
+    {
+      "kind": "zlib",
+      "input": "bad-check-zlib.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "deflate decompression error"
+      },
+      "archivey": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading zlib stream: Error -3 while decompressing data: incorrect data check"
+      }
+    },
+    {
+      "kind": "bzip2",
+      "input": "bad-check-bzip2.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "bzip2: invalid data"
+      },
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "bzip2 stream is corrupt: the combined CRC in the end-of-stream marker is 0x7f40a566, but the stream's blocks combine to 0x7f40b566"
+      }
+    },
+    {
+      "kind": "lz4",
+      "input": "bad-check-lz4.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "lz4: ERROR_contentChecksum_invalid"
+      },
+      "archivey": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading lz4 stream: LZ4F_decompress failed with code: ERROR_contentChecksum_invalid"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "lz4 checksum mismatch at frame 0"
+      }
+    },
+    {
+      "kind": "xz",
+      "input": "bad-check-xz.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "lzma data error"
+      },
+      "archivey": {
+        "accepted": false,
+        "error": "CorruptionError",
+        "message": "XZ decompression error: Corrupt input data"
+      }
+    },
+    {
+      "kind": "zstd",
+      "input": "bad-check-zstd.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "Restored data doesn't match checksum"
+      },
+      "archivey": {
+        "accepted": false,
+        "error": "StreamChecksumError",
+        "message": "Error reading zstd stream: Unable to decompress Zstandard data: Restored data doesn't match checksum"
+      },
+      "unpackio": {
+        "accepted": false,
+        "error": "ChecksumError",
+        "message": "zstandard checksum mismatch at frame 0"
+      }
+    },
+    {
+      "kind": "snappy",
+      "input": "bad-check-snappy.bin",
+      "cramjam": {
+        "accepted": false,
+        "error": "DecompressionError",
+        "message": "snappy: corrupt input (bad checksum; expected: 3545484555, got: 3545484554)"
+      }
+    }
+  ],
+  "names": [
+    {
+      "name": "/absolute",
+      "safe": false,
+      "reason": "absolute",
+      "symlink": false,
+      "bytes": "78"
+    },
+    {
+      "name": "../escape",
+      "safe": false,
+      "reason": "traversal",
+      "symlink": false,
+      "bytes": "78"
+    },
+    {
+      "name": "a/../../escape",
+      "safe": false,
+      "reason": "traversal",
+      "symlink": false,
+      "bytes": "78"
+    },
+    {
+      "name": "C:\\drive",
+      "safe": false,
+      "reason": "drive",
+      "symlink": false,
+      "bytes": "78"
+    },
+    {
+      "name": "ok/file",
+      "safe": true,
+      "reason": null,
+      "symlink": false,
+      "bytes": "78"
+    },
+    {
+      "name": "link",
+      "safe": true,
+      "reason": null,
+      "symlink": true,
+      "bytes": "2e2e2f2e2e2f657363617065"
+    }
+  ],
+  "bounds": [
+    {
+      "kind": "gzip",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "zlib",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "deflate",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "bzip2",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "xz",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "zstd",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "lz4",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    },
+    {
+      "kind": "brotli",
+      "into_8": {
+        "error": "DecompressionError",
+        "message": "failed to write whole buffer"
+      },
+      "output_hex": "6172636869766579"
+    }
+  ],
+  "brotli_7z": {
+    "archivey": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "unpackio": {
+      "accepted": false,
+      "error": "FormatError",
+      "message": "invalid 7z format: invalid or truncated Brotli stream"
+    }
+  },
+  "legacy_lz4": {
+    "archivey": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    },
+    "cramjam": {
+      "accepted": false,
+      "error": "DecompressionError",
+      "message": "lz4: ERROR_frameType_unknown"
+    },
+    "unpackio": {
+      "accepted": true,
+      "size": 2048,
+      "sha256": "bc91e6b0ef177eb916704a4baffa6d01350e92b30c0d017166c26c4d4668ab55"
+    }
+  },
+  "valid_ppmd": {
+    "input": "ppmd-valid-refused.7z",
+    "archivey": {
+      "accepted": true,
+      "size": 262144,
+      "sha256": "bb12106fea95d619c7a7f925f2ebda60aa0a9c0109b1c2f70fadefd74fe17fa9"
+    },
+    "unpackio": {
+      "accepted": false,
+      "error": "FormatError",
+      "message": "invalid 7z format: PPMd SEE summary overflows"
+    },
+    "sevenzip": {
+      "exit": 0,
+      "size": 262144,
+      "sha256": "bb12106fea95d619c7a7f925f2ebda60aa0a9c0109b1c2f70fadefd74fe17fa9",
+      "expected_sha256": "bb12106fea95d619c7a7f925f2ebda60aa0a9c0109b1c2f70fadefd74fe17fa9",
+      "banner": [
+        "",
+        "7-Zip (z) 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21",
+        " 64-bit locale=C.UTF-8 Threads:3 OPEN_MAX:16384",
+        ""
+      ],
+      "stderr": ""
+    }
+  },
+  "peak_rss_kib": 105044
+}

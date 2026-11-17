@@ -1,0 +1,339 @@
+[
+  {
+    "library": "baseline",
+    "kind": "gzip",
+    "before_rss_kib": 48320,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48416,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 48672
+  },
+  {
+    "library": "cramjam",
+    "kind": "gzip",
+    "before_rss_kib": 50784,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 67752,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 67636
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "gzip",
+    "before_rss_kib": 51652,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 51728
+  },
+  {
+    "library": "baseline",
+    "kind": "zlib",
+    "before_rss_kib": 48232,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48264,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 48480
+  },
+  {
+    "library": "cramjam",
+    "kind": "zlib",
+    "before_rss_kib": 51096,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 68000,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 67820
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "zlib",
+    "before_rss_kib": 50268,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 50540
+  },
+  {
+    "library": "baseline",
+    "kind": "deflate",
+    "before_rss_kib": 48180,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48212,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 48436
+  },
+  {
+    "library": "cramjam",
+    "kind": "deflate",
+    "before_rss_kib": 51160,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 68020,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 68012
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "deflate",
+    "before_rss_kib": 50812,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 51004
+  },
+  {
+    "library": "baseline",
+    "kind": "bzip2",
+    "before_rss_kib": 48284,
+    "first_output_bytes": 128,
+    "first_rss_kib": 66680,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 66744
+  },
+  {
+    "library": "cramjam",
+    "kind": "bzip2",
+    "before_rss_kib": 50568,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 68764,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 68764
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "bzip2",
+    "before_rss_kib": 51284,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 52656
+  },
+  {
+    "library": "baseline",
+    "kind": "xz",
+    "before_rss_kib": 48044,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48184,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 56536
+  },
+  {
+    "library": "cramjam",
+    "kind": "xz",
+    "before_rss_kib": 50644,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 76008,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 76008
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "xz",
+    "before_rss_kib": 51680,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 51892
+  },
+  {
+    "library": "baseline",
+    "kind": "lzma_alone",
+    "before_rss_kib": 48292,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48368,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 56860
+  },
+  {
+    "library": "cramjam",
+    "kind": "lzma_alone",
+    "before_rss_kib": 50100,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 75852,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 75852
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "lzma_alone",
+    "before_rss_kib": 50848,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 51644
+  },
+  {
+    "library": "baseline",
+    "kind": "zstd",
+    "before_rss_kib": 48240,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48568,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 51064
+  },
+  {
+    "library": "cramjam",
+    "kind": "zstd",
+    "before_rss_kib": 50888,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 70812,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 70812
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "zstd",
+    "before_rss_kib": 51636,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 51972
+  },
+  {
+    "library": "unpackio",
+    "kind": "zstd",
+    "before_rss_kib": 49932,
+    "error": "LimitExceededError: limit exceeded for entry output bytes: requested 16777216, maximum 128",
+    "peak_rss_kib": 50188
+  },
+  {
+    "library": "baseline",
+    "kind": "lz4",
+    "before_rss_kib": 48244,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48600,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 49088
+  },
+  {
+    "library": "cramjam",
+    "kind": "lz4",
+    "before_rss_kib": 50736,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 68048,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 68048
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "lz4",
+    "before_rss_kib": 50280,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 50864
+  },
+  {
+    "library": "unpackio",
+    "kind": "lz4",
+    "before_rss_kib": 49936,
+    "error": "LimitExceededError: limit exceeded for entry output bytes: requested 16777216, maximum 128",
+    "peak_rss_kib": 50320
+  },
+  {
+    "library": "baseline",
+    "kind": "brotli",
+    "before_rss_kib": 48364,
+    "first_output_bytes": 128,
+    "first_rss_kib": 52916,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 53308
+  },
+  {
+    "library": "cramjam",
+    "kind": "brotli",
+    "before_rss_kib": 51024,
+    "first_output_bytes": 16777216,
+    "first_rss_kib": 71716,
+    "into_error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 71716
+  },
+  {
+    "library": "cramjam_into",
+    "kind": "brotli",
+    "before_rss_kib": 51520,
+    "error": "DecompressionError: failed to write whole buffer",
+    "peak_rss_kib": 55700
+  },
+  {
+    "library": "baseline",
+    "kind": "unix_compress",
+    "before_rss_kib": 48288,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48308,
+    "total_output_bytes": 16777216,
+    "peak_rss_kib": 49904
+  },
+  {
+    "library": "unpackio",
+    "kind": "unix_compress",
+    "before_rss_kib": 49988,
+    "first_output_bytes": 1,
+    "first_rss_kib": 50644,
+    "error": "CancelledError: stream callback requested cancellation",
+    "peak_rss_kib": 50644
+  },
+  {
+    "library": "baseline",
+    "kind": "zip_deflate",
+    "before_rss_kib": 48408,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48588,
+    "peak_rss_kib": 48588
+  },
+  {
+    "library": "unpackio",
+    "kind": "zip_deflate",
+    "before_rss_kib": 49780,
+    "error": "LimitExceededError: limit exceeded for entry output bytes: requested 16777216, maximum 128",
+    "peak_rss_kib": 50272
+  },
+  {
+    "library": "baseline",
+    "kind": "7z",
+    "before_rss_kib": 48328,
+    "first_output_bytes": 128,
+    "first_rss_kib": 48564,
+    "peak_rss_kib": 48572
+  },
+  {
+    "library": "unpackio",
+    "kind": "7z",
+    "before_rss_kib": 49752,
+    "error": "LimitExceededError: limit exceeded for entry output bytes: requested 16777216, maximum 128",
+    "peak_rss_kib": 50400
+  },
+  {
+    "library": "unpackio",
+    "kind": "zstd",
+    "before_rss_kib": 49852,
+    "first_output_bytes": 4096,
+    "first_rss_kib": 54696,
+    "error": "CancelledError: stream callback requested cancellation",
+    "peak_rss_kib": 54696,
+    "default_limits_first_callback": true
+  },
+  {
+    "library": "unpackio",
+    "kind": "lz4",
+    "before_rss_kib": 49896,
+    "first_output_bytes": 4096,
+    "first_rss_kib": 50512,
+    "error": "CancelledError: stream callback requested cancellation",
+    "peak_rss_kib": 50520,
+    "default_limits_first_callback": true
+  },
+  {
+    "library": "unpackio",
+    "kind": "unix_compress",
+    "before_rss_kib": 49972,
+    "first_output_bytes": 1,
+    "first_rss_kib": 50568,
+    "error": "CancelledError: stream callback requested cancellation",
+    "peak_rss_kib": 50568,
+    "default_limits_first_callback": true
+  },
+  {
+    "library": "unpackio",
+    "kind": "zip_deflate",
+    "before_rss_kib": 49952,
+    "first_output_bytes": 4096,
+    "first_rss_kib": 66800,
+    "error": "CancelledError: stream callback requested cancellation",
+    "peak_rss_kib": 66680,
+    "default_limits_first_callback": true
+  },
+  {
+    "library": "unpackio",
+    "kind": "7z",
+    "before_rss_kib": 50060,
+    "first_output_bytes": 8192,
+    "first_rss_kib": 66992,
+    "error": "CancelledError: stream callback requested cancellation",
+    "peak_rss_kib": 66792,
+    "default_limits_first_callback": true
+  }
+]

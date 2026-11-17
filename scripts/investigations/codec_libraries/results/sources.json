@@ -1,0 +1,10 @@
+{
+  "cramjam": {
+    "sdist_sha256": "050095380dc01a7f3dc2b8bcd9de2cbf4a208a8aab32301c760ea3c280d641bd",
+    "lockfile": "cramjam-2.14.0/Cargo.lock"
+  },
+  "unpackio": {
+    "sdist_sha256": "f33409bfa0c782845d8ae12c33536005e340d64dd24c682528e42f07c8145eac",
+    "lockfile": "unpackio-0.1.1/bindings/python/Cargo.lock"
+  }
+}
