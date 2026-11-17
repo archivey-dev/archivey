@@ -363,7 +363,8 @@ class _DataTree:
 
     def add_entry(self, where: list[str]) -> None:
         """Record a member that is neither a directory nor a symlink (a file, a hard
-        link, a device) at ``where``: its parent is a directory.
+        link to one, a device) at ``where``: its parent is a directory. A hard link
+        to a symlink extracts as a symlink, and goes to ``add_symlink``.
 
         A symlink at ``where`` stays in the tree. Extraction replaces it with the
         member when both are extracted, and then a path through ``where`` names no
