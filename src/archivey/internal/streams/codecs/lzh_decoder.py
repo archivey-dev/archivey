@@ -164,6 +164,15 @@ class LhaBitDecoder:
         """Decode at least ``want`` more bytes, or to the member's end."""
         raise NotImplementedError
 
+    def read_head(self, n: int) -> bytes:
+        """The next ``n`` bytes, or fewer at the member's end, decoding only what they
+        need. :meth:`read` decodes a whole chunk for speed; a probe that reads a
+        header and stops (the MacBinary check in a listing) would pay for the chunk
+        on every member."""
+        if len(self._out) - self._start < n and self._left > 0:
+            self._decode(n)
+        return self.read(n)
+
     def read(self, n: int) -> bytes:
         if n <= 0:
             return b""
