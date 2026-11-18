@@ -537,79 +537,44 @@ details.
 
 ## LHA
 
-LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari
-ST and Japanese PCs, and from LHa for UNIX.
+LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari ST
+and Japanese PCs, and from LHa for UNIX. They need nothing extra: archivey decodes the methods
+itself, in Python, at about 4 to 8 MB a second. Each member is compressed on its own and read
+directly. The archive needs a source that can seek, so not a pipe, for now.
 
-- **Needs:** nothing. archivey decodes the methods itself, in Python, at about 4 to 8 MB a
-  second.
-- **Listing:** header by header: each member is a header and then its data, and the listing
-  reads each header and seeks past the data to the next one.
-- **Reading members:** each member is compressed on its own, so every member is direct.
-- **From a pipe:** no, for now: the listing seeks past each member's data.
-- Header levels 0 to 3 all read. Stored members (`-lh0-`, `-lz4-`, `-pm0-`) and the
-  `-lh1-` and `-lh4-` to `-lh7-` methods, UNLHA32's `-lhx-`, LHARK's `-lk7-` and LArc's
-  `-lzs-` and `-lz5-` decode; other methods (`-lh2-`, `-lh3-`, PMarc's `-pm1-` and `-pm2-`) are listed and
-  raise `UnsupportedFeatureError` when read. `member.compression` is `LZH` for every
-  `-lh?-` and `-lz?-` method, and `extra["lha.method"]` names the exact one.
-- Each member stores a CRC-16 of its data, which a read checks, so a member read to its
-  end is at `Verification.CHECKSUM`. A header's own checksum or CRC is checked when it is
-  read: a damaged header is `CorruptionError`.
-- `member.modified` is the Unix time a header stores, in UTC, or else its DOS time, with no
-  time zone. A Windows timestamps record adds `created` and `accessed`. Unix mode, owner and
-  group names come from LHa for UNIX's records; OS-9 permissions become a Unix mode as
-  lhasa reads them. A directory is a member of its own; a Unix symlink is listed with its
-  target. `create_system` comes from the header's OS id, and `extra["lha.os_id"]` keeps it.
-- Names are UTF-8 when valid, otherwise decoded with `encoding=` (an archive from a
-  Japanese PC is usually `encoding="cp932"`), as in every format. A name's `\` separators
-  become `/`. An Amiga file note stored after the name is `member.comment`.
-- An archive without the zero byte that ends it reports `ARCHIVE_EOF_MARKER_MISSING`, after
-  listing every member.
-- A self-extracting LHA program reads like an archive: the archive behind a DOS, Windows,
-  Amiga, Atari or X68000 stub is found by its first header, as for ZIP, 7z and RAR (see
-  [Detection](#detection)). An Amiga self-extractor's own usage text, a small archive inside
-  the stub, is passed over for the archive that ends the file.
-- A Mac file archived by MacLHA reads as its data fork (or its resource fork, when the
-  data fork is empty), as lhasa reads it: MacLHA wraps the file in MacBinary, a 128-byte
-  header that archivey strips when every field in it matches the LHA header (name, sizes,
-  and a time within 14 hours). `member.size` is the fork's size, and
-  `extra["lha.mac_type"]` and `extra["lha.mac_creator"]` keep the Finder's type and
-  creator codes. The listing decodes the first 128 bytes of each such member to check.
-  A level-0 member has no OS id to say it came from a Mac, so it reads with its wrapper,
-  as in lhasa.
+- **Methods:** header levels 0 to 3, stored members, `-lh1-` and `-lh4-` to `-lh7-`, `-lhx-`,
+  `-lk7-`, `-lzs-` and `-lz5-` can be read. `-lh2-`, `-lh3-`, `-pm1-` and `-pm2-` members are
+  listed, and reading one raises `UnsupportedFeatureError`. `extra["lha.method"]` names the exact
+  method.
+- **Checksums:** each member stores a CRC-16 of its data, checked when you read it to its end.
+- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. An archive from a Japanese PC
+  is usually `encoding="cp932"`.
+- **Self-extracting programs** for DOS, Windows, the Amiga, the Atari and the X68000 open as
+  archives ([Detection](#detection)).
+- **Mac files** archived by MacLHA are read as their data fork, or their resource fork when the
+  data fork is empty, as `lhasa` reads them.
+
+The [LHA handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/lha.md)
+covers header levels, the per-system fields, and how the MacLHA wrapper is recognised.
 
 ## ARJ
 
-ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Linux).
+ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Linux). They need
+nothing extra: archivey decodes methods 0 to 4 itself, in Python, at about 10 to 30 MB a second.
+Each member is compressed on its own and read directly. The archive needs a source that can seek,
+so not a pipe, for now.
 
-- **Needs:** nothing. archivey decodes the methods itself, in Python, at about 10 to 30 MB a
-  second.
-- **Listing:** header by header: each member is a header and then its data, and the listing
-  reads each header and seeks past the data to the next one.
-- **Reading members:** each member is compressed on its own, so every member is direct.
-- **From a pipe:** no, for now: the listing seeks past each member's data.
-- Methods 0 (stored) to 4 all decode. `member.compression` is `LZH` for methods 1 to 3,
-  which are the same as LHA's `-lh5-` to `-lh7-` with another dictionary size, and
-  `ARJ_FAST` for method 4. `extra["arj.method"]` names the exact one.
-- Each header has a CRC-32, checked when it is read: a damaged header is
-  `CorruptionError`. Each member stores a CRC-32 of its data, which a read checks, so a
-  member read to its end is at `Verification.CHECKSUM`.
-- `member.modified` is a DOS time with no time zone, except from ARJ for Unix, which
-  stores a Unix time, read in UTC. ARJ 2.62 and later also store `accessed` and `created`.
-  From ARJ for Unix, `mode` is the Unix mode; from DOS and Windows, `windows_attrs` holds
-  the attributes. A directory is a member of its own; ARJ for Unix's symlinks and hard
-  links are listed with their targets, and FIFOs and devices as `OTHER`.
-- Names are UTF-8 when valid, otherwise decoded with `encoding=` (DOS archives are usually
-  `encoding="cp437"`, or `"cp866"` from Russian systems), as in every format. A DOS or
-  Windows name's `\` separators become `/`.
-- Garbled (password-protected) members are listed with `is_encrypted` and raise
-  `UnsupportedFeatureError` when read, as do members split across the volumes of a
-  multi-volume set. An archive without the end header reports
-  `ARCHIVE_EOF_MARKER_MISSING`, after listing every member.
-- Self-extracting ARJ programs (ARJ's DOS `.EXE` modules, or an ELF program from ARJ for
-  Unix) are read: detection finds the main header behind the program by its CRC-32, and
-  so does `format=ARJ`.
-- An archive signed by a registered ARJ carries an ARJ-SECURITY envelope after its end
-  header. The envelope is not checked, and is not reported as data after the archive.
+- **Checksums:** each member stores a CRC-32 of its data, checked when you read it to its end.
+- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
+  `encoding="cp437"`, or `"cp866"` from Russian systems.
+- **Not read:** garbled (password-protected) members are listed with `is_encrypted`, and reading
+  one raises `UnsupportedFeatureError`, as does reading a member split across the volumes of a
+  multi-volume set.
+- **Self-extracting programs**, ARJ's DOS `.EXE` modules and ARJ for Unix's ELF programs, open as
+  archives.
+
+The [ARJ handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md)
+covers the per-system fields and the ARJ-SECURITY envelope.
 
 ## CPIO
 
