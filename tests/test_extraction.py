@@ -15,6 +15,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tarfile
 import time
 import unicodedata
@@ -7301,15 +7302,27 @@ def test_no_member_is_written_through_a_symlink_the_run_created(
 def test_a_deep_name_after_a_run_link_is_checked_without_recursion(
     tmp_path: Path,
 ) -> None:
-    # 1500 components, past the interpreter's recursion limit: the check that no
-    # parent is a symlink the run created walks up the name in a loop.
-    deep = "a/" * 1500 + "x"
+    # The check that no parent is a symlink the run created walks up the name in a
+    # loop: 300 components, with the recursion limit lowered to 150 frames above the
+    # test's own, which a walk of one frame per component would pass. The name stays
+    # short of macOS's 1024-byte path limit.
+    deep = "a/" * 300 + "x"
     archive = _tar_bytes([("dir", "e", None), ("sym", "s", "e"), ("file", deep, b"x")])
     from archivey.internal.dry_run import remove_scratch
 
+    depth = 0
+    frame = sys._getframe()
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    limit = sys.getrecursionlimit()
     try:
         with open_archive(io.BytesIO(archive)) as reader:
-            report = reader.extract_all(tmp_path / "out")
+            sys.setrecursionlimit(depth + 150)
+            try:
+                report = reader.extract_all(tmp_path / "out")
+            finally:
+                sys.setrecursionlimit(limit)
         assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
     finally:
         # pytest removes its temp directories recursively, which a tree this deep
