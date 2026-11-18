@@ -10,6 +10,7 @@ from archivey.detection_cost import DetectionBudget, DetectionCostReceipt
 from archivey.internal.detection import TAIL_PROBE_ALLOWANCE, validator_allowance
 from archivey.internal.sfx import LAYOUT_PREFIX
 from archivey.internal.streams.codecs.brotli_framing import (
+    CHAIN_END_READ,
     CHAIN_HEADER_READ,
     CHAIN_MAX_LINKS,
 )
@@ -30,7 +31,7 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     """Whether aggregate measured work in ``receipt`` stays inside ``budget``'s limits.
 
     Seek-based content-probe ``read_at`` charges ``unique_bytes_read`` without growing
-    the prefix. Those bytes are allowed up to ``CHAIN_MAX_LINKS * CHAIN_HEADER_READ``,
+    the prefix. Those bytes allow eight 24-byte headers and one two-byte end check,
     the Brotli walk's own cap, on top of the prefix/far/scan ceiling. The Brotli chain
     decode reads ``[0, n)`` only when ``n`` is within that ceiling, and takes what the
     prefix holds from the prefix. A trailer block is the same kind of extra read:
@@ -53,7 +54,7 @@ def within_budget(receipt: DetectionCostReceipt, budget: DetectionBudget) -> boo
     # ``passes`` is 1 or 2 from ``detect_format``; a receipt built by hand can carry
     # anything, and fewer than one pass is judged as one.
     n = max(1, receipt.passes)
-    probe_allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+    probe_allowance = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + CHAIN_END_READ
     # An executable's headers are read from their whole span under any prefix
     # budget, so the layout matches the one a forced ``format=`` reads.
     read_ceiling = max(

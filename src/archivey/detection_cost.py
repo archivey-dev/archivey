@@ -68,9 +68,11 @@ class DetectionBudget:
     """Upper bounds on what detection may spend.
 
     Content-probe header reads at an offset are not a budget field: the Brotli chain walk
-    caps them itself, at ``CHAIN_MAX_LINKS`` (8) header reads of 24 bytes. The Brotli
-    chain decode that follows reads ``[0, end)``: it is charged to ``max_decode_input``
-    and runs only when ``end`` is within the prefix/far/scan ceiling.
+    caps them itself, at eight header reads of 24 bytes and a two-byte end check.
+    ``max_probe_forward_bytes`` bounds buffering through literal bodies on pipes. The
+    Brotli chain decode that follows reads ``[0, end)``: it is charged to
+    ``max_decode_input`` and runs only when ``end`` is within the prefix/far/scan
+    ceiling.
     """
 
     max_prefix_bytes: int
@@ -105,6 +107,14 @@ class DetectionBudget:
     completion_window_bytes: int
     """The largest source a content-probe hit is re-checked against in full; ``0``
     turns the check off."""
+
+    max_probe_forward_bytes: int = 0
+    """Furthest offset a content probe may buffer through on a forward-only source.
+    Zero keeps pipe probe reads inside the bytes already buffered. Seekable sources
+    retain their existing bounded reads, independently of this allowance. ``THOROUGH``
+    allows 1 MiB; the other presets allow no additional forward reads for probes.
+    Whole-source completion remains governed by ``completion_window_bytes``.
+    """
 
     def __post_init__(self) -> None:
         # Every field is a non-negative int; there is no ``None`` to mean "off".
@@ -197,4 +207,5 @@ THOROUGH_BUDGET = DetectionBudget(
     # Whole-source completion as far as the decode allowance reaches; the allowance
     # (``max_decode_input``) is the real bound, so this is the same 1 MiB.
     completion_window_bytes=_INNER_TAR_DECODE,
+    max_probe_forward_bytes=_INNER_TAR_DECODE,
 )

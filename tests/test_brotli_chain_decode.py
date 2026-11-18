@@ -13,13 +13,20 @@ default for unnamed sources is, and a rejected probe leaves only the extension g
 
 from __future__ import annotations
 
+import io
 import random
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, ArchiveyConfig, detect_format
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    FormatDetectionError,
+    ProcessIsolation,
+    detect_format,
+)
 from archivey.detection_cost import (
     BALANCED_BUDGET,
     FAST_BUDGET,
@@ -40,6 +47,7 @@ from archivey.internal.streams.codecs.brotli_framing import (
 from tests.conftest import requires
 from tests.detection_cost_util import within_budget
 from tests.streams_util import (
+    ShortReadBytesIO,
     brotli_compressed_metablock_header,
     brotli_declared_metablock_header,
     brotli_link_cap_residual,
@@ -242,12 +250,19 @@ def test_compressed_first_stream_decodes_nothing_more() -> None:
 
 
 @requires("brotli")
-def test_compressed_block_past_the_reach_is_not_decoded(tmp_path: Path) -> None:
-    # A first block longer than the 1 MiB reach: the decode would read past it, so the
-    # probe keeps "cannot disprove" without reading, and detection says it did not run.
-    length = PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE + 1
+@pytest.mark.parametrize("length", [(1 << 20) - 100, (1 << 20) + 1])
+def test_compressed_block_past_the_reach_is_not_decoded(
+    tmp_path: Path, length: int
+) -> None:
+    # Headers just below or above 1 MiB remain cheap to seek to. The sequential
+    # decode would exceed its separate input cap, so its refusal must name that tier.
     head = brotli_declared_metablock_header(length, first=True)
-    blob = head + bytes(length) + brotli_compressed_metablock_header() + bytes(64)
+    blob = (
+        head
+        + bytes(length)
+        + brotli_compressed_metablock_header()
+        + bytes(CHAIN_DECODE_MARGIN)
+    )
     _passes_the_earlier_checks(blob)
 
     def read_at(offset: int, n: int) -> bytes | None:
@@ -261,7 +276,7 @@ def test_compressed_block_past_the_reach_is_not_decoded(tmp_path: Path) -> None:
         )
         is True
     )
-    # Metered, the detector's ``charge_decode`` applies it, and records the skip.
+    # Cheap header seeks still run, but the larger decode has its own input cap.
     info = _detect_named(tmp_path, blob)
     assert info.detected_by == "content_probe"
     assert TierSkip("content_probe_decode", TierSkipReason.BUDGET_EXHAUSTED) in (
@@ -316,3 +331,32 @@ def test_link_cap_residual_is_still_claimed() -> None:
     walk = walk_chain(blob[:DETECTION_LIMIT], len(blob), read_at=_read_at(blob))
     assert not walk.proves_invalid and walk.compressed_at is None
     assert _probe(blob) is True
+
+
+@requires("brotli")
+@pytest.mark.parametrize("settings", [(300, 5, 16), (900, 1, 22)])
+@pytest.mark.parametrize("max_chunk", [7, 65536])
+@pytest.mark.parametrize(
+    "isolation", [ProcessIsolation.KNOWN_CRASHES, ProcessIsolation.NATIVE_DECODERS]
+)
+def test_pipe_chain_decode_reaches_damage_after_a_valid_compressed_header(
+    settings: tuple[int, int, int], max_chunk: int, isolation: ProcessIsolation
+) -> None:
+    stream = _uncompressed_first_stream(*settings)
+    compressed_at = _passes_the_earlier_checks(stream)
+    # Preserve the real compressed header and its first 64 bytes. Completion cannot
+    # check this large source; the chain decode must reach the later corruption.
+    damaged = stream[: compressed_at + 64] + random.Random(64).randbytes(1_300_000)
+    assert len(damaged) > 1 << 20
+    config = ArchiveyConfig(
+        always_probe_content=True,
+        detection_budget="thorough",
+        process_isolation=isolation,
+    )
+    with io.BytesIO(damaged) as source, pytest.raises(FormatDetectionError):
+        detect_format(source, config=config)
+    with (
+        ShortReadBytesIO(damaged, max_chunk=max_chunk, seekable=False) as source,
+        pytest.raises(FormatDetectionError),
+    ):
+        detect_format(source, config=config)
