@@ -13,6 +13,7 @@ import io
 import shutil
 import struct
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,7 +33,14 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.udf import UdfVolume, decode_dstring, udf_timestamp
+from archivey.internal.backends.udf import (
+    Span,
+    UdfEntry,
+    UdfVolume,
+    _Partition,
+    decode_dstring,
+    udf_timestamp,
+)
 from archivey.types import ArchiveFormat, MemberType
 from tests.conftest import requires, requires_binary
 from tests.udf_builder import BLOCK, WHEN, Node, build_udf, directory, retag
@@ -174,6 +182,78 @@ def test_timestamps() -> None:
     assert udf_timestamp(unspecified)[0] == datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
     bad = struct.pack("<HhBBBBBBBB", 1 << 12, 2020, 13, 2, 3, 4, 5, 0, 0, 0)
     assert udf_timestamp(bad) == (None, True)
+
+
+def test_a_sub_second_field_over_99_flags_the_date() -> None:
+    """Each sub-second field holds 0-99; one over keeps the seconds and is flagged."""
+    raw = struct.pack("<HhBBBBBBBB", 1 << 12, 2024, 5, 6, 7, 8, 9, 200, 0, 0)
+    assert udf_timestamp(raw) == (datetime(2024, 5, 6, 7, 8, 9, tzinfo=UTC), True)
+
+
+def test_first_extent_skips_an_unrecorded_span() -> None:
+    """The first recorded byte is what other trees point at, not a leading hole."""
+    entry = UdfEntry(
+        location=0,
+        file_type=5,
+        uid=None,
+        gid=None,
+        permissions=0,
+        info_length=4096,
+        modified=b"",
+        accessed=b"",
+        attribute=b"",
+        created=None,
+        spans=(Span(None, 2048), Span(8192, 2048)),
+        inline=None,
+        partition=0,
+    )
+    assert entry.first_extent == 8192
+    sparse = UdfEntry(**{**_fields(entry), "spans": (Span(None, 2048),)})
+    assert sparse.first_extent is None
+
+
+def _fields(entry: UdfEntry) -> dict[str, object]:
+    return {name: getattr(entry, name) for name in UdfEntry.__slots__}
+
+
+class _Weigh:
+    def __init__(self) -> None:
+        self.nbytes = 0
+
+    def add_udf_member(self) -> None:
+        pass
+
+    def add_udf_bytes(self, nbytes: int) -> None:
+        self.nbytes += nbytes
+
+
+def test_an_extent_over_many_metadata_runs_costs_one_step_per_run() -> None:
+    """A 1 GiB extent in a metadata partition of 201 runs is split once per run, not
+    walked block by block (about 3 s per extent before), and each extra span is
+    weighed against the metadata budget."""
+    image = build_udf(directory("", Node("f", b"x" * 10)), metadata=True)
+    weigh = _Weigh()
+    volume = UdfVolume(
+        lambda offset, n: image[offset : offset + n],
+        len(image),
+        archive_name=None,
+        budget=weigh,
+    )
+    big = 0x3FFFF800 // BLOCK
+    runs = tuple((10 + 2 * index, 1) for index in range(200)) + ((1000, big),)
+    firsts = tuple(range(200)) + (200,)
+    volume._partitions[1] = _Partition(0, 200 + big, runs, firsts)
+    before = weigh.nbytes
+    started = time.monotonic()
+    for _ in range(20):
+        spans = volume._extent_spans(1, 0, 0x3FFFF800, "a file's extent")
+    assert time.monotonic() - started < 2
+    assert len(spans) == 201
+    assert spans[0] == Span(10 * BLOCK, BLOCK)
+    assert sum(span.length for span in spans) == 0x3FFFF800
+    assert weigh.nbytes - before == 20 * 200 * 16
+    # A block inside the last run maps through the same bisect.
+    assert volume._block_offset(1, 205, "x") == (1000 + 5) * BLOCK
 
 
 def test_an_invalid_udf_date_is_reported() -> None:

@@ -457,3 +457,26 @@ SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 | PVD, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | The same image with `max_metadata_bytes` above the sum | Opens and lists |
 | A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |
+
+### Requirement: Bound the UDF chains structurally
+
+The UDF parser SHALL follow at most 16 Volume Descriptor Sequence extents and 256
+descriptors in them, 64 indirect entries and 64 allocation extent continuations for one
+File Entry, 64 Volume Recognition descriptors and 64 partition maps, and SHALL read a
+symlink of at most 64 KiB; past any of these the image SHALL be refused with
+`CorruptionError` at open. These are structural bounds, not policy limits: each stops a
+chain the format lets point anywhere, real writers record one descriptor extent, one or
+two partition maps and no indirect entries, and no system makes a symlink target over
+4096 bytes (Linux's `PATH_MAX`; its UDF driver reads at most one block). A directory has
+no such bound: `max_metadata_bytes` weighs it before it is read. An extent that a
+metadata partition splits over its runs SHALL cost one step per run it covers, not one
+per block, and each extra span SHALL be weighed against `max_metadata_bytes` as one long
+allocation descriptor (16 bytes).
+
+#### Scenario: UDF bounds
+
+| Case | Expected |
+| --- | --- |
+| A File Entry whose allocation extents continue more than 64 times, or more than 64 indirect entries in a row | `CorruptionError` at open |
+| A symlink over 64 KiB | `CorruptionError` at open |
+| Many 1 GiB allocation descriptors in a metadata partition of 200 runs | Open time grows with the runs covered, not the blocks; the extra spans count against `max_metadata_bytes` |

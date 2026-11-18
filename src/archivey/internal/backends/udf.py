@@ -33,6 +33,7 @@ image and takes the source's lock. What the walk keeps is weighed against
 
 from __future__ import annotations
 
+import bisect
 import io
 import stat
 import struct
@@ -57,7 +58,9 @@ if TYPE_CHECKING:
 VRS_START = 32768
 _VRS_STRIDE = 2048
 # How many Volume Recognition descriptors are looked at before giving up: the ISO 9660
-# descriptors come first on a bridge image, and real images have fewer than ten.
+# descriptors come first on a bridge image, and real images have fewer than ten. A
+# structural bound, not a policy limit (format-iso spec): a scan guard far past what
+# any writer produces, and each step is one 2048-byte read.
 _VRS_MAX = 64
 # Block sizes tried for the anchor at block 256 (ECMA-167 3/8.4.2.1). 2048 first:
 # every optical disc and every image writer uses it.
@@ -79,17 +82,28 @@ _TAG_TE = 260
 _TAG_FE = 261
 _TAG_EFE = 266
 
+# The bounds below are structural, not policy limits (format-iso spec, "Bound the
+# UDF chains"): they stop a loop in a chain that the format lets point anywhere, and
+# no writer comes near them, so ``ArchiveyConfig`` has no setting for them.
 # How many Volume Descriptor Sequence extents (VDP chain) and descriptors are read.
+# Writers record one extent of fewer than ten descriptors.
 _MAX_VDS_EXTENTS = 16
 _MAX_VDS_DESCRIPTORS = 256
 # How many indirect entries (ICB strategy 4096) and allocation extent descriptors
-# are followed for one entry before it is refused as a loop.
+# are followed for one entry before it is refused as a loop. Writers use strategy 4
+# (no indirect entries) and a few continuation blocks for a very fragmented file.
 _MAX_INDIRECT = 64
-# A directory's data is read whole while listing. The metadata budget bounds it too,
-# but ``ListingLimits.UNLIMITED`` turns that off.
-_MAX_DIRECTORY_BYTES = 1 << 30
-# A symlink's data is read while listing; a longer one is refused as corrupt.
+# How many partition maps a Logical Volume Descriptor may hold. Writers record one or
+# two (a physical partition, and a metadata partition over it).
+_MAX_PARTITION_MAPS = 64
+# A symlink's data is read while listing; a longer one is refused as corrupt. No
+# system can make one this long: PATH_MAX is 4096 bytes on Linux, and Linux's UDF
+# driver refuses a symlink longer than one block.
 _MAX_SYMLINK_BYTES = 64 * 1024
+
+# What one extra span from splitting an extent over metadata runs weighs against the
+# metadata budget: the size of a long allocation descriptor (ECMA-167 4/14.14.2).
+_SPAN_WEIGHT = 16
 
 # ICB file types (ECMA-167 4/14.6.6).
 _FT_DIRECTORY = 4
@@ -206,21 +220,15 @@ def udf_timestamp(raw: bytes) -> tuple[datetime | None, bool]:
     try:
         if tz is None:
             tz = timezone(timedelta(minutes=offset))
-        micros = centi * 10_000 + hundreds * 100 + micro
-        value = datetime(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            micros if micros < 1_000_000 else 0,
-            tzinfo=tz,
-        )
+        # Each sub-second field holds 0-99 (ECMA-167 1/7.3). One out of range keeps
+        # the whole seconds and flags the date, as nothing is dropped silently.
+        sub_second_ok = centi <= 99 and hundreds <= 99 and micro <= 99
+        micros = centi * 10_000 + hundreds * 100 + micro if sub_second_ok else 0
+        value = datetime(year, month, day, hour, minute, second, micros, tzinfo=tz)
         value.astimezone(UTC)
     except (ValueError, OverflowError):
         return None, True
-    return value, False
+    return value, not sub_second_ok
 
 
 def _tag_checksum(data: bytes) -> int:
@@ -323,9 +331,10 @@ class UdfEntry:
 
     @property
     def first_extent(self) -> int | None:
-        """The image offset the data starts at, or ``None`` when it has none."""
+        """The image offset of the first recorded byte of the data, or ``None`` when
+        no extent is recorded (no data, or zeros only)."""
         for span in self.spans:
-            if span.length:
+            if span.length and span.offset is not None:
                 return span.offset
         return None
 
@@ -348,6 +357,8 @@ class _Partition:
     start: int
     length: int
     metadata: tuple[tuple[int, int], ...] | None = None  # (block offset, blocks)
+    # The logical block each metadata run starts at, for a bisect.
+    firsts: tuple[int, ...] = ()
 
 
 class UdfVolume:
@@ -581,7 +592,7 @@ class UdfVolume:
             self._declared_end = max(self._declared_end, (start + plength) * size)
         map_length, map_count = struct.unpack_from("<II", lvd, 264)
         maps = lvd[440 : 440 + map_length]
-        if len(maps) < map_length or map_count > 64:
+        if len(maps) < map_length or map_count > _MAX_PARTITION_MAPS:
             raise self._corrupt("its partition maps do not fit their descriptor")
         offset = 0
         metadata_maps: list[tuple[int, int, int]] = []
@@ -653,7 +664,12 @@ class UdfVolume:
             if span.offset is None or span.offset % size or span.length % size:
                 raise self._corrupt("its metadata file has an extent not on a block")
             runs.append((span.offset // size, span.length // size))
-        return _Partition(0, sum(n for _b, n in runs), tuple(runs))
+        firsts: list[int] = []
+        total = 0
+        for _start, count in runs:
+            firsts.append(total)
+            total += count
+        return _Partition(0, total, tuple(runs), tuple(firsts))
 
     def _block_offset(self, partition: int, block: int, what: str) -> int:
         """The image offset of logical ``block`` of partition reference ``partition``."""
@@ -665,11 +681,9 @@ class UdfVolume:
             raise self._corrupt(f"{what} lies past the end of its partition")
         if part.metadata is None:
             return (part.start + block) * self.block_size
-        for start, count in part.metadata:
-            if block < count:
-                return (start + block) * self.block_size
-            block -= count
-        raise self._corrupt(f"{what} lies past the end of its partition")
+        index = bisect.bisect_right(part.firsts, block) - 1
+        start, _count = part.metadata[index]
+        return (start + block - part.firsts[index]) * self.block_size
 
     def _extent_spans(
         self, partition: int, block: int, length: int, what: str
@@ -682,18 +696,35 @@ class UdfVolume:
             raise self._corrupt(f"{what} names partition {partition}")
         if block + blocks > self._partitions[partition].length:
             raise self._corrupt(f"{what} runs past the end of its partition")
+        part = self._partitions[partition]
+        if part.metadata is None:
+            # A physical partition is contiguous: one span.
+            return [Span((part.start + block) * size, length)]
+        # Intersect [block, block + blocks) with the metadata runs once: the cost is
+        # one bisect plus one step per run the extent covers, never one per block.
         spans: list[Span] = []
-        for index in range(blocks):
-            offset = self._block_offset(partition, block + index, what)
-            run = min(size, length - index * size)
+        index = bisect.bisect_right(part.firsts, block) - 1
+        remaining = length
+        while remaining > 0:
+            run_start, run_count = part.metadata[index]
+            skip = block - part.firsts[index]
+            take = min(remaining, (run_count - skip) * size)
+            offset = (run_start + skip) * size
             last = spans[-1] if spans else None
-            if last is not None and last.offset == offset - last.length:
-                spans[-1] = Span(offset - last.length, last.length + run)
-                continue
-            spans.append(Span(offset, run))
-            if self._partitions[partition].metadata is None:
-                # One run: a physical partition is contiguous.
-                return [Span(offset, length)]
+            if not take:
+                pass  # An empty metadata run.
+            elif last is not None and last.offset == offset - last.length:
+                spans[-1] = Span(last.offset, last.length + take)
+            else:
+                spans.append(Span(offset, take))
+            remaining -= take
+            block += run_count - skip
+            index += 1
+        if self._budget is not None and len(spans) > 1:
+            # Each extra span is one more descriptor archivey keeps, as if stored:
+            # weighed as a long allocation descriptor. This bounds the work an
+            # extent split over many metadata runs can cause.
+            self._budget.add_udf_bytes((len(spans) - 1) * _SPAN_WEIGHT)
         return spans
 
     def _read_file_set(self, location: tuple[int, int, int]) -> tuple[int, int]:
@@ -876,11 +907,13 @@ class UdfVolume:
 
     # --- data -------------------------------------------------------------------
 
-    def read_data(self, entry: UdfEntry, limit: int, what: str) -> bytes:
-        """The data of a small entry (a directory or a symlink), read whole."""
+    def read_data(self, entry: UdfEntry, limit: int | None, what: str) -> bytes:
+        """The data of a small entry (a directory or a symlink), read whole. A
+        directory has no ``limit``: the metadata budget bounds it, and
+        ``ListingLimits.UNLIMITED`` is the caller's opt-out."""
         if entry.inline is not None:
             return entry.inline
-        if entry.info_length > limit:
+        if limit is not None and entry.info_length > limit:
             raise self._corrupt(f"a {what} is {entry.info_length} bytes long")
         if self._budget is not None:
             self._budget.add_udf_bytes(entry.info_length)
@@ -952,7 +985,7 @@ class UdfVolume:
 
     def _children(self, directory: UdfEntry) -> Iterator[tuple[str, bytes, UdfEntry]]:
         """``(name, stored name bytes, entry)`` per File Identifier of a directory."""
-        data = self.read_data(directory, _MAX_DIRECTORY_BYTES, "directory")
+        data = self.read_data(directory, None, "directory")
         offset = 0
         size = len(data)
         while offset + 38 <= size:

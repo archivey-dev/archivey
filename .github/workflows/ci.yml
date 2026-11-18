@@ -283,7 +283,7 @@ jobs:
       # genisoimage and udftools (mkudffs) the UDF images tests/test_iso_udf.py reads.
       # tabix ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks
       # the block walk against.
-      - name: Install unrar, unar, xorriso and bgzip (Linux)
+      - name: Install unrar, unar, xorriso, bgzip, genisoimage and udftools (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         uses: ./.github/actions/apt-install
         with:

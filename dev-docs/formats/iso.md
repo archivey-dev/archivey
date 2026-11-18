@@ -646,11 +646,14 @@ ISO-specific only. General extraction and name hazards are §2.4.
   `CorruptionError` otherwise (§2.3).
 - **A UDF File Entry's allocation descriptors and lengths are attacker-chosen.** Each
   read the UDF parser makes is one block, or a directory's or symlink's declared data,
-  weighed against `max_metadata_bytes` first and capped at 1 GiB and 64 KiB without
-  limits. Chains (volume descriptor pointers, indirect entries, allocation extents) stop
-  at 16 or 64 links. Extents that overlap are refused on read; unrecorded extents are
-  zeros the member's size already counts, so they amplify as a sparse file does,
-  under the same extraction limits.
+  weighed against `max_metadata_bytes` first; a symlink is also capped at 64 KiB, which
+  no system comes near. Chains (volume descriptor pointers, indirect entries, allocation
+  extents) stop at 16 or 64 links: structural bounds, not policy limits (spec "Bound the
+  UDF chains structurally"). An extent split over a metadata partition's runs costs one
+  step per run it covers, and each extra span is weighed as a 16-byte descriptor.
+  Extents that overlap are refused on read; unrecorded extents are zeros the member's
+  size already counts, so they amplify as a sparse file does, under the same extraction
+  limits.
 - **Rock Ridge names and link targets are attacker-chosen bytes.** A name can hold `/`,
   `..` or control characters, and a target can be absolute. The record walk keeps a `/`
   in a name from costing the listing; everything else is the shared name normalisation and
