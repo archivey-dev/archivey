@@ -539,3 +539,42 @@ def test_a_sheet_is_detected_by_its_name(tmp_path: Path) -> None:
     )
     info = detect_format(cue)
     assert (info.format, info.detected_by) == (ArchiveFormat.ISO, "extension")
+
+
+def _iso_with(name: str, data: bytes) -> bytes:
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(data), len(data), f"/{name};1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+@requires("pycdlib")
+def test_a_bin_read_without_its_sheet_reports_the_session_it_does_not_read(
+    tmp_path: Path,
+) -> None:
+    # Two data sessions in one .bin. From a path the sheet beside it is used, and the
+    # last session is listed. From a file object there is no sheet: the first track
+    # is listed, and the other volume after it is reported, so the caller learns that
+    # the two readings differ.
+    first = to_raw(_iso_with("OLD.TXT", b"old\n"))
+    second = to_raw(_iso_with("NEW.TXT", b"new\n"))
+    disc = tmp_path / "disc.bin"
+    disc.write_bytes(first + second)
+    (tmp_path / "disc.cue").write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        "REM SESSION 02\n  TRACK 02 MODE1/2352\n"
+        f"    INDEX 01 {_msf(len(first) // 2352)}\n"
+    )
+    with open_archive(disc) as archive:
+        assert [m.name for m in archive.members()] == ["NEW.TXT"]
+        assert archive.diagnostics.retained == ()
+    with open_archive(io.BytesIO(disc.read_bytes())) as archive:
+        assert [m.name for m in archive.members()] == ["OLD.TXT"]
+        (diagnostic,) = archive.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_UNREAD_SESSION
+    assert diagnostic.context.sector == len(first) // 2352 + 16

@@ -102,7 +102,13 @@ A Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors, is read through
 user data (checking sync and mode per sector, not EDC/ECC) and maps read hints back to raw
 sectors; `IsoHandler.open` wraps the source, so pycdlib sees a plain image. Only the first
 track is read (no `.cue`), and the trailing-data scan stops at the first sector that is
-not a data sector, so a mixed-mode disc's audio is not reported. Other layouts are refused
+not a data sector, so a mixed-mode disc's audio is not reported. When a sector of that
+scan starts with a primary volume descriptor (`01 CD001 01`), the image holds a later
+session that a `.cue` would choose: `ARCHIVE_UNREAD_SESSION` names its sector
+(`IsoReader._report_unread_session`), in place of `ARCHIVE_TRAILING_DATA`, and the
+listing stays the first track's (davitf, 2026-11-17: a diagnostic, not another listing).
+The same `.bin` opened by its path beside its sheet lists the last session, so this is
+the one signal a caller reading a stream gets. Other layouts are refused
 by name in `open_archive` with `UnsupportedFeatureError`, before the availability check,
 so a caller without `pycdlib` is not told to install it first
 (`refuse_raw_sector_image`); a replacement reader is refused every raw image.
@@ -476,9 +482,9 @@ discs), and archivey reads only the ISO 9660 side. On an image whose ISO tree ca
 8.3 names and whose long names live in UDF, the listing shows the 8.3 names. A Blu-ray
 style UDF-only image has no `CD001` and is not recognised at all.
 
-**A `.bin`/`.cue` pair is a raw sector dump**, not an ISO, and is refused by name (§2.1).
-Reading one means stripping every sector to its payload first; it is planned for after
-0.2.0.
+**A `.bin`/`.cue` pair is a raw sector dump**, not an ISO. Mode 1 and Mode 2 Form 1
+images are read with each sector stripped to its user data, and a `.cue` beside the
+`.bin` chooses the track (§2.1). Other layouts are refused by name.
 
 **Rock Ridge names follow the writer's locale.** `genisoimage -input-charset iso8859-1`
 stores `café.txt` as `caf\xe9.txt` in the Rock Ridge `NM` record and as proper UTF-16 in
@@ -633,6 +639,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- |
 | Detection by far magic; a bootable image is not taken by a probe; a short source falls through |
 | Raw sector images refused by name, without `pycdlib` |
+| A `.bin` of two data sessions lists its last session by path (with its `.cue`) and its first from a file object, which reports `ARCHIVE_UNREAD_SESSION` |
 | Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped |
 | Cost, seekable-only, write refused, password unused |
 | Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey |
