@@ -1367,7 +1367,10 @@ def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
 def test_zip64_end_record_nonzero_disk_fields_name_missing_parts() -> None:
     # The ZIP64 end record's disk fields replace the classic record's 0xFFFF sentinels,
     # so a spanned set's last part read alone is told apart there too.
-    raw = _genuine_zip64_bytes(zip64_this_disk=2, zip64_cd_start_disk=0)
+    raw = bytearray(_genuine_zip64_bytes(zip64_this_disk=2, zip64_cd_start_disk=0))
+    # The locator counts the disks too, and the two must agree.
+    struct.pack_into("<L", raw, raw.rindex(b"PK\x06\x07") + 16, 3)
+    raw = bytes(raw)
     with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):
         open_archive(io.BytesIO(raw))
 

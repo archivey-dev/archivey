@@ -908,6 +908,19 @@ def test_directory_on_a_disk_after_the_record_is_damage() -> None:
     assert not isinstance(excinfo.value, TruncatedError)
 
 
+def test_zip64_record_and_locator_disagreeing_on_disks_is_damage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = bytearray(_zip64(monkeypatch, {"a.txt": b"hello"}))
+    struct.pack_into("<LL", data, _zip64_record_offset(data) + 16, 2, 2)
+    # The classic record needs none of the ZIP64 fields, so it stands in for the
+    # contradicting records, which are reported as damage.
+    end = find_end_record(_read_at(bytes(data)), len(data))
+    assert end.zip64_damage is not None
+    assert "locator counts 1 disks" in end.zip64_damage
+    assert end.disk_starts == ()
+
+
 def test_zip64_sentinel_disk_field_is_not_a_disk() -> None:
     data = bytearray(_zip({"a.txt": b"hello"}))
     eocd = data.rindex(b"PK\x05\x06")
@@ -925,6 +938,7 @@ def test_zip64_record_disk_fields_refuse_a_spanned_part(
     """The ZIP64 record's disk fields replace the classic ones, as in stdlib."""
     data = bytearray(_zip64(monkeypatch, {"a.txt": b"hello"}))
     struct.pack_into("<LL", data, _zip64_record_offset(data) + 16, 2, 2)
+    struct.pack_into("<L", data, data.rindex(b"PK\x06\x07") + 16, 3)
     eocd = data.rindex(b"PK\x05\x06")
     struct.pack_into("<HH", data, eocd + 4, 0xFFFF, 0xFFFF)
     with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):

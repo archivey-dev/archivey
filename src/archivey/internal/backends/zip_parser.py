@@ -51,6 +51,7 @@ from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIGNATURE,
     LOCAL_HEADER_SIZE,
 )
+from archivey.internal.format_provenance import confirm_format
 from archivey.terminal import quoted
 
 #: ``read_at(offset, n)``: up to ``n`` bytes from absolute ``offset``; fewer only at
@@ -195,6 +196,16 @@ class SpannedPartsError(TruncatedError):
         super().__init__(message)
 
 
+def spanned_parts_missing(exc: SpannedPartsError) -> TruncatedError:
+    """The plain ``TruncatedError`` a :class:`SpannedPartsError` is raised as, with the
+    format confirmed (``confirm_format``): an end record naming the parts of a spanned
+    set is a ZIP's, though the last part, which starts inside member data, was chosen
+    by its extension alone."""
+    error = TruncatedError(raw_message_of(exc))
+    confirm_format(error)
+    return error
+
+
 def find_end_record(
     read_at: ReadAt,
     file_size: int,
@@ -233,7 +244,7 @@ def find_end_record(
     except SpannedPartsError as exc:
         # Callers here read one source, never a joined set, and the subclass is the
         # reader's alone (``read_end_record``): it must not reach the caller.
-        raise TruncatedError(raw_message_of(exc)) from None
+        raise spanned_parts_missing(exc) from None
 
 
 def locate_end_record(
@@ -615,7 +626,8 @@ def _read_zip64_records(
     if located is None:
         return None
     locator_offset, record_offset = located
-    record_disks = disk_starts if _locator_disks(read_at, locator_offset) > 1 else ()
+    locator_disks = _locator_disks(read_at, locator_offset)
+    record_disks = disk_starts if locator_disks > 1 else ()
     adjacent = locator_offset - ZIP64_EOCD_SIZE
     extensible = adjacent - record_offset
     record = read_at(record_offset, ZIP64_EOCD_SIZE)
@@ -638,6 +650,13 @@ def _read_zip64_records(
         cd_size,
         cd_offset,
     ) = _ZIP64_EOCD.unpack(record)
+    if (locator_disks > 1 or this_disk) and this_disk + 1 != locator_disks:
+        # The two records disagree on how many parts the set has; neither says which
+        # part is missing or extra.
+        raise CorruptionError(
+            f"The ZIP64 end record is on disk {this_disk + 1}, and the ZIP64 end "
+            f"locator counts {locator_disks} disks"
+        )
     return adjacent - extensible, this_disk, cd_disk, entries_total, cd_size, cd_offset
 
 

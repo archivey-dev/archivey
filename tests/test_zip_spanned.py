@@ -13,16 +13,16 @@ import hashlib
 import io
 import shutil
 import struct
-import subprocess
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveyConfig, open_archive
+from archivey import ArchiveyConfig, Diagnostic, DiagnosticCode, open_archive
 from archivey.exceptions import CorruptionError, OpenError, TruncatedError
 from archivey.internal.backends import zip_parser
-from tests.conftest import requires_binary
+from tests.conftest import requires_binary, run_7z
+from tests.streams_util import NonSeekableBytesIO
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "external" / "zip_spanned_infozip"
 _FIXTURE_BIG_SHA256 = "87dd44c4dcb2a45096ea7bb2dd6fa5a0846418cf572e860a1d4c7f66f6dd5360"
@@ -177,11 +177,7 @@ def test_infozip_set_extracts(tmp_path: Path) -> None:
 @requires_binary("7z")
 def test_infozip_set_matches_7zip(tmp_path: Path) -> None:
     """7-Zip reads ``zip -s`` sets too; ``unzip`` refuses them."""
-    subprocess.run(
-        ["7z", "x", "-y", f"-o{tmp_path}", str(_FIXTURE / "set.zip")],
-        check=True,
-        capture_output=True,
-    )
+    run_7z(["x", "-y", f"-o{tmp_path}", str(_FIXTURE / "set.zip")], check=True)
     expected = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     assert _contents(_FIXTURE / "set.zip") == expected
 
@@ -199,22 +195,55 @@ def test_infozip_set_with_a_part_missing_names_it(tmp_path: Path) -> None:
             open_archive(tmp_path / named)
 
 
+def _refused_with_format_confirmed(
+    source: object, match: str, **kwargs: object
+) -> None:
+    """The open raises a plain ``TruncatedError`` matching ``match``, not marked as a
+    failure under an unconfirmed format: the end record that names the set is a ZIP's,
+    though the last part starts inside member data and only its name chose ZIP."""
+    diagnostics: list[Diagnostic] = []
+    config = ArchiveyConfig(on_diagnostic=diagnostics.append, **kwargs)  # type: ignore[arg-type]
+    with pytest.raises(TruncatedError, match=match) as excinfo:
+        open_archive(source, config=config)  # type: ignore[arg-type]
+    error = excinfo.value
+    assert type(error) is TruncatedError
+    assert error.format_unconfirmed is False
+    assert "unconfirmed" not in str(error)
+    assert "Partial output" not in str(error)
+    codes = {d.code for d in diagnostics}
+    assert DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED not in codes
+    assert DiagnosticCode.PROBE_FORMAT_UNCONFIRMED not in codes
+
+
 def test_infozip_last_part_alone_says_the_others_are_missing(tmp_path: Path) -> None:
     shutil.copy(_FIXTURE / "set.zip", tmp_path)
-    with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts") as excinfo:
-        open_archive(tmp_path / "set.zip", format=None)
+    _refused_with_format_confirmed(tmp_path / "set.zip", "spanned ZIP set of 3 parts")
+
+
+def test_infozip_last_part_from_a_pipe_says_the_others_are_missing() -> None:
+    data = (_FIXTURE / "set.zip").read_bytes()
+    stream = NonSeekableBytesIO(data)
+    with (
+        pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts") as excinfo,
+        open_archive(stream, streaming=True) as archive,
+    ):
+        for _member, _stream in archive.stream_members():
+            pass
     assert type(excinfo.value) is TruncatedError
 
 
 def test_infozip_set_listed_with_a_part_missing(tmp_path: Path) -> None:
-    with pytest.raises(TruncatedError, match="spanned set of 3 parts, and 2 parts"):
-        open_archive([_FIXTURE / "set.z01", _FIXTURE / "set.zip"])
+    _refused_with_format_confirmed(
+        [_FIXTURE / "set.z01", _FIXTURE / "set.zip"],
+        "spanned set of 3 parts, and 2 parts",
+    )
 
 
 def test_discovery_off_reads_the_zip_alone(tmp_path: Path) -> None:
+    _refused_with_format_confirmed(
+        _FIXTURE / "set.zip", "spanned ZIP set of 3 parts", discover_volumes=False
+    )
     off = ArchiveyConfig(discover_volumes=False)
-    with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):
-        open_archive(_FIXTURE / "set.zip", config=off)
     with pytest.raises(TruncatedError, match="one part of a split or spanned"):
         open_archive(_FIXTURE / "set.z01", config=off)
 
@@ -350,3 +379,20 @@ def test_seven_zip_split_join_ignores_its_part_starts() -> None:
     end = zip_parser.read_end_record(read_at, len(single), found, disk_starts=[0, 100])
     assert end.disk_starts == ()
     assert zip_parser.spanned_disk_count(read_at, len(single)) == 1
+
+
+def test_zip64_records_disagreeing_on_the_part_count_are_damage(tmp_path: Path) -> None:
+    """The ZIP64 locator counts one disk more than its record's: the records contradict
+    each other, and no part is missing or extra."""
+    parts = _span(_stdlib_zip(_MEMBERS), 1000, zip64=True)
+    last = bytearray(parts[-1])
+    locator = last.rindex(b"PK\x06\x07")
+    struct.pack_into("<L", last, locator + 16, len(parts) + 1)
+    parts[-1] = bytes(last)
+    paths = _write_set(tmp_path, [*parts[:-1], b"extra part", parts[-1]])
+    with (
+        pytest.raises(CorruptionError, match="locator counts 14 disks") as excinfo,
+        open_archive(paths[-1]) as archive,
+    ):
+        archive.members()
+    assert not isinstance(excinfo.value, TruncatedError)

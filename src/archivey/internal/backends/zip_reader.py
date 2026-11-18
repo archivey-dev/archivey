@@ -153,6 +153,7 @@ from archivey.internal.backends.zip_parser import (
     locate_end_record,
     read_end_record,
     read_local_header,
+    spanned_parts_missing,
     unused_zip64_values,
     written_by_archive_utility,
 )
@@ -168,6 +169,7 @@ from archivey.internal.config import StreamConfig, stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.format_provenance import confirm_format, format_confirmed
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
@@ -1724,7 +1726,7 @@ class ZipReader(BaseArchiveReader):
             except SpannedPartsError as exc:
                 # Parts missing, not damage: the local headers of the parts given
                 # would list only some members, so nothing is listed.
-                raise TruncatedError(raw_message_of(exc)) from None
+                raise spanned_parts_missing(exc) from None
             except CorruptionError as exc:
                 # End records that cannot be used (a damaged ZIP64 record after a
                 # saturated classic one, a directory that would start before the
@@ -1737,6 +1739,8 @@ class ZipReader(BaseArchiveReader):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
                 # where it failed.
                 opened = type(exc)(f"Could not open ZIP archive: {raw_message_of(exc)}")
+                if format_confirmed(exc):
+                    confirm_format(opened)
                 self._stamp_error_context(opened)
                 raise opened from exc
             self._stamp_error_context(exc)

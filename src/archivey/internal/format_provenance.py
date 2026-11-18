@@ -131,6 +131,28 @@ def unconfirmed_context(
     )
 
 
+# The key :func:`confirm_format` sets in an exception's ``__dict__``. Kept there, not in
+# a declared attribute, because it is internal: it is no part of ``ArchiveyError``'s
+# public fields, and it travels with the exception when it is pickled or copied.
+_FORMAT_CONFIRMED = "_archivey_format_confirmed"
+
+
+def confirm_format(exc: ArchiveyError) -> None:
+    """Say that the bytes that raised ``exc`` confirm the format, though detection had
+    only a filename or a probe to go on: :func:`stamp_error_context` then does not mark
+    ``exc`` as a failure under an unconfirmed format.
+
+    For a refusal that reads a structure only the format has, such as a ZIP end record
+    naming the parts of a spanned set: the file is that format, and it is incomplete.
+    """
+    exc.__dict__[_FORMAT_CONFIRMED] = True
+
+
+def format_confirmed(exc: ArchiveyError) -> bool:
+    """Whether :func:`confirm_format` was called on ``exc``."""
+    return bool(exc.__dict__.get(_FORMAT_CONFIRMED))
+
+
 def stamp_error_context(
     exc: ArchiveyError,
     *,
@@ -151,7 +173,8 @@ def stamp_error_context(
     ``format_unconfirmed`` is set, and the diagnostic is emitted through ``collector``.
     ``claim_diagnostic`` returns whether this call may emit it; a reader passes one so
     the diagnostic is one per reader however many errors it stamps. Without it, every
-    call emits.
+    call emits. An exception whose bytes confirmed the format (:func:`confirm_format`)
+    is not marked.
     """
     if exc.source_format is None:
         exc.source_format = archive_format
@@ -160,6 +183,8 @@ def stamp_error_context(
     if exc.member_name is None and member_name is not None:
         exc.member_name = member_name
     if provenance is None or not isinstance(exc, (CorruptionError, ResourceLimitError)):
+        return
+    if format_confirmed(exc):
         return
     evidence = provenance.unconfirmed_evidence
     if evidence is None:
