@@ -51,8 +51,10 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
   Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
   from its index. Members: direct. Needs a source that can seek.
-- **XAR** (`.xar`, macOS `.pkg` and `.xip`): core for stored, gzip, bzip2, LZMA and xz
-  data. Listing: from its index. Members: direct. Needs a source that can seek.
+- **XAR** (`.xar`): core for stored, gzip, bzip2, LZMA and xz data. Listing: from its index.
+  Members: direct. Needs a source that can seek.
+- **macOS installer packages** (`.pkg`, `.mpkg`, `.xip`): core. Listing: needs decompression of
+  each payload. Members: solid within a payload. Needs a source that can seek.
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
@@ -77,8 +79,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
   the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo` and Snappy
-  `.sz` in core; Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4,
+- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo`, Snappy
+  `.sz` and Apple's pbzx in core; Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4,
   Firefox's mozlz4 files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and
   base64 text in core. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
@@ -1282,8 +1284,10 @@ other members because of a member's name any more. Setting it to `True` warns.
 
 ## XAR
 
-The format of macOS installer packages (`.pkg`) and `.xip` files, written by Apple's `xar`,
-`pkgbuild` and `bsdtar --format xar`.
+The archive format written by Apple's `xar` and `bsdtar --format xar`. macOS installer
+packages and `.xip` files are XAR archives too; archivey opens them as
+[installer packages](#macos-installer-packages), and as XAR only when asked with
+`format=ArchiveFormat.XAR`.
 
 - **Needs:** nothing. Each file's data is stored, or compressed with zlib, bzip2, LZMA or xz,
   all read with Python's own modules.
@@ -1296,10 +1300,9 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   source that can seek.
 - `ArchiveInfo.format_version` is `"1"`, the only version there is. Members carry the mode,
   owners, and modification, access and change times the index stores, all in UTC.
-- An installer package is listed as the files its XAR layer holds: `Distribution`, and per
-  component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a gzip-compressed
-  CPIO archive (or a `pbzx` stream in newer packages); archivey lists and reads it as one
-  file and does not expand it.
+- An installer package opened with `format=ArchiveFormat.XAR` is listed as the files its XAR
+  layer holds: `Distribution`, and per component `PackageInfo`, `Bom`, `Scripts` and
+  `Payload`, each `Payload` read as the one compressed file it is.
 - The index's own checksum is checked at open, and a damaged index raises
   `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
   default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
@@ -1314,6 +1317,34 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   the link before that member; archivey then lists it after.
 - A file whose data uses an encoding archivey does not know is listed, with
   `CompressionAlgorithm.UNKNOWN`, and raises `UnsupportedFeatureError` when read.
+
+## macOS installer packages
+
+macOS installer packages (`.pkg`, `.mpkg`), written by Apple's `pkgbuild` and
+`productbuild`, and Xcode's `.xip` archives. Each is a [XAR](#xar) archive whose payloads
+are CPIO archives; archivey lists the files inside them, the way `pkgutil --expand-full`
+unpacks a package. The format is `ArchiveFormat.PKG`.
+
+- **Needs:** nothing. Payloads are gzip or pbzx (Apple's xz in chunks), read with Python's
+  own modules.
+- **Listing:** each `Payload` and `Scripts`, in a component package or in a component's
+  folder of a product archive (`app.pkg/`), and the `Content` of a `.xip`, is listed as the
+  files its CPIO holds, under a folder of its own name:
+  `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and the
+  other files are listed as they are. Listing decodes every payload.
+- **Reading members:** solid within a payload: reading a file decodes its payload up to it,
+  and reading the files in order decodes each payload once.
+- **From a pipe:** no, as for XAR.
+- **Detection:** a XAR named `.pkg`, `.mpkg` or `.xip` is a package, and a `.xar` is not.
+  Without either name, a XAR whose index lists `Distribution` or `PackageInfo`, or both
+  `Content` and `Metadata`, is a package. `format=ArchiveFormat.XAR` opens a package as the
+  XAR files it holds, and `FormatPolicy` allows or refuses packages as `ContainerFormat.PKG`.
+- A payload's XAR checksum is checked as the listing reads it, and a payload that fails it
+  raises `CorruptionError`. A payload that is not a CPIO, or whose first CPIO header cannot
+  be read, is listed as the one file it is.
+- A file in a payload, or a hard link's target, whose name would extract outside the
+  payload's folder (`../Bom`) raises `CorruptionError`. A symlink in a payload is not
+  checked at listing; extraction applies its usual link checks.
 
 ## CAB
 
@@ -1672,6 +1703,11 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   process. Nothing marks the end of the file, so a file cut between two chunks reads short with no
   error; a cut inside a chunk raises `TruncatedError`. Hadoop's `.snappy` files and raw Snappy
   blocks have no signature, and archivey does not read them.
+- **pbzx** is Apple's framing of xz, the compression of a macOS installer package's payload:
+  a chunk size, then chunks that are each stored or one whole xz stream. archivey finds it by
+  its `pbzx` signature. Each xz chunk decodes under `DecoderLimits.max_decoder_memory`. A
+  chunk shorter than the chunk size ends the stream, and anything after it is trailing data.
+  A file cut inside a chunk raises `TruncatedError`.
 - **uuencode and base64** compress nothing, but they wrap a file as text the way a compressor
   wraps it, so archivey peels them the same way: `files.tar.uu` lists the tar.
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
