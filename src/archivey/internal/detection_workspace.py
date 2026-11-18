@@ -409,6 +409,59 @@ class PrefixWorkspace:
         self._clamped_view_read = False
         return flagged
 
+    def probe_read_allowed(self, end: int) -> bool:
+        """Whether a content probe may reach ``end``, recording a refused reach.
+
+        Cheap random access skips literal bodies; other sources must buffer through
+        them. Bytes already buffered need no forward allowance. Cheap header seeks
+        retain their existing reach. Seekable sources retain bounded read-ahead;
+        only forward-only sources need the explicit forward-read allowance.
+        """
+        if end <= len(self._buf) or self._cheap_random_access_handle() is not None:
+            return True
+        allowance = (
+            self._budget.max_probe_forward_bytes
+            if self.forward_only
+            else PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
+        )
+        if end > min(
+            allowance, self.read_ceiling, PROBE_READ_AT_MAX_OFFSET_NONSEEKABLE
+        ):
+            reason = (
+                TierSkipReason.NOT_ENABLED_BY_POLICY
+                if allowance == 0
+                else TierSkipReason.BUDGET_EXHAUSTED
+            )
+            self.record_skip("content_probe_read_at", reason)
+            return False
+        return True
+
+    def probe_read_at(self, offset: int, length: int) -> bytes | None:
+        """A probe range read under the source's forward-read policy."""
+        if not self.probe_read_allowed(offset + length):
+            return None
+        return self.read_at(offset, length)
+
+    def probe_read_available_at(
+        self, offset: int, length: int
+    ) -> tuple[bytes, bool] | None:
+        """Probe bytes available at a range, and whether the source has ended.
+
+        Reaching ``offset`` consumes a declared block's body. Once any requested
+        bytes are buffered, return them without waiting for optional following bytes.
+        A successor header with no buffered byte waits only for its first arrival.
+        """
+        if not self.probe_read_allowed(offset + length):
+            return None
+        if not self.forward_only:
+            data = self.read_at(offset, length)
+            return None if data is None else (data, len(data) < length)
+        self.ensure(offset)
+        if len(self._buf) <= offset and not self._source_exhausted:
+            self.ensure(offset + length, arrived=True)
+        self._receipt.prefix_bytes += length
+        return bytes(self._buf[offset : offset + length]), self._source_exhausted
+
     def read_at(self, offset: int, length: int) -> bytes | None:
         """Absolute (archive-origin) range read for content-probe chain walks.
 

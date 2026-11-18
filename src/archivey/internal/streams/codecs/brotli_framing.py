@@ -17,6 +17,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from archivey.internal.streams.codecs.base import ProbeReadAvailable
 
 # Link cap 8: real-tree census rejected every fabrication by link index ≤ 1;
 # revisit with hard data if a future corpus shows deeper rejecting chains.
@@ -25,6 +29,7 @@ from enum import Enum
 # format-detection chain-walk requirement).
 CHAIN_MAX_LINKS = 8
 CHAIN_HEADER_READ = 24
+CHAIN_END_READ = 2
 # When the walk stops at a compressed block past the window, the probe decodes the
 # source from offset 0 to this far past that block's header. Every measured false claim of
 # this shape (real files, libmagic bodies) failed within 256 bytes of the header; a
@@ -190,10 +195,11 @@ class ChainWalk:
 
 def walk_chain(
     prefix: bytes,
-    source_length: int,
+    source_length: int | None,
     *,
     read_at: Callable[[int, int], bytes | None] | None = None,
     max_links: int = CHAIN_MAX_LINKS,
+    read_available: ProbeReadAvailable | None = None,
 ) -> ChainWalk:
     """Follow the self-describing block chain from offset 0 (see :func:`chain_proves_invalid`).
 
@@ -205,39 +211,75 @@ def walk_chain(
     ``read_at(offset, length)`` returns bytes at that absolute offset, short/empty on
     EOF, or ``None`` when the caller will not provide the read. When omitted, only
     bytes already in ``prefix`` are reachable — and prefix exhaustion is EOF only
-    when ``len(prefix) >= source_length``; otherwise it is declined (cannot disprove).
+    when the known source length fits in the prefix. Without a known length,
+    ``read_at`` can still prove EOF; an unavailable read cannot prove invalid framing.
+    ``read_available`` observes a pipe without waiting to fill an optional range:
+    its separate EOF flag distinguishes a short arrival from a truncated source.
     """
     cannot_disprove = ChainWalk(proves_invalid=False)
     proven = ChainWalk(proves_invalid=True)
     off = 0
     for _ in range(max_links):
-        chunk = probe_bytes_at(prefix, source_length, off, CHAIN_HEADER_READ, read_at)
+        ended = True
+        if read_available is not None and source_length is None:
+            observed = read_available(off, CHAIN_HEADER_READ)
+            if observed is None:
+                return cannot_disprove
+            chunk, ended = observed
+        else:
+            chunk = probe_bytes_at(
+                prefix, source_length, off, CHAIN_HEADER_READ, read_at
+            )
         if chunk is None:
             return cannot_disprove  # declined
         if not chunk:
-            return proven  # expected a header, got EOF
+            return proven if ended else cannot_disprove
         info = parse_metablock(chunk, first=(off == 0))
         if info.outcome is BrotliBlock.UNDECIDED:
+            if not ended and len(chunk) < CHAIN_HEADER_READ:
+                return cannot_disprove  # a header fragment does not prove damage
             return proven
         if info.outcome is BrotliBlock.COMPRESSED:
             # No declared length to check: only a decoder can say more.
             return ChainWalk(proves_invalid=False, compressed_at=off)
         if info.outcome is BrotliBlock.EMPTY_LAST:
             assert info.consumed is not None
-            return ChainWalk(proves_invalid=off + info.consumed != source_length)
+            return _check_end(
+                prefix, source_length, off + info.consumed, read_at, read_available
+            )
         assert info.consumed is not None and info.declared_length is not None
         nxt = off + info.consumed + info.declared_length
-        if nxt > source_length:
+        if source_length is not None and nxt > source_length:
             return proven
         if info.is_last:
-            return ChainWalk(proves_invalid=nxt != source_length)
+            return _check_end(prefix, source_length, nxt, read_at, read_available)
         off = nxt
     return cannot_disprove  # link cap
 
 
+def _check_end(
+    prefix: bytes,
+    source_length: int | None,
+    end: int,
+    read_at: Callable[[int, int], bytes | None] | None,
+    read_available: ProbeReadAvailable | None = None,
+) -> ChainWalk:
+    """Check both the last declared byte and the absence of trailing bytes."""
+    if source_length is not None:
+        return ChainWalk(proves_invalid=end != source_length)
+    if read_available is not None:
+        observed = read_available(end - 1, CHAIN_END_READ)
+        if observed is None:
+            return ChainWalk(proves_invalid=False)
+        tail, ended = observed
+        return ChainWalk(proves_invalid=len(tail) > 1 or (ended and len(tail) != 1))
+    tail = probe_bytes_at(prefix, source_length, end - 1, CHAIN_END_READ, read_at)
+    return ChainWalk(proves_invalid=tail is not None and len(tail) != 1)
+
+
 def chain_proves_invalid(
     prefix: bytes,
-    source_length: int,
+    source_length: int | None,
     *,
     read_at: Callable[[int, int], bytes | None] | None = None,
     max_links: int = CHAIN_MAX_LINKS,
@@ -257,7 +299,7 @@ def chain_proves_invalid(
 
 def probe_bytes_at(
     prefix: bytes,
-    source_length: int,
+    source_length: int | None,
     offset: int,
     length: int,
     read_at: Callable[[int, int], bytes | None] | None,
@@ -276,7 +318,7 @@ def probe_bytes_at(
         if read_at is None:
             # Prefix exhausted: real EOF only when the prefix *is* the whole
             # source; otherwise we cannot see further → cannot disprove.
-            if len(prefix) >= source_length:
+            if source_length is not None and len(prefix) >= source_length:
                 return in_prefix
             return None
         rest = read_at(len(prefix), end - len(prefix))
@@ -284,7 +326,7 @@ def probe_bytes_at(
             return None
         return in_prefix + rest
     if read_at is None:
-        if len(prefix) >= source_length:
+        if source_length is not None and len(prefix) >= source_length:
             return b""  # past EOF of a fully-visible prefix
         return None
     return read_at(offset, length)

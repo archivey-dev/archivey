@@ -475,9 +475,10 @@ resolution runs through it to outside is refused as an escape (one made after it
 is made, one made before it by the recheck that the rooted link's creation starts), a
 hard link to a file under it is refused with its source, and a member that lands on the
 link's own name replaces the link or is refused by `overwrite`, never written through
-it. A target that leads back into `dest` is followed there, as any symlink is. The
+it. A member under such a link is refused even when its target leads back into `dest`,
+as under any symlink the run created (below). The
 `archivey://` tree under `TRUSTED` lists such a link as `"other"` and follows nothing
-through it, since it has no destination path: a member under it is left out. Tests:
+through it, since it has no destination path. Tests:
 `tests/test_rooted_symlinks.py`.
 
 #### Scenario: symlink revalidation matrix
@@ -490,6 +491,43 @@ through it, since it has no destination path: a member under it is left out. Tes
 | `STRICT` or `STANDARD`; SYMLINK `etc -> /etc` | `BLOCKED`, as any escape |
 | Chained symlink attack through earlier member | Post-creation resolution catches the escape and raises `FilterRejectionError` |
 | Cyclic links (`d -> d`; `a -> b`, `b -> a`; longer loops) | The link that closes the loop is unlinked; `FilterRejectionError` with the message "Symlink target is part of a symlink loop", not the escape message; no uncaught OS/runtime error; same on every Python version |
+
+### Requirement: No member is written through a symlink the run created
+
+A member whose parent path runs through a symlink that a member of this extraction
+created SHALL be refused, under every policy (`TRUSTED` included), in both access modes
+and in a dry run: `BLOCKED`, with a `FilterRejectionError` whose message is "Path goes
+through a symlink this extraction created", unless the path already resolves outside
+`dest`, which is refused as an escape first. A symlink is the run's while the entry the
+member's path meets is still that link (the same device and inode, or where the
+filesystem reports inode 0 the same place, with case folded), however the member spells
+it: a case variant or a name Windows trims reaches the link too (in a dry run, only
+where the temp directory's filesystem folds case as `dest`'s does; see the dry-run
+requirement). A symlink the caller had in `dest` before the run is followed, subject to
+the parent resolution check, until a member replaces it; and a member that replaces the
+run's link with a directory makes a directory, which later members are written into.
+Only a member's own path is checked: a symlink's target may run through another symlink
+of the run. A held-back hard link is refused before its placeholder is made.
+
+GNU tar and Python's `tarfile` write through such a link; bsdtar refuses. The shape was
+found in none of 82,635 release tarballs (tar-minefield's `tree.through-symlink` scan),
+so it is refused (maintainer decision, 2026-11-17, under the scope of design rule DR-6).
+A member's path is then fixed by its name and the caller's destination, never by a link
+the archive made. The `archivey://` tree leaves such a member out. Tests:
+`tests/test_extraction.py::test_no_member_is_written_through_a_symlink_the_run_created`.
+
+#### Scenario: write-through matrix
+
+| Case | Expected |
+| --- | --- |
+| `e/`, SYMLINK `s -> e`, then `s/x` | `s` `EXTRACTED`; `s/x` `BLOCKED`; nothing written in `e` |
+| `e/`, SYMLINK `s -> e`, then `e/x` | `e/x` `EXTRACTED` |
+| `d/x`, SYMLINK `s -> d`, then SYMLINK `t -> s/x` | Both links `EXTRACTED` |
+| `TRUSTED`; SYMLINK `etc -> /etc`, then `etc/passwd` | `etc/passwd` `BLOCKED` as an escape ("Member resolves outside the destination root") |
+| `e/`, SYMLINK `s -> e`, then HARDLINK `s/h` to a source left out of the selection | `s/h` `BLOCKED`; no placeholder |
+| The caller's `s -> e` in `dest`; `e/`, `f/`, SYMLINK `s -> f` under `REPLACE`, then `s/x` | `s` `EXTRACTED`; `s/x` `BLOCKED` |
+| The caller's `s -> e` in `dest`, then `s/x` | Written at `e/x` |
+| `e/`, SYMLINK `s -> e`, DIRECTORY `s/` under `REPLACE`, then `s/x` | `s` `OVERWRITTEN`; `s/x` `EXTRACTED` in the new directory `s` |
 
 ### Requirement: Hardlink Two-Pass Extraction
 
@@ -537,13 +575,13 @@ empty placeholder file, which the second pass fills with the source's bytes, so 
 outcome is the one a link made there would give. The placeholder is a regular file at
 the link's name, made as any file is: the overwrite policy and the parent directories
 apply to it there, and every later member meets it on disk as it would meet the made
-link, under every policy, through the run's symlinks and on a filesystem that folds case
+link, under every policy, through a caller's symlink and on a filesystem that folds case
 or not. A later link to the same source is made to the placeholder, so it shares the
 filled file. A placeholder that a later member replaces or supersedes is not filled, and
 its link's result is the one that member gives it. The second pass fills a placeholder
 only while its name still holds that empty file (the same device, inode and size), and
-writes it where it was physically made, so a later member that re-points one of the
-archive's symlinks on its way does not move it. A placeholder that the second pass cannot
+writes it where it was physically made, so a later member that replaces a symlink of the
+caller's on its way does not move it. A placeholder that the second pass cannot
 fill is removed: no empty file stands for a link that failed, and the run stops or goes
 on as `OnError` says. If the first pass stops on an error (not an interrupt), the
 placeholders made before the stop are filled, as the links made there would have been,
@@ -553,6 +591,10 @@ note, and any placeholder left empty is removed.
 A forward-only stream SHALL apply the overwrite policy at a held link's name before it
 fails the link for its unrecoverable source, except under `REPLACE`: a link that random
 access would skip or refuse at a taken name is skipped or refused in both modes.
+Otherwise the two modes differ for a link whose source was selected but has no written
+copy (the source failed, was skipped or refused, was superseded and its copy taken
+back, or a later member replaced its copy): random access reads the source again and
+makes the link, and a forward-only stream cannot, so the link fails.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
@@ -657,7 +699,7 @@ stops early (`OnError.STOP`, an `abort_on` trigger, a limit), for the directorie
 before it stopped. A directory is changed only when the entry at its path is still the
 directory the member wrote: a symlink, or another entry, that a later member put there
 SHALL NOT be changed, and the change SHALL NOT follow a symlink. A directory that a
-member reaches through a directory symlink the archive created SHALL be taken by where it
+member reaches through a directory symlink of the caller's SHALL be taken by where it
 physically is, with its parents resolved: that place sets its depth, and the change
 reaches it from the root through that place only. Where several members reach one
 directory, the one written last SHALL be applied last. A later member that removes the
@@ -761,7 +803,7 @@ not a collision event, so `collided_with` stays `None`. A symlink of the caller'
 resolves to a directory is a directory here and is followed, subject to the parent
 resolution check. A parent that is a non-directory this run wrote is not covered: the
 member fails as the `OnError` matrix states. That holds however the archive spelled the
-earlier member: `s/f` written through the archive's own symlink `s -> e` is the run's
+earlier member: `s/f` written through the caller's symlink `s -> e` is the run's
 file at `e/f`, so a later `e/f/x` fails against it under every policy.
 
 Replacing an existing directory with any member type removes the directory first, and
@@ -770,7 +812,7 @@ replacing member SHALL fail with an `ExtractionError` governed by `OnError` (as 
 does without `--recursive-unlink`). Removing a tree would take the members this run wrote
 into it, which would still report `EXTRACTED`, and the caller's own files when the
 directory was already there. When a member of this run wrote the removed directory, under
-any spelling that reaches it (through a directory symlink the archive created, under every
+any spelling that reaches it (through a directory symlink of the caller's, under every
 policy, or a case variant on a case-insensitive filesystem, under `STRICT` and `STANDARD`),
 that member's result SHALL be revised to `OVERWRITTEN`. Under `TRUSTED` the coordinator keys
 on the exact path and defers to the local OS (see the O2 collision requirement), so a case
@@ -791,7 +833,7 @@ left alone. On Windows a mode sets only the read-only attribute, so the member's
 compared as Windows would store it (`0o777`, or `0o555` without owner write): a `0o755`
 member over a writable directory reports no `kept_mode`. A directory this run wrote or
 created is recognized under any spelling that reaches it, under every policy: through a
-directory symlink the archive created, and a case variant on a case-insensitive
+directory symlink of the caller's, and a case variant on a case-insensitive
 filesystem. A case variant on a filesystem that reports inode 0 for every entry cannot be
 told from another directory, and is taken for one that was there before the run.
 
@@ -1676,14 +1718,14 @@ from each segment that has other characters (Win32 trims it, so `foo.` and `foo`
 file there), and treat a second member resolving to the same key as an existing
 destination on **all** platforms. The key is taken on where
 the entry physically lands (its parent resolved), so a member written through a
-directory symlink the archive created (`s/f` with `s -> d`) collides with `d/f`. A
-member whose destination holds an entry that no member of this run claimed by key, but that
-is the same file (`st_dev`, `st_ino`) as a file this run claimed, collides with that member
+directory symlink of the caller's (`s/f` with `s -> d`) collides with `d/f`. A member
+whose destination holds an entry that no member of this run claimed by key, but that is
+the same file (`st_dev`, `st_ino`) as a file this run claimed, collides with that member
 as a case variant does: on Windows this is an 8.3 short name (`LONGFI~1.TXT` after
-`longfilename.txt`) on a volume that makes them. This does not apply under `TRUSTED`, and
-not on a filesystem that reports inode 0. The key
-and the location are fixed when the earlier member is written, and a collision SHALL be
-resolved at that location, so repointing `s` later does not move it. Such a collision
+`longfilename.txt`) on a volume that makes them. This does not apply under `TRUSTED`,
+and not on a filesystem that reports inode 0. The key and the location are fixed when
+the earlier member is written, and a collision SHALL be resolved at that location, so a
+member that later replaces `s` with a link of its own does not move it. Such a collision
 SHALL apply `OverwritePolicy` deliberately and record the outcome on both members'
 `ExtractionResult`. DIRECTORY members are not claimed in the map, as a directory merges
 into one already there. The coordinator looks a DIRECTORY member up in the map when its
@@ -1955,7 +1997,11 @@ not create there is copied as an empty file; an entry that cannot be copied (the
 scratch filesystem is full, or the name is too long there) is left out; and a path
 whose links expand past `PATH_MAX` cannot be resolved and is refused, so where the
 scratch directory's path and `dest`'s differ in length, a member whose resolution
-passes that limit in only one of them MAY be refused in only one of the two runs. A
+passes that limit in only one of them MAY be refused in only one of the two runs. The
+scratch directory is on the temp directory's filesystem, so where that filesystem folds
+case and `dest`'s does not, or the other way round, a name in another case MAY meet a
+different entry in the two runs: under `TRUSTED` another member's name, and under every
+policy a symlink the run created, whose refusal then holds in only one of them. A
 `dest` that exists and is not a directory SHALL be refused as a real extraction
 refuses it. A `dest` that does not exist SHALL be refused with the error a real
 extraction gets creating it when the nearest part of its path that exists cannot be

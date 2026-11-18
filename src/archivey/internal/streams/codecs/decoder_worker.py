@@ -209,9 +209,9 @@ def _load_lz4_block() -> Callable[..., Any]:
 
 
 def _load_lzo() -> Callable[..., Any]:
-    # A module function, as for ``lz4.block``.
-    lzo = importlib.import_module("lzo")
-    return lambda: lzo
+    # A module function, as for ``lz4.block``: compress-utils' ``decompress``.
+    module = importlib.import_module("compress_utils")
+    return lambda: module
 
 
 def _load_brotli() -> Callable[..., Any]:

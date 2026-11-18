@@ -1259,7 +1259,7 @@ other members because of a member's name any more. Setting it to `True` warns.
 - **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
   file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
   (`lz4`). LZO is decoded as a `.lzo` file is ([below](#single-file-compressors)): with
-  liblzo2 when `python-lzo` is installed, and otherwise in Python.
+  `compress-utils` when it is installed, and otherwise in Python.
 - **Listing:** from the image's inode and directory tables.
 - **Reading members:** direct. Small files share a fragment block, which is decoded once for
   all of them.
@@ -1641,10 +1641,11 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 - **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo` and `.sz` are in core (`.Z` with
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
-  `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
-  decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
-  more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
-  wheels, so installing it needs the liblzo2 headers.
+  `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop`
+  writes, decodes LZO1X with the `compress-utils` package, which `[recommended]` installs on CPython
+  except on Intel macOS, and otherwise in Python, more than 20 times slower on text. Both refuse a
+  block that ends with an end marker other than the one every LZO1X writer produces, which `lzop`
+  itself accepts.
 - **bzip3** (`.bz3`, the format the `bzip3` tool writes) needs `[bzip3]`, which is in neither
   `[recommended]` nor `[all]` and does not install on macOS, PyPy or Python 3.15
   ([Install](install.md#bzip3)). It decodes in a child process unless `process_isolation` is
@@ -1663,13 +1664,13 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   the data is returned. With no other package installed, archivey decodes it and checks the CRC in
   Python, at about 10 MB/s. When `cramjam` or `compress-utils` is installed it decodes the raw
   blocks, and `google-crc32c` or `crc32c` computes the CRC; either kind alone reaches about 20 to 25
-  MB/s, and both kinds together several hundred MB/s. `[recommended]` installs `google-crc32c` on
-  CPython; the others are in no extra. Which packages are installed changes only the speed: a block
-  a package refuses is decoded again in Python, which decides. With
-  `process_isolation=NATIVE_DECODERS` the packages run in a child process. Nothing marks the end of
-  the file, so a file cut between two chunks reads short with no error; a cut inside a chunk raises
-  `TruncatedError`. Hadoop's `.snappy` files and raw Snappy blocks have no signature, and archivey
-  does not read them.
+  MB/s, and both kinds together several hundred MB/s. `[recommended]` installs `compress-utils`
+  (except on Intel macOS) and `google-crc32c` on CPython; `cramjam` and `crc32c` are in no extra.
+  Which packages are installed changes only the speed: a block a package refuses is decoded again in
+  Python, which decides. With `process_isolation=NATIVE_DECODERS` the packages run in a child
+  process. Nothing marks the end of the file, so a file cut between two chunks reads short with no
+  error; a cut inside a chunk raises `TruncatedError`. Hadoop's `.snappy` files and raw Snappy
+  blocks have no signature, and archivey does not read them.
 - **uuencode and base64** compress nothing, but they wrap a file as text the way a compressor
   wraps it, so archivey peels them the same way: `files.tar.uu` lists the tar.
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the

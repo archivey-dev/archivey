@@ -327,7 +327,6 @@ def test_an_lzop_block_over_the_cap_is_cant_tell(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Under its own 256 KiB probe ceiling, an lzop block is still held to the cap."""
-    pytest.importorskip("lzo")
     data = (_FIXTURES / "lzop" / "files.tar.lzo").read_bytes()
     tar_lzop = ArchiveFormat(ContainerFormat.TAR, StreamFormat.LZOP)
     assert detect_format(io.BytesIO(data)).format == tar_lzop

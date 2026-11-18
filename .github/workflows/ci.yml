@@ -895,9 +895,9 @@ jobs:
   # 1. Benchmark gate = **structural only** (seek baselines + solid decode-once).
   #    Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
   #    as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
-  # 2. archivey's LZO decoder against liblzo2 through python-lzo, which archivey uses in
-  #    a child process when it is installed but never depends on (GPL, no Linux
-  #    wheels). python-lzo goes in after the benchmark, so the benchmark measures the
+  # 2. archivey's LZO decoders against liblzo2 through python-lzo, a test oracle only
+  #    (GPL, no Linux wheels; archivey decodes LZO1X with compress-utils or in Python).
+  #    python-lzo goes in after the benchmark, so the benchmark measures the
   #    environment every other job has.
   benchmark:
     name: Benchmark gate (structural) + LZO against liblzo2
@@ -945,8 +945,8 @@ jobs:
           uv run --no-sync python -c "import lzo"
       - name: LZO against liblzo2
         if: ${{ !cancelled() }}
-        # This is the job with python-lzo, so the comparison with liblzo2 and the
-        # decode in a child process run nowhere else.
+        # This is the job with python-lzo, so the comparison with liblzo2 runs nowhere
+        # else.
         run: >-
           uv run --no-sync pytest tests/test_squashfs.py tests/test_lzo.py
           tests/test_lzop.py -q --no-cov -rs

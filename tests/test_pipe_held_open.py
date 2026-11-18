@@ -24,6 +24,7 @@ import gzip
 import io
 import lzma
 import os
+import random
 import tarfile
 import threading
 import zipfile
@@ -37,13 +38,18 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveReader,
+    ArchiveyConfig,
     detect_format,
     open_archive,
     open_stream,
 )
 from archivey.types import ContainerFormat
 from tests.conftest import requires, requires_zstd, zstd_backend
-from tests.streams_util import make_lzip_member, make_unix_compress
+from tests.streams_util import (
+    brotli_declared_metablock_header,
+    make_lzip_member,
+    make_unix_compress,
+)
 
 _HOLD_SECONDS = 10.0
 
@@ -222,6 +228,69 @@ def _detects_without_waiting(payload: bytes, expected: ArchiveFormat) -> None:
             info = detect_format(stream)
             assert not closed.is_set(), "detection waited for the writer to close"
         assert info.format == expected
+
+
+@requires("brotli")
+@pytest.mark.parametrize("preset", ["fast", "balanced"])
+@pytest.mark.parametrize("buffered", [False, True])
+def test_brotli_probe_does_not_wait_for_a_distant_header(
+    preset: str, buffered: bool
+) -> None:
+    # A crafted, incomplete literal block isolates detection's forward-read policy.
+    # The writer supplies enough bytes for completion measurement, but not the next
+    # header: an attempted walk to it waits for the writer to close.
+    payload = brotli_declared_metablock_header(200_000, first=True) + bytes(70_000)
+    config = ArchiveyConfig(always_probe_content=True, detection_budget=preset)
+    with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
+        info = detect_format(stream, config=config)
+        assert not closed.is_set(), "the Brotli probe waited for a distant header"
+        assert info.format == ArchiveFormat.BROTLI
+
+
+@requires("brotli")
+@pytest.mark.parametrize("preset", ["balanced", "thorough"])
+@pytest.mark.parametrize("buffered", [False, True])
+def test_complete_brotli_detection_does_not_wait_for_pipe_eof(
+    preset: str, buffered: bool
+) -> None:
+    import brotli
+
+    data = random.Random(1573).randbytes(150_000)
+    payload = brotli.compress(data, quality=5)
+    assert brotli.decompress(payload) == data
+    config = ArchiveyConfig(always_probe_content=True, detection_budget=preset)
+    with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
+        info = detect_format(stream, config=config)
+        assert not closed.is_set(), (
+            "detection waited for optional bytes after Brotli's end"
+        )
+        assert info.format == ArchiveFormat.BROTLI
+
+
+@requires("brotli")
+@pytest.mark.parametrize("buffered", [False, True])
+def test_pipe_chain_decode_stops_at_a_complete_compressed_block(buffered: bool) -> None:
+    import brotli
+
+    from archivey.internal.streams.codecs.brotli_framing import (
+        CHAIN_DECODE_MARGIN,
+        walk_chain,
+    )
+
+    noise = random.Random(1573).randbytes(70_000)
+    text = b"message " * 20
+    encoder = brotli.Compressor(quality=5, lgwin=16)
+    payload = encoder.process(noise) + encoder.flush()
+    payload += encoder.process(text) + encoder.finish()
+    assert brotli.decompress(payload) == noise + text
+    walk = walk_chain(payload, len(payload))
+    assert walk.compressed_at is not None
+    assert walk.compressed_at > 64 * 1024
+    assert len(payload) < walk.compressed_at + CHAIN_DECODE_MARGIN
+    config = ArchiveyConfig(always_probe_content=True, detection_budget="thorough")
+    with _held_open_pipe(payload, buffered=buffered) as (stream, closed):
+        assert detect_format(stream, config=config).format == ArchiveFormat.BROTLI
+        assert not closed.is_set(), "the finished trial decoder waited for pipe closure"
 
 
 @pytest.mark.parametrize(("compress", "bare", "in_tar"), _CODECS)

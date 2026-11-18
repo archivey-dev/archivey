@@ -58,6 +58,7 @@ _spec.loader.exec_module(scope)
         ["dev-docs/tar-minefield-results.md"],
         ["LICENSE"],
         [".github/workflows/publish.yml"],
+        [".github/actions/apt-install/action.yml"],
         [".python-version"],
         [".gitattributes"],
         # A script in no folder yet, or in a new one, counts until it is sorted.
@@ -158,6 +159,16 @@ def test_every_script_the_workflows_run_is_a_full_path() -> None:
         if not n.startswith("scripts/tests/") and not scope.needs_full([n])
     )
     assert not uncovered, f"move these out of the NOT_FULL folders: {uncovered}"
+
+
+def test_every_local_action_the_workflows_use_is_a_full_path() -> None:
+    """A composite action only a skipped job uses (the apt install) would otherwise
+    first run in the merge queue."""
+    used = set()
+    for workflow in (CI, CI.with_name("atheris-fuzz.yml")):
+        used |= set(re.findall(r"uses:\s*\./([\w./-]*[\w-])", workflow.read_text()))
+    assert used, "the scan found nothing"
+    assert not sorted(u for u in used if not scope.needs_full([u]))
 
 
 #: Script paths a library test names only in prose or as a member name inside an

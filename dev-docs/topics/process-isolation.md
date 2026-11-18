@@ -36,10 +36,10 @@ Other pages own parts of this, and this page links them rather than repeating th
   it comes from the same library. libbzip3 (every `.bz3` file) is isolated as a precaution
   too: it is a young library with memory-safety fixes in its 2023 releases, and it decodes
   in a child under every setting but `NONE`. `NATIVE_DECODERS` also isolates zlib, bz2,
-  lzma, zstd, lz4, brotli, inflate64 and python-lzo, and the trial decodes that detection
-  runs. `NONE` starts no child: pyppmd
-  decodes in this process, and rapidgzip is not used at all (`AUTO` falls back to the
-  standard library, and `ON` is refused when the config is built).
+  lzma, zstd, lz4, brotli, inflate64 and compress-utils, and the trial decodes that
+  detection runs. `NONE` starts no child: pyppmd decodes in this process, and rapidgzip
+  is not used at all (`AUTO` falls back to the standard library, and `ON` is refused
+  when the config is built).
 - **What a caller sees when a child dies.** A crash signal (or its Windows status) is
   `CorruptionError`: a verdict on the data. SIGKILL is `ResourceUnavailableError` (a
   `ResourceLimitError`), usually the out-of-memory killer. Any other end is `ReadError`.

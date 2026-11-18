@@ -303,6 +303,25 @@ _PROBE_COMPLETENESS_OUTPUT = 64 * 1024
 # Optional bounded read-at callback for probes that follow a self-describing block chain
 # past the peeked prefix (``compressed-streams``). ``None`` means the caller declined.
 ProbeReadAt = Callable[[int, int], bytes | None]
+ProbeReadAvailable = Callable[[int, int], tuple[bytes, bool] | None]
+
+
+@dataclass(frozen=True)
+class ProbeReadAccess:
+    """Range reads with a separate observation of available bytes and source EOF.
+
+    Calling the object keeps the full-read callback contract. ``available`` may
+    return fewer bytes without EOF, so a probe must not infer truncation from a
+    short observation. This lets a pipe keep its writer open after a complete stream.
+    """
+
+    read_at: ProbeReadAt
+    available: ProbeReadAvailable | None
+
+    def __call__(self, offset: int, length: int) -> bytes | None:
+        return self.read_at(offset, length)
+
+
 # Optional hook for a probe that decodes more than the sample it was handed (the Brotli
 # chain decode): ``charge_decode(n)`` asks to read and decode the total ``[0, n)`` of
 # the source, and is called before the read, which it also bounds. ``True`` means the
@@ -762,9 +781,6 @@ class StreamCodec:
         ``max_decoder_memory`` raises ``ResourceLimitError`` ("can't tell") rather than
         returning ``False`` ("not this format").
         """
-        # The registry imports every codec module, and so this one: import it here.
-        from archivey.internal.streams.codecs.registry import open_codec_stream
-
         if not self.available():
             return False
         fully_visible = source_length is not None and source_length <= len(prefix)
@@ -776,6 +792,29 @@ class StreamCodec:
             if fully_visible
             else max(len(sample), _PROBE_PREFIX)
         )
+        return self._decodes_probe_stream(
+            _ProbeSample(sample),
+            out_budget=out_budget,
+            fully_visible=fully_visible,
+            require_output=require_output,
+            isolation=isolation,
+            decoder_limits=decoder_limits,
+        )
+
+    def _decodes_probe_stream(
+        self,
+        source: BinaryIO,
+        *,
+        out_budget: int,
+        fully_visible: bool = False,
+        require_output: bool = False,
+        isolation: ProcessIsolation = ProcessIsolation.KNOWN_CRASHES,
+        decoder_limits: DecoderLimits = DecoderLimits(),
+    ) -> bool:
+        """Decode bounded probe output with the normal limits and error translation."""
+        # The registry imports every codec module, and so this one: import it here.
+        from archivey.internal.streams.codecs.registry import open_codec_stream
+
         # Held to the caller's ``DecoderLimits``: a probe that reserved more than
         # ``max_decoder_memory`` would let detection allocate what the caller ruled
         # out, and the read that follows would refuse it anyway. ``probe_read_bound``
@@ -792,9 +831,7 @@ class StreamCodec:
             process_isolation=isolation,
         )
         try:
-            with open_codec_stream(
-                self.codec, _ProbeSample(sample), config=config
-            ) as stream:
+            with open_codec_stream(self.codec, source, config=config) as stream:
                 if fully_visible:
                     # Drain up to the budget in chunks. A truncated high-ratio stream
                     # often yields its whole expansion on the first large read without

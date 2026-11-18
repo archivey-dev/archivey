@@ -127,6 +127,7 @@ What to do per package if its upstream stops for good:
 | `pycdlib` | recommended | ISO 9660 / Joliet / Rock Ridge / UDF | opening an ISO raises `PackageNotInstalledError` | It is pure Python, so it cannot lose wheels. If it stops getting fixes, vendor the version we test against |
 | `google-crc32c` | recommended, CPython | the CRC-32C of Snappy (`.sz`) chunks; under `NATIVE_DECODERS` in the Snappy child process | nothing breaks: `crc32c` if installed, else archivey's Python CRC (about 20 MB/s) | Drop it from `[recommended]`; `crc32c` (LGPL-2.1+) has the same use and wider wheels |
 | `tqdm` | recommended | CLI progress bars | no progress bars | Drop it; the CLI already works without it |
+| `compress-utils` | recommended (CPython, not Intel macOS); free-threaded from 3.14 | LZO1X in `.lzo` files and SquashFS images | nothing breaks: archivey decodes LZO1X in Python, 20 to 30 times slower | Drop it from the extras. `python-lzo` (GPL, no Linux wheels) was the accelerator before it, and stays a test oracle |
 | `rapidgzip` | seekable (not in recommended) | faster gzip, zlib, DEFLATE and bzip2 with random access; runs in a child process | nothing breaks: archivey uses the stdlib decoders and seeks get slower | Remove the accelerator, or leave the extra in place and let it go stale. Nothing depends on it for correctness |
 | `unrar` (external program) | none | compressed RAR members | `PackageNotInstalledError` naming `unrar` (or `unar`) | `unar` is the fallback backend. RAR listing and stored members do not need either program |
 

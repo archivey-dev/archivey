@@ -30,7 +30,6 @@ from archivey import (
     ExtractionLimits,
     ExtractionPolicy,
     ExtractionStatus,
-    MemberType,
     NameCollisionError,
     OnError,
     OverwritePolicy,
@@ -437,7 +436,8 @@ def _dest_named_links(dest: Path) -> list[tuple[str, str, object]]:
         ("abs-dotdot", "sym", f"{dest}/sub/../data"),
         # Absolute, into dest past a component that does not exist.
         ("abs-gone", "sym", f"{dest.parent}/gone/../{dest.name}/data"),
-        # A file written through an absolute link to a directory in dest.
+        # A file under an absolute link to a directory in dest: the link is this
+        # run's, so the file is refused, in a real run as in a dry one.
         ("sub", "dir", None),
         ("abs-dir", "sym", f"{dest}/sub"),
         ("abs-dir/f", "file", 0),
@@ -478,7 +478,7 @@ def test_link_targets_that_name_dest_match(streaming: bool, tmp_path: Path) -> N
         assert statuses["abs"] is ExtractionStatus.EXTRACTED
         assert statuses["up"] is ExtractionStatus.EXTRACTED
         assert statuses["abs-gone"] is ExtractionStatus.EXTRACTED
-        assert statuses["abs-dir/f"] is ExtractionStatus.EXTRACTED
+        assert statuses["abs-dir/f"] is ExtractionStatus.BLOCKED
         # TRUSTED writes a target from ``/`` as stored, wherever it leads.
         rooted = policy is ExtractionPolicy.TRUSTED
         assert statuses["abs-out"] is (
@@ -1400,43 +1400,38 @@ def test_scratch_is_removed_when_the_archive_locks_its_own_directories(
     _assert_nothing_left(tmp_path, dest)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="PATH_MAX is a POSIX limit")
+@pytest.mark.skipif(
+    os.name == "nt" or not dry_run_module._FD_WALK,
+    reason="PATH_MAX is a POSIX limit; needs the descriptor walk",
+)
 def test_scratch_is_removed_when_its_tree_is_deeper_than_path_max(
     tmp_path: Path,
 ) -> None:
-    # Each directory is reached through a short symlink to it, so every member name
-    # is short while the real paths in the scratch tree are longer than PATH_MAX.
-    # Removing that tree by full path failed with ENAMETOOLONG, and the scratch
-    # directory stayed in the temp directory. The deep part covers the descriptor
-    # walk; a directory down there keeps no mode (its path is too long to set one,
-    # as in a real run). The locked ``ro`` up front covers the chmod: its file
-    # cannot be removed until ``ro`` is opened up. The last links resolve past
-    # PATH_MAX, so the filter refuses them; the members under them still go in under
-    # real directories named ``l``, so the tree stays deeper than PATH_MAX.
+    # A scratch tree whose real paths are longer than PATH_MAX: removing it by full
+    # path failed with ENAMETOOLONG, and the scratch directory stayed. An archive can
+    # no longer build such a tree (a member is never written through a symlink the
+    # run created, and a longer name is refused), so the tree is made here, relative
+    # to each directory's descriptor. The locked ``ro`` and the locked directory at
+    # the bottom cover the chmod: their files cannot be removed until they are opened.
+    root = tmp_path / "scratch"
+    (root / "ro").mkdir(parents=True)
+    (root / "ro" / "f").write_bytes(b"")
+    (root / "ro").chmod(0o555)
     component = "d" * 250
     depth = os.pathconf(tmp_path, "PC_PATH_MAX") // len(component) + 2
-    entries: list[tuple[str, str, object]] = [("ro/f", "file", 0), ("ro", "dir", 0o555)]
-    path = ""
-    for _ in range(depth):
-        entries.append((f"{path}{component}", "dir", None))
-        entries.append((f"{path}l", "sym", component))
-        path += "l/"
-    entries.append((f"{path}f", "file", 0))
-    entries.append((path.rstrip("/") + "/" + component, "dir", 0o555))
-    blob = _tar(entries)
-    dest = tmp_path / "out"
-    with open_archive(io.BytesIO(blob)) as reader:
-        report = reader.extract_all(
-            dest, policy=ExtractionPolicy.TRUSTED, dry_run=True, on_blocked="skip"
-        )
-    blocked = [r.member for r in report.results if r.status is ExtractionStatus.BLOCKED]
-    assert blocked
-    assert all(m.type is MemberType.SYMLINK for m in blocked)
-    assert {r.status for r in report.results} == {
-        ExtractionStatus.EXTRACTED,
-        ExtractionStatus.BLOCKED,
-    }
-    _assert_nothing_left(tmp_path, dest)
+    fd = os.open(root, os.O_RDONLY)
+    try:
+        for _ in range(depth):
+            os.mkdir(component, dir_fd=fd)
+            child = os.open(component, os.O_RDONLY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        os.close(os.open("f", os.O_CREAT | os.O_WRONLY, 0o644, dir_fd=fd))
+        os.chmod(fd, 0o555)
+    finally:
+        os.close(fd)
+    dry_run_module.remove_scratch(root)
+    assert not root.exists()
 
 
 def test_scratch_is_removed_on_abort_and_the_message_names_dest(
