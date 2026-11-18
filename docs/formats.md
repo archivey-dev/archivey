@@ -578,53 +578,42 @@ covers the per-system fields and the ARJ-SECURITY envelope.
 
 ## CPIO
 
-- **Needs:** nothing.
-- **Listing:** header by header, in one pass, up to the `TRAILER!!!` member; inside a compressor,
-  it needs decompression, as in a compressed TAR.
-- **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
-- **From a pipe:** yes, with `streaming=True`.
-- All four header variants read: binary (either byte order), odc, newc and crc, and afio's
-  large header in an odc archive. `ArchiveInfo.extra["cpio.variant"]` names the variant as
-  GNU cpio's `-H` option does (`bin`, `odc`, `newc`, `crc`), with `bin-be` for a binary
-  archive in the other byte order. `ArchiveInfo.format_version` is `None`.
-- A binary archive (GNU cpio's default) has only a 2-byte magic, so it is detected only when
-  its name ends in `.cpio` or a compressed spelling of it (`.cpio.gz`, …), or with
-  `always_probe_content=True`, or when you pass `format=` (`"cpio"`, `"cpio.gz"`, …). Inside a
-  compressor the check reads the first 512 decompressed bytes, so an archive whose first name
-  ends past them needs `format="cpio.gz"`.
-- A symlink's target is its data. Devices, FIFOs and sockets are `OTHER`, as in every
-  format.
-- In crc, each file's checksum is checked as its data is read.
-- **Hard links.** Names that share a device and inode number are one file. The first name
-  listed is a `FILE`, the others `HARDLINK` members to it. newc and crc store the data with
-  the **last** name only, so archivey lists that name first and the earlier, empty names
-  right after it: the member order is then not quite the archive's. A file whose names are
-  all empty is listed at the trailer.
-- An archive that ends before its trailer raises `TruncatedError`. Non-zero bytes after the
-  trailer are `ARCHIVE_TRAILING_DATA`, as for TAR; a second archive appended after the first
-  is not listed.
+CPIO is the old Unix archive format still used inside RPM packages, Linux initramfs images and macOS
+installer payloads. CPIO archives need nothing extra, and can be read from a pipe with
+`streaming=True`. Members are read directly, or inside a compressor (`.cpio.gz`, …) one after
+another, as in a compressed TAR.
+
+- **Variants:** binary (either byte order), odc, newc and crc can be read.
+  `ArchiveInfo.extra["cpio.variant"]` names the variant as GNU cpio's `-H` option does. In crc,
+  each file's checksum is checked as it is read.
+- **Detection:** a binary archive (GNU cpio's default) has only a 2-byte magic, so it is found
+  only by a name ending in `.cpio` (or `.cpio.gz`, …), or with `format="cpio"` or
+  `always_probe_content=True`.
+- **Hard links:** names that share a device and inode are one file. newc and crc store the data
+  with the last name, so archivey lists that name first and the others right after it as
+  `HARDLINK` members.
+- **Endings:** an archive cut before its trailer raises `TruncatedError`.
+
+The [CPIO handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md)
+covers afio's large headers, detection inside a compressor, and data after the trailer.
 
 ## ar
 
-- **Needs:** nothing.
-- **Listing:** header by header, in one pass; inside a compressor, it needs decompression, as in a
-  compressed TAR. Every member is a file: ar has no directories or links.
-- **Reading members:** direct; inside a compressor, solid, as in a compressed TAR.
-- **From a pipe:** yes, with `streaming=True`.
-- Both dialects read. GNU (System V, also Windows `.lib`) keeps long names in a `//` member;
-  BSD and macOS keep a long name at the start of the member's data (`#1/N`).
-  `ArchiveInfo.extra["ar.dialect"]` is `"gnu"` or `"bsd"`, and absent for an archive with no
-  members. `ArchiveInfo.format_version` is `None`: ar has no versions.
-- The symbol table (`/`, `/SYM64/`, `__.SYMDEF`) is the linker's index, not a file. It is not
-  listed, and `ArchiveInfo.extra["ar.symbol_table"]` says whether there was one. During a
-  streaming pass both keys say what the walk has seen so far, and are final once it ends.
-- macOS ar pads each member with newlines so the next header starts on 8 bytes, and counts the
-  padding in the member's size. The padding is then part of the member, as llvm-ar and bsdtar
-  extract it.
-- A blank time, owner or mode field is `None`.
-- A thin archive (`!<thin>`) only names files kept outside it, and raises
+ar archives (static libraries, Windows `.lib` files) need nothing extra, and can be read from a
+pipe with `streaming=True`. Every member is a file, read directly: ar has no folders or links.
+
+- **Dialects:** both GNU (System V, Windows `.lib`) and BSD (macOS) can be read.
+  `ArchiveInfo.extra["ar.dialect"]` says which.
+- **Symbol table:** the index a linker uses to find which member defines each symbol (`/`,
+  `/SYM64/`, `__.SYMDEF`) is not listed as a member. `ArchiveInfo.extra["ar.symbol_table"]` is
+  `True` when the archive has one; its contents are not read.
+- **macOS padding:** macOS `ar` pads members with newlines and counts the padding in the size, so
+  the padding is part of the member, as `llvm-ar` and `bsdtar` extract it.
+- **Thin archives** (`!<thin>`) only name files kept outside them, and raise
   `UnsupportedFeatureError`.
-- The long-name table may be no larger than `ListingLimits.max_metadata_bytes`.
+
+The [ar handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md)
+covers long names in each dialect and the streaming details.
 
 ## Debian packages
 
