@@ -107,6 +107,10 @@ def _assert_matches_zipfile(data: bytes) -> bool:
 
 def _fixture_zips() -> Iterator[tuple[str, bytes]]:
     for path in sorted(FIXTURES.rglob("*.zip")):
+        if path.parent.name == "zip_spanned_infozip":
+            # The last part of a spanned set: no whole archive alone, and stdlib reads
+            # no spanned set (tests/test_zip_spanned.py).
+            continue
         yield str(path.relative_to(FIXTURES)), path.read_bytes()
     for entry, data in adversarial_archives():
         if entry.fmt == "zip":
@@ -886,13 +890,22 @@ def test_records_out_of_order_after_the_directory_are_not_stepped_over() -> None
     )
 
 
-@pytest.mark.parametrize("field_offset", [4, 6], ids=["this_disk", "cd_start_disk"])
-def test_classic_disk_fields_refuse_a_spanned_part(field_offset: int) -> None:
+def test_classic_disk_field_names_the_last_part_of_a_spanned_set() -> None:
+    """A record on disk 3 read alone is the last of three parts, with two missing."""
     data = bytearray(_zip({"a.txt": b"hello"}))
     eocd = data.rindex(b"PK\x05\x06")
-    struct.pack_into("<H", data, eocd + field_offset, 2)
-    with pytest.raises(UnsupportedFeatureError, match="multi-volume|spanned|split"):
+    struct.pack_into("<H", data, eocd + 4, 2)
+    with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):
         find_end_record(_read_at(bytes(data)), len(data))
+
+
+def test_directory_on_a_disk_after_the_record_is_damage() -> None:
+    data = bytearray(_zip({"a.txt": b"hello"}))
+    eocd = data.rindex(b"PK\x05\x06")
+    struct.pack_into("<H", data, eocd + 6, 2)
+    with pytest.raises(CorruptionError, match="directory on disk 3") as excinfo:
+        find_end_record(_read_at(bytes(data)), len(data))
+    assert not isinstance(excinfo.value, TruncatedError)
 
 
 def test_zip64_sentinel_disk_field_is_not_a_disk() -> None:
@@ -914,7 +927,7 @@ def test_zip64_record_disk_fields_refuse_a_spanned_part(
     struct.pack_into("<LL", data, _zip64_record_offset(data) + 16, 2, 2)
     eocd = data.rindex(b"PK\x05\x06")
     struct.pack_into("<HH", data, eocd + 4, 0xFFFF, 0xFFFF)
-    with pytest.raises(UnsupportedFeatureError, match="multi-volume|spanned|split"):
+    with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):
         find_end_record(_read_at(bytes(data)), len(data))
 
 
@@ -927,12 +940,21 @@ def test_zip64_record_disk_fields_win_over_classic(
     assert _assert_matches_zipfile(bytes(data))
 
 
-def test_zip64_locator_with_several_disks_refuses() -> None:
+def test_zip64_locator_with_several_disks_names_a_spanned_set() -> None:
     data = bytearray(_zip({f"{i}": b"" for i in range(65_537)}))
     locator = data.rindex(b"PK\x06\x07")
     struct.pack_into("<L", data, locator + 16, 3)
-    with pytest.raises(UnsupportedFeatureError):
+    with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):
         find_end_record(_read_at(bytes(data)), len(data))
+    assert zip_parser.spanned_disk_count(_read_at(bytes(data)), len(data)) == 3
+
+
+def test_zip64_locator_naming_a_disk_past_its_count_is_damage() -> None:
+    data = bytearray(_zip({f"{i}": b"" for i in range(65_537)}))
+    locator = data.rindex(b"PK\x06\x07")
+    struct.pack_into("<L", data, locator + 4, 1)
+    with pytest.raises(CorruptionError, match="single-disk archive"):
+        zip_parser.read_zip64_locator(_read_at(bytes(data)), locator + 20)
 
 
 @pytest.mark.parametrize("zip64", [False, True], ids=["classic", "zip64"])

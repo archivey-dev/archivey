@@ -5,12 +5,11 @@ Four bytes of ``PK\\x03\\x04`` in a stub are not a ZIP. The cued scan calls
 central-directory confirmation is the tail probe's job, not this check.
 
 Also: :func:`is_zip_split_segment_name` — Info-ZIP ``.zNN`` and 7-Zip
-``name.zip.NNN`` split naming. Info-ZIP names are refused in ``open_archive``
-before format detection (middle/last parts typically have no magic at offset 0).
-A lone ``.zip.NNN`` is an incomplete numbered set (``TruncatedError``) instead;
-this helper still matches both so the ZIP reader can refuse a spanned ``.zNN``
-that reached it unjoined. See ``internal/volumes.py`` for the byte-slice join.
-Info-ZIP's spanned sets are never joined.
+``name.zip.NNN`` split naming. A part with either name that reaches ``open_archive``
+alone (its set was not found beside it, or discovery is off) is refused there with
+``TruncatedError`` before format detection, because middle parts have no magic at
+offset 0; the ZIP reader refuses one that reached it unjoined the same way. See
+``internal/volumes.py`` for how both kinds of set are found and joined.
 """
 
 from __future__ import annotations
@@ -22,9 +21,15 @@ from pathlib import PurePath
 
 from archivey.internal.sfx import HitOutcome
 
-# Shared rejoin-first message for every ZIP split/spanned refuse path
-# (``open_archive`` early name check and the ZIP reader).
-ZIP_MULTI_VOLUME_MSG = "Multi-volume (split/spanned) ZIP archives are not supported."
+# The refusal of one part of a split or spanned set read alone (``open_archive``'s
+# check of the name, and the ZIP reader's backstop). With volume discovery on, a part
+# gets here only when the parts the set needs are not beside it.
+ZIP_LONE_PART_MSG = (
+    "This file is one part of a split or spanned ZIP set, read alone. Keep every "
+    "part in the same folder and open the set from any part, or pass every part as "
+    "a list, in order (name.z01, name.z02, ..., name.zip, or name.zip.001, "
+    "name.zip.002, ...)"
+)
 
 # Info-ZIP/WinZip ``name.z01``…``name.zNN`` (and ``.z100``+ when the set exceeds
 # 99 parts); 7-Zip ``name.zip.001``…``name.zip.00N``. The final Info-ZIP ``.zip``

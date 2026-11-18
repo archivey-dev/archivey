@@ -1085,7 +1085,8 @@ def test_non_seekable_zip_opens_via_detection_when_streaming(simple_zip: Path) -
 
 
 # ---------------------------------------------------------------------------
-# Multi-volume: 7-Zip .zip.NNN byte slices join; Info-ZIP .zNN spanned sets refuse
+# Multi-volume: 7-Zip .zip.NNN byte slices join (Info-ZIP's spanned sets:
+# tests/test_zip_spanned.py)
 # ---------------------------------------------------------------------------
 
 
@@ -1107,27 +1108,28 @@ def _patch_eocd_disk_fields(
     return bytes(raw)
 
 
+_LONE_PART = "one part of a split or spanned ZIP set"
+
+
 def test_split_segment_name_rejected(tmp_path: Path) -> None:
-    # A .z01 segment of a split set is rejected by name as an unsupported multi-volume ZIP.
+    # A .z01 part with no .zip beside it to end its set is refused by name, as a set
+    # with parts missing.
     segment = tmp_path / "archive.z01"
     segment.write_bytes(b"\x50\x4b\x03\x04" + b"\x00" * 64)
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match=_LONE_PART):
         open_archive(segment, format=ArchiveFormat.ZIP)
-    assert "multi-volume" in str(excinfo.value).lower()
 
     # Middle Info-ZIP parts have no magic at offset 0; refuse by filename before detection.
     middle = tmp_path / "archive.z02"
     middle.write_bytes(b"\x00" * 64)
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match=_LONE_PART):
         open_archive(middle)
-    assert "multi-volume" in str(excinfo.value).lower()
 
     # Info-ZIP continues past .z99 as .z100, .z101, … — still a split segment.
     high = tmp_path / "archive.z100"
     high.write_bytes(b"\x00" * 64)
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match=_LONE_PART):
         open_archive(high)
-    assert "multi-volume" in str(excinfo.value).lower()
 
 
 def test_sevenzip_split_segment_without_siblings_rejected(tmp_path: Path) -> None:
@@ -1167,9 +1169,8 @@ def test_volume_shaped_name_honours_explicit_non_zip_format(tmp_path: Path) -> N
 
     z01 = tmp_path / "payload.z01"
     z01.write_bytes(raw)
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match=_LONE_PART):
         open_archive(z01)
-    assert "multi-volume" in str(excinfo.value).lower()
     with open_archive(z01, format=ArchiveFormat.TAR_GZ) as ar:
         assert [m.name for m in ar.members()] == ["hello.txt"]
         assert ar.read("hello.txt") == b"hello"
@@ -1239,52 +1240,38 @@ def test_sevenzip_split_zip_set_with_missing_part_is_truncated(tmp_path: Path) -
         open_archive(first)
 
 
-def test_infozip_spanned_set_still_refused(tmp_path: Path) -> None:
-    """Info-ZIP ``.z01 … .zip`` keeps refusing, siblings present or not.
-
-    ``zip -s`` writes a true spanned set: entries are addressed by (disk, offset), so a
-    linear join lists correctly and then reads only whichever members happen to sit on
-    the last disk. That makes it a different thing from 7-Zip's byte slices however alike
-    the two look from outside. Synthesised
-    rather than built with ``zip -s`` because Info-ZIP is not installed on CI, macOS
-    or Windows — a real fixture would skip everywhere and prove nothing.
-    """
-    # .z01 opens with the spanning marker; middle parts carry no signature at all;
-    # the final .zip holds the central directory and names a non-zero disk.
-    (tmp_path / "set.z01").write_bytes(b"PK\x07\x08" + b"\x00" * 64)
-    (tmp_path / "set.z02").write_bytes(b"\x00" * 64)
-    (tmp_path / "set.zip").write_bytes(
-        _patch_eocd_disk_fields(_stdlib_zip_bytes(), this_disk=2, cd_start_disk=2)
-    )
-    for name in ("set.z01", "set.z02", "set.zip"):
-        with pytest.raises(UnsupportedFeatureError) as excinfo:
-            open_archive(tmp_path / name)
-        assert "multi-volume" in str(excinfo.value).lower(), name
-
-
 @pytest.mark.parametrize(
     ("this_disk", "cd_start_disk"),
-    [
-        (7, 0),
-        (0, 7),
-        (7, 7),
-    ],
-    ids=["this_disk", "cd_start_disk", "both"],
+    [(7, 0), (7, 7)],
+    ids=["this_disk", "both"],
 )
-def test_eocd_nonzero_disk_fields_rejected(
+def test_eocd_nonzero_disk_fields_name_missing_parts(
     tmp_path: Path, this_disk: int, cd_start_disk: int
 ) -> None:
     # Info-ZIP's final .zip part carries the CD + EOCD with this_disk / cd_start_disk
     # equal to the last data volume index. Byte-equivalent: patch those EOCD fields.
+    # Read alone, it is a set of eight parts with seven missing.
     path = tmp_path / "set.zip"
     path.write_bytes(
         _patch_eocd_disk_fields(
             _stdlib_zip_bytes(), this_disk=this_disk, cd_start_disk=cd_start_disk
         )
     )
-    with pytest.raises(UnsupportedFeatureError) as excinfo:
+    with pytest.raises(TruncatedError, match="spanned ZIP set of 8 parts"):
         open_archive(path)
-    assert "multi-volume" in str(excinfo.value).lower()
+
+
+def test_eocd_directory_disk_after_the_record_disk_is_damage(tmp_path: Path) -> None:
+    path = tmp_path / "set.zip"
+    path.write_bytes(
+        _patch_eocd_disk_fields(_stdlib_zip_bytes(), this_disk=0, cd_start_disk=7)
+    )
+    with (
+        pytest.raises(CorruptionError, match="directory on disk 8") as excinfo,
+        open_archive(path) as archive,
+    ):
+        archive.members()
+    assert not isinstance(excinfo.value, TruncatedError)
 
 
 def _genuine_zip64_bytes(
@@ -1377,20 +1364,11 @@ def test_eocd_zip64_disk_sentinel_still_opens(tmp_path: Path) -> None:
         assert ar.read("a.txt") == b"hello"
 
 
-@pytest.mark.parametrize(
-    ("this_disk", "cd_start_disk"),
-    [(2, 0), (0, 2)],
-    ids=["this_disk", "cd_start_disk"],
-)
-def test_zip64_end_record_nonzero_disk_fields_rejected(
-    this_disk: int, cd_start_disk: int
-) -> None:
+def test_zip64_end_record_nonzero_disk_fields_name_missing_parts() -> None:
     # The ZIP64 end record's disk fields replace the classic record's 0xFFFF sentinels,
-    # so a split set's last part is refused there too.
-    raw = _genuine_zip64_bytes(
-        zip64_this_disk=this_disk, zip64_cd_start_disk=cd_start_disk
-    )
-    with pytest.raises(UnsupportedFeatureError, match="(?i)multi-volume"):
+    # so a spanned set's last part read alone is told apart there too.
+    raw = _genuine_zip64_bytes(zip64_this_disk=2, zip64_cd_start_disk=0)
+    with pytest.raises(TruncatedError, match="spanned ZIP set of 3 parts"):
         open_archive(io.BytesIO(raw))
 
 

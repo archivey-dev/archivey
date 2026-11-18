@@ -1962,7 +1962,7 @@ def test_numbered_part_number_too_long_to_parse_is_not_a_volume_name(
         open_archive(stream)
     stream = io.BytesIO(zip_bytes)
     stream.name = f"x.zip.{digits}"
-    with pytest.raises(UnsupportedFeatureError, match="spanned"):
+    with pytest.raises(TruncatedError, match="spanned"):
         open_archive(stream)
 
     assert volumes_mod.incomplete_lone_numbered_volume_error(f"x.zip.{digits}") is None
@@ -2583,12 +2583,12 @@ def test_discovery_off_reads_only_the_named_file(tmp_path: Path) -> None:
     first, payload = _split_zip(tmp_path / "zip")
     with open_archive(first) as reader:
         assert reader.read("payload.bin") == payload
-    with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+    with pytest.raises(TruncatedError, match="one part of a split or spanned ZIP set"):
         open_archive(first, config=off)
     junk = tmp_path / "junk.zip.001"
     junk.write_bytes(b"not an archive" * 10)
     (tmp_path / "junk.zip.002").write_bytes(b"x")
-    with pytest.raises(UnsupportedFeatureError, match="Multi-volume"):
+    with pytest.raises(TruncatedError, match="one part of a split or spanned ZIP set"):
         open_archive(junk, config=off)
     # A ``.7z.NNN`` part is opened alone, and the 7z reader refuses what it finds.
     data = (_FIXTURES / "damaged_member" / "7z_copy_nonsolid.7z").read_bytes()
