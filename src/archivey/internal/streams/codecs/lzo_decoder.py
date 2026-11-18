@@ -120,6 +120,11 @@ def lzo1x_decompressor(
 # Each zero extends a literal or match length by 255 bytes. Handling the first four
 # inline avoids a regex call on short extensions. The C-level search skips longer
 # runs without a Python step per byte. Nonzero extensions need no scan.
+#
+# Both sites deliberately unroll the four checks: a bounded loop measured slower
+# on short extensions, and a helper adds a call. Keep the two copies in step.
+# Runs of about five to eight zeros pay for both the inline prefix and the regex
+# call, so they can be slightly slower than either scan alone.
 _FIND_NONZERO = re.compile(rb"[^\x00]").search
 
 
