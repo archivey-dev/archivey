@@ -294,7 +294,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Backward seeks re-decode and are reported |
 | Frame starts and the seekable-zstd table give resume points and the size; a bad table degrades; the table is trusted |
 | zstd as a ZIP method |
-| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 |
+| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP methods 93 and 20 |
 | A frame after zero bytes is trailing data, and strict refuses it; zeros at the end and frames with nothing between them stay silent |
 | The legacy LZ4 stream: detection, blocks, concatenation, padding, the size bound, corruption and truncation |
 | `pyzstd` is not a runtime dependency |
