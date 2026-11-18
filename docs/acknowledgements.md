@@ -75,6 +75,8 @@ Archivey itself needs no third-party package. Optional packages add formats and 
 - **[tqdm](https://github.com/tqdm/tqdm):** progress bars in the command-line tool.
 - **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip, bzip2 and
   DEFLATE data, such as ZIP members, and faster reading of large DEFLATE data where it pays off.
+- **[compress-utils](https://github.com/dupontcyborg/compress-utils):** faster
+  LZO decoding in `.lzo` files and SquashFS images.
 
 Compressed or encrypted RAR data is read with RARLAB's `unrar` (or `rar`), or with [The
 Unarchiver](https://theunarchiver.com/)'s `unar`. [Install](install.md) says which one runs when.
