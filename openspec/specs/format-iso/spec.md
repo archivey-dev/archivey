@@ -202,14 +202,18 @@ extent is empty. Over a non-empty extent such a mode SHALL give `FILE` with the
 extent's bytes as the content and `MEMBER_SPECIAL_FILE_HAS_DATA` reported; either
 way `extra["special_file_type"]` SHALL name the stored kind.
 
-In the plain ISO 9660 namespace the `;N` file version SHALL be removed from the
-presented name of a file together with the `.` of an empty extension (`FOO.;1`
-is `FOO`), and recorded as `extra["iso.version"]`. When a directory holds several
-versions of one name, the highest takes the bare name and the others SHALL be
-presented by their stored identifier (`FOO.;1`) with `is_current=False`, the RAR
-file-version history shape, also when the same stored identifier is repeated. In
-the plain namespace a directory's presented name keeps a `;N` at its end, as its
-children's paths do, and the directory has no `extra["iso.version"]`.
+In the plain ISO 9660 and Joliet namespaces the `;N` file version SHALL be removed from
+the presented name of a file together with the `.` of an empty extension (`FOO.;1` is
+`FOO`), and recorded as `extra["iso.version"]`. When a directory holds several versions
+of one name, the highest takes the bare name and the others SHALL be presented by their
+stored identifier (`FOO.;1`) with `is_current=False`, the RAR file-version history
+shape, also when the same stored identifier is repeated. In both namespaces a
+directory's presented name keeps a `;N` at its end, as its children's paths do, and the
+directory has no `extra["iso.version"]`. A file name whose part before `;N` is empty or
+only dots (`;1`, `.;1`, `...;1`) SHALL keep its stored spelling and have no
+`extra["iso.version"]`: removing the version would make up an empty, `.` or `..` name.
+In the Joliet namespace the versions of one name SHALL list together, the highest last,
+and other files SHALL keep their record order.
 
 Records that share an identifier in one directory SHALL be worked out from the
 directory as written, in on-disc order, and not from pycdlib's links or order. A
@@ -243,6 +247,8 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | PX mode `0o020666` (char device) over an empty extent | `type=OTHER`, `size=None`, `extra["special_file_type"]="char_device"`; extraction skips it |
 | PX mode `0o020666` (char device) over a 4-byte extent | `type=FILE`, `size=4`, `extra["special_file_type"]="char_device"`, `MEMBER_SPECIAL_FILE_HAS_DATA`; reads and extracts the 4 bytes |
 | Plain `FOO.;1` and `FOO.;2` | `FOO` (version 2, current) and `FOO.;1` (version 1, `is_current=False`); extraction writes version 2 |
+| Joliet `readme.txt;1`, `foo.;1`, `foo.a`, `foo;2`, `;1` and `plain`, in that record order | `;1`, `foo.;1` (version 1, `is_current=False`), `foo` (version 2, current), `foo.a`, `plain`, `readme.txt` (version 1); `;1`, `foo.a` and `plain` have no `iso.version` |
+| Joliet or plain file `.;1`, `..;1`, `...;1`, `SUB/....;1` | Listed as stored, with no `iso.version`; never `.` or `..` |
 | Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
 | Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |
 | Three records with one identifier, flagged, not flagged, not flagged | The first two are one member; the third is a second member with the same name |
