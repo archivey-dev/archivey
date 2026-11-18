@@ -39,19 +39,21 @@ import re
 import stat
 import struct
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.formats import ReaderSource
 from archivey.internal.backends.cd_sectors import (
+    LEAD_IN_SECTORS,
     USER_DATA_SIZE,
     RawSectorLayout,
     _SectorChecker,
     cooked_access,
     load_sectors,
+    sector_address,
 )
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat
@@ -246,6 +248,7 @@ class _TrackFile:
         self._fp: BinaryIO = os.fdopen(fd, "rb")  # closed by close()
         self._lock = threading.Lock()
         self.size = st.st_size
+        self.name = path.name
 
     def read_at(self, offset: int, n: int) -> bytes:
         with self._lock:
@@ -256,33 +259,73 @@ class _TrackFile:
         self._fp.close()
 
 
-class DiscSource(ReaderSource):
-    """The data sectors of a disc a ``.cue`` sheet describes, at absolute addresses.
+class TrackReader(Protocol):
+    """A file holding tracks of the disc: a track file a sheet names, or the raw image
+    itself (``cd_sessions``)."""
 
-    Sectors 0 to the end of the volume descriptor set are read from the chosen track's
-    start (``base``), as a drive mounting that session does; every other address is
-    absolute. A sector in no data track (an audio track, a pregap, the gap between
-    sessions) fails the read that reaches it.
+    name: str
+
+    def read_at(self, offset: int, n: int) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class DiscSource(ReaderSource):
+    """The data sectors of a disc, at absolute addresses: as a ``.cue`` sheet
+    describes them, or as the sector headers of a raw image do (``cd_sessions``).
+
+    Sectors 0 to the end of the volume descriptor set are read from the chosen
+    session's start (``base``, by default the chosen track's), as a drive mounting
+    that session does; every other address is absolute. A sector in no data track (an
+    audio track, a pregap, the gap between sessions) fails the read that reaches it.
+
+    ``path`` is set when every track is in the file archivey opened (a raw image read
+    by its headers): member read hints then name that file's bytes.
     """
 
     def __init__(
         self,
-        files: list[_TrackFile],
+        files: Sequence[TrackReader],
         extents: list[_Extent],
         chosen: _Extent,
         archive_name: str | None,
+        *,
+        base: int | None = None,
+        path: Path | None = None,
+        hints: bool = False,
     ) -> None:
-        self._files = files
+        self._files = list(files)
         self._extents = sorted(extents, key=lambda e: e.lba)
         self._starts = [e.lba for e in self._extents]
         self.chosen = chosen
         self._archive_name = archive_name
-        self.base = chosen.lba
+        self.base = chosen.lba if base is None else base
+        self.hints = hints
+        self.hidden_session: tuple[int, int] | None = None
+        """A data track (number, first sector's address) whose sector addresses put
+        it in a later session than the sheet does: see :func:`_hidden_session`."""
         self._descriptor_end = 16  # the system area, until the set is measured
         size = max(e.lba + e.count for e in self._extents) * USER_DATA_SIZE
         view, read_at = cooked_access(self._load, size)
-        super().__init__(view, size, None, read_at)
+        super().__init__(view, size, path, read_at)
         self._descriptor_end = self._measure_descriptors()
+
+    def file_range(self, start: int, end: int) -> tuple[int, int] | None:
+        """The bytes of the opened file holding cooked bytes ``[start, end)``: whole
+        sectors. ``None`` when the range is not in one data track, or the opened file
+        is not the one holding the tracks (a sheet)."""
+        if not self.hints:
+            return None
+        first = start // USER_DATA_SIZE
+        last = max(first, (end - 1) // USER_DATA_SIZE)
+        extent = self._extent_of(first)
+        if extent is None or last >= extent.lba + extent.count:
+            return None
+        size = extent.checker.sector_size
+        lo = extent.file_offset + (first - extent.lba) * size
+        if end <= start:
+            return lo, lo
+        return lo, extent.file_offset + (last + 1 - extent.lba) * size
 
     def _extent_of(self, sector: int) -> _Extent | None:
         at = bisect.bisect_right(self._starts, sector) - 1
@@ -319,7 +362,7 @@ class DiscSource(ReaderSource):
         )
         if not data:
             raise TruncatedError(
-                f"{quoted(track_file.path.name)} ends inside track {extent.track}",
+                f"{quoted(track_file.name)} ends inside track {extent.track}",
                 source_format=ArchiveFormat.ISO,
                 archive_name=self._archive_name,
             )
@@ -439,7 +482,7 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
     return opened
 
 
-def _close_all(files: list[_TrackFile]) -> None:
+def _close_all(files: Sequence[TrackReader]) -> None:
     """Close each track file once; two ``FILE`` lines can share one."""
     for track_file in dict.fromkeys(files):
         track_file.close()
@@ -553,7 +596,9 @@ def disc_source(cue_path: Path, archive_name: str | None) -> DiscSource:
         chosen = min((e for e in extents if e.track in numbers), key=lambda e: e.lba)
         extents = _settle_base(opened, extents, chosen)
         chosen = next(e for e in extents if e.track == chosen.track)
-        return DiscSource(opened, extents, chosen, archive_name)
+        disc = DiscSource(opened, extents, chosen, archive_name)
+        disc.hidden_session = _hidden_session(opened, extents, chosen)
+        return disc
     except BaseException:
         _close_all(opened)
         raise
@@ -581,3 +626,39 @@ def _settle_base(
         if _names_itself(relative(index), root):
             return _rebase(extents, chosen, root - index - chosen.lba)
     return extents
+
+
+def _hidden_session(
+    opened: list[_TrackFile], extents: list[_Extent], chosen: _Extent
+) -> tuple[int, int] | None:
+    """A data track after the chosen one that the sheet places in the chosen session
+    or a later one, but whose sector addresses jump past the track before it by a
+    session gap more than the sheet's addresses do: the disc has a later session than
+    the sheet shows (a sheet with no ``REM SESSION`` lines, for one). Without the sheet
+    the same image lists that session (``cd_sessions``), so this is reported. Returns
+    the track's number and the address its first sector names. Two header
+    reads per data track; a cooked track has no headers and is skipped."""
+
+    def header_offset(extent: _Extent) -> int | None:
+        if extent.checker.layout.cooked:
+            return None
+        header = opened[extent.file].read_at(extent.file_offset, 24)
+        if len(header) < 24 or not extent.checker.is_data_sector(header):
+            return None
+        address = sector_address(header)
+        return None if address is None else address - extent.lba
+
+    ordered = sorted(extents, key=lambda e: e.lba)
+    previous: int | None = None
+    for extent in ordered:
+        offset = header_offset(extent)
+        if (
+            previous is not None
+            and offset is not None
+            and extent.lba > chosen.lba
+            and offset - previous >= LEAD_IN_SECTORS
+        ):
+            return extent.track, extent.lba + offset
+        if offset is not None:
+            previous = offset
+    return None

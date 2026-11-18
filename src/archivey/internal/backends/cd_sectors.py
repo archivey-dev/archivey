@@ -13,9 +13,10 @@ sector of that layout (an audio track after the data track, a Form 2 sector of a
 Video CD or an XA file, or bytes at a shifted offset) fails the read rather than
 handing the ISO reader 2048 wrong bytes. The EDC and ECC bytes are not checked.
 
-Only the first track is read: without the ``.cue`` sheet nothing says where a later
-track starts, and on a mixed-mode disc (data first, audio after) the filesystem is
-all in the first one.
+This view reads the first track. A later data session of the same image is found from
+the addresses in the sector headers (``cd_sessions``) or from a ``.cue`` sheet
+(``cue_sheet``); on a mixed-mode disc (data first, audio after) the filesystem is all in
+the first track.
 """
 
 from __future__ import annotations
@@ -44,6 +45,31 @@ USER_DATA_SIZE = 2048
 
 PROBE_SIZE = max(RAW_SECTOR_SIZES) + len(RAW_SECTOR_SYNC)
 """Bytes from the start of the file that :func:`raw_sector_layout` needs."""
+
+LEAD_IN_SECTORS = 4_500
+"""The shortest gap between two sessions: a lead-in alone is one minute. A pregap
+(150 sectors) left out of the file moves the addresses much less."""
+
+_ADDRESS_ORIGIN = 150
+"""Header addresses count from two seconds (150 sectors) before sector 0."""
+
+
+def sector_address(header: bytes) -> int | None:
+    """The address a raw sector's header names, or ``None`` when its three BCD bytes
+    are not a valid minutes, seconds and frames."""
+    if len(header) < 15:
+        return None
+    values = []
+    for byte in header[12:15]:
+        high, low = byte >> 4, byte & 0x0F
+        if high > 9 or low > 9:
+            return None
+        values.append(high * 10 + low)
+    minutes, seconds, frames = values
+    if seconds >= 60 or frames >= 75:
+        return None
+    return (minutes * 60 + seconds) * 75 + frames - _ADDRESS_ORIGIN
+
 
 # How many sectors one read of the underlying source covers (about 150 KB raw).
 _SECTORS_PER_READ = 64

@@ -133,6 +133,7 @@ from archivey.internal.backends.cd_sectors import (
     cooked_source,
     raw_sector_layout,
 )
+from archivey.internal.backends.cd_sessions import last_session_source
 from archivey.internal.backends.cue_sheet import (
     DiscSource,
     disc_source,
@@ -1807,19 +1808,19 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     def _report_unread_session(self, start: int, stop: int) -> bool:
         """Report another ISO 9660 volume in the data sectors from ``start`` to
-        ``stop`` of a raw image read without its ``.cue`` sheet; True when one is
-        there.
+        ``stop`` of a raw image read from its first track; True when one is there.
 
-        ``ARCHIVE_UNREAD_SESSION``: a disc with a later data session holds a volume
-        there, and a ``.cue`` sheet beside the file would choose that session, so a
-        read of the same file by its path beside the sheet can list other files. The
-        listing stays the first track's. Another ISO appended to the image, or a
-        sector that starts with the same bytes by chance, gets the same report. A
-        primary volume descriptor starts a sector with ``1``, ``CD001`` and version
-        ``1`` (:data:`_PVD_PREFIX`), which is all that is checked. That trade-off is
-        deliberate: a false match only changes which integrity code names bytes that
-        are reported either way. The report stands for the trailing data those
-        sectors are, which is not reported as well.
+        ``ARCHIVE_UNREAD_SESSION``: the sector addresses did not place a later session
+        there that holds a volume (``cd_sessions``), which a session written for other
+        addresses, or a later one that only starts with a volume descriptor, does not. A
+        ``.cue`` sheet beside the file may still choose it, so a read of the same file
+        by its path beside the sheet can list other files. The listing stays the first
+        track's. Another ISO appended to the image, or a sector that starts with the
+        same bytes by chance, gets the same report. A primary volume descriptor starts a
+        sector with ``1``, ``CD001`` and version ``1`` (:data:`_PVD_PREFIX`), which is
+        all that is checked. That trade-off is deliberate: a false match only changes
+        which integrity code names bytes that are reported either way. The report stands
+        for the trailing data those sectors are, which is not reported as well.
         """
         sector = -(-start // USER_DATA_SIZE)
         while sector * USER_DATA_SIZE + len(_PVD_PREFIX) <= stop:
@@ -1834,14 +1835,39 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             (
                 "Raw CD image holds another ISO 9660 volume descriptor at sector "
                 f"{sector}, after the one listed, as a later session of a disc does. "
-                "Only the first track is read without a .cue sheet; a sheet beside "
-                "the file would choose its last session."
+                "Its sector addresses do not place a readable session there, so "
+                "without a .cue sheet the first track is read; a sheet beside the "
+                "file may choose that session."
             ),
             UnreadSessionContext(
                 archive_name=self._archive_name, format="iso", sector=sector
             ),
         )
         return True
+
+    def _report_hidden_session(self, disc: DiscSource) -> None:
+        """Report a later session the ``.cue`` sheet does not show.
+
+        ``ARCHIVE_UNREAD_SESSION``, as for a raw image read from its first track: the
+        sheet chose a track, but the sector addresses of a data track after it jump
+        by a session gap the sheet does not have (``cue_sheet._hidden_session``).
+        Read without the sheet, the same image lists the later session, so the two
+        readings differ; the listing follows the sheet."""
+        if disc.hidden_session is None:
+            return
+        track, address = disc.hidden_session
+        sector = address + 16
+        self._context.report(
+            DiagnosticCode.ARCHIVE_UNREAD_SESSION,
+            (
+                f"The .cue sheet places track {track} in the session it reads, but "
+                "the track's sector addresses start a later session. The listing "
+                "follows the sheet; read without it, the image lists that session."
+            ),
+            UnreadSessionContext(
+                archive_name=self._archive_name, format="iso", sector=sector
+            ),
+        )
 
     def _report_trailing_data(self) -> None:
         """Report a non-zero byte after the end of the image, as DR-3 asks.
@@ -1862,6 +1888,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         )
         image_length = self._image_length
         if isinstance(self._source, DiscSource):
+            self._report_hidden_session(self._source)
             # Only the rest of the chosen track: what follows it is another track
             # of the disc, which the .cue sheet accounts for.
             end, image_length = self._source.trailing_window(end, MAX_TRAILING_SCAN)
@@ -3073,8 +3100,13 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # are the whole sectors holding each extent.
             ranges = tuple(self._source.raw_range(*span) for span in ranges)
         elif isinstance(self._source, DiscSource):
-            # The opened file is the .cue sheet; the data is in the track files.
-            ranges = ()
+            # Read by its sector addresses, the opened file holds the tracks; by a
+            # .cue sheet it does not (the data is in the track files), and a span
+            # across two tracks has no one range.
+            mapped = [self._source.file_range(*span) for span in ranges]
+            ranges = tuple(r for r in mapped if r is not None)
+            if len(ranges) < len(mapped):
+                ranges = ()
         return MemberData(
             self._data_stream(spans, zisofs, member),
             bounded=True,
@@ -3296,6 +3328,10 @@ class IsoHandler(IndexedFormatHandler):
                 disc.close()
                 raise
         if layout is not None:
+            # Without a sheet, the sector addresses place a later session.
+            disc = last_session_source(source, layout, context.archive_name)
+            if disc is not None:
+                return IsoReader(disc, context)
             source = cooked_source(source, layout, context.archive_name)
         return IsoReader(source, context)
 

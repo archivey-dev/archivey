@@ -52,11 +52,12 @@ def _image(
     return b"".join(_sector(i, mode=mode, form2=form2, size=size) for i in range(count))
 
 
-def to_raw(iso: bytes, *, mode: int = 1, size: int = 2352) -> bytes:
-    """``iso`` written as a raw sector image: each 2048-byte block in a whole sector."""
+def to_raw(iso: bytes, *, mode: int = 1, size: int = 2352, first: int = 0) -> bytes:
+    """``iso`` written as a raw sector image: each 2048-byte block in a whole sector,
+    the first one at address ``first``."""
     out = []
     for index in range(0, len(iso), 2048):
-        sector = bytearray(_sector(index // 2048, mode=mode, size=size))
+        sector = bytearray(_sector(first + index // 2048, mode=mode, size=size))
         offset = 16 if mode == 1 else 24
         sector[offset : offset + 2048] = iso[index : index + 2048].ljust(2048, b"\0")
         out.append(bytes(sector))
