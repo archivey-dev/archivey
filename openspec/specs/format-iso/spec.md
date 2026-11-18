@@ -129,13 +129,14 @@ form a run, placed at those addresses; runs whose offsets differ by at least a l
 (4 500 sectors) are in different sessions. The backend SHALL list the first run of the
 last session, reading its volume descriptors from the first sector at or after that
 run's sector 16 that holds a primary volume descriptor, within its first 4096 sectors,
-and only when the root directory's `.` record is at the sector it names; every other
-address is absolute. The walk SHALL NOT read every sector: when the last data sector
-near the end of the file has the same offset as sector 0, the image is one session and
-no other sector header is read; a run is followed by probes at doubling distances and
-bisection; only sectors that are not data are read in turn, in batches. Addresses that
-go backwards, more than 256 runs, no later session, or a later session without a volume
-that passes the check SHALL leave the image read from its first track.
+and only when the root directory's `.` record is at the sector it names and the
+descriptor set (through its terminator and the sector after) is in data sectors; every
+other address is absolute. The walk SHALL NOT read every sector: when the last data
+sector near the end of the file has the same offset as sector 0, the image is one
+session and no other sector header is read; a run is followed by probes at doubling
+distances and bisection; only sectors that are not data are read in turn, in batches.
+Addresses that go backwards, more than 256 runs, no later session, or a later session
+without a volume that passes the check SHALL leave the image read from its first track.
 
 Read from its first track, the trailing-data check SHALL scan only the data sectors that
 continue the track after the volume space, so a mixed-mode disc's audio is not reported.

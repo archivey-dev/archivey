@@ -116,7 +116,8 @@ postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a lea
 more are in different sessions. The first run of the last session is chosen, its volume
 descriptors are looked for from its sector 16 on (a pregap kept in the file puts them
 150 later), and a candidate is kept only when the root directory's `.` record names its
-own sector through that mapping (`cue_sheet.find_volume`: two sector reads per
+own sector through that mapping and its descriptor set, through the terminator and one
+sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
 candidate, so 4 096 crafted candidates cost about 8 200 sector reads). The result is a
 `DiscSource` over the `.bin` itself, so read hints map back to its sectors
 (`DiscSource.file_range`). Addresses that go backwards, more than 256 runs, or a last

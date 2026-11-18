@@ -350,8 +350,9 @@ class DiscSource(ReaderSource):
         extent = self._extent_of(physical)
         if extent is None:
             raise CorruptionError(
-                f"CD sector {physical} is in no data track of the .cue sheet (an audio "
-                "track, a pregap, or the gap between sessions)",
+                f"CD sector {physical} is in no data track of the "
+                f"{'image' if self.hints else '.cue sheet'} (an audio track, a "
+                "pregap, or the gap between sessions)",
                 source_format=ArchiveFormat.ISO,
                 archive_name=self._archive_name,
             )
@@ -642,8 +643,9 @@ def find_volume(
     batches, and a sector whose user data opens with a primary volume descriptor is a
     candidate 16 sectors after the start. A candidate is taken when its root
     directory's ``.`` record, read at the address the descriptor names through
-    ``extents``, names that address. Two sector reads per candidate: the descriptor
-    comes with its batch, and the root is one more."""
+    ``extents``, names that address, and its descriptor set is all in data sectors
+    (:func:`_descriptors_present`). Two sector reads per rejected candidate: the
+    descriptor comes with its batch, and the root is one more."""
     checker = chosen.checker
     size = checker.sector_size
     offset = checker.layout.data_offset
@@ -677,10 +679,29 @@ def find_volume(
                 continue
             (root,) = struct.unpack_from("<I", data, 156 + 2)
             found = user_data(root)
-            if found is not None and _names_itself(found, root):
-                return chosen.lba + index + k - 16
+            base = chosen.lba + index + k - 16
+            if (
+                found is not None
+                and _names_itself(found, root)
+                and _descriptors_present(user_data, base)
+            ):
+                return base
         index += count
     return None
+
+
+def _descriptors_present(user_data: Callable[[int], bytes | None], base: int) -> bool:
+    """Whether the volume descriptor set from ``base + 16`` is all in data sectors:
+    up to the terminator (at most :data:`_MAX_DESCRIPTORS`) and the sector after it,
+    the sectors :meth:`DiscSource._measure_descriptors` and ``pycdlib`` read. A
+    session cut inside its descriptors is not a volume the reader can open."""
+    for at in range(base + 16, base + 16 + _MAX_DESCRIPTORS):
+        sector = user_data(at)
+        if sector is None:
+            return False
+        if sector[1:6] != b"CD001" or sector[0] == 255:
+            return user_data(at + 1) is not None
+    return user_data(base + 16 + _MAX_DESCRIPTORS) is not None
 
 
 def _hidden_session(

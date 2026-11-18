@@ -346,3 +346,40 @@ def test_a_sheet_over_a_blank_later_session_is_not_reported(tmp_path: Path) -> N
         with open_archive(source) as archive:
             assert [m.name for m in archive.members()] == ["ONE.TXT"]
             assert archive.diagnostics.retained == ()
+
+
+def _dot_sector(address: int) -> bytes:
+    """A raw sector at ``address`` whose user data opens with a directory's ``.``
+    record naming ``address``."""
+    record = bytearray(34)
+    record[0] = 34
+    record[2:6] = address.to_bytes(4, "little")
+    record[32] = 1
+    sector = bytearray(_sector(address, mode=1))
+    sector[16 : 16 + 34] = record
+    return bytes(sector)
+
+
+@requires("pycdlib")
+def test_a_later_session_cut_in_its_descriptors_leaves_the_first_track() -> None:
+    # Session 2 ends at its primary descriptor: its root names itself, but the rest
+    # of the descriptor set is not in the file. The image is read from its first
+    # track and the other volume is reported, rather than failing the open.
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"one\n"), 4, "/ONE.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    first = out.getvalue()
+    start = len(first) // 2048 + _FIRST_GAP
+    later = [_sector(start + i, mode=1) for i in range(17)]
+    later[5] = _dot_sector(start + 5)
+    later[16] = _pvd_sector(start + 16, start + 5)
+    data = to_raw(first) + b"".join(later)
+    with open_archive(io.BytesIO(data)) as archive:
+        assert [m.name for m in archive.members()] == ["ONE.TXT"]
+        (diagnostic,) = archive.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_UNREAD_SESSION
