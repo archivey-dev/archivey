@@ -1260,7 +1260,7 @@ other members because of a member's name any more. Setting it to `True` warns.
 - **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
   file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
   (`lz4`). LZO is decoded as a `.lzo` file is ([below](#single-file-compressors)): with
-  liblzo2 when `python-lzo` is installed, and otherwise in Python.
+  `compress-utils` when it is installed, and otherwise in Python.
 - **Listing:** from the image's inode and directory tables.
 - **Reading members:** direct. Small files share a fragment block, which is decoded once for
   all of them.
@@ -1643,9 +1643,10 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 - **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` are in core (`.Z` with
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
   `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
-  decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
-  more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
-  wheels, so installing it needs the liblzo2 headers.
+  decodes LZO1X with the `compress-utils` package, which `[recommended]` installs on CPython
+  except on Intel macOS, and otherwise in Python, more than 20 times slower on text. Both refuse a
+  block that ends with an end marker other than the one every LZO1X writer produces, which `lzop`
+  itself accepts.
 - **bzip3** (`.bz3`, the format the `bzip3` tool writes) needs `[bzip3]`, which is in neither
   `[recommended]` nor `[all]` and does not install on macOS, PyPy or Python 3.15
   ([Install](install.md#bzip3)). It decodes in a child process unless `process_isolation` is

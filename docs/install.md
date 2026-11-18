@@ -24,7 +24,7 @@ methods.
 | You install | It reads |
 | --- | --- |
 | `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
-| `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
+| `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Faster LZO decoding for `.lzo` files and SquashFS images, on CPython except on Intel macOS. Progress bars in the command-line tool. |
 | `[bzip3]` adds | `.bz3` files, alone or inside a TAR ([bzip3](#bzip3)). |
 | `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. On Linux and macOS, also faster reading of large DEFLATE data that compresses 3:1 or less, without that option. |
 
@@ -130,9 +130,9 @@ setup.
 On a free-threaded build (3.13t and later), importing a compiled package that doesn't declare
 free-threading support turns the GIL back on for the rest of the process. If you use `pip install
 "archivey[free-threaded]"`, you get only the optional packages that keep it off: ISO, LZ4 and
-Zstandard support, and CLI progress bars, plus AES decryption from 3.14t. On 3.13t, `[recommended]`
-doesn't install at all, because `cryptography` can't be installed there yet, and neither does
-`archivey-cli`, which depends on it. Use `[free-threaded]` there instead.
+Zstandard support, and CLI progress bars, plus AES decryption and faster LZO decoding from 3.14t. On
+3.13t, `[recommended]` doesn't install at all, because `cryptography` can't be installed there yet,
+and neither does `archivey-cli`, which depends on it. Use `[free-threaded]` there instead.
 
 Other optional packages can still be installed. Archivey imports each one only when a file needs it,
 so the GIL comes back the first time you read PPMd, Deflate64 or Brotli data. Free-threaded builds

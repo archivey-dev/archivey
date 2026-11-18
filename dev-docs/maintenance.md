@@ -126,6 +126,7 @@ What to do per package if its upstream stops for good:
 | `cryptography` | recommended | AES for 7z, RAR and WinZip AES | AES-encrypted members raise; a header-encrypted RAR or 7z cannot be opened at all; ZipCrypto still works (pure Python) | Very unlikely to stop. If it did: `pycryptodome` covers AES-CBC and AES-CTR |
 | `pycdlib` | recommended | ISO 9660 / Joliet / Rock Ridge / UDF | opening an ISO raises `PackageNotInstalledError` | It is pure Python, so it cannot lose wheels. If it stops getting fixes, vendor the version we test against |
 | `tqdm` | recommended | CLI progress bars | no progress bars | Drop it; the CLI already works without it |
+| `compress-utils` | recommended (CPython, not Intel macOS); free-threaded from 3.14 | LZO1X in `.lzo` files and SquashFS images | nothing breaks: archivey decodes LZO1X in Python, 20 to 30 times slower | Drop it from the extras. `python-lzo` (GPL, no Linux wheels) was the accelerator before it, and stays a test oracle |
 | `rapidgzip` | seekable (not in recommended) | faster gzip, zlib, DEFLATE and bzip2 with random access; runs in a child process | nothing breaks: archivey uses the stdlib decoders and seeks get slower | Remove the accelerator, or leave the extra in place and let it go stale. Nothing depends on it for correctness |
 | `unrar` (external program) | none | compressed RAR members | `PackageNotInstalledError` naming `unrar` (or `unar`) | `unar` is the fallback backend. RAR listing and stored members do not need either program |
 

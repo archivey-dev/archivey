@@ -233,8 +233,8 @@ class StreamFormat(StrEnum):
     """The Unix ``compress`` format."""
     LZOP = "lzo"
     """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
-    archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
-    more than 25 times slower on text."""
+    archivey decodes LZO1X with ``compress-utils`` when it is installed, else in Python,
+    more than 20 times slower on text."""
     BZIP3 = "bz3"
     """The ``.bz3`` files the ``bzip3`` tool writes. Needs ``archivey[bzip3]``; the
     decoder runs in a child process unless ``process_isolation`` is ``NONE``."""
@@ -518,8 +518,8 @@ class OptionalLibrary(StrEnum):
     """ISO 9660 images."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
-    LZO = "lzo"
-    """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
+    COMPRESS_UTILS = "compress_utils"
+    """``compress-utils``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
     LZO1X in Python without it, more slowly."""
     BZIP3 = "bz3"
     """The ``bzip3`` package (imported as ``bz3``): ``.bz3`` files."""
@@ -535,7 +535,8 @@ OptionalLibraryStr = Literal[
     "rapidgzip",
     "pycdlib",
     "cryptography",
-    "lzo",
+    "compress_utils",
+    "compress-utils",
     "bz3",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""

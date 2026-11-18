@@ -8,9 +8,9 @@ proxy forwards each call with its arguments unchanged, so a codec's per-library 
 (zlib's ``max_length=0`` meaning "no limit", the others' ``-1``) stay where they are.
 
 The libraries that re-enable the GIL on a free-threaded build (brotli, inflate64,
-pyppmd, python-lzo) are never imported here when isolated: their exception types have
-stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`, :class:`LzoChildError`)
-that the codecs catch and translate alongside the real ones.
+pyppmd) are never imported here when isolated, nor is compress-utils: their exception
+types have stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`,
+:class:`LzoChildError`) that the codecs catch and translate alongside the real ones.
 """
 
 from __future__ import annotations
@@ -64,7 +64,8 @@ class PpmdChildError(ValueError):
 
 
 class LzoChildError(ValueError):
-    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
+    """Stand-in for ``compress_utils.CompressError`` raised by its LZO1X decoder in a
+    child process."""
 
 
 def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Exception]]:
@@ -78,7 +79,9 @@ _LZMA_ERRORS = _known(lzma.LZMAError)
 
 
 # Matched by type name alone ("*"): the modules that raise them differ by build.
-_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {("*", "error"): LzoChildError}
+_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {
+    ("*", "CompressError"): LzoChildError
+}
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError
 }
@@ -375,16 +378,17 @@ class Natives:
             child.close()
 
     def lzo_decompress(self, block: bytes, limit: int) -> bytes:
-        """``lzo.decompress(block, False, limit)``: one raw LZO1X block. Needs
-        python-lzo; not imported here when isolated, where it raises
-        :class:`LzoChildError` for ``lzo.error``."""
+        """``compress_utils.decompress(block, "lzo", expected_size=limit)``: one raw
+        LZO1X block, decoded to at most ``limit`` bytes. Needs compress-utils; not
+        imported here when isolated, where it raises :class:`LzoChildError` for
+        ``CompressError``."""
         if not self.isolated:
-            lzo = deps.lzo.load()
-            assert lzo is not None
-            return lzo.decompress(block, False, limit)
+            module = deps.compress_utils.load()
+            assert module is not None
+            return module.decompress(block, "lzo", expected_size=limit)
         child = self._child("lzo", known=_LZO_ERRORS)
         try:
-            return child.call("decompress", block, (False, limit))
+            return child.call("decompress", block, ("lzo", limit))
         finally:
             child.close()
 
@@ -392,9 +396,9 @@ class Natives:
         """The exception types :meth:`lzo_decompress` raises on bad data."""
         if self.isolated:
             return (LzoChildError,)
-        lzo = deps.lzo.load()
-        assert lzo is not None
-        return (lzo.error,)
+        module = deps.compress_utils.load()
+        assert module is not None
+        return (module.CompressError,)
 
     def brotli_decompressor(self) -> Any:
         """A ``brotli.Decompressor``; needs brotli installed. Not imported here when

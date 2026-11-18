@@ -44,12 +44,12 @@ class LazyOptional:
     On a free-threaded CPython, importing an extension module that has not declared
     free-thread support re-enables the GIL for the whole process. pyppmd, inflate64,
     brotli and rapidgzip are such modules (measured 2026-10-08 on 3.13t, 3.14t and
-    3.15t), and so is python-lzo 1.15 (measured 2026-10-30 on 3.14t). Importing them
-    when this module loads would re-enable the GIL for every program that imports
-    archivey with them installed, even one that never opens a stream they decode. So
-    :meth:`available` only looks the package up, and the import waits for
-    :meth:`load`, which a codec calls when it opens a stream that needs it.
-    zstd and lz4 keep the GIL disabled and stay eager imports.
+    3.15t). Importing them when this module loads would re-enable the GIL for every
+    program that imports archivey with them installed, even one that never opens a
+    stream they decode. So :meth:`available` only looks the package up, and the import
+    waits for :meth:`load`, which a codec calls when it opens a stream that needs it.
+    zstd and lz4 keep the GIL disabled and stay eager imports; compress-utils keeps it
+    disabled too, and is lazy only so that a program that never reads LZO skips it.
 
     There is no lock: two threads in :meth:`load` at once both get the same module
     (the import system serialises the import), and every field write stores the value
@@ -156,9 +156,10 @@ _LZ4_UNUSED = bool(unused_reason(OptionalLibrary.LZ4))
 lz4_frame = None if _LZ4_UNUSED else _optional("lz4.frame")
 lz4_block = None if _LZ4_UNUSED else _optional("lz4.block")
 brotli = LazyOptional(OptionalLibrary.BROTLI)
-# python-lzo: only an accelerator, since LZO1X decodes in Python without it. Lazy
-# because it re-enables the GIL (see LazyOptional).
-lzo = LazyOptional(OptionalLibrary.LZO)
+# compress-utils: only an accelerator, since LZO1X decodes in Python without it. It
+# keeps the GIL disabled (0.12.1, measured 2026-11-17 on 3.14t); lazy so that a
+# program that never reads LZO does not load it.
+compress_utils = LazyOptional(OptionalLibrary.COMPRESS_UTILS)
 # bzip3 (imported as ``bz3``): decoded in a child process unless isolation is NONE, so
 # this process imports it only then.
 bzip3 = LazyOptional(OptionalLibrary.BZIP3)

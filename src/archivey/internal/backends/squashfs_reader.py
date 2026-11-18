@@ -105,7 +105,7 @@ _DECODED_AS: dict[str, CompressionAlgorithm | StreamFormat] = {
     "lzma": StreamFormat.LZMA_ALONE,
     "xz": StreamFormat.XZ,
     "zstd": CompressionAlgorithm.ZSTD,
-    # Raw LZO1X, which archivey decodes with liblzo2 through python-lzo, or in Python.
+    # Raw LZO1X, which archivey decodes with compress-utils, or in Python.
     "lzo": CompressionAlgorithm.LZO,
 }
 

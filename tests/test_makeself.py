@@ -67,7 +67,7 @@ READABLE = [
     ("xz-2.7.1.run", "xz"),
     pytest.param("zstd-2.7.1.run", "zstd", marks=requires_zstd()),
     pytest.param("lz4-2.7.1.run", "lz4", marks=_requires("lz4")),
-    pytest.param("lzo-2.7.1.run", "lzop", marks=_requires("lzo")),
+    pytest.param("lzo-2.7.1.run", "lzop"),
     ("nocomp-2.7.1.run", "none"),
     ("base64-2.7.1.run", "gzip"),
     ("base64-2.4.0.run", "none"),
