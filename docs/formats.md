@@ -335,9 +335,9 @@ in a real folder named `__MACOSX`.
   symlink, are stored only in the index at the end, so they arrive when the pass gets there, and
   `member.member_state_final` turns `True` then. Extraction from a pipe keeps the files in a
   temporary folder inside the destination, and puts them in place once the index has been read.
-- **Split sets:** a set split by 7-Zip (`name.zip.001`, `.002`, …) opens from any part, when all
-  parts are in one folder. A set spanned by `zip -s` (`.z01`, …, `.zip`) is refused: join it with
-  the tool that made it.
+- **Split sets:** a set split by 7-Zip (`name.zip.001`, `.002`, …), or spanned by `zip -s` or
+  WinZip (`name.z01`, `.z02`, …, `name.zip`), opens from any part, when all parts are in one
+  folder. A missing part raises `TruncatedError`.
 - **Encryption:** ZipCrypto, and WinZip AES with `[recommended]`. ZipCrypto's password check lets
   about one wrong password in 256 through, so a wrong password and a damaged member fail with the
   same error, and its decryption is slow, a few MiB/s. PKWARE Strong Encryption is not supported.

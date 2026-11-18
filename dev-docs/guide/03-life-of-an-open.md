@@ -70,9 +70,9 @@ itself (the `_SourceSlot` in its `try`). Once a reader exists, the reader owns i
 
 The middle part of a split set usually has no magic bytes at its start, so detection would
 say "unknown format", which is confusing. A lone `x.zip.002` whose siblings are missing is
-refused by its name first, with a `TruncatedError` that names the missing parts. An
-Info-ZIP spanned set (`.z01`) gets an `UnsupportedFeatureError` that says to rejoin it with
-the tool that made it.
+refused by its name first, with a `TruncatedError` that names the missing parts. A lone
+Info-ZIP spanned part (`.z01`) with no `.zip` beside it to end its set gets a
+`TruncatedError` too.
 
 ## Step 4. Decide the format (`internal/detection.py`, `detect_format_into`)
 

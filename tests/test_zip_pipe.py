@@ -1768,28 +1768,47 @@ def test_a_zip64_end_record_among_the_members_data_is_refused() -> None:
             pass
 
 
-@pytest.mark.parametrize("field", ["disks", "disk_with_record"])
-def test_a_split_set_locator_is_refused_before_the_record_is_looked_for(
-    field: str,
-) -> None:
-    """The locator's disk fields are refused as a split set first, as from a file,
-    wherever the record it names is."""
+def test_a_split_set_locator_is_refused_before_the_record_is_looked_for() -> None:
+    """A locator counting two disks names the last part of a spanned set, read alone:
+    refused as parts missing first, as from a file, wherever the record it names is."""
     data = bytearray(_zip64_record_in_member_data())
     locator_at = data.rindex(b"PK\x06\x07")
-    if field == "disks":
-        struct.pack_into("<I", data, locator_at + 16, 2)
-    else:
-        struct.pack_into("<I", data, locator_at + 4, 7)
+    struct.pack_into("<I", data, locator_at + 16, 2)
     for source, streaming in (
         (io.BytesIO(bytes(data)), False),
         (_pipe(bytes(data)), True),
     ):
         with (
-            pytest.raises(UnsupportedFeatureError, match="Multi-volume"),
+            pytest.raises(TruncatedError, match="spanned ZIP set of 2 parts"),
             archivey.open_archive(source, streaming=streaming) as reader,
         ):
             for _ in reader.stream_members():
                 pass
+
+
+def test_a_locator_naming_another_disk_of_one_is_damage() -> None:
+    """A locator that counts one disk and places its record on disk 8 is damage, not a
+    spanned set: the classic record, which needs none of the ZIP64 fields, stands in,
+    and the file read reports why. (This archive's one member overlaps the directory,
+    so its read fails anyway.)"""
+    data = bytearray(_zip64_record_in_member_data())
+    locator_at = data.rindex(b"PK\x06\x07")
+    struct.pack_into("<I", data, locator_at + 4, 7)
+    diagnostics: list[archivey.Diagnostic] = []
+    config = archivey.ArchiveyConfig(on_diagnostic=diagnostics.append)
+    for source, streaming in (
+        (io.BytesIO(bytes(data)), False),
+        (_pipe(bytes(data)), True),
+    ):
+        with (
+            pytest.raises(CorruptionError) as excinfo,
+            archivey.open_archive(source, streaming=streaming, config=config) as reader,
+        ):
+            for _member, stream in reader.stream_members():
+                if stream is not None:
+                    stream.read()
+        assert not isinstance(excinfo.value, TruncatedError)
+    assert any("single-disk archive" in d.message for d in diagnostics)
 
 
 def test_a_zip64_archive_behind_a_stub_lists_from_a_pipe() -> None:

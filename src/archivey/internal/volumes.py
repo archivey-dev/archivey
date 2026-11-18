@@ -10,11 +10,13 @@ a stream, an ``fsspec`` ``OpenFile`` or a list of volumes all come out as one so
    as a single source.
 2. A single path may be one part of a set. Discovery
    (:func:`discover_volume_siblings`) finds the other parts beside it from the three
-   naming schemes below. Numbered parts (``x.7z.001``) are raw byte slices, so they
-   are joined. A RAR set keeps the path of the first volume present, because unrar
-   walks the set on disk itself. The RAR backend also uses the RAR naming helpers
-   here. An ``OpenFile`` is never searched: a remote set is passed as a list
-   (maintainer ruling, 2026-11-11; :data:`REMOTE_VOLUMES_AS_LIST`).
+   naming schemes below, and Info-ZIP's ``zip -s`` names (:func:`_spanned_zip_set`).
+   Numbered parts (``x.7z.001``) are raw byte slices, so they are joined; so are a
+   ``zip -s`` set's parts, whose offsets the ZIP parser moves into the join. A RAR set
+   keeps the path of the first volume present, because unrar walks the set on disk
+   itself. The RAR backend also uses the RAR naming helpers here. An ``OpenFile`` is
+   never searched: a remote set is passed as a list (maintainer ruling, 2026-11-11;
+   :data:`REMOTE_VOLUMES_AS_LIST`).
 3. Anything else is one source: a path is read as the one file it names, an
    ``OpenFile`` is read by range (or through fsspec's decompression when it has a
    ``compression``), and a binary stream is wrapped as it is.
@@ -101,10 +103,9 @@ SourceSequence = Sequence[SourceItem]
 # ``.sfx`` is not in this pattern: 7-Zip does not emit
 # ``name.sfx.001``, and arbitrary ``name.foo.001`` is not a 7-Zip split. Info-ZIP's
 # ``name.z01 … name.zip`` deliberately does not match this pattern: that is a true
-# spanned set addressed by (disk, offset). A linear join of one lists correctly and
-# then reads only whichever members happen to sit on the last disk, so it is refused
-# in the ZIP backend instead. ``name.z01`` does match the broad old-scheme RAR shape
-# below, and what keeps it out of a RAR set there is stated beside that pattern.
+# spanned set addressed by (disk, offset), found by ``_spanned_zip_set`` instead.
+# ``name.z01`` does match the broad old-scheme RAR shape below, and what keeps it out
+# of a RAR set there is stated beside that pattern.
 #
 # **Three digits minimum, not one or more.** 7-Zip numbers from ``.001`` and widens past
 # part 999, so nothing it emits needs fewer. Accepting one or two would swallow
@@ -115,8 +116,8 @@ SourceSequence = Sequence[SourceItem]
 # writes it for a 7z or ZIP payload), so this pattern is not kept in step with
 # ``is_zip_split_segment_name`` (still ``zip\.[0-9]{3,}`` / ``.zNN``). A lone
 # numbered part (``.7z.001`` / ``.zip.001`` / ``.exe.001``) is refused at
-# ``open_archive`` as an incomplete set, naming the missing parts — not as a ZIP
-# spanned-set error. Info-ZIP ``.zNN`` stays that ZIP refusal.
+# ``open_archive`` as an incomplete set, naming the missing parts. A lone Info-ZIP
+# ``.zNN`` is refused there too, by ``is_zip_split_segment_name``.
 #
 # The part number is capped at 999 999 parts, which no real set comes near. The cap is
 # on the value, not the width: leading zeros are matched outside the ``part`` group, so
@@ -129,9 +130,9 @@ SourceSequence = Sequence[SourceItem]
 # default) with a bare ``ValueError``. A larger number is not a part number, so the
 # lone-part refusal below does not apply: a ``.7z`` or ``.exe`` name goes to ordinary
 # detection, while a ``.zip`` name still matches the uncapped
-# ``is_zip_split_segment_name`` and is refused as a spanned ZIP. The ``.partN`` pattern
-# below has the same cap for the same reason.
-# The largest part the six-digit ``part`` groups below can hold.
+# ``is_zip_split_segment_name`` and is refused as a lone ZIP part. The ``.partN``
+# pattern below has the same cap for the same reason. The largest part the six-digit
+# ``part`` groups below can hold.
 _MAX_VOLUME_PART = 999_999
 # This pattern and ``_RAR_PART_RE`` end in ``\Z``, not ``$``: ``$`` also matches before
 # a final newline, which would read ``name.7z.001\n`` as a volume name. Digits are
@@ -161,19 +162,19 @@ _RAR_PART_RE = re.compile(
 # unrelated extensions such as ``cert.p12`` or ``image.e01``, so it only makes a name
 # a candidate, and two guards in discovery decide. First, volume 1 (``<base>.rar`` /
 # ``.exe`` / ``.sfx``) must sit beside the name: an Info-ZIP spanned set has none, so
-# ``backup.z01`` is not a RAR volume and still reaches the ZIP backend's spanned-set
-# refusal. Second, the walk of the names unrar would look for from volume 1 must reach
-# the name, so ``notes.a01`` beside ``notes.rar`` is not a volume either. The cost of
-# the breadth: opening a name of this shape pays one directory listing, where the fast
-# reject in ``discover_volume_siblings`` turns other names away before any filesystem
-# call. The explicit-sequence check classifies old-scheme parts with this same
-# pattern, so it reads the base discovery groups on. It has neither guard, though, so
-# there the breadth costs a false refusal: a stray of this shape (``readme.p12``,
-# ``notes.e01``) in an explicit sequence counts as an old-scheme part, so beside parts
-# of another scheme or another base the check refuses the sequence as two sets. No
-# narrower pattern is sound. The name alone cannot tell ``beta.s00`` from
-# ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART`` stops
-# it. ``\Z``, not ``$``: ``$`` also matches before a final newline.
+# ``backup.z01`` is not a RAR volume (discovery has already tried it as a ``zip -s``
+# part, :func:`_spanned_zip_set`). Second, the walk of the names unrar would look for
+# from volume 1 must reach the name, so ``notes.a01`` beside ``notes.rar`` is not a
+# volume either. The cost of the breadth: opening a name of this shape pays one
+# directory listing, where the fast reject in ``discover_volume_siblings`` turns other
+# names away before any filesystem call. The explicit-sequence check classifies
+# old-scheme parts with this same pattern, so it reads the base discovery groups on. It
+# has neither guard, though, so there the breadth costs a false refusal: a stray of this
+# shape (``readme.p12``, ``notes.e01``) in an explicit sequence counts as an old-scheme
+# part, so beside parts of another scheme or another base the check refuses the sequence
+# as two sets. No narrower pattern is sound. The name alone cannot tell ``beta.s00``
+# from ``readme.p12``, and the walk can reach any letter before ``_MAX_VOLUME_PART``
+# stops it. ``\Z``, not ``$``: ``$`` also matches before a final newline.
 _OLD_RAR_CONTINUATION_RE = re.compile(r"^(?P<base>.+)\.[^.0-9][0-9]{2}\Z")
 _OLD_RAR_EXT_RE = re.compile(r"(?P<letter>[^.0-9])(?P<num>[0-9]{2})")
 
@@ -188,6 +189,20 @@ _SCHEME_NAMES = (
     "name.EXT.NNN",
     "name.partN.rar",
     "name.xNN (the old RAR scheme's shape: .r00, .s01, ...)",
+)
+
+
+# Info-ZIP's and WinZip's ``zip -s`` spanned set: ``name.z01`` … ``name.z99``, then
+# ``name.z100`` and on, and last ``name.zip``, which holds the directory. Unlike the
+# numbered scheme these are not byte slices: every offset counts from the start of
+# its own part, so the ZIP parser maps each (disk, offset) pair into the join
+# (``zip_parser.read_end_record``). The two-digit names also have the old RAR
+# scheme's shape; a name is read as a ZIP part only when a ``name.zip`` whose end
+# record names a spanned set sits beside it (:func:`_spanned_zip_set`), and a RAR
+# set that reaches ``.z01`` has a ``name.rar`` and no such ``name.zip``. The part
+# number is capped like the others (``_MAX_VOLUME_PART``).
+_SPANNED_ZIP_PART_RE = re.compile(
+    r"^(?P<base>.+)\.(?P<letter>z)(?P<part>[0-9]{2,6})\Z", re.IGNORECASE | re.ASCII
 )
 
 
@@ -600,9 +615,13 @@ def _discover_volume_siblings(path: Path) -> list[Path] | None:
     """
     name = path.name
     lower = name.lower()
-    # Fast reject before any filesystem op: most opens (ZIP/TAR/gz/plain .7z) are
-    # not volume-shaped, so this saves a ``stat`` on every open_archive.
-    # ``_volume_scheme_and_base`` also classifies SFX first members
+    # A ``.zip`` pays one ``is_file`` here, for the ``.z01`` of a ``zip -s`` set.
+    spanned = _spanned_zip_set(path)
+    if spanned is not None:
+        return spanned
+    # Fast reject before any filesystem op: most opens (TAR/gz/plain .7z, and a ZIP past
+    # the probe above) are not volume-shaped, so this saves a ``stat`` on every
+    # open_archive. ``_volume_scheme_and_base`` also classifies SFX first members
     # (``*.exe.001``, ``*.part1.sfx``).
     classified = _volume_scheme_and_base(name)
     if classified is None:
@@ -646,6 +665,106 @@ def _discover_volume_siblings(path: Path) -> list[Path] | None:
     if any(volume.name.lower() == lower for volume in volumes):
         return volumes
     return None
+
+
+def _spanned_zip_set(path: Path) -> list[Path] | None:
+    """The parts of the ``zip -s`` spanned set ``path`` is a part of, in order, with
+    the ``.zip`` last; ``None`` when it is not one.
+
+    ``path`` is a part when it is a ``name.zip`` with ``name.z01`` beside it, or a
+    ``name.zNN`` with ``name.zip`` beside it, and that ``.zip``'s end record names
+    more than one disk. The record's disk count says which parts the set has, so a
+    missing one is ``TruncatedError`` naming it, before anything else is read. A
+    ``.zip`` whose record names one disk is an ordinary archive, read alone whatever
+    stray ``.z01`` sits beside it.
+
+    An ordinary ``.zip`` open pays one ``is_file`` here (two for an upper-case
+    ``.ZIP``), for ``name.z01``; only a hit reads the ``.zip``'s end record. The other
+    parts are probed by the names ``zip`` gives them, with the letter's case of the
+    first one found, so a set renamed part by part is not found. A ``.zip`` found
+    beside a named ``.zNN`` that is a symbolic link is refused before it is read, as
+    any discovered part is (:func:`discover_volume_siblings`).
+    """
+    name = path.name
+    parent = path.parent
+    if name.lower().endswith(".zip"):
+        base = name[:-4]
+        letters = ("z", "Z") if name.endswith(".ZIP") else ("z",)
+        letter = next(
+            (each for each in letters if (parent / f"{base}.{each}01").is_file()), None
+        )
+        if not base or letter is None or not path.is_file():
+            return None
+        last, part = path, None
+    else:
+        match = _SPANNED_ZIP_PART_RE.match(name)
+        if match is None:
+            return None
+        base, letter = match.group("base"), match.group("letter")
+        part = int(match.group("part"))
+        last = next(
+            (
+                candidate
+                for candidate in (parent / f"{base}.zip", parent / f"{base}.ZIP")
+                if candidate.is_file()
+            ),
+            None,
+        )
+        if part < 1 or last is None or not path.is_file():
+            return None
+        if last.is_symlink():
+            raise _discovered_link_error(last, path)
+    disks = _spanned_zip_disk_count(last)
+    if disks <= 1 or disks > _MAX_VOLUME_PART + 1:
+        return None
+    if part is not None and part >= disks:
+        # A stray ``.zNN`` past the parts the ``.zip`` names.
+        return None
+    parts: list[Path] = []
+    missing: list[str] = []
+    for number in range(1, disks):
+        candidate = parent / f"{base}.{letter}{number:02d}"
+        if candidate.is_file():
+            parts.append(candidate)
+            continue
+        missing.append(candidate.name)
+        if len(missing) == _MAX_ENUMERATED_PARTS:
+            if number < disks - 1:
+                missing.append("…")
+            break
+    if missing:
+        raise TruncatedError(
+            f"Incomplete spanned ZIP set for {display_path(last)}: its end record "
+            f"names {disks} parts; missing {', '.join(missing)}"
+        )
+    parts.append(last)
+    return parts
+
+
+def _spanned_zip_disk_count(path: Path) -> int:
+    """How many parts the end record of the ``.zip`` at ``path`` names; 1 when it
+    names one, or when the file cannot be read (the open that follows says why)."""
+    # Imported here: the parser is the ZIP backend's, and only a ``.zip`` with a
+    # ``.z01`` beside it gets this far.
+    from archivey.internal.backends.zip_parser import spanned_disk_count
+
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, io.SEEK_END)
+
+            def read_at(offset: int, n: int) -> bytes:
+                handle.seek(offset)
+                return handle.read(n)
+
+            return spanned_disk_count(read_at, size)
+    except OSError:
+        return 1
+
+
+def is_spanned_zip_set(volumes: Sequence[Path]) -> bool:
+    """Whether discovered ``volumes`` are a ``zip -s`` set (:func:`_spanned_zip_set`),
+    which ends in its ``.zip``; no RAR or numbered set does."""
+    return len(volumes) > 1 and volumes[-1].name.lower().endswith(".zip")
 
 
 def is_sfx_stub_name(name: str) -> bool:
@@ -1363,10 +1482,9 @@ def incomplete_lone_numbered_volume_error(
     Discovery returns ``None`` for a single matching file, so a lone
     ``name.7z.001`` / ``name.zip.001`` / ``name.exe.001`` would otherwise fall
     through to detection and surface as ``CorruptionError``. The missing parts
-    are a truncated set, not a format-specific spanned-ZIP refusal. Callers
-    skip this when ``format=`` names a format other than ZIP or 7z: that format
-    is honoured or refused as a conflict, not reported as a missing volume.
-    ``remote`` (a lone ``OpenFile``, which is never searched) adds
+    are a truncated set. Callers skip this when ``format=`` names a format other than
+    ZIP or 7z: that format is honoured or refused as a conflict, not reported as a
+    missing volume. ``remote`` (a lone ``OpenFile``, which is never searched) adds
     :data:`REMOTE_VOLUMES_AS_LIST`.
     """
     if not archive_name:
@@ -1635,6 +1753,15 @@ def _resolve_single(
             # RAR keeps the path of the first volume present instead: unrar walks the
             # set itself and needs the sibling files on disk.
             name = source_name(siblings[0])
+            if is_spanned_zip_set(siblings):
+                # Joined like numbered parts, under the name of the ``.zip``, which
+                # is the set's name to ``zip`` and ``unzip``.
+                name = source_name(siblings[-1])
+                return ResolvedSource(
+                    ArchiveSource.for_volumes(join_volumes(siblings), name=name),
+                    name,
+                    len(siblings),
+                )
             if _NUMBERED_VOLUME_RE.match(siblings[0].name):
                 return ResolvedSource(
                     ArchiveSource.for_volumes(join_volumes(siblings), name=name),
