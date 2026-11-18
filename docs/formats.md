@@ -475,28 +475,21 @@ Archivey also refuses folder trees that loop back on themselves, survives Rock R
 
 ## SquashFS
 
-- **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
-  file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
-  (`lz4`). LZO is decoded as a `.lzo` file is ([below](#single-file-compressors)): with
-  `compress-utils` when it is installed, and otherwise in Python.
-- **Listing:** from the image's inode and directory tables.
-- **Reading members:** direct. Small files share a fragment block, which is decoded once for
-  all of them.
-- **Member order:** depth first, each directory's entries by name, as the image stores them.
-  An image whose small files share fragment blocks in another order (one built from a tar
-  that is not in name order, for example) lists the files kept in fragments in fragment
-  order instead, after the directories and the other members and before the hard links, so
-  each block is decoded once.
-- **From a pipe:** no; the tables come after the file data, so the image needs a source
-  that can seek.
-- `ArchiveInfo.format_version` is `"4.0"`. `ArchiveInfo.extra["squashfs.compressor"]` names
-  the compressor and `extra["squashfs.block_size"]` the block size.
-- Files, directories, symlinks, hard links, sparse files, and devices, FIFOs and sockets
-  (`OTHER`) read. `member.is_sparse` is true for a file stored with holes. Extended
-  attributes are not read.
-- Big-endian images (SquashFS 3 and older) raise `UnsupportedFeatureError`.
-- SquashFS stores no checksums of its own. A damaged block is found when it does not decode
-  to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
+gzip, xz, LZMA and LZO images need nothing extra. Zstandard images need `[recommended]` before
+Python 3.14, and LZ4 images need `[recommended]`. Members are read directly, but the image needs a
+source that can seek, so not a pipe. `ArchiveInfo.extra` names the compressor
+(`"squashfs.compressor"`) and the block size (`"squashfs.block_size"`).
+
+- **Members:** files, folders, symlinks, hard links, sparse files (`is_sparse`), and devices,
+  FIFOs and sockets (`OTHER`). Extended attributes are not read.
+- **SquashFS 3 and older** raise `UnsupportedFeatureError`. Only version 4.0, written since 2009,
+  is read.
+- **Damage:** SquashFS stores no checksums of its own. A damaged block is caught when it doesn't
+  decode to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
+
+The [SquashFS
+handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md) covers
+the layout and how damaged images are handled.
 
 ## XAR
 
