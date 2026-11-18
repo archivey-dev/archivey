@@ -117,10 +117,9 @@ def lzo1x_decompressor(
     return package
 
 
-# Each zero extends a literal or match length by 255 bytes. A C-level search skips
-# long zero runs without a Python step per byte. The callers' zero guard avoids a
-# regex call for a nonzero extension. For one or two zeros, the regex call can cost
-# more than the Python loop.
+# Each zero extends a literal or match length by 255 bytes. Handling the first four
+# inline avoids a regex call on short extensions. The C-level search skips longer
+# runs without a Python step per byte. Nonzero extensions need no scan.
 _FIND_NONZERO = re.compile(rb"[^\x00]").search
 
 
@@ -153,8 +152,16 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
                 if t == 0:
                     zeros = ip
                     if ip < end and data[ip] == 0:
-                        found = _FIND_NONZERO(data, ip)
-                        ip = found.start() if found is not None else end
+                        ip += 1
+                        if ip < end and data[ip] == 0:
+                            ip += 1
+                            if ip < end and data[ip] == 0:
+                                ip += 1
+                                if ip < end and data[ip] == 0:
+                                    ip += 1
+                                    if ip < end and data[ip] == 0:
+                                        found = _FIND_NONZERO(data, ip)
+                                        ip = found.start() if found is not None else end
                     if ip >= end:
                         raise LzoError("the input ends inside an instruction")
                     t = (ip - zeros) * 255 + 15 + data[ip]
@@ -197,8 +204,16 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
             if length == 0:
                 zeros = ip
                 if ip < end and data[ip] == 0:
-                    found = _FIND_NONZERO(data, ip)
-                    ip = found.start() if found is not None else end
+                    ip += 1
+                    if ip < end and data[ip] == 0:
+                        ip += 1
+                        if ip < end and data[ip] == 0:
+                            ip += 1
+                            if ip < end and data[ip] == 0:
+                                ip += 1
+                                if ip < end and data[ip] == 0:
+                                    found = _FIND_NONZERO(data, ip)
+                                    ip = found.start() if found is not None else end
                 if ip >= end:
                     raise LzoError("the input ends inside an instruction")
                 length = (ip - zeros) * 255 + base + data[ip]
