@@ -30,8 +30,12 @@ again in Python, which decides (:func:`checked_by_python`). So the installed pac
 change the speed, never which files read or what they read to.
 
 **CRC-32C.** The standard library has no CRC-32C (``zlib.crc32`` is a different
-polynomial). ``google-crc32c``, else ``crc32c``, is used when installed; otherwise a
-table-driven Python CRC runs at about 21 MB/s, which then bounds the whole decode.
+polynomial). ``google-crc32c`` (only with its C extension), else ``crc32c``, is used
+when installed; otherwise a table-driven Python CRC runs at about 20 MB/s.
+
+**Speed.** With a native decoder and the Python CRC, the CRC bounds the decode. With
+nothing installed, the Python decoder costs about as much again as the Python CRC, and
+a read runs at about 10 MB/s; with native packages for both, at hundreds of MB/s.
 """
 
 from __future__ import annotations
@@ -99,8 +103,7 @@ def _halfword_tables() -> tuple[array[int], ...]:
     """Four 65,536-entry tables, one per 16-bit half-word of an 8-byte step: each
     combines two of the byte tables. 1 MiB and about 25 ms to build, so built on the
     first Python CRC rather than at import: a process with a native CRC package never
-    needs
-    them. Kept for the process, shared by every decoder."""
+    needs them. Kept for the process, shared by every decoder."""
     return tuple(
         array("I", (_T[2 * i + 1][x & 0xFF] ^ _T[2 * i][x >> 8] for x in range(65536)))
         for i in range(4)
@@ -132,6 +135,16 @@ _NATIVE_CRC = (
 )
 
 
+def _is_native(library: OptionalLibrary, module: ModuleType) -> bool:
+    """Whether ``module`` computes the CRC in native code. google-crc32c imports
+    without its C extension when that fails to load, falls back to its own Python CRC
+    (about 3 times slower than :func:`crc32c_python`) and says so in
+    ``implementation``."""
+    if library is OptionalLibrary.GOOGLE_CRC32C:
+        return getattr(module, "implementation", None) == "c"
+    return True
+
+
 def crc32c_function(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     natives: Natives = IN_PROCESS,
@@ -150,7 +163,7 @@ def crc32c_function(
         if library in excluded:
             continue
         module = deps.snappy_libraries[library].load()
-        if module is not None:
+        if module is not None and _is_native(library, module):
             if usage is not None:
                 usage.note_backend("library", library.value, "snappy")
             return getattr(module, function)

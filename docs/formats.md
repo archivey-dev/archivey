@@ -36,9 +36,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   3.14. Listing: from its index; from a pipe, header by header. Members: direct. Readable from a pipe.
 - **TAR:** core. Listing: header by header. Members: direct. Readable from a pipe.
 - **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
-  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`, `.tar.bz3`): needs what its compressor needs
-  (below).
-  Listing: needs decompression. Members: solid. Readable from a pipe.
+  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`, `.tar.bz3`, `.tar.sz`): needs what its
+  compressor needs (below). Listing: needs decompression. Members: solid. Readable from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
   ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
   before Python 3.14. Listing: from its index. Members: solid, unless written without solid
@@ -1661,9 +1660,10 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   `CorruptionError`.
 - **Snappy** (`.sz`) is Snappy's framing format, which `snzip`, python-snappy and the Snappy
   libraries write: chunks of at most 64 KiB, each with a CRC-32C of its decoded data, checked
-  before the data is returned. archivey decodes it in Python, at about 20 MB/s. When `cramjam` or
-  `compress-utils` is installed it decodes the raw blocks, and `google-crc32c` or `crc32c`
-  computes the CRC; with both kinds installed a read reaches several hundred MB/s. None of them
+  before the data is returned. With no other package installed, archivey decodes it and checks
+  the CRC in Python, at about 10 MB/s. When `cramjam` or `compress-utils` is installed it decodes
+  the raw blocks, and `google-crc32c` or `crc32c` computes the CRC; either kind alone reaches
+  about 20 to 25 MB/s, and both kinds together several hundred MB/s. None of them
   is in an extra. Which packages are installed changes only the speed: a block a package refuses
   is decoded again in Python, which decides. With `process_isolation=NATIVE_DECODERS` the
   Python decoder and CRC always run. Nothing marks the end of the file, so a file cut between two

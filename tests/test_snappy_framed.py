@@ -1,8 +1,11 @@
-"""The experimental Snappy framed (``.sz``) codec plugin, with each raw-block backend.
+"""The built-in Snappy framed (``.sz``) codec, with each raw-block backend.
 
-The framing is archivey's own (``snappy_framed``); these tests check it the same way
-for both backends, and that the backends agree on the raw blocks the study kept as
-repros (``scripts/investigations/snappy_compress_utils/repros``).
+The framing is archivey's own (``snappy_framed``). These tests check it the same way for
+the three raw-block backends (compress-utils, cramjam and the pure-Python decoder), the
+selection between them, and that they agree on the raw blocks the study kept as repros
+(``scripts/investigations/snappy_compress_utils/repros``). Compressed test data comes
+from a small encoder below, so the Python backend's cases need no package; only the
+cases named after a package's own writer need that package.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import io
 import os
 import random
 import tarfile
+import types
 from collections.abc import Callable
 from pathlib import Path
 
@@ -90,9 +94,62 @@ def selected(backend: str, monkeypatch: pytest.MonkeyPatch) -> str:
 # --- building streams -------------------------------------------------------------------
 
 
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append(value & 0x7F | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _literal(data: bytes) -> bytes:
+    n = len(data) - 1
+    if n < 60:
+        return bytes([n << 2]) + data
+    width = (n.bit_length() + 7) // 8
+    return bytes([(59 + width) << 2]) + n.to_bytes(width, "little") + data
+
+
 def _raw(data: bytes) -> bytes:
-    cramjam = importorskip("cramjam")
-    return bytes(cramjam.snappy.compress_raw(data))
+    """A raw Snappy block: greedy 4-byte matches as 2-byte-offset copies of 4 to 64
+    bytes, the rest as literals. A run gives a copy whose offset is shorter than its
+    length, which the decoder must expand byte by byte."""
+    out = bytearray(_varint(len(data)))
+    last: dict[bytes, int] = {}
+    pos = start = 0
+    while pos + 4 <= len(data):
+        key = data[pos : pos + 4]
+        candidate = last.get(key)
+        last[key] = pos
+        if candidate is None or pos - candidate > 0xFFFF:
+            pos += 1
+            continue
+        length = 4
+        while (
+            length < 64
+            and pos + length < len(data)
+            and data[candidate + length] == data[pos + length]
+        ):
+            length += 1
+        if start < pos:
+            out += _literal(data[start:pos])
+        out += bytes([(length - 1) << 2 | 2]) + (pos - candidate).to_bytes(2, "little")
+        pos += length
+        start = pos
+    if start < len(data):
+        out += _literal(data[start:])
+    return bytes(out)
+
+
+def written_frame(data: bytes) -> bytes:
+    """A ``.sz`` file of compressed chunks written by :func:`_raw`."""
+    return _frame(
+        *(
+            _data_chunk(data[i : i + MAX_CHUNK_DATA])
+            for i in range(0, len(data), MAX_CHUNK_DATA)
+        )
+    )
 
 
 def _chunk(kind: int, body: bytes) -> bytes:
@@ -183,6 +240,38 @@ def test_a_seekable_member_seeks_back_and_forward() -> None:
         assert stream.read(5) == data[10:15]
 
 
+@pytest.mark.parametrize(
+    ("data", "repetitive"),
+    [
+        (b"", False),
+        (b"a", False),
+        (os.urandom(70), False),
+        (_sample(MAX_CHUNK_DATA), False),
+        (bytes(MAX_CHUNK_DATA), True),
+        (b"ab" * 30_000, True),
+        (bytes(range(256)) * 250, True),
+    ],
+    ids=["empty", "one", "random", "text", "zeros", "pairs", "ramp"],
+)
+def test_the_test_encoder_round_trips(
+    decode: Callable[[bytes, int], bytes], data: bytes, repetitive: bool
+) -> None:
+    block = _raw(data)
+    assert decode_raw_chunk(decode, block) == data
+    if repetitive:
+        # Copies, and for the runs overlapping ones, carried most of the block.
+        assert len(block) < len(data) // 10
+
+
+@pytest.mark.parametrize("size", [1, 1000, MAX_CHUNK_DATA, 5 * MAX_CHUNK_DATA + 17])
+def test_a_written_file_reads_back(selected: str, size: int) -> None:
+    data = _sample(size)
+    with open_archive(io.BytesIO(written_frame(data))) as reader:
+        assert reader.format == ArchiveFormat.SNAPPY
+        (member,) = reader.members()
+        assert reader.read(member) == data
+
+
 # cramjam writes nothing at all, not even an identifier, for empty input.
 @pytest.mark.parametrize("size", [1, 1000, MAX_CHUNK_DATA, 5 * MAX_CHUNK_DATA + 17])
 def test_a_cramjam_written_file_reads_back(selected: str, size: int) -> None:
@@ -196,7 +285,6 @@ def test_a_cramjam_written_file_reads_back(selected: str, size: int) -> None:
 
 
 def test_a_tar_sz_lists_its_members(selected: str, tmp_path: Path) -> None:
-    cramjam = importorskip("cramjam")
     raw = io.BytesIO()
     files = {"a.txt": _sample(100_000), "b/c.bin": os.urandom(70_000)}
     with tarfile.open(fileobj=raw, mode="w") as tf:
@@ -205,7 +293,7 @@ def test_a_tar_sz_lists_its_members(selected: str, tmp_path: Path) -> None:
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
     path = tmp_path / "x.tar.sz"
-    path.write_bytes(bytes(cramjam.snappy.compress(raw.getvalue())))
+    path.write_bytes(written_frame(raw.getvalue()))
     with open_archive(path) as reader:
         assert {m.name: reader.read(m) for m in reader.members()} == files
 
@@ -546,3 +634,21 @@ def test_each_native_crc32c_matches_python(
     for size in (0, 1, 9, 4096, 65536):
         data = os.urandom(size)
         assert native(data) == crc32c_python(data)
+
+
+def test_google_crc32c_without_its_c_extension_is_not_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # google-crc32c imports without its C extension and then runs its own Python CRC,
+    # slower than archivey's: that module must fall through to the next choice.
+    def value(data: bytes) -> int:
+        raise AssertionError("google-crc32c's Python fallback was used")
+
+    fallback = types.SimpleNamespace(implementation="python", value=value)
+    monkeypatch.setitem(
+        deps.snappy_libraries,
+        OptionalLibrary.GOOGLE_CRC32C,
+        types.SimpleNamespace(load=lambda: fallback),
+    )
+    _hide(monkeypatch, OptionalLibrary.CRC32C)
+    assert crc32c_function() is crc32c_python
