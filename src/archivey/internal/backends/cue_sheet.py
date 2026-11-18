@@ -710,14 +710,18 @@ def _hidden_session(
     """A data track after the chosen one whose sector addresses start a later session
     than the sheet shows, with a volume the sheet-less reading lists.
 
-    The sheet may place the track in the chosen session (a sheet with no ``REM
-    SESSION`` lines), while its sector addresses jump past the track before it by a
-    session gap the sheet's addresses lack. Read without the sheet, the image is
-    placed by those addresses (``cd_sessions``), and that reading lists the session
-    when :func:`find_volume` finds a volume in it; the same check runs here, on the
-    tracks placed by their addresses, so the report holds exactly when the two
-    readings differ. Returns the track's number and the address of that volume's
-    primary descriptor. Two header reads per data track, and the volume search for a
+    The sheet may place the track in the chosen session (a sheet with no ``REM SESSION``
+    lines), while its sector addresses jump past the track before it by a session gap
+    the sheet's addresses lack. Read without the sheet, the image is placed by those
+    addresses (``cd_sessions``), and that reading lists the session when
+    :func:`find_volume` finds a volume in it; the same check runs here, on the tracks
+    placed by their addresses, so a report means the two readings differ. The converse
+    does not hold: a jump inside one sheet track (a single ``TRACK`` line over a
+    two-session ``.bin``) is not seen, since one header is read per track, and the
+    sheet-less walk can give up where this check does not (addresses that go backwards
+    elsewhere, more than 256 runs). Returns the track's number and the address of that
+    volume's primary descriptor. Two header reads per data track, and the volume search
+    for a
     track that jumps; a cooked track has no headers and is skipped."""
 
     def header_offset(extent: _Extent) -> int | None:
