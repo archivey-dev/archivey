@@ -40,10 +40,15 @@ stride slice and translated to ``0x01`` for a possible JAL or AUIPC, and
 
 from __future__ import annotations
 
+import struct
+
 # liblzma's LZMA_FILTER_RISCV and the 7z method id are the same number.
 FILTER_RISCV = 0x0B
 
 _M32 = 0xFFFFFFFF
+_READ_LE32 = struct.Struct("<I").unpack_from
+_READ_BE32 = struct.Struct(">I").unpack_from
+_WRITE_PAIR = struct.Struct("<II").pack_into
 # 0x01 for a first byte that may start a converted instruction: 0xEF (JAL) or one
 # whose low 7 bits are 0x17 (AUIPC).
 _CANDIDATES = bytes(1 if b == 0xEF or (b & 0x7F) == 0x17 else 0 for b in range(256))
@@ -88,11 +93,11 @@ def riscv_decode(data: bytes, pc: int) -> bytes:
             buf[i + 3] = ((addr >> 4) & 0x7F) | ((addr >> 13) & 0x80)
             resume = i + 4
         else:
-            inst = int.from_bytes(buf[i : i + 4], "little")
+            inst = _READ_LE32(buf, i)[0]
             if inst & 0xE80:
                 # AUIPC whose rd is not x0 or x2: a pair the encoder left as it was
                 # unless the next word uses rd with a 12-bit immediate.
-                inst2 = int.from_bytes(buf[i + 4 : i + 8], "little")
+                inst2 = _READ_LE32(buf, i + 4)[0]
                 if ((inst << 8) ^ (inst2 - 3)) & 0xF8003:
                     resume = i + 6
                     k = find(1, resume >> 1)
@@ -109,11 +114,10 @@ def riscv_decode(data: bytes, pc: int) -> bytes:
                     resume = i + 4
                     k = find(1, resume >> 1)
                     continue
-                addr = (int.from_bytes(buf[i + 4 : i + 8], "big") - (pc + i)) & _M32
+                addr = (_READ_BE32(buf, i + 4)[0] - (pc + i)) & _M32
                 inst2 = ((inst >> 12) | (addr << 20)) & _M32
                 inst = 0x17 | (rs1 << 7) | ((addr + 0x800) & 0xFFFFF000)
-            buf[i : i + 4] = inst.to_bytes(4, "little")
-            buf[i + 4 : i + 8] = inst2.to_bytes(4, "little")
+            _WRITE_PAIR(buf, i, inst, inst2)
             resume = i + 8
         k = find(1, resume >> 1)
     return bytes(buf[: max(resume, (last // 2 + 1) * 2)])
