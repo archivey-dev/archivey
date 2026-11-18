@@ -1527,11 +1527,15 @@ class _ParkOnClose(io.RawIOBase):
     """A reopened inner member's data (``_reopen_nested``): once closed, its inner
     archive's walk is free for the next member."""
 
+    # What close() reads, set before __init__ runs.
+    _stream: io.RawIOBase | BinaryIO | None = None
+    _park: Callable[[], None] | None = None
+
     def __init__(
         self, stream: io.RawIOBase | BinaryIO, park: Callable[[], None]
     ) -> None:
         self._stream = stream
-        self._park: Callable[[], None] | None = park
+        self._park = park
 
     @override
     def readable(self) -> bool:
@@ -1539,6 +1543,7 @@ class _ParkOnClose(io.RawIOBase):
 
     @override
     def readinto(self, buffer: Any) -> int:
+        assert self._stream is not None
         data = self._stream.read(len(buffer)) or b""
         buffer[: len(data)] = data
         return len(data)
@@ -1548,7 +1553,8 @@ class _ParkOnClose(io.RawIOBase):
         if self.closed:
             return
         try:
-            self._stream.close()
+            if self._stream is not None:
+                self._stream.close()
         finally:
             super().close()
             park, self._park = self._park, None
