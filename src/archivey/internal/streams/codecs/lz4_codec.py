@@ -24,7 +24,9 @@ from archivey.internal.streams.codecs.base import (
 )
 from archivey.internal.streams.codecs.framed_decoder import (
     FrameCheck,
+    StreamIndex,
     StreamStart,
+    no_file_index,
     stream_magic,
 )
 from archivey.internal.streams.codecs.lz4_legacy import LEGACY_MAGIC, Lz4Decompressor
@@ -72,6 +74,11 @@ def _lz4_frame_has_checksum(head: bytes) -> bool | None:
 
 
 _LZ4_FRAME_CHECK = FrameCheck(head=5, judge=_lz4_frame_has_checksum)
+# A further stream is a point when it is a frame; a legacy stream's first block is one
+# already, and a skippable frame has no output.
+_LZ4_INDEX = StreamIndex(
+    resumes_at=lambda data: data.startswith(_LZ4_FRAME_MAGIC), build=no_file_index
+)
 
 
 class Lz4Codec(StreamCodec):
@@ -94,6 +101,20 @@ class Lz4Codec(StreamCodec):
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         # A frame or a legacy stream, whichever the data starts with.
         return Lz4Decompressor(config.natives)
+
+    @override
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
+        # Declared seek demand or restart points only, as bzip2 and zstd: every block
+        # of a legacy stream that a decode passes is a seek point
+        # (``Lz4LegacyDecompressor.take_block_starts``), and so is the start of every
+        # further frame. A frame's blocks are not: a decode that starts inside a frame
+        # could not check its xxHash32 checksums.
+        if not config.records_restart_points:
+            return None
+        return _LZ4_INDEX
 
     @override
     def frame_check(self) -> FrameCheck:
