@@ -42,7 +42,7 @@ from archivey.internal.backends.udf import (
     udf_timestamp,
 )
 from archivey.types import ArchiveFormat, MemberType
-from tests.conftest import requires, requires_binary
+from tests.conftest import requires, requires_binary, run_7z
 from tests.udf_builder import BLOCK, WHEN, Node, build_udf, directory, retag
 
 pytestmark = requires("pycdlib")
@@ -557,8 +557,7 @@ def test_a_virtual_allocation_table_is_unsupported(tmp_path: Path) -> None:
 
 def test_7z_lists_the_builder_images_the_same_way(tmp_path: Path) -> None:
     """The builder's images are what 7-Zip reads too, for the shapes it supports."""
-    seven = shutil.which("7z")
-    if seven is None:
+    if shutil.which("7z") is None:
         pytest.skip("requires 7z")
     image = build_udf(
         directory("", directory("d", Node("f", b"x")), Node("Ünï ✓", b"y")),
@@ -566,9 +565,7 @@ def test_7z_lists_the_builder_images_the_same_way(tmp_path: Path) -> None:
     )
     path = tmp_path / "disc.udf"
     path.write_bytes(image)
-    result = subprocess.run(
-        [seven, "l", "-tudf", "-slt", str(path)], check=True, capture_output=True
-    )
+    result = run_7z(["l", "-tudf", "-slt", str(path)], check=True)
     paths = sorted(
         line.removeprefix("Path = ")
         for line in result.stdout.decode().splitlines()
