@@ -640,8 +640,11 @@ names only its own layer.
 The system SHALL read Snappy's framing format (`.sz`, stream identifier
 `ff 06 00 00 73 4e 61 50 70 59`) with no third-party package, and SHALL use
 `compress-utils` or `cramjam` for raw blocks and `google-crc32c` or `crc32c` for the
-CRC-32C when they are installed, not excluded by the format policy, and
-`process_isolation` is not `NATIVE_DECODERS`. Which of them are installed SHALL NOT
+CRC-32C when they are installed and not excluded by the format policy. Under
+`process_isolation=NATIVE_DECODERS` the packages SHALL run in a child process held for
+the stream, one round trip per data chunk for its decode and its CRC together, and the
+framing and every check SHALL stay in the caller's process; a package the child cannot
+import SHALL be skipped. Which of them are installed SHALL NOT
 change which streams are read or the bytes they read to: a raw block a package refuses,
 or decodes to a length other than the one it declares, SHALL be decoded again in Python,
 whose result SHALL be used.

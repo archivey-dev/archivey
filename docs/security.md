@@ -207,8 +207,9 @@ costs only the member being read:
   application, a PPMd member raises `ResourceUnavailableError`, and rapidgzip gives way to the standard
   library's decoder with one warning; a `.bz3` file raises `ResourceUnavailableError` too.
 - **`ProcessIsolation.NATIVE_DECODERS`** also isolates zlib, bz2, lzma, zstd, lz4, brotli,
-  inflate64 (Deflate64) and python-lzo, detection's trial decodes included. Without python-lzo,
-  archivey decodes LZO in Python, in your process. Reads take longer. Measured on one
+  inflate64 (Deflate64), python-lzo, and Snappy's cramjam, compress-utils, google-crc32c and
+  crc32c, detection's trial decodes included. Without python-lzo, archivey decodes LZO in Python,
+  in your process, and Snappy likewise without its packages. Reads take longer. Measured on one
   Linux machine, a single stream took about 1.05 to 1.5 times as long for bzip2, 1.1 to 1.6 times
   for xz, 1.4 to 2 times for gzip and deflate, and 2 to 6 times for zstd, mostly copying data
   between processes. Each member with a decoder of its own also costs about 0.6 to 1 ms (1.4 to
