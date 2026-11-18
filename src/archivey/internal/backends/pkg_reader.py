@@ -13,7 +13,8 @@ and ``Content`` member is listed as the files its CPIO holds, under a folder of 
 member's name (``app.pkg/Payload/Applications/App.app/...``), and every other member
 as it is (``Distribution``, ``PackageInfo``, ``Bom``). Opening the file with
 ``format=ArchiveFormat.XAR`` gives the XAR members instead. A payload that is not one
-of those CPIO forms is listed as it is.
+of those CPIO forms is listed as it is: one whose first bytes are no gzip, pbzx or
+CPIO magic, or whose first CPIO header cannot be read.
 
 The payloads are read through :meth:`ReaderContext.open_nested`, so listing decodes
 each one, and the XAR checksum of a payload is checked as the listing reads it. A
@@ -28,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import itertools
 import re
 import zlib
 from collections.abc import Iterator
@@ -206,7 +208,15 @@ class PkgReader(XarReader):
             folder = payload.name
             folder_key = _key(extracted_segments(folder))
             inner_location = _Inner(payload, location, fmt)
-            for span in self._context.open_nested(data, fmt):
+            spans = iter(self._context.open_nested(data, fmt))
+            try:
+                first = next(spans, None)
+            except CorruptionError:
+                # It starts like a CPIO but none follows: the file it is. A payload
+                # that fails after its first member has listed files, and raises.
+                yield record
+                return
+            for span in itertools.chain(() if first is None else (first,), spans):
                 member = span.member
                 inner = member.name
                 member.name = folder if inner in (".", "./") else f"{folder}/{inner}"

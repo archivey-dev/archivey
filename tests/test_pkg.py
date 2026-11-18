@@ -179,6 +179,29 @@ def test_a_payload_that_holds_no_cpio_is_listed_as_it_is() -> None:
         assert archive.read("Payload") == b"something else"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        gzip.compress(b"hello world, not a cpio" * 10),
+        make_pbzx(b"not cpio at all" * 10),
+        b"070707 but not a header",
+    ],
+    ids=["gzip", "pbzx", "cpio-magic"],
+)
+def test_a_payload_that_starts_like_a_cpio_but_holds_none_is_listed_as_it_is(
+    payload: bytes,
+) -> None:
+    """Its first bytes match, but no CPIO header follows: the payload is listed as
+    the file it is, and the other members stay readable."""
+    files = _component()
+    files[2] = XarFile("Payload", payload, encoding="none")
+    with open_archive(io.BytesIO(write_xar(files))) as archive:
+        assert archive.format == ArchiveFormat.PKG
+        assert "Payload" in [m.name for m in archive.members()]
+        assert archive.read("Payload") == payload
+        assert archive.read("Bom")
+
+
 def test_a_payload_that_fails_its_xar_checksum_is_refused() -> None:
     """A byte of a file's data changed in a stored chunk: the CPIO still reads, and
     the payload's XAR checksum catches it."""
