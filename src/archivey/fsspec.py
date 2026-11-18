@@ -68,9 +68,14 @@ class _Refusal:
 
 
 _LOOP = _Refusal("it resolves through a symlink loop")
-# A walk through a symlink whose target starts at ``/`` (kept as stored under
-# TRUSTED). The tree has no destination path, so it cannot tell a target that leads
-# back into the destination, which extraction follows, from one that leads out.
+# Every symlink in the tree is one the archive made, and extraction never writes a
+# member through a symlink the same run created.
+_THROUGH_RUN_LINK = _Refusal("a parent of it is a symlink this extraction created")
+# A symlink's target that runs through a symlink whose target starts at ``/`` (kept
+# as stored under TRUSTED). The tree has no destination path, so it cannot tell
+# whether that leads back into the destination, where extraction writes the first
+# symlink, or out, where extraction refuses it. (A member's own path under such a
+# link is ``_THROUGH_RUN_LINK``, as under any link of the archive.)
 _ROOTED = _Refusal(
     "it resolves through a symlink whose target starts at /, which the tree does not "
     "follow; extraction writes it only if that target leads back into the destination",
@@ -91,11 +96,9 @@ class _Node:
         "dependents",
         "entry",
         "held",
-        "held_final",
         "key",
         "kind",
         "leads_to",
-        "leads_to_final",
         "parent",
         "part",
         "read_as",
@@ -119,12 +122,10 @@ class _Node:
         # A directory's collision key, as the start of a longer path's key.
         self.key: _KeyNode | None = None
         # A link's walk, kept: the node its target leads to and the links followed
-        # on the way, as a parent and as the end of a path (``_Tree._follow``).
+        # on the way (``_Tree._follow``).
         self.leads_to: tuple[_Node, int] | None = None
-        self.leads_to_final: tuple[_Node, int] | None = None
         # Any other walk of the link, or its refusal, with the hops before it.
         self.held: tuple[int, _Walk | _Refusal] | None = None
-        self.held_final: tuple[int, _Walk | _Refusal] | None = None
         # The links whose held walk followed this link's held walk.
         self.dependents: list[_Node] | None = None
 
@@ -168,9 +169,11 @@ class _Tree:
     Paths are exact, as on a case-sensitive disk: a directory, a parent and a link's
     target are found by name. Only files and links also claim the policy's
     ``collision_key``, as extraction's collision map does, and the first to claim a
-    key keeps it. A path is resolved as the destination resolves it once the members
-    before it are written: a component that is a symlink the archive made is
-    followed, so ``l/y`` under ``l -> d`` is written as ``d/y``.
+    key keeps it. A member whose parent path has a symlink in it is refused, since
+    every symlink in the tree is one the archive made, and extraction never writes
+    through a symlink the same run created. A link's target is resolved as the
+    destination resolves it once the members before it are written: a symlink on the
+    way is followed.
 
     No path string is built while the tree is built or resolved: a resolve step moves
     to a child or to a parent node, so its cost does not grow with the depth.
@@ -241,7 +244,7 @@ class _Tree:
             problem = self._resolve(parent, target, final=True)
             if isinstance(problem, _Refusal):
                 for kept in self._kept_final:
-                    kept.leads_to_final = None
+                    kept.leads_to = None
                     self._drop(kept)
                 self._remove(node)
                 if problem is not _LOOP:
@@ -332,14 +335,7 @@ class _Tree:
         if link.target is None:
             return None  # a target from the filesystem root, kept as stored
         parent = cast("_Node", link.parent)
-        walked = self._walk(
-            parent,
-            link.target,
-            final=True,
-            from_link=True,
-            hops=0,
-            deps=_Deps(),
-        )
+        walked = self._walk(parent, link.target, final=True, hops=0, deps=_Deps())
         return None if isinstance(walked, _Refusal) else (walked.node, walked.missing)
 
     def _resolve(
@@ -352,9 +348,7 @@ class _Tree:
         path under it. With ``final``, ``name`` is a link's target, which may lead
         anywhere inside the destination: only a loop and a way out are refused.
         """
-        walked = self._walk(
-            start, name.split("/"), final=final, from_link=False, hops=0, deps=_Deps()
-        )
+        walked = self._walk(start, name.split("/"), final=final, hops=0, deps=_Deps())
         if isinstance(walked, _Refusal):
             return walked
         return walked.node, walked.missing
@@ -365,13 +359,13 @@ class _Tree:
         parts: list[str],
         *,
         final: bool,
-        from_link: bool,
         hops: int,
         deps: _Deps,
     ) -> _Walk | _Refusal:
         """``_resolve``'s walk of the components ``parts`` from ``start``, with
-        ``hops`` links followed before it. ``from_link`` says the components are a
-        link's target. ``deps`` collects what the result depends on."""
+        ``hops`` links followed before it. Without ``final`` the components are a
+        member's parent, which no link may be part of. ``deps`` collects what the
+        result depends on."""
         node = start
         missing: list[str] = []
         for part in parts:
@@ -389,29 +383,23 @@ class _Tree:
                 continue
             if missing:
                 # Under a missing directory: nothing there to look up.
-                if from_link and not final:
-                    return _Refusal(
-                        "a parent of it is a symlink that leads to no directory"
-                    )
                 missing.append(part)
                 continue
             child = node.child(part)
             if child is None:
                 deps.absent.append((node, part))
-                if from_link and not final:
-                    return _Refusal(
-                        "a parent of it is a symlink that leads to no directory"
-                    )
                 missing.append(part)
                 continue
             if child.kind == "link":
+                if not final:
+                    return _THROUGH_RUN_LINK
                 if child.target is None:
                     # A target from the filesystem root, kept as stored under TRUSTED.
                     return _ROOTED
                 # The target is relative to the link's parent, which ``node`` is.
                 # ``check_universal`` refuses an absolute target under every policy
                 # but TRUSTED, and the tree never walks one (above).
-                followed = self._follow(child, node, final=final, hops=hops, deps=deps)
+                followed = self._follow(child, node, hops=hops, deps=deps)
                 if isinstance(followed, _Refusal):
                     return followed
                 node, missing = followed.node, list(followed.missing)
@@ -423,7 +411,7 @@ class _Tree:
         return _Walk(node, missing, hops)
 
     def _follow(
-        self, link: _Node, parent: _Node, *, final: bool, hops: int, deps: _Deps
+        self, link: _Node, parent: _Node, *, hops: int, deps: _Deps
     ) -> _Walk | _Refusal:
         """Follow ``link``, in ``parent``, as one more hop after ``hops``.
 
@@ -437,44 +425,32 @@ class _Tree:
           followed whose walk is held too. Adding a node of such a name drops it
           (``_add``), and dropping a link's walk drops the walks that followed it.
 
-        A walk with ``final`` can run through a link and parents that ``place`` then
-        removes, so ``place`` drops what was kept then (``_kept_final``). A walk
-        without ``final`` runs only before a member's nodes are added.
+        Only a walk with ``final`` follows a link. It can run through a link and
+        parents that ``place`` then removes, so ``place`` drops what was kept then
+        (``_kept_final``).
         """
         hops += 1
         if hops > _MAX_SYMLINK_HOPS:
             return _LOOP
-        kept = link.leads_to_final if final else link.leads_to
+        kept = link.leads_to
         if kept is not None:
             node, used = kept
             if hops + used > _MAX_SYMLINK_HOPS:
                 return _LOOP  # where the walk itself would have stopped
             return _Walk(node, [], hops + used)
-        held = link.held_final if final else link.held
+        held = link.held
         if held is not None and held[0] == hops:
             deps.links.append(link)
             return held[1]
         inner = _Deps()
         walked = self._walk(
-            parent,
-            cast("list[str]", link.target),
-            final=final,
-            from_link=True,
-            hops=hops,
-            deps=inner,
+            parent, cast("list[str]", link.target), final=True, hops=hops, deps=inner
         )
-        if final:
-            self._kept_final.append(link)
+        self._kept_final.append(link)
         if isinstance(walked, _Walk) and not inner.absent and not inner.links:
-            if final:
-                link.leads_to_final = (walked.node, walked.hops - hops)
-            else:
-                link.leads_to = (walked.node, walked.hops - hops)
+            link.leads_to = (walked.node, walked.hops - hops)
             return walked
-        if final:
-            link.held_final = (hops, walked)
-        else:
-            link.held = (hops, walked)
+        link.held = (hops, walked)
         for absent in inner.absent:
             self._watch.setdefault(absent, []).append(link)
         for followed in inner.links:
@@ -489,7 +465,7 @@ class _Tree:
         stack = [link]
         while stack:
             item = stack.pop()
-            item.held = item.held_final = None
+            item.held = None
             stack.extend(item.dependents or ())
             item.dependents = None
 
@@ -537,8 +513,8 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
 
     **The tree is what extraction writes.** Each path is the relative path
     ``reader.extract_all(dest, policy=policy)`` gives the member, into an empty
-    ``dest``, and the tree leaves out what that extraction would not write: a member
-    the policy refuses (a ``..`` segment, an absolute name under ``STRICT``, a name the
+    ``dest``, and the tree leaves out what that extraction would not write: a member the
+    policy refuses (a ``..`` segment, an absolute name under ``STRICT``, a name the
     policy will not write, a symlink whose target leaves the destination, except one
     whose target starts at ``/`` under ``TRUSTED``, which is listed as ``"other"``), a
     hard link to a refused member, a member whose name collides with one before it (the
@@ -549,22 +525,22 @@ class ArchiveyFileSystem(AbstractArchiveFileSystem):
     is a ``MEMBER_PATH_REFUSED`` diagnostic on ``fs.reader.diagnostics``. A duplicate
     name shows its current entry, unless a member between the two copies took the name
     first (see the earlier copy under "Not modelled" below). A member under one of the
-    archive's own symlinks is listed where extraction writes it, through the link:
-    ``l/y`` under ``l -> d`` is ``d/y``, and a path under a link that leads to no
-    directory is refused. Paths are compared as on a case-sensitive disk; only files and
-    links collide by the policy's key. Not modelled: what a non-empty destination
-    decides (``overwrite=``, existing files), what the destination's file system cannot
-    hold (a reserved name under ``TRUSTED`` on Windows, case folded by the disk, a link
-    Windows keeps because it collapses ``..`` before following links), where a symlink
-    whose target starts at ``/`` leads (the tree has no destination path, so it follows
-    no such link and leaves out a member whose path or target runs through one, even
-    when extraction would follow it back into the destination), a link that a later
-    member makes lead out, the earlier copy of a duplicate name (extraction writes it
-    until the later copy replaces it, and a member between the two copies can meet it on
-    disk; the tree places that member as if the earlier copy were not there, so it can
-    list that member where extraction refuses it, and leave out the later copy), and
-    ``filter=``. A hard link to a symlink is that symlink, with its target read from the
-    hard link's own directory, as extraction (and GNU tar) write it.
+    archive's own symlinks is left out too, as extraction refuses to write through a
+    symlink it created: ``l/y`` under ``l -> d``. Paths are compared as on a
+    case-sensitive disk; only files and links collide by the policy's key. Not modelled:
+    what a non-empty destination decides (``overwrite=``, existing files), what the
+    destination's file system cannot hold (a reserved name under ``TRUSTED`` on Windows,
+    case folded by the disk, a link Windows keeps because it collapses ``..`` before
+    following links), where a symlink whose target starts at ``/`` leads (the tree has
+    no destination path, so it follows no such link and leaves out a symlink whose
+    target runs through one, even when extraction would follow it back into the
+    destination), a link that a later member makes lead out, the earlier copy of a
+    duplicate name (extraction writes it until the later copy replaces it, and a member
+    between the two copies can meet it on disk; the tree places that member as if the
+    earlier copy were not there, so it can list that member where extraction refuses it,
+    and leave out the later copy), and ``filter=``. A hard link to a symlink is that
+    symlink, with its target read from the hard link's own directory, as extraction (and
+    GNU tar) write it.
 
     A symlink's target text is resolved among the written paths, as the destination
     resolves it once every member is written: the symlink is listed as what it

@@ -177,8 +177,9 @@ These are refused under every policy:
 
 - `../evil.txt` or `a/../../evil.txt`.
 - A link to `../../outside`.
-- A member written through a link that leads out of the destination, such as `etc/passwd`
-  after a link `etc -> /etc`.
+- A member written through a link that the same extraction made, such as `etc/passwd` after
+  a link `etc -> /etc`, or `s/x` after `s -> docs`. A link that was in the destination before
+  the extraction is followed, as long as it stays inside the destination.
 - A device file or a named pipe.
 
 These are written as is under every policy, and noted:
@@ -192,9 +193,8 @@ The rest depend on the policy:
 
 - **A link to `/etc/passwd` or `/opt/app/bin/tool`, with a target that starts at `/`:** `"strict"`
   and `"standard"` refuse it. `"trusted"` writes it as stored, as GNU tar, cpio and unsquashfs do,
-  so a root filesystem or an initramfs image extracts in full. Nothing is written outside the
-  destination through such a link under any policy: a member under it is written only when the
-  link leads back into the destination.
+  so a root filesystem or an initramfs image extracts in full. Nothing is written through such a
+  link under any policy, as through any link the same extraction made.
 
 - **`/etc/evil.txt` or `C:/evil.txt`:** `"strict"` refuses it. `"standard"` and `"trusted"` write it
   as `etc/evil.txt` or `evil.txt`.
