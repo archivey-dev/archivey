@@ -85,6 +85,40 @@ on the machine can see it ([`unar` instead of `unrar`](#unar-instead-of-unrar)).
 of 6.0 or later is found, even when a usable `unar` is installed.
 [Getting unrar](install.md#getting-unrar) says how to install it.
 
+## Seeking in compressed files
+
+A member stream can seek when you pass `seekable_members=True`
+([Seeking inside a member](reading.md#seeking-inside-a-member)). A seek forward decodes the bytes
+in between. A seek backward resumes from the last point before its target where decoding can
+restart. If there is no such point, it decodes again from the start of the stream. Reading a
+member of a `.tar.gz` or other compressed TAR by name uses the same points.
+
+**Always near the target:**
+
+- **gzip, zlib, and Deflate members of ZIP and 7z:** from a point archivey keeps about every MiB
+  that a read has passed, except on PyPy ([PyPy](install.md#pypy)). `[seekable]` adds an
+  accelerator that keeps its own points.
+- **bzip2:** from the start of the block, which holds at most 900 kB of data.
+- **bzip3:** from the start of the block. Its size is set by the writer, and is 16 MiB by default.
+
+**Near the target only if the file was written in pieces:**
+
+- **xz:** from the start of a block, found from the file's index without decoding.
+  Single-threaded `xz` writes one block. `xz -T0` writes one every 24 MiB at the default level.
+- **lzip:** from the start of a member. `lzip` writes one, and `plzip` writes several for a large
+  file.
+- **Zstandard:** from the start of a frame. `zstd` writes one frame per file. Files in the
+  Seekable Zstandard format have many frames, and archivey finds them without decoding.
+- **Unix compress (`.Z`):** from a reset code (CLEAR), which the writer adds only when compression
+  gets worse.
+
+**Always from the start:** LZMA Alone, LZ4, Brotli, lzop, Snappy and mozlz4. Archivey keeps no
+restart points in them.
+
+If you'll seek backwards often in a file from the last two groups, extracting the member to a file
+first is usually faster.
+
+
 ## Member fields across formats
 
 ### The `extra` bags
