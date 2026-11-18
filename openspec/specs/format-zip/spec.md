@@ -45,9 +45,10 @@ pure Python and ended at the member's declared size since neither has an end mar
 the PKZIP 0.9x method Reduce (methods 2 to 5, compression factors 1 to 4), decoded and
 ended the same way, PKWARE DCL Implode (method 10), decoded in core in pure Python and
 ended by its own end code, and extended codecs when their backends are
-installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
-(method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
-SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
+installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93, and
+20 from APPNOTE 6.3.7), PPMD (method 98, ZIP PPMd8 framing via
+`[recommended]`/`pyppmd`). A missing optional backend SHALL raise
+`PackageNotInstalledError`. An unknown/unsupported method id SHALL
 raise `UnsupportedFeatureError`. `format_availability(ZIP)` SHALL report FULL
 when every optional ZIP member codec is installed, else PARTIAL with the missing
 components listed. Encrypted members (ZipCrypto / WinZip AE) SHALL decode the same
@@ -133,7 +134,7 @@ encoder sometimes flushes it past the decoder's last read.
 | DEFLATE member with a second stream that holds the last rapidgzip index point, declared size and CRC covering both, `use_rapidgzip=ON` | Decodes both streams; with the accelerator off, `CorruptionError` |
 | Zstd member with a second frame or a skippable frame after its first, declared size and CRC covering all of it | Decodes every frame, as a `.zst` file does; a declared size or CRC that stops at the first frame raises `CorruptionError` |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
-| ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
+| ZSTD (method 93 or 20) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | XZ (method 95) member, as 7-Zip writes it with `-mm=XZ` | Decodes in core; lists `CompressionAlgorithm.XZ` |
 | XZ member with a second xz stream, or stream padding (groups of four zero bytes) between or after its streams, declared size and CRC covering all of it | Decodes every stream, as an `.xz` file does (7-Zip reads it too) |
 | XZ member with junk, or zero bytes that do not fill a group of four, after its last stream | `CorruptionError` (7-Zip: "Data Error", or "There are some data after the end of the payload data") |
@@ -809,6 +810,29 @@ SHALL stay refused as a split set.
 | A locator naming an offset in bytes a pipe's listing limits dropped, classic fields unsaturated | Members listed from a file with `ARCHIVE_EOF_MARKER_MISSING`; `ResourceLimitError` from a pipe |
 | Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
+
+### Requirement: Report ZIP64 extra fields that no header field uses
+
+APPNOTE 4.5.3 has a ZIP64 extra field (`0x0001`) hold only the values whose header
+field is all ones. When a central directory entry has such a field and none of its
+uncompressed size, compressed size, local header offset and disk number fields is all
+ones, the entry's own values SHALL be used, as unzip and `zipfile` read them. When the
+first ZIP64 field's values, read in APPNOTE's order as far as the field's length holds
+whole values, differ from the entry's, the listing SHALL report
+`MEMBER_HEADER_AMBIGUOUS` with `ambiguity="zip64_unused"`, `field` the first value that
+differs and `more_fields` the count of the others: a reader that takes the field
+whatever the entry holds lists another size or reads other bytes. A field whose values
+agree with the entry SHALL report nothing. The report SHALL come from a file read and a
+pipe read alike, and `STRICT` SHALL refuse the member, as for every
+`MEMBER_HEADER_AMBIGUOUS`.
+
+#### Scenario: unused ZIP64 values
+
+| Archive, one stored member of 5 bytes | Expected, from a file and from a pipe |
+| --- | --- |
+| A ZIP64 field of 16 bytes giving 10¹² for both sizes, entry fields 5 and 5 | Lists size 5 and reads the 5 bytes; `MEMBER_HEADER_AMBIGUOUS` with `field="uncompressed size"`, `more_fields=1` |
+| A ZIP64 field giving 5 and 5 | Lists and reads; no diagnostic |
+| The first case under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` |
 
 ### Requirement: Read ZIPs written past 4 GiB without ZIP64
 

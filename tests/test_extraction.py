@@ -15,6 +15,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tarfile
 import time
 import unicodedata
@@ -70,7 +71,7 @@ from archivey.types import ArchiveFormat, ArchiveInfo, ArchiveMember, MemberType
 from tests.conftest import binary_refusal, case_sensitive
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.extract_util import open_and_extract
-from tests.streams_util import SizedNonSeekable
+from tests.streams_util import NonSeekableBytesIO, SizedNonSeekable
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -1045,6 +1046,16 @@ def _extract_removing_a_directory(
     return [r.status for r in report.results]
 
 
+def _callers_symlink(dest: Path, name: str, target: str) -> None:
+    """Make ``dest`` with the caller's symlink ``name -> target`` in it. A member is
+    never written through a symlink the same run created, so a test that needs a
+    second spelling of one path uses a symlink that was there before the run.
+    ``target`` names a directory, which may not exist yet: Windows makes a file
+    symlink by default, which a path cannot go through."""
+    dest.mkdir(parents=True, exist_ok=True)
+    os.symlink(target.replace("/", os.sep), dest / name, target_is_directory=True)
+
+
 def _assert_plain_parent(directory: Path) -> None:
     """``directory`` was made as a parent: the creation default and the current time."""
     umask = os.umask(0)
@@ -1059,24 +1070,23 @@ def _assert_plain_parent(directory: Path) -> None:
 def test_deferred_metadata_of_a_directory_removed_by_another_spelling_is_dropped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``s/d/`` is written through the archive's own ``s -> .``, so it is the
+    """``s/d/`` is written through the caller's ``s -> .``, so it is the
     directory ``d``. REPLACE removes that empty directory for the symlink ``d -> d``,
     which is then refused, and ``d/x`` creates ``d`` again as a plain parent. The
     removed member's mode and mtime must not land on that new directory: the removal
     names ``d``, and the pending metadata has to be found from that name."""
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", ".")
     statuses = _extract_removing_a_directory(
         dest,
         monkeypatch,
         [
-            ("s->.", None, 0),
             ("s/d/", 0o700, _DIR_MTIME),
             ("d->d", None, 0),
             ("d/x", 0o644, 0),
         ],
     )
     assert statuses == [
-        ExtractionStatus.EXTRACTED,
         ExtractionStatus.OVERWRITTEN,
         ExtractionStatus.BLOCKED,
         ExtractionStatus.EXTRACTED,
@@ -1162,18 +1172,18 @@ def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
     [
         # The run creates ``d`` as the parent of ``s/d/f``; ``d/`` names it again.
         (
-            [("s->.", None, 0), ("s/d/f", 0o644, 0), ("d/", 0o700, _DIR_MTIME)],
+            [("s/d/f", 0o644, 0), ("d/", 0o700, _DIR_MTIME)],
             0o700,
             _DIR_MTIME,
         ),
         # Two directory members reach one directory: the one written last applies.
         (
-            [("s->.", None, 0), ("d/", 0o700, _DIR_MTIME), ("s/d/", 0o750, _SUB_MTIME)],
+            [("d/", 0o700, _DIR_MTIME), ("s/d/", 0o750, _SUB_MTIME)],
             0o750,
             _SUB_MTIME,
         ),
         (
-            [("s->.", None, 0), ("s/d/", 0o750, _SUB_MTIME), ("d/", 0o700, _DIR_MTIME)],
+            [("s/d/", 0o750, _SUB_MTIME), ("d/", 0o700, _DIR_MTIME)],
             0o700,
             _DIR_MTIME,
         ),
@@ -1183,14 +1193,15 @@ def test_deferred_metadata_of_a_case_variant_directory_still_there_is_kept(
 def test_a_directory_this_run_made_is_ours_under_every_spelling(
     tmp_path: Path, specs: list[tuple[str, int | None, int]], mode: int, mtime: int
 ) -> None:
-    """A directory member that names, under another spelling, a directory this run
-    already wrote or created is not the caller's directory: its stored mode and mtime
-    are applied, and no ``kept_mode`` is reported."""
+    """A directory member that names, through the caller's ``s -> .``, a directory
+    this run already wrote or created is not the caller's directory: its stored mode
+    and mtime are applied, and no ``kept_mode`` is reported."""
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", ".")
     report = open_and_extract(
         io.BytesIO(_tar_with_dir_modes(specs)), dest, policy=ExtractionPolicy.STANDARD
     )
-    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 2
     assert all(r.kept_mode is None for r in report.results)
     st = (dest / "d").stat()
     assert (st.st_mode & 0o7777, int(st.st_mtime)) == (mode, mtime)
@@ -1229,10 +1240,11 @@ def test_a_directory_this_run_made_is_ours_under_a_case_variant(
 def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
     tmp_path: Path,
 ) -> None:
-    """``a/b/c/s/u/`` is written through the archive's own ``a/b/c/s -> ../../../t``,
-    so it is the directory ``t/u``. ``a/b/c`` is stored ``0o000`` and is deeper, so
-    its mode is applied first. ``t/u`` still gets its stored mode and mtime: it is
-    opened as ``t/u``, not through ``a/b/c``, which the owner can no longer search."""
+    """``s/u/`` is written through the caller's ``s -> a/b/c/../../../t``, so it is
+    the directory ``t/u``, reached through ``a/b/c``. ``a/b/c`` is stored ``0o000``
+    and is deeper, so its mode is applied first. ``t/u`` still gets its stored mode
+    and mtime: it is opened as ``t/u``, not through ``a/b/c``, which the owner can no
+    longer search."""
     probe = tmp_path / "probe"
     probe.mkdir(mode=0o000)
     try:
@@ -1245,20 +1257,23 @@ def test_deferred_metadata_reaches_a_directory_through_a_locked_spelling(
         [
             ("t/", 0o755, 0),
             ("a/b/c/", 0o000, _SUB_MTIME),
-            ("a/b/c/s->../../../t", None, 0),
-            ("a/b/c/s/u/", 0o750, _DIR_MTIME),
+            ("s/u/", 0o750, _DIR_MTIME),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "a/b/c/../../../t")
     try:
         report = open_and_extract(
             io.BytesIO(archive), dest, policy=ExtractionPolicy.STANDARD
         )
-        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 4
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
         st = (dest / "t" / "u").stat()
         assert (st.st_mode & 0o7777, int(st.st_mtime)) == (0o750, _DIR_MTIME)
         assert (dest / "a" / "b" / "c").stat().st_mode & 0o7777 == 0o000
     finally:
+        # The link resolves through the locked ``a/b/c``: removed before the walk
+        # that unlocks, which would stat through it.
+        (dest / "s").unlink()
         _restore_modes(dest)
 
 
@@ -4923,20 +4938,20 @@ def test_file_over_a_directory_this_run_wrote_is_no_collision_under_trusted(
 def test_file_over_a_run_directory_names_the_directory_as_its_member_spelled_it(
     tmp_path: Path,
 ) -> None:
-    """The only directory member reached ``d/x`` as ``s/x`` through the archive's own
+    """The only directory member reached ``d/x`` as ``s/x`` through the caller's
     ``s -> d``. ``collided_with`` is that member's ``path``, so it joins to its
     result, not the spelling the file member used."""
     archive = _tar_bytes(
         [
             ("dir", "d/", None),
-            ("sym", "s", "d"),
             ("dir", "s/x/", None),
             ("file", "d/x", b"file"),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "d")
     report = open_and_extract(io.BytesIO(archive), dest, overwrite=OverwritePolicy.SKIP)
-    directory, member = report.results[2:]
+    directory, member = report.results[1:]
     assert directory.path == dest / "s" / "x"
     assert member.status is ExtractionStatus.NOT_OVERWRITTEN
     assert member.requested_path == dest / "d" / "x"
@@ -4982,27 +4997,27 @@ def test_file_over_a_directory_already_there_is_no_collision_after_a_merge(
 def test_replace_revises_a_directory_reached_through_the_archives_symlink(
     tmp_path: Path,
 ) -> None:
-    """``s/sub/`` and ``d/sub/`` are one directory when ``s -> d``: removing it revises
-    both results, not only the one spelled the way the replacing member spells it."""
+    """``s/sub/`` and ``d/sub/`` are one directory when the caller's ``s -> d`` is in
+    ``dest``: removing it revises both results, not only the one spelled the way the
+    replacing member spells it."""
     archive = _tar_bytes(
         [
             ("dir", "d/", None),
-            ("sym", "s", "d"),
             ("dir", "s/sub/", None),
             ("dir", "d/sub/", None),
             ("file", "d/sub", b"file"),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "d")
     report = open_and_extract(
         io.BytesIO(archive), dest, overwrite=OverwritePolicy.REPLACE
     )
 
-    top, link, via_link, direct, member = report.results
+    top, via_link, direct, member = report.results
     assert via_link.status is ExtractionStatus.OVERWRITTEN
     assert direct.status is ExtractionStatus.OVERWRITTEN
     assert top.status is ExtractionStatus.EXTRACTED
-    assert link.status is ExtractionStatus.EXTRACTED
     assert member.status is ExtractionStatus.EXTRACTED
     assert member.collided_with == direct.requested_path == dest / "d" / "sub"
     assert (dest / "d" / "sub").read_bytes() == b"file"
@@ -5502,21 +5517,22 @@ _HELD_BACK_LINK_SHAPES = {
 def test_a_file_written_through_a_symlink_is_the_runs_own(
     tmp_path: Path, overwrite: OverwritePolicy, re_point: bool
 ) -> None:
-    # `s/f` written through the archive's own `s -> e` is the file at `e/f`: a later
+    # `s/f` written through the caller's `s -> e` is the file at `e/f`: a later
     # `e/f/x` fails against it as it would against `e/f` written by that name, under
     # every policy, rather than meeting it as the caller's file. It still does after
-    # `s` is re-pointed, when `s/f` no longer leads there.
+    # the archive's `s -> f` replaces the caller's link (REPLACE), when `s/f` no
+    # longer leads there.
     archive = _tar_bytes(
         [
             ("dir", "e", None),
             ("dir", "f", None),
-            ("sym", "s", "e"),
             ("file", "s/f", b"mine"),
             *([("sym", "s", "f")] if re_point else []),
             ("file", "e/f/x", b"later"),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "e")
     with open_archive(io.BytesIO(archive)) as reader:
         report = reader.extract_all(
             dest, overwrite=overwrite, on_error=OnError.CONTINUE
@@ -5558,26 +5574,36 @@ def test_a_held_link_over_a_callers_symlink_meets_it_at_its_place(
 
 
 def test_a_copy_superseded_after_a_re_point_is_taken_back(tmp_path: Path) -> None:
-    # A later copy of `s/X` supersedes the earlier one, which was written through
-    # `s -> e`. `s` now leads to `f`, so the later copy lands at `f/X`; the earlier
-    # copy is still removed from `e/X`, as it is when nothing is re-pointed.
+    # The first `s/X` is written through the caller's `s -> e`. The archive's own
+    # `s -> f` then replaces that link, so the second `s/X` goes through a symlink
+    # this run created and is refused. It still supersedes the first copy, which is
+    # removed from `e/X`, where it was written, though `s/X` now leads to `f/X`.
     archive = _tar_bytes(
         [
             ("dir", "e", None),
             ("dir", "f", None),
-            ("sym", "s", "e"),
             ("file", "s/X", b"first"),
             ("sym", "s", "f"),
             ("file", "s/X", b"second"),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "e")
     with open_archive(io.BytesIO(archive)) as reader:
-        report = reader.extract_all(dest, on_error=OnError.CONTINUE)
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+        )
     statuses = [(r.member.name, r.status) for r in report.results]
-    assert ("s/X", ExtractionStatus.SUPERSEDED) in statuses
+    assert statuses[2:] == [
+        ("s/X", ExtractionStatus.SUPERSEDED),
+        ("s", ExtractionStatus.EXTRACTED),
+        ("s/X", ExtractionStatus.BLOCKED),
+    ]
     assert not (dest / "e" / "X").exists()
-    assert (dest / "f" / "X").read_bytes() == b"second"
+    assert not (dest / "f" / "X").exists()
 
 
 @pytest.mark.parametrize(
@@ -5607,23 +5633,194 @@ def test_a_streamed_link_with_no_source_is_skipped_where_random_access_skips_it(
     assert runs[True][-1][1] == "NOT_OVERWRITTEN"
 
 
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_source_replaced_under_another_spelling_is_not_linked_to(
+    tmp_path: Path, held: bool
+) -> None:
+    # On a case-insensitive filesystem a member `a` replaces the file at `A` without
+    # naming `A`. Here the filter stands in for that member: it replaces `A` before
+    # `b` is handled, with a file or a directory (the next test does it with an
+    # archive member, through a symlink). `b` then gets `src1`'s bytes, not the new
+    # file's, and when `A` held the only copy (a placeholder, `src1` excluded) `b` is
+    # held back in its turn rather than failing.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("hard", "A", "src1"),
+            ("file", "c", b"c"),
+            ("hard", "b", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+
+    def replace_a(member: ArchiveMember) -> ArchiveMember:
+        if member.name == "b":
+            (dest / "A").unlink()
+            if held:
+                (dest / "A").mkdir()
+            else:
+                (dest / "A").write_bytes(b"other")
+        return member
+
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            filter=replace_a,
+            members=(lambda m: m.name != "src1") if held else None,
+            on_error=OnError.CONTINUE,
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["b"] is ExtractionStatus.EXTRACTED
+    assert (dest / "b").read_bytes() == b"1"
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_onto_an_older_replaced_source_path_gets_the_source_bytes(
+    tmp_path: Path, held: bool
+) -> None:
+    # As above, the filter replaces `A` the way a case variant would, but `B`, a
+    # newer path of the same source, is still in place. The link `X`, renamed to
+    # `A`, lands on the replaced path: it gets `src1`'s bytes, not the replacement's.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("hard", "A", "src1"),
+            ("hard", "B", "src1"),
+            ("file", "c", b"c"),
+            ("hard", "X", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+
+    def replace_a(member: ArchiveMember) -> ArchiveMember:
+        if member.name == "X":
+            (dest / "A").unlink()
+            (dest / "A").write_bytes(b"other")
+            return member.replace(name="A")
+        return member
+
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            filter=replace_a,
+            overwrite=OverwritePolicy.REPLACE,
+            members=(lambda m: m.name != "src1") if held else None,
+            on_error=OnError.CONTINUE,
+        )
+    assert report.results[-1].status is ExtractionStatus.EXTRACTED
+    assert (dest / "A").read_bytes() == b"1"
+    assert (dest / "B").read_bytes() == b"1"
+
+
+def test_a_link_source_replaced_by_a_folded_name_through_a_symlink_is_not_linked_to(
+    tmp_path: Path,
+) -> None:
+    # On any filesystem: STRICT folds `s/A` and `s/a` onto one name, so `s/a` is
+    # written over `d/A`, the file `s/A` was written to through the caller's symlink
+    # `s -> d`. The source record keyed by `s/A` must not survive that: `s/h` gets
+    # `s/A`'s bytes, not `s/a`'s.
+    archive = _tar_bytes(
+        [
+            ("file", "s/A", b"ORIGINAL"),
+            ("file", "s/a", b"OTHER"),
+            ("hard", "s/h", "s/A"),
+        ]
+    )
+    dest = tmp_path / "out"
+    (dest / "d").mkdir(parents=True)
+    os.symlink("d", dest / "s")
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            policy=ExtractionPolicy.STRICT,
+            on_error=OnError.CONTINUE,
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["s/h"] is ExtractionStatus.EXTRACTED, statuses
+    assert (dest / "d" / "h").read_bytes() == b"ORIGINAL"
+
+
+def test_a_placeholder_whose_spelling_stops_reaching_it_is_still_filled(
+    tmp_path: Path,
+) -> None:
+    # `a/x` is written through the caller's symlink `a -> .`, so its placeholder is
+    # `x`. A file `a` then replaces the symlink: the spelling `a/x` no longer reaches
+    # `x`, but `x` is still the placeholder, and the second pass fills it. The link
+    # `a` finds no path to link to and is held back in its turn.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("hard", "a/x", "src1"),
+            ("file", "a", b"f"),
+            ("hard", "a", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(".", dest / "a")
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            policy=ExtractionPolicy.TRUSTED,
+            members=lambda m: m.name != "src1",
+            on_error=OnError.CONTINUE,
+        )
+    statuses = [(r.member.name, r.status) for r in report.results]
+    assert statuses[-1] == ("a", ExtractionStatus.EXTRACTED), statuses
+    assert (dest / "x").read_bytes() == b"1"
+    assert (dest / "a").read_bytes() == b"1"
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_fan_out_checks_one_source_path_per_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    # n links to one source record n paths. Checking every recorded path for a
+    # replaced file before each link would make n² checks; the newest path links, so
+    # each link checks one, and the held run's second pass the same.
+    n = 200
+    archive = _tar_bytes(
+        [("file", "src1", b"1")] + [("hard", f"l{i}", "src1") for i in range(n)]
+    )
+    calls = 0
+    original = ExtractionCoordinator._source_path_current
+
+    def counting(self: ExtractionCoordinator, path: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(self, path)
+
+    monkeypatch.setattr(ExtractionCoordinator, "_source_path_current", counting)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, members=(lambda m: m.name != "src1") if held else None
+        )
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert (dest / f"l{n - 1}").read_bytes() == b"1"
+    assert calls <= 4 * n
+
+
 def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
     tmp_path: Path,
 ) -> None:
-    # The placeholder for `s/X` is made at `e/X`. `s` is then re-pointed to `f`,
-    # where the caller has an empty `X` of their own: the second pass fills `e/X`
-    # and leaves the caller's file alone, though both are empty files at `s/X`.
+    # The placeholder for `s/X` is made at `e/X`, through the caller's `s -> e`. The
+    # archive's `s -> f` then replaces that link, and the caller has an empty `X` of
+    # their own in `f`: the second pass fills `e/X` and leaves the caller's file
+    # alone, though both are empty files at `s/X`.
     archive = _tar_bytes(
         [
             ("file", "src", b"data"),
             ("dir", "e", None),
             ("dir", "f", None),
-            ("sym", "s", "e"),
             ("hard", "s/X", "src"),
             ("sym", "s", "f"),
         ]
     )
     dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "e")
     (dest / "f").mkdir(parents=True)
     (dest / "f" / "X").write_bytes(b"")
     with open_archive(io.BytesIO(archive)) as reader:
@@ -5771,6 +5968,7 @@ def test_a_held_back_link_extracts_as_a_made_one(
                 dest,
                 overwrite=overwrite,
                 on_error=OnError.CONTINUE,
+                on_blocked="skip",
                 members=(lambda m: not m.name.startswith("src")) if held else None,
             )
         statuses = [
@@ -7165,3 +7363,255 @@ def test_a_taken_temp_name_moves_on_to_the_next(
     assert len(set(tried)) == 2
     assert all(name.startswith(".archivey-tmp-") for name in tried)
     assert sorted(p.name for p in (dest / "d").iterdir()) == ["f.txt"]
+
+
+_THROUGH_RUN_LINK_SHAPES = {
+    # A member under a symlink this run made is refused; nothing lands in `e`.
+    "under-a-run-link": (
+        [("dir", "e", None), ("sym", "s", "e"), ("file", "s/x", b"x")],
+        {},
+        None,
+        ["EXTRACTED", "EXTRACTED", "BLOCKED"],
+    ),
+    # The same file by its own name is written.
+    "by-its-own-name": (
+        [("dir", "e", None), ("sym", "s", "e"), ("file", "e/x", b"x")],
+        {},
+        None,
+        ["EXTRACTED", "EXTRACTED", "EXTRACTED"],
+    ),
+    # Only a member's path is checked, not a symlink's target.
+    "a-target-through-a-run-link": (
+        [
+            ("dir", "d", None),
+            ("file", "d/x", b"x"),
+            ("sym", "s", "d"),
+            ("sym", "t", "s/x"),
+        ],
+        {},
+        None,
+        ["EXTRACTED"] * 4,
+    ),
+    # TRUSTED too, and a target from `/` that leads anywhere.
+    "trusted-rooted": (
+        [("sym", "etc", "/etc"), ("file", "etc/passwd", b"x")],
+        {"policy": ExtractionPolicy.TRUSTED},
+        None,
+        ["EXTRACTED", "BLOCKED"],
+    ),
+    # A held-back hard link is refused before its placeholder is made.
+    "held-link": (
+        [
+            ("file", "src", b"S"),
+            ("dir", "e", None),
+            ("sym", "s", "e"),
+            ("hard", "s/h", "src"),
+        ],
+        {"members": lambda m: m.name != "src"},
+        None,
+        ["EXTRACTED", "EXTRACTED", "BLOCKED"],
+    ),
+    # The caller's `s -> e` is followed until the archive's `s -> f` replaces it.
+    "caller-link-replaced": (
+        [
+            ("dir", "e", None),
+            ("dir", "f", None),
+            ("sym", "s", "f"),
+            ("file", "s/x", b"x"),
+        ],
+        {"overwrite": OverwritePolicy.REPLACE},
+        ("s", "e"),
+        ["EXTRACTED", "EXTRACTED", "EXTRACTED", "BLOCKED"],
+    ),
+    # A directory that replaces the run's link is a directory: written into.
+    "a-directory-replaces-the-link": (
+        [
+            ("dir", "e", None),
+            ("sym", "s", "e"),
+            ("dir", "s/", None),
+            ("file", "s/x", b"x"),
+        ],
+        {"overwrite": OverwritePolicy.REPLACE},
+        None,
+        ["EXTRACTED", "OVERWRITTEN", "EXTRACTED", "EXTRACTED"],
+    ),
+}
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("mode", ["random", "streaming", "dry-run"])
+@pytest.mark.parametrize("shape", list(_THROUGH_RUN_LINK_SHAPES))
+def test_no_member_is_written_through_a_symlink_the_run_created(
+    tmp_path: Path, shape: str, mode: str
+) -> None:
+    specs, kwargs, callers, expected = _THROUGH_RUN_LINK_SHAPES[shape]
+    dest = tmp_path / "out"
+    if callers is not None:
+        _callers_symlink(dest, *callers)
+    with open_archive(
+        io.BytesIO(_tar_bytes(specs)), streaming=mode == "streaming"
+    ) as reader:
+        report = reader.extract_all(
+            dest,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+            dry_run=mode == "dry-run",
+            **kwargs,
+        )
+    assert [r.status.name for r in report.results] == expected
+    blocked = [r for r in report.results if r.status is ExtractionStatus.BLOCKED]
+    for result in blocked:
+        # A link out of the destination is refused for that first.
+        reason = "outside" if shape == "trusted-rooted" else "this extraction created"
+        assert reason in str(result.error)
+    if blocked and mode != "dry-run":
+        assert not any(p.is_file() for p in (tmp_path / "out").rglob("*"))
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_a_deep_name_after_a_run_link_is_checked_without_recursion(
+    tmp_path: Path,
+) -> None:
+    # The check that no parent is a symlink the run created walks up the name in a
+    # loop: 300 components, with the recursion limit lowered to 150 frames above the
+    # test's own, which a walk of one frame per component would pass. The name stays
+    # short of macOS's 1024-byte path limit.
+    deep = "a/" * 300 + "x"
+    archive = _tar_bytes([("dir", "e", None), ("sym", "s", "e"), ("file", deep, b"x")])
+    from archivey.internal.dry_run import remove_scratch
+
+    depth = 0
+    frame = sys._getframe()
+    while frame is not None:
+        depth += 1
+        frame = frame.f_back
+    limit = sys.getrecursionlimit()
+    try:
+        with open_archive(io.BytesIO(archive)) as reader:
+            sys.setrecursionlimit(depth + 150)
+            try:
+                report = reader.extract_all(tmp_path / "out")
+            finally:
+                sys.setrecursionlimit(limit)
+        assert [r.status for r in report.results] == [ExtractionStatus.EXTRACTED] * 3
+    finally:
+        # pytest removes its temp directories recursively, which a tree this deep
+        # would break.
+        remove_scratch(tmp_path / "out")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_a_case_variant_of_a_run_link_is_refused_too(
+    tmp_path: Path, policy: ExtractionPolicy
+) -> None:
+    # `S/x` reaches the run's `s -> e` on a filesystem that folds case: the link is
+    # found by what is on disk, not by how the member spells it.
+    dest = tmp_path / "out"
+    dest.mkdir()
+    if case_sensitive(dest):
+        pytest.skip("needs a case-insensitive filesystem, where S and s are one entry")
+    archive = _tar_bytes([("dir", "e", None), ("sym", "s", "e"), ("file", "S/x", b"x")])
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, policy=policy, on_error=OnError.CONTINUE, on_blocked="skip"
+        )
+    assert [r.status for r in report.results][-1] is ExtractionStatus.BLOCKED
+    assert list((dest / "e").iterdir()) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_a_run_link_is_refused_where_the_filesystem_reports_inode_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With no inode to go by, the link is found by its folded physical key.
+    lstat = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    archive = _tar_bytes(
+        [
+            ("dir", "e", None),
+            ("sym", "s", "e"),
+            ("file", "s/x", b"x"),
+            ("file", "e/y", b"y"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, on_blocked="skip")
+    monkeypatch.undo()
+    assert [r.status.name for r in report.results] == [
+        "EXTRACTED",
+        "EXTRACTED",
+        "BLOCKED",
+        "EXTRACTED",
+    ]
+    assert sorted(os.listdir(dest / "e")) == ["y"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_run_link_made_where_a_taken_back_directory_was_is_refused(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `d/x` looks `d` up while `d` is the run's directory. The second `d/` is
+    # filtered out, which takes the first one back and removes it; the link made at
+    # `d` next is still found: removing the directory forgot the answer about `d`.
+    specs = [
+        ("dir", "e", None),
+        ("sym", "q", "e"),
+        ("dir", "d", None),
+        ("hard", "d/x", "nope"),
+        ("dir", "d", None),
+        ("sym", "d", "e"),
+        ("file", "d/y", b"y"),
+    ]
+    seen_dirs: list[str] = []
+
+    def drop_second_d(m: ArchiveMember) -> ArchiveMember | None:
+        if m.name.rstrip("/") == "d" and m.type is MemberType.DIRECTORY:
+            seen_dirs.append(m.name)
+            if len(seen_dirs) == 2:
+                return None
+        return m
+
+    dest = tmp_path / "out"
+    raw = _tar_bytes(specs)
+    source = NonSeekableBytesIO(raw) if streaming else io.BytesIO(raw)
+    with open_archive(source, streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            filter=drop_second_d,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["d/y"] is ExtractionStatus.BLOCKED
+    assert not (dest / "e" / "y").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+def test_a_run_link_made_where_a_parent_was_looked_up_before_is_refused(
+    tmp_path: Path,
+) -> None:
+    # `p/y` looks `p` up while `p` is a file (`q` makes the run have a link, so the
+    # look happens). The link that replaces that file is still found: no answer
+    # about a file's name is kept.
+    specs = [
+        ("dir", "e", None),
+        ("sym", "q", "e"),
+        ("file", "p", b"p"),
+        ("file", "p/y", b"y"),
+        ("sym", "p", "e"),
+        ("file", "p/x", b"x"),
+    ]
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(_tar_bytes(specs))) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["p/x"] is ExtractionStatus.BLOCKED
+    assert not (dest / "e" / "x").exists()

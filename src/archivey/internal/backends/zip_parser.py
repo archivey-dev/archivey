@@ -595,6 +595,12 @@ class CentralEntry:
     #: the member's data runs a multiple of 2³² past it (macOS Archive Utility,
     #: :func:`written_by_archive_utility`); 0 otherwise.
     compressed_size_correction: int = 0
+    #: The local header offset as stored, when no field of the entry defers to a ZIP64
+    #: extra field and the extra blob holds the bytes such a field starts with; ``-1``
+    #: otherwise, for nearly every entry. The reader then looks for a ZIP64 field in
+    #: its split of the blob and compares it with the entry
+    #: (:func:`unused_zip64_values`).
+    undeferred_offset: int = -1
 
     @property
     def create_system(self) -> int:
@@ -1370,15 +1376,27 @@ def _central_entry(
         external_attr,
         header_offset,
     ) = fields
-    compressed_size, file_size, header_offset, disk_start = _apply_zip64_extra(
-        extra,
-        compressed_size=compressed_size,
-        file_size=file_size,
-        header_offset=header_offset,
-        disk_start=disk_start,
-        index=index,
-    )
-    return CentralEntry(
+    undeferred_offset = -1
+    if (
+        file_size == _U32_MAX
+        or compressed_size == _U32_MAX
+        or header_offset == _U32_MAX
+        or disk_start == 0xFFFF
+    ):
+        compressed_size, file_size, header_offset, disk_start = _apply_zip64_extra(
+            extra,
+            compressed_size=compressed_size,
+            file_size=file_size,
+            header_offset=header_offset,
+            disk_start=disk_start,
+            index=index,
+        )
+    elif extra and _ZIP64_EXTRA_HEADER in extra:
+        # No field defers to a ZIP64 field, so none is read; the reader checks
+        # whether one is there anyway. Most blobs that pass the byte test hold a
+        # Windows writer's NTFS field, whose attribute tag is 1.
+        undeferred_offset = header_offset
+    entry = CentralEntry(
         index,
         (made_system << 8) | made_version,
         (needed_system << 8) | needed_version,
@@ -1396,6 +1414,43 @@ def _central_entry(
         name,
         extra,
         comment,
+    )
+    if undeferred_offset >= 0:
+        entry.undeferred_offset = undeferred_offset
+    return entry
+
+
+#: The bytes a ZIP64 extra field starts with, a cheap test before the walk over the
+#: blob.
+_ZIP64_EXTRA_HEADER = _ZIP64_EXTRA_TAG.to_bytes(2, "little")
+
+
+def unused_zip64_values(
+    data: bytes, *, file_size: int, compressed_size: int, header_offset: int
+) -> tuple[tuple[str, int, int], ...]:
+    """The values of a ZIP64 extra field's ``data`` that differ from the header's,
+    when no header field defers to it.
+
+    APPNOTE 4.5.3 has the field hold only the values whose header field is all ones,
+    and archivey, stdlib and unzip read it so: here none is, and the field is not
+    read. A reader that takes it whatever the header holds reads its values in their
+    order (uncompressed size, compressed size, local header offset), as many as the
+    field holds whole, and lists another size or reads other bytes. This returns each
+    such value that differs from the header's: ``(field, header value, ZIP64
+    value)``. Empty when they agree, as they do from the writers that always add the
+    field.
+    """
+    header = (
+        ("uncompressed size", file_size),
+        ("compressed size", compressed_size),
+        ("local header offset", header_offset),
+    )
+    return tuple(
+        (name, stored, value)
+        for position, (name, stored) in enumerate(header)
+        if (position + 1) * 8 <= len(data)
+        and (value := int.from_bytes(data[position * 8 : (position + 1) * 8], "little"))
+        != stored
     )
 
 
@@ -1420,15 +1475,9 @@ def _apply_zip64_extra(
     known") rather than refusing an archive stdlib opens; it is read once, from the
     first field with four bytes left after the other values (its first four bytes when
     it is the only deferred value, per APPNOTE). A field elsewhere in the blob that is
-    cut short is left alone: it says nothing about these four.
+    cut short is left alone: it says nothing about these four. The caller calls it
+    only when at least one of the four is deferred.
     """
-    if not (
-        file_size == _U32_MAX
-        or compressed_size == _U32_MAX
-        or header_offset == _U32_MAX
-        or disk_start == 0xFFFF
-    ):
-        return compressed_size, file_size, header_offset, disk_start
     disk_deferred = disk_start == 0xFFFF
     for field in iter_extra_fields(extra):
         if field.tag != _ZIP64_EXTRA_TAG:

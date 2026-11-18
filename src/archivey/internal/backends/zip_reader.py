@@ -86,6 +86,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    HeaderAmbiguityContext,
     LocalHeaderContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
@@ -149,6 +150,7 @@ from archivey.internal.backends.zip_parser import (
     locate_end_record,
     read_end_record,
     read_local_header,
+    unused_zip64_values,
     written_by_archive_utility,
 )
 from archivey.internal.backends.zipcrypto import (
@@ -321,6 +323,8 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     10: CompressionAlgorithm.DCL_IMPLODE,
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
+    # 20: Zstandard's id in APPNOTE 6.3.7, deprecated for 93 in 6.3.8; same data.
+    20: CompressionAlgorithm.ZSTD,
     93: CompressionAlgorithm.ZSTD,
     95: CompressionAlgorithm.XZ,
     98: CompressionAlgorithm.PPMD,
@@ -349,6 +353,7 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     10: Codec.DCL_IMPLODE,
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
+    20: Codec.ZSTD,  # APPNOTE 6.3.7's id, deprecated for 93
     93: Codec.ZSTD,
     95: Codec.XZ,
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
@@ -2974,6 +2979,8 @@ class ZipReader(BaseArchiveReader):
             self._emit_size_wrapped(member, entry, index)
         if directory_by_attribute:
             self._report_directory_by_attribute(member, index, name_source)
+        if entry.undeferred_offset >= 0:
+            self._check_undeferred_zip64(member, index, entry, fields)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -3127,6 +3134,65 @@ class ZipReader(BaseArchiveReader):
                 member_name=member.name,
                 member_id=index,
                 shape="directory_attribute_without_slash",
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
+
+    def _check_undeferred_zip64(
+        self,
+        member: ArchiveMember,
+        index: int,
+        entry: CentralEntry,
+        fields: Sequence[ExtraField],
+    ) -> None:
+        """Report a ZIP64 extra field whose values differ from the entry's, when no
+        field of the entry defers to it (``CentralEntry.undeferred_offset``). The
+        entry's values are used, as APPNOTE, stdlib and unzip read them; a reader that
+        takes the field anyway lists another size or reads other bytes. In
+        ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it. The first ZIP64 field is
+        the one such a reader takes."""
+        for field in fields:
+            if field.tag == _ZIP_EXTRA_ZIP64:
+                # Stored values throughout: the walk may have corrected the offset
+                # and, for macOS Archive Utility, the compressed size. That writer's
+                # blob is its UX field alone (written_by_archive_utility), so the
+                # size correction cannot meet a ZIP64 field today; taking it off
+                # keeps the comparison on stored values regardless.
+                unused = unused_zip64_values(
+                    field.data,
+                    file_size=entry.file_size,
+                    compressed_size=(
+                        entry.compressed_size - entry.compressed_size_correction
+                    ),
+                    header_offset=entry.undeferred_offset,
+                )
+                break
+        else:
+            return
+        if not unused:
+            return
+        values = "; ".join(
+            f"{name} {value} where the entry stores {stored}"
+            for name, stored, value in unused
+        )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            message=(
+                f"ZIP central directory entry {quoted(member.name)} has a ZIP64 "
+                f"extra field that gives {values}. No field of the entry defers to "
+                "the ZIP64 field, so the entry's values are used, as unzip and "
+                "zipfile read them; a reader that takes the ZIP64 field anyway "
+                "lists another size or reads other bytes."
+            ),
+            context=HeaderAmbiguityContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                ambiguity="zip64_unused",
+                field=unused[0][0],
+                more_fields=len(unused) - 1,
             ),
             member=member,
             attach_to_member=True,

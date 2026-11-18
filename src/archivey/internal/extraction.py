@@ -512,11 +512,13 @@ class _HeldLink:
     ``path`` is the name it landed on, as the run records it (``source_paths``),
     ``physical`` where that is, its parents resolved, and ``identity`` the file's
     ``(st_dev, st_ino)``. ``live`` turns False once anything else goes to ``path``
-    (``_forget_source_path``). The second pass fills the name only while it is live
-    and still holds that file (``_holds_placeholder``), so a later member that
-    replaced it, or re-pointed one of the archive's symlinks on its way, keeps what
-    it put there. ``spelled_from`` is
-    ``transformed`` before its disk spelling, when that differs, so an error names it
+    (``_forget_source_path``). The second pass fills the name only while it is live and
+    still holds that file (``_holds_placeholder``), so a later member that replaced it,
+    or replaced a caller's symlink on its way, keeps what it put there. One found
+    stale only because ``path`` stopped reaching it (a directory on the way became a
+    file) stays live but leaves ``placeholder_at`` (``_forget_stale_source_path``):
+    from then on the identity-and-empty check alone guards its fill. ``spelled_from``
+    is ``transformed`` before its disk spelling, when that differs, so an error names it
     as the first pass would (``_MemberState.spelled_from``).
     """
 
@@ -572,7 +574,8 @@ class _Claim:
 
     ``physical`` is where the claimed file was when it was claimed, with every parent
     resolved. The key is taken from it, and a collision is routed to it. ``path`` can
-    run through a symlink the archive later repoints, so it can stop naming that file.
+    run through a caller's symlink that a later member replaces, so it can stop naming
+    that file.
     """
 
     path: Path
@@ -595,6 +598,15 @@ class _RunState:
     # The symlinks this run created and the paths each one's resolution depends on,
     # so a later member that changes such a path gets them rechecked.
     links: LinkWatch
+    # Every symlink this run created, by ``(st_dev, st_ino)``: a member whose path
+    # goes through one is refused (``_refuse_through_run_link``). A link kept as
+    # stored under TRUSTED is here too. Where the filesystem reports inode 0, the
+    # link's ``_physical_key`` goes in ``run_symlink_keys`` instead.
+    run_symlinks: set[tuple[int, int]] = field(default_factory=set)
+    run_symlink_keys: set[str] = field(default_factory=set)
+    # Parent directory (as spelled) -> whether its path goes through one of
+    # ``run_symlinks``; cleared with ``resolved_parents``.
+    through_run_link: dict[str, bool] = field(default_factory=dict)
     # Progress totals; see ``_run``.
     members_total: int | None = None
     total_estimate: int | None = None
@@ -615,6 +627,11 @@ class _RunState:
     # The reverse of ``source_paths``: path -> the one source whose content it holds,
     # so forgetting a path is one lookup however many sources the run has.
     source_of: dict[Path, int] = field(default_factory=dict)
+    # Path -> ``(st_dev, st_ino)`` of the file recorded there, where the filesystem
+    # reports an inode: a later member can replace that file under another spelling (a
+    # case variant on a case-insensitive filesystem), which ``_forget_source_path``,
+    # keyed by spelling, does not see (``_drop_replaced_source_paths``).
+    source_identity: dict[Path, tuple[int, int]] = field(default_factory=dict)
     # Path -> the source it held when it was forgotten, until it is recorded again. A
     # replaced or parked path is forgotten before the Windows read-only clear looks for
     # its other names, and those names are still on this source.
@@ -647,7 +664,7 @@ class _RunState:
     # Directories this run wrote: collision key of the written path -> indices of the
     # EXTRACTED results that report it. Not collision claims (directories merge, so
     # they never go in the collision map), but keyed the same way, so a directory
-    # reached through the archive's own symlink or by a case variant is one entry.
+    # reached through a caller's symlink or by a case variant is one entry.
     # Kept so a REPLACE that removes an empty directory this run wrote can revise
     # that result to OVERWRITTEN.
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
@@ -656,7 +673,9 @@ class _RunState:
     # (``_write_hardlink``): the second pass fills them (``_fill_held_sources``).
     held: dict[int, _HeldSource] = field(default_factory=dict)
     # Each placeholder name, as recorded in ``source_paths``, -> its link, so the
-    # first thing that replaces it marks the link no longer live.
+    # first thing that replaces it marks the link no longer live. A placeholder whose
+    # name stopped reaching it leaves this map but stays live while its file is
+    # intact (``_forget_stale_source_path``); ``_is_placeholder_file`` alone guards it.
     placeholder_at: dict[Path, _HeldLink] = field(default_factory=dict)
     # Superseded copies the filesystem refused to remove, by archive name, as in
     # ``_MemberState.parked``: the next member of that name parks them again.
@@ -925,7 +944,10 @@ class ExtractionCoordinator:
         ``dest`` (``DryRun.target_on_disk``) and is not affected. And everything is
         written to one filesystem, so a hardlink never falls back to a copy: the bytes
         such a copy counts against ``max_extracted_bytes`` in a ``dest`` that spans a
-        mount point are not counted.
+        mount point are not counted. That filesystem is the temp directory's: where it
+        folds case and ``dest``'s does not, or the other way round, a name in another
+        case meets a different entry, so a case variant of a symlink the run created is
+        refused in only one of the two runs (``_is_run_symlink`` asks the disk).
         """
         dest = Path(dest)
         if not self._dry_run:
@@ -1832,7 +1854,7 @@ class ExtractionCoordinator:
         ):
             claim = state.collision_map.get(self._claimed_key(path))
             # Where the copy was written: ``path`` no longer leads there once a later
-            # member re-pointed one of the archive's symlinks on its way.
+            # member replaced a caller's symlink on its way.
             physical = (
                 claim.physical if claim is not None and claim.path == path else path
             )
@@ -1846,6 +1868,8 @@ class ExtractionCoordinator:
                 with contextlib.suppress(OSError):  # not empty: members live under it
                     os.rmdir(on_disk)
                     state.written_paths.discard(path)
+                    # A later link may take the name (``_record_run_symlink``).
+                    self._resolutions_changed()
             else:
                 state.written_paths.discard(path)
                 if physical != path and physical != self._physical_path(path):
@@ -2193,6 +2217,7 @@ class ExtractionCoordinator:
         target = self._follow_renamed_dirs(
             requested, is_dir=transformed.type == MemberType.DIRECTORY
         )
+        self._refuse_through_run_link(transformed, target)
 
         if original.is_anti:
             return copy_with(
@@ -2316,6 +2341,7 @@ class ExtractionCoordinator:
                 transformed.type == MemberType.SYMLINK
                 and transformed.link_target is not None
             ):
+                self._record_run_symlink(result.path)
                 on_disk = self._link_target_on_disk(transformed.link_target)
                 if not self._keeps_rooted_target(transformed.link_target):
                     self._state.links.track(result.path, on_disk, result_index)
@@ -2445,8 +2471,8 @@ class ExtractionCoordinator:
         ERROR/SKIP/REPLACE to the prior path so the existing OverwritePolicy machinery
         handles it uniformly, or derive a fresh ``name (N)`` under RENAME. TRUSTED keys
         on the exact name and defers to the local OS (no collision *event*, but RENAME
-        still uses the map to avoid re-deriving names). Hardlinks held for the second pass
-        claim their name here too, at their place in archive order.
+        still uses the map to avoid re-deriving names). Hardlinks held for the second
+        pass claim their name here too, at their place in archive order.
 
         Under RENAME, a parent of ``requested`` that the caller holds as a file or a
         symlink first moves ``requested`` under a derived name for that parent
@@ -2796,7 +2822,7 @@ class ExtractionCoordinator:
         """Claim ``path`` for result ``index``, keyed on where it physically is now.
 
         The key is remembered per path, so releasing the claim later finds it even after
-        a symlink in ``path`` was repointed and ``path`` resolves somewhere else."""
+        a symlink in ``path`` was replaced and ``path`` resolves somewhere else."""
         key = self._collision_key(path)
         self._state.collision_map[key] = _Claim(path, index, self._physical_path(path))
         self._state.claim_keys[path] = key
@@ -2852,6 +2878,98 @@ class ExtractionCoordinator:
         """The key ``path`` was claimed under, or its current key if it was not."""
         key = self._state.claim_keys.get(path)
         return key if key is not None else self._collision_key(path)
+
+    def _record_run_symlink(self, path: Path) -> None:
+        """Record the symlink this run just created at ``path``
+        (``_refuse_through_run_link``)."""
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            return
+        if st.st_ino:
+            self._state.run_symlinks.add((st.st_dev, st.st_ino))
+        else:
+            self._state.run_symlink_keys.add(self._physical_key(path))
+        # No cached answer changes: only a name that is on disk is cached
+        # (``_goes_through_run_link``), and a new link's name held nothing, or what
+        # it held was removed first. A file's name has no cached answer, and every
+        # other removal this run makes clears the cache: a link it replaces or
+        # removes (``_note_link_change``), and a directory it replaces, takes back or
+        # removes for an anti-item (``_note_link_change``, ``_resolutions_changed``).
+
+    def _refuse_through_run_link(self, member: ArchiveMember, path: Path) -> None:
+        """Refuse ``member`` when its path goes through a symlink this run created:
+        ``s -> e``, then ``s/x``. Under every policy (maintainer decision,
+        2026-11-17): none of 82,635 release tarballs in tar-minefield's
+        ``tree.through-symlink`` scan does this, bsdtar refuses it too, and a member's
+        path is then fixed by its name and the caller's destination, never by a link
+        the archive made. A symlink the caller had in the destination is followed as
+        before."""
+        if not self._state.run_symlinks and not self._state.run_symlink_keys:
+            return
+        if self._goes_through_run_link(os.path.dirname(os.fspath(path))):
+            raise FilterRejectionError(
+                "Path goes through a symlink this extraction created",
+                member_name=member.name,
+            )
+
+    def _goes_through_run_link(self, parent: str) -> bool:
+        """Whether the directory ``parent`` (as spelled under the destination) is, or
+        is under, a symlink this run created. A loop, not recursion: a name can be
+        thousands of components deep.
+
+        Cached per directory or link on disk, so each costs one ``lstat`` until one
+        is removed or replaced (``_resolutions_changed``). Any other name is not
+        cached: a later member may make a link there."""
+        state = self._state
+        cache = state.through_run_link
+        dest = os.fspath(state.dest)
+        # The directories from ``parent`` up to the first one already known.
+        unknown: list[str] = []
+        answer = False
+        current = parent
+        while True:
+            known = cache.get(current)
+            if known is not None:
+                answer = known
+                break
+            if current == dest or len(current) <= len(dest):
+                break
+            unknown.append(current)
+            head = os.path.dirname(current)
+            if head == current:
+                break
+            current = head
+        # Down again: once one is under a run link, every directory below it is. Below
+        # a name that is not a directory or link on disk, nothing is.
+        for directory in reversed(unknown):
+            if not answer:
+                found = self._is_run_symlink(Path(directory))
+                if found is None:
+                    return False
+                answer = found
+            cache[directory] = answer
+        return answer
+
+    def _is_run_symlink(self, path: Path) -> bool | None:
+        """Whether the entry at ``path`` is a symlink this run created, the same
+        entry and not one put in its place since. Decided by identity, not by
+        spelling, so a case variant, a name Windows trims or an 8.3 short name that
+        reaches the link is caught too. Where the filesystem reports inode 0, by
+        ``_physical_key``, which folds case and trims a trailing dot or space. ``None``
+        when nothing, or a file, is at ``path``: a later member may put a link there
+        without removing a directory or link, which is what clears the cache."""
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            return None
+        if stat.S_ISDIR(st.st_mode):
+            return False
+        if not stat.S_ISLNK(st.st_mode):
+            return None
+        if st.st_ino:
+            return (st.st_dev, st.st_ino) in self._state.run_symlinks
+        return self._physical_key(path) in self._state.run_symlink_keys
 
     def _physical_rel(self, path: Path) -> str | None:
         """Where ``path`` is, relative to the destination root and ``/``-separated, with
@@ -2933,7 +3051,7 @@ class ExtractionCoordinator:
         """The collision-map key of the entry at ``path``: where it physically is.
 
         The parent is resolved, so two members that reach one file by different names
-        collide: ``s/f`` through the archive's own ``s -> d`` is ``d/f``. The final
+        collide: ``s/f`` through the caller's ``s -> d`` is ``d/f``. The final
         component is not followed, as a member's own destination never is. A parent
         that does not resolve inside the destination (it was checked when the member
         was accepted, so only a later change can do that) falls back to the name as
@@ -3024,6 +3142,8 @@ class ExtractionCoordinator:
                 os.rmdir(long_path(dest_path))
                 # Its member's metadata has no directory left to go on.
                 self._drop_pending_dir(dest_path)
+                # A later link may take the name (``_record_run_symlink``).
+                self._resolutions_changed()
             else:
                 os.unlink(long_path(dest_path))
             if stat.S_ISLNK(st.st_mode):
@@ -3233,7 +3353,7 @@ class ExtractionCoordinator:
             if not self._taken_after_check(dest_path, atomic=False):
                 raise
             raise self._refusal(dest_path, transformed) from exc
-        self._resolutions_changed()
+        self._resolutions_changed(created=True)
 
         # Resolve the link now that it exists, through the real filesystem, and remove
         # it if it escapes. check_universal checked the target against the tree as it
@@ -3445,10 +3565,16 @@ class ExtractionCoordinator:
             parked = self._parked_copy_of(source.member_id)
             if parked is not None:
                 self._record_source_path(source.member_id, parked)
+        self._drop_replaced_source_paths(source.member_id)
         if source.member_id in state.source_paths:
             # Taken before ``_make_room``: under REPLACE a link can land on one of its
-            # own source's paths, which ``_make_room`` then forgets.
-            on_source = dest_path in state.source_paths[source.member_id]
+            # own source's paths, which ``_make_room`` then forgets. That path counts
+            # only while it is still the recorded file: the walk above stops at the
+            # newest current path, and an older one a member replaced under another
+            # spelling holds that member's bytes.
+            on_source = dest_path in state.source_paths[
+                source.member_id
+            ] and self._source_path_current(dest_path)
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
@@ -3532,8 +3658,8 @@ class ExtractionCoordinator:
     ) -> None:
         """Record ``landed`` as one name of ``source``'s placeholder, for the second
         pass to fill (``_fill_held_sources``): where it physically is, and the file it
-        names, so a later member that re-points one of the archive's symlinks on its
-        way or replaces it does not make the second pass write elsewhere."""
+        names, so a later member that replaces a caller's symlink on its way, or the
+        placeholder itself, does not make the second pass write elsewhere."""
         physical = self._physical_path(landed)
         try:
             st = os.lstat(long_path(physical))
@@ -3565,8 +3691,8 @@ class ExtractionCoordinator:
         """Whether ``link``'s name still holds the placeholder it was made as: a later
         member has not replaced it, nor taken it back. Both checks are needed. Every
         replacement forgets the name as a source (``_forget_source_path``), which
-        ends ``live``, but a member spelled through a symlink a later member
-        re-pointed does not name it. The identity alone can match a new file that
+        ends ``live``, but a member spelled through a caller's symlink that a later
+        member replaced does not name it. The identity alone can match a new file that
         reused the inode of a placeholder removed since; that file is then not
         empty, unless its content is."""
         return link.live and self._is_placeholder_file(link)
@@ -3979,6 +4105,7 @@ class ExtractionCoordinator:
         placeholder = state.placeholder_at.pop(path, None)
         if placeholder is not None:
             placeholder.live = False
+        state.source_identity.pop(path, None)
         source_id = state.source_of.pop(path, None)
         if source_id is None:
             return False
@@ -3990,9 +4117,13 @@ class ExtractionCoordinator:
         del state.source_paths[source_id]
         return False
 
-    def _resolutions_changed(self) -> None:
-        """Forget the cached parent resolutions: a symlink was created or removed."""
+    def _resolutions_changed(self, *, created: bool = False) -> None:
+        """Forget the cached parent resolutions: a symlink was created or removed.
+        A symlink created at a free name changes no ``through_run_link`` answer,
+        which holds only names that are on disk."""
         self._state.resolved_parents.clear()
+        if not created:
+            self._state.through_run_link.clear()
 
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""
@@ -4170,11 +4301,11 @@ class ExtractionCoordinator:
 
     def _run_wrote(self, path: Path) -> bool:
         """Whether this run wrote the entry at ``path``, however the archive spelled
-        it: ``s/d`` written through the archive's own ``s -> e`` is the entry at
+        it: ``s/d`` written through the caller's ``s -> e`` is the entry at
         ``e/d``. The collision map finds the claim where its file was written, and
         the claim counts only at that exact physical path (``_Claim.physical``), not
-        under another case, and not where ``s/d`` resolves after ``s`` is
-        re-pointed."""
+        under another case, and not where ``s/d`` resolves after the caller's ``s``
+        is replaced."""
         state = self._state
         written_paths = state.written_paths
         if path in written_paths:
@@ -4293,7 +4424,7 @@ class ExtractionCoordinator:
 
     def _is_run_directory(self, path: Path, st: os.stat_result) -> bool:
         """Whether the directory at ``path`` (``st`` its ``lstat``) is one this run
-        wrote or created, under any spelling: through a symlink the archive created
+        wrote or created, under any spelling: through a caller's symlink
         (the same physical path), or a case variant on a case-insensitive filesystem
         under every policy (one recorded under the same ``_physical_key`` that is the
         same directory). Where
@@ -4424,8 +4555,8 @@ class ExtractionCoordinator:
         link or rename that refuses a taken name) — atomic, so a mid-stream failure
         never truncates or removes an existing destination (only the temp is discarded),
         and the target name never appears half-written. The temp lives in the destination
-        directory so the rename stays on one filesystem. When the second pass fills a held
-        hardlink's placeholder, ``member`` is the *link's* transformed copy, so the
+        directory so the rename stays on one filesystem. When the second pass fills a
+        held hardlink's placeholder, ``member`` is the *link's* transformed copy, so the
         file carrying the content gets the link's (policy-capped) mode, not the source's.
 
         Under TRUSTED, a member with no stored mode gets the mode an ordinary file
@@ -4609,10 +4740,12 @@ class ExtractionCoordinator:
             # unlinking it, so the file is still in place and there is nothing to link.
             self._record_source_path(source_id, new_path)
             return new_path
-        # Each path was a regular file this run wrote, and ``_forget_source_path``
-        # drops one once another member replaces it. The one path that can be stale
-        # here is ``new_path``: the early return above takes it while it is a regular
-        # file, and the check below skips it when it is not. Checked again here because
+        # Each path was a regular file this run wrote. ``_forget_source_path`` drops
+        # one once another member replaces it under the same spelling;
+        # ``_drop_replaced_source_paths`` and the check below catch one replaced under
+        # another spelling (a case variant), by its recorded inode. ``new_path`` can be
+        # stale too: ``on_source`` holds only while it is still the recorded file, and
+        # the check below forgets it when it is not. The check also matters because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
@@ -4623,9 +4756,12 @@ class ExtractionCoordinator:
             linked = False
             at_link_limit = False
             copy_from: Path | None = None
-            # Nothing below changes ``source_paths`` before the loop ends.
+            # Nothing below changes ``source_paths`` before the loop ends: a path
+            # found replaced is forgotten after it.
+            stale: list[Path] = []
             for candidate in reversed(self._state.source_paths.get(source_id, {})):
-                if not _is_regular_file(candidate):
+                if not self._source_path_current(candidate):
+                    stale.append(candidate)
                     continue
                 if copy_from is None:
                     copy_from = candidate
@@ -4640,6 +4776,8 @@ class ExtractionCoordinator:
                     continue
                 linked = True
                 break
+            for path in stale:
+                self._forget_stale_source_path(path)
             if not linked:
                 if copy_from is None:
                     raise ExtractionError(
@@ -4688,6 +4826,60 @@ class ExtractionCoordinator:
         paths[path] = None
         state.source_of[path] = source_id
         state.forgotten_source.pop(path, None)
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            st = None
+        if st is not None and st.st_ino:
+            state.source_identity[path] = (st.st_dev, st.st_ino)
+        else:
+            state.source_identity.pop(path, None)
+
+    def _drop_replaced_source_paths(self, source_id: int) -> None:
+        """Forget the newest paths of ``source_id`` whose file a later member replaced
+        without ``_forget_source_path`` seeing it: under another spelling of the same
+        entry, as ``a`` replaces ``A`` on a case-insensitive filesystem. Such a path now
+        holds another member's bytes, or a directory.
+
+        Walks newest first, the order ``_place_link`` tries, and stops at the first path
+        that still holds the recorded file: a fan-out of n links to one source checks
+        one path per link, not n. A source left with no path takes the route of one not
+        on disk. ``_place_link`` checks each older path it reaches the same way."""
+        state = self._state
+        paths = state.source_paths.get(source_id)
+        if not paths:
+            return
+        stale: list[Path] = []
+        for path in reversed(paths):
+            if self._source_path_current(path):
+                break
+            stale.append(path)
+        for path in stale:
+            self._forget_stale_source_path(path)
+
+    def _forget_stale_source_path(self, path: Path) -> None:
+        """Forget ``path`` as a source path once ``_source_path_current`` finds it
+        stale. A placeholder made there stays to be filled while its own file is still
+        in place: its spelling can stop reaching it (a directory on the way became a
+        file) with the file left where it was made. One replaced under another
+        spelling fails ``_is_placeholder_file`` and is not filled."""
+        placeholder = self._state.placeholder_at.get(path)
+        self._forget_source_path(path)
+        if placeholder is not None and self._is_placeholder_file(placeholder):
+            placeholder.live = True
+
+    def _source_path_current(self, path: Path) -> bool:
+        """Whether ``path`` is still the regular file ``_record_source_path`` recorded.
+        Where the filesystem reports inode 0 a replaced file cannot be told from the
+        recorded one, so a regular file there counts as current."""
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            return False
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        identity = self._state.source_identity.get(path)
+        return identity is None or (st.st_dev, st.st_ino) == identity
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the

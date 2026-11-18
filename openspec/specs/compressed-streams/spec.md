@@ -735,14 +735,16 @@ The system SHALL decide where each native decoder runs from
 | Value | Runs in a child process | Runs in the caller's process |
 | --- | --- | --- |
 | `KNOWN_CRASHES` (default) | rapidgzip (every codec it decodes); `pyppmd` (every PPMd member) | every other decoder |
-| `NATIVE_DECODERS` | every native decoder: `zlib`, `bz2`, `lzma` (all formats and filter chains), zstd, `lz4` (frame and block), `brotli`, `inflate64`, `pyppmd`, rapidgzip | nothing that decodes compressed data |
+| `NATIVE_DECODERS` | every native decoder: `zlib`, `bz2`, `lzma` (all formats and filter chains), zstd, `lz4` (frame and block), `brotli`, `inflate64`, `pyppmd`, rapidgzip, Snappy's raw-block decoder and CRC-32C (`compress-utils` or `cramjam`, `google-crc32c` or `crc32c`) | nothing that decodes compressed data |
 | `NONE` | nothing | every decoder |
 
 The setting SHALL cover every decode of archive data the library runs, not only member
 reads: format detection's content probes, password confirmation, the decodes a seek
 index is built from and the checks that end a stream. The native code that does not
 decode compressed data SHALL stay in the caller's process under every value: checksums
-(`zlib.crc32`, `hashlib`) and AES decryption through `cryptography`. The external
+(`zlib.crc32`, `hashlib`) and AES decryption through `cryptography`. Snappy's CRC-32C
+package is the exception: under `NATIVE_DECODERS` it runs in the Snappy child with the
+raw-block decoder, so each chunk crosses the pipe once. The external
 programs (`unrar`, `unar`, `7z`) are separate processes under every value.
 
 #### Scenario: where decoding runs
@@ -753,16 +755,19 @@ programs (`unrar`, `unar`, `7z`) are separate processes under every value.
 | `.br` stream under `NATIVE_DECODERS` on a free-threaded build | Same bytes; `brotli` never imported by the caller's process, the GIL stays disabled |
 | `detect_format` on a `.zz` stream under `NATIVE_DECODERS` | The zlib content probe decodes in a child process |
 | A WinZip AES member under `NATIVE_DECODERS` | AES decrypts in the caller's process; the codec after it decodes in a child |
+| `.sz` stream under `NATIVE_DECODERS` with cramjam and google-crc32c installed | Same bytes; each chunk is decoded and its CRC computed in one child round trip; the framing checks run in the caller's process |
 
 ### Requirement: Each open decoder has a child process of its own
 
 A child process SHALL run one decoder at a time, and an open decoder SHALL have a child
 of its own, so a crash is charged to the one decoder whose request was in flight and
 threads decode in parallel. A child SHALL import only the standard library and the
-library of the codec it is asked for, and MUST NOT import `archivey`; importing
+library of the codec it is asked for (for Snappy, one raw-block decoder package and one
+CRC-32C package), and MUST NOT import `archivey`; importing
 `archivey` SHALL NOT import any codec library the caller's process would not import
 without the setting. Under `NATIVE_DECODERS` the caller's process MUST NOT import
-`pyppmd`, `inflate64`, `brotli` or `rapidgzip`.
+`pyppmd`, `inflate64`, `brotli`, `rapidgzip`, `cramjam`, `compress_utils`,
+`google_crc32c` or `crc32c`.
 
 A child MAY be kept and reused for a later decoder only after a clean finish: the
 decoder ended with no error from the child and was closed normally, so a run of small

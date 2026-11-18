@@ -1119,6 +1119,12 @@ def _bzip3_compress(data: bytes) -> bytes:
     return compressor.compress(data) + compressor.flush()
 
 
+def _snappy_frame(data: bytes) -> bytes:
+    from tests.test_snappy_framed import stored_frame
+
+    return stored_frame(data)
+
+
 def _uu_encode(data: bytes) -> bytes:
     import binascii
 
@@ -1154,6 +1160,7 @@ _SINGLE_FILE_CODECS = {
     ".lzo": (make_lzop, ()),
     ".mozlz4": (_mozlz4_compress, (requires("lz4"),)),
     ".bz3": (_bzip3_compress, (requires("bz3"),)),
+    ".sz": (_snappy_frame, ()),
     ".uu": (_uu_encode, ()),
     ".b64": (_base64_encode, ()),
 }

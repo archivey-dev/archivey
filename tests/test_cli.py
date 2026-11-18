@@ -33,6 +33,7 @@ from archivey.cli.exit_codes import (
     EXIT_FAIL,
     EXIT_INTERRUPTED,
     EXIT_OK,
+    EXIT_POLICY,
     EXIT_USAGE,
 )
 from archivey.cli.extract_cmd import _report_extraction
@@ -5430,9 +5431,10 @@ def test_indexed_single_root_with_a_symlink_cannot_write_into_the_cwd(
 ) -> None:
     """An indexed archive with one top-level name, a symlink inside it pointing at the
     cwd, and a member under the link: extracted straight into the cwd, the link stays
-    inside the destination and the member lands in the operator's ``.ssh``. Through
-    the wrapper the link is checked against the wrapper and the hoist's link walk,
-    so nothing outside the wrapper is written."""
+    inside the destination and the member would land in the operator's ``.ssh``.
+    Through the wrapper the link is checked against the wrapper, and the member under
+    it is refused, as it goes through a symlink the extraction created: nothing
+    outside the wrapper is written."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".ssh").mkdir()
     archive = _zip_with_links(
@@ -5443,11 +5445,10 @@ def test_indexed_single_root_with_a_symlink_cannot_write_into_the_cwd(
             ("docs/up/.ssh/authorized_keys", b"ATTACKER", False),
         ],
     )
-    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_OK
+    assert main(["x", str(archive), "--overwrite", overwrite]) == EXIT_POLICY
     capsys.readouterr()
     assert not (tmp_path / ".ssh" / "authorized_keys").exists()
-    # The link leads to the wrapper, which then holds two entries and is not hoisted.
-    assert (tmp_path / "docs" / ".ssh" / "authorized_keys").read_bytes() == b"ATTACKER"
+    assert not (tmp_path / "docs" / ".ssh").exists()
 
 
 @pytest.mark.parametrize("overwrite", ["rename", "replace"])

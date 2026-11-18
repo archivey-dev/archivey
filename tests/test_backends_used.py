@@ -276,17 +276,19 @@ def test_a_unar_spawn_records_the_binary(
     assert usage.backends() == (BackendUse("program", "unar", "RAR", binary),)
 
 
-def test_python_lzo_is_recorded_when_chosen(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compress_utils_is_recorded_when_chosen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from archivey.internal.streams.codecs import lzo_decoder
 
     def package(data: bytes, size: int) -> bytes:
         return b""
 
-    monkeypatch.setattr(lzo_decoder, "_python_lzo", lambda *_a: package)
+    monkeypatch.setattr(lzo_decoder, "_compress_utils", lambda *_a: package)
     usage = ResourceUsageRecorder()
     assert lzo_decoder.lzo1x_decompressor(usage=usage) is package
-    assert usage.backends() == (BackendUse("library", "lzo", "lzo"),)
-    monkeypatch.setattr(lzo_decoder, "_python_lzo", lambda *_a: None)
+    assert usage.backends() == (BackendUse("library", "compress_utils", "lzo"),)
+    monkeypatch.setattr(lzo_decoder, "_compress_utils", lambda *_a: None)
     usage = ResourceUsageRecorder()
     lzo_decoder.lzo1x_decompressor(usage=usage)
     assert usage.backends() == ()

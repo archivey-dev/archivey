@@ -171,7 +171,9 @@ class DiagnosticCode(StrEnum):
     set twice, a global header naming or sizing members, or a NUL inside a PAX name.
     archivey reads it as GNU tar does; another tool may list another name or size.
     Also an RPM symlink whose payload stores another target than the package
-    header: archivey keeps the header's, as ``rpm`` installs it."""
+    header: archivey keeps the header's, as ``rpm`` installs it. And a ZIP entry whose
+    ZIP64 extra field gives other sizes or offset than the entry, which defers none of
+    them to it: archivey uses the entry's, as unzip does."""
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     """An encrypted member's stream was closed or seeked before its checksum
     confirmed the password, and nothing stronger had confirmed it, so the bytes read
@@ -779,8 +781,8 @@ class LinkDataContext(_JsonSafeContext):
 @dataclass(frozen=True)
 class HeaderAmbiguityContext(_JsonSafeContext):
     """A member's headers take a shape no known writer produces, which readers
-    resolve differently. archivey reads a TAR as GNU tar 1.35 does, and an RPM as
-    ``rpm`` does.
+    resolve differently. archivey reads a TAR as GNU tar 1.35 does, an RPM as
+    ``rpm`` does, and a ZIP as APPNOTE and unzip do.
 
     ``ambiguity`` names the shape:
 
@@ -830,6 +832,13 @@ class HeaderAmbiguityContext(_JsonSafeContext):
       installs and the header digests cover; ``rpm2cpio | cpio`` makes the payload's.
       It is found when a read of another file passes the entry, after the link is
       listed. ``field`` is ``"FILELINKTOS"``.
+    - ``"zip64_unused"`` (ZIP): a central directory entry has a ZIP64 extra field
+      although none of its size and offset fields is all ones, and the field's values
+      differ from the entry's. APPNOTE has the field hold only deferred values, so the
+      entry's are used, as unzip and ``zipfile`` read them; a reader that takes the
+      field anyway lists another size or reads other bytes. ``field`` is the first
+      value that differs: ``"uncompressed size"``, ``"compressed size"`` or
+      ``"local header offset"``.
 
     ``field`` is the PAX keyword (the header field's name for ``"field_tail"``,
     ``"size"`` for ``"size_on_no_data"``, ``"chksum"`` for ``"signed_checksum"`` and
@@ -863,6 +872,7 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "magic_version",
         "newline_in_value",
         "copies_differ",
+        "zip64_unused",
     ] = "repeated"
     field: str = ""
     more_fields: int = 0

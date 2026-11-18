@@ -189,10 +189,13 @@ def test_zip_xz_member_with_a_second_stream_past_its_size_is_corrupt() -> None:
 
 
 @requires_zstd()
-def test_zip_zstd_handbuilt_roundtrip() -> None:
+@pytest.mark.parametrize("method", [93, 20])
+def test_zip_zstd_handbuilt_roundtrip(method: int) -> None:
+    # 20 is Zstandard's id in APPNOTE 6.3.7, deprecated for 93 in 6.3.8; the data
+    # is the same, so both read.
     zstd = zstd_backend()
     compressed = zstd.compress(_PAYLOAD)
-    data = _build_minimal_zip(b"zstd.txt", compressed, _PAYLOAD, 93)
+    data = _build_minimal_zip(b"zstd.txt", compressed, _PAYLOAD, method)
     with open_archive(io.BytesIO(data)) as ar:
         (member,) = ar.members()
         assert member.compression[0].algo is CompressionAlgorithm.ZSTD

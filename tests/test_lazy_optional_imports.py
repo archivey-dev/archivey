@@ -27,7 +27,7 @@ from archivey.internal.config import AcceleratorMode, StreamConfig
 from archivey.internal.streams import codecs
 from tests.conftest import has_package, importorskip
 
-_GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip", "lzo")
+_GIL_REENABLING = ("pyppmd", "inflate64", "brotli", "rapidgzip")
 
 _PROBE = textwrap.dedent(
     """
@@ -40,6 +40,25 @@ _PROBE = textwrap.dedent(
     print(sys._is_gil_enabled() if hasattr(sys, "_is_gil_enabled") else "n/a")
     """
 )
+
+
+def test_import_and_format_listing_do_not_import_compress_utils() -> None:
+    """compress-utils keeps the GIL disabled, but is imported only when an LZO1X block
+    is decoded, so a program that never reads LZO does not load it (``deps.py``)."""
+    importorskip("compress_utils")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "ignore",
+            "-c",
+            _PROBE.format(names=("compress_utils",)),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "imported=\n" in proc.stdout, proc.stdout
 
 
 def test_import_and_format_listing_do_not_import_gil_reenabling_packages() -> None:

@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3), and the
-uuencode and base64 text wrappers, are exposed
+Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3,
+Snappy SZ), and the uuencode and base64 text wrappers, are exposed
 as one-member pseudo-archives through the unified `ArchiveReader`
 interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
@@ -30,14 +30,15 @@ checksum trailer.
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
-Z, LZOP, mozlz4, BZ3, UU or BASE64 source as an archive containing exactly one `ArchiveMember` of type
-`MemberType.FILE`. No directory members SHALL be synthesized.
+Z, LZOP, mozlz4, BZ3, SZ (Snappy framed), UU or BASE64 source as an archive containing
+exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members SHALL be
+synthesized.
 
 The member name SHALL be inferred from the source filename:
 
 | Source filename | Member name |
 | --- | --- |
-| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo`, `.mozlz4`, `.bz3`, `.uu`, `.uue`, `.b64` or `.base64` (case-insensitive) | Strip exactly that recognized compression extension |
+| Ends in `.gz`, `.bz2`, `.xz`, `.zst`, `.lz4`, `.lz`, `.lzma`, `.zz`, `.zlib`, `.br`, `.brotli`, `.Z`, `.lzo`, `.mozlz4`, `.bz3`, `.sz`, `.uu`, `.uue`, `.b64` or `.base64` (case-insensitive) | Strip exactly that recognized compression extension |
 | Ends in `.tgz`, `.tbz2`, `.tbz`, `.txz`, `.tzst`, `.tlz` or `.tzo` (case-insensitive) | Replace that suffix with `.tar`, as `gzip -d` and `xz -d` do |
 | Ends in `.jsonlz4` or `.baklz4` (case-insensitive), Firefox's mozlz4 names | Replace that suffix with `.json` or `.bak` |
 | Ends in a recognized extension, but the remaining stem is entirely dots and spaces (`..gz`, `....gz`, ` .gz`) | Append `.uncompressed` instead; `.` and `..` are not member names, and an all-dots segment is refused under `STRICT` and `STANDARD` |
@@ -613,12 +614,13 @@ and SHALL then be reported as `PROBABLE`.
 The one member's `compression` SHALL name the method the stream decodes with, as one
 `CompressionMethod`, the one a ZIP or 7z member compressed the same way lists: gzip
 and zlib `DEFLATE`, bzip2 `BZIP2`, xz `XZ`, LZMA Alone and lzip `LZMA`, zstd `ZSTD`, LZ4
-and mozLz4 `LZ4`, Brotli `BROTLI`, lzop `LZO`, `.Z` `LZW`, bzip3 `BZIP3`. A stream with
-no `CompressionAlgorithm` member (uuencode, base64, a plugin codec) SHALL list `()`, not
-`UNKNOWN`, which means a method archivey cannot decode. The value SHALL be the same from
-a file, a seekable stream and a forward pass. A container inside a compression stream
-(`.tar.gz`) SHALL NOT add the stream's method to its members: the stream belongs to the
-archive. A single file inside another single file names only its own layer.
+and mozLz4 `LZ4`, Brotli `BROTLI`, lzop `LZO`, `.Z` `LZW`, bzip3 `BZIP3`, Snappy
+`SNAPPY`. A stream with no `CompressionAlgorithm` member (uuencode, base64, a plugin
+codec) SHALL list `()`, not `UNKNOWN`, which means a method archivey cannot decode. The
+value SHALL be the same from a file, a seekable stream and a forward pass. A container
+inside a compression stream (`.tar.gz`) SHALL NOT add the stream's method to its
+members: the stream belongs to the archive. A single file inside another single file
+names only its own layer.
 
 #### Scenario: member compression matrix
 
@@ -632,3 +634,38 @@ archive. A single file inside another single file names only its own layer.
 | `.uu` or a plugin codec | `()` |
 | `.xz.gz`, and the `.xz` member it holds opened in turn | `(DEFLATE,)`, then `(XZ,)` |
 | A member of a `.tar.gz` | `(CompressionMethod(STORED),)` |
+
+### Requirement: Snappy framed streams decode the same with any installed package
+
+The system SHALL read Snappy's framing format (`.sz`, stream identifier
+`ff 06 00 00 73 4e 61 50 70 59`) with no third-party package, and SHALL use
+`compress-utils` or `cramjam` for raw blocks and `google-crc32c` or `crc32c` for the
+CRC-32C when they are installed and not excluded by the format policy. Under
+`process_isolation=NATIVE_DECODERS` the packages SHALL run in a child process held for
+the stream, one round trip per data chunk for its decode and its CRC together, and the
+framing and every check SHALL stay in the caller's process; a package the child cannot
+import SHALL be skipped. Which of them are installed SHALL NOT
+change which streams are read or the bytes they read to: a raw block a package refuses,
+or decodes to a length other than the one it declares, SHALL be decoded again in Python,
+whose result SHALL be used.
+
+#### Scenario: A block cramjam refuses is read
+- **GIVEN** a `.sz` file whose raw block stores a one-byte literal with a two-byte
+  length field, which Google Snappy accepts and cramjam 2.14 refuses
+- **WHEN** it is read with only cramjam installed, and with no package installed
+- **THEN** both reads return the same byte
+
+### Requirement: Snappy framed streams are checked chunk by chunk
+
+The decoder SHALL refuse with `CorruptionError` a stream that does not start with the
+stream identifier, a reserved unskippable chunk (types `0x02` to `0x7f`), a data chunk
+shorter than its CRC or longer than a 64 KiB chunk can be, a raw block that declares
+more than 65,536 decoded bytes (before decoding it), and a chunk whose masked CRC-32C
+does not match its decoded data. It SHALL skip reserved skippable chunks and padding
+(`0x80` to `0xfe`) without holding them in memory. Input that ends inside a chunk SHALL
+raise `TruncatedError`; input that ends between chunks SHALL end the stream.
+
+#### Scenario: A bad CRC is refused
+- **GIVEN** a `.sz` file whose chunk CRC does not match its data
+- **WHEN** it is read
+- **THEN** `CorruptionError` is raised before that chunk's data is returned

@@ -773,6 +773,10 @@ where none was previously required from PyPI.
    markers, verify size ceilings/unused input, and run archivey's full LZO/SquashFS/
    lzop corpus plus a stateful differential fuzzer. Measure with process IPC and
    realistic block sizes before choosing it over the existing kernel path.
+   **Done 2026-11-17:** compress-utils replaced python-lzo, and archivey now refuses
+   the alternate end markers instead of falling back on them
+   ([`lzo-compress-utils-vs-python-lzo.md`](lzo-compress-utils-vs-python-lzo.md),
+   which says what it did not measure).
 3. **An upstream C API / binding request.** Draft the four LZO marker repros,
    resumable Python output buffers, per-decoder working-memory limits, typed status
    exposure and Windows/macOS exported-symbol guarantees. Resolve binding/Google

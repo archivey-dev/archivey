@@ -71,8 +71,9 @@ a symlink whose stored target starts at `/` is written as stored (maintainer rul
 initramfs image extracts. The link itself changes nothing outside, and nothing is
 written outside the destination through it under any policy: the parent check below
 refuses a member whose parent resolves through it to outside, and the escape check
-refuses a link that resolves through it to outside. A target that leads back into the
-destination is followed there, as any symlink is.
+refuses a link that resolves through it to outside. No member is written through it,
+as through any symlink the same extraction made; another symlink's target may still
+resolve through it back into the destination.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,
@@ -1390,13 +1391,18 @@ archivey in a worker they can kill. Public:
 ### A native decoder crash or MemoryError
 
 Under the default `process_isolation` the stdlib `zlib`, `bz2` and `lzma`, zstd, lz4,
-brotli, inflate64 and python-lzo run in-process (`NATIVE_DECODERS` isolates them too;
-under `NONE` pyppmd decodes in-process as well and rapidgzip is not used). A crash
+brotli, inflate64 and compress-utils run in-process (`NATIVE_DECODERS` isolates them
+too; under `NONE` pyppmd decodes in-process as well and rapidgzip is not used). A crash
 nobody has found yet would abort the process. pyppmd runs in a child by default because
 of a known pyppmd issue ([`known-issues.md`](known-issues.md) §`pyppmd` crashes on
 damaged or crafted PPMd data). libbzip3 runs in a child by default too, as a precaution:
 no crash is known, but it had seven memory-safety CVEs in 2023 (under `NONE` it decodes
-in-process). Both rapidgzip decoders run in a child process;
+in-process). compress-utils' LZO1X decoder stays in-process like python-lzo before it:
+it is about 100 lines of C (`third_party/lzokay/lzokay.c` in 0.12.1) that checks every
+read and write against the input and output ends, upstream fuzzes it under ASan and
+UBSan on every pull request and nightly, and 700,000 fuzzed blocks found no crash
+([`investigations/lzo-compress-utils-vs-python-lzo.md`](investigations/lzo-compress-utils-vs-python-lzo.md)).
+Both rapidgzip decoders run in a child process;
 `scripts/investigations/accelerator_crash_search.py` tells whether they still need to.
 `MemoryError` is not translated, so running out of memory is never mistaken for a damaged archive; the limits above exist to
 keep a hostile archive from getting that far. Public:

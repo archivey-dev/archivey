@@ -544,15 +544,18 @@ def test_replacing_a_directory_revises_the_members_written_inside_it(
 def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracted(
     tmp_path: Path,
 ) -> None:
+    # ``s -> d`` is the caller's: a member is never written through a symlink the
+    # same run created.
     archive = _build_tar(
         tmp_path / "a.tar",
         [
             ("d", "dir", None),
-            ("s", "sym", "d"),
             ("s/f", "file", b"FIRST"),
             ("d/f", "file", b"SECOND"),
         ],
     )
+    (tmp_path / "out").mkdir()
+    os.symlink("d", tmp_path / "out" / "s")
 
     report = open_and_extract(archive, tmp_path / "out", overwrite="replace")
 
@@ -573,22 +576,22 @@ def test_two_members_written_to_one_file_through_a_symlink_are_not_both_extracte
 def test_a_collision_through_a_repointed_symlink_lands_where_the_member_named(
     tmp_path: Path, streaming: bool
 ) -> None:
-    # ``s/f`` claims ``d1/f`` while ``s -> d1``. After ``s`` is repointed to ``d2``, the
-    # claim's name ``s/f`` names ``d2/f``, so routing ``d1/f`` to that name wrote it
-    # into ``d2``.
+    # ``s/f`` claims ``d1/f`` through the caller's ``s -> d1``. After the archive's
+    # ``s -> d2`` replaces that link, the claim's name ``s/f`` names ``d2/f``, so
+    # routing ``d1/f`` to that name wrote it into ``d2``.
     archive = _build_tar(
         tmp_path / "a.tar",
         [
             ("d1", "dir", None),
             ("d2", "dir", None),
-            ("s", "sym", "d1"),
             ("s/f", "file", b"A"),
             ("s", "sym", "d2"),
-            ("s/f", "file", b"C"),
             ("d1/f", "file", b"D"),
         ],
     )
     dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink("d1", dest / "s")
 
     with archivey.open_archive(archive, streaming=streaming) as reader:
         report = reader.extract_all(
@@ -596,7 +599,7 @@ def test_a_collision_through_a_repointed_symlink_lands_where_the_member_named(
         )
 
     assert (dest / "d1" / "f").read_bytes() == b"D"
-    assert (dest / "d2" / "f").read_bytes() == b"C"
+    assert not (dest / "d2" / "f").exists()
     last = report.results[-1]
     assert last.status is ExtractionStatus.EXTRACTED
     assert last.path is not None

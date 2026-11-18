@@ -17,7 +17,14 @@ from typing import BinaryIO
 
 import pytest
 
-from archivey import ArchiveMember, ArchiveyConfig, SpoolLimits, open_archive
+from archivey import (
+    ArchiveMember,
+    ArchiveyConfig,
+    CorruptionError,
+    SpoolLimits,
+    TruncatedError,
+    open_archive,
+)
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     ArchiveyError,
@@ -34,7 +41,13 @@ from archivey.internal.backends import (
 from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
 from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
 from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
-from tests.conftest import requires, requires_binary, requires_unrar_cli
+from archivey.internal.hashing.blake2sp import blake2sp as blake2sp_digest
+from tests.conftest import (
+    requires,
+    requires_binary,
+    requires_unrar_cli,
+    unrar_reads_from_pipes,
+)
 from tests.test_audit_rar_iso_dir import (
     _rar3_build,
     _rar3_parse,
@@ -1035,3 +1048,179 @@ def test_members_after_one_that_fails_its_digest_still_read_when_they_line_up() 
     ]
     assert all(isinstance(entry[1], (str, type(None))) for entry in expected[1:-1])  # type: ignore[index]
     assert _pass(_pipe(raw), None, config=_config(None)) == expected
+
+
+# --- Members built by hand: a late cut, extra-area padding ------------------------
+
+
+def _rar5_file(
+    name: str,
+    payload: bytes,
+    *,
+    padded: bool = False,
+    blake2sp: bool | bytes = False,
+) -> bytes:
+    """A stored RAR5 FILE header and its data, with a CRC32 or a BLAKE2sp digest.
+
+    ``blake2sp`` may be the digest itself: the pure-Python hasher takes about two
+    seconds per MiB. With ``padded``, the header's extra area holds one padding
+    byte. The native walk permits this byte, and RARLAB unrar tests the complete
+    member successfully.
+    """
+    extra = b""
+    if blake2sp:
+        digest = blake2sp if isinstance(blake2sp, bytes) else blake2sp_digest(payload)
+        record = _rar5_vint(2) + _rar5_vint(0) + digest  # HASH, BLAKE2sp
+        extra += _rar5_vint(len(record)) + record
+    if padded:
+        extra += b"\x00"
+    fields = (
+        _rar5_vint(0 if blake2sp else 4)  # file flags: CRC32 unless BLAKE2sp
+        + _rar5_vint(len(payload))
+        + _rar5_vint(0o100644)
+        + (b"" if blake2sp else struct.pack("<I", zlib.crc32(payload)))
+        + _rar5_vint(0)  # stored
+        + _rar5_vint(1)  # Unix
+        + _rar5_vint(len(name.encode()))
+        + name.encode()
+    )
+    header = (
+        (b"\x02\x03" + _rar5_vint(len(extra)) if extra else b"\x02\x02")  # type, flags
+        + _rar5_vint(len(payload))
+        + fields
+        + extra
+    )
+    return _rar5_block(header) + payload
+
+
+# BLAKE2sp of 6 and 24 MiB of zeros. Hashing them in the test takes about a minute
+# with the pure-Python hasher, past the per-test timeout.
+_ZEROS_BLAKE2SP = {
+    6: bytes.fromhex(
+        "b878b13c60bac85d452f92d71b9ce5cae3cf606242db7c3a6fde70630aa9cedb"
+    ),
+    24: bytes.fromhex(
+        "a83583bd897a0226f97faaf8f95b2bc718e343ce90d85d6ef1cccc13ea8cf681"
+    ),
+}
+
+
+@pytest.mark.skipif(
+    not unrar_reads_from_pipes(), reason="requires RARLAB unrar 7.00 or later"
+)
+@requires_unrar_cli()
+def test_a_truncated_pipe_member_never_verifies_zero_padding(tmp_path: Path) -> None:
+    payload = bytes(6 << 20)
+    # Built by hand, as ``rar a -ma5 -m0`` stores it: CI never installs the RAR writer.
+    cut = _rar5_archive(_rar5_file("a", payload))[: 5 << 20]
+    path = tmp_path / "cut.rar"
+    path.write_bytes(cut)
+    oracle = subprocess.run(
+        ["unrar", "t", "-cfg-", "-inul", str(path)], check=False, capture_output=True
+    )
+    assert oracle.returncode == 3
+    config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=2 << 20))
+    with open_archive(io.BytesIO(cut), streaming=True, config=config) as reader:
+        members = reader.stream_members()
+        member, stream = next(members)
+        assert member.size == len(payload)
+        assert stream is not None
+        with pytest.raises(TruncatedError):
+            stream.read()
+    # The missing bytes are zero in the original. Invented padding therefore passes
+    # the member's CRC. The error must come from the source ending, not the digest.
+    with open_archive(_pipe(cut), streaming=True, config=config) as reader:
+        members = reader.stream_members()
+        member, stream = next(members)
+        assert member.size == len(payload)
+        assert stream is not None
+        with pytest.raises(TruncatedError, match="cut short"):
+            stream.read()
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("blake2sp", [False, True], ids=["crc32", "blake2sp"])
+@pytest.mark.parametrize(
+    "limit", [2 << 20, None], ids=["small-volumes", "default-volumes"]
+)
+@pytest.mark.parametrize("read", ["all", "exact", "chunks", "readinto"])
+def test_a_late_source_cut_fails_the_member_read(
+    blake2sp: bool, limit: int | None, read: str
+) -> None:
+    # More than the 4 MiB source lookahead and one synthetic volume. The member is
+    # listed before the feeder discovers its missing tail. That tail would be all
+    # zeros, so a digest over synthetic padding alone cannot detect its absence.
+    size, cut_at = (6, 5) if limit is not None else (24, 20)
+    # Built by hand, as ``rar a -m0`` stores it: CI never installs the RAR writer.
+    raw = _rar5_archive(
+        _rar5_file("before", b"intact prefix", blake2sp=blake2sp),
+        _rar5_file(
+            "zeros", bytes(size << 20), blake2sp=blake2sp and _ZEROS_BLAKE2SP[size]
+        ),
+    )[: cut_at << 20]
+    config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=limit))
+    with (
+        open_archive(_pipe(raw), streaming=True, config=config) as reader,
+        reader.stream_members() as members,
+    ):
+        member, stream = next(members)
+        assert member.name == "before"
+        assert stream is not None
+        assert stream.read() == b"intact prefix"
+        member, stream = next(members)
+        assert member.name == "zeros"
+        assert member.size == size << 20
+        assert stream is not None
+        with pytest.raises(TruncatedError, match="cut short"):
+            if read == "all":
+                stream.read()
+            elif read == "exact":
+                # One read that reaches the end of ``unrar``'s output: the member's
+                # own error, not the pass's (``_ForwardUnrarStream`` exit mapping).
+                stream.read(member.size)
+            elif read == "chunks":
+                while stream.read(64 << 10):
+                    pass
+            else:
+                buffer = bytearray(64 << 10)
+                while stream.readinto(buffer):
+                    pass
+
+
+@pytest.mark.skipif(
+    not unrar_reads_from_pipes(), reason="requires RARLAB unrar 7.00 or later"
+)
+@requires_unrar_cli()
+@pytest.mark.xfail(
+    strict=True,
+    raises=CorruptionError,
+    reason="R2: Splitting a RAR5 member rejects extra-area padding that unrar accepts",
+)
+def test_extra_area_padding_survives_a_rolling_volume_split(tmp_path: Path) -> None:
+    payload = bytes(range(251)) * 40
+    raw = _rar5_archive(_rar5_file("a", payload, padded=True))
+    path = tmp_path / "padded.rar"
+    path.write_bytes(raw)
+    subprocess.run(
+        ["unrar", "t", "-cfg-", "-inul", str(path)], check=True, capture_output=True
+    )
+    oracle = subprocess.run(
+        ["unrar", "p", "-cfg-", "-inul", str(path), "a"],
+        check=True,
+        capture_output=True,
+    )
+    assert oracle.stdout == payload
+    with open_archive(path) as reader:
+        (member,) = reader.members()
+        with reader.open(member) as stream:
+            assert stream.read() == payload
+    with open_archive(_pipe(raw), streaming=True) as reader:
+        assert [
+            (m.name, s.read() if s else None) for m, s in reader.stream_members()
+        ] == [("a", payload)]
+    config = ArchiveyConfig(spool_limits=SpoolLimits(max_bytes=4000))
+    with open_archive(_pipe(raw), streaming=True, config=config) as reader:
+        assert [
+            (m.name, s.read() if s else None) for m, s in reader.stream_members()
+        ] == [("a", payload)]

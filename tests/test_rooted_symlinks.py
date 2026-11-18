@@ -296,9 +296,9 @@ def test_a_loop_closed_by_a_later_rooted_link_is_removed(
 
 
 def test_a_rooted_link_back_into_the_destination(tmp_path: Path) -> None:
-    """Extraction follows a target from ``/`` that leads back into the destination, as
-    any symlink. The ``archivey://`` tree has no destination path, so it leaves the
-    member out, and its diagnostic does not claim that extraction refuses it."""
+    """A symlink with a target from ``/`` that leads back into the destination is
+    written under ``TRUSTED``, but a member under it goes through a symlink this run
+    created, so extraction refuses it. The ``archivey://`` tree leaves it out too."""
     pytest.importorskip("fsspec")
     from archivey.fsspec import ArchiveyFileSystem
 
@@ -313,9 +313,15 @@ def test_a_rooted_link_back_into_the_destination(tmp_path: Path) -> None:
             ]
         )
     )
-    report = open_and_extract(archive, dest, policy=ExtractionPolicy.TRUSTED)
-    assert all(r.status is ExtractionStatus.EXTRACTED for r in report)
-    assert (dest / "sub/f").read_bytes() == b"through"
+    report = open_and_extract(
+        archive, dest, policy=ExtractionPolicy.TRUSTED, on_blocked="skip"
+    )
+    assert {r.member.name: r.status for r in report} == {
+        "sub/": ExtractionStatus.EXTRACTED,
+        "abs-dir": ExtractionStatus.EXTRACTED,
+        "abs-dir/f": ExtractionStatus.BLOCKED,
+    }
+    assert not (dest / "sub/f").exists()
     with ArchiveyFileSystem(str(archive), policy=ExtractionPolicy.TRUSTED) as fs:
         assert not fs.exists("abs-dir/f")
         messages = [
@@ -324,5 +330,5 @@ def test_a_rooted_link_back_into_the_destination(tmp_path: Path) -> None:
             if "abs-dir/f" in d.message
         ]
         assert len(messages) == 1
-        assert "does not follow" in messages[0]
-        assert "would not write" not in messages[0]
+        assert "would not write" in messages[0]
+        assert "symlink this extraction created" in messages[0]
