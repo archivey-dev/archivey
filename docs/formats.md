@@ -79,9 +79,9 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
   the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo`, Snappy
-  `.sz` and Apple's pbzx in core; Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4,
-  Firefox's mozlz4 files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and
+- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo`, Snappy `.sz`
+  and Apple's pbzx in core; Zstandard in core on Python 3.14 and later, otherwise `[recommended]`;
+  LZ4, Firefox's mozlz4 files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and
   base64 text in core. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).

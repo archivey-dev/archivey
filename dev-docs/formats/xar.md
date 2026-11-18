@@ -150,13 +150,13 @@ choice).
   (`app.pkg/Payload/Applications/...`), the layout `pkgutil --expand-full` writes; the
   CPIO's `.` is that folder. The format is told from the payload's first bytes (gzip,
   `pbzx`, `0707`); anything else, or a payload whose first CPIO header cannot be read
-  (`CorruptionError` before the first member), is listed as the file it is. A
-  failure after the first member raises, since files are already listed. The CPIO is read through
-  `ReaderContext.open_nested`, so listing decodes every payload. The payload's XAR
-  checksum is computed as the listing reads it, the rest of the payload drained after
-  the CPIO ends, and a mismatch raises `CorruptionError`. A payload file, or a hard
-  link's target, that extracts outside its folder (`../Bom`, `a/../../Scripts/x`) is
-  refused: it would replace another member of the package. Symlinks inside a payload
+  (`CorruptionError` before the first member), is listed as the file it is. A failure
+  after the first member raises, since files are already listed. The CPIO is read
+  through `ReaderContext.open_nested`, so listing decodes every payload. The payload's
+  XAR checksum is computed as the listing reads it, the rest of the payload drained
+  after the CPIO ends, and a mismatch raises `CorruptionError`. A payload file, or a
+  hard link's target, that extracts outside its folder (`../Bom`, `a/../../Scripts/x`)
+  is refused: it would replace another member of the package. Symlinks inside a payload
   are not followed for that check; extraction's own link checks apply.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,
   which yields the one span asked for (`format-plugins`, "An indexed reader reads an
