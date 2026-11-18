@@ -5,18 +5,23 @@ Image layout (what ``pycdlib`` addresses)::
     Sector 16+ : volume descriptors (PVD at 16 * 2048 = 32768 bytes)
     Directory records form the tree; file data at extent * block_size
 
-Namespaces — auto-select richest available (Rock Ridge > Joliet > plain) and record
-the choice in ``ArchiveInfo.extra["iso.namespace"]``:
+Namespaces — auto-select richest available (Rock Ridge > UDF > Joliet > plain) and
+record the choice in ``ArchiveInfo.extra["iso.namespace"]``:
 
 - Rock Ridge — POSIX mode/uid/gid and symlinks
+- UDF — long Unicode names, permissions, owner, symlinks; read by archivey's own
+  parser (``udf.py``), which also reads a UDF-only image, one with no ISO 9660
+  descriptor, which pycdlib cannot open
 - Joliet / plain — those fields are ``None``; plain names are upper-case 8.3 with a
   ``;version`` suffix, and Joliet names often carry one too; both drop it
 
 How a listing is built:
 
-1. ``IsoReader.__init__`` hands the image to pycdlib's ``open_fp``, which parses every
-   directory tree the image has, under the hooks listed below. ``__init__`` then picks
-   the namespace.
+1. ``IsoReader.__init__`` hands the image to pycdlib's ``open_fp``, which parses its
+   ISO 9660 and Joliet trees, under the hooks listed below, and parses the UDF tree
+   with ``udf.UdfVolume`` when the image has one. ``__init__`` then picks the
+   namespace. A UDF-only image skips pycdlib; when UDF is listed, steps 2 and 3 are
+   ``udf.UdfVolume.walk`` and :meth:`IsoReader._make_udf_member`.
 2. :meth:`IsoReader._walk_records` walks that namespace's tree record by record and
    renders each record's path. :meth:`IsoReader._record_name` gives each record's name.
    Rock Ridge takes the ``NM`` name, else the ISO 9660 identifier. Joliet takes its
@@ -39,7 +44,7 @@ mid-positioned streams (stream-position contract). A compressed ``.iso.xz`` is a
 single-file compressor wrapping the image, not mounted here.
 
 **Installed at import.** Importing this module (which ``import archivey`` does
-eagerly, to register backends) wraps four pycdlib methods and two pycdlib functions:
+eagerly, to register backends) wraps six pycdlib methods:
 
 - ``pycdlib.rockridge.RockRidge.parse`` (:func:`_install_pycdlib_system_use_filter`),
   which filters each System Use area and refuses a Rock Ridge ``CE`` area past its
@@ -51,9 +56,9 @@ eagerly, to register backends) wraps four pycdlib methods and two pycdlib functi
   (:func:`_install_pycdlib_path_table_bound`), which bound a path table by the image
   and the same budget before pycdlib reads it, and count its entries as pycdlib parses
   them;
-- ``pycdlib.udf.parse_file_ident`` and ``pycdlib.udf.parse_file_entry``
-  (:func:`_install_pycdlib_udf_counter`), which weigh the UDF tree against the same
-  budget.
+- ``pycdlib.pycdlib.PyCdlib._parse_udf_descriptors`` and
+  ``_walk_udf_directories`` (:func:`_install_pycdlib_udf_skip`), which do nothing, so
+  the UDF tree is parsed once, by ``udf.py``, under the same budget.
 
 Every wrapper acts only inside this module's own ``open_fp`` call, so other users of
 pycdlib see no change.
@@ -92,7 +97,6 @@ if TYPE_CHECKING:
     from pycdlib.path_table_record import PathTableRecord
     from pycdlib.pycdlib import PyCdlib
     from pycdlib.rockridge import RockRidge, RockRidgeEntries, RRCERecord
-    from pycdlib.udf import UDFFileEntry, UDFFileIdentifierDescriptor
 
 from archivey.config import ListingLimits
 from archivey.diagnostics import (
@@ -138,6 +142,15 @@ from archivey.internal.backends.cue_sheet import (
     disc_source,
     parse_cue,
     read_cue_text,
+)
+from archivey.internal.backends.udf import (
+    Span,
+    UdfEntry,
+    UdfName,
+    UdfVolume,
+    ZeroRun,
+    has_volume_recognition,
+    udf_timestamp,
 )
 from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.format_adapter import register_builtin_format
@@ -456,12 +469,12 @@ class _ParseBudget:
     big-endian path tables, which pycdlib reads whole and parses into one object per
     record (at least 8 bytes each). That is more than the text a listing keeps.
 
-    The UDF tree, when the image has one, is counted as one more tree, although
-    archivey does not list it: pycdlib parses it inside ``open_fp`` all the same. Every
-    File Identifier but the parent entry counts as a member of the UDF tree, and each
-    File Identifier as stored plus each File Entry's fixed part, extended attributes and
-    allocation descriptors as the entry declares them add to the image's bytes, the
-    File Entry weighed before pycdlib parses it into one object per descriptor.
+    The UDF tree, when the image has one, is counted as one more tree, parsed at open
+    by ``udf.UdfVolume`` whether or not it is the tree listed. Every File Identifier
+    but the parent entry and deleted entries counts as a member of the UDF tree, and
+    each directory's data as stored plus each File Entry's fixed part, extended
+    attributes and allocation descriptors as the entry declares them add to the
+    image's bytes, a directory weighed before it is read.
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -548,26 +561,13 @@ class _ParseBudget:
 # How many files only another tree holds are reported per tree
 # (``IsoReader._report_files_in_other_trees``).
 _OTHER_TREE_REPORTS = 16
-# A UDF File Entry's ICB flags (ECMA-167 4/14.6.8, low three bits) for data held inside
-# the entry itself, with no extent of its own.
-_UDF_INLINE_DATA = 3
 # What ``IsoReader._report_unlisted`` decodes a reported file's name from: a directory
-# record, or a UDF File Identifier.
+# record, or a UDF name already decoded.
 _NameSource = TypeVar("_NameSource")
 
 
-def _udf_text(ident: UDFFileIdentifierDescriptor) -> str:
-    """A UDF File Identifier's name as text; never raises. pycdlib keeps the stored
-    bytes and the encoding their compression ID names: UTF-16BE (16), decoded as a
-    Joliet name is, or Latin-1 (8)."""
-    raw = bytes(ident.fi)
-    return (
-        _decode_joliet(raw) if ident.encoding == "utf-16_be" else raw.decode("latin-1")
-    )
-
-
-# The key the UDF tree is counted under in ``_ParseBudget``: pycdlib walks one UDF file
-# set per image, and no ``id()`` is negative.
+# The key the UDF tree is counted under in ``_ParseBudget``: archivey reads one UDF
+# file set per image, and no ``id()`` is negative.
 _UDF_TREE = -1
 # How a refusal names the tree a member or the last bytes came from: an ISO 9660 or
 # Joliet tree, or the UDF tree.
@@ -773,85 +773,42 @@ def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
 
 _install_pycdlib_path_table_bound()
 
-# The fixed size of a UDF File Entry (ECMA-167 4/14.9, tag 261) and Extended File Entry
-# (4/14.17, tag 266), keyed by tag. Both end with the little-endian L_EA and L_AD
-# fields, which the extended attributes and allocation descriptors follow. Filled from
-# pycdlib's own struct formats when the counter is installed, so the weight reads the
-# fields where the installed pycdlib reads them.
-_UDF_FILE_ENTRY_FIXED_SIZE: dict[int, int] = {}
-_PYCDLIB_UDF_COUNTER_INSTALLED = False
+_PYCDLIB_UDF_SKIP_INSTALLED = False
 
 
-def _udf_file_entry_size(icbdata: bytes) -> int:
-    """The bytes pycdlib parses from one UDF File Entry, from its own length fields.
+def _install_pycdlib_udf_skip() -> None:
+    """Stop pycdlib from parsing the UDF tree inside archivey's ``open_fp``.
 
-    pycdlib reads the ICB's whole extent and parses ``L_AD`` bytes of it into one
-    object per allocation descriptor, so the cost is the fixed part plus ``L_EA`` plus
-    ``L_AD``, capped by what was read. An all-zero entry (which pycdlib keeps as no
-    entry) or any other tag costs nothing here; pycdlib refuses the other tags itself.
+    archivey reads UDF with its own parser (``udf.py``), which handles what pycdlib's
+    does not (a UDF-only image, a metadata partition) and weighs what it parses
+    against ``ListingLimits``. pycdlib's ``_open_fp`` calls
+    ``_parse_udf_descriptors`` and ``_walk_udf_directories`` on any image whose
+    Volume Recognition Sequence names UDF; inside archivey's open both do nothing, so
+    the tree is parsed once, by archivey. pycdlib still records the recognition
+    sequence, so ``has_udf()`` keeps its meaning, but it holds no UDF tree. Installed
+    once and transparent outside ``IsoReader``'s ``open_fp``, like the hooks above.
     """
-    fixed = _UDF_FILE_ENTRY_FIXED_SIZE.get(int.from_bytes(icbdata[:2], "little"))
-    if fixed is None or len(icbdata) < fixed:
-        return 0
-    extended_attrs, alloc_descs = struct.unpack_from("<LL", icbdata, fixed - 8)
-    return min(len(icbdata), fixed + extended_attrs + alloc_descs)
-
-
-def _install_pycdlib_udf_counter() -> None:
-    """Weigh the UDF tree pycdlib parses in ``open_fp`` against ``_PARSE_BUDGET``.
-
-    pycdlib's ``_walk_udf_directories`` calls ``pycdlib.udf.parse_file_ident`` for each
-    File Identifier and ``pycdlib.udf.parse_file_entry`` for each File Entry it names;
-    both are looked up on the module at each call, so wrapping them there counts
-    every one. A File Entry is weighed before pycdlib parses it, from the lengths it
-    declares; a File Identifier after, because its size is bounded by its own 8- and
-    16-bit length fields and only the parse says whether it is the parent entry, which
-    is not a member. Installed once and transparent outside ``IsoReader``'s
-    ``open_fp``, like the hooks above.
-    """
-    global _PYCDLIB_UDF_COUNTER_INSTALLED
-    if pycdlib is None or _PYCDLIB_UDF_COUNTER_INSTALLED:
+    global _PYCDLIB_UDF_SKIP_INSTALLED
+    if pycdlib is None or _PYCDLIB_UDF_SKIP_INSTALLED:
         return
-    from pycdlib import udf as udf_mod
+    cls = pycdlib.PyCdlib
+    original_parse = getattr(cls, "_parse_udf_descriptors")
+    original_walk = getattr(cls, "_walk_udf_directories")
 
-    for tag, entry_cls in (
-        (261, udf_mod.UDFFileEntry),
-        (266, udf_mod.UDFExtendedFileEntry),
-    ):
-        _UDF_FILE_ENTRY_FIXED_SIZE[tag] = struct.calcsize(entry_cls.FMT)
+    def parse_udf_descriptors(self: PyCdlib) -> None:
+        if not _inside_our_open():
+            original_parse(self)
 
-    original_ident = udf_mod.parse_file_ident
-    original_entry = udf_mod.parse_file_entry
+    def walk_udf_directories(self: PyCdlib, extent_to_inode: object) -> None:
+        if not _inside_our_open():
+            original_walk(self, extent_to_inode)
 
-    def parse_file_ident(
-        data: bytes, current_extent: int, part_start: int, udf_file_entry: object
-    ) -> tuple[UDFFileIdentifierDescriptor, int]:
-        result = original_ident(data, current_extent, part_start, udf_file_entry)
-        budget = _PARSE_BUDGET.get()
-        if budget is not None:
-            file_ident, nbytes = result
-            budget.add_udf_bytes(nbytes)
-            if not file_ident.is_parent():
-                budget.add_udf_member()
-        return result
-
-    def parse_file_entry(
-        icbdata: bytes,
-        abs_file_entry_extent: int,
-        icb_log_block_num: int,
-        parent: UDFFileEntry | None,
-    ) -> UDFFileEntry | None:
-        budget = _PARSE_BUDGET.get()
-        if budget is not None:
-            budget.add_udf_bytes(_udf_file_entry_size(icbdata))
-        return original_entry(icbdata, abs_file_entry_extent, icb_log_block_num, parent)
-
-    setattr(udf_mod, "parse_file_ident", parse_file_ident)
-    setattr(udf_mod, "parse_file_entry", parse_file_entry)
-    _PYCDLIB_UDF_COUNTER_INSTALLED = True
+    setattr(cls, "_parse_udf_descriptors", parse_udf_descriptors)
+    setattr(cls, "_walk_udf_directories", walk_udf_directories)
+    _PYCDLIB_UDF_SKIP_INSTALLED = True
 
 
-_install_pycdlib_udf_counter()
+_install_pycdlib_udf_skip()
 
 # Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``: the image
 # offset of the first non-zero byte in each directory block's padding that pycdlib met.
@@ -993,6 +950,25 @@ _MAX_DESCRIPTORS_SEARCHED = 64
 # The first bytes of a primary volume descriptor: type 1, standard identifier
 # ``CD001``, version 1.
 _PVD_PREFIX = b"\x01CD001\x01"
+
+
+def _has_primary_descriptor(read_at: Callable[[int, int], bytes]) -> bool:
+    """Whether the volume descriptor set holds a primary volume descriptor.
+
+    Descriptors are searched the way ``_declared_length`` searches them; a UDF
+    recognition descriptor (``BEA01``, ``NSR02``, ``TEA01``) does not end the search,
+    since a bridge image may in principle put one first.
+    """
+    for index in range(_MAX_DESCRIPTORS_SEARCHED):
+        head = read_at(_FIRST_DESCRIPTOR + index * _DESCRIPTOR_SECTOR, 6)
+        if head[1:6] == b"CD001":
+            if head[0] == 1:
+                return True
+            if head[0] == 255:
+                return False
+        elif head[1:6] not in (b"BEA01", b"NSR02", b"NSR03", b"TEA01", b"BOOT2"):
+            return False
+    return False
 
 
 def _declared_length(fp: BinaryIO, image_length: int) -> int | None:
@@ -1651,7 +1627,7 @@ class _ZisofsStream(io.RawIOBase):
                 super().close()
 
 
-class IsoReader(IndexedReader["DirectoryRecord"]):
+class IsoReader(IndexedReader["DirectoryRecord | UdfEntry"]):
     """Reads an ISO 9660 image via ``pycdlib`` (Rock Ridge / Joliet / plain).
 
     Written against ``archivey.formats`` (``IsoHandler``): the adapter holds the handle
@@ -1720,6 +1696,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # (``_release_archive_handles``). ``_raw_directory`` reads a directory's
         # extent again through it.
         self._iso_fp = source.view(0)
+        # The UDF tree, read by archivey's own parser (``udf.py``), when the image has
+        # one that parses; ``None`` otherwise.
+        self._udf: UdfVolume | None = None
         try:
             limits = config.listing_limits
             budget = (
@@ -1727,43 +1706,33 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 if limits.max_members is None and limits.max_metadata_bytes is None
                 else _ParseBudget(limits)
             )
-            token = _SYSTEM_USE_NOTES.set(self._system_use)
-            budget_token = _PARSE_BUDGET.set(budget)
-            padding_notes: list[int] = []
-            padding_token = _PADDING_NOTES.set(padding_notes)
-            try:
-                self._iso.open_fp(self._iso_fp)
-            except _PYCDLIB_ERRORS as exc:
-                truncated = _cut_short(
-                    self._iso_fp,
-                    exc,
-                    source if isinstance(source, CookedSource) else None,
-                )
-                if truncated is None:
-                    raise
-                raise truncated from exc
-            finally:
-                _PADDING_NOTES.reset(padding_token)
-                _PARSE_BUDGET.reset(budget_token)
-                _SYSTEM_USE_NOTES.reset(token)
-            self._iso_opened = True
-            # pycdlib measured the image the same way inside ``open_fp``.
             self._image_length = self._iso_fp.seek(0, 2)
+            udf_present = has_volume_recognition(source.read_at)
+            # A UDF-only image (no primary volume descriptor) is not handed to
+            # pycdlib, which cannot open one; every other image is, so a cut or
+            # damaged ISO 9660 image is refused by the same path as before.
+            if not udf_present or _has_primary_descriptor(source.read_at):
+                self._open_pycdlib(source, budget)
+            if udf_present:
+                self._udf = self._open_udf(budget, required=not self._iso_opened)
 
-            # Auto-select the richest namespace: Rock Ridge > Joliet > plain
-            # ISO 9660. Inside this ``try``, not after it: these are pycdlib calls
-            # on the image just opened, so a failure here is an image failure
-            # and releases pycdlib's state as a failure in ``open_fp`` does.
-            if self._iso.has_rock_ridge():
+            # The namespace, once for the image: Rock Ridge > UDF > Joliet > plain
+            # ISO 9660 (davi, 2026-11-18). Inside this ``try``, not after it: these
+            # are pycdlib calls on the image just opened, so a failure here is an
+            # image failure and releases pycdlib's state as a failure in ``open_fp``
+            # does.
+            if self._iso_opened and self._iso.has_rock_ridge():
                 self._namespace = "rock_ridge"
                 self._path_kw = "rr_path"
+            elif self._udf is not None:
+                self._namespace = "udf"
+                self._path_kw = "udf_path"
             elif self._iso.has_joliet():
                 self._namespace = "joliet"
                 self._path_kw = "joliet_path"
             else:
                 self._namespace = "iso9660"
                 self._path_kw = "iso_path"
-            self._report_directory_padding(padding_notes)
             self._report_trailing_data()
         except BaseException:
             # No reader is returned for anyone to close, and the exception's traceback
@@ -1774,6 +1743,49 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # ``open_fp``.
             self._release_archive_handles()
             raise
+
+    def _open_pycdlib(self, source: ReaderSource, budget: _ParseBudget | None) -> None:
+        """Hand the image to pycdlib's ``open_fp`` under this module's hooks."""
+        token = _SYSTEM_USE_NOTES.set(self._system_use)
+        budget_token = _PARSE_BUDGET.set(budget)
+        padding_notes: list[int] = []
+        padding_token = _PADDING_NOTES.set(padding_notes)
+        try:
+            self._iso.open_fp(self._iso_fp)
+        except _PYCDLIB_ERRORS as exc:
+            truncated = _cut_short(
+                self._iso_fp,
+                exc,
+                source if isinstance(source, CookedSource) else None,
+            )
+            if truncated is None:
+                raise
+            raise truncated from exc
+        finally:
+            _PADDING_NOTES.reset(padding_token)
+            _PARSE_BUDGET.reset(budget_token)
+            _SYSTEM_USE_NOTES.reset(token)
+        self._iso_opened = True
+        self._report_directory_padding(padding_notes)
+
+    def _open_udf(
+        self, budget: _ParseBudget | None, *, required: bool
+    ) -> UdfVolume | None:
+        """Parse the image's UDF tree. A tree that uses a partition type archivey
+        does not read (sparable or virtual) is ``None`` when the image has an ISO 9660
+        tree to list instead, and refused when it has not. A damaged UDF tree is
+        refused either way, as pycdlib refused it before archivey parsed UDF."""
+        try:
+            return UdfVolume(
+                self._source.read_at,
+                self._image_length,
+                archive_name=self._archive_name,
+                budget=budget,
+            )
+        except UnsupportedFeatureError:
+            if required:
+                raise
+            return None
 
     def _report_directory_padding(self, offsets: list[int]) -> None:
         """Report each directory block whose padding is not all zeros (DR-3).
@@ -1855,9 +1867,19 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         on them; archivey does not. Called from the constructor, which the adapter
         calls under its handle lock.
         """
+        volume_end = (
+            self._iso.pvd.space_size * self._iso.logical_block_size
+            if self._iso_opened
+            else 0
+        )
+        if self._udf is not None:
+            # The partitions the UDF volume declares, and its anchor at block 256. A
+            # UDF volume may also keep anchors at its last blocks, which end inside
+            # the partition space or the ISO 9660 volume space on every writer seen.
+            volume_end = max(volume_end, self._udf.end)
         end = _image_end(
             self._iso_fp,
-            volume_end=self._iso.pvd.space_size * self._iso.logical_block_size,
+            volume_end=volume_end,
             image_length=self._image_length,
         )
         image_length = self._image_length
@@ -2283,7 +2305,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         return self._file_records_of.get(id(record), (record,))
 
     @override
-    def iter_members(self) -> Iterator[MemberRecord[DirectoryRecord]]:
+    def iter_members(self) -> Iterator[MemberRecord[DirectoryRecord | UdfEntry]]:
         # Audit against the pinned pycdlib: the record walk traverses in-memory
         # parsed catalog records and reads nothing from the image, except in two
         # cases. For a repeated identifier (``_entries_sharing_identifier``) or a file
@@ -2295,27 +2317,38 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         # looks among parsed records, and ``_yield_children`` on the Joliet tree walks
         # them. The comparison after the walk (``_report_files_in_other_trees``) reads
         # nothing either: it walks the Joliet and plain ISO 9660 trees with
-        # ``get_record`` and ``_yield_children``, and the UDF tree through the parsed
-        # File Entries' ``fi_descs`` and ``alloc_descs``, all built inside
-        # ``open_fp``. Following a link target (``_rock_ridge_child``) is the walk's
-        # own ``_yield_children`` over Rock Ridge records already parsed, and
-        # ``_nm_name`` reads the parsed ``NM`` records (``dr_entries``/``ce_entries``).
-        # Any other image read added to listing must also go through ``self._source``
-        # (``read_at`` or a view), whose reads take the ``SharedSource`` lock. If a
-        # future pycdlib version gains handle access in the walk, lock the complete
-        # call.
-        # ``index`` is each member's position in the walk, the id registration
-        # stamps, so a diagnostic raised while typing can name it.
+        # ``get_record`` and ``_yield_children``, built inside ``open_fp``, and the UDF
+        # names ``udf.UdfVolume`` parsed at open. Listing the UDF tree reads nothing
+        # either, for the same reason. Following a link target (``_rock_ridge_child``)
+        # is the walk's own ``_yield_children`` over Rock Ridge records already parsed,
+        # and ``_nm_name`` reads the parsed ``NM`` records
+        # (``dr_entries``/``ce_entries``). Any other image read added to listing must
+        # also go through ``self._source`` (``read_at`` or a view), whose reads take the
+        # ``SharedSource`` lock. If a future pycdlib version gains handle access in the
+        # walk, lock the complete call. ``index`` is each member's position in the walk,
+        # the id registration stamps, so a diagnostic raised while typing can name it.
+        # The image offset each listed non-empty file's data starts at, so the trees not
+        # listed can be compared with the listed one.
         listed_extents: set[int] = set()
-        for index, (ns_path, raw_path, record, superseded) in enumerate(
-            self._walk_records()
-        ):
-            if not record.is_dir() and record.data_length:
-                listed_extents.add(record.extent_location())
-            member = self._make_member(
-                ns_path, raw_path, record, index, superseded=superseded
-            )
-            yield MemberRecord(member, record)
+        if self._udf is not None and self._namespace == "udf":
+            for index, name in enumerate(self._udf.walk()):
+                entry = name.entry
+                extent = entry.first_extent
+                if not entry.is_directory and entry.info_length and extent is not None:
+                    listed_extents.add(extent)
+                member = self._make_udf_member(name, index)
+                yield MemberRecord(member, entry)
+        else:
+            block_size = self._iso.logical_block_size
+            for index, (ns_path, raw_path, record, superseded) in enumerate(
+                self._walk_records()
+            ):
+                if not record.is_dir() and record.data_length:
+                    listed_extents.add(record.extent_location() * block_size)
+                member = self._make_member(
+                    ns_path, raw_path, record, index, superseded=superseded
+                )
+                yield MemberRecord(member, record)
         self._report_files_in_other_trees(listed_extents)
 
     # --- the image's other trees ---------------------------------------------------
@@ -2326,22 +2359,25 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         ``file_only_in_iso9660`` or ``file_only_in_udf``.
 
         An image carries up to three name trees over one set of file data. Linux and
-        xorriso read Rock Ridge, Windows and 7-Zip read Joliet (and Windows UDF first,
-        on an image that has it), and a reader without Joliet support reads the plain
-        ISO 9660 tree, so a file put in one tree only is seen by some readers and
-        hidden from the others. archivey lists one tree (Rock Ridge, else Joliet, else
-        plain ISO 9660) and compares every other one: Joliet unless it is listed, the
-        plain tree when Joliet is listed (Rock Ridge names ride the plain records, so
-        listing Rock Ridge covers them), and UDF. Files are matched by the data each
+        xorriso read Rock Ridge, Windows and 7-Zip read UDF first and Joliet when there
+        is no UDF, and a reader without Joliet support reads the plain ISO 9660 tree,
+        so a file put in one tree only is seen by some readers and hidden from the
+        others. archivey lists one tree (Rock Ridge, else UDF, else Joliet, else plain
+        ISO 9660) and compares the others: Joliet unless it is listed, the plain tree
+        when Joliet is listed or when UDF is listed and there is no Joliet (Rock Ridge
+        names ride the plain records, so listing Rock Ridge covers them), and UDF
+        unless it is listed. Files are matched by the image offset of the data each
         points at, not by name, since a Joliet name is cut at 64 characters and a plain
         one is 8.3. Empty files are left out: they share one extent, so they cannot be
         told apart.
 
-        pycdlib parsed every tree in ``open_fp``, within the listing budget, so this
-        walks records already in memory and reads nothing from the image. At most
+        pycdlib parsed the ISO 9660 and Joliet trees in ``open_fp``, and ``udf.py``
+        the whole UDF tree at open, within the listing budget, so this walks what is
+        already in memory and reads nothing from the image. At most
         ``_OTHER_TREE_REPORTS`` files are reported per tree.
         """
-        if self._namespace != "joliet" and self._iso.has_joliet():
+        joliet = self._iso_opened and self._iso.has_joliet()
+        if self._namespace != "joliet" and joliet:
             self._report_unlisted(
                 "Joliet",
                 "file_only_in_joliet",
@@ -2349,7 +2385,9 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 self._joliet_text,
                 listed_extents,
             )
-        if self._namespace == "joliet":
+        if self._namespace == "joliet" or (
+            self._namespace == "udf" and self._iso_opened and not joliet
+        ):
             self._report_unlisted(
                 "ISO 9660",
                 "file_only_in_iso9660",
@@ -2357,12 +2395,12 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 self._plain_text,
                 listed_extents,
             )
-        if self._iso.has_udf():
+        if self._udf is not None and self._namespace != "udf":
             self._report_unlisted(
                 "UDF",
                 "file_only_in_udf",
-                self._udf_tree_files(),
-                _udf_text,
+                self._udf_tree_files(self._udf),
+                lambda name: name,
                 listed_extents,
             )
 
@@ -2413,6 +2451,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         """``(extent, directory path, record)`` of every non-empty file in the Joliet
         or plain ISO 9660 tree."""
         root = self._iso.get_record(**{path_kw: "/"})
+        block_size = self._iso.logical_block_size
         name_of = self._joliet_text if path_kw == "joliet_path" else self._plain_text
         seen = {root.extent_location()}
         stack: list[tuple[str, DirectoryRecord]] = [("", root)]
@@ -2425,7 +2464,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                         seen.add(extent)
                         stack.append((f"{dirpath}{name_of(child)}/", child))
                 elif child.data_length:
-                    yield extent, dirpath, child
+                    yield extent * block_size, dirpath, child
 
     @staticmethod
     def _plain_text(record: DirectoryRecord) -> str:
@@ -2433,37 +2472,79 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         name = bytes(record.file_identifier()).decode("latin-1")
         return name if record.is_dir() else _strip_version(name, listed=True)[0]
 
-    def _udf_tree_files(
-        self,
-    ) -> Iterator[tuple[int | None, str, UDFFileIdentifierDescriptor]]:
-        """``(extent, directory path, File Identifier)`` of every non-empty file in the
-        UDF tree. The extent is made absolute, like an ISO 9660 one; it is ``None``
-        for data held inside the File Entry (ICB flags 3), which no ISO 9660 record can
-        point at."""
-        root = self._iso.get_record(udf_path="/")
-        part_start = self._iso.udf_main_descs.partitions[0].part_start_location
-        seen = {id(root)}
-        stack: list[tuple[str, UDFFileEntry]] = [("", root)]
-        while stack:
-            dirpath, directory = stack.pop()
-            for ident in directory.fi_descs.values():
-                entry = ident.file_entry
-                if ident.is_parent() or entry is None:
-                    continue
-                if ident.is_dir():
-                    if id(entry) not in seen:
-                        seen.add(id(entry))
-                        stack.append((f"{dirpath}{_udf_text(ident)}/", entry))
-                elif entry.is_file() and entry.get_data_length():
-                    # pycdlib reads alloc_descs[0] itself for every such entry inside
-                    # open_fp, so the list is not empty here.
-                    inline = entry.icb_tag.flags & 0x7 == _UDF_INLINE_DATA
-                    extent = (
-                        None
-                        if inline
-                        else part_start + entry.alloc_descs[0].log_block_num
-                    )
-                    yield extent, dirpath, ident
+    @staticmethod
+    def _udf_tree_files(udf: UdfVolume) -> Iterator[tuple[int | None, str, str]]:
+        """``(image offset, directory path, name)`` of every non-empty file in the UDF
+        tree. The offset is ``None`` for data held inside the File Entry, which no
+        ISO 9660 record can point at."""
+        for name in udf.walk():
+            entry = name.entry
+            if entry.is_directory or entry.is_symlink or not entry.info_length:
+                continue
+            dirpath, _, base = name.path.rpartition("/")
+            yield entry.first_extent, f"{dirpath}/" if dirpath else "", base
+
+    def _make_udf_member(self, name: UdfName, index: int) -> ArchiveMember:
+        """The member for one name of the UDF tree.
+
+        Type, mode, owner and times come from the File Entry: its ICB file type, its
+        permissions (UDF's owner, group and other bits, which map onto POSIX's), its
+        uid and gid (``None`` when UDF's "not specified" ``0xFFFFFFFF``), and its
+        modification, access and attribute times, plus the creation time of an
+        Extended File Entry. A device, FIFO or socket with no data is ``OTHER``, as
+        under Rock Ridge.
+        """
+        entry = name.entry
+        raw_mode = entry.mode
+        special = special_file_type(raw_mode)
+        if entry.is_directory:
+            member_type = MemberType.DIRECTORY
+        elif entry.is_symlink:
+            member_type = MemberType.SYMLINK
+        elif stat.S_ISREG(raw_mode) or entry.info_length:
+            member_type = MemberType.FILE
+        else:
+            member_type = MemberType.OTHER
+        extra = MemberExtra()
+        if special is not None:
+            extra[EXTRA_SPECIAL_FILE_TYPE] = special
+        invalid: list[tuple[str, str, str]] = []
+
+        def convert(raw: bytes | None, field: str) -> datetime | None:
+            if raw is None:
+                return None
+            value, bad = udf_timestamp(raw)
+            if bad:
+                invalid.append((field, "udf", raw.hex()))
+            return value
+
+        is_file = member_type is MemberType.FILE
+        member = ArchiveMember(
+            type=member_type,
+            name=name.path,
+            raw_name=name.raw_path,
+            size=entry.info_length if is_file else None,
+            compressed_size=entry.info_length if is_file else None,
+            modified=convert(entry.modified, "modified"),
+            accessed=convert(entry.accessed, "accessed"),
+            created=convert(entry.created, "created"),
+            ctime=convert(entry.attribute, "ctime"),
+            mode=stat.S_IMODE(raw_mode),
+            uid=entry.uid,
+            gid=entry.gid,
+            link_target=name.link_target,
+            compression=(
+                (CompressionMethod(algo=CompressionAlgorithm.STORED),)
+                if is_file
+                else ()
+            ),
+            is_encrypted=False,
+            extra=extra,
+        )
+        if special is not None and is_file:
+            self._context.report(*special_file_has_data_report(member), member=member)
+        self._report_invalid_dates(member, invalid, tree="UDF")
+        return member
 
     def _make_member(
         self,
@@ -2613,14 +2694,18 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         return size, compressed_size, compression
 
     def _report_invalid_dates(
-        self, member: ArchiveMember, invalid_dates: list[tuple[str, str, str]]
+        self,
+        member: ArchiveMember,
+        invalid_dates: list[tuple[str, str, str]],
+        *,
+        tree: str = "ISO 9660",
     ) -> None:
         """Report each stored date ``_timestamps`` could not read.
 
         The message names the member, so it is built here, not in ``_timestamps``.
         """
         for field, source, value_repr in invalid_dates:
-            message = f"Invalid ISO 9660 date for {quoted(member.name)}: {value_repr}"
+            message = f"Invalid {tree} date for {quoted(member.name)}: {value_repr}"
             issue = TimestampIssue(
                 field=field, source=source, value_repr=value_repr, message=message
             )
@@ -3045,8 +3130,10 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     @override
     def open_member(
-        self, member: ArchiveMember, locator: DirectoryRecord
+        self, member: ArchiveMember, locator: DirectoryRecord | UdfEntry
     ) -> MemberData:
+        if isinstance(locator, UdfEntry):
+            return self._open_udf_member(locator)
         # The adapter checks the listed size on every member, so a file whose declared
         # data runs past the end of the image reads what is there, then fails at the
         # cut with TruncatedError. A zisofs file cut there fails at the block that is
@@ -3080,6 +3167,71 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             bounded=True,
             ranges=ranges,
         )
+
+    def _open_udf_member(self, entry: UdfEntry) -> MemberData:
+        """A UDF file's data: inline in its File Entry, or its extents joined.
+
+        Recorded extents that overlap each other are refused as corrupt, as for an
+        ISO 9660 multi-extent file: no writer makes them, and they would let a small
+        image list a file many times its size. An extent allocated but not recorded
+        reads as zeros. An extent past the end of the image is read as far as the
+        image goes and the extents after it are dropped, so the adapter's size check
+        makes the short read a ``TruncatedError``.
+        """
+        if entry.inline is not None:
+            return MemberData(io.BytesIO(entry.inline), bounded=True)
+        end = -1
+        for start, length in sorted(
+            (span.offset, span.length)
+            for span in entry.spans
+            if span.offset is not None and span.length
+        ):
+            if start < end:
+                raise CorruptionError(
+                    "UDF file stored in extents that overlap each other",
+                    source_format=self._format,
+                    archive_name=self._archive_name,
+                )
+            end = start + length
+        kept: list[Span] = []
+        for span in entry.spans:
+            if span.offset is None:
+                kept.append(span)
+                continue
+            present = max(0, min(span.length, self._image_length - span.offset))
+            if present:
+                kept.append(Span(span.offset, present))
+            if present < span.length:
+                break
+        ranges = tuple(
+            (span.offset, span.offset + span.length)
+            for span in kept
+            if span.offset is not None
+        )
+        if isinstance(self._source, CookedSource):
+            ranges = tuple(self._source.raw_range(*span) for span in ranges)
+        elif isinstance(self._source, DiscSource):
+            ranges = ()
+        streams: list[BinaryIO] = []
+        try:
+            for span in kept:
+                streams.append(
+                    cast(BinaryIO, ZeroRun(span.length))
+                    if span.offset is None
+                    else self._source.view(span.offset, span.length)
+                )
+            stream: BinaryIO
+            if len(streams) == 1:
+                stream = streams[0]
+            elif not streams:
+                stream = self._source.view(0, 0)
+            else:
+                stream = JoinedViews(streams)
+        except BaseException:
+            for part in streams:
+                part.close()
+            raise
+        return MemberData(stream, bounded=True, ranges=ranges)
 
     def _data_stream(
         self,
@@ -3123,6 +3275,13 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
+        if self._namespace == "udf":
+            assert self._udf is not None
+            return ReaderArchiveInfo(
+                format_version=None,
+                comment=self._udf.volume_identifier or None,
+                extra=ArchiveInfoExtra({"iso.namespace": self._namespace}),
+            )
         pvd = self._iso.pvd
         # The standard allows d-characters only, but writers store the -V text as it
         # was given (xorriso: UTF-8). It records no charset, as a Rock Ridge name does
@@ -3268,6 +3427,9 @@ class IsoHandler(IndexedFormatHandler):
     # internal/detection.py).
     magic = (
         Magic(32769, b"CD001"),
+        # A UDF-only image (a Blu-ray disc, say) starts its Volume Recognition
+        # Sequence with "BEA01" where an ISO 9660 image has its primary descriptor.
+        Magic(32769, b"BEA01"),
         # A raw CD sector dump (a ``.bin``). Mode 1 and Mode 2 Form 1 are read through
         # ``cooked_source``; other layouts are refused by name in open_archive (see
         # refuse_raw_sector_image) rather than failing detection.

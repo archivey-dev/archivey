@@ -608,17 +608,18 @@ members, and the bytes are records as stored, System Use areas included, not onl
 text kept. An image right at a cap can therefore be refused at open. Below the caps
 `pycdlib` still builds the whole tree, so memory at open stays linear in the records the
 budget allows: about 0.8 KB per plain record measured, so roughly 210 MB per tree at the
-default `max_members`. The UDF tree `pycdlib` also walks is counted as one more tree,
-though archivey lists no UDF namespace: each File Identifier but the parent entry is a
-member, and each File Identifier and each File Entry, with the extended attributes and
-allocation descriptors it declares, is weighed against `max_metadata_bytes`, the File
-Entry before `pycdlib` parses it. `pycdlib` keeps every tree it walked, so
+default `max_members`. The UDF tree, which archivey's own parser (`udf.py`) walks whole
+at open, listed or not, is counted as one more tree: each File Identifier but the parent
+entry and deleted ones is a member, and each directory's data and each File Entry, with
+the extended attributes and allocation descriptors it declares, is weighed against
+`max_metadata_bytes`, a directory before it is read. Every tree is kept once parsed, so
 `max_metadata_bytes` is one sum for the whole image, every tree together (ruled by davi,
 2026-10-10; reasons and the reopen condition in `dev-docs/formats/iso.md` §2.2). A
 budget per tree let an image carrying all three trees peak near 2.6 GiB at the limits of
 the time (`max_members` 1,048,576): a PVD tree and a Joliet tree at about 1 GiB each,
-plus a UDF tree, where a name weighs at least about 220 bytes and was measured at about
-2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB. `max_members` stays
+plus a UDF tree, where a name weighs at least about 220 bytes (measured at about 2.1 KB
+retained when `pycdlib` parsed it; archivey's parser keeps a few hundred bytes a name),
+stopped by 64 MiB near 300,000 names. `max_members` stays
 per tree, because a Joliet tree repeats every file and one count would halve the cap for
 such an image. At the default `max_members` of 262,144 the member cap per tree binds
 before the byte sum: two trees hold at most 524,288 records, about 0.42 GB at 0.8 KB
@@ -1085,15 +1086,15 @@ pycdlib before 1.22 looped forever when corrupt directory records formed a back-
 in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
 UDF File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
 default limits. From 1.22, the minimum archivey requires, pycdlib detects the loop and
-raises "ISO Directory Records form a loop" or "UDF File Entries form a loop", which
-archivey reports as `CorruptionError`. So a looping tree is refused at open, in any tree
-pycdlib walks.
+raises "ISO Directory Records form a loop", which archivey reports as `CorruptionError`.
+archivey's own UDF walk (pycdlib's is off inside archivey's open) enters each directory
+once and refuses one named again. So a looping tree is refused at open, in any tree.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+Ridge and Joliet), `::test_a_udf_directory_cycle_is_refused_at_open` (UDF).
 `tests/test_cve_regressions_7z_rar.py` replays published 7z and RAR reader advisories
 on hand-built headers: a COPY folder short of its size, a cyclic coder graph, huge
 declared counts (with an allocation bound), pack-stream counts that must parse in

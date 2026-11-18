@@ -1144,13 +1144,15 @@ other members because of a member's name any more. Setting it to `True` warns.
 
 - **Needs:** `[recommended]` (`pycdlib` 1.22 or later).
 - **Listing:** from the image's directory records. The namespace is chosen automatically, Rock
-  Ridge, then Joliet, then plain ISO 9660, and reported in `ArchiveInfo.extra["iso.namespace"]`.
+  Ridge, then UDF, then Joliet, then plain ISO 9660, and reported in
+  `ArchiveInfo.extra["iso.namespace"]`. An image with only a UDF file system, as on most Blu-ray
+  discs, is recognised and read too.
 - **Reading members:** direct. With `concurrent_operations=True`, reads share one file handle and
   take turns on it, as in TAR.
 - **From a pipe:** no; an ISO needs a source that can seek.
 - `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
 - `ArchiveInfo.comment` is the volume identifier (`-V`), decoded as a plain ISO 9660 name is:
-  UTF-8 first, then `encoding=`, then escaped.
+  UTF-8 first, then `encoding=`, then escaped. When UDF is listed, it is the UDF volume's name.
 
 ### Names
 
@@ -1160,7 +1162,8 @@ other members because of a member's name any more. Setting it to `True` warns.
   line up, with a `member_name_encoding_inferred` diagnostic, and is escaped otherwise
   ([Names in other encodings](opening.md#names-in-other-encodings)).
 - Joliet names are UTF-16 and ignore `encoding=`. They can hold an
-  [unpaired surrogate](#names-with-an-unpaired-surrogate).
+  [unpaired surrogate](#names-with-an-unpaired-surrogate). UDF names are Latin-1 or UTF-16, as
+  each name says, and ignore `encoding=` too.
 - Plain ISO 9660 and Joliet file names lose their `;N` version suffix (and the `.` of an empty
   extension), and `extra["iso.version"]` keeps the number. Many writers put `;1` on Joliet names
   too, and Windows and Linux drop it there as well. When a directory holds several versions of one
@@ -1173,12 +1176,12 @@ other members because of a member's name any more. Setting it to `True` warns.
   which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory
   are listed in the order of their records on the disc.
 - An image carries up to three name trees over one set of files: Rock Ridge (on the plain ISO
-  9660 records), which Linux reads and archivey lists; Joliet, which 7-Zip and Windows read; and
-  UDF, which Windows reads first. Without Rock Ridge archivey lists Joliet, and a reader without
-  Joliet reads the plain tree. A file that only an unlisted tree holds is not a member, so it is
-  reported with `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
-  `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It is advisory:
-  `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses such an image.
+  9660 records), which Linux reads and archivey lists first; UDF, which Windows and 7-Zip read
+  first; and Joliet, which they read when there is no UDF. Without Rock Ridge archivey lists UDF,
+  then Joliet, and a reader without Joliet reads the plain tree. A file that only an unlisted tree
+  holds is not a member, so it is reported with `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`,
+  `file_only_in_iso9660`, `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It
+  is advisory: `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses such an image.
 
 ### Contents
 
@@ -1193,7 +1196,11 @@ other members because of a member's name any more. Setting it to `True` warns.
   `CorruptionError`.
 - The El Torito boot catalog of a bootable image (`boot.catalog`, `BOOT.CAT`) is listed as an ordinary
   file, with the catalog's bytes as its data, as a mounted image shows it.
-- A Rock Ridge device node, FIFO or socket over an empty extent follows
+- A UDF member gets its permission bits, owner and group from the UDF file entry, and a UDF
+  symbolic link its target. A UDF file system on a rewritable or incrementally written disc (a
+  sparable or virtual partition) is not read: the image lists another tree when it has one, and
+  `open_archive` raises `UnsupportedFeatureError` when it has none.
+- A Rock Ridge or UDF device node, FIFO or socket over an empty extent follows
   [the shared rule](#device-files-fifos-and-sockets); over a non-empty extent it is a `FILE`.
 - The `rr_moved` directory that holds relocated deep subtrees is not listed; those subtrees appear
   at their logical place.
@@ -1209,16 +1216,14 @@ other members because of a member's name any more. Setting it to `True` warns.
 ### Damage and endings
 
 - An image whose directory tree loops back on itself, in any of its trees (ISO 9660, Joliet or UDF),
-  is refused at open with `CorruptionError`, even when the tree archivey lists from is intact.
-  pycdlib finds the loop. No tool writes such an image; a damaged or crafted one can.
+  is refused at open with `CorruptionError`, even when the tree archivey lists from is intact. No
+  tool writes such an image; a damaged or crafted one can.
 - A truncated image opens as long as its directories survive, and lists the sizes its records
   declare. A file the cut reaches reads the bytes that survive and then raises `TruncatedError`;
   files before the cut read normally. A file whose declared length cannot be recovered lists with
   `size` set to `None`. A cut that reaches the volume descriptors, path tables or directories makes
-  `open_archive` raise `TruncatedError`.
-- An image with UDF does not open once it is truncated at all, even when the files before the cut
-  survive: `open_archive` raises `TruncatedError`, because the UDF anchor that pycdlib reads is in
-  the image's last block.
+  `open_archive` raise `TruncatedError`, and so does one that reaches the UDF anchor at block 256
+  or a UDF file entry or directory.
 - **Bytes after the image's end** are `ARCHIVE_TRAILING_DATA` with `format="iso"`. The end counts
   the partitions the image's MBR lists, and those of its GPT when the GPT's checksums match, so a
   hybrid installer image, whose EFI partition and GPT backup header sit after the ISO 9660 volume
