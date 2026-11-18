@@ -790,13 +790,13 @@ comparison with the CDH that reports a mismatch), slices the source, and dispatc
 the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
-BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP, and XZ (95), Shrink (1), Reduce (2 to 5), Implode
-(6) and DCL Implode (10), which are core. It also puts ZIP member reads on the same
-`VerifyingStream` and the same exception translation as every other backend, so a corrupt
-body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
-code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
-since `use_rapidgzip` covers raw deflate.
+BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93, and 20 from APPNOTE 6.3.7)
+and PPMd (98), which the registry already advertised for ZIP, and XZ (95), Shrink (1),
+Reduce (2 to 5), Implode (6) and DCL Implode (10), which are core. It also puts ZIP
+member reads on the same `VerifyingStream` and the same exception translation as every
+other backend, so a corrupt body raises `CorruptionError` and a cut-short one raises
+`TruncatedError` through shared code — and it is what lets a ZIP member use the
+accelerators when the caller turns them on, since `use_rapidgzip` covers raw deflate.
 
 **Codec settings 7-Zip names but this reader cannot decode are unsupported, not
 corrupt.** An LZMA member's properties byte with `lc + lp` over 4 (7-Zip accepts up to
@@ -822,18 +822,18 @@ declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data E
 or "There are some data after the end of the payload data"), and the bytes may be a side
 channel (`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError`
 of an unconfirmed password instead, caused by that `CorruptionError`, as the verify
-table below records. A Zstd member (method 93) reads every frame, skippable ones too, as
-a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more frames,
-and the member's sizes and CRC check the whole output (maintainer, 2026-10-21). Bytes
-after the last frame that start no frame are refused like any other input after the end. An
-XZ member (method 95) reads the same way, for the same reason: the xz format (spec §2.2)
-defines its data as one or more streams with stream padding (groups of four zero bytes)
-between and after them, and 7-Zip 23.01 and 26.05 read such a member in full. Zero bytes that
-do not fill a group of four, or any other byte after the last stream, are input after the
-end; 7-Zip fails those members too. An LZMA member with bit 1 clear, and a PPMd member,
-end at their declared size, and their input must end there too: right after it for LZMA
-(or one zero byte later, which 7-Zip's encoder sometimes writes), after the end mark
-PPMd8 must carry. So a declared size short
+table below records. A Zstd member (method 93 or 20) reads every frame, skippable ones
+too, as a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more
+frames, and the member's sizes and CRC check the whole output (maintainer, 2026-10-21).
+Bytes after the last frame that start no frame are refused like any other input after
+the end. An XZ member (method 95) reads the same way, for the same reason: the xz format
+(spec §2.2) defines its data as one or more streams with stream padding (groups of four
+zero bytes) between and after them, and 7-Zip 23.01 and 26.05 read such a member in
+full. Zero bytes that do not fill a group of four, or any other byte after the last
+stream, are input after the end; 7-Zip fails those members too. An LZMA member with bit
+1 clear, and a PPMd member, end at their declared size, and their input must end there
+too: right after it for LZMA (or one zero byte later, which 7-Zip's encoder sometimes
+writes), after the end mark PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
 not short. Shrink (method 1) and Implode (method 6) have no end marker at all, so the
 declared size is their end too: the bits left in the last byte are padding, and a whole
@@ -1288,6 +1288,7 @@ ours.
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
+| Read method 20 as Zstandard, as 93 | APPNOTE 6.3.7 gave Zstandard id 20 and 6.3.8 deprecated it for 93; the member data is the same Zstandard stream, so an archive written with the old id reads instead of being refused. Both ids share the codec, its window limits and the password-confirmation rung | Refusing 20 as an unknown method |
 | archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
 | Under rapidgzip, check a DEFLATE member's end from the last point of rapidgzip's complete index (2026-10-24) | The check finds a cut stream and bytes after the last stream for the cost of the tail, where the index has a point before the end; where it has none (seen on the windows-latest CI runner) the check decodes from the start and costs what it did before. The complete index makes the result the same on every run on one machine, where the points a stream keeps as it reads depend on timing | A zlib decode from the start, which doubled a full read under rapidgzip (about 500 ms against 320 ms without it, 40 MiB member); a parallel zlib check of the stretches between resume points, prototyped at about 300 ms, which still costs as much as the read rapidgzip replaces |
 | Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |

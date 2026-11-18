@@ -27,6 +27,7 @@ from __future__ import annotations
 import struct
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
@@ -265,28 +266,18 @@ _U16 = struct.Struct(">H")
 _U32 = struct.Struct(">I")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
 class LzopHeader:
-    """The fields of an lzop file header that archivey uses."""
+    """The fields of an lzop file header that archivey uses. Compared by value: a seek
+    point at a block carries its file's header, and two decodes parse equal ones."""
 
-    __slots__ = ("flags", "length", "method", "mode", "mtime", "name")
-
-    def __init__(
-        self,
-        *,
-        flags: int,
-        method: int,
-        mode: int,
-        mtime: int,
-        name: bytes,
-        length: int,
-    ) -> None:
-        self.flags = flags
-        self.method = method
-        self.mode = mode
-        self.mtime = mtime
-        self.name = name
-        # The header's length from the magic through its checksum and extra field.
-        self.length = length
+    flags: int
+    method: int
+    mode: int
+    mtime: int
+    name: bytes
+    # The header's length from the magic through its checksum and extra field.
+    length: int
 
 
 def parse_lzop_header(
@@ -431,6 +422,27 @@ class LzopDecompressor:
         self._header: LzopHeader | None = None
         self._ended = False
         self.unused_data = b""
+        # Input bytes parsed and output bytes decoded since this decompressor started,
+        # and the blocks begun since ``take_block_starts`` last asked
+        # (``BlockResumable``).
+        self._consumed = 0
+        self._decoded = 0
+        self._block_starts: list[tuple[int, int, object]] = []
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]:
+        """The blocks decoded and checked since the last call: their input and output
+        offsets from this decompressor's start, and the file's header, which is what
+        :meth:`resume` needs. lzop compresses every block on its own, and its
+        checksums cover one block, so a decode can start at any block."""
+        starts, self._block_starts = self._block_starts, []
+        return starts
+
+    def resume(self, state: object) -> None:
+        """Start inside a file whose header is ``state``: the input begins at a block
+        header."""
+        assert isinstance(state, LzopHeader)
+        assert self._header is None and not self._in
+        self._header = state
 
     @property
     def eof(self) -> bool:
@@ -479,6 +491,7 @@ class LzopDecompressor:
                 return False
             self._header = header
             del buf[: header.length]
+            self._consumed += header.length
             return True
         flags = self._header.flags
         if len(buf) < 4:
@@ -538,6 +551,9 @@ class LzopDecompressor:
         check(d_crc, zlib.crc32(block), "data")
         del buf[: pos + src_len]
         self._out += block
+        self._block_starts.append((self._consumed, self._decoded, self._header))
+        self._consumed += pos + src_len
+        self._decoded += dst_len
         return True
 
 

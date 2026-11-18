@@ -489,7 +489,7 @@ SHALL be reported the same way.
 A stream that exposes no seek-point table SHALL be treated as resuming from the origin.
 For a *decompressing* stream — the only kind this event applies to — that is the truth
 rather than a guess, and it is what keeps the index-less codecs (stdlib LZMA Alone,
-brotli, lz4) reporting.
+brotli, a one-frame LZ4 file) reporting.
 
 The event SHALL live on the stream operation and cumulative owning-reader
 aggregate, never on `CostReceipt` or `ArchiveInfo`. Gzip/bzip2/deflate/zlib context names the
@@ -520,7 +520,7 @@ first. See `diagnostics` for the general rule.
 | One-frame zstd stream rewinds | Re-decompresses from start in place; one occurrence when above the threshold |
 | Multi-frame zstd stream rewinds within one frame | Resumes at that frame's start; no occurrence unless the progress since that frame passes the threshold |
 | Stdlib-fallback zlib/deflate stream rewinds | One occurrence naming the `[seekable]` accelerator |
-| Stream with no seek-point table (stdlib LZMA Alone, brotli, lz4) | Resume point is the origin; one occurrence once progress passes the threshold |
+| Stream with no seek-point table (stdlib LZMA Alone, brotli, one-frame LZ4) | Resume point is the origin; one occurrence once progress passes the threshold |
 | `STORED` member seeks backward | No occurrence, at any distance |
 
 ### Requirement: Recoverable seek-index degradation is diagnostic data
@@ -800,6 +800,33 @@ index (§"rapidgzip is the only gzip and bzip2 accelerator").
 | Seek forward past the points read so far | Decodes on from the last point |
 | A resumed decode reaches the end-of-stream marker | Its combined CRC is checked from the point's state; no decode from the start |
 | Concatenated streams | Each stream's blocks are points; the combined CRC restarts with each stream |
+| Stream opened with neither seek demand nor restart points | No points |
+
+### Requirement: lzop, legacy LZ4 and Snappy blocks are seek points, found while decoding
+
+On declared seek demand or restart points every lzop block, every block of a legacy LZ4
+stream and every Snappy data chunk that a decode passes SHALL be a seek point, recorded
+when a forward read reaches it. Each of these formats compresses every block on its own,
+and none has a check that covers more than one block, so a decode resumed at a block
+SHALL check every block after it as a decode from the start does, and give the same
+bytes and errors. An lzop point carries its file's header as its resume state; a Snappy
+point carries the chunk's offset in the stream, so error messages after a resume name
+the same offsets. LZ4 frames SHALL be seek points at the start of every frame after the
+first, as zstd frames are; a frame's blocks SHALL NOT be points, since a decode that
+starts inside a frame could not check its xxHash32 checksums. No walk finds these points
+without decoding. A stream opened with neither seek demand nor restart points SHALL keep
+no points.
+
+#### Scenario: block point matrix
+
+| Case | Expected |
+| --- | --- |
+| Read forward, then seek back into block N | Decoding resumes at block N's start |
+| A block after the resumed one is damaged | Its check raises, as from the start |
+| Concatenated lzop files | Each file's blocks are points; a resume in a later file uses that file's header |
+| Snappy chunk damaged after a resume | The error names the chunk's offset in the stream |
+| Several LZ4 frames | Each frame after the first starts a point |
+| One LZ4 frame | Only the origin |
 | Stream opened with neither seek demand nor restart points | No points |
 
 ### Requirement: gzip decodes record zlib snapshot points

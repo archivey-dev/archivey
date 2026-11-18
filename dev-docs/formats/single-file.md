@@ -86,14 +86,16 @@ last member's size, which is why archivey never reports it as the file's size.
 
 **Decoding runs forward, and random access needs points to resume from.** A decoder
 reaches offset N by decoding everything before it, unless the stream has places where
-decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
-index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib, raw), the
-standard library engine also keeps its own on declared seek demand or restart points: a
-copy of zlib's decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3;
-none under PyPy). Where there are none, and for most files there are none (default `xz`
-writes one block, `lzip` one member, and `plzip` one member for a small file), a
-backward seek decodes again from byte zero. The decode engine (§2.3) keeps the points it
-finds and reports a backward seek that costs more than a megabyte.
+decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, zstd and
+LZ4 frames, bzip2 and bzip3 blocks, lzop blocks, legacy LZ4 blocks, Snappy data chunks,
+and the index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib,
+raw), the standard library engine also keeps its own on declared seek demand or restart
+points: a copy of zlib's decoder state about every MiB a read passes
+([`gzip.md`](gzip.md) §2.3; none under PyPy). Where there are none, and for most files
+there are none (default `xz` writes one block, `lzip` one member, and `plzip` one member
+for a small file), a backward seek decodes again from byte zero. The decode engine
+(§2.3) keeps the points it finds and reports a backward seek that costs more than a
+megabyte.
 
 ## 2. The pipeline here
 
@@ -283,10 +285,13 @@ Where resume points come from, per codec:
 | `.Z` | Every CLEAR code, which `compress` emits when the dictionary stops paying |
 | gzip | On declared seek demand or restart points: every member after the first, recorded as a forward read reaches it, and a zlib snapshot about every MiB inside a member (none under PyPy); on declared seek demand only, every BGZF member, walked without decoding ([`gzip.md`](gzip.md) §2.3). With `rapidgzip` engaged, its own index, built as it decodes |
 | zlib, raw DEFLATE | None natively. With `rapidgzip` engaged, its own index, built as it decodes; without it, on declared seek demand or restart points, zlib snapshots a read has passed (`gzip.md` §2.3; none under PyPy) |
-| bzip2 | None natively. With `rapidgzip` engaged, its own index, built as it decodes |
+| bzip2 | On declared seek demand or restart points: every block the standard library engine checks, recorded as a forward read reaches it; nothing indexes the blocks without decoding ([`bzip2.md`](bzip2.md)). With `rapidgzip` engaged, its own index, built as it decodes |
 | zstd | On declared seek demand or restart points: every regular frame after the first, recorded as a forward read reaches it; on declared seek demand only, every frame the seekable format's seek table lists ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
 | bzip3 | On declared seek demand or restart points: every block after the first, recorded as a forward read reaches it; on declared seek demand only, every block from a walk of the block headers, without decoding ([`bzip3.md`](bzip3.md) §2.1) |
-| LZMA Alone, LZ4, Brotli | None |
+| LZ4 | On declared seek demand or restart points: every frame after the first, and every block of a legacy (`lz4 -l`) stream, recorded as a forward read reaches it. A frame's own blocks are not points ([`zstd-lz4.md`](zstd-lz4.md) §2.3) |
+| lzop | On declared seek demand or restart points: every block, recorded as a forward read reaches it; nothing indexes the blocks without decoding |
+| Snappy | On declared seek demand or restart points: every data chunk with output, recorded as a forward read reaches it; nothing indexes the chunks without decoding |
+| LZMA Alone, Brotli | None |
 
 **The rewind report.** A backward seek emits `STREAM_REWIND_REDECOMPRESSES`, once per
 stream, when the decoded progress it discards reaches 1 MiB

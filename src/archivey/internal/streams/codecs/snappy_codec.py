@@ -14,6 +14,7 @@ from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
+from archivey.internal.streams.codecs.framed_decoder import BLOCKS_ONLY, StreamIndex
 from archivey.internal.streams.codecs.snappy_framed import (
     STREAM_IDENTIFIER,
     SnappyFormatError,
@@ -49,6 +50,16 @@ class SnappyCodec(StreamCodec):
             config.usage,
         )
         return SnappyFramedDecompressor(chunk_decoder(excluded, natives, usage))
+
+    @override
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
+        # Declared seek demand or restart points only, as bzip2 and bzip3: every data
+        # chunk a decode checks is a seek point
+        # (``SnappyFramedDecompressor.take_block_starts``).
+        return BLOCKS_ONLY if config.records_restart_points else None
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:

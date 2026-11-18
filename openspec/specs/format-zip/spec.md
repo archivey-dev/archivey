@@ -45,9 +45,10 @@ pure Python and ended at the member's declared size since neither has an end mar
 the PKZIP 0.9x method Reduce (methods 2 to 5, compression factors 1 to 4), decoded and
 ended the same way, PKWARE DCL Implode (method 10), decoded in core in pure Python and
 ended by its own end code, and extended codecs when their backends are
-installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
-(method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
-SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
+installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93, and
+20 from APPNOTE 6.3.7), PPMD (method 98, ZIP PPMd8 framing via
+`[recommended]`/`pyppmd`). A missing optional backend SHALL raise
+`PackageNotInstalledError`. An unknown/unsupported method id SHALL
 raise `UnsupportedFeatureError`. `format_availability(ZIP)` SHALL report FULL
 when every optional ZIP member codec is installed, else PARTIAL with the missing
 components listed. Encrypted members (ZipCrypto / WinZip AE) SHALL decode the same
@@ -133,7 +134,7 @@ encoder sometimes flushes it past the decoder's last read.
 | DEFLATE member with a second stream that holds the last rapidgzip index point, declared size and CRC covering both, `use_rapidgzip=ON` | Decodes both streams; with the accelerator off, `CorruptionError` |
 | Zstd member with a second frame or a skippable frame after its first, declared size and CRC covering all of it | Decodes every frame, as a `.zst` file does; a declared size or CRC that stops at the first frame raises `CorruptionError` |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
-| ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
+| ZSTD (method 93 or 20) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | XZ (method 95) member, as 7-Zip writes it with `-mm=XZ` | Decodes in core; lists `CompressionAlgorithm.XZ` |
 | XZ member with a second xz stream, or stream padding (groups of four zero bytes) between or after its streams, declared size and CRC covering all of it | Decodes every stream, as an `.xz` file does (7-Zip reads it too) |
 | XZ member with junk, or zero bytes that do not fill a group of four, after its last stream | `CorruptionError` (7-Zip: "Data Error", or "There are some data after the end of the payload data") |

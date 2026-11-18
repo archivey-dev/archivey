@@ -116,6 +116,7 @@ def _layout(
     members: Sequence[tuple[str, bytes | _Zeros]],
     *,
     central_names: dict[str, str] | None = None,
+    central_extras: dict[str, bytes] | None = None,
 ) -> _Layout:
     """A stored ZIP of ``members`` with every stored offset taken modulo 2³².
 
@@ -124,7 +125,8 @@ def _layout(
     data instead of searching it for a descriptor.
 
     ``central_names`` renames entries in the central directory only, so the local
-    header at an offset names another member.
+    header at an offset names another member. ``central_extras`` gives entries an
+    extra-field blob in the central directory only.
     """
     segments: list[tuple[int, bytes]] = []
     central: list[bytes] = []
@@ -163,6 +165,7 @@ def _layout(
             segments.append((pos, struct.pack("<4s3L", b"PK\x07\x08", crc, size, size)))
             pos += 16
         stored_name = (central_names or {}).get(name, name).encode()
+        extra = (central_extras or {}).get(name, b"")
         central.append(
             struct.pack(
                 "<4s4B4HL2L5H2L",
@@ -179,7 +182,7 @@ def _layout(
                 stored,
                 stored,
                 len(stored_name),
-                0,
+                len(extra),
                 0,
                 0,
                 0,
@@ -187,6 +190,7 @@ def _layout(
                 offsets[-1] % _WRAP,
             )
             + stored_name
+            + extra
         )
     directory = b"".join(central)
     cd_offset = pos
@@ -245,6 +249,29 @@ def test_offsets_wrapped_past_4_gib_are_corrected() -> None:
         (layout.offsets[2] - _WRAP, layout.offsets[2]),
         (layout.cd_offset - _WRAP, layout.cd_offset),
     ]
+
+
+@pytest.mark.parametrize("corrected", [False, True], ids=["stored", "corrected"])
+def test_an_unused_zip64_offset_is_compared_with_the_stored_offset(
+    corrected: bool,
+) -> None:
+    # A ZIP64 field that no entry field defers to: a reader that takes it anyway
+    # reads the offset as stored, so only a value other than the stored one differs,
+    # however the walk corrects the offset.
+    stored = _layout(_PAST_4_GIB).offsets[1] % _WRAP
+    offset = stored + _WRAP if corrected else stored
+    size = len(b"bee " * 8)
+    zip64 = struct.pack("<HHQQQ", 1, 24, size, size, offset)
+    layout = _layout(_PAST_4_GIB, central_extras={"b.txt": zip64})
+    with _open(layout) as reader:
+        members = reader.members()
+        assert reader.read(members[1]) == b"bee " * 8
+        reported = [
+            (d.context.member_name, d.context.field)
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+        ]
+    assert reported == ([("b.txt", "local header offset")] if corrected else [])
 
 
 def test_extraction_of_the_members_past_4_gib(tmp_path) -> None:
