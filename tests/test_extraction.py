@@ -5803,6 +5803,39 @@ def test_a_link_fan_out_checks_one_source_path_per_link(
     assert calls <= 4 * n
 
 
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_whose_parent_replaces_its_sources_only_path_is_held(
+    tmp_path: Path, held: bool
+) -> None:
+    # On a case-insensitive filesystem only. `a` lands on the file `A` (STRICT folds
+    # the names), so its record is `A`. Making room for `a/x` replaces that file with
+    # the directory `a`, under a spelling the record does not use. With `src1`
+    # excluded `A` was the only copy, so `a/x` is held back, as when `src1` is made
+    # it links to `src1`.
+    if case_sensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem")
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("file", "A", b"f0"),
+            ("hard", "a", "src1"),
+            ("hard", "a/x", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            policy=ExtractionPolicy.STRICT,
+            members=(lambda m: m.name != "src1") if held else None,
+            on_error=OnError.CONTINUE,
+        )
+    statuses = [(r.member.name, r.status) for r in report.results]
+    assert statuses[-1] == ("a/x", ExtractionStatus.EXTRACTED), statuses
+    assert (dest / "a" / "x").read_bytes() == b"1"
+
+
 def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
     tmp_path: Path,
 ) -> None:
