@@ -904,6 +904,14 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        if config.probe_read_bound is not None:
+            # A detection probe reads a few hundred bytes that never reach the
+            # caller, so it takes them before the block's CRC is checked. Holding them
+            # would decode and hold the whole first block's output, up to 46.6 MB for
+            # a crafted block (dev-docs/formats/bzip2.md §2.3), and the open after
+            # detection decodes that block again. That open checks every block, so a
+            # damaged first block raises there.
+            return config.natives.bz2_decompressor()
         # One block at a time, each block's output held until its CRC passes
         # (``bzip2_blocks``).
         return Bzip2BlockDecompressor(
