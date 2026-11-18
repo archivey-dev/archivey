@@ -48,8 +48,8 @@ MUST NOT implicitly buffer or copy the image to make it seekable.
 The ISO backend SHALL select the richest available namespace in priority order:
 Rock Ridge, then UDF, then Joliet, then plain ISO 9660. It SHALL report the selection in
 `ArchiveInfo.extra["iso.namespace"]`. A UDF tree that uses a sparable or virtual
-partition is not a candidate when the image has an ISO 9660 tree; a UDF-only image with
-one SHALL raise `UnsupportedFeatureError`.
+partition, or extended allocation descriptors, is not a candidate when the image has an
+ISO 9660 tree; a UDF-only image with one SHALL raise `UnsupportedFeatureError`.
 
 | Namespace | Reported value | Filename fidelity | POSIX metadata |
 | --- | --- | --- | --- |
@@ -68,7 +68,7 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Image contains UDF but no Rock Ridge | Use UDF names and metadata; `iso.namespace="udf"` |
 | UDF-only image (no ISO 9660 primary volume descriptor; `BEA01` at offset 32 769) | Detected as ISO; UDF names and metadata; `iso.namespace="udf"` |
 | UDF tree in a metadata partition (UDF 2.50 and later), with Extended File Entries, data inside the File Entry, continued allocation extents or unrecorded extents | Lists and reads; an unrecorded extent reads as zeros |
-| UDF tree with a sparable or virtual partition, beside an ISO 9660 tree / alone | The next namespace is used / `UnsupportedFeatureError` at open |
+| UDF tree with a sparable or virtual partition or extended allocation descriptors, beside an ISO 9660 tree / alone | The next namespace is used / `UnsupportedFeatureError` at open |
 | Image contains Joliet but no Rock Ridge and no UDF | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
 | Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
 | Rock Ridge symlink | Symlink metadata is available through the selected namespace |

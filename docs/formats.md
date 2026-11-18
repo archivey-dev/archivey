@@ -1198,8 +1198,9 @@ other members because of a member's name any more. Setting it to `True` warns.
   file, with the catalog's bytes as its data, as a mounted image shows it.
 - A UDF member gets its permission bits, owner and group from the UDF file entry, and a UDF
   symbolic link its target. A UDF file system on a rewritable or incrementally written disc (a
-  sparable or virtual partition) is not read: the image lists another tree when it has one, and
-  `open_archive` raises `UnsupportedFeatureError` when it has none.
+  sparable or virtual partition), or one that uses extended allocation descriptors, is not read:
+  the image lists another tree when it has one, and `open_archive` raises
+  `UnsupportedFeatureError` when it has none.
 - A Rock Ridge or UDF device node, FIFO or socket over an empty extent follows
   [the shared rule](#device-files-fifos-and-sockets); over a non-empty extent it is a `FILE`.
 - The `rr_moved` directory that holds relocated deep subtrees is not listed; those subtrees appear
