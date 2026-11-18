@@ -532,9 +532,35 @@ class SnappyFramedDecompressor:
         self._identified = False
         self._ended = False
         self._output = memoryview(b"")
-        # Offset in the stream of the start of ``_input``, for error messages.
+        # Offset in the stream of the start of ``_input``, for error messages and seek
+        # points; where this decompressor started in the stream (not 0 after
+        # :meth:`resume`); and the output decoded since then.
         self._offset = 0
+        self._base = 0
+        self._decoded = 0
+        # The data chunks begun since ``take_block_starts`` last asked
+        # (``BlockResumable``).
+        self._block_starts: list[tuple[int, int, object]] = []
         self.unused_data = b""
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]:
+        """The data chunks decoded and checked since the last call: their input and
+        output offsets from this decompressor's start, and the chunk's offset in the
+        stream, what :meth:`resume` takes. Every chunk is a raw block of its own with
+        its own CRC-32C, and nothing in the stream covers more than one chunk, so a
+        decode can
+        start at any data chunk."""
+        starts, self._block_starts = self._block_starts, []
+        return starts
+
+    def resume(self, state: object) -> None:
+        """Start inside a stream: the input begins at the data chunk at offset
+        ``state`` in the stream, after the stream identifier. Error messages go on
+        naming offsets in the stream."""
+        assert isinstance(state, int)
+        assert not self._identified and not self._input
+        self._identified = True
+        self._offset = self._base = state
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
         if self._ended and data:
@@ -611,6 +637,9 @@ class SnappyFramedDecompressor:
                 if masked_crc(crc) != stored:
                     raise SnappyFormatError(f"CRC-32C mismatch in chunk at offset {at}")
                 self._output = memoryview(data)
+                if data:
+                    self._block_starts.append((at - self._base, self._decoded, at))
+                    self._decoded += len(data)
                 return True
             if kind < _FIRST_SKIPPABLE:
                 raise SnappyFormatError(

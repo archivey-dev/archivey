@@ -86,14 +86,16 @@ last member's size, which is why archivey never reports it as the file's size.
 
 **Decoding runs forward, and random access needs points to resume from.** A decoder
 reaches offset N by decoding everything before it, unless the stream has places where
-decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, and the
-index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib, raw), the
-standard library engine also keeps its own on declared seek demand or restart points: a
-copy of zlib's decoder state about every MiB a read passes ([`gzip.md`](gzip.md) §2.3;
-none under PyPy). Where there are none, and for most files there are none (default `xz`
-writes one block, `lzip` one member, and `plzip` one member for a small file), a
-backward seek decodes again from byte zero. The decode engine (§2.3) keeps the points it
-finds and reports a backward seek that costs more than a megabyte.
+decoding can restart: xz blocks and streams, lzip members, `.Z` CLEAR codes, zstd and
+LZ4 frames, bzip2 and bzip3 blocks, lzop blocks, legacy LZ4 blocks, Snappy data chunks,
+and the index `rapidgzip` builds as it reads gzip or bzip2. For DEFLATE (gzip, zlib,
+raw), the standard library engine also keeps its own on declared seek demand or restart
+points: a copy of zlib's decoder state about every MiB a read passes
+([`gzip.md`](gzip.md) §2.3; none under PyPy). Where there are none, and for most files
+there are none (default `xz` writes one block, `lzip` one member, and `plzip` one member
+for a small file), a backward seek decodes again from byte zero. The decode engine
+(§2.3) keeps the points it finds and reports a backward seek that costs more than a
+megabyte.
 
 ## 2. The pipeline here
 

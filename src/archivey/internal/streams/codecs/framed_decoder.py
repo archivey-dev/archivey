@@ -88,7 +88,8 @@ class FrameCheck:
 
 
 class BlockResumable(Protocol):
-    """A decompressor whose stream is a run of blocks it can resume at (bzip3, bzip2).
+    """A decompressor whose stream is a run of blocks it can resume at (bzip3, bzip2,
+    lzop, legacy LZ4, Snappy).
 
     Internal: plugin codecs do not implement it. :class:`FramedDecoder` asks it, after
     each ``decompress``, for the blocks it began: each as the block's compressed and
@@ -116,6 +117,22 @@ class StreamIndex:
 
     resumes_at: Callable[[bytes], bool]
     build: Callable[[BinaryIO, SeekPoint], tuple[list[SeekPoint], int | None]]
+
+
+def no_file_index(
+    inner: BinaryIO, last_known: SeekPoint
+) -> tuple[list[SeekPoint], int | None]:
+    """The :attr:`StreamIndex.build` of a codec with no index in the file: no points,
+    no size."""
+    del inner, last_known
+    return [], None
+
+
+# The :class:`StreamIndex` of a codec whose seek points are the blocks its
+# :class:`BlockResumable` decompressor reports as a decode passes them (bzip2, lzop,
+# legacy LZ4, Snappy): no stream start is kept, since a further stream's first block is
+# a point, and nothing indexes the blocks without decoding them.
+BLOCKS_ONLY = StreamIndex(resumes_at=lambda data: False, build=no_file_index)
 
 
 class MagicStart:
@@ -246,7 +263,7 @@ class FramedDecoder(BaseDecoder):
         self._zero_padding = zero_padding
         self._decomp = new_decompressor()
         if start is not None and start.state is not None:
-            # Only a BlockResumable's points carry a state here (bzip3, bzip2).
+            # Only a BlockResumable's points carry a state here.
             cast("BlockResumable", self._decomp).resume(start.state)
         self._fed = False
         # Past a stream's end, looking for the next one.
