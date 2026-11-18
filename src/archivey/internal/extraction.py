@@ -515,7 +515,10 @@ class _HeldLink:
     (``_forget_source_path``). The second pass fills the name only while it is live
     and still holds that file (``_holds_placeholder``), so a later member that
     replaced it, or re-pointed one of the archive's symlinks on its way, keeps what
-    it put there. ``spelled_from`` is
+    it put there. One found stale only because ``path`` stopped reaching it (a
+    directory on the way became a file) stays live but leaves ``placeholder_at``
+    (``_forget_stale_source_path``): from then on the identity-and-empty check alone
+    guards its fill. ``spelled_from`` is
     ``transformed`` before its disk spelling, when that differs, so an error names it
     as the first pass would (``_MemberState.spelled_from``).
     """
@@ -661,7 +664,9 @@ class _RunState:
     # (``_write_hardlink``): the second pass fills them (``_fill_held_sources``).
     held: dict[int, _HeldSource] = field(default_factory=dict)
     # Each placeholder name, as recorded in ``source_paths``, -> its link, so the
-    # first thing that replaces it marks the link no longer live.
+    # first thing that replaces it marks the link no longer live. A placeholder whose
+    # name stopped reaching it leaves this map but stays live while its file is
+    # intact (``_forget_stale_source_path``); ``_is_placeholder_file`` alone guards it.
     placeholder_at: dict[Path, _HeldLink] = field(default_factory=dict)
     # Superseded copies the filesystem refused to remove, by archive name, as in
     # ``_MemberState.parked``: the next member of that name parks them again.
@@ -3453,8 +3458,13 @@ class ExtractionCoordinator:
         self._drop_replaced_source_paths(source.member_id)
         if source.member_id in state.source_paths:
             # Taken before ``_make_room``: under REPLACE a link can land on one of its
-            # own source's paths, which ``_make_room`` then forgets.
-            on_source = dest_path in state.source_paths[source.member_id]
+            # own source's paths, which ``_make_room`` then forgets. That path counts
+            # only while it is still the recorded file: the walk above stops at the
+            # newest current path, and an older one a member replaced under another
+            # spelling holds that member's bytes.
+            on_source = dest_path in state.source_paths[
+                source.member_id
+            ] and self._source_path_current(dest_path)
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
@@ -4620,8 +4630,8 @@ class ExtractionCoordinator:
         # one once another member replaces it under the same spelling;
         # ``_drop_replaced_source_paths`` and the check below catch one replaced under
         # another spelling (a case variant), by its recorded inode. ``new_path`` can be
-        # stale too: the early return above takes it while it is a regular file, and
-        # the check below skips it when it is not. The check also matters because
+        # stale too: ``on_source`` holds only while it is still the recorded file, and
+        # the check below forgets it when it is not. The check also matters because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,

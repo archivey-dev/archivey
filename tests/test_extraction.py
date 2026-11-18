@@ -5648,6 +5648,44 @@ def test_a_link_source_replaced_under_another_spelling_is_not_linked_to(
     assert (dest / "b").read_bytes() == b"1"
 
 
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_onto_an_older_replaced_source_path_gets_the_source_bytes(
+    tmp_path: Path, held: bool
+) -> None:
+    # As above, the filter replaces `A` the way a case variant would, but `B`, a
+    # newer path of the same source, is still in place. The link `X`, renamed to
+    # `A`, lands on the replaced path: it gets `src1`'s bytes, not the replacement's.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("hard", "A", "src1"),
+            ("hard", "B", "src1"),
+            ("file", "c", b"c"),
+            ("hard", "X", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+
+    def replace_a(member: ArchiveMember) -> ArchiveMember:
+        if member.name == "X":
+            (dest / "A").unlink()
+            (dest / "A").write_bytes(b"other")
+            return member.replace(name="A")
+        return member
+
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            filter=replace_a,
+            overwrite=OverwritePolicy.REPLACE,
+            members=(lambda m: m.name != "src1") if held else None,
+            on_error=OnError.CONTINUE,
+        )
+    assert report.results[-1].status is ExtractionStatus.EXTRACTED
+    assert (dest / "A").read_bytes() == b"1"
+    assert (dest / "B").read_bytes() == b"1"
+
+
 def test_a_link_source_replaced_by_a_folded_name_through_a_symlink_is_not_linked_to(
     tmp_path: Path,
 ) -> None:
