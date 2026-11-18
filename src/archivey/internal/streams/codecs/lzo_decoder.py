@@ -117,6 +117,10 @@ def lzo1x_decompressor(
     return package
 
 
+# Each zero extends a literal or match length by 255 bytes. A C-level search skips
+# long zero runs without a Python step per byte. The callers' zero guard avoids a
+# regex call for a nonzero extension. For one or two zeros, the regex call can cost
+# more than the Python loop.
 _FIND_NONZERO = re.compile(rb"[^\x00]").search
 
 
