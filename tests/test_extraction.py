@@ -5607,6 +5607,46 @@ def test_a_streamed_link_with_no_source_is_skipped_where_random_access_skips_it(
     assert runs[True][-1][1] == "NOT_OVERWRITTEN"
 
 
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_source_replaced_under_another_spelling_is_not_linked_to(
+    tmp_path: Path, held: bool
+) -> None:
+    # On a case-insensitive filesystem a member `a` replaces the file at `A` without
+    # naming `A`. Here the filter stands in for that member: it replaces `A` before
+    # `b` is handled. `b` then gets `src1`'s bytes, not the new file's, and when `A`
+    # held the only copy (a placeholder, `src1` excluded) `b` is held back in its
+    # turn rather than failing.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("hard", "A", "src1"),
+            ("file", "c", b"c"),
+            ("hard", "b", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+
+    def replace_a(member: ArchiveMember) -> ArchiveMember:
+        if member.name == "b":
+            (dest / "A").unlink()
+            if held:
+                (dest / "A").mkdir()
+            else:
+                (dest / "A").write_bytes(b"other")
+        return member
+
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            filter=replace_a,
+            members=(lambda m: m.name != "src1") if held else None,
+            on_error=OnError.CONTINUE,
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["b"] is ExtractionStatus.EXTRACTED
+    assert (dest / "b").read_bytes() == b"1"
+
+
 def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
     tmp_path: Path,
 ) -> None:

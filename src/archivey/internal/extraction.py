@@ -615,6 +615,11 @@ class _RunState:
     # The reverse of ``source_paths``: path -> the one source whose content it holds,
     # so forgetting a path is one lookup however many sources the run has.
     source_of: dict[Path, int] = field(default_factory=dict)
+    # Path -> ``(st_dev, st_ino)`` of the file recorded there, where the filesystem
+    # reports an inode: a later member can replace that file under another spelling (a
+    # case variant on a case-insensitive filesystem), which ``_forget_source_path``,
+    # keyed by spelling, does not see (``_drop_replaced_source_paths``).
+    source_identity: dict[Path, tuple[int, int]] = field(default_factory=dict)
     # Path -> the source it held when it was forgotten, until it is recorded again. A
     # replaced or parked path is forgotten before the Windows read-only clear looks for
     # its other names, and those names are still on this source.
@@ -3445,6 +3450,7 @@ class ExtractionCoordinator:
             parked = self._parked_copy_of(source.member_id)
             if parked is not None:
                 self._record_source_path(source.member_id, parked)
+        self._drop_replaced_source_paths(source.member_id)
         if source.member_id in state.source_paths:
             # Taken before ``_make_room``: under REPLACE a link can land on one of its
             # own source's paths, which ``_make_room`` then forgets.
@@ -3979,6 +3985,7 @@ class ExtractionCoordinator:
         placeholder = state.placeholder_at.pop(path, None)
         if placeholder is not None:
             placeholder.live = False
+        state.source_identity.pop(path, None)
         source_id = state.source_of.pop(path, None)
         if source_id is None:
             return False
@@ -4688,6 +4695,39 @@ class ExtractionCoordinator:
         paths[path] = None
         state.source_of[path] = source_id
         state.forgotten_source.pop(path, None)
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            st = None
+        if st is not None and st.st_ino:
+            state.source_identity[path] = (st.st_dev, st.st_ino)
+        else:
+            state.source_identity.pop(path, None)
+
+    def _drop_replaced_source_paths(self, source_id: int) -> None:
+        """Forget each path of ``source_id`` whose file a later member replaced without
+        ``_forget_source_path`` seeing it: under another spelling of the same entry, as
+        ``a`` replaces ``A`` on a case-insensitive filesystem. Such a path now holds
+        another member's bytes, or a directory. Where the filesystem reports inode 0 a
+        replaced file cannot be told from the recorded one, and the path is kept."""
+        state = self._state
+        paths = state.source_paths.get(source_id)
+        if not paths:
+            return
+        for path in list(paths):
+            identity = state.source_identity.get(path)
+            if identity is None:
+                continue
+            try:
+                st = os.lstat(long_path(path))
+            except OSError:
+                st = None
+            if (
+                st is None
+                or not stat.S_ISREG(st.st_mode)
+                or (st.st_dev, st.st_ino) != identity
+            ):
+                self._forget_source_path(path)
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the
