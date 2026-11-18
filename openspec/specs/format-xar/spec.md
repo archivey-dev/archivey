@@ -2,10 +2,12 @@
 
 ## Purpose
 
-XAR archives (macOS installer packages `.pkg`, `.xip` files, what Apple's `xar`,
-`pkgbuild` and `bsdtar --format xar` write) are read through the unified `ArchiveReader`
-API. The reader is a built-in written against `archivey.formats` and registered with
-`register_builtin_format`. The format handbook is `dev-docs/formats/xar.md`.
+XAR archives (what Apple's `xar` and `bsdtar --format xar` write, and the XAR layer of a
+macOS installer package `.pkg` or `.xip` file opened with `format=ArchiveFormat.XAR`)
+are read through the unified `ArchiveReader` API. A `.pkg` or `.xip` otherwise opens as
+`ArchiveFormat.PKG`, which lists its payloads' files. The reader is a built-in written
+against `archivey.formats` and registered with `register_builtin_format`. The format
+handbook is `dev-docs/formats/xar.md`.
 
 ## Related specs
 
