@@ -1,0 +1,72 @@
+diff --git a/src/archivey/internal/extraction.py b/src/archivey/internal/extraction.py
+index 9dcece28..f6c6f909 100644
+--- a/src/archivey/internal/extraction.py
++++ b/src/archivey/internal/extraction.py
+@@ -663,6 +663,7 @@ class _RunState:
+     # Kept so a REPLACE that removes an empty directory this run wrote can revise
+     # that result to OVERWRITTEN.
+     written_dirs: dict[str, list[int]] = field(default_factory=dict)
++    placeholders: dict[int, tuple[ArchiveMember, list[int]]] = field(default_factory=dict)
+     # Hardlinks whose source was not on disk yet, for the second pass.
+     orphans: list[_Orphan] = field(default_factory=list)
+     # The names those hardlinks hold until the second pass makes them, by collision
+@@ -1227,8 +1228,8 @@ def _run_pass(
+         # Core second pass: resolve orphaned hardlinks whose (re-readable) source was
+         # excluded. Only populated for a seekable source; forward-only orphans already
+         # failed at the link during the main pass.
+-        if state.orphans:
+-            self._resolve_orphans(reader)
++        if state.placeholders:
++            self._fill_placeholders(reader)
+         if listing_damage:
+             raise listing_damage[0]
+ 
+@@ -3466,7 +3467,20 @@ def _write_hardlink(
+                 link_target=source.name,
+                 member_name=transformed.name,
+             )
+-        # Re-readable: resolve in the second pass.
++        # PROTOTYPE: a placeholder file at the link's place, filled in pass 2.
++        declined = self._make_room(original, transformed, dest_path, atomic=True)
++        if declined is not None:
++            return declined
++        if source.member_id in self._state.source_paths:
++            dest_path = self._place_link(
++                source.member_id, dest_path, transformed, on_source=False
++            )
++        else:
++            dest_path = self._write_file_atomic(io.BytesIO(b""), dest_path, transformed)
++            self._record_source_path(source.member_id, dest_path)
++            self._state.placeholders.setdefault(source.member_id, (source, []))
++        self._state.placeholders[source.member_id][1].append(result_index)
++        return ExtractionResult(original, dest_path, ExtractionStatus.EXTRACTED, None)
+         orphan = _Orphan(
+             result_index,
+             original,
+@@ -3480,6 +3494,26 @@ def _write_hardlink(
+         self._reserve_orphan(orphan)
+         return ExtractionResult(original, None, ExtractionStatus.FAILED, None)
+ 
++    def _fill_placeholders(self, reader: BaseArchiveReader) -> None:
++        """PROTOTYPE: write each excluded source's bytes into the inode its
++        placeholders share, found through any of its names still on disk."""
++        state = self._state
++        for source_id, (source, indexes) in state.placeholders.items():
++            live = [
++                i for i in indexes
++                if state.results[i].status is ExtractionStatus.EXTRACTED
++                and state.results[i].path is not None
++            ]
++            paths = [state.results[i].path for i in live] + list(state.source_paths.get(source_id, {}))
++            target = next((p for p in paths if os.path.isfile(p) and not os.path.islink(p)), None)
++            if target is None:
++                continue
++            with contextlib.closing(reader._lazy_member_stream(source)) as data:
++                fd = os.open(target, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
++                with os.fdopen(fd, "wb") as out:
++                    while chunk := data.read(_CHUNK):
++                        out.write(chunk)
++
+     def _reserve_orphan(self, orphan: _Orphan) -> None:
+         """Hold ``orphan``'s name from its place in archive order until the second
+         pass makes it. First in archive order wins a name, so a later member that
