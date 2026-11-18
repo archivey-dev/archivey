@@ -174,10 +174,8 @@ class Lh1Decoder(LhaBitDecoder):
                 if count <= distance:
                     out += out[start : start + count]
                 else:
-                    while count > 0:
-                        step = min(len(out) - start, count)
-                        out += out[start : start + step]
-                        count -= step
+                    pattern = out[start:]
+                    out += (pattern * ((count + distance - 1) // distance))[:count]
             self._left -= len(out) - before
         self._finish()
 
