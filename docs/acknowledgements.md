@@ -91,8 +91,9 @@ archivey against other readers. The tests read them when they are given a copy:
 - **[Apache Commons Compress](https://github.com/apache/commons-compress)'s test archives:** about
   410 files in many formats, read by archivey and by Commons Compress.
 
-Where they are installed, the tests also read their archives with `unar`, lhasa, `cabextract`,
-`bsdtar` and Info-ZIP's `unzip`, and compare.
+Where they are installed, the tests also compare archivey with `unar`, lhasa, `cabextract`,
+`bsdtar` and Info-ZIP's `unzip` on the same archives, and with liblzo2, through
+[python-lzo](https://github.com/jd-boyd/python-lzo), on LZO data.
 
 7-Zip, RARLAB's `rar`, Info-ZIP's `zip`, `lzop`, `bsdtar`, ARJ for Unix, makeself, squashfs-tools,
 `rpmbuild`, `dpkg-deb`, xorriso, [ncompress](https://github.com/valgur/ncompress) and several of
