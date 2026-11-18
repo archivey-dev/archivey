@@ -14,8 +14,10 @@ one accepted difference is the streaming one: a hard link whose source has no wr
 copy left fails on a forward-only stream ("cannot be recovered on a forward-only
 stream"). A streaming run that has one is not compared with the reference, since that
 failure changes members before it as well as after it (a name the link would have
-overwritten stays as it was). The test asserts what still holds there: only hard links
-fail that way, and never in the other runs.
+overwritten stays as it was). The test finds such a link by its "Skipping hardlink"
+warning, since a later copy of the link's name revises its result to ``SUPERSEDED``,
+and asserts what still holds there: only hard links fail that way, and never in the
+other runs.
 
 This started as the design's hand-run fuzzer (the archived
 ``link-extraction-redesign`` change, ``evidence/linkfuzz.py``). A shrunk
@@ -47,6 +49,9 @@ import pytest
 try:
     from hypothesis import example, given, settings, strategies as st
 except ImportError:  # pragma: no cover - [core-only] leg
+    if os.environ.get("ARCHIVEY_LINK_PARITY_EXAMPLES"):
+        # The soak asked for examples: a skip would pass it having run none.
+        raise
     pytest.skip("hypothesis not installed (dev group)", allow_module_level=True)
 
 from archivey import (
@@ -186,16 +191,40 @@ def scratch() -> Iterator[Path]:
     shutil.rmtree(root, ignore_errors=True)
 
 
+class _Unrecoverable(logging.Handler):
+    """Collects the "Skipping hardlink ..." warnings of the streaming exception. The
+    result is not enough: a later copy of the link's name revises the failed link's
+    result to ``SUPERSEDED``, which carries no error."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if _UNRECOVERABLE in message:
+            self.seen.append(message)
+
+
+_UNRECOVERABLE_LOG = _Unrecoverable()
+
+
 @pytest.fixture(autouse=True)
 def _quiet() -> Iterator[None]:
     # Every refused or failed member logs; thousands of runs would flood the output.
-    logging.disable(logging.CRITICAL)
+    # Archivey's records go to the collector alone.
+    archivey_logger = logging.getLogger("archivey")
+    propagate = archivey_logger.propagate
+    archivey_logger.propagate = False
+    archivey_logger.addHandler(_UNRECOVERABLE_LOG)
     yield
-    logging.disable(logging.NOTSET)
+    archivey_logger.removeHandler(_UNRECOVERABLE_LOG)
+    archivey_logger.propagate = propagate
 
 
-# A deeper run outlasts the suite's per-test timeout; the 300 stay under it.
-@pytest.mark.timeout(0 if _EXAMPLES > 300 else 60)
+# A deeper run outlasts the suite's per-test timeout; the 300 stay under it, and keep
+# the suite's ``--timeout``.
+@(pytest.mark.timeout(0) if _EXAMPLES > 300 else lambda f: f)
 @settings(max_examples=_EXAMPLES, derandomize=not _SOAK)
 @given(
     specs=_archives(),
@@ -223,16 +252,20 @@ def test_held_streamed_and_dry_runs_match_the_made_run(
     policy: ExtractionPolicy,
 ) -> None:
     data = _tar(specs)
+    _UNRECOVERABLE_LOG.seen.clear()
     base = Path(tempfile.mkdtemp(dir=scratch))
     try:
         kw = {"overwrite": overwrite, "policy": policy}
         ref = _extract(data, base / "ref", **kw)
         held = _extract(data, base / "held", held=True, **kw)
         assert _outcome(held) == _outcome(ref), "held-back links differ from made ones"
+        # The sources are left out of the comparison: the reference writes them.
+        assert not any((base / "held" / name).exists() for name in _SOURCES)
         dry = _extract(data, base / "dry", dry=True, **kw)
         assert _outcome(dry)[0] == _outcome(ref)[0], "the dry run differs"
         for run in (ref, held, dry):
             assert not any(_UNRECOVERABLE in error for *_, error in run[0])
+        assert not _UNRECOVERABLE_LOG.seen
         stream = _extract(data, base / "stream", streaming=True, **kw)
         kinds = [(name, kind) for kind, name, _ in specs if name not in _SOURCES]
         # A directory member's name has a trailing slash in the results.
@@ -242,9 +275,21 @@ def test_held_streamed_and_dry_runs_match_the_made_run(
             for (_, kind), (*_, error) in zip(kinds, stream[0], strict=True)
             if _UNRECOVERABLE in error
         ]
-        # The documented streaming difference, which only a hard link meets.
+        # The documented streaming difference, which only a hard link meets. The log
+        # also has the links whose results a later copy of their name revised.
         assert set(unrecoverable) <= {"hard"}
-        if not unrecoverable:
+        assert all(m.startswith("Skipping hardlink ") for m in _UNRECOVERABLE_LOG.seen)
+        if not _UNRECOVERABLE_LOG.seen:
             assert _outcome(stream) == _outcome(ref), "the streaming run differs"
+        # Excluded sources on a forward-only stream: no link to one can be made.
+        stream_held = _extract(
+            data, base / "stream-held", held=True, streaming=True, **kw
+        )
+        members = [spec for spec in specs if spec[1] not in _SOURCES]
+        for (kind, name, target), (_, status, *_) in zip(
+            members, stream_held[0], strict=True
+        ):
+            if kind == "hard" and target in _SOURCES:
+                assert status not in {"EXTRACTED", "OVERWRITTEN"}, name
     finally:
         shutil.rmtree(base, ignore_errors=True)
