@@ -470,8 +470,9 @@ sending side when the ZIP is done.
 - A set split by 7-Zip's `-v` (`name.zip.001` to `name.zip.00N`) opens from any part, when every
   part is in the same directory. The parts are byte slices of one ordinary ZIP, and archivey joins
   them. A missing part raises `TruncatedError`.
-- A spanned set written by `zip -s` (`.z01` to `.zip`) addresses its entries by disk number, and is
-  refused with `UnsupportedFeatureError`. Join it with the tool that made it.
+- A spanned set written by `zip -s` (`name.z01`, `name.z02`, and so on, then `name.zip`) opens the
+  same way, from the `.zip` or any other part, when every part is in the same directory. A missing
+  part raises `TruncatedError`.
 
 ### Compression methods
 

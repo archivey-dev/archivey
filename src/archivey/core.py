@@ -57,6 +57,7 @@ from archivey.exceptions import (
     FormatDetectionError,
     SourceChangedError,
     StreamNotSeekableError,
+    TruncatedError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -76,7 +77,7 @@ from archivey.internal.backends.iso_reader import (
 )
 from archivey.internal.backends.makeself_reader import MAGIC as MAKESELF_MAGIC
 from archivey.internal.backends.zip_detect import (
-    ZIP_MULTI_VOLUME_MSG,
+    ZIP_LONE_PART_MSG,
     is_zip_split_segment_name,
 )
 from archivey.internal.config import stream_config_from_archivey
@@ -311,11 +312,14 @@ def _refuse_unjoined_volume_names(
         )
         if error is not None:
             raise error
+    # An Info-ZIP ``.zNN`` part not joined: the ``.zip`` that ends its set is not
+    # beside it, or discovery is off. A middle part has no magic at offset 0, so the
+    # name answers here. A ``.zip.NNN`` part with discovery off is refused the same way.
     if is_zip_split_segment_name(archive_name) and (
         format is None or format == ArchiveFormat.ZIP
     ):
-        raise UnsupportedFeatureError(
-            ZIP_MULTI_VOLUME_MSG,
+        raise TruncatedError(
+            ZIP_LONE_PART_MSG,
             archive_name=archive_name,
             source_format=ArchiveFormat.ZIP,
         )
@@ -977,10 +981,9 @@ def _refuse_unopenable_format(
                 archive_name,
             )
 
-    # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP.
-    # Info-ZIP's spanned sets never reach this point as a joined source (they are not
-    # volume-shaped to ``discover_volume_siblings``); an explicitly passed sequence of
-    # their parts is still caught by the reader's EOCD disk-field check.
+    # ZIP is here for 7-Zip's ``-v`` byte slices, which rejoin into an ordinary ZIP,
+    # and for Info-ZIP's ``zip -s`` spanned sets, whose parts are joined the same way
+    # and whose (disk, offset) pairs the ZIP parser moves into the join.
     if decision.resolved.volume_count > 1 and resolved_format.container not in (
         ContainerFormat.SEVEN_Z,
         ContainerFormat.RAR,

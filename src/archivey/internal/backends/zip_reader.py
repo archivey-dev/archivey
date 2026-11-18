@@ -41,13 +41,15 @@ Multi-volume sets:
 
 - 7-Zip ``.zip.NNN`` split sets are byte slices of one ordinary ZIP. ``open_archive``
   joins the parts before this backend sees them (``source.volume_count > 1``).
-- A lone ``.zip.NNN`` segment whose sibling parts are missing is an incomplete set,
-  not a spanned one: ``open_archive`` raises ``TruncatedError`` naming the missing
-  parts. The ``UnsupportedFeatureError`` in ``ZipReader.__init__`` is only the
-  backstop for a segment that did not pass through that check.
-- Spanned sets are rejected with ``UnsupportedFeatureError``; rejoin them with the
-  tool that made them (see ``format-zip``): Info-ZIP ``.zNN`` / final ``.zip`` (EOCD
-  disk fields) and ZIP64 locator ``disks > 1``.
+- Info-ZIP ``zip -s`` spanned sets (``name.z01`` … ``name.zip``) are joined the same
+  way, part by part, and the parser moves each (disk, offset) pair into the join
+  (``read_end_record``'s ``disk_starts``, from the joined source's part starts).
+- A lone ``.zip.NNN`` segment whose sibling parts are missing is an incomplete set:
+  ``open_archive`` raises ``TruncatedError`` naming the missing parts, and so does a
+  lone ``.zNN``. The ``TruncatedError`` in ``ZipReader.__init__`` is only the backstop
+  for a segment that did not pass through that check. A ``.zip`` whose end records
+  name more disks than the parts given is ``TruncatedError`` too, raised when the end
+  record is read (``SpannedPartsError``).
 """
 
 from __future__ import annotations
@@ -120,7 +122,7 @@ from archivey.internal.backends.zip_aes import (
 )
 from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIGNATURE,
-    ZIP_MULTI_VOLUME_MSG,
+    ZIP_LONE_PART_MSG,
     is_zip_split_segment_name,
     validate_zip_local_header,
 )
@@ -145,11 +147,13 @@ from archivey.internal.backends.zip_parser import (
     EndRecord,
     EntryCountMismatch,
     LocalHeader,
+    SpannedPartsError,
     WalkFinding,
     local_header_at,
     locate_end_record,
     read_end_record,
     read_local_header,
+    spanned_parts_missing,
     unused_zip64_values,
     written_by_archive_utility,
 )
@@ -165,6 +169,7 @@ from archivey.internal.config import StreamConfig, stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.format_provenance import confirm_format, format_confirmed
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
@@ -1652,12 +1657,12 @@ class ZipReader(BaseArchiveReader):
         """Refuse a split-set segment read alone."""
         # A split-set segment read alone. A joined set arrives here still carrying
         # part one's name, so the name alone does not decide it: what is refused is a
-        # segment that was *not* rejoined. Numbered ``.zip.NNN`` incompleteness is
-        # ``TruncatedError`` in ``open_archive``; this backstop is Info-ZIP's spanned
-        # ``.zNN`` (and any ``.zip.NNN`` that skipped that refuse).
+        # segment that was *not* rejoined. ``open_archive`` refuses such a part by name
+        # first (``_refuse_unjoined_volume_names``); this is the backstop for a part
+        # that skipped that check.
         if self._volume_count == 1 and is_zip_split_segment_name(self._archive_name):
-            raise UnsupportedFeatureError(
-                ZIP_MULTI_VOLUME_MSG,
+            raise TruncatedError(
+                ZIP_LONE_PART_MSG,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -1713,9 +1718,18 @@ class ZipReader(BaseArchiveReader):
             if found is None:
                 raise CorruptionError(NO_END_RECORD_MSG)
             try:
-                self._end: EndRecord = read_end_record(self._read_at, file_size, found)
+                self._end: EndRecord = read_end_record(
+                    self._read_at,
+                    file_size,
+                    found,
+                    disk_starts=self._disk_starts(source, start_offset, end_offset),
+                )
                 # A directory larger than the tail: its span, in one request.
                 self._hint(self._end.cd_start, self._end.eocd_offset)
+            except SpannedPartsError as exc:
+                # Parts missing, not damage: the local headers of the parts given
+                # would list only some members, so nothing is listed.
+                raise spanned_parts_missing(exc) from None
             except CorruptionError as exc:
                 # End records that cannot be used (a damaged ZIP64 record after a
                 # saturated classic one, a directory that would start before the
@@ -1728,6 +1742,8 @@ class ZipReader(BaseArchiveReader):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
                 # where it failed.
                 opened = type(exc)(f"Could not open ZIP archive: {raw_message_of(exc)}")
+                if format_confirmed(exc):
+                    confirm_format(opened)
                 self._stamp_error_context(opened)
                 raise opened from exc
             self._stamp_error_context(exc)
@@ -1735,6 +1751,19 @@ class ZipReader(BaseArchiveReader):
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
         self._report_trailing_data()
+
+    @staticmethod
+    def _disk_starts(
+        source: ArchiveSource, start_offset: int, end_offset: int | None
+    ) -> list[int]:
+        """Where each part of a joined volume set starts, for a spanned set
+        (``read_end_record``); empty for a single source. A region cut from a joined
+        set (a stub or a certificate table around it) is not offered as one: a
+        spanned set's offsets count from the start of each whole part."""
+        joined = source.joined
+        if joined is None or start_offset or end_offset is not None:
+            return []
+        return [start for start, _size in joined.volume_ranges]
 
     def _list_after_bad_end_records(
         self, error: CorruptionError, walked: _WalkedMembers | None
