@@ -7,7 +7,8 @@
 # once and does not use one that does this (dev-docs/known-issues.md, "Debian/
 # Ubuntu unar 1.10.1"), so on Ubuntu 22.04-26.04 the apt package is refused and
 # every test that needs unar skips. Upstream XADMaster 1.10.8, the version
-# Homebrew ships, does not have the problem; this script builds it.
+# Homebrew ships, does not have the problem; this script builds it. It builds on
+# Ubuntu 24.04 (GCC 13) and 26.04 (GCC 15).
 #
 # Sources are fetched by pinned commit (the tags v1.10.8 and 1.1), side by side,
 # because XADMaster's Makefile.linux builds ../UniversalDetector.
@@ -113,9 +114,25 @@ src="${CACHE_DIR}/${XADMASTER_TAG}-${DETECTOR_TAG}"
 fetch "$XADMASTER_REPO" "$XADMASTER_COMMIT" "${src}/XADMaster"
 fetch "$DETECTOR_REPO" "$DETECTOR_COMMIT" "${src}/UniversalDetector"
 
+# Both Makefile.linux files hard-code -isystem /usr/include/GNUstep. Ubuntu 26.04
+# installs the headers under /usr/include/<multiarch>/GNUstep instead, so add the
+# directory gnustep-config reports. XADMaster reads extra flags from CFLAGS (C) and
+# OBJCFLAGS (Objective-C, added after CFLAGS), UniversalDetector from OBJCFLAGS only;
+# command-line variables reach the UniversalDetector sub-make too.
+# -Wno-error=int-conversion: GCC 14+ makes -Wint-conversion an error by default, and
+# XADRAR5Parser.m:79 calls +signatureLocationInData: before declaring it, so GCC
+# assumes it returns id and stores that in an off_t. Both are returned in the same
+# register on x86-64 and arm64, so the built binary is correct.
+headers="$(gnustep-config --variable=GNUSTEP_SYSTEM_HEADERS 2>/dev/null || true)"
+extra="-Wno-error=int-conversion"
+if [ -n "$headers" ]; then
+  extra="-isystem ${headers} ${extra}"
+fi
+
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 echo "install-unar-from-source: compiling XADMaster ${XADMASTER_TAG} with ${jobs} jobs"
-make -C "${src}/XADMaster" -f Makefile.linux -j"$jobs" unar
+make -C "${src}/XADMaster" -f Makefile.linux -j"$jobs" unar \
+  CFLAGS="$extra" OBJCFLAGS="$extra"
 
 cp "${src}/XADMaster/unar" "${DEST}/unar"
 chmod +x "${DEST}/unar"

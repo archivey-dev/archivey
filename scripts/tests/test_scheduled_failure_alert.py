@@ -31,7 +31,7 @@ _spec.loader.exec_module(alert)
 
 BOT = {"login": "github-actions"}
 PYPY = "pypy3.11"
-LOWEST = "ubuntu-latest / py3.11 / all-lowest"
+LOWEST = "ubuntu-24.04 / py3.11 / all-lowest"
 
 
 def report(conclusion="failure", event="schedule", issue=None, jobs=(PYPY, LOWEST)):
