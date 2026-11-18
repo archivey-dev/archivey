@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import random
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -23,12 +25,15 @@ from archivey.exceptions import (
 from archivey.internal.streams.codecs import BrotliCodec, LzmaAloneCodec
 from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
+    _check_end,
     first_block_overruns_source,
     parse_metablock,
+    walk_chain,
 )
 from tests.conftest import requires
 from tests.streams_util import (
     brotli_compressed_metablock_header,
+    brotli_declared_metablock_header,
     brotli_link_cap_residual,
     truncated_brotli,
 )
@@ -424,3 +429,135 @@ def test_first_metablock_matches_survey_self_test_vectors() -> None:
         assert got.outcome is want_outcome, data[:6]
         if want_mlen is not None:
             assert got.declared_length == want_mlen
+
+
+# --- Sources of unknown length --------------------------------------------------------
+# Unknown-length framing rejects only bytes reached, never a declined read.
+
+
+@pytest.mark.parametrize("data", [b"\x06", b"\x1a"])
+@pytest.mark.parametrize("suffix", [b"", b"junk"])
+def test_unknown_length_checks_trailing_bytes(data: bytes, suffix: bytes) -> None:
+    # RFC 7932: 06 is an empty stream; 1a is a final empty metadata block.
+    blob = data + suffix
+    result = walk_chain(blob[:1], None, read_at=lambda off, n: blob[off : off + n])
+    assert result.proves_invalid == bool(suffix)
+
+
+def test_unknown_length_does_not_treat_prefix_exhaustion_as_eof() -> None:
+    head = brotli_declared_metablock_header(100_000, first=True)
+    assert not walk_chain(head + bytes(4096), None).proves_invalid
+    assert not walk_chain(
+        head + bytes(4096), None, read_at=lambda off, n: None
+    ).proves_invalid
+
+
+def test_unknown_length_rejects_a_missing_successor() -> None:
+    head = brotli_declared_metablock_header(100_000, first=True)
+    blob = head + bytes(5000)
+    result = walk_chain(blob[:4096], None, read_at=lambda off, n: blob[off : off + n])
+    assert result.proves_invalid
+
+
+@pytest.mark.parametrize("payload_size", [0, 9, 10])
+def test_unknown_length_checks_the_final_declared_payload(payload_size: int) -> None:
+    # RFC 7932 fields: WBITS=16, ISLAST=1, ISLASTEMPTY=0, metadata,
+    # MSKIPBYTES=1 and MSKIPLEN=9 (ten payload bytes), followed by byte alignment.
+    head = b"\x5a\x09"
+    blob = head + bytes(payload_size)
+    result = walk_chain(head, None, read_at=lambda off, n: blob[off : off + n])
+    assert result.proves_invalid == (payload_size != 10)
+
+
+@pytest.mark.parametrize("ended", [False, True])
+def test_a_partial_available_header_is_not_eof(ended: bool) -> None:
+    result = walk_chain(b"", None, read_available=lambda off, n: (b"\x00", ended))
+    assert result.proves_invalid == ended
+
+
+@pytest.mark.parametrize(
+    ("data", "ended", "invalid"),
+    [
+        (b"", False, False),
+        (b"", True, True),
+        (b"\x06", False, False),
+        (b"\x06x", False, True),
+    ],
+)
+def test_an_optional_end_observation_needs_eof_evidence(
+    data: bytes, ended: bool, invalid: bool
+) -> None:
+    result = _check_end(b"\x06", None, 1, None, lambda off, n: (data, ended))
+    assert result.proves_invalid == invalid
+
+
+# --- Finite sources keep the bounded check --------------------------------------------
+# Adding unknown-size checks must preserve checks on finite archive sources.
+
+
+def _invalid_successor(length: int) -> bytes:
+    # A real encoder cannot produce this: the literal block fits, but its successor
+    # has invalid last-block padding. Random literal data is valid as stored bytes.
+    return (
+        brotli_declared_metablock_header(length, first=True)
+        + random.Random(length).randbytes(length)
+        + b"\xff" * 30_000
+    )
+
+
+@requires("brotli")
+@pytest.mark.parametrize("preset", ["fast", "balanced", "thorough"])
+@pytest.mark.parametrize("as_path", [False, True])
+def test_a_cheap_header_seek_past_one_mib_still_checks_framing(
+    tmp_path: Path, preset: str, as_path: bool
+) -> None:
+    data = _invalid_successor(1_100_000)
+    config = ArchiveyConfig(always_probe_content=True, detection_budget=preset)
+    if as_path:
+        path = tmp_path / "invalid.bin"
+        path.write_bytes(data)
+        with pytest.raises(FormatDetectionError):
+            detect_format(path, config=config)
+    else:
+        with io.BytesIO(data) as source, pytest.raises(FormatDetectionError):
+            detect_format(source, config=config)
+
+
+@requires("brotli")
+@requires("fsspec")
+@pytest.mark.parametrize("preset", ["fast", "balanced", "thorough"])
+def test_a_finite_remote_source_keeps_its_bounded_framing_check(preset: str) -> None:
+    import fsspec
+
+    data = _invalid_successor(100_000)
+    config = ArchiveyConfig(always_probe_content=True, detection_budget=preset)
+    with io.BytesIO(data) as source, pytest.raises(FormatDetectionError):
+        detect_format(source, config=config)
+    remote = fsspec.open("memory://brotli-review/invalid.bin", "wb")
+    with remote as stream:
+        stream.write(data)
+    try:
+        with pytest.raises(FormatDetectionError):
+            detect_format(
+                fsspec.open("memory://brotli-review/invalid.bin"), config=config
+            )
+    finally:
+        remote.fs.rm(remote.path)
+
+
+@requires("brotli")
+@pytest.mark.parametrize("preset", ["fast", "balanced", "thorough"])
+def test_a_seekable_decoded_member_keeps_its_bounded_framing_check(preset: str) -> None:
+    data = _invalid_successor(100_000)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as writer:
+        writer.writestr("invalid.bin", data)
+    archive.seek(0)
+    config = ArchiveyConfig(always_probe_content=True, detection_budget=preset)
+    with (
+        open_archive(archive, seekable_members=True) as reader,
+        reader.open("invalid.bin") as member,
+    ):
+        assert member.seekable()
+        with pytest.raises(FormatDetectionError):
+            detect_format(member, config=config)
