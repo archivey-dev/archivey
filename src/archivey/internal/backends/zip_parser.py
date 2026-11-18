@@ -595,6 +595,11 @@ class CentralEntry:
     #: the member's data runs a multiple of 2³² past it (macOS Archive Utility,
     #: :func:`written_by_archive_utility`); 0 otherwise.
     compressed_size_correction: int = 0
+    #: The values of a ZIP64 extra field that APPNOTE leaves unused because no header
+    #: field defers to it, where they differ from the header's:
+    #: ``(field, header value, ZIP64 value)`` per field, in the field's order
+    #: (:func:`_unused_zip64_values`). Empty for nearly every entry.
+    zip64_unused: tuple[tuple[str, int, int], ...] = ()
 
     @property
     def create_system(self) -> int:
@@ -1370,6 +1375,32 @@ def _central_entry(
         external_attr,
         header_offset,
     ) = fields
+    unused: tuple[tuple[str, int, int], ...] = ()
+    if (
+        extra
+        and _ZIP64_EXTRA_HEADER in extra
+        and file_size != _U32_MAX
+        and compressed_size != _U32_MAX
+        and header_offset != _U32_MAX
+        and disk_start != 0xFFFF
+    ):
+        # No field defers to a ZIP64 field: find one anyway. The walk of
+        # iter_extra_fields, inlined, since nearly every blob that gets here is a
+        # Windows writer's NTFS field, whose attribute tag 1 passed the test above.
+        end = len(extra)
+        pos = 0
+        while pos + 4 <= end:
+            tag, size = _EXTRA_FIELD_HEADER.unpack_from(extra, pos)
+            pos += 4
+            if tag == _ZIP64_EXTRA_TAG:
+                unused = _unused_zip64_values(
+                    extra[pos : pos + size],
+                    file_size=file_size,
+                    compressed_size=compressed_size,
+                    header_offset=header_offset,
+                )
+                break
+            pos += size
     compressed_size, file_size, header_offset, disk_start = _apply_zip64_extra(
         extra,
         compressed_size=compressed_size,
@@ -1378,7 +1409,7 @@ def _central_entry(
         disk_start=disk_start,
         index=index,
     )
-    return CentralEntry(
+    entry = CentralEntry(
         index,
         (made_system << 8) | made_version,
         (needed_system << 8) | needed_version,
@@ -1396,6 +1427,45 @@ def _central_entry(
         name,
         extra,
         comment,
+    )
+    if unused:
+        entry.zip64_unused = unused
+    return entry
+
+
+#: The bytes a ZIP64 extra field starts with, a cheap test before the walk over the
+#: blob.
+_ZIP64_EXTRA_HEADER = _ZIP64_EXTRA_TAG.to_bytes(2, "little")
+#: An extra field's tag and data size.
+_EXTRA_FIELD_HEADER = struct.Struct("<HH")
+
+
+def _unused_zip64_values(
+    data: bytes, *, file_size: int, compressed_size: int, header_offset: int
+) -> tuple[tuple[str, int, int], ...]:
+    """The values of a ZIP64 extra field's ``data`` that differ from the header's,
+    when no header field defers to it.
+
+    APPNOTE 4.5.3 has the field hold only the values whose header field is all ones,
+    and archivey, stdlib and unzip read it so: here none is, and the field is not
+    read. A reader that takes it whatever the header holds reads its values in their
+    order (uncompressed size, compressed size, local header offset), as many as the
+    field holds whole, and lists another size or reads other bytes. This returns each
+    such value that differs from the header's: ``(field, header value, ZIP64
+    value)``. Empty when they agree, as they do from the writers that always add the
+    field.
+    """
+    header = (
+        ("uncompressed size", file_size),
+        ("compressed size", compressed_size),
+        ("local header offset", header_offset),
+    )
+    return tuple(
+        (name, stored, value)
+        for position, (name, stored) in enumerate(header)
+        if (position + 1) * 8 <= len(data)
+        and (value := int.from_bytes(data[position * 8 : (position + 1) * 8], "little"))
+        != stored
     )
 
 

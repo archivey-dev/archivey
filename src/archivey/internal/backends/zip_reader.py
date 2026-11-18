@@ -86,6 +86,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    HeaderAmbiguityContext,
     LocalHeaderContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
@@ -2974,6 +2975,8 @@ class ZipReader(BaseArchiveReader):
             self._emit_size_wrapped(member, entry, index)
         if directory_by_attribute:
             self._report_directory_by_attribute(member, index, name_source)
+        if entry.zip64_unused:
+            self._report_zip64_unused(member, index, entry.zip64_unused)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -3127,6 +3130,45 @@ class ZipReader(BaseArchiveReader):
                 member_name=member.name,
                 member_id=index,
                 shape="directory_attribute_without_slash",
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
+
+    def _report_zip64_unused(
+        self,
+        member: ArchiveMember,
+        index: int,
+        unused: tuple[tuple[str, int, int], ...],
+    ) -> None:
+        """Report a ZIP64 extra field whose values differ from the header fields that
+        do not defer to it (``CentralEntry.zip64_unused``). The header's values are
+        used, as APPNOTE, stdlib and unzip read them; a reader that takes the field
+        anyway lists another size or reads other bytes. In ``ARCHIVE_INTEGRITY_CODES``:
+        ``STRICT`` refuses it."""
+        field, stored, value = unused[0]
+        others = "".join(
+            f"; its {name} {other_value} against {other_stored}"
+            for name, other_stored, other_value in unused[1:]
+        )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            message=(
+                f"ZIP central directory entry {quoted(member.name)} has a ZIP64 "
+                f"extra field that gives {field} {value}{others}, where the entry "
+                f"stores {stored}. No field of the entry defers to the ZIP64 field, "
+                "so the entry's values are used, as unzip and zipfile read them; a "
+                "reader that takes the ZIP64 field anyway lists another size or "
+                "reads other bytes."
+            ),
+            context=HeaderAmbiguityContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                ambiguity="zip64_unused",
+                field=field,
+                more_fields=len(unused) - 1,
             ),
             member=member,
             attach_to_member=True,
