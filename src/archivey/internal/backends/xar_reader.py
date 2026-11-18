@@ -1,5 +1,5 @@
-"""An XAR reader (``.xar``, macOS ``.pkg`` and ``.xip``), written against
-``archivey.formats``.
+"""An XAR reader (``.xar``; also the XAR layer of a macOS ``.pkg`` or ``.xip`` under
+``format=ArchiveFormat.XAR``), written against ``archivey.formats``.
 
 The layout, from Apple's ``xar`` sources (``include/xar.h.in``, ``lib/archive.c``) and
 libarchive's ``archive_read_support_format_xar.c``: a big-endian header (``xar!``, its
@@ -15,10 +15,9 @@ The reader reads the whole TOC at open, bounded by ``max_metadata_bytes`` before
 decoded and by ``max_members`` while it is parsed, and checks its checksum. The XML is
 parsed with expat, refusing a document type declaration, so no entity is ever
 expanded. A member's data is decoded through archivey's codecs, refusing any byte
-after the end of its stream, and checked against its extracted checksum. A ``.pkg``'s
-payloads are listed as the files they are (``Payload``, a gzip-compressed CPIO), not
-opened; ``pkg_reader`` lists them as their files. Handbook page:
-``dev-docs/formats/xar.md``.
+after the end of its stream, and checked against its extracted checksum. This reader
+lists a package's ``Payload`` (a gzip or pbzx CPIO) as one file; ``pkg_reader`` expands
+it. Handbook page: ``dev-docs/formats/xar.md``.
 """
 
 from __future__ import annotations

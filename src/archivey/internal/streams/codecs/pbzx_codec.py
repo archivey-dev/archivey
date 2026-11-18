@@ -46,9 +46,6 @@ PBZX_MAGIC = b"pbzx"
 _U64 = struct.Struct(">Q")
 _HEADER_SIZE = len(PBZX_MAGIC) + _U64.size
 _CHUNK_HEAD = struct.Struct(">QQ")
-# The largest chunk size accepted. Apple writes 16 MiB; the size bounds nothing the
-# decoder allocates (see the module docstring), only how far one chunk may run.
-_MAX_CHUNK_SIZE = 1 << 32
 
 # What the decompressor is reading now.
 _HEADER = 0
@@ -136,7 +133,7 @@ class PbzxDecompressor:
         if len(pending) < _HEADER_SIZE:
             return False
         (size,) = _U64.unpack_from(pending, len(PBZX_MAGIC))
-        if not 0 < size <= _MAX_CHUNK_SIZE:
+        if not size:
             raise CorruptionError(f"pbzx header declares a chunk size of {size}")
         del pending[:_HEADER_SIZE]
         self._chunk_size = size

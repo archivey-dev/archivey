@@ -1061,11 +1061,8 @@ def extracted_top_segment(name: str) -> str:
     rewrites. The segment keeps its spelling. :func:`extracted_top_key` also folds it
     as the filesystem may, for a test that must catch every spelling.
     """
-    resolved = _collapse_dotdot(strip_absolute_root(name))
-    for segment in _SEP_SPLIT.split(resolved):
-        if segment not in ("", "."):
-            return segment
-    return ""
+    segments = extracted_segments(name)
+    return segments[0] if segments else ""
 
 
 def extracted_top_key(name: str) -> str:

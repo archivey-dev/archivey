@@ -248,6 +248,8 @@ class PkgReader(XarReader):
         if inner is None:
             return super().open_member(member, locator)
         stream = super().open_member(inner.payload, inner.location).stream
+        # From open_member, open_nested yields one span: this member's, reached again
+        # (ReaderContext.open_nested).
         span = next(iter(self._context.open_nested(stream, inner.format)))
         data = span.data
         return MemberData(data if data is not None else io.BytesIO(b""))
