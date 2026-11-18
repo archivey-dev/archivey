@@ -194,3 +194,29 @@ def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     finally:
         tracemalloc.stop()
     assert peak < 64 * 1024
+
+
+@pytest.mark.parametrize("zero_count", [0, 1, 2, 3, 4, 5, 1024])
+@pytest.mark.parametrize("match", [False, True])
+def test_length_extensions_keep_the_limit_and_refuse_a_cut(
+    match: bool, zero_count: int
+) -> None:
+    zeros = bytes(zero_count)
+    if match:
+        # One literal, then an M3 match at distance one, with an extended length.
+        prefix = b"\x12x\x20"
+        size = 1 + len(zeros) * 255 + 31 + 1 + 2
+        suffix = b"\x00\x00"
+        expected = b"x" * size
+    else:
+        # A literal run: every zero extends its length by 255 bytes.
+        prefix = b"\x00"
+        size = len(zeros) * 255 + 15 + 1 + 3
+        suffix = b"x" * size
+        expected = suffix
+    stream = prefix + zeros + b"\x01" + suffix + _END
+    assert decompress_python(stream, size) == expected
+    with pytest.raises(LzoError, match="more than"):
+        decompress_python(stream, size - 1)
+    with pytest.raises(LzoError, match="ends inside an instruction"):
+        decompress_python(prefix + zeros, size)
