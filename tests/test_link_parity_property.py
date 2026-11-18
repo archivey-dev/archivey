@@ -245,6 +245,19 @@ def _quiet() -> Iterator[None]:
     overwrite=OverwritePolicy.REPLACE,
     policy=ExtractionPolicy.TRUSTED,
 )
+# On a case-insensitive filesystem only: `a` replaces the file `A` with a placeholder,
+# and `a/x` replaces that with a directory. The held run failed `a/x` (#1641).
+@example(
+    specs=[
+        ("file", "src1", b"1"),
+        ("file", "src2", b"2"),
+        ("file", "A", b"f0"),
+        ("hard", "a", "src1"),
+        ("hard", "a/x", "src1"),
+    ],
+    overwrite=OverwritePolicy.REPLACE,
+    policy=ExtractionPolicy.STRICT,
+)
 def test_held_streamed_and_dry_runs_match_the_made_run(
     scratch: Path,
     specs: list[Spec],

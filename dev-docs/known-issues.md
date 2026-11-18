@@ -9,36 +9,6 @@ mitigation imposes lives on the format handbook page ([`formats/`](formats/)), a
 behaviour lives in the handbook's sharp-edges tables and, when users hit it, in
 the user docs ([`docs/formats.md`](../docs/formats.md) for format behaviour).
 
-## Held-back hard link fails on a case-insensitive filesystem where the made link succeeds (open)
-
-**Symptom.** On an ext4 `casefold` directory (the one filesystem it was run on; macOS's
-default volume folds case the same way and the daily soak runs there), a hard link held
-back for the second pass can end `FAILED` with "Hardlink source is no longer on disk as
-a regular file" where the same archive with the source selected makes the link. With
-the source selected, a later link can get the bytes of the member that replaced its
-source. Found by `tests/test_link_parity_property.py` (#1638, review round 1):
-
-```
-file src1, file src2, hard A -> src1, file a/x, file a, file a, file a, hard b -> src1
-REPLACE, STRICT, members excluding src1 and src2
-```
-
-The placeholder at `A` is the only copy of `src1`'s bytes, and `a/x` replaces it with
-the directory `a`. The later link `b` then finds no file to link to. In the run with the
-source selected, `b` links to `src1`. On a case-sensitive filesystem both runs agree.
-
-**Affects.** Found on `main` after placeholders (#1620); earlier versions not checked.
-Random access.
-
-**Cause.** The record of where a source's bytes are (`source_paths`, `source_of`,
-`placeholder_at` in `extraction.py`) is keyed by the spelled path, so a member that
-replaces `A` through the spelling `a` does not drop it. (On Windows, `Path` compares
-case-insensitively, so it may not show there; not run.)
-
-**Remains.** The fix is #1641. Until it merges, the daily `link-parity-soak` macOS leg
-may fail, and `continue-on-error` on that leg in `ci.yml` keeps it from failing the
-run; #1641 removes both.
-
 ## MacPaw `unar` / XADMaster: RAR5 solid after an empty entry is silent-wrong (open)
 
 **Symptom.** On a RAR5 solid archive, `unar` fails on a member with data that comes after
