@@ -618,7 +618,7 @@ def test_7z_lists_the_builder_images_the_same_way(tmp_path: Path) -> None:
     path.write_bytes(image)
     result = run_7z(["l", "-tudf", "-slt", "-sccUTF-8", str(path)], check=True)
     paths = sorted(
-        line.removeprefix("Path = ")
+        line.removeprefix("Path = ").replace("\\", "/")
         for line in result.stdout.decode().splitlines()
         if line.startswith("Path = ") and line != f"Path = {path}"
     )
