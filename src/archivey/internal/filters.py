@@ -1043,6 +1043,13 @@ def _collapse_dotdot(name: str) -> str:
     return joined.lstrip("/\\") or "."
 
 
+def extracted_segments(name: str) -> list[str]:
+    """The segments of the furthest-reaching path that ``name`` can extract to, as
+    stored: the rewrites of :func:`extracted_top_segment`, every segment kept."""
+    resolved = _collapse_dotdot(strip_absolute_root(name))
+    return [s for s in _SEP_SPLIT.split(resolved) if s not in ("", ".")]
+
+
 def extracted_top_segment(name: str) -> str:
     """The first segment of the furthest-reaching path that ``name`` can extract to, as
     stored, or ``""`` when that path is the destination itself.

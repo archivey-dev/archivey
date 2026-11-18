@@ -52,6 +52,7 @@ from archivey.types import HashAlgorithm
 from tests.conftest import requires, requires_zstd, zstd_backend
 from tests.corruption_util import raises_corruption_not_truncation
 from tests.lzop_build import make_lzop
+from tests.pbzx_util import make_pbzx
 from tests.streams_util import (
     MemberSeek,
     NonSeekableBytesIO,
@@ -1161,6 +1162,7 @@ _SINGLE_FILE_CODECS = {
     ".mozlz4": (_mozlz4_compress, (requires("lz4"),)),
     ".bz3": (_bzip3_compress, (requires("bz3"),)),
     ".sz": (_snappy_frame, ()),
+    ".pbzx": (make_pbzx, ()),
     ".uu": (_uu_encode, ()),
     ".b64": (_base64_encode, ()),
 }

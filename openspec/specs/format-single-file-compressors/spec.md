@@ -3,7 +3,7 @@
 ## Purpose
 
 Single-file compressors (GZ, BZ2, XZ, ZST, LZ4, LZIP, ZLIB, BR, Z, LZOP, mozlz4, BZ3,
-Snappy SZ), and the uuencode and base64 text wrappers, are exposed
+Snappy SZ, pbzx), and the uuencode and base64 text wrappers, are exposed
 as one-member pseudo-archives through the unified `ArchiveReader`
 interface. Each source contains exactly one file member whose
 name is inferred from the source filename.
@@ -30,9 +30,9 @@ checksum trailer.
 ### Requirement: Present each compressor as a one-member archive
 
 The system SHALL present any GZ, BZ2, XZ, ZST, LZ4, LZIP, LZMA Alone, ZLIB, BR,
-Z, LZOP, mozlz4, BZ3, SZ (Snappy framed), UU or BASE64 source as an archive containing
-exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members SHALL be
-synthesized.
+Z, LZOP, mozlz4, BZ3, SZ (Snappy framed), PBZX, UU or BASE64 source as an archive
+containing exactly one `ArchiveMember` of type `MemberType.FILE`. No directory members
+SHALL be synthesized.
 
 The member name SHALL be inferred from the source filename:
 
@@ -669,3 +669,28 @@ raise `TruncatedError`; input that ends between chunks SHALL end the stream.
 - **GIVEN** a `.sz` file whose chunk CRC does not match its data
 - **WHEN** it is read
 - **THEN** `CorruptionError` is raised before that chunk's data is returned
+
+### Requirement: pbzx streams are read as xz chunks
+
+The system SHALL read Apple's pbzx framing (`StreamFormat.PBZX`, `ArchiveFormat.PBZX`,
+magic `pbzx` at offset 0): a 64-bit big-endian chunk size, then chunks of a 64-bit
+decoded size, a 64-bit stored length and that many bytes. A chunk whose stored length
+equals its decoded size SHALL be read as stored; any other chunk SHALL be one xz stream
+that decodes to exactly its decoded size, decoded under `max_decoder_memory`. A chunk
+shorter than the chunk size SHALL end the stream, and bytes after it SHALL be reported
+as `ARCHIVE_TRAILING_DATA`; a stream whose size is a multiple of the chunk size SHALL
+end with the input. A chunk size of 0, a chunk that declares 0 decoded bytes or more
+than the chunk size, an xz chunk that decodes to another size or holds bytes after its
+stream SHALL raise `CorruptionError`, and input that ends inside the header or a chunk
+SHALL raise `TruncatedError`. The member's method SHALL be `CompressionAlgorithm.XZ`. A
+CPIO inside SHALL be read as `ArchiveFormat(CPIO, PBZX)`.
+
+#### Scenario: pbzx streams
+
+| Case | Expected |
+| --- | --- |
+| Data of 0, 1 and several chunks, chunks stored, xz or mixed | The data |
+| A `.pkg` Payload taken out of its package | Lists as `ArchiveFormat(CPIO, PBZX)` |
+| Bytes after the short chunk | The data; `ARCHIVE_TRAILING_DATA` |
+| An xz chunk that decodes to fewer bytes than it declares | `CorruptionError` |
+| An xz chunk whose dictionary is over `max_decoder_memory` | `ResourceLimitError` |

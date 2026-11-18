@@ -253,6 +253,21 @@ class _PluginAdapter(BaseArchiveReader):
         self._nested_iterators: weakref.WeakSet[Iterator[MemberSpan]] = (
             weakref.WeakSet()
         )
+        # An indexed reader's inner archives (``_RECORDS_NESTS``): the members the
+        # listing took from one, by member id, with the inner archive and the
+        # member's place in it, so ``open_member`` reaches it again
+        # (``_reopen_nested``). Until the listing names a member, its entry waits in
+        # ``_nest_spans``, by the id() of the member object the span carried.
+        self._nest_members: dict[int, tuple[_Nest, int]] = {}
+        self._nest_spans: dict[int, tuple[ArchiveMember, _Nest, int]] = {}
+        # While the plugin's ``open_member`` runs for a member listed from an inner
+        # archive: that archive, the member's place in it, and the member.
+        self._reopening: tuple[_Nest, int, ArchiveMember] | None = None
+        # The inner archive a reopen read last, parked once its member's data was
+        # closed, so the next member of the same inner archive further on carries
+        # on from it instead of reading the inner archive again from its start.
+        self._idle_nest: _NestWalk | None = None
+        self._idle_nest_lock = threading.Lock()
         # The plugin may hold a handle of its own (a library over ``source.path``), so
         # under CONCURRENT every call into it, and every read of a stream it returned,
         # takes one lock (``_handle_guard``). The exception is ``translate_exception``,
@@ -683,13 +698,20 @@ class _PluginAdapter(BaseArchiveReader):
             )
         self._listing_tracker.charge_walk(nbytes, what)
 
+    # Whether the listing keeps where each member from an inner archive came from, so
+    # ``open_member`` can read it again (an indexed reader; a sequential one reaches
+    # inner data by walking again).
+    _RECORDS_NESTS: ClassVar[bool] = False
+
     def _open_nested(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:
         """``ReaderContext.open_nested()``: archivey's reader for ``fmt`` over
         ``data``, working for this reader."""
-        if self._walk_step is None:
+        reopen = self._reopening if self._walk_step is None else None
+        if self._walk_step is None and reopen is None:
             raise ArchiveyUsageError(
                 "ReaderContext.open_nested() reads an inner archive only while walk() "
-                "is listing"
+                "or iter_members() is listing, or while open_member() opens a member "
+                "listed from an inner archive"
             )
         if not isinstance(fmt, ArchiveFormat):
             raise _plugin_bug(
@@ -720,9 +742,87 @@ class _PluginAdapter(BaseArchiveReader):
                 "archives deep",
                 source_format=fmt,
             )
-        spans = self._nested_spans(backend_cls, data, fmt, first=self._walk_index)
+        if reopen is not None:
+            nest, place, listed = reopen
+            return self._reopen_nested(backend_cls, data, fmt, nest, place, listed)
+        nest = (
+            _Nest(self._walk_index)
+            if self._RECORDS_NESTS and self._walk_step == _LISTING
+            else None
+        )
+        spans = self._nested_spans(
+            backend_cls, data, fmt, first=self._walk_index, nest=nest
+        )
         self._nested_iterators.add(spans)
         return spans
+
+    def _reopen_nested(
+        self,
+        backend_cls: type[ReadBackend],
+        data: BinaryIO,
+        fmt: ArchiveFormat,
+        nest: _Nest,
+        place: int,
+        listed: ArchiveMember,
+    ) -> Iterator[MemberSpan]:
+        """``open_nested()`` from ``open_member()``: the one span of ``listed``, the
+        member at ``place`` in the inner archive ``nest``, read again.
+
+        The inner reader reads its archive forward to the member, as the listing did,
+        and what it reports on the way is dropped: the listing delivered it. A parked
+        walk of the same inner archive that is not past the member carries on instead,
+        so a pass over the members in order reads each inner archive once."""
+        with self._idle_nest_lock:
+            walk, self._idle_nest = self._idle_nest, None
+        if walk is not None and (walk.nest is not nest or walk.next_index > place):
+            walk.close()
+            walk = None
+        if walk is None:
+            spans = self._nested_spans(
+                backend_cls, data, fmt, first=nest.first, muted=True
+            )
+            self._nested_iterators.add(spans)
+            walk = _NestWalk(nest, spans)
+        else:
+            # The parked walk reads the inner archive already.
+            data.close()
+        try:
+            while True:
+                span = next(walk.spans, None)
+                if span is None:
+                    raise CorruptionError(
+                        f"reading the {fmt.display_name} archive again ended before "
+                        f"{quoted(listed.name)}"
+                    )
+                index = walk.next_index
+                walk.next_index += 1
+                if index == place:
+                    break
+                if span.data is not None:
+                    # Read past as the listing read past it: nothing to report again.
+                    with self._diagnostics_collector.muted():
+                        span.data.close()
+        except BaseException:
+            walk.close()
+            raise
+        found = span.data
+        if found is None:
+            self._park_nest_walk(walk)
+            return iter((span._replace(data=io.BytesIO(b"")),))
+        if isinstance(found, _NestedData):
+            # What the inner reader attaches while the data is read reaches the
+            # member the caller holds.
+            found.attach_to(listed)
+        stream = _ParkOnClose(found, functools.partial(self._park_nest_walk, walk))
+        return iter((span._replace(data=stream),))
+
+    def _park_nest_walk(self, walk: _NestWalk) -> None:
+        """Keep ``walk`` for the next reopen, now that its member's data is closed."""
+        with self._idle_nest_lock:
+            if self._idle_nest is None and self._reader_open:
+                self._idle_nest = walk
+                return
+        walk.close()
 
     def _nested_spans(
         self,
@@ -731,17 +831,24 @@ class _PluginAdapter(BaseArchiveReader):
         fmt: ArchiveFormat,
         *,
         first: int,
+        nest: _Nest | None = None,
+        muted: bool = False,
     ) -> Iterator[MemberSpan]:
         """The spans of the inner archive ``data``: its members, numbered from
-        ``first`` in what it reports, and their decoded data."""
+        ``first`` in what it reports, and their decoded data.
+
+        With ``nest``, each span's member is noted as that inner archive's, for the
+        listing to record (``_walk_records``). ``muted`` drops what the inner reader
+        reports while it reads its headers, for a reopen (``_reopen_nested``)."""
         collector = self._diagnostics_collector
+        quiet = collector.muted if muted else nullcontext
         # The decoder that gives ``data`` may not have read its header yet (an xz,
         # zstd or LZMA Alone member from ``ReaderContext.decompress``): the first
         # byte makes it declare its working set, so the inner cap counts it.
-        with collector.member_ids_from(first):
+        with collector.member_ids_from(first), quiet():
             head = data.read(1) or b""
         config = self._nested_config()
-        with collector.member_ids_from(first), reading_inside(self):
+        with collector.member_ids_from(first), reading_inside(self), quiet():
             reader = backend_cls().open_read(
                 ArchiveSource.for_stream(
                     cast(BinaryIO, _Primed(head, data)) if head else data
@@ -759,13 +866,17 @@ class _PluginAdapter(BaseArchiveReader):
         reader._usage.report_backends_to(self._usage)
         try:
             pairs = iter(reader.stream_members())
+            place = 0
             while True:
-                with collector.member_ids_from(first):
+                with collector.member_ids_from(first), quiet():
                     pair = next(pairs, None)
                 if pair is None:
                     return
                 member, stream = pair
                 outer = _outer_copy(member)
+                if nest is not None:
+                    self._nest_spans[id(outer)] = (outer, nest, place)
+                place += 1
                 yield MemberSpan(
                     outer,
                     data=None
@@ -775,7 +886,7 @@ class _PluginAdapter(BaseArchiveReader):
                     ),
                 )
         finally:
-            with collector.member_ids_from(first):
+            with collector.member_ids_from(first), quiet():
                 reader.close()
 
     def _nested_config(self) -> ArchiveyConfig:
@@ -959,6 +1070,8 @@ class _PluginAdapter(BaseArchiveReader):
     @override
     def _close_archive(self) -> None:
         try:
+            with self._idle_nest_lock:
+                self._idle_nest = None
             for spans in list(self._nested_iterators):
                 cast(Generator[MemberSpan, None, None], spans).close()
             with self._translated_errors(), self._handle_guard():
@@ -971,6 +1084,8 @@ class _PluginAdapter(BaseArchiveReader):
 class IndexedReaderAdapter(_PluginAdapter):
     """Serves an :class:`~archivey.formats.IndexedReader` through the internal reader
     contract."""
+
+    _RECORDS_NESTS = True
 
     # The archive's region inside the source, ``[_origin, _region_end)``: set only for
     # a built-in format that ships behind a self-extracting stub (``SFX_MAGIC``), from
@@ -1062,6 +1177,9 @@ class IndexedReaderAdapter(_PluginAdapter):
         except BaseException:
             self._close_steps(records, guard)
             raise
+        finally:
+            # A span the plugin took from an inner archive and never yielded.
+            self._nest_spans.clear()
 
     def _walk_records(
         self,
@@ -1096,6 +1214,10 @@ class IndexedReaderAdapter(_PluginAdapter):
             # A held member is counted as listed from here on, not twice.
             tracker.release_member(member)
             member._raw = record.locator
+            if self._nest_spans:
+                taken = self._nest_spans.pop(id(member), None)
+                if taken is not None and taken[0] is member:
+                    self._nest_members[index] = (taken[1], taken[2])
             self._name_member(member, index)
             index += 1
             yield member
@@ -1103,8 +1225,18 @@ class IndexedReaderAdapter(_PluginAdapter):
     def _plugin_member_data(self, member: ArchiveMember) -> tuple[MemberData, BinaryIO]:
         """Call the plugin's ``open_member``: its data, and its stream as archivey reads
         it, full-count and under the handle lock."""
+        member_id = member._member_id
+        nest = (
+            self._nest_members.get(member_id)
+            if self._nest_members and member_id is not None
+            else None
+        )
         with self._translated_errors(member.name), self._handle_guard():
-            data = self._indexed.open_member(member, member._raw)
+            self._reopening = None if nest is None else (*nest, member)
+            try:
+                data = self._indexed.open_member(member, member._raw)
+            finally:
+                self._reopening = None
         if not isinstance(data, MemberData):
             raise _plugin_bug(
                 TypeError(
@@ -1324,6 +1456,11 @@ class _NestedData(io.RawIOBase):
         self._outer = outer
         self._seen = len(inner._diagnostics)
 
+    def attach_to(self, member: ArchiveMember) -> None:
+        """Attach what the inner reader attaches from now on to ``member`` instead:
+        the listed member, for data read again (``_reopen_nested``)."""
+        self._outer = member
+
     def _pass_on_diagnostics(self) -> None:
         attached = self._inner._diagnostics
         if len(attached) > self._seen:
@@ -1359,6 +1496,64 @@ class _NestedData(io.RawIOBase):
                     self._pass_on_diagnostics()
             finally:
                 super().close()
+
+
+class _Nest:
+    """An inner archive an indexed listing read (``ReaderContext.open_nested``)."""
+
+    __slots__ = ("first",)
+
+    def __init__(self, first: int) -> None:
+        # The member id the outer listing gave its first member.
+        self.first = first
+
+
+class _NestWalk:
+    """An inner archive read again to reach a member (``_reopen_nested``): its spans,
+    and the place of the next one."""
+
+    __slots__ = ("nest", "next_index", "spans")
+
+    def __init__(self, nest: _Nest, spans: Iterator[MemberSpan]) -> None:
+        self.nest = nest
+        self.spans = spans
+        self.next_index = 0
+
+    def close(self) -> None:
+        cast(Generator[MemberSpan, None, None], self.spans).close()
+
+
+class _ParkOnClose(io.RawIOBase):
+    """A reopened inner member's data (``_reopen_nested``): once closed, its inner
+    archive's walk is free for the next member."""
+
+    def __init__(
+        self, stream: io.RawIOBase | BinaryIO, park: Callable[[], None]
+    ) -> None:
+        self._stream = stream
+        self._park: Callable[[], None] | None = park
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        data = self._stream.read(len(buffer)) or b""
+        buffer[: len(data)] = data
+        return len(data)
+
+    @override
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            self._stream.close()
+        finally:
+            super().close()
+            park, self._park = self._park, None
+            if park is not None:
+                park()
 
 
 class _Walk:
