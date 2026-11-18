@@ -3152,6 +3152,11 @@ class ZipReader(BaseArchiveReader):
         the one such a reader takes."""
         for field in fields:
             if field.tag == _ZIP_EXTRA_ZIP64:
+                # Stored values throughout: the walk may have corrected the offset
+                # and, for macOS Archive Utility, the compressed size. That writer's
+                # blob is its UX field alone (written_by_archive_utility), so the
+                # size correction cannot meet a ZIP64 field today; taking it off
+                # keeps the comparison on stored values regardless.
                 unused = unused_zip64_values(
                     field.data,
                     file_size=entry.file_size,
