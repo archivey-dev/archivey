@@ -553,7 +553,10 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # macOS gets 30: on 2026-11-18 its 3.15 [all] test step took 17m40s and 16m55s in
+    # two queue runs (9m30s to 14m04s in others that day), so the job hit a 20-minute
+    # limit with every test passed. Linux keeps 20.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 30 || 20 }}
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
     # A row without the key compares null to true, which GitHub evaluates as false, so
@@ -614,8 +617,8 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
-    # Windows timeout: see `test`.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
+    # Windows timeout: see `test`; macOS: see `test-queue`.
+    timeout-minutes: ${{ (matrix.os == 'windows-latest' || matrix.os == 'macos-latest') && 30 || 20 }}
     env: *test-env
     strategy:
       fail-fast: false
