@@ -940,17 +940,27 @@ def test_listing_lets_a_waiting_thread_in_between_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A thread that starts waiting for the walk lock during a listing's first batch
-    gets it at a batch boundary, not only once the listing ends: the drain yields after
-    each release."""
-    batches = 40
+    gets it at the first batch boundary, not only once the listing ends: the drain
+    releases the lock after each batch and yields before taking it again.
+
+    Whether the waiter actually runs in that gap is up to the OS scheduler, so the test
+    makes the gap wait for it: the drain's yield (``time.sleep``) blocks until the
+    waiter holds the lock. A drain that kept the lock across batches, or took it again
+    without yielding, never lets the waiter in at batch 1 and fails every run.
+    """
+    batches = 4
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for i in range(base_reader._DRAIN_BATCH * batches):
             zf.writestr(f"f{i}", b"")
     pulled = 0
     got_in_at: list[int] = []
+    got_in = threading.Event()
     waiters: list[threading.Thread] = []
+    drains: list[base_reader.BaseArchiveReader] = []
+    yields: list[bool] = []
     pull = base_reader.BaseArchiveReader._pull_members_locked
+    real_sleep = base_reader.time.sleep
 
     def counting(self: base_reader.BaseArchiveReader, count: int) -> object:
         nonlocal pulled
@@ -962,14 +972,31 @@ def test_listing_lets_a_waiting_thread_in_between_batches(
             def wait_for_the_lock() -> None:
                 with self._walk_lock:
                     got_in_at.append(pulled)
+                    got_in.set()
 
+            drains.append(self)
             waiters.append(threading.Thread(target=wait_for_the_lock))
             waiters[0].start()
         return pull(self, count)
 
+    draining = threading.current_thread()
+
+    def yield_to_the_waiter(seconds: float) -> None:
+        if threading.current_thread() is not draining:
+            real_sleep(seconds)
+            return
+        # The draining thread must not hold the walk lock while it yields.
+        yields.append(drains[0]._walk_lock._is_owned())  # type: ignore[attr-defined]
+        if len(yields) == 1:
+            assert got_in.wait(timeout=30), "the waiter never got the walk lock"
+        real_sleep(seconds)
+
     monkeypatch.setattr(base_reader.BaseArchiveReader, "_pull_members_locked", counting)
+    monkeypatch.setattr(base_reader.time, "sleep", yield_to_the_waiter)
     with open_archive(io.BytesIO(buf.getvalue()), concurrent_operations=True) as reader:
-        reader.members()
+        listed = reader.members()
         waiters[0].join()
-    assert pulled > batches  # the listing ran in batches
-    assert got_in_at[0] < batches // 2, got_in_at
+    assert len(listed) == base_reader._DRAIN_BATCH * batches
+    assert got_in_at == [1]
+    # One yield after each full batch, none of them under the lock.
+    assert yields == [False] * batches, yields
