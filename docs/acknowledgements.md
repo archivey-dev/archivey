@@ -22,7 +22,8 @@ wherever the format leaves a choice, so that it reads what that tool reads:
   Summers' notes for LHARK's variant of `-lh7-`.
 - **LZX in CAB files:** [libmspack](https://github.com/kyz/libmspack) (Stuart Caie), the
   library `cabextract` uses.
-- **ARJ:** Robert Jung's UNARJ.
+- **ARJ:** Robert Jung's UNARJ, for the headers and method 4. Methods 1 to 3 are LHA's format
+  and use the LHA decoder.
 - **Shrink, Implode and Reduce in ZIP:** [Info-ZIP](https://infozip.sourceforge.net/)'s
   `unzip`. DCL Implode follows Mark Adler's `blast`, in [zlib](https://github.com/madler/zlib)'s
   `contrib/`.
@@ -91,12 +92,13 @@ archivey against other readers. The tests read them when they are given a copy:
 - **[Apache Commons Compress](https://github.com/apache/commons-compress)'s test archives:** about
   410 files in many formats, read by archivey and by Commons Compress.
 
-Where they are installed, the tests also compare archivey with `unar`, lhasa, `cabextract`,
-`bsdtar` and Info-ZIP's `unzip` on the same archives, and with liblzo2, through
+Where they are installed, the tests also compare archivey with `unar`, lhasa, `cabextract` and
+Info-ZIP's `unzip` on the same archives, and with liblzo2, through
 [python-lzo](https://github.com/jd-boyd/python-lzo), on LZO data.
 
-7-Zip, RARLAB's `rar`, Info-ZIP's `zip`, `lzop`, `bsdtar`, ARJ for Unix, makeself, squashfs-tools,
-`rpmbuild`, `dpkg-deb`, xorriso, [ncompress](https://github.com/valgur/ncompress),
+7-Zip, RARLAB's `rar`, Info-ZIP's `zip`, `lzop`, the `bzip3` tool, libarchive's `bsdtar` and
+`bsdcpio`, GNU `ar` and `cpio`, LLVM's `llvm-ar`, ARJ for Unix, makeself, CMake's CPack,
+squashfs-tools, `rpmbuild`, `dpkg-deb`, xorriso, [ncompress](https://github.com/valgur/ncompress),
 [pyzipper](https://github.com/danifus/pyzipper) and several of the libraries above write
 archivey's test archives. Some archives come from other projects, because no tool at hand writes
 them; each is credited in its folder's README:
