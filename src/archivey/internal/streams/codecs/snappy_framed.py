@@ -25,8 +25,10 @@ for ``DecoderLimits.max_decoder_memory`` to cap.
 
 **Backends.** The raw Snappy decode is the only native step: :data:`BACKENDS` maps a
 name to a small adapter for ``cramjam`` (Rust ``snap``) or ``compress-utils`` (its own C
-decoder); ``"auto"`` picks the first installed one in :data:`AUTO_ORDER`. Every check of
-the framing, the sizes and the CRC is done here, the same for both, so a backend can
+decoder), or to the pure-Python :func:`decode_raw_python`; ``"auto"`` picks the first
+installed one in :data:`AUTO_ORDER`, falling back to Python when neither package is
+installed. Every check of the framing, the sizes and the CRC is done here, the same for
+all of them, so a backend can
 differ only in which raw blocks it accepts and what bytes it returns. The decoded length
 must equal the length the block declares.
 
@@ -181,10 +183,10 @@ class Backend:
     """One native raw Snappy decoder."""
 
     name: str
-    module: str
-    """The module it imports."""
-    package: str
-    """What to ``pip install`` for it."""
+    module: str | None
+    """The module it imports, or ``None`` for the built-in Python decoder."""
+    package: str | None
+    """What to ``pip install`` for it, or ``None`` when nothing is needed."""
     load: Callable[[], Callable[[bytes, int], bytes]]
     """Import the module and return ``decode(block, size)``: the block's bytes,
     exactly ``size`` of them, or :class:`SnappyFormatError`."""
@@ -224,11 +226,87 @@ def _compress_utils() -> Callable[[bytes, int], bytes]:
     return decode
 
 
+def _python_refused(reason: str) -> SnappyFormatError:
+    return SnappyFormatError(f"the Python decoder refused the raw block: {reason}")
+
+
+def decode_raw_python(block: bytes, size: int) -> bytes:
+    """Decode a raw Snappy block in pure Python (format_description.txt).
+
+    ``size`` is the length the leading varint declares, already checked by
+    :func:`raw_length`. Refuses, as Google Snappy does: an element cut by the end of
+    the block, a copy whose offset is 0 or reaches before the start of the output, and
+    output that runs past ``size``. The caller checks that the output ends exactly at
+    ``size``. Accepts a literal length written with a longer tag than it needs, which
+    Google Snappy accepts too.
+    """
+    view = memoryview(block)
+    end = len(block)
+    pos = 0
+    while block[pos] & 0x80:  # skip the varint raw_length() already read
+        pos += 1
+    pos += 1
+    out = bytearray()
+    while pos < end:
+        tag = block[pos]
+        pos += 1
+        kind = tag & 3
+        if kind == 0:
+            n = tag >> 2
+            if n >= 60:
+                width = n - 59
+                if pos + width > end:
+                    raise _python_refused("raw block ends inside a literal length")
+                n = int.from_bytes(view[pos : pos + width], "little")
+                pos += width
+            n += 1
+            if pos + n > end:
+                raise _python_refused("raw block ends inside a literal")
+            if len(out) + n > size:
+                raise _python_refused("raw block decodes past its declared length")
+            out += view[pos : pos + n]
+            pos += n
+            continue
+        if kind == 1:
+            if pos >= end:
+                raise _python_refused("raw block ends inside a copy")
+            n = ((tag >> 2) & 7) + 4
+            offset = ((tag >> 5) << 8) | block[pos]
+            pos += 1
+        else:
+            width = 2 if kind == 2 else 4
+            if pos + width > end:
+                raise _python_refused("raw block ends inside a copy")
+            n = (tag >> 2) + 1
+            offset = int.from_bytes(view[pos : pos + width], "little")
+            pos += width
+        here = len(out)
+        if offset == 0 or offset > here:
+            raise _python_refused(
+                f"copy offset {offset} is outside the {here} bytes decoded so far"
+            )
+        if here + n > size:
+            raise _python_refused("raw block decodes past its declared length")
+        start = here - offset
+        if offset >= n:
+            out += out[start : start + n]
+        else:
+            # An overlapping copy repeats the last ``offset`` bytes.
+            pattern = out[start:]
+            out += (pattern * (n // offset + 1))[:n]
+    return bytes(out)
+
+
+def _python() -> Callable[[bytes, int], bytes]:
+    return decode_raw_python
+
+
 BACKENDS: dict[str, Backend] = {
     "cramjam": Backend("cramjam", "cramjam", "cramjam", _cramjam),
     "compress-utils": Backend(
         "compress-utils", "compress_utils", "compress-utils", _compress_utils
     ),
+    "python": Backend("python", None, None, _python),
 }
 
 
@@ -236,26 +314,28 @@ BACKENDS: dict[str, Backend] = {
 # Snappy on every input measured, while cramjam refuses three valid but unusual raw
 # encodings (dev-docs/investigations/snappy-framing-backends.md). cramjam second: it has
 # wheels for more interpreters, PyPy included.
-AUTO_ORDER = ("compress-utils", "cramjam")
+# The pure-Python decoder is last: it needs nothing installed, so "auto" always finds a
+# backend, but it is far slower than either native one.
+AUTO_ORDER = ("compress-utils", "cramjam", "python")
+
+
+def _installed(backend: Backend) -> bool:
+    return (
+        backend.module is None or importlib.util.find_spec(backend.module) is not None
+    )
 
 
 def installed_backends() -> list[str]:
-    """The backends whose module is installed, in ``AUTO_ORDER``. Does not import."""
-    return [
-        name
-        for name in AUTO_ORDER
-        if importlib.util.find_spec(BACKENDS[name].module) is not None
-    ]
+    """The backends that can run here, in ``AUTO_ORDER``. Does not import."""
+    return [name for name in AUTO_ORDER if _installed(BACKENDS[name])]
 
 
 def resolve_backend(name: str) -> Backend:
     """The backend ``name`` names; ``"auto"`` is the first installed one in
-    ``AUTO_ORDER``, or the last of them when none is installed (so the missing-package
-    report names it)."""
+    ``AUTO_ORDER``, which is at worst the pure-Python decoder."""
     if name != "auto":
         return BACKENDS[name]
-    found = installed_backends()
-    return BACKENDS[found[0] if found else AUTO_ORDER[-1]]
+    return BACKENDS[installed_backends()[0]]
 
 
 def decode_raw_chunk(decode: Callable[[bytes, int], bytes], block: bytes) -> bytes:
