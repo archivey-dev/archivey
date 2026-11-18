@@ -26,71 +26,42 @@ LZ4](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zstd-lz
 images](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) and
 [directories](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md).
 
-## Quick matrix
+## Overview
 
-"Core" means a plain `pip install archivey`, with no dependencies. *Listing* is what
-`archive.cost.listing_cost` reports, and *members* is its `access_cost`: direct, or solid when
-reaching a member means decompressing others first ([Solid archives](reading.md#solid-archives)).
-
-- **ZIP:** core; `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard before Python
-  3.14. Listing: from its index; from a pipe, header by header. Members: direct. Readable from a pipe.
-- **TAR:** core. Listing: header by header. Members: direct. Readable from a pipe.
-- **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
-  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`, `.tar.bz3`): needs what its compressor needs
-  (below).
-  Listing: needs decompression. Members: solid. Readable from a pipe.
-- **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
-  ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
-  before Python 3.14. Listing: from its index. Members: solid, unless written without solid
-  blocks (`7z -ms=off`). Needs a source that can seek.
-- **RAR:** listing and uncompressed members in core; compressed members need the `unrar`
-  program ([below](#the-program-for-rar)); `[recommended]` adds encrypted headers and
-  uncompressed encrypted members in one part. Listing: header by header. Members: solid when the archive is
-  solid, otherwise direct. Needs a source that can seek.
-- **ISO 9660:** `[recommended]` (`pycdlib`). Listing: from its index. Members: direct. Needs a
-  source that can seek.
-- **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
-  Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
-  from its index. Members: direct. Needs a source that can seek.
-- **XAR** (`.xar`, macOS `.pkg` and `.xip`): core for stored, gzip, bzip2, LZMA and xz
-  data. Listing: from its index. Members: direct. Needs a source that can seek.
-- **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
-  from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
-  that can seek.
-- **LHA** (`.lzh`, `.lha`, `.lzs`): core, for stored members and the `-lh1-`, `-lh4-` to
-  `-lh7-`, `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Listing: header by header. Members: direct. Needs a source
-  that can seek.
-- **ARJ** (`.arj`): core, for methods 0 to 4. Listing: header by header. Members: direct.
-  Needs a source that can seek.
-- **CPIO** (`.cpio`, initramfs, RPM payloads): core. Listing: header by header. Members:
-  direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.cpio.gz`,
-  …); there, as with a compressed TAR, listing needs decompression and members are solid.
-- **ar** (`.a`, `.lib`, the outer layer of a `.deb`): core. Listing: header by header. Members:
-  direct. Readable from a pipe. Readable inside any compressor a TAR can be in (`.a.gz`,
-  …); there, as with a compressed TAR, listing needs decompression and members are solid.
-- **Debian packages** (`.deb`, `.udeb`, `.ddeb`): needs what their tars' compressor needs
-  (xz, gzip and bzip2 in core; Zstandard as for a `.zst` file). Listing: needs decompression.
-  Members: solid. Readable from a pipe.
-- **RPM** (`.rpm`, binary and source packages): core; the payload needs what its compressor
-  needs (gzip, bzip2, xz and LZMA in core, Zstandard as for a `.zst` file). Listing: from
-  the package header, with nothing decompressed. Members: solid (direct for an
-  uncompressed payload, which is rare). Readable from a pipe.
-- **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
-  the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
-- **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
-  Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
-  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and base64 text in core.
-  One member. Members: direct. Readable from a pipe. Seeking inside the member
-  needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
-- **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
-
-[Install](install.md) lists what each extra installs. `archivey[recommended]` is the usual choice,
-and `archivey[all]` adds the `[seekable]` accelerator. At run time,
+"Core" means a plain `pip install archivey`, with no other packages. `archivey[recommended]` is
+the usual choice ([Install](install.md)). At run time,
 [`format_availability()`](api.md#archivey.format_availability) says what the current install can
-read. The [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
-explains the choice of each compression library, and
-[Acknowledgements](acknowledgements.md) credits them.
+read.
+
+| Format | Install |
+|---|---|
+| ZIP | Core. `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard before Python 3.14 |
+| TAR | Core |
+| Compressed TAR (`.tar.gz`, `.tar.zst`, …) | What its compressor needs (below) |
+| 7z | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before Python 3.14 |
+| RAR | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([below](#the-program-for-rar)) |
+| ISO 9660 | `[recommended]` |
+| SquashFS | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
+| XAR (macOS `.pkg`, `.xip`) | Core |
+| CAB | Core |
+| Debian packages (`.deb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
+| RPM | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
+| makeself (`.run`) | Core. The payload needs what its compressor needs |
+| LHA, ARJ | Core |
+| CPIO, ar | Core |
+| gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo`, Snappy (`.sz`) | Core. `[recommended]` makes `.lzo` and `.sz` faster |
+| Zstandard | Core on Python 3.14 and later, `[recommended]` before |
+| LZ4, Firefox's mozlz4, Brotli | `[recommended]` |
+| bzip3 | `[bzip3]` |
+| uuencode, base64 | Core |
+| A directory on disk | Core |
+
+A UDIF disk image (`.dmg`) is recognised and refused ([Disk images](#disk-images)).
+
+The
+[library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
+explains the choice of each compression library, and [Acknowledgements](acknowledgements.md)
+credits them.
 
 ### The program for RAR
 

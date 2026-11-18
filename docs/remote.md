@@ -93,7 +93,7 @@ raises `FileNotFoundError`.
 Each request to a remote store takes time before the first byte comes back, so archivey tries to
 make few requests and keep each one close to what it needs. How few depends on the format,
 because some formats keep an index and others have to be walked from the start
-([Quick matrix](formats.md#quick-matrix)):
+([Formats](formats.md)):
 
 - **A ZIP is listed in two requests**: one for the start of the file, to recognise the format, and
   one for the index at its end. Reading a member is one more request, for that member's bytes.
