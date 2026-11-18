@@ -67,6 +67,7 @@ from archivey.internal.streams.decompressor_stream import (
     Decoder,
     DecompressorStream,
     SeekPoint,
+    release_decoder,
     truncated_message,
 )
 from archivey.internal.streams.streamtools.slice import SlicingStream
@@ -464,11 +465,11 @@ class _AloneDecompressor:
                     marker_data, self._room(max_length, self._marker_out)
                 )
             except lzma.LZMAError:
-                self._marker_dec = None
+                self._drop_marker_decoder()
             else:
                 self._marker_out += len(marker_out)
                 if self._marker_out > self._size:
-                    self._marker_dec = None  # No marker at the declared size.
+                    self._drop_marker_decoder()  # No marker at the declared size.
         before = self._out
         try:
             out = self._dec.decompress(data, max_length)
@@ -499,8 +500,15 @@ class _AloneDecompressor:
             return marker_out
         self._out += len(out)
         if self._dec.eof:
-            self._marker_dec = None
+            self._drop_marker_decoder()
         return out
+
+    def _drop_marker_decoder(self) -> None:
+        # Give its child process back now: PyPy frees a dropped proxy only at a later
+        # collection (``release_decoder``).
+        if self._marker_dec is not None:
+            release_decoder(self._marker_dec)
+            self._marker_dec = None
 
     def _room(self, max_length: int, written: int) -> int:
         """The marker decoder's output limit: one byte past the declared size at most.
