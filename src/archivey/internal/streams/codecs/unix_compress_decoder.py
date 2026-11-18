@@ -479,9 +479,11 @@ class LzwState:
             if self._pending_skip:
                 return b"", []
 
+        # Local aliases — hot path (same trick as uncompresspy, ~2x).
+        # The buffer is not resized until the del after the loop, so read its length
+        # once.
         buf = self._buf
         buf_end = len(buf)
-        # Local aliases — hot path (same trick as uncompresspy, ~2x).
         bit_buffer = self._bit_buffer
         bits_in_buffer = self._bits_in_buffer
         code_width = self._code_width
