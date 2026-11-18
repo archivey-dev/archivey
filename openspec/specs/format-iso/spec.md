@@ -127,14 +127,31 @@ the plain ISO it holds: each sector stripped to its 2048 bytes of user data (aft
 when it is read: a sector without the sync or with another mode byte SHALL raise
 `CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read that
 reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and ECC bytes
-are not checked, and documentation SHALL say so. Without a `.cue` sheet beside it (next
-requirement) only the first track is read. The trailing-data check SHALL scan only the data sectors that
+are not checked, and documentation SHALL say so.
+
+Without a `.cue` sheet beside it (next requirement), the backend SHALL read the session
+the sheet would choose from the addresses in the sector headers (BCD minutes, seconds
+and frames). Data sectors whose address minus their position in the file is the same
+form a run, placed at those addresses; runs whose offsets differ by at least a lead-in
+(4 500 sectors) are in different sessions. The backend SHALL list the first run of the
+last session, reading its volume descriptors from the first sector at or after that
+run's sector 16 that holds a primary volume descriptor, within its first 4096 sectors,
+and only when the root directory's `.` record is at the sector it names and the
+descriptor set (through its terminator and the sector after) is in data sectors; every
+other address is absolute. The walk SHALL NOT read every sector: when the last data
+sector near the end of the file has the same offset as sector 0, the image is one
+session and no other sector header is read; a run is followed by probes at doubling
+distances and bisection; only sectors that are not data are read in turn, in batches.
+Addresses that go backwards, more than 256 runs, no later session, or a later session
+without a volume that passes the check SHALL leave the image read from its first track.
+
+Read from its first track, the trailing-data check SHALL scan only the data sectors that
 continue the track after the volume space, so a mixed-mode disc's audio is not reported.
 When those sectors hold another ISO 9660 volume (a sector that starts with a primary
-volume descriptor), as a later session of the disc does, the backend SHALL report
-`ARCHIVE_UNREAD_SESSION` naming that sector instead of `ARCHIVE_TRAILING_DATA`, and the
-listing SHALL stay the first track's. Read hints SHALL name the raw sectors that hold a
-member's extents.
+volume descriptor), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming that sector
+instead of `ARCHIVE_TRAILING_DATA`, and the listing SHALL stay the first track's. Read
+hints SHALL name the raw sectors that hold a member's extents, also for a later session
+placed by its addresses (a span across two runs has no hint).
 
 Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
 with `UnsupportedFeatureError` naming the layout, before the availability check, so the
@@ -148,7 +165,10 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | Lists and reads as the plain `.iso` does, with no diagnostic |
 | Data track followed by audio sectors | Reads; no `ARCHIVE_TRAILING_DATA` |
 | Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
-| A second ISO 9660 volume in the data sectors past the volume space, no `.cue` used | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
+| Two or three data sessions back to back, sector addresses jumping by the gap, no `.cue` used, from a path or a stream | The newest session, as with the `.cue`; files of earlier sessions read from their sectors; no diagnostic |
+| Non-data sectors, and a pregap of data sectors, between the sessions | The same; the volume found past the pregap |
+| One session, or a data track then audio to the end | Two header reads (sector 0 and the last 32 sectors), then the first track |
+| A second ISO 9660 volume past the volume space whose addresses do not place it (they restart, or its root is not where they put it) | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
 | A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
 | A Mode 2 Form 2 sector inside a file | Reading that file raises `UnsupportedFeatureError` |
 | Image cut inside a file | Reading that file raises `TruncatedError` |
@@ -184,6 +204,14 @@ before any file is opened. `FILE` lines that name the same file, by device and i
 SHALL share one handle. Member data hints SHALL be empty, since the opened file is the
 sheet.
 
+When the sector addresses of a data track after the chosen one jump past the track
+before it by a session gap the sheet's addresses do not have (a sheet with no
+`REM SESSION` lines), and a volume in that track passes the check the sheet-less reading
+uses (previous requirement), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming
+the address of that volume's primary volume descriptor: the image read without the sheet
+lists that session. The listing SHALL follow the sheet. A later session with no volume
+that passes is not reported, since both readings list the same files.
+
 #### Scenario: cue matrix
 
 | Case | Expected |
@@ -193,6 +221,8 @@ sheet.
 | Two data sessions, standard gap | The newest session; files from session 1 read from track 1 |
 | Two data sessions, another gap | The same, through the root-directory search |
 | Audio session, then data session (Enhanced CD) | The data session |
+| Two data sessions whose sector addresses jump by the gap, sheet with no `REM SESSION` | Track 1 is listed; `ARCHIVE_UNREAD_SESSION` |
+| The same, with no volume in the later session | Track 1 is listed; no diagnostic |
 | `FILE "../x.bin"`, `"/etc/passwd"`, `"sub/x.bin"` | `UnsupportedFeatureError` |
 | Missing track file | `TruncatedError` |
 | A `FILE` with no `TRACK` after it; a track number not above the one before | `CorruptionError`; no track file opened |

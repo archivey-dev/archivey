@@ -107,18 +107,40 @@ The second magic is the 12-byte CD sync pattern at offset 0: a raw sector image 
 A Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors, is read through
 `cd_sectors.cooked_source`, a `ReaderSource` that strips each sector to its 2048 bytes of
 user data (checking sync and mode per sector, not EDC/ECC) and maps read hints back to raw
-sectors; `IsoHandler.open` wraps the source, so pycdlib sees a plain image. Only the first
-track is read (no `.cue`), and the trailing-data scan stops at the first sector that is
-not a data sector, so a mixed-mode disc's audio is not reported. When a sector of that
-scan starts with a primary volume descriptor (`01 CD001 01`), the image holds a later
-session that a `.cue` would choose: `ARCHIVE_UNREAD_SESSION` names its sector
+sectors; `IsoHandler.open` wraps the source, so pycdlib sees a plain image.
+
+Without a `.cue`, the sessions come from the sector headers (`cd_sessions.py`, davitf
+2026-11-17: a stream lists what the path with its sheet lists). Each data sector names
+its address (BCD minutes, seconds, frames, from 150 sectors before sector 0), and a
+`.bin` holds the tracks back to back without the gaps between sessions, so address minus
+file position is constant inside a track and jumps by the session gap (11 400 or 6 900)
+at a session boundary. `last_session_source` reads sector 0 and the last 32 sectors
+first: if the last data sector there has sector 0's offset, the image is one session and
+nothing else is read, which is also what a mixed-mode disc (audio to the end) costs.
+Otherwise it splits the file into runs of one offset, following each by probes at
+doubling distances and bisection, and reading only non-data sectors (audio, a Form 2
+postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a lead-in) or
+more are in different sessions. The first run of the last session is chosen, its volume
+descriptors are looked for from its sector 16 on (a pregap kept in the file puts them
+150 later), and a candidate is kept only when the root directory's `.` record names its
+own sector through that mapping and its descriptor set, through the terminator and one
+sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
+candidate, so 4 096 crafted candidates cost about 8 200 sector reads). The result is a
+`DiscSource` over the `.bin` itself, so read hints map back to its sectors
+(`DiscSource.file_range`). Addresses that go backwards, more than 256 runs, or a last
+session without a volume that passes the check leave the image read from its first track
+(`cooked_source`), as before.
+
+Read from its first track, the trailing-data scan stops at the first sector that is not
+a data sector, so a mixed-mode disc's audio is not reported. When a sector of that scan
+starts with a primary volume descriptor (`01 CD001 01`), the image holds another volume
+the headers did not place (they restart at 0, say, as a `.bin` built by joining two
+`.iso`-derived dumps does): `ARCHIVE_UNREAD_SESSION` names its sector
 (`IsoReader._report_unread_session`), in place of `ARCHIVE_TRAILING_DATA`, and the
-listing stays the first track's (davitf, 2026-11-17: a diagnostic, not another listing).
-The same `.bin` opened by its path beside its sheet lists the last session, so this is
-the one signal a caller reading a stream gets. Other layouts are refused
-by name in `open_archive` with `UnsupportedFeatureError`, before the availability check,
-so a caller without `pycdlib` is not told to install it first
-(`refuse_raw_sector_image`); a replacement reader is refused every raw image.
+listing stays the first track's. Other layouts are refused by name in `open_archive`
+with `UnsupportedFeatureError`, before the availability check, so a caller without
+`pycdlib` is not told to install it first (`refuse_raw_sector_image`); a replacement
+reader is refused every raw image.
 
 A `.cue` sheet (claimed by extension; it has no magic) or a `.bin` with a same-stem
 `.cue` beside it that lists it is read through `cue_sheet.disc_source`: a `DiscSource`
@@ -134,10 +156,17 @@ a sheet names at most 99 files and opens at most 99 handles (a 64 KiB sheet of b
 `FILE` lines held about 5 000 open at once), and `FILE` lines naming one file share its
 handle, which is found by device and inode, so through a link or another case of the
 name too. It also refuses track numbers that do not increase: the chosen track is found
-by number, so a repeated number picked the first session's track. The trailing-data scan
-covers only the rest of the chosen track, and member hints are empty (the opened file is
-the sheet). A non-seekable source is also refused ahead of that check, with
-`StreamNotSeekableError`, because `pycdlib` could not read it either. The
+by number, so a repeated number picked the first session's track. When the sector
+addresses of a data track after the chosen one jump past the track before it by a
+session gap the sheet's addresses lack (a sheet with no `REM SESSION` lines), and
+`cue_sheet.find_volume` finds a volume there (the same check the sheet-less reading
+runs, on the tracks placed by their addresses), `ARCHIVE_UNREAD_SESSION` names that
+volume's descriptor address (`cue_sheet._hidden_session`, two header reads per track):
+without the sheet the image lists that session, and the listing follows the sheet. A
+later session with no volume is not reported, since both readings agree. The
+trailing-data scan covers only the rest of the chosen track, and member hints are empty
+(the opened file is the sheet). A non-seekable source is also refused ahead of that
+check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
 extension is `.iso`.
 
 A UDF-only image has `BEA01` at 32 769, where an ISO 9660 image has `CD001`: a third far
@@ -564,7 +593,8 @@ extents, symlinks and indirect entries). No real Blu-ray or Windows image has be
 
 **A `.bin`/`.cue` pair is a raw sector dump**, not an ISO. Mode 1 and Mode 2 Form 1
 images are read with each sector stripped to its user data, and a `.cue` beside the
-`.bin` chooses the track (§2.1). Other layouts are refused by name.
+`.bin`, or without one the sector addresses, choose the session (§2.1). Other layouts
+are refused by name.
 
 **Rock Ridge names follow the writer's locale.** `genisoimage -input-charset iso8859-1`
 stores `café.txt` as `caf\xe9.txt` in the Rock Ridge `NM` record and as proper UTF-16 in
@@ -735,7 +765,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | --- |
 | Detection by far magic; a bootable image is not taken by a probe; a short source falls through |
 | Raw sector images refused by name, without `pycdlib` |
-| A `.bin` of two data sessions lists its last session by path (with its `.cue`) and its first from a file object, which reports `ARCHIVE_UNREAD_SESSION` |
+| A `.bin` of two or three data sessions lists its last session by path (with or without its `.cue`) and from a file object; sectors between sessions and a pregap in the file are skipped; one session costs two reads (`tests/test_iso_sessions.py`) |
+| A `.bin` whose later volume the addresses do not place lists its first track and reports `ARCHIVE_UNREAD_SESSION`; so does a sheet with no `REM SESSION` over a disc whose addresses jump |
 | Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped |
 | Cost, seekable-only, write refused, password unused |
 | Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey |
@@ -794,7 +825,10 @@ libarchive's ISO fixtures live in `libarchive/test/*iso*.uu` (uuencoded, most al
   [`format-detection`](../../openspec/specs/format-detection/spec.md)
 - Code: `internal/backends/iso_reader.py` (reader, raw-sector refusal) ·
   `internal/backends/udf.py` (the UDF parser) ·
+  `internal/backends/cd_sectors.py` (raw sectors) · `internal/backends/cd_sessions.py`
+  (sessions from sector addresses) · `internal/backends/cue_sheet.py` (`.cue` sheets) ·
   `internal/detection.py` (far magic)
+- ECMA-130 §14: the sector header and its address in BCD minutes, seconds and frames
 - Registers: [`threat-model.md`](../threat-model.md) O16 and the cycle finding
 - Handbook: [`zip.md`](zip.md) · [`7z.md`](7z.md) · [`rar.md`](rar.md) (the file-history
   shape plain ISO versions borrow)

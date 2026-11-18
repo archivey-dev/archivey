@@ -24,6 +24,7 @@ else LZO1X. A further file may follow, starting with the magic again.
 
 from __future__ import annotations
 
+import re
 import struct
 import zlib
 from collections.abc import Callable
@@ -117,6 +118,17 @@ def lzo1x_decompressor(
     return package
 
 
+# Each zero extends a literal or match length by 255 bytes. Handling the first four
+# inline avoids a regex call on short extensions. The C-level search skips longer
+# runs without a Python step per byte. Nonzero extensions need no scan.
+#
+# Both sites deliberately unroll the four checks: a bounded loop measured slower
+# on short extensions, and a helper adds a call. Keep the two copies in step.
+# Runs of about five to eight zeros pay for both the inline prefix and the regex
+# call, so they can be slightly slower than either scan alone.
+_FIND_NONZERO = re.compile(rb"[^\x00]").search
+
+
 def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
     """Decode the LZO1X block ``data`` (no header) to at most ``limit`` bytes."""
     out = bytearray()
@@ -145,8 +157,17 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
                 # A literal run of 4 or more bytes.
                 if t == 0:
                     zeros = ip
-                    while ip < end and data[ip] == 0:
+                    if ip < end and data[ip] == 0:
                         ip += 1
+                        if ip < end and data[ip] == 0:
+                            ip += 1
+                            if ip < end and data[ip] == 0:
+                                ip += 1
+                                if ip < end and data[ip] == 0:
+                                    ip += 1
+                                    if ip < end and data[ip] == 0:
+                                        found = _FIND_NONZERO(data, ip)
+                                        ip = found.start() if found is not None else end
                     if ip >= end:
                         raise LzoError("the input ends inside an instruction")
                     t = (ip - zeros) * 255 + 15 + data[ip]
@@ -188,8 +209,17 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
                 base = 7
             if length == 0:
                 zeros = ip
-                while ip < end and data[ip] == 0:
+                if ip < end and data[ip] == 0:
                     ip += 1
+                    if ip < end and data[ip] == 0:
+                        ip += 1
+                        if ip < end and data[ip] == 0:
+                            ip += 1
+                            if ip < end and data[ip] == 0:
+                                ip += 1
+                                if ip < end and data[ip] == 0:
+                                    found = _FIND_NONZERO(data, ip)
+                                    ip = found.start() if found is not None else end
                 if ip >= end:
                     raise LzoError("the input ends inside an instruction")
                 length = (ip - zeros) * 255 + base + data[ip]

@@ -139,10 +139,13 @@ class DiagnosticCode(StrEnum):
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it."""
     ARCHIVE_UNREAD_SESSION = "archive_unread_session"
-    """A raw CD image (a ``.bin``) read without its ``.cue`` sheet holds another
-    ISO 9660 volume after the one listed, as a disc with a later session does. Only
-    the first track is listed. Opened by its path beside its sheet, the same file
-    lists the last session, which can hold other files."""
+    """A CD image holds a session its listing does not read, which another reading
+    of the same file does. A raw image (a ``.bin``) read without its ``.cue`` sheet
+    whose sector addresses place no readable later session there, but which holds
+    another ISO 9660 volume after the one listed: the first track is listed, and a
+    sheet beside it may choose the other volume. Or a ``.cue`` sheet chose a session,
+    but the sector addresses of a later data track start another one: the listing
+    follows the sheet, and the image read without it lists that session."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
@@ -632,9 +635,13 @@ class UnlistedDataContext(_JsonSafeContext):
 class UnreadSessionContext(_JsonSafeContext):
     """Another filesystem volume after the one a disc image's listing reads.
 
-    A raw CD image read without its ``.cue`` sheet is read from its first track; the
-    sheet would choose the last session that has data. ``sector`` is the image's
-    sector that holds the other volume's primary volume descriptor.
+    Two cases. A raw CD image read without its ``.cue`` sheet whose sector addresses
+    show no later session it can read is read from its first track, and another
+    volume follows it: ``sector`` is the image's sector that holds that volume's
+    primary volume descriptor. Or a ``.cue`` sheet chose a session, and the sector
+    addresses of a data track after it start a later one that holds a volume:
+    ``sector`` is the address, by those sector headers, of that volume's primary
+    volume descriptor.
     """
 
     kind: Literal["unread_session"] = "unread_session"
