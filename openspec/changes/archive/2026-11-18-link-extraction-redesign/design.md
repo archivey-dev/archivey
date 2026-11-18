@@ -1,7 +1,11 @@
 # Link extraction: remove the corner-case classes instead of closing cases one by one
 
-**Design draft. Never merged.** It asks the maintainer three questions (§6) and proposes
-the work that follows from the answers (`tasks.md`).
+**Archived 2026-11-18, for reference.** All three decisions in §6 were taken as
+recommended. D1 shipped in #1620, D2 in #1622 (next minor release), with the DR-6 scope
+rule it relies on in #1621, and D3 is the documented difference between the modes.
+`openspec/specs/safe-extraction/spec.md` carries the result; this change's delta spec
+was not applied on archive, because those PRs edited the spec directly. Where the
+outcome differs from the text below, §8 says so.
 
 ## 1. Recommendation
 
@@ -252,3 +256,19 @@ changes the result (the held run recovers it), against the ruling.
 3. Leaves (D2), in the next minor release.
 4. The oracle (§5.1), then the planned single pass (§5.6) if a solid-archive benchmark
    shows the second read matters.
+
+## 8. Outcome (2026-11-18)
+
+- **D1** as recommended. The prototype's last mismatch was fixed too: held-back against
+  made links gave 0 mismatches in 25,600 fuzz runs on #1620.
+- **D2** under every policy, `TRUSTED` included. The scan of 82,635 release tarballs
+  (tar-minefield, `tree.through-symlink`) found the shape in none. A run link is matched
+  by device and inode, so a case variant or a name Windows trims is refused too. Only a
+  member's own path is checked: a symlink's target may still go through a run link.
+- **Physical-path bookkeeping stays** (§5.3 expected to drop it). A symlink the caller
+  had in `dest` is still followed, and a later member can replace it with the archive's
+  own link, so the superseded-copy take-back and the placeholder fill still need to know
+  where a copy physically is.
+- **The fuzzer did not become a standing test.** It was run by hand on #1620 and #1622
+  and stays in `evidence/`.
+- §5.1 (oracle) and §5.6 (single pass) were not started.
