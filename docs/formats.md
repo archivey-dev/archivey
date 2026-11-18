@@ -100,6 +100,9 @@ member of a `.tar.gz` or other compressed TAR by name uses the same points.
   accelerator that keeps its own points.
 - **bzip2:** from the start of the block, which holds at most 900 kB of data.
 - **bzip3:** from the start of the block. Its size is set by the writer, and is 16 MiB by default.
+- **lzop:** from the start of the block, 256 KiB of data by default.
+- **Snappy:** from the start of the chunk, which holds at most 64 KiB of data.
+- **Legacy LZ4** (`lz4 -l`): from the start of the block, which holds 8 MiB of data.
 
 **Near the target only if the file was written in pieces:**
 
@@ -107,13 +110,14 @@ member of a `.tar.gz` or other compressed TAR by name uses the same points.
   Single-threaded `xz` writes one block. `xz -T0` writes one every 24 MiB at the default level.
 - **lzip:** from the start of a member. `lzip` writes one, and `plzip` writes several for a large
   file.
+- **LZ4:** from the start of a frame. `lz4` writes one frame per file.
 - **Zstandard:** from the start of a frame. `zstd` writes one frame per file. Files in the
   Seekable Zstandard format have many frames, and archivey finds them without decoding.
 - **Unix compress (`.Z`):** from a reset code (CLEAR), which the writer adds only when compression
   gets worse.
 
-**Always from the start:** LZMA Alone, LZ4, Brotli, lzop, Snappy and mozlz4. Archivey keeps no
-restart points in them.
+**Always from the start:** LZMA Alone, Brotli and mozlz4. Archivey keeps no restart points in
+them.
 
 If you'll seek backwards often in a file from the last two groups, extracting the member to a file
 first is usually faster.
