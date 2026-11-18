@@ -23,7 +23,7 @@ from archivey.internal.streams.codecs.snappy_framed import MAX_CHUNK_DATA
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from tests.conftest import requires
 from tests.lzop_build import make_lzop
-from tests.test_snappy_framed import stored_frame, written_frame
+from tests.test_snappy_framed import _data_chunk, _frame, stored_frame, written_frame
 
 BLOCK = 3000
 DATA = random.Random(7).randbytes(BLOCK * 5 + 123)
@@ -170,3 +170,14 @@ def test_one_lz4_frame_has_no_point_but_the_origin() -> None:
         assert _points(stream) == [0]
         stream.seek(STARTS[3])
         assert stream.read(10) == DATA[STARTS[3] : STARTS[3] + 10]
+
+
+def test_an_empty_snappy_chunk_is_no_point() -> None:
+    # It would share its output offset with the next chunk, with another state.
+    first, last = SNAPPY_DATA[:1000], SNAPPY_DATA[1000:61000]
+    raw = _frame(_data_chunk(first), _data_chunk(b""), _data_chunk(last))
+    with _open(Codec.SNAPPY, raw) as stream:
+        assert stream.read() == first + last
+        assert _points(stream) == [0, 1000]
+        stream.seek(1500)
+        assert stream.read(10) == last[500:510]

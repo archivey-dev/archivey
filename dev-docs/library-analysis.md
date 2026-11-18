@@ -335,8 +335,9 @@ checksum or size to check against (accepted limitation; container CRC covers ZIP
 ### lz4 — `lz4`
 
 The `lz4` package's frame reader (`lz4.frame`). Standard, broadly-wheeled, actively maintained.
-Forward-only seek (rewind + warning). No compelling alternative for the LZ4 frame format in
-Python.
+Seeks resume at frame starts only, since a frame's blocks are not used as points
+(`dev-docs/formats/zstd-lz4.md` §2.3). No compelling alternative for the LZ4 frame
+format in Python.
 
 ### brotli — `brotli`
 

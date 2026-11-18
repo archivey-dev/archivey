@@ -548,8 +548,7 @@ class SnappyFramedDecompressor:
         output offsets from this decompressor's start, and the chunk's offset in the
         stream, what :meth:`resume` takes. Every chunk is a raw block of its own with
         its own CRC-32C, and nothing in the stream covers more than one chunk, so a
-        decode can
-        start at any data chunk."""
+        decode can start at any data chunk."""
         starts, self._block_starts = self._block_starts, []
         return starts
 
@@ -637,6 +636,9 @@ class SnappyFramedDecompressor:
                 if masked_crc(crc) != stored:
                     raise SnappyFormatError(f"CRC-32C mismatch in chunk at offset {at}")
                 self._output = memoryview(data)
+                # An empty chunk is no point: it shares its output offset with the
+                # next chunk, and two points with different states at one offset are
+                # refused as a misleading index.
                 if data:
                     self._block_starts.append((at - self._base, self._decoded, at))
                     self._decoded += len(data)
