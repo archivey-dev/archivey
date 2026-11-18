@@ -120,10 +120,8 @@ class ArjFastDecoder:
                 if count <= distance:
                     out += out[start : start + count]
                 else:
-                    while count > 0:
-                        step = min(len(out) - start, count)
-                        out += out[start : start + step]
-                        count -= step
+                    pattern = out[start:]
+                    out += (pattern * ((count + distance - 1) // distance))[:count]
             self._bits &= (1 << self._nbits) - 1
             self._left -= len(out) - before
         if self._left < 0:  # the last match ran past the member's end

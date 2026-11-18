@@ -39,18 +39,21 @@ import re
 import stat
 import struct
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.formats import ReaderSource
 from archivey.internal.backends.cd_sectors import (
+    HEADER_SIZE,
+    LEAD_IN_SECTORS,
     USER_DATA_SIZE,
     RawSectorLayout,
     _SectorChecker,
     cooked_access,
+    data_sector_address,
     load_sectors,
 )
 from archivey.terminal import quoted
@@ -64,6 +67,9 @@ _FIRST_SESSION_GAP = 11_400
 _LATER_SESSION_GAP = 6_900
 # How far into a track the root directory is looked for when the computed base fails.
 _ROOT_SEARCH_SECTORS = 4096
+# Sectors read at once while looking for a primary volume descriptor.
+_SEARCH_BATCH = 64
+_PVD_PREFIX = b"\x01CD001\x01"
 # The volume descriptor set: system area (16 sectors) plus at most this many.
 _MAX_DESCRIPTORS = 64
 
@@ -246,6 +252,7 @@ class _TrackFile:
         self._fp: BinaryIO = os.fdopen(fd, "rb")  # closed by close()
         self._lock = threading.Lock()
         self.size = st.st_size
+        self.name = path.name
 
     def read_at(self, offset: int, n: int) -> bytes:
         with self._lock:
@@ -256,33 +263,74 @@ class _TrackFile:
         self._fp.close()
 
 
-class DiscSource(ReaderSource):
-    """The data sectors of a disc a ``.cue`` sheet describes, at absolute addresses.
+class TrackReader(Protocol):
+    """A file holding tracks of the disc: a track file a sheet names, or the raw image
+    itself (``cd_sessions``)."""
 
-    Sectors 0 to the end of the volume descriptor set are read from the chosen track's
-    start (``base``), as a drive mounting that session does; every other address is
-    absolute. A sector in no data track (an audio track, a pregap, the gap between
-    sessions) fails the read that reaches it.
+    name: str
+
+    def read_at(self, offset: int, n: int) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class DiscSource(ReaderSource):
+    """The data sectors of a disc, at absolute addresses: as a ``.cue`` sheet
+    describes them, or as the sector headers of a raw image do (``cd_sessions``).
+
+    Sectors 0 to the end of the volume descriptor set are read from the chosen
+    session's start (``base``, by default the chosen track's), as a drive mounting
+    that session does; every other address is absolute. A sector in no data track (an
+    audio track, a pregap, the gap between sessions) fails the read that reaches it.
+
+    ``path`` is set when every track is in the file archivey opened (a raw image read
+    by its headers): member read hints then name that file's bytes.
     """
 
     def __init__(
         self,
-        files: list[_TrackFile],
+        files: Sequence[TrackReader],
         extents: list[_Extent],
         chosen: _Extent,
         archive_name: str | None,
+        *,
+        base: int | None = None,
+        path: Path | None = None,
+        hints: bool = False,
     ) -> None:
-        self._files = files
+        self._files = list(files)
         self._extents = sorted(extents, key=lambda e: e.lba)
         self._starts = [e.lba for e in self._extents]
         self.chosen = chosen
         self._archive_name = archive_name
-        self.base = chosen.lba
+        self.base = chosen.lba if base is None else base
+        self.hints = hints
+        self.hidden_session: tuple[int, int] | None = None
+        """A data track (number, address of its volume's primary descriptor) whose
+        sector addresses put it in a later session than the sheet does, holding a
+        volume: see :func:`_hidden_session`."""
         self._descriptor_end = 16  # the system area, until the set is measured
         size = max(e.lba + e.count for e in self._extents) * USER_DATA_SIZE
         view, read_at = cooked_access(self._load, size)
-        super().__init__(view, size, None, read_at)
+        super().__init__(view, size, path, read_at)
         self._descriptor_end = self._measure_descriptors()
+
+    def file_range(self, start: int, end: int) -> tuple[int, int] | None:
+        """The bytes of the opened file holding cooked bytes ``[start, end)``: whole
+        sectors. ``None`` when the range is not in one data track, or the opened file
+        is not the one holding the tracks (a sheet)."""
+        if not self.hints:
+            return None
+        first = start // USER_DATA_SIZE
+        last = max(first, (end - 1) // USER_DATA_SIZE)
+        extent = self._extent_of(first)
+        if extent is None or last >= extent.lba + extent.count:
+            return None
+        size = extent.checker.sector_size
+        lo = extent.file_offset + (first - extent.lba) * size
+        if end <= start:
+            return lo, lo
+        return lo, extent.file_offset + (last + 1 - extent.lba) * size
 
     def _extent_of(self, sector: int) -> _Extent | None:
         at = bisect.bisect_right(self._starts, sector) - 1
@@ -302,8 +350,9 @@ class DiscSource(ReaderSource):
         extent = self._extent_of(physical)
         if extent is None:
             raise CorruptionError(
-                f"CD sector {physical} is in no data track of the .cue sheet (an audio "
-                "track, a pregap, or the gap between sessions)",
+                f"CD sector {physical} is in no data track of the "
+                f"{'image' if self.hints else '.cue sheet'} (an audio track, a "
+                "pregap, or the gap between sessions)",
                 source_format=ArchiveFormat.ISO,
                 archive_name=self._archive_name,
             )
@@ -319,7 +368,7 @@ class DiscSource(ReaderSource):
         )
         if not data:
             raise TruncatedError(
-                f"{quoted(track_file.path.name)} ends inside track {extent.track}",
+                f"{quoted(track_file.name)} ends inside track {extent.track}",
                 source_format=ArchiveFormat.ISO,
                 archive_name=self._archive_name,
             )
@@ -439,7 +488,7 @@ def _open_files(cue_path: Path, files: list[CueFile]) -> list[_TrackFile]:
     return opened
 
 
-def _close_all(files: list[_TrackFile]) -> None:
+def _close_all(files: Sequence[TrackReader]) -> None:
     """Close each track file once; two ``FILE`` lines can share one."""
     for track_file in dict.fromkeys(files):
         track_file.close()
@@ -553,7 +602,9 @@ def disc_source(cue_path: Path, archive_name: str | None) -> DiscSource:
         chosen = min((e for e in extents if e.track in numbers), key=lambda e: e.lba)
         extents = _settle_base(opened, extents, chosen)
         chosen = next(e for e in extents if e.track == chosen.track)
-        return DiscSource(opened, extents, chosen, archive_name)
+        disc = DiscSource(opened, extents, chosen, archive_name)
+        disc.hidden_session = _hidden_session(opened, extents, chosen)
+        return disc
     except BaseException:
         _close_all(opened)
         raise
@@ -581,3 +632,123 @@ def _settle_base(
         if _names_itself(relative(index), root):
             return _rebase(extents, chosen, root - index - chosen.lba)
     return extents
+
+
+def find_volume(
+    files: Sequence[TrackReader], extents: list[_Extent], chosen: _Extent
+) -> int | None:
+    """The address a volume in ``chosen`` starts at, or ``None``.
+
+    Its first :data:`_ROOT_SEARCH_SECTORS` sectors from sector 16 on are read in
+    batches, and a sector whose user data opens with a primary volume descriptor is a
+    candidate 16 sectors after the start. A candidate is taken when its root
+    directory's ``.`` record, read at the address the descriptor names through
+    ``extents``, names that address, and its descriptor set is all in data sectors
+    (:func:`_descriptors_present`). Two sector reads per rejected candidate: the
+    descriptor comes with its batch, and the root is one more."""
+    checker = chosen.checker
+    size = checker.sector_size
+    offset = checker.layout.data_offset
+
+    def user_data(lba: int) -> bytes | None:
+        for extent in extents:
+            if extent.lba <= lba < extent.lba + extent.count:
+                at = (
+                    extent.file_offset + (lba - extent.lba) * extent.checker.sector_size
+                )
+                raw = files[extent.file].read_at(at, extent.checker.sector_size)
+                if not extent.checker.is_data_sector(raw):
+                    return None
+                start = extent.checker.layout.data_offset
+                return raw[start : start + USER_DATA_SIZE]
+        return None
+
+    limit = min(chosen.count, _ROOT_SEARCH_SECTORS)
+    index = 16
+    while index < limit:
+        count = min(_SEARCH_BATCH, limit - index)
+        raw = files[chosen.file].read_at(
+            chosen.file_offset + index * size, count * size
+        )
+        for k in range(count):
+            sector = raw[k * size : (k + 1) * size]
+            data = sector[offset : offset + USER_DATA_SIZE]
+            if data[: len(_PVD_PREFIX)] != _PVD_PREFIX or len(data) < 190:
+                continue
+            if not checker.is_data_sector(sector):
+                continue
+            (root,) = struct.unpack_from("<I", data, 156 + 2)
+            found = user_data(root)
+            base = chosen.lba + index + k - 16
+            if (
+                found is not None
+                and _names_itself(found, root)
+                and _descriptors_present(user_data, base)
+            ):
+                return base
+        index += count
+    return None
+
+
+def _descriptors_present(user_data: Callable[[int], bytes | None], base: int) -> bool:
+    """Whether the volume descriptor set from ``base + 16`` is all in data sectors:
+    up to the terminator (at most :data:`_MAX_DESCRIPTORS`) and the sector after it,
+    the sectors :meth:`DiscSource._measure_descriptors` and ``pycdlib`` read. A
+    session cut inside its descriptors is not a volume the reader can open."""
+    for at in range(base + 16, base + 16 + _MAX_DESCRIPTORS):
+        sector = user_data(at)
+        if sector is None:
+            return False
+        if sector[1:6] != b"CD001" or sector[0] == 255:
+            return user_data(at + 1) is not None
+    return user_data(base + 16 + _MAX_DESCRIPTORS) is not None
+
+
+def _hidden_session(
+    opened: list[_TrackFile], extents: list[_Extent], chosen: _Extent
+) -> tuple[int, int] | None:
+    """A data track after the chosen one whose sector addresses start a later session
+    than the sheet shows, with a volume the sheet-less reading lists.
+
+    The sheet may place the track in the chosen session (a sheet with no ``REM SESSION``
+    lines), while its sector addresses jump past the track before it by a session gap
+    the sheet's addresses lack. Read without the sheet, the image is placed by those
+    addresses (``cd_sessions``), and that reading lists the session when
+    :func:`find_volume` finds a volume in it; the same check runs here, on the tracks
+    placed by their addresses, so a report means the two readings differ. The converse
+    does not hold: a jump inside one sheet track (a single ``TRACK`` line over a
+    two-session ``.bin``) is not seen, since one header is read per track, and the
+    sheet-less walk can give up where this check does not (addresses that go backwards
+    elsewhere, more than 256 runs). Returns the track's number and the address of that
+    volume's primary descriptor. Two header reads per data track, and the volume search
+    for a
+    track that jumps; a cooked track has no headers and is skipped."""
+
+    def header_offset(extent: _Extent) -> int | None:
+        if extent.checker.layout.cooked:
+            return None
+        header = opened[extent.file].read_at(extent.file_offset, HEADER_SIZE)
+        address = data_sector_address(extent.checker, header)
+        return None if address is None else address - extent.lba
+
+    ordered = sorted(extents, key=lambda e: e.lba)
+    offsets = [header_offset(e) for e in ordered]
+    placed = [
+        _Extent(e.lba + o, e.count, e.file, e.file_offset, e.checker, e.track)
+        for e, o in zip(ordered, offsets, strict=True)
+        if o is not None
+    ]
+    # The first track of the last session by the addresses, as cd_sessions picks it.
+    last: _Extent | None = None
+    previous: int | None = None
+    for extent, offset in zip(ordered, offsets, strict=True):
+        if offset is None:
+            continue
+        if previous is not None and offset - previous >= LEAD_IN_SECTORS:
+            last = extent
+        previous = offset
+    if last is None or last.lba <= chosen.lba:
+        return None
+    track = next(e for e in placed if e.track == last.track)
+    base = find_volume(opened, placed, track)
+    return None if base is None else (last.track, base + 16)
