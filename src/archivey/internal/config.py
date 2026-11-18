@@ -21,9 +21,11 @@ from archivey.config import (
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
-from archivey.types import OptionalLibrary
+from archivey.types import CompressionAlgorithm, OptionalLibrary
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from archivey.internal.diagnostics_collector import DiagnosticCollector
     from archivey.internal.resource_usage import ResourceUsageRecorder
     from archivey.internal.streams.codecs.isolated import Natives
@@ -42,6 +44,7 @@ __all__ = [
     "check_decoder_memory",
     "decoder_cap_error",
     "decoder_cap_refusal",
+    "methods_off",
     "probe_lzma_dictionary",
     "stream_config_from_archivey",
     "without_accelerators",
@@ -180,6 +183,20 @@ class StreamConfig:
     from ``exclude_libraries`` and ``only_libraries``): a codec whose package it names
     opens as if the package were not installed."""
 
+    excluded_methods: frozenset[CompressionAlgorithm] = frozenset()
+    """The methods the caller's ``FormatPolicy.exclude`` lists (:func:`methods_off`).
+    The policy refuses a member or a file whose method it names before a codec opens;
+    this is for the methods a codec finds only in the data, such as the BCJ and Delta
+    filters an xz block header declares, which the xz decoder refuses at the block."""
+
+    source_origin: int = field(default=0, compare=False)
+    """Where the codec's source starts in the file, for messages only. A stream found
+    behind a ``#!`` script is decoded from a source rebased to its first byte
+    (:meth:`~archivey.internal.source.ArchiveSource.start_at`); a codec adds this to
+    every compressed offset it names in an error or a diagnostic, so the offset counts
+    from the file's first byte as every other message's does. It is 0 for any other
+    source. It changes no decode, so equality leaves it out."""
+
     @property
     def natives(self) -> Natives:
         """The native decoders ``process_isolation`` selects: in a child process
@@ -216,7 +233,14 @@ def stream_config_from_archivey(
         process_isolation=config.process_isolation,
         recover_partial_data=config.recover_partial_data,
         excluded_libraries=config.formats._libraries_off,
+        excluded_methods=methods_off(config.formats.exclude),
     )
+
+
+def methods_off(exclude: Iterable[object]) -> frozenset[CompressionAlgorithm]:
+    """The :class:`~archivey.CompressionAlgorithm` entries of a ``FormatPolicy``'s
+    ``exclude``."""
+    return frozenset(e for e in exclude if isinstance(e, CompressionAlgorithm))
 
 
 def without_accelerators(config: StreamConfig) -> StreamConfig:

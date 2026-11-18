@@ -323,6 +323,10 @@ class ArchiveSource(ReadOnlyIOStream):
     _remote: tuple[RangeSource, ...] = ()
     _owned_beneath: BinaryIO | None = None
     _fsspec_decompressed: FsspecDecompressed | None = None
+    # Where the reader's first byte sits in the file: the offset of a compressed stream
+    # behind a ``#!`` script (``open_at_script_payload``), else 0. A codec adds it to
+    # the offsets its messages name (``StreamConfig.source_origin``).
+    payload_origin: int = 0
 
     def __init__(
         self,
@@ -1106,6 +1110,19 @@ class ArchiveSource(ReadOnlyIOStream):
         # returned bytes since.
         self._seek_target -= start
         self._pos = 0
+
+    def start_at(self, offset: int) -> None:
+        """Make byte ``offset`` of a seekable source its offset 0, and stop naming the
+        file.
+
+        For a compressed stream behind a ``#!`` script: the reader must see the stream
+        alone. The path still names the whole file, script included, so a reader that
+        reopened it would read the script; :attr:`path` turns ``None`` and the reader
+        reads through this source's own handle, as for a caller's stream.
+        """
+        self.seek(offset)
+        self.rebase_to_current_position()
+        self._path = None
 
     def on_close(self, callback: Callable[[], None]) -> None:
         """Call ``callback`` when this source closes (at once if it already has). It

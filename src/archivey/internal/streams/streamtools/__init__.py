@@ -21,6 +21,7 @@ Module map:
 - :mod:`.base` — ``ReadOnlyIOStream`` / ``DelegatingStream`` (wrapper bases)
 - :mod:`.binaryio` — classify/coerce sources (``is_seekable``, ``ensure_binaryio``, …)
   plus ``ask_resume_offset`` (duck-typed resume query; see the named exception above)
+  and ``decode_to`` (a forward move that reports where the data ends)
   and ``resolve_seek`` / ``check_seek_args`` / ``check_read_size`` (``io.BytesIO``
   seek-target and argument rules)
 - :mod:`.slice` — ``SlicingStream`` / ``SharedView`` bound views + ``fix_stream_start_position``

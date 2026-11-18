@@ -217,6 +217,8 @@ def test_a_single_file_is_detected_and_read(toy: ArchiveFormat, tmp_path: Path) 
         assert reader.format.display_name == "TOY"
         (member,) = reader.members()
         assert member.name == "notes.txt"
+        # No CompressionAlgorithm member names a plugin codec: the chain stays empty.
+        assert member.compression == ()
         assert reader.read(member) == _TEXT
 
 

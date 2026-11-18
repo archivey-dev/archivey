@@ -39,10 +39,11 @@ from archivey.cost import (
 )
 from archivey.diagnostics import Diagnostic, DiagnosticCode, DiagnosticContext
 from archivey.exceptions import ArchiveyError, StreamNotSeekableError
+from archivey.format_policy import _STREAM_METHODS
 from archivey.internal.base_reader import (
     BaseArchiveReader,
     ReadBackend,
-    reject_start_offset,
+    open_at_script_payload,
 )
 from archivey.internal.config import (
     stream_config_from_archivey,
@@ -90,8 +91,11 @@ from archivey.types import (
     ArchiveFormat,
     ArchiveInfo,
     ArchiveMember,
+    CompressionMethod,
     MemberStreams,
     MemberType,
+    PluginStream,
+    StreamFormat,
 )
 
 _T = TypeVar("_T")
@@ -170,6 +174,17 @@ class _IndexReportRecorder(DiagnosticCollector):
         return Diagnostic(
             occurrence_id=uuid.uuid4().hex, code=code, message=message, context=context
         )
+
+
+def _stream_compression(
+    stream: StreamFormat | PluginStream,
+) -> tuple[CompressionMethod, ...]:
+    """The one member's ``compression``: the method a ZIP or 7z member compressed the
+    same way lists. Empty for a stream no ``CompressionAlgorithm`` member names
+    (uu, base64, a plugin codec): ``UNKNOWN`` means a method archivey
+    cannot decode, and these decode."""
+    method = _STREAM_METHODS.get(stream) if isinstance(stream, StreamFormat) else None
+    return () if method is None else (CompressionMethod(method),)
 
 
 def _infer_member_name(archive_name: str | None) -> str:
@@ -251,6 +266,7 @@ class SingleFileReader(BaseArchiveReader):
                 usage=self._usage,
             ),
             report_trailing_data=True,
+            source_origin=source.payload_origin,
         )
 
         # Metadata probes answer a different question than member streams, so they get
@@ -261,13 +277,16 @@ class SingleFileReader(BaseArchiveReader):
         # plain open and its real size with the flag: a capability flag must not change
         # metadata. Accelerators stay OFF: a probe reads no member data, so an
         # accelerator's startup cost buys nothing the native index does not already have.
-        self._metadata_config = without_accelerators(
-            stream_config_from_archivey(
-                self._config,
-                streaming=False,
-                seekable=self._seekable,
-                usage=self._usage,
-            )
+        self._metadata_config = replace(
+            without_accelerators(
+                stream_config_from_archivey(
+                    self._config,
+                    streaming=False,
+                    seekable=self._seekable,
+                    usage=self._usage,
+                )
+            ),
+            source_origin=source.payload_origin,
         )
 
         # The compressed-source header, read at most once and cached (only the gzip metadata
@@ -352,6 +371,7 @@ class SingleFileReader(BaseArchiveReader):
             size=None,  # filled per-codec below where cheaply known
             compressed_size=self._probe_compressed_size(),
             modified=None,
+            compression=_stream_compression(self._format.stream),
         )
         # Per-codec metadata extraction lives on the codec object (gzip FNAME/mtime, xz/lzip
         # decompressed size); the reader stays codec-agnostic and just supplies the
@@ -815,8 +835,9 @@ class SingleFileBackend(ReadBackend):
         end_offset: int | None = None,
         program_resources: ProgramResources | None = None,
     ) -> SingleFileReader:
-        reject_start_offset(
-            start_offset, format, archive_name, end_offset, program_resources
+        # A stream behind a ``#!`` script starts past it (detection's payload offset).
+        open_at_script_payload(
+            source, start_offset, format, archive_name, end_offset, program_resources
         )
         # `format` is the resolved single-file format (from detection or the caller); its
         # stream codec is exactly what to decompress with — no re-inspection needed.

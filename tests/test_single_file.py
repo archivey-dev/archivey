@@ -29,6 +29,8 @@ from archivey import (
     AcceleratorMode,
     ArchiveFormat,
     ArchiveyConfig,
+    CompressionAlgorithm,
+    CompressionMethod,
     MemberType,
     open_archive,
 )
@@ -1543,3 +1545,97 @@ def test_a_standard_library_decompressor_source_is_not_peeked() -> None:
         (inner,) = nested.members()
         assert inner.size is None
         assert nested.read(inner) == payload
+
+
+# ---------------------------------------------------------------------------
+# member.compression names the stream's codec
+# ---------------------------------------------------------------------------
+
+_DEFLATE = (CompressionMethod(CompressionAlgorithm.DEFLATE),)
+
+
+@pytest.mark.parametrize(
+    ("make", "config", "expected"),
+    [
+        pytest.param(
+            lambda: gzip.compress(b"x"), None, CompressionAlgorithm.DEFLATE, id="gz"
+        ),
+        pytest.param(
+            lambda: bz2.compress(b"x"), None, CompressionAlgorithm.BZIP2, id="bz2"
+        ),
+        pytest.param(
+            lambda: lzma.compress(b"x"), None, CompressionAlgorithm.XZ, id="xz"
+        ),
+        pytest.param(
+            lambda: lzma.compress(b"x", format=lzma.FORMAT_ALONE),
+            _ALWAYS_PROBE,
+            CompressionAlgorithm.LZMA,
+            id="lzma-alone",
+        ),
+        pytest.param(
+            lambda: make_lzip_member(b"x"),
+            None,
+            CompressionAlgorithm.LZMA,
+            id="lzip",
+        ),
+        pytest.param(
+            lambda: zlib.compress(b"x"),
+            _ALWAYS_PROBE,
+            CompressionAlgorithm.DEFLATE,
+            id="zlib",
+        ),
+        # Built inside the test: ncompress is absent from the core-only legs.
+        pytest.param(
+            lambda: make_unix_compress(b"x"),
+            None,
+            CompressionAlgorithm.LZW,
+            id="Z",
+            marks=requires("ncompress"),
+        ),
+        pytest.param(
+            lambda: _bzip3_compress(b"x"),
+            None,
+            CompressionAlgorithm.BZIP3,
+            id="bz3",
+            marks=requires("bz3"),
+        ),
+        # No CompressionAlgorithm member names an encoding, so uuencode lists
+        # nothing: UNKNOWN would say archivey cannot decode it.
+        pytest.param(lambda: _uu_encode(b"x"), None, None, id="uu"),
+    ],
+)
+def test_the_member_names_the_stream_codec(
+    make: Callable[[], bytes],
+    config: ArchiveyConfig | None,
+    expected: CompressionAlgorithm | None,
+) -> None:
+    """The listed method is the one a ZIP or 7z member compressed the same way lists."""
+    data = make()
+    want = () if expected is None else (CompressionMethod(expected),)
+    with open_archive(io.BytesIO(data), config=config) as ar:
+        assert ar.members()[0].compression == want
+    with open_archive(NonSeekableBytesIO(data), streaming=True, config=config) as ar:
+        assert [m.compression for m, _ in ar.stream_members()] == [want]
+
+
+def test_each_stacked_stream_names_its_own_codec() -> None:
+    """A ``.xz.gz`` lists DEFLATE; the ``.xz`` member it holds, opened in turn,
+    lists XZ. A ``.tar.gz``'s members stay STORED: the gzip is the archive's."""
+    inner = lzma.compress(b"x")
+    with open_archive(io.BytesIO(gzip.compress(inner))) as outer:
+        (member,) = outer.members()
+        assert member.compression == _DEFLATE
+        with open_archive(io.BytesIO(outer.read(member))) as nested:
+            assert nested.members()[0].compression == (
+                CompressionMethod(CompressionAlgorithm.XZ),
+            )
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo("a.txt")
+        info.size = 1
+        tar.addfile(info, io.BytesIO(b"x"))
+    with open_archive(io.BytesIO(buf.getvalue())) as ar:
+        assert ar.members()[0].compression == (
+            CompressionMethod(CompressionAlgorithm.STORED),
+        )

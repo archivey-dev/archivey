@@ -138,6 +138,7 @@ from archivey.exceptions import (
     ReadError,
     ResourceLimitError,
     ResourceUnavailableError,
+    TruncatedError,
     UnsupportedFeatureError,
     _UsageTypeError,
     _UsageValueError,
@@ -208,6 +209,7 @@ from archivey.internal.sfx import HitValidator
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
+    ErrorStamp,
     ExceptionTranslator,
     MemberStreamParts,
     RewindWarning,
@@ -484,9 +486,10 @@ def reject_start_offset(
     ``program_resources``, for a format that cannot honour it.
 
     Only the self-extracting formats (RAR / 7z / ZIP / LHA / ARJ) are ever handed a nonzero
-    offset, because only they can carry an executable stub and only they are scanned for
-    one by ``detect_format``. Reaching here with an offset means a caller invented one,
-    and reading from byte 0 instead would answer with the wrong bytes rather than say so.
+    offset behind an executable stub, and a compressed TAR or single-file stream behind
+    a ``#!`` script (:func:`open_at_script_payload`), because only those are scanned for
+    by ``detect_format``. Reaching here with an offset means a caller invented one, and
+    reading from byte 0 instead would answer with the wrong bytes rather than say so.
     """
     if start_offset:
         raise UnsupportedFeatureError(
@@ -509,6 +512,56 @@ def reject_start_offset(
             source_format=fmt,
             archive_name=archive_name,
         )
+
+
+def open_at_script_payload(
+    source: ArchiveSource,
+    start_offset: int,
+    fmt: ArchiveFormat,
+    archive_name: str | None,
+    end_offset: int | None = None,
+    program_resources: ProgramResources | None = None,
+) -> None:
+    """Move ``source`` to a compressed stream that starts ``start_offset`` bytes in,
+    behind a ``#!`` script, so the reader sees that byte as its first.
+
+    Detection hands a compressed TAR or a single-file stream a start offset only when
+    it found the stream behind a script launcher (a CPack ``.sh`` installer, a
+    hand-rolled one). A script ends where the stream starts, so an ``end_offset`` or
+    a program's resources, which only an executable stub has, are refused as for any
+    format without a stub, and so is any offset for an uncompressed TAR, which the
+    scan never claims there. On a seekable source the offset becomes the source's
+    offset 0 (:meth:`ArchiveSource.start_at`); on a pipe the script's bytes are read
+    and dropped. Either way :attr:`ArchiveSource.payload_origin` keeps the offset, which
+    the reader's codec adds to the offsets its messages name.
+    """
+    # Detection claims only a compressed stream behind a script. An uncompressed TAR
+    # would also name its header offsets from the payload, not the file.
+    uncompressed = fmt.stream is StreamFormat.UNCOMPRESSED
+    reject_start_offset(
+        start_offset if uncompressed else 0,
+        fmt,
+        archive_name,
+        end_offset,
+        program_resources,
+    )
+    if not start_offset:
+        return
+    source.payload_origin = start_offset
+    if source.seekable():
+        source.start_at(start_offset)
+        return
+    left = start_offset
+    while left:
+        chunk = source.read(min(left, 1 << 16))
+        if not chunk:
+            raise TruncatedError(
+                f"The source ends {left} bytes before the {fmt.display_name} stream "
+                f"it should hold at offset {start_offset}",
+                source_format=fmt,
+                archive_name=archive_name,
+            )
+        left -= len(chunk)
 
 
 class ReadBackend(ABC):
@@ -1489,15 +1542,33 @@ class BaseArchiveReader(ArchiveReader):
         )
         if not excluded:
             return
-        names = ", ".join(f"CompressionAlgorithm.{m.name}" for m in excluded)
         subject = (
             f"{quoted(member.name)} is"
             if decoded is member
             else f"{quoted(member.name)} copies {quoted(decoded.name)}, which is"
         )
+        them = "it" if len({entry for _, entry in excluded}) == 1 else "them"
+        if all(method is entry for method, entry in excluded):
+            names = ", ".join(f"CompressionAlgorithm.{m.name}" for m, _ in excluded)
+            message = (
+                f"{subject} compressed with {names}, which ArchiveyConfig.formats "
+                f"turns off: exclude= lists {them}."
+            )
+        else:
+            # The member's method is not the entry: name both, so the message
+            # matches the member's ``compression``.
+            names = "; and ".join(
+                f"CompressionAlgorithm.{m.name}"
+                if m is entry
+                else (
+                    f"CompressionAlgorithm.{m.name}, which decodes with "
+                    f"CompressionAlgorithm.{entry.name}"
+                )
+                for m, entry in excluded
+            )
+            message = f"{subject} compressed with {names}; exclude= lists {them}."
         raise UnsupportedFeatureError(
-            f"{subject} compressed with {names}, which ArchiveyConfig.formats turns "
-            f"off: exclude= lists {'it' if len(excluded) == 1 else 'them'}.",
+            message,
             source_format=self._format,
             archive_name=self._archive_name,
             member_name=member.name,
@@ -1581,7 +1652,7 @@ class BaseArchiveReader(ArchiveReader):
     ) -> None:
         """Hold a member stream ``open()`` or ``stream_members()`` gives the caller to
         ``decoder_limits.max_ratio``, as extraction holds what it writes
-        (:class:`MemberRatioGuard`). ``member`` is the member whose data it reads;
+        (:class:`MemberRatioCheck`). ``member`` is the member whose data it reads;
         ``counted_as`` is the member the caller asked for, which the archive-wide
         total counts the output under.
 
@@ -1623,20 +1694,17 @@ class BaseArchiveReader(ArchiveReader):
             self._nest.report_pass(total)
             return
         # Imported here, as in ``_open_outer_codec_stream``.
-        from archivey.internal.bomb_tracker import MemberRatioGuard
+        from archivey.internal.bomb_tracker import MemberRatioCheck
 
-        static_size = self._trusted_source_size()
-        consumed = self._live_consumed()
-        stream._hold_inner(
-            lambda inner: MemberRatioGuard(
-                inner,
+        stream._hold_ratio(
+            MemberRatioCheck(
                 limits=limits,
                 member=member,
                 tally_key=key,
                 member_name=counted_as.name,
                 tally=tally,
-                static_size=static_size,
-                consumed=consumed,
+                static_size=self._trusted_source_size(),
+                consumed=self._live_consumed(),
                 nest=self._nest,
             )
         )
@@ -1814,10 +1882,12 @@ class BaseArchiveReader(ArchiveReader):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        on_error: ErrorStamp | None = None,
     ) -> ArchiveStreamImpl:
         """A member stream that calls ``open_fn`` on its first read: one
         ``ArchiveStream``, whose read/seek errors route through the backend's
         translator and are stamped with format/archive/member context.
+        ``on_error`` is then given each ``ArchiveyError`` the stream raises.
 
         The arguments are :meth:`_member_parts`'s, and ``seekable`` defaults to
         declared. If ``open_fn`` returns ``MemberStreamParts`` (from ``_open_member``),
@@ -1844,6 +1914,12 @@ class BaseArchiveReader(ArchiveReader):
             use_open: Callable[[], BinaryIO | MemberStreamParts] = tracked_open
         else:
             use_open = open_fn
+
+        def stamp(exc: ArchiveyError) -> None:
+            self._stamp_error_context(exc, member_name)
+            if on_error is not None:
+                on_error(exc)
+
         return ArchiveStreamImpl(
             use_open,
             translate=(
@@ -1851,7 +1927,7 @@ class BaseArchiveReader(ArchiveReader):
                 if translate is None
                 else compose_translators(translate, self._translate_exception)
             ),
-            stamp=lambda exc: self._stamp_error_context(exc, member_name),
+            stamp=stamp,
             lazy=True,
             seekable=(self._seek_declared() if seekable is None else seekable),
             size=size,
@@ -2215,13 +2291,29 @@ class BaseArchiveReader(ArchiveReader):
                 if unread:
                     self._prepare_link_target_reads(unread)
                 for member in unread:
+                    was_unread = member._link_target_unread
                     try:
-                        self._resolve_link_target(member)
-                    except UNREADABLE_LINK_TARGET_ERRORS as exc:
-                        self._report_unreadable_link_target(member, exc)
-                        continue
-                    if member.link_target is not None:
-                        self._listing_tracker.account_link_target(member.link_target)
+                        try:
+                            self._resolve_link_target(member)
+                        except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                            self._report_unreadable_link_target(member, exc)
+                            continue
+                        if member.link_target is not None:
+                            self._listing_tracker.account_link_target(
+                                member.link_target
+                            )
+                    except BaseException:
+                        # The read set the target, and then the weighing refused it. (A
+                        # report that raises clears the target itself, in
+                        # `_resolve_link_target_locked`.) Not counted, so not kept: a
+                        # member left holding the target would drop out of `unread` on
+                        # the next call and be published uncounted. Put it back as it
+                        # was, so a retry reads it and raises again.
+                        if member.link_target is not None:
+                            member.link_target = None
+                            member._link_target_resolved = False
+                            member._link_target_unread = was_unread
+                        raise
             # One memo per finalize: every link on a walked chain shares its terminal,
             # so a chain of N links costs O(N) rather than a fresh walk per member.
             terminals: dict[int, ArchiveMember | None] = {}
@@ -3318,11 +3410,19 @@ class BaseArchiveReader(ArchiveReader):
             # member again and reports it again.
             member.link_target = None
             self._emit_empty_link_target(member)
-        emit_link_target_controls(
-            self._diagnostics_collector,
-            member=member,
-            archive_name=self._archive_name,
-        )
+        try:
+            emit_link_target_controls(
+                self._diagnostics_collector,
+                member=member,
+                archive_name=self._archive_name,
+            )
+        except BaseException:
+            # A strict policy raised on a control character. Neither caller has
+            # weighed the target yet, so it is not kept: a member left holding it
+            # would be published uncounted. A later lookup reads it and reports it
+            # again, as for the empty target above.
+            member.link_target = None
+            raise
         # After, not before: a hook that raised did not look and come back empty, it
         # never finished. `_finalize_links` reports an unreadable target (damage, an
         # unsupported method, a missing codec) here and lists the link without a
@@ -4240,6 +4340,7 @@ class BaseArchiveReader(ArchiveReader):
                 # bytes would take whole members before the damage with it. So it
                 # recovers them whatever the caller set.
                 recover_partial_data=True,
+                source_origin=source.payload_origin,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
             collector=self._diagnostics_collector,

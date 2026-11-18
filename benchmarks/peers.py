@@ -342,10 +342,8 @@ def _build_rpm(base: Path, tree: Path) -> Path | None:
     """A binary RPM installing ``tree`` under /opt, with a gzip payload, written by
     ``rpmbuild``, or None without it.
 
-    ``_rpmformat 4`` asks rpm 6 (Ubuntu 26.04) for a v4 package. Its default, v6,
-    always stores the payload as stripped cpio (``07070X``), which archivey reads but
-    libarchive 3.8, the only peer, refuses ("Unrecognized archive format"). rpm 4
-    ignores the macro and writes v4 anyway."""
+    ``_rpmformat 4`` asks for a v4 package: rpm 6.0 (ubuntu-26.04) writes v6 by
+    default, which libarchive does not read. An older ``rpmbuild`` ignores the macro."""
     path = base / "small.rpm"
     if not path.exists():
         if shutil.which("rpmbuild") is None:

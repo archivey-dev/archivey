@@ -1147,6 +1147,15 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         return lz4.frame.compress(data)
     if method is CompressionAlgorithm.XZ:
         return lzma.compress(data)
+    if method is CompressionAlgorithm.LZW:
+        from tests.streams_util import make_unix_compress
+
+        return make_unix_compress(data)
+    if method is CompressionAlgorithm.BZIP3:
+        from bz3.backends import BZ3Compressor
+
+        compressor = BZ3Compressor(1 << 20)
+        return compressor.compress(data) + compressor.flush()
     assert method is CompressionAlgorithm.BROTLI
     import brotli
 
@@ -1166,6 +1175,8 @@ def _compress(method: CompressionAlgorithm, data: bytes) -> bytes:
         pytest.param(CompressionAlgorithm.ZSTD, marks=requires_zstd()),
         pytest.param(CompressionAlgorithm.LZ4, marks=requires("lz4")),
         pytest.param(CompressionAlgorithm.BROTLI, marks=requires("brotli")),
+        pytest.param(CompressionAlgorithm.LZW, marks=requires("ncompress")),
+        pytest.param(CompressionAlgorithm.BZIP3, marks=requires("bz3")),
     ],
 )
 def test_decompress_methods(
@@ -1231,6 +1242,30 @@ def test_decompress_refuses_a_method_the_policy_excludes(
         open_archive(_compressed_archive(tmp_path, stored), config=config) as reader,
         pytest.raises(
             archivey.UnsupportedFeatureError, match=r"CompressionAlgorithm\.DEFLATE"
+        ),
+    ):
+        reader.read("m.bin")
+
+
+def test_decompress_refuses_xz_when_the_policy_excludes_lzma2(
+    clean_registry: None, tmp_path: Path
+) -> None:
+    """xz data decodes with LZMA2, so ``exclude={LZMA2}`` refuses a plugin's
+    decompress call for ``CompressionAlgorithm.XZ`` before the codec runs."""
+    register_format(_compressed_plugin(CompressionAlgorithm.XZ))
+    config = archivey.ArchiveyConfig(
+        formats=archivey.FormatPolicy(exclude={CompressionAlgorithm.LZMA2})
+    )
+    with (
+        open_archive(
+            _compressed_archive(tmp_path, lzma.compress(_PLAIN)), config=config
+        ) as reader,
+        pytest.raises(
+            archivey.UnsupportedFeatureError,
+            match=(
+                r"does not allow CompressionAlgorithm\.XZ: exclude= lists "
+                r"CompressionAlgorithm\.LZMA2, which it decodes with"
+            ),
         ),
     ):
         reader.read("m.bin")

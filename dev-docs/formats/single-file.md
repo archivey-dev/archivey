@@ -449,6 +449,11 @@ Shared by the codecs; each page adds its own.
 - **A seek table grows with the unit count the file declares.** An lzip member can be 26
   bytes, so a table could cost several times the file's size; capped by
   `MAX_SEEK_POINTS` (§2.3).
+- **Many tiny units cost calls, not bytes, under `NATIVE_DECODERS`.** Each gzip member,
+  bzip2 or xz stream, or zstd or lz4 frame opens a new decoder in the child, about three
+  round trips, and every 64 decoders start a new child. 30 000 one-byte units take 13 to
+  16 s isolated against 0.06 to 0.9 s in the parent: 20 to 50 s a MB. Linear, and no
+  limit bounds time: threat-model "No CPU or wall-clock bound".
 - **A content probe can fabricate a member** from bytes that are not the codec, and
   deliver a prefix of fabricated output before the read fails: threat-model O10.
   Detection-time decode work is bounded by the detection budget: O11.

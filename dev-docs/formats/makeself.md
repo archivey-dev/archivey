@@ -20,7 +20,7 @@ hook, for the payload digests (§3).
 | Encryption | openssl AES-256-CBC read with `password=` (PBKDF2 since 2.6.0, `EVP_BytesToKey` before; `cryptography`); gpg refused by name |
 | Checksums | The header's CRC (POSIX `cksum`), MD5 and SHA-256 of each payload's stored bytes, all that are stated, as a check over the payload's files |
 | Name encoding | The TAR's: UTF-8 first, then `encoding=`, then escaped |
-| Spec | `openspec/changes/makeself-format/` (rulings in its `design.md`) |
+| Spec | `openspec/specs/format-makeself/`; rulings in `openspec/changes/archive/2026-11-17-makeself-format/design.md` |
 
 Not here: the startup script is reported (`makeself.script`), never run; the gpg
 signature (`--sign`) is reported (`makeself.signed`), not checked; the license text and
@@ -77,11 +77,20 @@ The header is read in 16 KiB chunks until `skip` lines are in, bounded by
 inside a value (a license holding `skip="3"`) is never taken for a variable. It goes on
 from where the last chunk stopped (`_LineCounter` likewise for the `skip` lines), so a
 hostile header costs time linear in its length, and it keeps only the variables in
-`_USED`, so memory does not grow with it. A used variable assigned twice, text with a
-quote after a value, numbers that are not numbers, digests of the wrong length or count,
-`totalsize` not the sum of `filesizes`, old offset lines that disagree, and payload
-commands that differ are `CorruptionError`. A command archivey does not know is
-`UnsupportedFeatureError` naming it.
+`_USED`, so memory does not grow with it. Its patterns repeat possessively (`*+`), since
+a repeated alternation keeps about 150 bytes of backtracking state per byte of a value.
+A used variable assigned twice, or given a plain `NAME=` where the parse does not read
+assignments (an indented line, after a `;` or `export`, after another value on its
+line), text with a quote after a value, numbers that are not numbers, digests of the
+wrong length or count, `totalsize` not the sum of `filesizes`, old offset lines
+that disagree, and payload commands that differ are `CorruptionError`. A command
+archivey does not know is `UnsupportedFeatureError` naming it. More payloads than
+`max_members` is `ResourceLimitError`, counted before the list of sizes is built: each
+payload builds a TAR reader, which costs far more than the bytes of header that list it,
+and an empty one adds no member to count. The `NAME=` check catches a header edited by
+hand or by a careless tool. It is not every way the shell sets a variable (`for`,
+`read`, `eval`, `${NAME:=…}`), so the script can still read its payloads another way
+than archivey does: §4, first row.
 
 ### 2.3 Read the payloads
 
@@ -112,6 +121,7 @@ walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 | --- | --- | --- |
 | The listing is what the TARs hold, not what running the script does | **format** | Threat model §4 "A self-extracting archive's stub is not run" |
 | An old archive lists `.` as a directory member | **format** | makeself before 2.4.2 tars `.` itself |
+| A 2.4.x header whose `--help-header` text holds `NAME=` for a variable the reader uses (`label=`, `skip=`) is refused | **archivey** | That makeself writes `helpheader='…'` single-quoted, which the parse does not read as a value, so its lines are checked for a hidden `NAME=` (§2.2) |
 | gpg payloads are refused | **archivey** | Decided 2026-11-08: no OpenPGP implementation here |
 | A wrong password is told from the first decrypted bytes; damaged padding only at the payload's end | **format** | §1 "Encryption" |
 | The first password whose first block passes is taken, with no later check among candidates; a wrong one passes about once in 2^24 (2^19 for a Unix compress payload) and then fails as damage | **archivey** | The magic check is the only one before the walk |
@@ -119,7 +129,8 @@ walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 
 ## 5. Decisions
 
-The maintainer's rulings of 2026-11-08 are in `openspec/changes/makeself-format/design.md`:
-a format of its own rather than the inner `TAR_GZ` with `prefixed=True`; the header
-parsed, not scanned; every payload listed; a forced other format refused, naming
-makeself; every stated digest checked; makeself 2.2.0 and later.
+The maintainer's rulings of 2026-11-08 are in
+`openspec/changes/archive/2026-11-17-makeself-format/design.md`: a format of its own
+rather than the inner `TAR_GZ` with `prefixed=True`; the header parsed, not scanned;
+every payload listed; a forced other format refused, naming makeself; every stated
+digest checked; makeself 2.2.0 and later.

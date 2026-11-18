@@ -650,9 +650,11 @@ class _PluginAdapter(BaseArchiveReader):
         if step == _REWALK:
             return
         if not isinstance(member, ArchiveMember):
-            raise TypeError(
-                f"ReaderContext.hold() takes an ArchiveMember, not "
-                f"{type(member).__name__}"
+            raise _plugin_bug(
+                TypeError(
+                    f"ReaderContext.hold() takes an ArchiveMember, not "
+                    f"{type(member).__name__}"
+                )
             )
         try:
             self._listing_tracker.hold_member(
@@ -690,9 +692,11 @@ class _PluginAdapter(BaseArchiveReader):
                 "is listing"
             )
         if not isinstance(fmt, ArchiveFormat):
-            raise TypeError(
-                f"ReaderContext.open_nested() takes an ArchiveFormat, not "
-                f"{type(fmt).__name__}"
+            raise _plugin_bug(
+                TypeError(
+                    f"ReaderContext.open_nested() takes an ArchiveFormat, not "
+                    f"{type(fmt).__name__}"
+                )
             )
         registry = get_registry()
         policy = self._config.formats
@@ -2915,6 +2919,8 @@ _PLUGIN_CODECS: dict[CompressionAlgorithm, Codec] = {
     CompressionAlgorithm.LZMA2: Codec.LZMA2,
     CompressionAlgorithm.XZ: Codec.XZ,
     CompressionAlgorithm.LZO: Codec.LZO,
+    CompressionAlgorithm.LZW: Codec.UNIX_COMPRESS,
+    CompressionAlgorithm.BZIP3: Codec.BZIP3,
 }
 
 

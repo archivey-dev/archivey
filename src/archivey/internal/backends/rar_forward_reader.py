@@ -35,6 +35,7 @@ import io
 import queue
 import subprocess
 import threading
+import zlib
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
@@ -43,6 +44,7 @@ from archivey.config import RarDecompressor
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import (
     ArchiveyError,
+    CorruptionError,
     EncryptionError,
     ReadError,
     StreamNotSeekableError,
@@ -82,6 +84,7 @@ from archivey.internal.backends.rar_synthetic import SyntheticMember, has_packed
 from archivey.internal.backends.rar_unar import uses_no_dictionary
 from archivey.internal.backends.rar_unrar import open_unrar_p
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.hashing import crc32_digest
 from archivey.internal.naming import resolve_link_target_name
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidatesExhausted
@@ -95,7 +98,13 @@ from archivey.internal.streams.crypto import note_crypto_use
 from archivey.internal.streams.streamtools import DelegatingStream, SolidBlockReader
 from archivey.internal.streams.streamtools.shared import SharedSource, SharedView
 from archivey.terminal import quoted
-from archivey.types import ArchiveInfo, ArchiveInfoExtra, ArchiveMember, MemberType
+from archivey.types import (
+    ArchiveInfo,
+    ArchiveInfoExtra,
+    ArchiveMember,
+    HashAlgorithm,
+    MemberType,
+)
 
 #: The longest RAR 1.5-4 symlink target a pass keeps from the source, which is
 #: that member's data. A longer one is reported as unreadable.
@@ -177,8 +186,10 @@ class _ForwardVolumes(RollingVolumes):
 
 class _PaddedSpan:
     """A member's packed bytes from the forward source. When the source ends first,
-    it reads zeros for the rest, so the volume is still written and the members
-    before it in that volume still decode; the member is marked cut."""
+    it reads zeros for the rest of the volume being written, so that volume is still
+    written and the members before it there still decode; the member is marked cut.
+    A read for a later volume raises ``cut_error``: padding the rest of a declared
+    size the archive chooses would cost time in proportion to it, for no member."""
 
     def __init__(
         self,
@@ -186,12 +197,17 @@ class _PaddedSpan:
         size: int,
         on_cut: Callable[[], None],
         stopping: Callable[[], bool],
+        volume: Callable[[], int],
+        cut_error: Callable[[], ArchiveyError],
     ):
         self._span = span
         self._left = size
         self._on_cut = on_cut
         self._stopping = stopping
-        self._cut = False
+        self._volume = volume
+        self._cut_error = cut_error
+        # The volume being written when the source ended, once it has.
+        self._cut_in: int | None = None
 
     def read(self, n: int = -1) -> bytes:
         if n < 0 or n > self._left:
@@ -200,10 +216,12 @@ class _PaddedSpan:
             return b""
         if self._stopping():
             raise _Closed()
-        data = b"" if self._cut else self._span.read(n)
+        if self._cut_in is not None and self._volume() != self._cut_in:
+            raise self._cut_error()
+        data = b"" if self._cut_in is not None else self._span.read(n)
         if not data:
-            if not self._cut:
-                self._cut = True
+            if self._cut_in is None:
+                self._cut_in = self._volume()
                 self._on_cut()
             data = bytes(n)
         self._left -= len(data)
@@ -213,13 +231,56 @@ class _PaddedSpan:
         self._span.close()
 
 
+class _LineCheck:
+    """Whether a member's slice of the pass's output is the member's output, by its
+    CRC32. Used after an earlier member failed its check: its output may have had
+    another length than its header says, and then this slice starts in the wrong
+    place."""
+
+    def __init__(
+        self,
+        size: int,
+        matches: Callable[[bytes], bool],
+        on_match: Callable[[], None],
+        on_mismatch: Callable[[], ArchiveyError],
+    ) -> None:
+        self._left = size
+        self._crc = 0
+        self._matches = matches
+        self._on_match = on_match
+        self._on_mismatch = on_mismatch
+        # ``None`` until the slice ends, then whether it matched.
+        self._matched: bool | None = None
+
+    def update(self, data: bytes) -> None:
+        """Take the bytes of one read of ``n`` > 0 bytes: none at the end. Every
+        read from the one that ends a slice that does not match raises."""
+        if self._matched is None:
+            self._crc = zlib.crc32(data, self._crc)
+            self._left -= len(data)
+            if data and self._left > 0:
+                return
+            self._matched = self._left == 0 and self._matches(crc32_digest(self._crc))
+            if self._matched:
+                self._on_match()
+        if not self._matched:
+            raise self._on_mismatch()
+
+
 class _ForwardMemberStream(DelegatingStream):
-    """Check the real source after each read, before padding can pass verification."""
+    """Check the real source after each read, before padding can pass verification,
+    and, with ``line``, that the slice is the member's output."""
 
     readinto_passthrough = False
 
-    def __init__(self, inner: BinaryIO, check_cut: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        inner: BinaryIO,
+        check_cut: Callable[[], None],
+        line: _LineCheck | None = None,
+    ) -> None:
         self._check_cut = check_cut
+        self._line = line
         super().__init__(inner)
 
     @override
@@ -229,6 +290,10 @@ class _ForwardMemberStream(DelegatingStream):
             # _PaddedSpan marks the cut before returning any padding, so this
             # check sees the mark before padded bytes can reach the verifier.
             self._check_cut()
+            if self._line is not None:
+                # Before the verifier gets the last bytes: a slice from the wrong
+                # place is refused as such, not reported as damage to this member.
+                self._line.update(data)
         return data
 
 
@@ -250,6 +315,9 @@ class _ForwardPass:
         self.building = threading.Lock()
         #: Set when the reader closes: the walk stops at its next read of the source.
         self.stopping = False
+        #: The error the feeder stopped ``unrar`` with when the source ended inside a
+        #: member and the volume the cut is in was written (``_PaddedSpan``).
+        self.cut_stop: ArchiveyError | None = None
         self._charge = _rolling_volume_bytes(reader._config.spool_limits)
         self._released = False
         self.stream: _RollingUnrarStream | None = None
@@ -456,6 +524,17 @@ class _ForwardUnrarStream(_RollingUnrarStream):
         super().__init__(stdout, proc, feeder, volumes, release, **kwargs)
 
     @override
+    def _raise_for_returncode(self, rc: int) -> None:
+        stop = self._fpass.cut_stop
+        if stop is not None and self.feeder.error is stop:
+            # The output ends after the volume the source cut is in. A read of the
+            # cut member that reaches that end raises the member's own error
+            # (``check_cut``, after the read returns), and the listing raises this
+            # one after the members before it, so this read has nothing to add.
+            return
+        super()._raise_for_returncode(rc)
+
+    @override
     def close(self) -> None:
         self._fpass.stop()
         if not self.closed:
@@ -528,6 +607,12 @@ class RarForwardReader(RarReader):
         # Where the output of the members placed so far ends; ``None`` once it no
         # longer lines up.
         self._pipe_end: int | None = 0
+        # The member whose failed read leaves ``_pipe_end`` in doubt, until a member
+        # placed after it is read whole and matches its CRC32 (``_LineCheck``).
+        self._pipe_doubt: str | None = None
+        # How to check the CRC32 of each member placed while in doubt, by ``id`` of
+        # the parsed member.
+        self._line_checks: dict[int, Callable[[bytes], bool]] = {}
         self._pass_password: str | None | Literal[False] = False
         self._fpass: _ForwardPass | None = None
         self._fwalk_done = False
@@ -713,11 +798,27 @@ class RarForwardReader(RarReader):
         fpass = self._fpass
         assert fpass is not None  # only a pass writes volumes
         span = ForwardSpan(self._fsource, raw.data_offset, raw.compress_size)
+
+        def cut_error() -> TruncatedError:
+            # Ends the pass: the feeder stops ``unrar`` with it, and the listing
+            # raises it once the members before are given.
+            error = TruncatedError(
+                "RAR archive is truncated: the stream ends inside the packed data "
+                f"of {quoted(raw.filename)}.",
+                archive_name=self._archive_name,
+                source_format=ArchiveFormat.RAR,
+            )
+            fpass.cut_stop = error
+            return error
+
         padded = _PaddedSpan(
             span,
             raw.compress_size,
             lambda: cut.add(id(raw)),
             lambda: fpass.stopping,
+            # The volumes written so far: the one being written is the next.
+            lambda: fpass.volumes.count,
+            cut_error,
         )
         return [(cast("BinaryIO", padded), raw.compress_size)]
 
@@ -908,6 +1009,7 @@ class RarForwardReader(RarReader):
                 costs=self._pass_costs,
                 on_pipe=_on_pipe,
                 wrap_member=self._wrap_forward_member,
+                on_member_error=self._on_member_error,
             )
         finally:
             fpass.close()
@@ -950,10 +1052,65 @@ class RarForwardReader(RarReader):
                     "raised its own error",
                 )
             )
-        assert size is not None  # a member of unknown size stops the volumes
         offset = self._pipe_end
+        if self._can_direct_read(raw):
+            mismatch = self._stored_sizes_error(member, raw)
+            if mismatch is not None:
+                # Refused as the seekable reader refuses it. ``unrar`` copies a
+                # stored member up to the smaller of its two sizes, so the output
+                # after it starts there.
+                self._pipe_end = offset + min(raw.compress_size, raw.file_size)
+                return refuse(mismatch)
+        # An empty slice has no output to place wrongly, and it matches its CRC32
+        # wherever it starts, so it is read with no check and leaves the doubt set.
+        if self._pipe_doubt is not None and size != 0:
+            matches = self._crc32_check(member)
+            if matches is None:
+                self._pipe_end = None
+                return refuse(self._out_of_line_error(member, self._pipe_doubt))
+            self._line_checks[id(raw)] = matches
+        assert size is not None  # a member of unknown size stops the volumes
         self._pipe_end = offset + size
         return offset
+
+    def _crc32_check(self, member: ArchiveMember) -> Callable[[bytes], bool] | None:
+        """Whether a CRC32 digest of ``member``'s output is the one its header holds,
+        or ``None`` when the header holds no CRC32 the pass can compare."""
+        hashes, _, transforms, _ = self._payload_verify_args(member)
+        expected = (hashes or {}).get(HashAlgorithm.CRC32)
+        if expected is None:
+            return None
+        transform = (transforms or {}).get(HashAlgorithm.CRC32)
+        return lambda digest: (
+            (transform(digest) if transform is not None else digest) == expected
+        )
+
+    def _out_of_line_error(
+        self, member: ArchiveMember, doubt: str
+    ) -> UnsupportedFeatureError:
+        return self._not_fed_error(
+            member,
+            f"the member {quoted(doubt)} before it failed its check, so its output "
+            "may have another length than its header says, and the pass cannot tell "
+            "where this member's output starts",
+        )
+
+    def _on_member_error(self, member: ArchiveMember, error: ArchiveyError) -> None:
+        """A member placed in the output failed its read. A damaged compressed or
+        encrypted member can decode to another length than its header says, and then
+        every later member's output starts somewhere else. Each member with output
+        placed after it is checked against its CRC32 (``_LineCheck``) until one
+        matches; one that does not, or that has no CRC32, is refused, and so is every
+        member after it. A plain stored member's output is a copy of its packed bytes,
+        so its length is known even when its digest fails."""
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        if (
+            isinstance(error, CorruptionError)
+            and not self._can_direct_read(raw)
+            and self._pipe_end is not None
+        ):
+            self._pipe_doubt = member.name
 
     def _wrap_forward_member(self, member: ArchiveMember, stream: BinaryIO) -> BinaryIO:
         """Keep a late source cut from verifying through a synthetic member slice."""
@@ -965,7 +1122,21 @@ class RarForwardReader(RarReader):
                 self._pipe_end = None
                 raise self._cut_error(member)
 
-        return _ForwardMemberStream(stream, check_cut)
+        matches = self._line_checks.pop(id(raw), None)
+        line = None
+        if matches is not None:
+            doubt = self._pipe_doubt
+            assert doubt is not None and member.size is not None
+
+            def on_match() -> None:
+                self._pipe_doubt = None
+
+            def on_mismatch() -> ArchiveyError:
+                self._pipe_end = None
+                return self._out_of_line_error(member, doubt)
+
+            line = _LineCheck(member.size, matches, on_match, on_mismatch)
+        return _ForwardMemberStream(stream, check_cut, line)
 
     def _password_refusal(
         self, member: ArchiveMember, raw: RarMemberInfo
