@@ -53,7 +53,7 @@ less than one second here. The scripts below run from the repository root, with 
   ```sh
   uv run --no-sync python review/outside-rar-sweep-2026-11-15/reproduce.py R1
   uv run --no-sync pytest -o addopts= --runxfail -q \
-    tests/test_audit_outside_rar_sweep_2026_11_15.py::test_a_truncated_pipe_member_never_verifies_zero_padding
+    tests/test_rar_forward.py::test_a_truncated_pipe_member_never_verifies_zero_padding
   # Default spool limit, CRC32 and BLAKE2sp variants:
   uv run --no-sync python review/outside-rar-sweep-2026-11-15/reproduce.py R1-default
   uv run --no-sync python review/outside-rar-sweep-2026-11-15/reproduce.py R1-blake
@@ -109,7 +109,7 @@ less than one second here. The scripts below run from the repository root, with 
   ```sh
   uv run --no-sync python review/outside-rar-sweep-2026-11-15/reproduce.py R2
   uv run --no-sync pytest -o addopts= --runxfail -q \
-    tests/test_audit_outside_rar_sweep_2026_11_15.py::test_extra_area_padding_survives_a_rolling_volume_split
+    tests/test_rar_forward.py::test_extra_area_padding_survives_a_rolling_volume_split
   ```
 
   [`reproduce.py`](reproduce.py) builds every header and its CRC with the standard
