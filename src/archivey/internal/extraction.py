@@ -3578,18 +3578,6 @@ class ExtractionCoordinator:
             declined = self._make_room(original, transformed, dest_path, atomic=True)
             if declined is not None:
                 return declined
-            room_made = True
-            # ``_make_room`` can remove the source's only path: a parent of the link
-            # that was the source's file, under a spelling the record does not use
-            # (``a/x`` after a placeholder recorded as ``A``, on a case-insensitive
-            # filesystem). The source then takes the route of one not on disk. A link
-            # on its own source's path (``on_source``) keeps that file, though
-            # ``_make_room`` forgot it.
-            if not on_source:
-                self._drop_replaced_source_paths(source.member_id)
-        else:
-            on_source = room_made = False
-        if on_source or source.member_id in state.source_paths:
             dest_path = self._place_link(
                 source.member_id, dest_path, transformed, on_source=on_source
             )
@@ -3611,7 +3599,7 @@ class ExtractionCoordinator:
             # would skip or refuse at a taken name is skipped or refused here too.
             # REPLACE is left out: it could remove a directory there before the link
             # fails, and the result is FAILED either way.
-            if not room_made and self._overwrite is not OverwritePolicy.REPLACE:
+            if self._overwrite is not OverwritePolicy.REPLACE:
                 declined = self._make_room(
                     original, transformed, dest_path, atomic=True
                 )
@@ -3629,10 +3617,9 @@ class ExtractionCoordinator:
         # too, so every later member meets the placeholder as it would meet the made
         # link, under every overwrite policy: the filesystem answers, so nothing has
         # to model the link (GNU tar makes its delayed links the same way).
-        if not room_made:
-            declined = self._make_room(original, transformed, dest_path, atomic=True)
-            if declined is not None:
-                return declined
+        declined = self._make_room(original, transformed, dest_path, atomic=True)
+        if declined is not None:
+            return declined
         dest_path = self._write_placeholder(dest_path, transformed)
         self._record_source_path(source.member_id, dest_path)
         self._hold(source, result_index, original, transformed, dest_path)
@@ -4316,9 +4303,9 @@ class ExtractionCoordinator:
         """Whether this run wrote the entry at ``path``, however the archive spelled
         it: ``s/d`` written through the caller's ``s -> e`` is the entry at
         ``e/d``. The collision map finds the claim where its file was written, and
-        the claim counts only at that exact physical path (``_Claim.physical``), not
-        under another case, and not where ``s/d`` resolves after the caller's ``s``
-        is replaced."""
+        the claim counts at that physical path (``_Claim.physical``), or under a name
+        the filesystem gives that same file (a case variant where case is folded),
+        and not where ``s/d`` resolves after the caller's ``s`` is replaced."""
         state = self._state
         written_paths = state.written_paths
         if path in written_paths:
@@ -4326,11 +4313,17 @@ class ExtractionCoordinator:
         if not state.collision_map or not path.is_relative_to(state.dest):
             return False
         claim = state.collision_map.get(self._collision_key(path))
-        return (
+        if (
             claim is not None
             and claim.path in written_paths
             and claim.physical == self._physical_path(path)
-        )
+        ):
+            return True
+        # Another name of the claimed file itself: a case variant on a case-insensitive
+        # filesystem, under any policy, matched by identity (``_alias_claim``). A case
+        # variant that is another file, on a case-sensitive filesystem, is not one.
+        alias = self._alias_claim(path)
+        return alias is not None and alias.path in written_paths
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a parked superseded copy."""
