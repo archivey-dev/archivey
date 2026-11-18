@@ -257,6 +257,43 @@ def test_an_extent_over_many_metadata_runs_costs_one_step_per_run() -> None:
     assert volume._block_offset(1, 205, "x") == (1000 + 5) * BLOCK
 
 
+def _inline_directory(data: bytes) -> UdfEntry:
+    return UdfEntry(
+        location=0,
+        file_type=4,
+        uid=None,
+        gid=None,
+        permissions=0,
+        info_length=len(data),
+        modified=b"",
+        accessed=b"",
+        attribute=b"",
+        created=None,
+        spans=(),
+        inline=data,
+        partition=0,
+    )
+
+
+def test_zeros_inside_a_directory_are_refused() -> None:
+    """Zeros where a File Identifier should start end the directory only when nothing
+    follows them; a gap with descriptors after it is corrupt, not a quiet stop."""
+    volume = _volume(_udf_only())
+    assert list(volume._children(_inline_directory(bytes(64)))) == []
+    gap = _inline_directory(bytes(16) + b"\x01" * 40)
+    with pytest.raises(CorruptionError, match="zeros where a file identifier"):
+        list(volume._children(gap))
+
+
+def test_extended_allocation_descriptors_are_unsupported() -> None:
+    """UDF records only short and long descriptors; an extended one is refused rather
+    than read with its recorded and information lengths ignored."""
+    volume = _volume(_udf_only())
+    area = struct.pack("<IIIIH2x", 2048, 10, 10, 64, 0)
+    with pytest.raises(UnsupportedFeatureError, match="extended allocation"):
+        volume._allocation(area, 2, 0, None, 10)
+
+
 def test_contiguous_metadata_runs_are_one_run() -> None:
     """Metadata file extents that follow each other on disc merge into one run, so
     an extent over them is one step and one span, not one step per extent."""
@@ -579,7 +616,7 @@ def test_7z_lists_the_builder_images_the_same_way(tmp_path: Path) -> None:
     )
     path = tmp_path / "disc.udf"
     path.write_bytes(image)
-    result = run_7z(["l", "-tudf", "-slt", str(path)], check=True)
+    result = run_7z(["l", "-tudf", "-slt", "-sccUTF-8", str(path)], check=True)
     paths = sorted(
         line.removeprefix("Path = ")
         for line in result.stdout.decode().splitlines()

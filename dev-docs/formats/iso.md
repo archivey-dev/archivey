@@ -507,18 +507,20 @@ Primary (the volume name), Partition, and Logical Volume (block size, partition 
 where the File Set Descriptor is). Type 1 partition maps and the type 2 metadata
 partition, whose blocks are the data of the metadata file (an Extended File Entry in the
 physical partition). File Entries and Extended File Entries, through strategy-4096
-indirect entries; short, long and extended allocation descriptors; continued allocation
+indirect entries; short and long allocation descriptors; continued allocation
 extents; data inside the File Entry; and extents allocated but not recorded, which read
 as zeros. Every descriptor's tag checksum, identifier, recorded location (but a File
 Identifier's) and CRC must hold, or the image is `CorruptionError`.
 
 **Refused.** Sparable and virtual partitions (rewritable and incrementally written
-discs; `mkudffs --media-type=bdr` writes a virtual one) raise `UnsupportedFeatureError`.
-On a bridge image the reader then lists the ISO 9660 trees instead; on a UDF-only image
-there is nothing else. A damaged UDF tree is `CorruptionError` even when Rock Ridge is
-the listed tree, as when `pycdlib` parsed it: a loop, a File Identifier and File Entry
-that disagree on whether it is a directory, extents holding less than the declared
-length.
+discs; `mkudffs --media-type=bdr` writes a virtual one), and extended allocation
+descriptors (UDF 2.01 2.3.10 allows only short and long ones, and Linux refuses them),
+raise `UnsupportedFeatureError`. On a bridge image the reader then lists the ISO 9660
+trees instead; on a UDF-only image there is nothing else. A damaged UDF tree is
+`CorruptionError` even when Rock Ridge is the listed tree, as when `pycdlib` parsed it:
+a loop, a File Identifier and File Entry that disagree on whether it is a directory,
+extents holding less than the declared length, a directory with zeros where a File
+Identifier should start and more after them.
 
 **The member.** The name is the File Identifier decoded by its compression ID: 8 or 254
 is one byte per character (Latin-1), 16 or 255 UTF-16BE, a lone surrogate kept as in a
@@ -543,9 +545,9 @@ reads nothing more.
 
 **Reads.** A member is its extents joined, as image views, with a zero stream for an
 unrecorded extent; inline data is a `BytesIO`. Recorded extents that overlap are
-`CorruptionError` on open, as for a multi-extent ISO 9660 file. An extent past the end
-of the image reads what is there, and the adapter's size check makes it
-`TruncatedError`.
+`CorruptionError` when the member is read, as for a multi-extent ISO 9660 file. An
+extent past the end of the image reads what is there, and the adapter's size check makes
+it `TruncatedError`.
 
 **A cut image.** A read at open that comes back short is `TruncatedError` when it
 started inside the file before the partitions were known, or when the partitions the

@@ -495,9 +495,9 @@ descriptors in them, 64 indirect entries and 64 allocation extent continuations 
 File Entry and 64 partition maps, and SHALL read a symlink of at most 64 KiB; past any
 of these the image SHALL be refused with `CorruptionError` at open. It SHALL look at no
 more than 64 Volume Recognition descriptors: a UDF descriptor past them is not seen, and
-the image is not read as UDF. These are structural bounds, not policy limits: each stops a
-chain the format lets point anywhere, real writers record one descriptor extent, one or
-two partition maps and no indirect entries, and no system makes a symlink target over
+the image is not read as UDF. These are structural bounds, not policy limits: each stops
+a chain the format lets point anywhere, real writers record one descriptor extent, one
+or two partition maps and no indirect entries, and no system makes a symlink target over
 4096 bytes (Linux's `PATH_MAX`; its UDF driver reads at most one block). A directory has
 no such bound: `max_metadata_bytes` weighs it before it is read. An extent that a
 metadata partition splits over its runs SHALL cost one step per run it covers, not one

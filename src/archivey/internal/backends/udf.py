@@ -20,7 +20,7 @@ How the tree is found, from the start of the image::
                        File Identifier Descriptors, each naming a child's ICB
 
 Supported: type 1 partition maps, the type 2 metadata partition (UDF 2.50 and later,
-Blu-ray), short, long and extended allocation descriptors, continued allocation
+Blu-ray), short and long allocation descriptors, continued allocation
 extents, data inline in the File Entry, unrecorded (sparse) extents read as zeros,
 File Entries and Extended File Entries, ICB strategy 4 and the indirect entries of
 strategy 4096. Sparable and virtual partitions (rewritable and incrementally written
@@ -277,9 +277,9 @@ class ZeroRun(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
-        view = memoryview(b).cast("B")
-        n = max(0, min(len(view), self._length - self._position))
-        view[:n] = bytes(n)
+        with memoryview(b) as outer, outer.cast("B") as view:
+            n = max(0, min(len(view), self._length - self._position))
+            view[:n] = bytes(n)
         self._position += n
         return n
 
@@ -838,7 +838,15 @@ class UdfVolume:
         elif kind == _AD_LONG:
             ad_size = 16
         elif kind == _AD_EXTENDED:
-            ad_size = 20
+            # UDF 2.01 2.3.10 allows only short and long descriptors; Linux refuses
+            # extended ones too. Their recorded and information lengths (data that
+            # is partly recorded, or compressed) are not modelled.
+            raise UnsupportedFeatureError(
+                "UDF file entry uses extended allocation descriptors; reading them "
+                "is not supported",
+                source_format=ArchiveFormat.ISO,
+                archive_name=self._archive_name,
+            )
         else:
             raise self._corrupt(f"a file entry has allocation descriptor kind {kind}")
         spans: list[Span] = []
@@ -854,10 +862,8 @@ class UdfVolume:
             if kind == _AD_SHORT:
                 block = struct.unpack_from("<I", area, offset + 4)[0]
                 part = partition
-            elif kind == _AD_LONG:
-                block, part = struct.unpack_from("<IH", area, offset + 4)
             else:
-                block, part = struct.unpack_from("<IH", area, offset + 12)
+                block, part = struct.unpack_from("<IH", area, offset + 4)
             offset += ad_size
             if length == 0:
                 break
@@ -991,7 +997,13 @@ class UdfVolume:
         size = len(data)
         while offset + 38 <= size:
             if not any(data[offset : offset + 16]):
-                # Zeros where a descriptor would start: padding up to the block end.
+                # Zeros where a descriptor would start end the directory only when
+                # nothing follows: UDF 2.01 2.3.4.4 keeps a tag off a block boundary,
+                # so a writer leaves no gap, and Linux and 7-Zip refuse one.
+                if any(data[offset:]):
+                    raise self._corrupt(
+                        "a directory has zeros where a file identifier should start"
+                    )
                 break
             (l_iu,) = struct.unpack_from("<H", data, offset + 36)
             l_fi = data[offset + 19]
