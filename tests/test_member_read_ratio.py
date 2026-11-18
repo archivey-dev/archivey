@@ -633,8 +633,8 @@ def test_a_read_to_an_unknown_end_asks_the_decoder_for_bounded_pieces() -> None:
 
 def test_a_read_to_an_unknown_end_asks_for_one_decoder_call_at_a_time() -> None:
     """A step larger than one decoder call makes ``DecompressorStream`` join its calls
-    into each step before the guard joins the steps: two copies of the whole output,
-    which made reading a large ``.gz`` to the end about 25% slower than in 0.3.0."""
+    into each step before the guard joins the steps: a second copy of the whole output,
+    even where one decoder call fills a step (highly compressible data)."""
     from archivey.internal.streams import decompressor_stream
 
     assert bomb_tracker._READ_TO_END_STEP <= decompressor_stream._SEEKABLE_FEED_OUTPUT

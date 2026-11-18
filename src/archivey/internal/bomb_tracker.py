@@ -376,10 +376,12 @@ _GUARD_STEP = 1 << 20
 # pages the kernel hands out as they are touched.
 #
 # One step, the most a ``DecompressorStream`` decoder call gives on a file
-# (``_SEEKABLE_FEED_OUTPUT``): a read that size comes back as the decoder's own bytes,
-# so the join below is the only copy of the output. A larger step makes the decoder
-# join its calls into it first, which copies the whole output twice: 16 MiB steps made
-# reading a 32 MiB ``.gz`` to the end about 25% slower.
+# (``_SEEKABLE_FEED_OUTPUT``). When one decoder call fills the step (a feed slice that
+# decodes to 1 MiB or more, as on highly compressible data), the read comes back as the
+# decoder's own bytes, and the join below is the only copy of the output. A larger step
+# makes the decoder join several calls into it first, which copies the whole output a
+# second time. On data that compresses less, the decoder still joins several calls
+# into each step.
 _READ_TO_END_STEP = _GUARD_STEP
 
 
