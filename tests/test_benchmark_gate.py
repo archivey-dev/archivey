@@ -803,32 +803,53 @@ def test_compressed_tar_peers_read_the_file_once(
     assert data_read == scale.common_members * scale.common_member_size
 
 
-def test_min_sample_s_records_the_mean_per_call(
+def test_listing_times_report_a_low_percentile_of_single_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Each call "takes" a fixed time on a fake clock. With min_sample_s, every sample
-    # repeats its call until the minimum has passed and records the per-call mean, not
-    # the total (fails against `return total, result`) and not a single call (fails
-    # against a loop that stops after the first call).
+    # Each call "takes" a fixed time on a fake clock, except that every fourth call of
+    # each side stalls for 50 ms. The result must be the unstalled time (fails against
+    # a median or a mean, which take in the stalls), the loop must run until both the
+    # budget and the minimum pair count are met, and each call must be timed alone.
     now = [0.0]
     monkeypatch.setattr(harness.time, "perf_counter", lambda: now[0])
     calls = {"ay": 0, "std": 0}
 
     def ay() -> str:
         calls["ay"] += 1
-        now[0] += 0.002
+        now[0] += 0.002 + (0.05 if calls["ay"] % 4 == 0 else 0.0)
         return "result"
 
     def std() -> None:
         calls["std"] += 1
-        now[0] += 0.0005
+        now[0] += 0.0005 + (0.05 if calls["std"] % 4 == 0 else 0.0)
 
-    ay_s, result, std_s = harness._interleaved_pair_times(
-        ay, std, rounds=3, min_sample_s=0.01
+    ay_s, result, std_s = harness._interleaved_listing_times(
+        ay, std, budget_s=0.5, min_pairs=15, quantile=0.1
     )
     assert ay_s == pytest.approx(0.002)
     assert std_s == pytest.approx(0.0005)
     assert result == "result"
-    # One warmup each, then three samples of at least 0.01 s each.
-    assert calls["ay"] >= 1 + 3 * 5
-    assert calls["std"] >= 1 + 3 * 20
+    # Warmup plus enough pairs to fill the 0.5 s budget (about 0.0275 s per pair
+    # averaged over the stalls): far more than the 15-pair minimum.
+    assert calls["ay"] == calls["std"]
+    assert calls["ay"] > 15
+    assert now[0] >= 0.5
+
+
+def test_listing_times_run_the_minimum_pairs_past_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A slow listing uses up the budget in a few pairs; the loop still runs the minimum.
+    now = [0.0]
+    monkeypatch.setattr(harness.time, "perf_counter", lambda: now[0])
+    calls = {"ay": 0}
+
+    def ay() -> None:
+        calls["ay"] += 1
+        now[0] += 0.2
+
+    def std() -> None:
+        now[0] += 0.1
+
+    harness._interleaved_listing_times(ay, std, budget_s=0.5, min_pairs=15)
+    assert calls["ay"] == 1 + 15

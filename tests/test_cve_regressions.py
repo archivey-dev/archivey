@@ -632,7 +632,12 @@ def test_link_that_leads_out(
     archive = (_tar if fmt == "tar" else _zip)(entries)
     report = _extract_and_check(tmp_path, archive, policy=policy, streaming=streaming)
     if case == "symlink-backslash" and policy is ExtractionPolicy.TRUSTED:
-        expected = {"dir": ExtractionStatus.EXTRACTED}
+        # The link dangles inside, and the member under it is refused: it goes
+        # through a symlink this extraction created.
+        expected = {
+            "dir": ExtractionStatus.EXTRACTED,
+            "dir/victim": ExtractionStatus.BLOCKED,
+        }
     elif case in _TRUSTED_WRITES and policy is ExtractionPolicy.TRUSTED:
         expected = _TRUSTED_WRITES[case]
     else:

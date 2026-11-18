@@ -71,8 +71,9 @@ a symlink whose stored target starts at `/` is written as stored (maintainer rul
 initramfs image extracts. The link itself changes nothing outside, and nothing is
 written outside the destination through it under any policy: the parent check below
 refuses a member whose parent resolves through it to outside, and the escape check
-refuses a link that resolves through it to outside. A target that leads back into the
-destination is followed there, as any symlink is.
+refuses a link that resolves through it to outside. No member is written through it,
+as through any symlink the same extraction made; another symlink's target may still
+resolve through it back into the destination.
 
 **Mechanism.**
 - `internal/filters.py` `check_universal` runs on every member under every policy,

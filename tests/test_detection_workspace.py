@@ -617,6 +617,7 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     # scan window, and the PE tail probe.
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.codecs.brotli_framing import (
+        CHAIN_END_READ,
         CHAIN_HEADER_READ,
         CHAIN_MAX_LINKS,
     )
@@ -625,6 +626,7 @@ def test_within_budget_allows_probe_seeks_above_scan_ceiling() -> None:
     assert validator_allowance(BALANCED_BUDGET) == VALIDATOR_PEEK_MAX
     allowance = (
         CHAIN_MAX_LINKS * CHAIN_HEADER_READ
+        + CHAIN_END_READ
         + trailer_allowance()
         + VALIDATOR_PEEK_MAX
         + TAIL_PROBE_ALLOWANCE
@@ -650,11 +652,12 @@ def test_within_budget_grants_the_validator_allowance_only_to_a_scan() -> None:
     """
     from archivey.detection_cost import DetectionCostReceipt
     from archivey.internal.streams.codecs.brotli_framing import (
+        CHAIN_END_READ,
         CHAIN_HEADER_READ,
         CHAIN_MAX_LINKS,
     )
 
-    base = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + trailer_allowance()
+    base = CHAIN_MAX_LINKS * CHAIN_HEADER_READ + CHAIN_END_READ + trailer_allowance()
     for budget in (BALANCED_BUDGET, _tight_budget()):
         ceiling = max(
             budget.max_prefix_bytes, budget.max_far_bytes, budget.max_scan_bytes
