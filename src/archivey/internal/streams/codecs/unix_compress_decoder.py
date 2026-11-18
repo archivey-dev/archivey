@@ -480,6 +480,10 @@ class LzwState:
                 return b"", []
 
         # Local aliases — hot path (same trick as uncompresspy, ~2x).
+        # The buffer is not resized until the del after the loop, so read its length
+        # once.
+        buf = self._buf
+        buf_end = len(buf)
         bit_buffer = self._bit_buffer
         bits_in_buffer = self._bits_in_buffer
         code_width = self._code_width
@@ -511,8 +515,8 @@ class LzwState:
 
         buf_i = 0
         budget_hit = False
-        while buf_i < len(self._buf):
-            cur_byte = self._buf[buf_i]
+        while buf_i < buf_end:
+            cur_byte = buf[buf_i]
             buf_i += 1
             bytes_in_era += 1
             bit_buffer += cur_byte << bits_in_buffer
@@ -556,13 +560,13 @@ class LzwState:
                     bytes_in_era = 0
                     codes_in_era = 0
                     codes_per_era = 1 << (code_width - 1)
-                    if target > len(self._buf):
+                    if target > buf_end:
                         # CLEAR realignment extends past this feed — skip the rest
                         # of the padding at the start of the next feed.
-                        self._pending_skip = target - len(self._buf)
+                        self._pending_skip = target - buf_end
                         self._skip_may_end_at = 0
                         self._skip_reason = "after a CLEAR"
-                        buf_i = len(self._buf)
+                        buf_i = buf_end
                     else:
                         buf_i = target
                     cleared = True
@@ -633,15 +637,13 @@ class LzwState:
                     # code longer.
                     if pad := -bytes_in_era % code_width:
                         seg_comp += pad
-                        if buf_i + pad > len(self._buf):
-                            self._pending_skip = buf_i + pad - len(self._buf)
+                        if buf_i + pad > buf_end:
+                            self._pending_skip = buf_i + pad - buf_end
                             # Only a source that stops before any of the padding
                             # ends here legitimately; part of it means a cut.
-                            self._skip_may_end_at = (
-                                pad if buf_i == len(self._buf) else 0
-                            )
+                            self._skip_may_end_at = pad if buf_i == buf_end else 0
                             self._skip_reason = "at a code-width increase"
-                            buf_i = len(self._buf)
+                            buf_i = buf_end
                         else:
                             buf_i += pad
                     code_width += 1
@@ -664,7 +666,7 @@ class LzwState:
             if budget_hit:
                 break
 
-        del self._buf[:buf_i]
+        del buf[:buf_i]
 
         self._bit_buffer = bit_buffer
         self._bits_in_buffer = bits_in_buffer
