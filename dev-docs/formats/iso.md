@@ -650,7 +650,8 @@ ISO-specific only. General extraction and name hazards are §2.4.
   no system comes near. Chains (volume descriptor pointers, indirect entries, allocation
   extents) stop at 16 or 64 links: structural bounds, not policy limits (spec "Bound the
   UDF chains structurally"). An extent split over a metadata partition's runs costs one
-  step per run it covers, and each extra span is weighed as a 16-byte descriptor.
+  step per run it covers, and each run covered after the first is weighed as a 16-byte
+  descriptor; runs that follow each other on disc are merged into one first.
   Extents that overlap are refused on read; unrecorded extents are zeros the member's
   size already counts, so they amplify as a sparse file does, under the same extraction
   limits.

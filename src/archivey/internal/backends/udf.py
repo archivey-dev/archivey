@@ -663,7 +663,13 @@ class UdfVolume:
         for span in entry.spans:
             if span.offset is None or span.offset % size or span.length % size:
                 raise self._corrupt("its metadata file has an extent not on a block")
-            runs.append((span.offset // size, span.length // size))
+            start, count = span.offset // size, span.length // size
+            if runs and runs[-1][0] + runs[-1][1] == start:
+                # Runs that follow each other on disc are one run: each step of
+                # _extent_spans then makes one span, which is what it is charged.
+                runs[-1] = (runs[-1][0], runs[-1][1] + count)
+            elif count:
+                runs.append((start, count))
         firsts: list[int] = []
         total = 0
         for _start, count in runs:
@@ -702,6 +708,8 @@ class UdfVolume:
             return [Span((part.start + block) * size, length)]
         # Intersect [block, block + blocks) with the metadata runs once: the cost is
         # one bisect plus one step per run the extent covers, never one per block.
+        # Runs are non-empty and never contiguous (_metadata_partition merges
+        # them), so each step makes one span.
         spans: list[Span] = []
         index = bisect.bisect_right(part.firsts, block) - 1
         remaining = length
@@ -709,21 +717,14 @@ class UdfVolume:
             run_start, run_count = part.metadata[index]
             skip = block - part.firsts[index]
             take = min(remaining, (run_count - skip) * size)
-            offset = (run_start + skip) * size
-            last = spans[-1] if spans else None
-            if not take:
-                pass  # An empty metadata run.
-            elif last is not None and last.offset == offset - last.length:
-                spans[-1] = Span(last.offset, last.length + take)
-            else:
-                spans.append(Span(offset, take))
+            spans.append(Span((run_start + skip) * size, take))
             remaining -= take
             block += run_count - skip
             index += 1
         if self._budget is not None and len(spans) > 1:
-            # Each extra span is one more descriptor archivey keeps, as if stored:
-            # weighed as a long allocation descriptor. This bounds the work an
-            # extent split over many metadata runs can cause.
+            # Each run covered after the first is one more span archivey keeps, as
+            # if stored: weighed as a long allocation descriptor. This charges the
+            # work an extent split over many metadata runs causes.
             self._budget.add_udf_bytes((len(spans) - 1) * _SPAN_WEIGHT)
         return spans
 

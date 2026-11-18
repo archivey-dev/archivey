@@ -240,6 +240,7 @@ def test_an_extent_over_many_metadata_runs_costs_one_step_per_run() -> None:
         budget=weigh,
     )
     big = 0x3FFFF800 // BLOCK
+    # Runs apart on disc, as _metadata_partition leaves them: one span per run.
     runs = tuple((10 + 2 * index, 1) for index in range(200)) + ((1000, big),)
     firsts = tuple(range(200)) + (200,)
     volume._partitions[1] = _Partition(0, 200 + big, runs, firsts)
@@ -254,6 +255,19 @@ def test_an_extent_over_many_metadata_runs_costs_one_step_per_run() -> None:
     assert weigh.nbytes - before == 20 * 200 * 16
     # A block inside the last run maps through the same bisect.
     assert volume._block_offset(1, 205, "x") == (1000 + 5) * BLOCK
+
+
+def test_contiguous_metadata_runs_are_one_run() -> None:
+    """Metadata file extents that follow each other on disc merge into one run, so
+    an extent over them is one step and one span, not one step per extent."""
+    image = build_udf(_tree(), metadata=True, split_metadata_file=True)
+    volume = _volume(image)
+    part = volume._partitions[1]
+    assert part.metadata is not None
+    assert len(part.metadata) == 1
+    assert part.length > 1
+    with open_archive(io.BytesIO(image)) as reader:
+        assert {m.name for m in reader.members()} == set(_EXPECTED)
 
 
 def test_an_invalid_udf_date_is_reported() -> None:

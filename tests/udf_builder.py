@@ -303,11 +303,13 @@ def build_udf(
     label: str = "UDFTEST",
     revision: int = 0x0250,
     map_ident: bytes = b"*UDF Metadata Partition",
+    split_metadata_file: bool = False,
 ) -> bytes:
     """A UDF-only image holding the tree under ``root`` (a directory node).
 
     ``extended`` writes Extended File Entries, ``metadata`` a metadata partition
     (whose map names ``map_ident``), ``long_ad`` long allocation descriptors.
+    ``split_metadata_file`` records the metadata file as one extent per block.
     """
     image = _Image(extended=extended or metadata, metadata=metadata, long_ad=long_ad)
     fsd_block = image.alloc_meta()
@@ -329,7 +331,13 @@ def build_udf(
         for block, data in image.meta.items():
             image.physical[start + block] = data
         meta_node = Node("", permissions=0, uid=0xFFFFFFFF, gid=0xFFFFFFFF)
-        ads = struct.pack("<II", meta_blocks * BLOCK, start)
+        if split_metadata_file:
+            # One short AD per block, back to back on disc.
+            ads = b"".join(
+                struct.pack("<II", BLOCK, start + index) for index in range(meta_blocks)
+            )
+        else:
+            ads = struct.pack("<II", meta_blocks * BLOCK, start)
         image.long_ad = False
         entry = image.file_entry(meta_node, 0, meta_blocks * BLOCK, ads, file_type=250)
         image.physical[0] = entry

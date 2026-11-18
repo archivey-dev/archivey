@@ -470,8 +470,9 @@ two partition maps and no indirect entries, and no system makes a symlink target
 4096 bytes (Linux's `PATH_MAX`; its UDF driver reads at most one block). A directory has
 no such bound: `max_metadata_bytes` weighs it before it is read. An extent that a
 metadata partition splits over its runs SHALL cost one step per run it covers, not one
-per block, and each extra span SHALL be weighed against `max_metadata_bytes` as one long
-allocation descriptor (16 bytes).
+per block, where runs that follow each other on disc count as one, and each run covered
+after the first SHALL be weighed against `max_metadata_bytes` as one long allocation
+descriptor (16 bytes).
 
 #### Scenario: UDF bounds
 
@@ -479,4 +480,4 @@ allocation descriptor (16 bytes).
 | --- | --- |
 | A File Entry whose allocation extents continue more than 64 times, or more than 64 indirect entries in a row | `CorruptionError` at open |
 | A symlink over 64 KiB | `CorruptionError` at open |
-| Many 1 GiB allocation descriptors in a metadata partition of 200 runs | Open time grows with the runs covered, not the blocks; the extra spans count against `max_metadata_bytes` |
+| Many 1 GiB allocation descriptors in a metadata partition of 200 runs | Open time grows with the runs covered, not the blocks; each run covered after the first counts against `max_metadata_bytes` |
