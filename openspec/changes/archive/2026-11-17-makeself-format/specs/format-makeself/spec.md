@@ -24,13 +24,15 @@ before the first function definition, and after them the whole lines that state 
 payload command and, before makeself 2.4.2, the line count. The header SHALL end after
 `skip` lines, and the payloads SHALL follow it back to back with the sizes `filesizes`
 lists. It SHALL refuse with `CorruptionError` a header where a variable is assigned twice,
-a number is not a number, a digest is not hexadecimal of its length, `CRCsum` or `MD5`
-does not list one value per payload (or `SHA`, unless its values are all zeros),
-`totalsize` is not the sum of `filesizes`, the old offset lines disagree, or the payload
-command is not one command. It SHALL refuse with `UnsupportedFeatureError` a payload
-command or `decrypt_cmd` it does not read. The header SHALL count against
+a variable it reads is assigned with a plain `NAME=` anywhere but at the start of a line
+of the block, a number is not a number, a digest is not hexadecimal of its length,
+`CRCsum` or `MD5` does not list one value per payload (or `SHA`, unless its values are
+all zeros), `totalsize` is not the sum of `filesizes`, the old offset lines disagree, or
+the payload command is not one command. It SHALL refuse with `UnsupportedFeatureError` a
+payload command or `decrypt_cmd` it does not read. The header SHALL count against
 `max_metadata_bytes` (`ResourceLimitError`), the only bound on its length, and SHALL be
-parsed in one pass, in time linear in its length.
+parsed in one pass, in time linear in its length. A header that lists more payloads than
+`max_members` SHALL be refused with `ResourceLimitError`.
 
 #### Scenario: header parsing
 
@@ -38,6 +40,8 @@ parsed in one pass, in time linear in its length.
 | --- | --- |
 | A license text holding `skip="3"` and `MS_Printf()` lines | Ignored: inside a quoted value |
 | `filesizes` assigned twice | `CorruptionError` |
+| `filesizes` assigned on an indented line, or after `;` | `CorruptionError` |
+| 11 payloads under `max_members=10` | `ResourceLimitError` |
 | The file ends inside the header | `TruncatedError` |
 | `max_metadata_bytes` below the header's length | `ResourceLimitError` |
 
@@ -46,8 +50,14 @@ parsed in one pass, in time linear in its length.
 The backend SHALL read each payload as a TAR in the compressor the payload command
 names (gzip, bzip2, xz, zstd, lz4, lzop, bzip3, Unix compress, or none), base64-decoded
 first when the header says so, and list its members in payload order, a later payload's
-after an earlier one's. It SHALL refuse a gpg or openssl payload with
-`UnsupportedFeatureError` naming the cipher. Bytes after the last payload that are not
+after an earlier one's. It SHALL decrypt an openssl payload with the caller's
+`password=`: AES-256-CBC keyed by PBKDF2-HMAC-SHA256 when the command says `-pbkdf2`,
+else by `EVP_BytesToKey` with the `-md` digest, or MD5 then SHA-256 when there is none.
+It SHALL take a password only when the first decrypted bytes start the payload's
+compressor stream, or a TAR header with a matching checksum, and SHALL raise
+`EncryptionError` when no password is given or none is taken, and `CorruptionError`
+when the PKCS#7 padding at the end is damaged. It SHALL refuse a gpg payload with
+`UnsupportedFeatureError` naming gpg. Bytes after the last payload that are not
 zero SHALL be reported with `ARCHIVE_TRAILING_DATA`. The archive SHALL be solid.
 
 #### Scenario: listings
@@ -56,7 +66,11 @@ zero SHALL be reported with `ARCHIVE_TRAILING_DATA`. The archive SHALL be solid.
 | --- | --- |
 | makeself 2.4.0, `--append` once | Both payloads' files; `makeself.payloads=2` |
 | `--base64` (2.4.0 and 2.7.1) | The TAR's files |
-| `--ssl-encrypt` | `UnsupportedFeatureError` |
+| `--ssl-encrypt` (2.4.0, 2.4.5 with and without `-md`, 2.7.1), `password=` right | The TAR's files, from a file and from a pipe |
+| `--ssl-encrypt`, no password | `EncryptionError` asking for `password=` |
+| `--ssl-encrypt`, wrong password | `EncryptionError`, wrong password |
+| `--ssl-encrypt`, damaged padding | `CorruptionError` |
+| `--gpg-encrypt` | `UnsupportedFeatureError` |
 | A pipe, `streaming=True` | The same files |
 
 ### Requirement: Check every digest the header states

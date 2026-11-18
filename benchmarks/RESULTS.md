@@ -46,15 +46,70 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-## Release figures for 0.4.0, 0.3.0 and 0.2.1
+## Release figures for 0.4.1, 0.4.0, 0.3.0 and 0.2.1
 
-The figures quoted in the CHANGELOG entries for 0.4.0, 0.3.0 and 0.2.1. Each comes from
+The figures quoted in the CHANGELOG entries for 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each comes from
 a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs, Python
 3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
 three rounds per side. A cell is the fastest of the three rounds, for archivey and for
 its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator on are
 left out, because the default does not use one at this corpus size. The rows are the
 same cases as in [0.2.0 release figures](#020-release-figures-2026-10-21).
+
+### 0.4.1 against 0.4.0 and 0.3.0 (2026-11-18)
+
+Two runs, each with the 0.4.1 release branch at `2f0db5d8` as the candidate. Each run
+pairs its own baseline with the candidate on the same runner, so compare within a table,
+not across them: the two runners differ in speed, by up to 1.6 times, and not by the same
+factor for every case.
+
+Run 44220708965, baseline the `v0.4.0` tag (`5baeb00c`):
+
+| Case | archivey 0.4.0 | ratio 0.4.0 | archivey 0.4.1 | ratio 0.4.1 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 28.6 ms | 1.12× | 26.6 ms | 1.03× |
+| `tar_read_all` | 7.3 ms | 3.49× | 7.3 ms | 3.45× |
+| `tarbz2_read_all_accel_off` | 218.5 ms | 1.07× | 222.9 ms | 1.12× |
+| `targz_read_all_accel_off` | 16.5 ms | 1.86× | 17.5 ms | 1.97× |
+| `zip_extract` | 34.4 ms | 2.70× | 35.0 ms | 2.75× |
+| `zip_read_all` | 18.5 ms | 2.42× | 18.1 ms | 2.36× |
+| `rar_many_open_list` | 22.9 ms | 2.20× | 22.7 ms | 2.20× |
+| `rar_nonsolid_open_list` | 6.6 ms | 2.53× | 6.4 ms | 2.45× |
+| `rar_open_list` | 1.0 ms | 11.01× | 0.9 ms | 10.71× |
+| `sevenzip_many_open_list` | 129.0 ms | 1.92× | 115.3 ms | 1.75× |
+| `sevenzip_nonsolid_open_list` | 16.8 ms | 1.14× | 18.7 ms | 1.59× |
+| `sevenzip_open_list` | 1.7 ms | 3.23× | 1.5 ms | 3.00× |
+| `tar_open_list` | 2.9 ms | 3.02× | 2.9 ms | 2.92× |
+| `zip_open_list` | 1.6 ms | 12.41× | 1.4 ms | 11.37× |
+
+Run 44220715975, baseline the `v0.3.0` tag (`f013eec9`):
+
+| Case | archivey 0.3.0 | ratio 0.3.0 | archivey 0.4.1 | ratio 0.4.1 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 37.4 ms | 0.98× | 40.9 ms | 1.07× |
+| `tar_read_all` | 11.4 ms | 3.62× | 11.2 ms | 3.34× |
+| `tarbz2_read_all_accel_off` | 140.6 ms | 1.19× | 153.0 ms | 1.29× |
+| `targz_read_all_accel_off` | 23.9 ms | 1.79× | 25.5 ms | 1.91× |
+| `zip_extract` | 50.0 ms | 2.35× | 49.0 ms | 2.31× |
+| `zip_read_all` | 27.3 ms | 2.40× | 26.6 ms | 2.29× |
+| `rar_many_open_list` | 29.7 ms | 2.09× | 33.6 ms | 2.36× |
+| `rar_nonsolid_open_list` | 8.4 ms | 2.26× | 9.6 ms | 2.63× |
+| `rar_open_list` | 1.2 ms | 6.34× | 1.5 ms | 10.91× |
+| `sevenzip_many_open_list` | 155.3 ms | 1.54× | 163.6 ms | 1.70× |
+| `sevenzip_nonsolid_open_list` | 22.7 ms | 1.50× | 23.4 ms | 1.54× |
+| `sevenzip_open_list` | 1.9 ms | 2.37× | 2.1 ms | 2.66× |
+| `tar_open_list` | 3.9 ms | 2.70× | 4.3 ms | 3.02× |
+| `zip_open_list` | 2.0 ms | 9.15× | 2.2 ms | 11.97× |
+
+Against 0.4.0, `gzip_read_all` is 7% faster in archivey's own time (#1627), and 7z
+listing of many members 11% faster (#1580 and #1579). `sevenzip_nonsolid_open_list` measured
+11% slower here, but its reference reader moved by as much between the two sides, and a
+run on 2026-11-17 at `ed7e9313` measured it 19% faster, so it is noise. Outside the
+tables, `z_zeros_read_all` went from 162 to 133 ms (#1574), and `tarbz2_read_all_accel_on`
+from 106 to 117 ms (9% in the 2026-11-17 run too). Against 0.3.0, `gzip_read_all` is 9%
+slower (37.4 against 40.9 ms), where the 2026-11-17 run, before #1627, measured 22%; 7z
+listing is 3–7% slower (10–14% in 0.4.0); and RAR listing is still 13–19% slower. The
+RAR listing slowdown came with 0.4.0.
 
 ### 0.4.0 and 0.3.0 (2026-11-15)
 

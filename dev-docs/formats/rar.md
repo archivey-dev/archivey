@@ -1192,9 +1192,12 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   volume is split (`RollingVolumes`), so this is rare at the default 16 MiB volume. A
   `UOW` or `CMT` after such a member is written into it when the next member is listed
   or the pass ends (`_add_late_records`); the member is not final until then
-  (`member_state_final`), and extraction places it after the pass. The walk waits for
-  the caller to build a member listed early before it reads the next header
-  (`_ForwardPass.listed`), so nothing changes the parsed header during the build. While
+  (`member_state_final`), and extraction places it after the pass. The caller builds a
+  member listed early, and the walk reads the next header, each under one lock
+  (`_ForwardPass.building`), so nothing changes the parsed header during the build. The
+  walk never waits for the caller to list a member: the caller may be inside the read
+  of an earlier member that decoded short, waiting for output that `unrar` writes only
+  after the volume the walk is writing. A wait there was a deadlock, fixed 2026-11. While
   waiting for the next member, the caller reads past `unrar`'s output of the members it
   was given, so `unrar` never blocks on a full pipe while the walk waits for its prompt.
 - **Listing without a pass** (`members_report()`) walks with the data skipped and writes
@@ -1205,12 +1208,28 @@ the seekable reader's member building, verification and solid-pass demultiplexin
   does not fit, or a RAR 1.5-4 encrypted member with several candidates, is refused. A
   member with no size, a member past 4 GiB in RAR 1.5-4, or in a solid archive a member
   of an unknown compression version stops the volumes; every later member with data is
-  refused, as is every member after one whose output did not line up. A member cut short
-  is refused as `TruncatedError` when the source ends inside the 4 MiB the forward
-  source reads ahead; a longer one is padded with zeros so the members before it in its
-  volume still decode. The feeder sets the cut flag before writing any padding. The
-  member's stream checks that flag after each read and raises `TruncatedError` before
-  those zeros can pass a size or digest check.
+  refused, as is every member after one whose output did not line up. A compressed or
+  encrypted member whose read fails a check (`CorruptionError`) may have decoded to
+  another length than its header says, and the next member would then be read from the
+  wrong place and reported as cut short. So each member with output placed after it is
+  checked against its CRC32 before the verifier sees its last bytes (`_LineCheck`): a
+  match ends the doubt, and a mismatch, a slice that ends early, or a member with no
+  CRC32 is refused (`UnsupportedFeatureError`), and every member after it too. An empty
+  member is read with no check and leaves the doubt, since an empty slice matches its
+  CRC32 wherever it starts. A member the caller does not read is not checked, so its
+  failure is not seen, and a later member may then raise the error of a member read from
+  the wrong place. A stored member whose two sizes differ is refused as the seekable
+  reader refuses it, and its output is placed by the smaller size, which is what `unrar`
+  copies. A stored member's failed digest leaves no doubt: its output is a copy of its
+  packed bytes. A member cut short is refused as `TruncatedError` when the source ends
+  inside the 4 MiB the forward source reads ahead. A longer one is padded with zeros to
+  the end of the volume being written, so the members before it in that volume still
+  decode. The next volume is not written: the feeder stops `unrar`, and the listing
+  raises `TruncatedError` after the members before the cut. Padding the whole declared
+  size cost time in proportion to a size the archive chooses (a 63-byte stream that
+  declares 16 GiB ran for minutes), fixed 2026-11. The feeder sets the cut flag before
+  writing any padding. The member's stream checks that flag after each read and raises
+  `TruncatedError` before those zeros can pass a size or digest check.
 - **Closing** sets a flag the walk checks before each read of the source, closes
   `unrar`'s stdin (it ignores a terminate signal while it waits for a volume prompt's
   answer, but exits at the end of its input), and waits up to a second for the feeder

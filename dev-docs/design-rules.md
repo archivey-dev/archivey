@@ -171,9 +171,10 @@ excuse.
 5. **Consistent behaviour between formats and libraries** (DR-5). This can be relaxed a
    little for malformed data, particularly for a corner case so specific that only
    crafted archives hit it (DR-5a).
-6. **Follow the official tool's behaviour** (DR-6). When this and principle 5 conflict,
-   that needs a real decision. The factors below settle the clear cases; the rest go to
-   the maintainer.
+6. **Follow the official tool's behaviour** (DR-6), for every well-intentioned, correct
+   input; a shape only crafted archives make may be refused (DR-6 scope). When this and
+   principle 5 conflict, that needs a real decision. The factors below settle the clear
+   cases; the rest go to the maintainer.
 7. **Generalise fixes and approaches across all formats** (DR-0).
 
 The numbered rules below work the same way as the strong defaults: a rule settles a
@@ -493,6 +494,17 @@ does and match it: `unrar` for RAR (over `unar`), GNU `tar` for TAR, 7-Zip for 7
 `bzip2`, `xz`, `lzip` and `zstd` for their streams. Before refusing an input as junk,
 check whether a real tool produces it.
 
+**Scope.** The match is owed to every well-intentioned, correct input. A shape that only
+a crafted archive makes may be refused, though the tool accepts it, when all four hold:
+- no real archive has it: check real-world data, such as the scans of release tarballs
+  in tar-minefield's `contrib/data`, and the corpus case for the shape;
+- refusing it makes the code simpler;
+- another major tool already refuses it (bsdtar, for example);
+- refusing it is the safer option.
+
+Say in the pull request how each one was checked. When one of them fails, match the
+tool, or ask the maintainer (maintainer ruling, 2026-11-17).
+
 **Why.** It is a tie-breaker that avoids relitigating each case, and it is what users
 already expect from their tools (2026-10-02, extraction re-audit).
 
@@ -508,7 +520,16 @@ and no writer produces the shape (2026-10-10; `formats/bzip2.md` and `formats/gz
 there too; xz keeps reading past the Stream Padding its format defines. Zeros at the end
 stay silent for every codec, although `zstd`, `lz4` and `xz --format=lzma` refuse them:
 one cross-codec rule, after the tape and block padding GNU `gzip` and `bzip2` accept
-(`formats/single-file.md` §6).
+(`formats/single-file.md` §6). Under the scope above, a member written through a symlink
+the same extraction created (`s -> e`, then `s/x`) is refused under every policy from
+0.5.0 (pull request #1622); until then archivey writes through it, as GNU `tar` and
+Python's `tarfile` do. Each condition was checked. No real archive has it: tar-minefield's
+scans found it in none of 82,635 release tarballs, and its case S19
+(`x/l -> ../d`, then `x/l/f`) has the verdict `reject`. It is simpler: the `archivey://`
+tree no longer follows links on a member's own path, and no write depends on where a link
+the archive made, and may later re-point, leads. bsdtar refuses it. It is safer: a member's
+path is fixed by its name and the caller's destination, so staying inside the destination
+no longer depends on resolving every archive link correctly at every write (2026-11-17).
 
 **Limits.** When this rule and DR-5 disagree, that is a
 [real decision](#when-consistency-and-the-official-tool-disagree): weigh the factors,
@@ -694,7 +715,7 @@ field would be false for most members of an ordinary read.
   past the first 5 MiB no longer lists by default (800:1 since 2026-10-30). Reopen if a real archive class
   (not a test of zeros) is refused there.
 - `max_ratio` holds every member read (`open()`, `read()`, `stream_members()`), by the
-  per-member and archive-wide rules extraction applies (`MemberRatioGuard`): scanning
+  per-member and archive-wide rules extraction applies (`MemberRatioCheck`): scanning
   or hashing members pays for the decode as extracting does, and holding only the
   compressed-tar spelling of a bzip2 bomb left the ZIP, 7z and bare `.bz2` spellings
   open (davi, 2026-10-30, after PR 1138). Cost: an honest member over 1000:1 past

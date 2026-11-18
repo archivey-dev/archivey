@@ -1219,6 +1219,12 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         self._moved_to(position)
         return position
 
+    def decode_to(self, target: int) -> int:
+        """Seek to ``target`` (see ``decode_to`` in ``binaryio``). The child decodes up to
+        it and stops at the end of the data when that comes first: rapidgzip clamps a
+        seek past the end. Only the position crosses the pipe."""
+        return self.seek(target)
+
     @override
     def tell(self) -> int:
         self._raise_if_unusable()

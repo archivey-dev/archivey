@@ -21,8 +21,9 @@ SHA-256 (hexadecimal) of the payload's bytes as stored.
 A payload is a TAR, compressed by the command the script pipes it through
 (``eval "gzip -cd"``). makeself 2.4.2 and later may encrypt or encode the compressed
 bytes too, and say how in ``decrypt_cmd``; 2.2.0 to 2.4.0 had base64, gpg and openssl
-as compressors instead. archivey reads every compressor it has a codec for, and base64.
-An encrypted payload is refused.
+as compressors instead. archivey reads every compressor it has a codec for, base64,
+and openssl's AES-256-CBC with the caller's ``password=`` (see ``_Cipher``). A gpg
+payload is refused.
 
 The header is parsed, never run. Only the variable block at the top is read as shell
 (double-quoted values, which may span lines, with their backslash escapes), up to the
@@ -49,6 +50,7 @@ from typing import Any, BinaryIO
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
+    EncryptionError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -62,8 +64,20 @@ from archivey.formats import (
     SequentialFormatHandler,
     SequentialReader,
 )
+from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.password import (
+    _PasswordCandidatesExhausted,
+    wrong_password_error,
+)
+from archivey.internal.streams.crypto import (
+    AES_BLOCK_SIZE,
+    AesParams,
+    DecryptStage,
+    get_crypto_backend,
+    note_crypto_use,
+)
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -82,11 +96,14 @@ _READ_SIZE = 64 * 1024
 _FUNCTION = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*\(\)[ \t]*")
 _ASSIGNMENT = re.compile(rb'([A-Za-z_][A-Za-z0-9_]*)="')
 # A double-quoted value's text up to its closing quote, or up to the end of what is
-# read; it never stops between a backslash and the byte it escapes.
-_VALUE = re.compile(rb'(?:[^"\\]|\\.)*', re.DOTALL)
+# read; it never stops between a backslash and the byte it escapes. The repeats are
+# possessive here and in the two patterns below: a repeated group with an alternation
+# otherwise keeps backtracking state for each repetition, about 150 bytes for each
+# byte of the value, and a value may be most of a 64 MiB header.
+_VALUE = re.compile(rb'(?:[^"\\]++|\\.)*+', re.DOTALL)
 # An assignment whose value closes on its line, the common case, matched at once.
 _LINE_ASSIGNMENT = re.compile(
-    rb'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\\n]|\\.)*)"([^\n]*)\n'
+    rb'([A-Za-z_][A-Za-z0-9_]*)="((?:[^"\\\n]++|\\.)*+)"([^\n]*)\n'
 )
 # The variables the reader uses; the others (licensetxt, the long one) are passed
 # over, not kept.
@@ -105,6 +122,16 @@ _USED = frozenset(
         b"SIGNATURE",
     }
 )
+# A plain ``NAME=`` for a used variable where the parse does not read assignments:
+# indented, after a ``;`` or ``export``, unquoted. makeself writes each used variable
+# at the start of its own line, so this catches a header edited by hand or by a
+# careless tool. It is not every way the shell sets a variable (``for``, ``read``,
+# ``eval``, ``${NAME:=...}`` are not refused): the script may still read its payload
+# another way than archivey does, as threat model §4 says of every stub. Not after
+# ``$`` (an expansion) or ``-`` (an option such as ``--skip=``).
+_HIDDEN_ASSIGNMENT = re.compile(
+    rb"(?<![A-Za-z0-9_$-])(" + b"|".join(sorted(_USED)) + rb")="
+)
 # The escapes the shell undoes inside double quotes, and a backslash-newline.
 _ESCAPE = re.compile(rb'\\([$`"\\\n])')
 # makeself 2.2.0 to 2.4.0: the header's line count, written into the script.
@@ -114,7 +141,9 @@ _OLD_OFFSET = re.compile(
 )
 # The command a payload is piped through, quoted for ``eval``: after a ``|``, or alone
 # on its line (``MS_Decompress`` with no ``decrypt_cmd``).
-_PAYLOAD_EVAL = re.compile(rb'(?:\| |^[ \t]+)eval "((?:[^"\\\n]|\\.)*)"', re.MULTILINE)
+_PAYLOAD_EVAL = re.compile(
+    rb'(?:\| |^[ \t]+)eval "((?:[^"\\\n]++|\\.)*+)"', re.MULTILINE
+)
 # ``eval`` of the script's own variables (``"$script" $scriptargs``), not a command.
 _VARIABLE_EVAL = (b"$", b"\\$", b'\\"')
 
@@ -140,7 +169,8 @@ _BZIP3 = re.compile(rb"bzip3 -dj[0-9]*")
 _OLD_BASE64 = frozenset({b"base64 -d -i", b"base64 --decode -i -"})
 _OLD_GPG = frozenset({b"gpg -d", b"gpg --yes -d"})
 _OLD_OPENSSL = re.compile(rb"openssl aes-256-cbc -d -a( -md sha256)?")
-# makeself 2.4.2 and later: ``decrypt_cmd``, run before the compressor.
+# makeself 2.4.2 and later: ``decrypt_cmd``, run before the compressor. ``-pbkdf2``
+# since 2.6.0.
 _OPENSSL = re.compile(rb"openssl enc -aes-256-cbc -d( -salt)?( -pbkdf2)?( -md sha256)?")
 _BASE64 = b"base64 --decode"
 
@@ -170,6 +200,7 @@ class _Header:
     shas: list[bytes]
     compressor: StreamFormat
     encoding: str | None
+    cipher: _Cipher | None
     label: bytes | None
     script: bytes | None
     target_dir: bytes | None
@@ -199,6 +230,16 @@ class MakeselfReader(SequentialReader):
         self._context = context
         self._extra = ArchiveInfoExtra({})
         self._version: str | None = None
+        self._budget: KeyDerivationBudget | None = None
+        # PBKDF2 output by (password, salt, digest): a later walk reuses the first's.
+        self._keys: dict[tuple[bytes, bytes, str], bytes] = {}
+
+    def _kdf_budget(self) -> KeyDerivationBudget:
+        if self._budget is None:
+            self._budget = KeyDerivationBudget(self._context.config.decoder_limits)
+            if self._context._usage is not None:
+                self._context._usage.watch_key_derivation(self._budget)
+        return self._budget
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
@@ -217,8 +258,15 @@ class MakeselfReader(SequentialReader):
             digests = _digests_for(header, index)
             payload = _Payload(pending, stream, size, digests.hashers, index)
             data: BinaryIO = io.BufferedReader(payload, _READ_SIZE)
-            if header.encoding == "base64":
+            if header.encoding == "base64" or (
+                header.cipher is not None and header.cipher.armored
+            ):
                 data = io.BufferedReader(_Base64Reader(data, index), _READ_SIZE)
+            if header.cipher is not None:
+                data = io.BufferedReader(
+                    self._decrypt(data, header.cipher, header.compressor, index),
+                    _READ_SIZE,
+                )
             check = (
                 spanning(("makeself payload", index))
                 if digests.hashers and spanning is not None
@@ -228,6 +276,10 @@ class MakeselfReader(SequentialReader):
                 if check is not None:
                     check.cover(span.member)
                 yield span
+            # To the end of every layer, so a base64 or openssl end is checked
+            # whatever the TAR reader above read.
+            while data.read(_READ_SIZE):
+                pass
             payload.drain()
             if check is not None:
                 failure = _mismatch(header, index, digests)
@@ -236,6 +288,68 @@ class MakeselfReader(SequentialReader):
                 else:
                     raise check.failed(failure)
         self._check_end(pending, stream)
+
+    def _decrypt(
+        self, data: BinaryIO, cipher: _Cipher, compressor: StreamFormat, index: int
+    ) -> _OpenSSLReader:
+        """Payload ``index`` decrypted with the caller's password.
+
+        A password is taken once the first bytes it decrypts start what the payload
+        must hold: the compressor's magic, or for a TAR that is not compressed, a TAR
+        header whose checksum matches. A wrong password passes that by chance about
+        once in 2**24 tries or less often (2**19 for Unix compress: 16 flag values and
+        two digests); PKCS#7 padding is checked again at the end.
+        """
+        head = _read_up_to(data, 16)
+        if len(head) < 16 or not head.startswith(_SALTED):
+            if len(head) < 16 and head[:8] == _SALTED[: len(head)]:
+                raise TruncatedError(
+                    f"makeself payload {index + 1}: the file ends inside its openssl "
+                    "salt"
+                )
+            raise CorruptionError(
+                f"makeself payload {index + 1} does not start with openssl's salt "
+                "header (Salted__)"
+            )
+        salt = head[8:16]
+        probe = _read_up_to(data, _probe_length(compressor))
+        excluded = self._context.config.formats._libraries_off
+        backend = get_crypto_backend(excluded)
+        note_crypto_use(self._context._usage)
+        passwords = self._context._passwords
+
+        def unlock(password: bytes) -> AesParams:
+            for params in _derive(
+                cipher, password, salt, self._kdf_budget(), self._keys
+            ):
+                stage = backend.aes_cbc_decrypt_stage(params)
+                if _starts_payload(stage.update(probe), compressor):
+                    return params
+            raise wrong_password_error(
+                f"Wrong password for makeself payload {index + 1}"
+            )
+
+        if len(probe) % AES_BLOCK_SIZE or len(probe) < _probe_length(compressor):
+            raise TruncatedError(
+                f"makeself payload {index + 1}: the file ends inside its first "
+                "encrypted bytes"
+            )
+        required = EncryptionError(
+            f"makeself payload {index + 1} is encrypted with openssl: pass password= "
+            "to read it"
+        )
+        if passwords is None:
+            raise required
+        try:
+            params = passwords.attempt(None, unlock)
+        except _PasswordCandidatesExhausted as exc:
+            # Keep "required" apart from "rejected", naming the payload in both.
+            if exc.last_error is None:  # no candidate was tried
+                raise required from exc
+            raise wrong_password_error(
+                f"Wrong password for makeself payload {index + 1}"
+            ) from exc
+        return _OpenSSLReader(data, backend.aes_cbc_decrypt_stage(params), probe, index)
 
     # The header ---------------------------------------------------------------------
 
@@ -336,10 +450,39 @@ class MakeselfReader(SequentialReader):
                 )
             )
         (command,) = commands
-        compressor, encoding = _decoders(command, variables.get(b"decrypt_cmd", b""))
-        sizes = [_number(t, "filesizes") for t in _required(variables, b"filesizes")]
-        if not sizes:
+        decrypt = variables.get(b"decrypt_cmd", b"")
+        compressor, encoding = _decoders(command, decrypt)
+        cipher = _cipher(command, decrypt) if encoding == "openssl" else None
+        # Each payload builds a TAR reader, which costs far more than the few bytes
+        # of header that list it, and an empty one adds nothing to the member count.
+        # So the payloads count against max_members too, counted before the list of
+        # sizes is built: each entry is an object.
+        payloads = _token_count(_required(variables, b"filesizes"))
+        max_members = self._context.config.listing_limits.max_members
+        if max_members is not None and payloads > max_members:
+            raise ResourceLimitError(
+                f"Listing limit reached: max_members={max_members} (the makeself "
+                f"header lists {payloads} payloads)"
+            )
+        if not payloads:
             raise CorruptionError("makeself header: filesizes lists no payload")
+        # makeself writes one CRC and one MD5 per payload, zeros where it computed
+        # none. 2.4.0's --append leaves SHA at one entry; an entry there that is not
+        # zeros could be any payload's, so only a list of zeros may be another length
+        # (and is then not used). Each count is checked before its list is built.
+        for name in (b"CRCsum", b"MD5"):
+            listed = _token_count(_required(variables, name))
+            if listed != payloads:
+                raise CorruptionError(_count_mismatch(name, listed, payloads))
+        sha = variables.get(b"SHA", b"")
+        listed = _token_count(sha)
+        if listed not in (0, payloads) and any(
+            token.group() != _ZERO_SHA for token in _TOKEN.finditer(sha)
+        ):
+            raise CorruptionError(_count_mismatch(b"SHA", listed, payloads))
+        sizes = [
+            _number(t, "filesizes") for t in _required(variables, b"filesizes").split()
+        ]
         total = variables.get(b"totalsize")
         if (
             total is not None
@@ -350,17 +493,11 @@ class MakeselfReader(SequentialReader):
                 f"makeself header: totalsize {_shown(total)} is not the sum of "
                 f"filesizes {' '.join(str(s) for s in sizes)}"
             )
-        crcs = [_number(t, "CRCsum") for t in _required(variables, b"CRCsum")]
-        md5s = [_hex(t, "MD5", 32) for t in _required(variables, b"MD5")]
-        shas = [_hex(t, "SHA", 64) for t in variables.get(b"SHA", b"").split()]
-        # makeself writes one CRC and one MD5 per payload, zeros where it computed
-        # none. 2.4.0's --append leaves SHA at one entry; an entry there that is not
-        # zeros could be any payload's, so only a list of zeros may be short.
-        for name, listed in ((b"CRCsum", crcs), (b"MD5", md5s)):
-            if len(listed) != len(sizes):
-                raise CorruptionError(_count_mismatch(name, len(listed), len(sizes)))
-        if len(shas) not in (0, len(sizes)) and any(v != _ZERO_SHA for v in shas):
-            raise CorruptionError(_count_mismatch(b"SHA", len(shas), len(sizes)))
+        crcs = [_number(t, "CRCsum") for t in _required(variables, b"CRCsum").split()]
+        md5s = [_hex(t, "MD5", 32) for t in _required(variables, b"MD5").split()]
+        # A SHA list whose length is not the payload count holds only zeros (checked
+        # above), which state no digest, so it is not split: it may be long.
+        shas = [_hex(t, "SHA", 64) for t in sha.split()] if listed == payloads else []
         header = _Header(
             version=version,
             sizes=sizes,
@@ -369,16 +506,16 @@ class MakeselfReader(SequentialReader):
             shas=shas,
             compressor=compressor,
             encoding=encoding,
+            cipher=cipher,
             label=variables.get(b"label"),
             script=variables.get(b"script"),
             target_dir=variables.get(b"targetdir"),
             signed=bool(variables.get(b"SIGNATURE", b"").strip()),
         )
         self._extra = self._info(header)
-        if encoding in ("openssl", "gpg"):
+        if encoding == "gpg":
             raise UnsupportedFeatureError(
-                f"makeself payload encrypted with {encoding}: archivey does not "
-                "decrypt it"
+                "makeself payload encrypted with gpg: archivey does not decrypt it"
             )
         return header
 
@@ -443,6 +580,9 @@ class _VariableParser:
     ``if ...``) are skipped. Only the variables in ``_USED`` are kept, so memory does
     not grow with the header. One of those assigned twice is damage: the shell would
     take the last, and a reader should not have to guess which one makeself wrote.
+    So is a plain ``NAME=`` for one of them where the parse does not read it, on a
+    skipped line or after another value on its line (``_HIDDEN_ASSIGNMENT``, which
+    says what it does not catch).
 
     ``feed`` goes on from where the last call stopped and reads each byte about once:
     a newline is looked for only past where the last search ended, a line is matched
@@ -481,6 +621,7 @@ class _VariableParser:
                     return True
                 match = _ASSIGNMENT.match(buffer, self._pos, eol)
                 if match is None:
+                    _refuse_hidden(buffer, self._pos, eol)
                     self._pos = eol + 1
                     continue
                 self._name = bytes(match.group(1))
@@ -521,11 +662,23 @@ class _VariableParser:
             raise CorruptionError(
                 f"makeself header: a quote after the value of {_shown(name)}"
             )
+        _refuse_hidden(after, 0, len(after))
         if name not in _USED:
             return
         if name in self.variables:
             raise CorruptionError(f"makeself header assigns {_shown(name)} twice")
         self.variables[name] = _ESCAPE.sub(_unescape_one, bytes(raw))
+
+
+def _refuse_hidden(line: bytes | bytearray, start: int, end: int) -> None:
+    """Refuse ``line[start:end]``, text the parse skips, when it assigns a variable
+    the reader uses."""
+    found = _HIDDEN_ASSIGNMENT.search(line, start, end)
+    if found is not None:
+        raise CorruptionError(
+            f"makeself header assigns {_shown(found.group(1))} where this reader "
+            "does not read it"
+        )
 
 
 # The header's newline searches, each over ``buffer[start:]``.
@@ -600,11 +753,20 @@ def _decoders(command: bytes, decrypt: bytes) -> tuple[StreamFormat, str | None]
     )
 
 
-def _required(variables: dict[bytes, bytes], name: bytes) -> list[bytes]:
+def _required(variables: dict[bytes, bytes], name: bytes) -> bytes:
     value = variables.get(name)
     if value is None:
         raise CorruptionError(f"makeself header has no {name.decode()} variable")
-    return value.split()
+    return value
+
+
+# One whitespace-separated entry of a list variable, as ``bytes.split()`` splits.
+_TOKEN = re.compile(rb"[^ \t\n\r\f\v]++")
+
+
+def _token_count(value: bytes) -> int:
+    """How many entries ``value.split()`` would give, without building them."""
+    return sum(1 for _ in _TOKEN.finditer(value))
 
 
 def _number(raw: bytes, what: str) -> int:
@@ -770,7 +932,190 @@ _BASE64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456
 _NOT_BASE64 = bytes(sorted(set(range(256)) - set(_BASE64_ALPHABET)))
 
 
-class _Base64Reader(io.RawIOBase):
+_SALTED = b"Salted__"
+_PBKDF2_ROUNDS = 10000  # openssl enc's -iter default
+_KEY_IV = 32 + AES_BLOCK_SIZE
+
+
+@dataclass(frozen=True)
+class _Cipher:
+    """How makeself ran ``openssl enc -aes-256-cbc`` over a payload: the key
+    derivation and its digests, and whether the output is base64 (``-a``).
+
+    openssl derives the key and IV from the password and the 8-byte salt after
+    ``Salted__``: with ``-pbkdf2`` (makeself 2.6.0 and later) by PBKDF2-HMAC-SHA256
+    over 10000 rounds, before that by ``EVP_BytesToKey`` with one round. That one
+    uses ``-md``'s digest, SHA-256 where makeself passes ``-md sha256``; with
+    ``--ssl-no-md`` it is openssl's default, MD5 before openssl 1.1.0 and SHA-256
+    since, so both are tried.
+    """
+
+    pbkdf2: bool
+    digests: tuple[str, ...]
+    armored: bool
+
+
+def _cipher(command: bytes, decrypt: bytes) -> _Cipher:
+    """The openssl command of a payload ``_decoders`` named openssl."""
+    old = _OLD_OPENSSL.fullmatch(b" ".join(command.split()))
+    if old is not None:
+        return _Cipher(False, ("sha256",) if old.group(1) else ("md5", "sha256"), True)
+    new = _OPENSSL.fullmatch(b" ".join(decrypt.split()))
+    assert new is not None
+    if new.group(2):
+        return _Cipher(True, ("sha256",), False)
+    return _Cipher(False, ("sha256",) if new.group(3) else ("md5", "sha256"), False)
+
+
+def _derive(
+    cipher: _Cipher,
+    password: bytes,
+    salt: bytes,
+    budget: KeyDerivationBudget,
+    cache: dict[tuple[bytes, bytes, str], bytes],
+) -> Iterator[AesParams]:
+    """The key and IV for each digest ``cipher`` may have used. A PBKDF2 derivation
+    not in ``cache`` is charged to ``budget`` first: a crafted header may name many
+    payloads, one derivation each, and a second walk repeats the first's."""
+    for digest in cipher.digests:
+        if cipher.pbkdf2:
+            material = cache.get((password, salt, digest), b"")
+            if not material:
+                budget.spend(_PBKDF2_ROUNDS, what="makeself openssl key derivation")
+                material = hashlib.pbkdf2_hmac(
+                    digest, password, salt, _PBKDF2_ROUNDS, _KEY_IV
+                )
+                cache[password, salt, digest] = material
+        else:
+            # EVP_BytesToKey, one round: D_i = H(D_{i-1} || password || salt).
+            material = b""
+            block = b""
+            while len(material) < _KEY_IV:
+                block = hashlib.new(digest, block + password + salt).digest()
+                material += block
+        yield AesParams(key=material[:32], iv=material[32:_KEY_IV])
+
+
+# The first bytes each compressor writes, enough that a wrong key matches by chance
+# about once in 2**24 or less often; Unix compress only 2**20 (its flag byte: maxbits
+# 9 to 16, block mode or not).
+_STARTS: dict[StreamFormat, re.Pattern[bytes]] = {
+    StreamFormat.GZIP: re.compile(rb"\x1f\x8b\x08[\x00-\x1f]", re.DOTALL),
+    StreamFormat.BZIP2: re.compile(rb"BZh[1-9]"),
+    StreamFormat.XZ: re.compile(rb"\xfd7zXZ\x00"),
+    StreamFormat.ZSTD: re.compile(rb"\x28\xb5\x2f\xfd"),
+    StreamFormat.LZ4: re.compile(rb"\x04\x22\x4d\x18"),
+    StreamFormat.LZOP: re.compile(rb"\x89LZO\x00\r\n\x1a\n"),
+    StreamFormat.BZIP3: re.compile(rb"BZ3v1"),
+    # compress: the magic, then a flags byte whose two reserved bits are clear.
+    StreamFormat.UNIX_COMPRESS: re.compile(rb"\x1f\x9d[\x09-\x10\x89-\x90]"),
+}
+_TAR_HEADER = 512
+
+
+def _probe_length(compressor: StreamFormat) -> int:
+    """The ciphertext a password is checked on: one AES block, or a TAR header."""
+    return _TAR_HEADER if compressor is StreamFormat.UNCOMPRESSED else AES_BLOCK_SIZE
+
+
+def _starts_payload(plain: bytes, compressor: StreamFormat) -> bool:
+    """Whether ``plain`` starts what a payload in ``compressor`` starts with."""
+    if compressor is not StreamFormat.UNCOMPRESSED:
+        return _STARTS[compressor].match(plain) is not None
+    # A TAR header: its checksum field, octal, is the sum of its bytes with the
+    # field taken as spaces.
+    field = plain[148:156].strip(b" \x00")
+    if not field or field.strip(b"01234567"):
+        return False
+    return int(field, 8) == sum(plain[:148]) + sum(plain[156:_TAR_HEADER]) + 8 * 0x20
+
+
+def _read_up_to(data: BinaryIO, size: int) -> bytes:
+    chunks = []
+    while size > 0:
+        chunk = data.read(size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size -= len(chunk)
+    return b"".join(chunks)
+
+
+class _DecodeLayer(io.RawIOBase):
+    """A layer under a payload's TAR whose damage is raised again on every later
+    read: a reader above may take the first raise as a diagnostic (gzip past the TAR's
+    end-of-archive marker), and the walk's drain must still see it."""
+
+    _damage: CorruptionError | None = None
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        if self._damage is not None:
+            raise self._damage
+        try:
+            return self._fill(buffer)
+        except CorruptionError as e:
+            self._damage = e
+            raise
+
+    def _fill(self, buffer: Any) -> int:
+        raise NotImplementedError
+
+
+class _OpenSSLReader(_DecodeLayer):
+    """A payload's ``openssl enc`` output decrypted: AES-256-CBC, then the PKCS#7
+    padding taken off the last block."""
+
+    def __init__(
+        self, raw: BinaryIO, stage: DecryptStage, first: bytes, index: int
+    ) -> None:
+        self._raw = raw
+        self._stage = stage
+        self._index = index
+        self._first: bytes | None = first
+        # The last decrypted block, held back until the end shows it is the last.
+        self._held = b""
+        self._out = b""
+        self._ended = False
+
+    @override
+    def _fill(self, buffer: Any) -> int:
+        while not self._out and not self._ended:
+            if self._first is not None:
+                chunk, self._first = self._first, None
+            else:
+                chunk = self._raw.read(_READ_SIZE)
+            if chunk:
+                plain = self._held + self._stage.update(chunk)
+                cut = max(0, len(plain) - AES_BLOCK_SIZE)
+                self._out, self._held = plain[:cut], plain[cut:]
+                continue
+            self._ended = True
+            try:
+                last = self._held + self._stage.finalize()
+            except TruncatedError as e:
+                raise TruncatedError(
+                    f"makeself payload {self._index + 1}: its openssl data ends "
+                    "part-way through a block"
+                ) from e
+            pad = last[-1] if last else 0
+            if not 1 <= pad <= AES_BLOCK_SIZE or last[-pad:] != bytes([pad]) * pad:
+                raise CorruptionError(
+                    f"makeself payload {self._index + 1}: its openssl padding is "
+                    "damaged"
+                )
+            self._out = last[:-pad]
+        data = self._out[: len(buffer)]
+        self._out = self._out[len(data) :]
+        buffer[: len(data)] = data
+        return len(data)
+
+
+class _Base64Reader(_DecodeLayer):
     """A base64 payload decoded as ``base64 -d -i`` decodes it: bytes outside the
     alphabet (line breaks) are skipped, and text after a padded group of four is
     decoded on, as the start of more base64."""
@@ -783,11 +1128,7 @@ class _Base64Reader(io.RawIOBase):
         self._ended = False
 
     @override
-    def readable(self) -> bool:
-        return True
-
-    @override
-    def readinto(self, buffer: Any) -> int:
+    def _fill(self, buffer: Any) -> int:
         while not self._out and not self._ended:
             chunk = self._raw.read(_READ_SIZE)
             if not chunk:
@@ -841,4 +1182,5 @@ class MakeselfHandler(SequentialFormatHandler):
         return MakeselfReader(context)
 
 
-MakeselfReadBackend = register_builtin_format(MakeselfHandler)
+# openssl payloads take password= (``MakeselfReader._decrypt``).
+MakeselfReadBackend = register_builtin_format(MakeselfHandler, SUPPORTS_PASSWORD=True)

@@ -581,9 +581,11 @@ uuencode SHALL be read from its first `begin MODE NAME` line to its `end` line, 
 `begin-base64` line to `====`. Detection SHALL accept a `begin` line at offset 0 followed by a
 valid encoded line, for any name, as `PROBABLE` from a content test, not as magic. With a `.uu` or `.uue` name, text before the `begin`
 line SHALL be skipped, up to 64 KiB; past that the source SHALL be refused with
-`CorruptionError`. Bytes after the end line other than whitespace SHALL be trailing data. The
-stored name SHALL be surfaced as `raw_name` and `extra["uu.original_filename"]` and SHALL NOT
-choose the member's name; the stored mode SHALL be the member's `mode`.
+`CorruptionError`. A uuencode line longer than 4 096 bytes, before the `begin` line or
+after it, SHALL raise `CorruptionError`, and detection SHALL NOT look past one for a
+`begin` line. Bytes after the end line other than whitespace SHALL be trailing data. The
+stored name SHALL be surfaced as `raw_name` and `extra["uu.original_filename"]` and
+SHALL NOT choose the member's name; the stored mode SHALL be the member's `mode`.
 
 Base64 SHALL be decoded with line breaks skipped, ending at `=` padding or the end of the
 input; any other character, a space included, SHALL raise `CorruptionError`. Without a `.b64` or `.base64`
@@ -600,7 +602,33 @@ and SHALL then be reported as `PROBABLE`.
 | The same post with no name | Not detected |
 | A `begin` or `begin-base64` line followed by prose | Not detected |
 | A uuencoded file with no `end` line | `TruncatedError` |
+| A `.uu` post with one 5 000-byte line before `begin` | `CorruptionError` |
 | Base64 of a ZIP, no name | Detected as base64, `PROBABLE` |
 | Base64 of random bytes, a hex dump or a column of IDs, no name | Not detected |
 | Base64 with a character outside the alphabet | `CorruptionError` |
 | Unpadded base64 followed by a line of prose | `CorruptionError` |
+
+### Requirement: The member names the stream's compression method
+
+The one member's `compression` SHALL name the method the stream decodes with, as one
+`CompressionMethod`, the one a ZIP or 7z member compressed the same way lists: gzip
+and zlib `DEFLATE`, bzip2 `BZIP2`, xz `XZ`, LZMA Alone and lzip `LZMA`, zstd `ZSTD`, LZ4
+and mozLz4 `LZ4`, Brotli `BROTLI`, lzop `LZO`, `.Z` `LZW`, bzip3 `BZIP3`. A stream with
+no `CompressionAlgorithm` member (uuencode, base64, a plugin codec) SHALL list `()`, not
+`UNKNOWN`, which means a method archivey cannot decode. The value SHALL be the same from
+a file, a seekable stream and a forward pass. A container inside a compression stream
+(`.tar.gz`) SHALL NOT add the stream's method to its members: the stream belongs to the
+archive. A single file inside another single file names only its own layer.
+
+#### Scenario: member compression matrix
+
+| Case | Expected |
+| --- | --- |
+| `.gz` from a path, and from a pipe with `streaming=True` | `compression == (CompressionMethod(DEFLATE),)` both times |
+| `.xz` | `(CompressionMethod(XZ),)` |
+| `.lz` or `.lzma` | `(CompressionMethod(LZMA),)` |
+| `.Z` | `(CompressionMethod(LZW),)` |
+| `.bz3` | `(CompressionMethod(BZIP3),)` |
+| `.uu` or a plugin codec | `()` |
+| `.xz.gz`, and the `.xz` member it holds opened in turn | `(DEFLATE,)`, then `(XZ,)` |
+| A member of a `.tar.gz` | `(CompressionMethod(STORED),)` |

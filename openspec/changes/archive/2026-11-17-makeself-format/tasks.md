@@ -19,5 +19,5 @@
 
 ## 4. Follow-ups (their own changes)
 
-- [ ] 4.1 openssl decryption with `password=`
-- [ ] 4.2 Generic `#!` compressor-needle scan, with TAR and single-file start offsets
+- [x] 4.1 openssl decryption with `password=`
+- [x] 4.2 Generic `#!` compressor-needle scan, with TAR and single-file start offsets

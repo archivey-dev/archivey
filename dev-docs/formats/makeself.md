@@ -17,10 +17,10 @@ hook, for the payload digests (§3).
 | Listing cost | `REQUIRES_DECOMPRESSION`: each payload is a compressed TAR |
 | Access cost | `SOLID` |
 | Compressors | gzip, bzip2, xz, zstd, lz4, lzop, bzip3, Unix compress, none; base64 over any of them |
-| Encryption | openssl and gpg payloads are refused by name |
+| Encryption | openssl AES-256-CBC read with `password=` (PBKDF2 since 2.6.0, `EVP_BytesToKey` before; `cryptography`); gpg refused by name |
 | Checksums | The header's CRC (POSIX `cksum`), MD5 and SHA-256 of each payload's stored bytes, all that are stated, as a check over the payload's files |
 | Name encoding | The TAR's: UTF-8 first, then `encoding=`, then escaped |
-| Spec | `openspec/changes/makeself-format/` (rulings in its `design.md`) |
+| Spec | `openspec/specs/format-makeself/`; rulings in `openspec/changes/archive/2026-11-17-makeself-format/design.md` |
 
 Not here: the startup script is reported (`makeself.script`), never run; the gpg
 signature (`--sign`) is reported (`makeself.signed`), not checked; the license text and
@@ -50,6 +50,15 @@ From `makeself-header.sh` at each release tag:
 - **Encryption.** 2.2.0 to 2.4.0 had base64 (`base64 -d -i`), gpg (`gpg -d`) and openssl
   (`openssl aes-256-cbc -d -a`) as compressors over the plain TAR. 2.4.2+ apply them
   after compression and name the command in `decrypt_cmd`; `-pbkdf2` since 2.6.0.
+  openssl's output is `Salted__`, an 8-byte salt, then AES-256-CBC with PKCS#7 padding.
+  The key and IV come from PBKDF2-HMAC-SHA256 (10 000 rounds) with `-pbkdf2`, else from
+  one round of `EVP_BytesToKey` with `-md`'s digest; with no `-md` (2.4.2 to 2.5.0
+  `--ssl-no-md`) the digest was openssl's default, MD5 before openssl 1.1.0 and SHA-256
+  after, so both are tried. The old `openssl aes-256-cbc -d -a` compressor is the
+  EVP form, base64-armored, over the plain TAR. The digests cover the ciphertext.
+  A password is taken when the first decrypted bytes start the compressor's stream
+  (its magic) or, uncompressed, a TAR header whose checksum matches; the padding is
+  checked when the walk reaches the payload's end.
 
 ## 2. The pipeline here
 
@@ -68,11 +77,20 @@ The header is read in 16 KiB chunks until `skip` lines are in, bounded by
 inside a value (a license holding `skip="3"`) is never taken for a variable. It goes on
 from where the last chunk stopped (`_LineCounter` likewise for the `skip` lines), so a
 hostile header costs time linear in its length, and it keeps only the variables in
-`_USED`, so memory does not grow with it. A used variable assigned twice, text with a
-quote after a value, numbers that are not numbers, digests of the wrong length or count,
-`totalsize` not the sum of `filesizes`, old offset lines that disagree, and payload
-commands that differ are `CorruptionError`. A command archivey does not know is
-`UnsupportedFeatureError` naming it.
+`_USED`, so memory does not grow with it. Its patterns repeat possessively (`*+`), since
+a repeated alternation keeps about 150 bytes of backtracking state per byte of a value.
+A used variable assigned twice, or given a plain `NAME=` where the parse does not read
+assignments (an indented line, after a `;` or `export`, after another value on its
+line), text with a quote after a value, numbers that are not numbers, digests of the
+wrong length or count, `totalsize` not the sum of `filesizes`, old offset lines
+that disagree, and payload commands that differ are `CorruptionError`. A command
+archivey does not know is `UnsupportedFeatureError` naming it. More payloads than
+`max_members` is `ResourceLimitError`, counted before the list of sizes is built: each
+payload builds a TAR reader, which costs far more than the bytes of header that list it,
+and an empty one adds no member to count. The `NAME=` check catches a header edited by
+hand or by a careless tool. It is not every way the shell sets a variable (`for`,
+`read`, `eval`, `${NAME:=…}`), so the script can still read its payloads another way
+than archivey does: §4, first row.
 
 ### 2.3 Read the payloads
 
@@ -103,12 +121,16 @@ walk passes the check. The POSIX `cksum` CRC is CRC-32 MSB first, computed with
 | --- | --- | --- |
 | The listing is what the TARs hold, not what running the script does | **format** | Threat model §4 "A self-extracting archive's stub is not run" |
 | An old archive lists `.` as a directory member | **format** | makeself before 2.4.2 tars `.` itself |
-| openssl and gpg payloads are refused | **archivey** | openssl decryption is the next change |
+| A 2.4.x header whose `--help-header` text holds `NAME=` for a variable the reader uses (`label=`, `skip=`) is refused | **archivey** | That makeself writes `helpheader='…'` single-quoted, which the parse does not read as a value, so its lines are checked for a hidden `NAME=` (§2.2) |
+| gpg payloads are refused | **archivey** | Decided 2026-11-08: no OpenPGP implementation here |
+| A wrong password is told from the first decrypted bytes; damaged padding only at the payload's end | **format** | §1 "Encryption" |
+| The first password whose first block passes is taken, with no later check among candidates; a wrong one passes about once in 2^24 (2^19 for a Unix compress payload) and then fails as damage | **archivey** | The magic check is the only one before the walk |
 | A member is `CHECKSUM` only after the walk reaches its payload's end | **format** | The digest is over the whole payload |
 
 ## 5. Decisions
 
-The maintainer's rulings of 2026-11-08 are in `openspec/changes/makeself-format/design.md`:
-a format of its own rather than the inner `TAR_GZ` with `prefixed=True`; the header
-parsed, not scanned; every payload listed; a forced other format refused, naming
-makeself; every stated digest checked; makeself 2.2.0 and later.
+The maintainer's rulings of 2026-11-08 are in
+`openspec/changes/archive/2026-11-17-makeself-format/design.md`: a format of its own
+rather than the inner `TAR_GZ` with `prefixed=True`; the header parsed, not scanned;
+every payload listed; a forced other format refused, naming makeself; every stated
+digest checked; makeself 2.2.0 and later.

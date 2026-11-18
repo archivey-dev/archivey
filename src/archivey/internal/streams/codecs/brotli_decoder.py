@@ -347,6 +347,7 @@ def BrotliDecompressorStream(
     report_trailing_data: bool = False,
     refuse_input_after_end: bool = False,
     natives: Natives = IN_PROCESS,
+    source_origin: int = 0,
 ) -> DecompressorStream:
     """Decode a raw Brotli stream (forward-only)."""
     return DecompressorStream(
@@ -356,4 +357,5 @@ def BrotliDecompressorStream(
         codec_name="brotli",
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
+        source_origin=source_origin,
     )

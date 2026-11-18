@@ -690,6 +690,91 @@ def test_members_report_after_an_interrupted_pass_past_the_caps_raises(
             reader.members_report()
 
 
+def test_link_target_refused_for_max_metadata_bytes_stays_refused() -> None:
+    """A ZIP symlink target that crosses ``max_metadata_bytes`` is refused on every
+    ``members()`` call: the refused target is not kept on the member, so a retry
+    weighs it again and does not publish a listing over the cap."""
+    import stat
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for i in range(3):
+            info = zipfile.ZipInfo(f"l{i}")
+            info.create_system = 3
+            info.external_attr = (stat.S_IFLNK | 0o777) << 16
+            z.writestr(info, "t" * 1000 + str(i))
+    cfg = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2500))
+    with open_archive(io.BytesIO(buf.getvalue()), config=cfg) as reader:
+        for _ in range(3):
+            with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+                reader.members()
+
+
+def test_link_target_whose_report_raises_is_not_kept_unweighed() -> None:
+    """A ZIP symlink target whose control-character report raises (``raise_on``) is
+    set on the member before the listing tracker weighs it. The report's error must
+    not leave it there: the next ``members()`` reads the target again and raises
+    again, and does not publish a listing that holds the target uncounted."""
+    import stat
+
+    from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        info = zipfile.ZipInfo("l")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        z.writestr(info, "\u202e" + "a" * 800)
+    cfg = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=500),
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on=[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL]
+        ),
+    )
+    with open_archive(io.BytesIO(buf.getvalue()), config=cfg) as reader:
+        for _ in range(2):
+            with pytest.raises(DiagnosticRaisedError):
+                reader.members()
+
+
+def test_link_target_read_on_request_whose_report_raises_is_not_kept() -> None:
+    """The same target read on request: a streaming pass reads it when it hands out
+    the link, and the report raises there. The target must not stay on the member
+    unweighed, so the listing after it is not published over ``max_metadata_bytes``
+    with that target."""
+    import stat
+
+    from archivey.diagnostics import DiagnosticCode, DiagnosticPolicy
+    from archivey.exceptions import DiagnosticRaisedError, ReadError
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("a.txt", b"")
+        info = zipfile.ZipInfo("l")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        z.writestr(info, "\u202e" + "a" * 800)
+    cfg = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=500),
+        diagnostic_policy=DiagnosticPolicy(
+            raise_on=[DiagnosticCode.MEMBER_NAME_BIDI_CONTROL]
+        ),
+    )
+    with open_archive(io.BytesIO(buf.getvalue()), config=cfg, streaming=True) as r:
+        names = []
+        with pytest.raises(DiagnosticRaisedError):
+            for member, _stream in r.stream_members():
+                names.append(member.name)
+        assert names == ["a.txt"]
+        # The listing reads the target again and its report raises again; after
+        # that, the failed pass cannot be resumed. Either way, nothing is published.
+        with pytest.raises(DiagnosticRaisedError):
+            r.members_report()
+        with pytest.raises(ReadError, match="previously failed"):
+            r.members_report()
+
+
 @pytest.mark.parametrize("streaming", [True, False], ids=["streaming", "random"])
 def test_unlimited_lifts_the_caps_for_a_pass(tmp_path: Path, streaming: bool) -> None:
     tar_path = _tar_of_empty_members(tmp_path / "many.tar", 50)

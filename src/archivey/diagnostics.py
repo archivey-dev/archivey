@@ -138,6 +138,11 @@ class DiagnosticCode(StrEnum):
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it."""
+    ARCHIVE_UNREAD_SESSION = "archive_unread_session"
+    """A raw CD image (a ``.bin``) read without its ``.cue`` sheet holds another
+    ISO 9660 volume after the one listed, as a disc with a later session does. Only
+    the first track is listed. Opened by its path beside its sheet, the same file
+    lists the last session, which can hold other files."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
@@ -290,6 +295,8 @@ DiagnosticCodeStr = Literal[
     "archive-trailing-data",
     "archive_unlisted_data",
     "archive-unlisted-data",
+    "archive_unread_session",
+    "archive-unread-session",
     "member_timestamp_invalid",
     "member-timestamp-invalid",
     "member_header_record_skipped",
@@ -617,6 +624,21 @@ class UnlistedDataContext(_JsonSafeContext):
     member_id: int | None = None
     offset: int = 0
     compressed_size: int | None = None
+
+
+@dataclass(frozen=True)
+class UnreadSessionContext(_JsonSafeContext):
+    """Another filesystem volume after the one a disc image's listing reads.
+
+    A raw CD image read without its ``.cue`` sheet is read from its first track; the
+    sheet would choose the last session that has data. ``sector`` is the image's
+    sector that holds the other volume's primary volume descriptor.
+    """
+
+    kind: Literal["unread_session"] = "unread_session"
+    archive_name: str | None = None
+    format: str = ""
+    sector: int = 0
 
 
 @dataclass(frozen=True)
@@ -1242,6 +1264,7 @@ DiagnosticContext = (
     | ScanRaceContext
     | ArchiveEofContext
     | UnlistedDataContext
+    | UnreadSessionContext
     | MemberTimestampContext
     | MemberHeaderRecordContext
     | SymlinkTargetContext
@@ -1286,6 +1309,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
         DiagnosticCode.ARCHIVE_UNLISTED_DATA: "unlisted_data",
+        DiagnosticCode.ARCHIVE_UNREAD_SESSION: "unread_session",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
@@ -1327,6 +1351,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         DiagnosticCode.ARCHIVE_UNLISTED_DATA,
+        DiagnosticCode.ARCHIVE_UNREAD_SESSION,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
@@ -1421,6 +1446,10 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-one codes are delibe
   Their sibling ``MEMBER_NAME_DUPLICATE_UNEXPECTED`` is **in** the set: it reports a
   repeated name only in a format with no way to repeat one (CAB), where no writer
   makes the shape (maintainer, 2026-11-11).
+
+``ARCHIVE_UNREAD_SESSION`` is **in** the set, as ``ARCHIVE_UNLISTED_DATA`` is: the
+listing leaves out a filesystem the file holds, which another reading of the same file
+lists.
 """
 
 
@@ -2002,6 +2031,7 @@ __all__ = [
     "UnexpectedNameDuplicateContext",
     "UnknownMemberTypeContext",
     "UnlistedDataContext",
+    "UnreadSessionContext",
     "UnusedArgumentContext",
     "VerifyReport",
     "format_path_name",

@@ -553,10 +553,12 @@ def FramedDecompressorStream(
     refuse_input_after_end: bool = False,
     frame_check: FrameCheck | None = None,
     file_index: bool = True,
+    source_origin: int = 0,
 ) -> DecompressorStream:
     """Decode a one-stream library decompressor's codec.
 
     Forward-only with an O(n) rewind, unless ``index`` makes its streams seek points.
+    ``source_origin`` is ``StreamConfig.source_origin``, for the offsets messages name.
     """
     return DecompressorStream(
         path,
@@ -573,4 +575,5 @@ def FramedDecompressorStream(
         report_trailing_data=report_trailing_data,
         refuse_input_after_end=refuse_input_after_end,
         file_index=file_index,
+        source_origin=source_origin,
     )

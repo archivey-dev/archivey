@@ -35,7 +35,14 @@ from archivey.internal.backends.rar_forward import ForwardSource, ForwardSpan
 from archivey.internal.backends.rar_parser import _RAR3_FILE_SOLID
 from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
 from tests.conftest import requires, requires_binary, requires_unrar_cli
-from tests.test_audit_rar_iso_dir import _rar3_build, _rar3_parse, _rar3_rename
+from tests.test_audit_rar_iso_dir import (
+    _rar3_build,
+    _rar3_parse,
+    _rar3_rename,
+    _rar5_build,
+    _rar5_file_blocks,
+    _rar5_parse,
+)
 from tests.test_rar_owner import OWNER_NAMES_RAR4
 from tests.test_rar_reader import _rar3_file_block
 from tests.test_rar_synthetic import _password
@@ -415,9 +422,9 @@ def test_an_owner_header_read_after_a_split_member_that_names_none_is_reported()
 def test_the_walk_waits_while_a_member_released_early_is_built(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The walk reads the header after a split member on its own thread; it waits
-    until the caller's thread has built the member, so the owner is in the member
-    either way. A pause after each member is built is where it would land."""
+    """The walk reads the header after a split member on its own thread; it does
+    not read it while the caller's thread builds the member, so the owner is in the
+    member either way. A pause after each member is built is where it would land."""
     real = rar_forward_reader.RarForwardReader._list_member
 
     def slow(self: rar_forward_reader.RarForwardReader, found: object) -> object:
@@ -433,11 +440,18 @@ def test_the_walk_waits_while_a_member_released_early_is_built(
     ]
 
 
-class _SlowListed(threading.Event):
-    """An event whose ``set`` returns late: the walk it lets go runs first."""
+class _SlowBuilding:
+    """``_ForwardPass.building``, released late by the caller: once the caller lets
+    go of it, the walk it held back runs first."""
 
-    def set(self) -> None:
-        super().set()
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self._lock.release()
         if threading.current_thread() is threading.main_thread():
             time.sleep(0.3)
 
@@ -453,7 +467,7 @@ def test_a_member_released_early_keeps_what_the_walk_reads_once_let_go(
 
     def init(self: rar_forward_reader._ForwardPass, reader: object) -> None:
         real(self, reader)  # type: ignore[arg-type]
-        self.listed = _SlowListed()
+        self.building = _SlowBuilding()  # type: ignore[assignment]
 
     monkeypatch.setattr(rar_forward_reader._ForwardPass, "__init__", init)
     data = _owner_archive(*(30_000,) * 5, comment=b"c")
@@ -534,9 +548,9 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
             _member, stream = next(it)
             assert stream is not None
             assert len(stream.read()) == 3000
-        # The third, listed and not read: the walk waits for that before it reads
-        # on. The thread now reads ahead into the last member, where the source
-        # stops sending, to finish the volume that ends the third.
+        # The third, listed and not read. The thread now reads ahead into the last
+        # member, where the source stops sending, to finish the volume that ends
+        # the third.
         next(it)
         assert source.stalled.wait(10)
         started = time.monotonic()
@@ -597,6 +611,59 @@ def test_a_failed_source_read_raises_its_own_error(
         for _member, stream in reader.stream_members():
             if stream is not None:
                 stream.read()
+
+
+_DAMAGED = Path(__file__).parent / "fixtures" / "damaged_member"
+
+
+def _pass_on_a_thread(
+    data: bytes, config: ArchiveyConfig, timeout: float = 30
+) -> list[tuple[str, object]]:
+    """Each member's name and its bytes' digest, or what its read raised, from a pipe
+    pass run on a thread. A pass still running after ``timeout`` seconds fails the
+    test; the reader is closed then, which ends ``unrar`` and lets the thread go."""
+    got: list[tuple[str, object]] = []
+    reader = open_archive(_pipe(data), streaming=True, config=config)
+
+    def run() -> None:
+        try:
+            for member, stream in reader.stream_members():
+                assert stream is not None
+                try:
+                    digest: object = hashlib.sha256(stream.read()).hexdigest()
+                except ArchiveyError as exc:
+                    digest = _outcome(exc)
+                got.append((member.name, digest))
+        except ArchiveyError as exc:
+            got.append(("pass", _outcome(exc)))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    hung = thread.is_alive()
+    try:
+        reader.close()
+    finally:
+        thread.join(10)
+        assert not hung, f"the pipe pass hung after {got}"
+    return got
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("name", ["rar5_nonsolid.rar", "rar5_solid.rar"])
+def test_a_member_that_decodes_short_does_not_stop_the_pass(name: str) -> None:
+    """``b.txt`` decodes to fewer bytes than its header says, and ``c.txt`` after it
+    is split across volumes (600-byte spool limit, 300-byte volumes). The read of
+    ``b.txt`` waits for output that ``unrar`` writes only after the next volume; the
+    thread that writes it must not wait for the caller to list ``c.txt`` first."""
+    data = (_DAMAGED / name).read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        expected = hashlib.sha256(reader.read("a.txt")).hexdigest()
+    got = _pass_on_a_thread(data, _config(600))
+    assert [name for name, _ in got] == ["a.txt", "b.txt", "c.txt"]
+    assert got[0][1] == expected
+    assert got[1][1] == ("raises", "CorruptionError")
 
 
 def _rar(tmp_path: Path, files: dict[str, bytes], *switches: str) -> bytes:
@@ -817,3 +884,154 @@ def test_random_access_on_a_pipe_stays_refused() -> None:
     raw = (_FIXTURES / "basic_solid__.rar").read_bytes()
     with pytest.raises(StreamNotSeekableError):
         open_archive(_pipe(raw), streaming=False)
+
+
+def _rar5_vint(value: int) -> bytes:
+    out = bytearray()
+    while value >= 0x80:
+        out.append((value & 0x7F) | 0x80)
+        value >>= 7
+    out.append(value)
+    return bytes(out)
+
+
+def _rar5_block(body: bytes) -> bytes:
+    framed = _rar5_vint(len(body)) + body
+    return struct.pack("<I", zlib.crc32(framed)) + framed
+
+
+def _rar5_stored(name: str, data: bytes, *, size: int, packed: int) -> bytes:
+    """A stored RAR5 FILE header that declares ``size`` unpacked and ``packed``
+    packed bytes, then ``data``, which may be shorter than ``packed``."""
+    fields = (
+        _rar5_vint(4)  # file flags: CRC32
+        + _rar5_vint(size)
+        + _rar5_vint(0o100644)
+        + struct.pack("<I", zlib.crc32(data))
+        + _rar5_vint(0)  # stored
+        + _rar5_vint(1)  # Unix
+        + _rar5_vint(len(name))
+        + name.encode()
+    )
+    return _rar5_block(b"\x02\x02" + _rar5_vint(packed) + fields) + data
+
+
+def _rar5_archive(*files: bytes, end: bool = True) -> bytes:
+    return (
+        b"Rar!\x1a\x07\x01\x00"
+        + _rar5_block(b"\x01\x00\x00")  # MAIN
+        + b"".join(files)
+        + (_rar5_block(b"\x05\x00\x00") if end else b"")  # ENDARC
+    )
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+@pytest.mark.parametrize("declared", [5_978 + 22, 5_978 - 22], ids=["more", "fewer"])
+def test_a_stored_member_whose_sizes_differ_does_not_shift_the_next(
+    declared: int,
+) -> None:
+    """A stored member whose unpacked size is not its packed size is refused, as the
+    seekable reader refuses it, and ``unrar`` writes its packed bytes: the member
+    after it is placed after those and reads intact."""
+    after = os.urandom(30_000)
+    raw = _rar5_archive(
+        _rar5_stored("short", b"s" * 5_978, size=declared, packed=5_978),
+        _rar5_stored("after", after, size=len(after), packed=len(after)),
+    )
+    expected = _pass(io.BytesIO(raw), None)
+    assert [entry[1] for entry in expected[:2]] == [
+        ("raises", "CorruptionError"),
+        hashlib.sha256(after).hexdigest(),
+    ]
+    assert _pass(_pipe(raw), None, config=_config(None)) == expected
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_a_member_after_one_that_decoded_short_is_refused() -> None:
+    """``b.txt`` decodes to fewer bytes than its header says, so the output after
+    it no longer lines up. ``c.txt`` is refused as a member after such output, not
+    reported as cut short: its own data is intact."""
+    data = (
+        Path(__file__).parent / "fixtures" / "damaged_member" / "rar5_nonsolid.rar"
+    ).read_bytes()
+    with open_archive(io.BytesIO(data)) as reader:
+        a_txt = hashlib.sha256(reader.read("a.txt")).hexdigest()
+    got = _pass(_pipe(data), None, config=_config(None))
+    assert [(entry[0][0], entry[1]) for entry in got[:3]] == [  # type: ignore[index]
+        ("a.txt", a_txt),
+        ("b.txt", ("raises", "CorruptionError")),
+        ("c.txt", ("raises", "UnsupportedFeatureError")),
+    ]
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_an_empty_member_after_one_that_decoded_short_does_not_end_the_doubt() -> None:
+    """An empty ``e.txt`` between ``b.txt``, which decodes short, and ``c.txt``. Its
+    output matches its CRC32 wherever it starts, so it does not show that the output
+    lines up again: ``e.txt`` reads empty and ``c.txt`` is still refused."""
+    blocks = _rar5_parse(
+        (
+            Path(__file__).parent / "fixtures" / "damaged_member" / "rar5_nonsolid.rar"
+        ).read_bytes()
+    )
+    files = _rar5_file_blocks(blocks)
+    assert [block["name"] for block in files] == [b"a.txt", b"b.txt", b"c.txt"]
+    empty = dict(files[2], name=b"e.txt", unpacked=0, crc=bytes(4), cinfo=0, data=b"")
+    blocks.insert(blocks.index(files[2]), empty)
+    got = _pass(_pipe(_rar5_build(blocks)), None, config=_config(None))
+    assert [(entry[0][0], entry[1]) for entry in got[1:4]] == [  # type: ignore[index]
+        ("b.txt", ("raises", "CorruptionError")),
+        ("e.txt", hashlib.sha256(b"").hexdigest()),
+        ("c.txt", ("raises", "UnsupportedFeatureError")),
+    ]
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_a_cut_member_writes_no_volume_after_the_one_the_cut_is_in(
+    volumes_made: list[rl.RollingVolumes],
+) -> None:
+    """A stored member that declares 8 MiB and holds 16 bytes: the source ends
+    inside it. The volume the cut is in is padded, so the members before it there
+    still decode, and the pass ends then with the cut. It does not pad the rest
+    of the declared size, a volume at a time."""
+    raw = _rar5_archive(
+        _rar5_stored("before", b"b" * 1_000, size=1_000, packed=1_000),
+        _rar5_stored("cut", b"x" * 16, size=8 << 20, packed=8 << 20),
+        end=False,
+    )
+    got = _pass(_pipe(raw), None, config=_config())
+    assert [(entry[0][0], entry[1]) for entry in got[:2]] == [  # type: ignore[index]
+        ("before", hashlib.sha256(b"b" * 1_000).hexdigest()),
+        ("cut", ("raises", "TruncatedError")),
+    ]
+    assert got[2:] == [("raises", "TruncatedError")]
+    (volumes,) = volumes_made
+    assert volumes.count <= 2
+
+
+@requires_unrar_cli()
+@pytest.mark.usefixtures("rolling_unrar")
+def test_members_after_one_that_fails_its_digest_still_read_when_they_line_up() -> None:
+    """The first member's header holds a wrong CRC32, so its read fails, though its
+    output has the length its header says. The pass cannot tell that from a member
+    that decoded short until the next member's own CRC32 matches where it was
+    placed: from then on, the members read as from a seekable source."""
+    blocks = _rar5_parse((_FIXTURES / "wildcard_dirglob__.rar").read_bytes())
+    first = _rar5_file_blocks(blocks)[0]
+    first["crc"] = bytes(b ^ 0xFF for b in first["crc"])
+    raw = _rar5_build(blocks)
+    expected = _pass(io.BytesIO(raw), None)
+    assert expected[0][1] == ("raises", "CorruptionError")  # type: ignore[index]
+    assert [entry[1] is not None for entry in expected[1:-1]] == [  # type: ignore[index]
+        False,  # a directory
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert all(isinstance(entry[1], (str, type(None))) for entry in expected[1:-1])  # type: ignore[index]
+    assert _pass(_pipe(raw), None, config=_config(None)) == expected

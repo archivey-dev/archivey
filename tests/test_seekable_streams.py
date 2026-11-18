@@ -687,10 +687,12 @@ def test_xz_index_with_room_for_more_records_is_rejected() -> None:
 def test_xz_index_rejects_a_non_minimal_multibyte_integer() -> None:
     from archivey.internal.streams.codecs.xz_decoder import _decode_mbi
 
-    assert _decode_mbi(iter(b"\x00")) == (0, 1)
-    assert _decode_mbi(iter(b"\x80\x01")) == (128, 2)
-    with raises_corruption_not_truncation(match="not minimally encoded"):
-        _decode_mbi(iter(b"\x80\x00"))
+    assert _decode_mbi(iter(b"\x00"), "index") == (0, 1)
+    assert _decode_mbi(iter(b"\x80\x01"), "index") == (128, 2)
+    with raises_corruption_not_truncation(
+        match="XZ index MBI is not minimally encoded"
+    ):
+        _decode_mbi(iter(b"\x80\x00"), "index")
 
 
 def test_lzip_trailer_member_size_past_start_raises() -> None:

@@ -19,7 +19,8 @@ compressor-needle block of the archived `prefixed-archive-detection` change.
   lines of the script after it. makeself 2.2.0 and later.
 - Every payload's TAR is listed, in order, through `ReaderContext.open_nested`. Every
   compressor archivey has a codec for, and base64, are read. gpg and openssl payloads
-  are refused by name; openssl decryption follows in its own change.
+  are refused by name; openssl payloads, at first refused, are now decrypted with
+  `password=` (a follow-up PR on this change).
 - The header's CRC (POSIX `cksum`), MD5 and SHA-256 of each payload are all checked. A
   match raises every file of the payload to `Verification.CHECKSUM`; a mismatch makes
   them failures of `verify_all()`. This needs an internal hook for a check over several
@@ -40,6 +41,7 @@ compressor-needle block of the archived `prefixed-archive-detection` change.
   `dev-docs/formats/makeself.md`.
 - Changed: `types.py` (format, extra keys), `formats.py` and `format_adapter.py`
   (the internal spanning-check hook), `core.py` (the forced-format hint), user docs.
-- Non-goals here: openssl decryption (next change, with password plumbing for readers
-  written against `archivey.formats`), and the generic `#!` compressor-needle scan for
-  other script launchers such as CPack STGZ and conda installers (the change after).
+- Follow-up PRs on this change: openssl decryption (password plumbing for readers
+  written against `archivey.formats`), then the generic `#!` compressor-needle scan for
+  other script launchers such as CPack STGZ (`specs/format-detection`), with start
+  offsets in the TAR and single-file readers.

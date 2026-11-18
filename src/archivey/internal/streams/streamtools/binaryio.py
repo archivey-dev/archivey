@@ -28,6 +28,7 @@ from typing import (
     NoReturn,
     Protocol,
     TypeGuard,
+    cast,
     runtime_checkable,
 )
 
@@ -73,6 +74,28 @@ def ask_resume_offset(inner: object | None, target: int) -> int | None:
         return None
     offset = ask(target)
     return offset if isinstance(offset, int) else None
+
+
+def decode_to(stream: BinaryIO, target: int) -> int:
+    """Move ``stream`` forward to ``target``, producing the data up to it, and return
+    the position reached: ``target`` or more while the data goes on, less when it ends
+    first, at its end.
+
+    A seek alone does not answer this: a decoder's seek past its end can return the
+    target without decoding (as the standard library's and ``io.BytesIO`` do). A stream
+    that can answer it without handing the bytes over has a ``decode_to`` method (a
+    decoder in another process decodes there and sends back only the position). Any
+    other stream seeks and reads one byte: ``target + 1`` when it gets one, and the end,
+    from ``seek(0, SEEK_END)``, when the data ends inside the move.
+    """
+    method = getattr(stream, "decode_to", None)
+    if method is not None:
+        return cast("int", method(target))
+    stream.seek(target)
+    if read_blocking(stream, 1):
+        return target + 1
+    # The data ends at or before ``target``, so this decodes nothing more.
+    return stream.seek(0, io.SEEK_END)
 
 
 def is_closed_file_error(exc: BaseException) -> bool:

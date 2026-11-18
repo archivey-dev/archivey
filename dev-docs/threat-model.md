@@ -230,8 +230,11 @@ end-of-run sweep and not a refusal of `a/../x` targets.
 `resolve()` already costs, so a `node_modules`-shaped tree stays linear in link count.
 Measured on that shape at 2,000 and 4,000 links: 94,013 and 188,013 `lstat` calls for
 the whole extraction, against 73,013 and 146,013 with the index disabled, so about 29%
-more, and exactly linear. Memory is one index node per distinct path visited plus one
-entry per path per link, so it is proportional to the walk work already done. A hostile
+more, and exactly linear. Memory is one index node per distinct path that a live link's
+last walk visited plus one entry per path per link, so it is proportional to the walk
+work already done. The index (`internal/dependency_index.py`, shared with the Debian
+reader's data tree) drops the nodes a recheck leaves behind, so a path changed many
+times does not keep the nodes of every abandoned route. A hostile
 archive can still make work quadratic: many links through one path, then many members
 changing that path (a streaming pass does that with repeated copies of one name, under
 the default policy). Rechecks are therefore bounded by `ExtractionLimits.max_entries`,
@@ -404,8 +407,9 @@ data its pass keeps for link targets beside it.
   such as UTF-16, which expat would read in a way the scan cannot see) and a tag of
   more than 65 536 pieces (characters outside quotes, or whole quoted values), since
   expat builds a tag's attributes before any handler can weigh them.
-  makeself weighs its shell header against `max_metadata_bytes` as it reads it, parses
-  it in one pass and keeps only the variables it uses; the header is parsed, never run
+  makeself weighs its shell header against `max_metadata_bytes` as it reads it, at open,
+  and refuses a header that lists more payloads than `max_members`; it parses the header
+  in one pass and keeps only the variables it uses; the header is parsed, never run
   (`makeself_reader.py`).
   CAB weighs the block tables it keeps, one per folder read, against
   `max_metadata_bytes` as they are read, at 256 bytes a block: folders may all name one
@@ -798,7 +802,10 @@ no password matches, which costs 4.4 s per member per candidate (0.013 s at the 
 derivation runs in `hashlib` and cannot be interrupted. The caches
 (`internal/backends/sevenzip_aes.py` `SevenZipKeyCache`, `rar_parser.py` `RarKdfCache`)
 make an honest archive cost one or two derivations. RAR3 is charged its fixed `2**18`;
-ZIP AES's fixed 1000 rounds are not counted. The budget is in rounds, not derivations,
+makeself openssl's fixed 10 000 PBKDF2 rounds are charged per payload, salt and
+candidate, cached on the reader (`makeself_reader.py` `_derive`), because a crafted
+header can name many payloads. ZIP AES's fixed 1000 rounds and makeself's one
+`EVP_BytesToKey` round are not counted. The budget is in rounds, not derivations,
 because a derivation count would either refuse honest per-member salting or admit
 hostile archives depending on declared cost. A spent budget raises `ResourceLimitError`,
 which the RAR header walks let through so candidate iteration stops rather than reading
@@ -1220,8 +1227,12 @@ member as fact.
 **Residual.** Measured with the 256-byte sample on a 150,623-file `/usr` tree: 29
 fabricated claims (0.019%), 0 of them without a signal. That is the baseline for the
 next census. A fabricated listing is [accepted](#a-probe-can-fabricate-a-member).
-The aggregate bound [re-opens](#detection-decoding-scan-candidates) when a tier starts
-decoding scan candidates.
+One tier decodes a scan candidate: the compressed-stream needles behind a `#!` script
+([prefixed archives](topics/prefixed-archives.md) §5). It decodes one, the hit the scan
+chooses after header checks of at most 12 bytes, once, through the inner-container probe
+and its `max_decode_input` charge, so the aggregate bound above holds. Measured on a 2
+MiB script carpeted with gzip headers that pass the check, each followed by junk: the
+probe reads 64 KiB of input and fails, and detection answers `GZ` in 3 ms.
 
 **Tests.** `tests/test_brotli_framing_gate.py`, `tests/test_detection_workspace.py` (the
 `*budget*` and receipt tests), the Atheris `detect_format` target. Investigation:
@@ -1324,12 +1335,25 @@ commands and full tables does the same, at about 2 µs an input byte
 chunks costs about 360 ns an input byte where a forward read walks its blocks for block
 points (restart points, random access), one Python step per chunk header, against
 liblzma's near-instant decode; a walk kept only to raise members from block checks gives
-up on such a stream (`_XzBlockWalker._chunk`). A cabinet whose file table is out of
-data order is listed in data order, so each folder decodes once, unless a name is listed
-twice: then table order is kept, and each member can decode its folder again from the
-start (150 members of 32 KiB in one LZX folder, reversed: 58 s against under 1 s;
-`STRICT` refuses such a cabinet at listing with `MEMBER_NAME_DUPLICATE_UNEXPECTED`)
-([CAB §6](formats/cab.md#6-decisions)). On declared seek demand,
+up on such a stream (`_XzBlockWalker._chunk`). A file cut into many tiny units costs
+calls, not bytes, under `ProcessIsolation.NATIVE_DECODERS`, where each decoder call is a
+round trip to the child. A plain decode makes about one call per 64 KiB of input. A
+concatenated stream (gzip members, bzip2 or xz streams, zstd or lz4 frames) opens a new
+decoder in the child for each unit and makes about three round trips a unit, and the
+child is replaced after `MAX_DECODERS_PER_CHILD` (64) decoders
+(`decoder_child.py`), so every 64 units also start a process. 30 000 one-byte units,
+CPython 3.13: gzip (630 KB) 13.0 s isolated against 0.06 s in the parent, about 20 s a
+MB; zstd (300 KB) 15.9 s against 0.9 s, about 50 s a MB; xz (1.8 MB) 14.8 s; lz4
+(720 KB) 14.4 s; bzip2 streams (1.1 MB) 13.4 s. Empty gzip members cost the same. With
+the replacement turned off, the gzip case takes 3.8 s, so process starts are about 70% of
+it. A normal 30 MB gzip member decodes isolated in 0.11 s. Inside one bzip2 stream,
+one-byte blocks cost at least two `bz2` calls a block in the standard library engine
+(the feed up to the block marker, which returns the block, and one empty drain call;
+[bzip2 §2.3](formats/bzip2.md#23-member-data)), so 30 000 of them (671 KB) decode
+isolated in 2.6 s, about 4 s a MB, against 0.15 s in the parent; a match of the block
+magic inside block data costs the same feed and drain. All of these are linear in the
+input and need the caller to opt into `NATIVE_DECODERS`. Keeping the child across unit
+boundaries for one stream is tracked internally for a later release. On declared seek demand,
 a forward seek past the known points, a `SEEK_END` or a size query reads a Seekable
 Zstandard seek table, and a forward seek past the known points or a `SEEK_END` walks a
 BGZF file's members. Both scans are linear but run one
@@ -1536,7 +1560,7 @@ the nest ratio: their bytes are in the outer reader's number. Code:
 `read()` and `open()` have no byte cap: `max_extracted_bytes` and `max_entries` apply to
 `extract` only, and a `read()` of an honest 1 GiB member holds 1 GiB. `max_ratio` does
 hold reads: each member stream is held to the per-member and archive-wide ratios
-(`bomb_tracker.MemberRatioGuard`, one `ReadRatioTally` per reader), so a scan or hash of a
+(`bomb_tracker.MemberRatioCheck`, one `ReadRatioTally` per reader), so a scan or hash of a
 bzip2 or xz bomb stops within a step past 5 MiB. A member whose data is the archive
 stream's own bytes (every TAR member but a sparse one) gets no guard: it cannot pass 1:1
 and a compressed stream is held as a whole. It counts toward the archive-wide total at its
@@ -1673,13 +1697,6 @@ with 4 or more zero padding bytes, about three folders in four from 7-Zip or py7
 leaves: the writer chooses the last block, so a crafted archive can make a wrong
 candidate pass it. Those still walk once per candidate.
 
-### Detection decoding scan candidates
-
-No detection tier decodes scan candidates today, so the 683-fold amplification in
-[detection](#detection-is-bounded-and-says-when-it-guessed) is not reachable. A tier
-that does (makeself compressor needles after a `#!` stub, planned after 0.2.0) must draw
-on the shared `max_decode_input` allowance and be measured before this is settled.
-
 ### OSS-Fuzz
 
 Onboarding waits until archivey has more users, since OSS-Fuzz expects a project with a
@@ -1718,7 +1735,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O8 | 7z wrong header password gives an empty archive | [Integrity verdicts](#integrity-verdicts-come-from-reads) |
 | O9 | Attacker bytes reaching the terminal | [Terminal](#attacker-bytes-reaching-a-terminal-are-inert) |
 | O10 | Content probe fabricates a member | [Detection](#detection-is-bounded-and-says-when-it-guessed), [A probe can fabricate a member](#a-probe-can-fabricate-a-member) |
-| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed), [Detection decoding scan candidates](#detection-decoding-scan-candidates) |
+| O11 | Detection-time decode work | [Detection](#detection-is-bounded-and-says-when-it-guessed) |
 | O12 | 7z password confirmation | [7z password confirmation](#7z-password-confirmation), [late CRC gap](#7z-password-confirmation-on-a-late-crc) |
 | O13 | 7z `NumUnpackStreams` allocation | [Listing](#listing) |
 | O14 | 7z encoded-header nesting | [Listing](#listing) |

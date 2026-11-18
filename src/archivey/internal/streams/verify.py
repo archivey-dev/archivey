@@ -81,6 +81,7 @@ from archivey.internal.streams.streamtools import (
     is_closed_file_error,
     is_seekable,
 )
+from archivey.internal.streams.streamtools.binaryio import decode_to
 from archivey.internal.streams.verification import (
     VerificationProofs,
     ask_verification_proofs,
@@ -823,6 +824,19 @@ class MemberVerifier:
             raise planned
         return result
 
+    def decode_to(self, inner: BinaryIO, target: int) -> int:
+        """Move forward to ``target`` and report where the data ends (``decode_to``),
+        recorded as a seek passed on is (``note_seek``).
+
+        The bytes moved over are not hashed, as after any seek past the frontier, and
+        no length verdict is given: like a seek, this move reads nothing the caller
+        gets. A read that reaches the end afterwards gives the verdicts.
+        """
+        self._read_through_due = None
+        result = decode_to(inner, target)
+        self.note_seek(result)
+        return result
+
     def _seek_target(self, offset: int, whence: int) -> int | None:
         """The position a seek asks for, or ``None`` when it needs the unknown size."""
         if whence == 0:
@@ -1048,6 +1062,13 @@ class VerifyingStream(ReadOnlyIOStream):
     def seek(self, offset: int, whence: int = 0, /) -> int:
         try:
             return self._verifier.seek(self._inner, offset, whence)
+        except Exception:
+            note_raised_seek(self._verifier, self._inner)
+            raise
+
+    def decode_to(self, target: int) -> int:
+        try:
+            return self._verifier.decode_to(self._inner, target)
         except Exception:
             note_raised_seek(self._verifier, self._inner)
             raise

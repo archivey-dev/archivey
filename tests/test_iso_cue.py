@@ -22,6 +22,7 @@ from archivey import (
     UnsupportedFeatureError,
     open_archive,
 )
+from archivey.internal.backends import cue_sheet
 from archivey.internal.backends.cue_sheet import parse_cue
 from tests.conftest import requires, requires_binary
 from tests.test_iso_raw_sectors import _sector, to_raw
@@ -117,6 +118,126 @@ def test_parse_refuses_more_than_99_tracks() -> None:
     )
     with pytest.raises(CorruptionError, match="99 tracks"):
         parse_cue('FILE "a.bin" BINARY\n' + body)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A FILE with no TRACK, then one that has a track.
+        (
+            'FILE "a.bin" BINARY\nFILE "b.bin" BINARY\n  TRACK 01 MODE1/2352\n'
+            "    INDEX 01 00:00:00\n"
+        ),
+        # A FILE with no TRACK at the end of the sheet.
+        (
+            'FILE "a.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+            'FILE "b.bin" BINARY\n'
+        ),
+    ],
+    ids=["before-a-file", "at-the-end"],
+)
+def test_parse_refuses_a_file_with_no_track(text: str) -> None:
+    with pytest.raises(CorruptionError, match="no TRACK"):
+        parse_cue(text)
+
+
+@pytest.mark.parametrize(
+    "numbers",
+    [(1, 1), (2, 1), (1, 3, 2)],
+    ids=["repeated", "decreasing", "decreasing-later"],
+)
+def test_parse_refuses_track_numbers_that_do_not_increase(
+    numbers: tuple[int, ...],
+) -> None:
+    # Tracks are found by number, so a repeated number would make the choice of
+    # session depend on how the sheet numbers its tracks.
+    body = "".join(
+        f'FILE "t{n}.bin" BINARY\n  TRACK {n:02d} MODE1/2048\n    INDEX 01 00:00:00\n'
+        for n in numbers
+    )
+    with pytest.raises(CorruptionError, match="must increase"):
+        parse_cue(body)
+
+
+def test_parse_reads_track_numbers_that_skip() -> None:
+    files = parse_cue(
+        'FILE "a.bin" BINARY\n  TRACK 02 MODE1/2048\n    INDEX 01 00:00:00\n'
+        "  TRACK 05 AUDIO\n    INDEX 01 00:01:00\n"
+    )
+    assert [t.number for t in files[0].tracks] == [2, 5]
+
+
+def _count_track_files(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """The path of each track file the cue reader opens, as it opens it."""
+    opened: list[Path] = []
+    real = cue_sheet._TrackFile.__init__
+
+    def counting(self: cue_sheet._TrackFile, path: Path) -> None:
+        opened.append(path)
+        real(self, path)
+
+    monkeypatch.setattr(cue_sheet._TrackFile, "__init__", counting)
+    return opened
+
+
+@requires("pycdlib")
+def test_a_sheet_of_file_lines_opens_no_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A sheet of bare FILE lines is refused before any track file is opened;
+    # otherwise a 64 KiB sheet could hold about 5 000 descriptors.
+    (tmp_path / "x.bin").write_bytes(b"\0" * 2352)
+    cue = tmp_path / "a.cue"
+    # Bytes, not text: Windows text mode would write CRLF and take the sheet over the
+    # 64 KiB cap, which refuses it before the FILE lines are read.
+    sheet = b"FILE x.bin B\n" * 5000 + b"  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n"
+    assert len(sheet) <= cue_sheet.MAX_CUE_SIZE
+    cue.write_bytes(sheet)
+    opened = _count_track_files(monkeypatch)
+    with pytest.raises(CorruptionError, match="no TRACK"):
+        open_archive(cue)
+    assert opened == []
+
+
+@requires("pycdlib")
+def test_a_file_named_twice_is_opened_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    data = to_raw(_plain_iso())
+    (tmp_path / "disc.bin").write_bytes(data)
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        'FILE "DISC.BIN" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+    )
+    opened = _count_track_files(monkeypatch)
+    assert _contents(cue)["big.dat"] == _PAYLOAD
+    # One handle, whichever spelling opened it: on a case-folding volume the exact
+    # name "DISC.BIN" exists too.
+    assert len(opened) == 1
+
+
+@requires("pycdlib")
+@pytest.mark.parametrize("link", ["symlink", "hard link"])
+def test_a_file_named_through_a_link_is_opened_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, link: str
+) -> None:
+    (tmp_path / "disc.bin").write_bytes(to_raw(_plain_iso()))
+    try:
+        if link == "symlink":
+            (tmp_path / "alias.bin").symlink_to(tmp_path / "disc.bin")
+        else:
+            os.link(tmp_path / "disc.bin", tmp_path / "alias.bin")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"cannot make a {link} here: {exc}")
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        'FILE "alias.bin" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n'
+    )
+    opened = _count_track_files(monkeypatch)
+    assert _contents(cue)["big.dat"] == _PAYLOAD
+    assert opened == [tmp_path / "disc.bin"]
 
 
 # --- single session ------------------------------------------------------------------
@@ -418,3 +539,42 @@ def test_a_sheet_is_detected_by_its_name(tmp_path: Path) -> None:
     )
     info = detect_format(cue)
     assert (info.format, info.detected_by) == (ArchiveFormat.ISO, "extension")
+
+
+def _iso_with(name: str, data: bytes) -> bytes:
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(data), len(data), f"/{name};1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+@requires("pycdlib")
+def test_a_bin_read_without_its_sheet_reports_the_session_it_does_not_read(
+    tmp_path: Path,
+) -> None:
+    # Two data sessions in one .bin. From a path the sheet beside it is used, and the
+    # last session is listed. From a file object there is no sheet: the first track
+    # is listed, and the other volume after it is reported, so the caller learns that
+    # the two readings differ.
+    first = to_raw(_iso_with("OLD.TXT", b"old\n"))
+    second = to_raw(_iso_with("NEW.TXT", b"new\n"))
+    disc = tmp_path / "disc.bin"
+    disc.write_bytes(first + second)
+    (tmp_path / "disc.cue").write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        "REM SESSION 02\n  TRACK 02 MODE1/2352\n"
+        f"    INDEX 01 {_msf(len(first) // 2352)}\n"
+    )
+    with open_archive(disc) as archive:
+        assert [m.name for m in archive.members()] == ["NEW.TXT"]
+        assert archive.diagnostics.retained == ()
+    with open_archive(io.BytesIO(disc.read_bytes())) as archive:
+        assert [m.name for m in archive.members()] == ["OLD.TXT"]
+        (diagnostic,) = archive.diagnostics.retained
+    assert diagnostic.code is DiagnosticCode.ARCHIVE_UNREAD_SESSION
+    assert diagnostic.context.sector == len(first) // 2352 + 16

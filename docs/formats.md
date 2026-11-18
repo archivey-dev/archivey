@@ -1161,11 +1161,13 @@ other members because of a member's name any more. Setting it to `True` warns.
   ([Names in other encodings](opening.md#names-in-other-encodings)).
 - Joliet names are UTF-16 and ignore `encoding=`. They can hold an
   [unpaired surrogate](#names-with-an-unpaired-surrogate).
-- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty extension), and
-  `extra["iso.version"]` keeps the number. When a directory holds several versions of one name, the
-  highest takes the bare name, and the others list under their stored identifier (`FOO.;1`) with
-  `is_current=False`, the same shape as RAR file versions. Plain directory names have no version
-  and keep any `;N`.
+- Plain ISO 9660 and Joliet file names lose their `;N` version suffix (and the `.` of an empty
+  extension), and `extra["iso.version"]` keeps the number. Many writers put `;1` on Joliet names
+  too, and Windows and Linux drop it there as well. When a directory holds several versions of one
+  name, the highest takes the bare name, and the others list under their stored identifier
+  (`FOO.;1`) with `is_current=False`, the same shape as RAR file versions. Directory names have no
+  version and keep any `;N`, and so does a file name that is only dots before the `;N`
+  (`...;1`), so that no member is named `.` or `..`.
 - Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
   which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory
@@ -1243,10 +1245,15 @@ other members because of a member's name any more. Setting it to `True` warns.
   when they disagree, the address is searched for. A `FILE` that is not a plain name beside the
   sheet (a path, `..`) or not a regular file (a FIFO, a device) is refused; a symlink is followed.
   A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
-  for `disc.bin`), and a missing one is `TruncatedError`. Without a `.cue`, a
+  for `disc.bin`), and a missing one is `TruncatedError`. A sheet with a `FILE` that holds no
+  `TRACK`, or with track numbers that do not go up, is `CorruptionError`. Without a `.cue`, a
   `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
-  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
-  is recognised by its name, and only from a path, since its tracks are files beside it.
+  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). The `.cue` is used only
+  when you open the `.bin` by its path, so the same multisession `.bin` passed as a file object
+  lists its first session, not its last. When archivey finds another session's filesystem after the
+  first one, it reports `ARCHIVE_UNREAD_SESSION`, which `DiagnosticPolicy.STRICT` refuses. A `.cue`
+  has no magic: it is recognised by its name, and only from a path, since its tracks are files
+  beside it.
 
 ## SquashFS
 
@@ -1322,9 +1329,9 @@ what `makecab` and `gcab` write.
 - **Member order:** the order of the cabinet's file table, which writers keep in the order
   the files' bytes are stored. When reading the files in table order would decode part of a
   folder twice (a table that is crafted or edited, for example reversed), the files are
-  listed by folder and by position in the folder instead, so each folder is decoded once,
-  unless a name is listed twice: then the table's order is kept, because the entry listed
-  last is the one that counts, and reading can be much slower.
+  listed by folder and by position in the folder instead, so each folder is decoded once.
+  When a name is listed twice, the entries that a later entry replaces come first, so each
+  folder is decoded at most twice and the entry listed last is still the one that counts.
 - **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
   `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
   name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
@@ -1499,6 +1506,19 @@ ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Lin
 - As `dpkg-deb` does, a package whose format version is not 2.x raises `UnsupportedFeatureError`,
   members whose names start with `_` (a signature, for example) are skipped, any other member
   before the data tar raises `CorruptionError`, and nothing after the data tar is read.
+- A file of the data tar that would land in `DEBIAN/`, whatever its spelling, raises
+  `CorruptionError`, and so does a symlink or hard link of the data tar that points there, or a
+  file that reaches `DEBIAN/` through such a symlink. A later symlink that makes an earlier one
+  point there (`x -> y/DEBIAN/control`, then `y -> .`) raises it too, and so does a symlink whose
+  target reaches `DEBIAN/` once its `..` are taken literally (`x -> y/../DEBIAN/control`). The
+  control files are always the control tar's.
+- So that this holds whichever members you extract and whatever `overwrite` says, a data file
+  under a data symlink (`y -> a/b`, then `y/z`) raises `CorruptionError`, and so does a data
+  symlink at the path of a directory or of another symlink. Packages built by `dpkg-deb` have
+  neither. A hard link to a data symlink is checked as the symlink extraction writes for it.
+- Following one data symlink through another, and checking earlier symlinks again when a later
+  symlink moves them, count against `ListingLimits.max_members`, one per path step, and raise
+  `ResourceLimitError` past it. A symlink that follows no other costs nothing.
 - The control file and `md5sums` are held whole while the package is read, and together may be
   no larger than `ListingLimits.max_metadata_bytes`.
 
@@ -1553,7 +1573,8 @@ NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are ship
 Archivey reads the TARs and never runs the script.
 
 - **Needs:** nothing for gzip, bzip2, xz and uncompressed payloads; a Zstandard, LZ4, lzop or
-  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs.
+  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs;
+  an `--ssl-encrypt` payload needs `cryptography`.
 - **Listing:** needs decompression. The members are the TAR's, named as makeself extracts them
   into its target folder.
 - **Reading members:** solid.
@@ -1566,8 +1587,11 @@ Archivey reads the TARs and never runs the script.
   payload. Archivey checks each one it finds when it reads to the end of the payload. They cover
   every file of the payload, so a match raises each to `Verification.CHECKSUM`, and a mismatch
   raises `CorruptionError` and makes `verify_all()` return each file of the payload.
-- **Encryption.** A payload written with `--base64` is read. One encrypted with
-  `--ssl-encrypt` or `--gpg-encrypt` raises `UnsupportedFeatureError`.
+- **Encryption.** A payload written with `--base64` is read. One written with `--ssl-encrypt`
+  is read with `password=` and needs `cryptography`, as AES in a ZIP does. Without a password,
+  opening the archive raises `EncryptionError`, and with a wrong one it raises `EncryptionError`
+  saying the password is wrong. One written with `--gpg-encrypt` raises
+  `UnsupportedFeatureError`.
 - `ArchiveInfo.format_version` is the makeself version the header names (`"2.4.5"`).
   `ArchiveInfo.extra` holds `makeself.label`, `makeself.script` (the command run after
   extraction), `makeself.target_dir`, `makeself.compression` (`"gzip"`, `"xz"`, `"none"`, …),
@@ -1576,8 +1600,9 @@ Archivey reads the TARs and never runs the script.
   checked).
 - `format=TAR_GZ` (or any other format) on a makeself archive fails as on any file that is not
   one, and the error says the file is a makeself archive.
-- A header archivey cannot parse raises `CorruptionError`. The header counts against
-  `max_metadata_bytes`: a longer one raises `ResourceLimitError`.
+- A header archivey cannot parse raises `CorruptionError`. Archivey weighs the header against
+  `max_metadata_bytes` as it reads it, at open, and refuses a header that lists more payloads
+  than `max_members`: either raises `ResourceLimitError`.
 
 ## Disk images
 
@@ -1639,8 +1664,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the
     `begin-base64` variant (`uuencode -m`) ends at `====`. A file is recognised by its `begin`
     line at the start, whatever its name. With a `.uu` or `.uue` name, text before `begin` (a
-    mail or news post) is skipped, up to 64 KiB. Only the first file is read, and text after its
-    end line is reported as `ARCHIVE_TRAILING_DATA`. The stored name is
+    mail or news post) is skipped, up to 64 KiB. A line over 4 096 bytes, before `begin` or
+    after it, is an error. Only the first file is read, and text after its end line is
+    reported as `ARCHIVE_TRAILING_DATA`. The stored name is
     `extra["uu.original_filename"]` and `raw_name`, and the stored mode is `mode`; the member
     keeps the name it gets from the file's own name, so the stored name never picks a path.
   - **base64** (`.b64`, `.base64`): bare base64 text, in lines of one length or one long line,
@@ -1900,7 +1926,13 @@ they open at once. Close the sending side when the file is done.
   Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
   reaches is found from its end, when the program's header shows that something was
   appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR, LHA, ARJ) are searched for. Behind a Windows, Linux or macOS program whose header says
+  (ZIP, 7z, RAR, LHA, ARJ) are searched for, and so are gzip, bzip2, xz, zstd, LZ4 and lzip
+  streams whose header fields pass their checks: a CPack `.sh` installer, or another shell
+  installer, is a script followed by a compressed TAR. That stream is reported as the TAR inside
+  it (`TAR_GZ`), or as the bare stream (`GZ`) when it holds nothing archivey recognizes, and is
+  read from where it starts, from a pipe too. An uncompressed TAR behind a script is not found,
+  and `format=TAR_GZ` on such a script fails, as on any file that does not start with the
+  stream. Behind a Windows, Linux or macOS program whose header says
   where its own image ends, an archive that starts exactly there is taken first, ahead of
   anything else in the window. That holds under every detection budget: a smaller one, such as
   `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before

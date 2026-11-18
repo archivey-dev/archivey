@@ -68,6 +68,7 @@ from archivey.internal.streams.streamtools import (
     resolve_seek,
     source_byte_size,
 )
+from archivey.internal.streams.streamtools.binaryio import decode_to
 from archivey.internal.streams.streamtools.slice import SlicingStream
 from archivey.types import MissingComponent, OptionalLibrary
 
@@ -312,6 +313,13 @@ class _StdlibSeekContract(DelegatingStream):
         if self._inner.seek(target, io.SEEK_SET) < target:
             self._past_end = target
         return target
+
+    def decode_to(self, target: int) -> int:
+        """Move to ``target`` and report where the data ends (``decode_to``), as the
+        stream below reports it: unlike :meth:`seek`, a target past the end is not
+        kept, so the position is the one returned."""
+        self._past_end = None
+        return decode_to(self._inner, target)
 
     def _end_offset(self) -> int:
         """Return the size, by seeking the stream below to its end."""

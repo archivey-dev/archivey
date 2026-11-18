@@ -373,3 +373,22 @@ def test_the_daily_only_legs_run_on_the_daily_run_and_a_dispatch_only() -> None:
     sys.modules[spec.name] = release
     spec.loader.exec_module(release)
     assert "ci.yml" in release.RELEASE_GATE_WORKFLOWS
+
+
+def test_two_linux_legs_stay_on_the_older_lts_image() -> None:
+    """Linux follows ubuntu-latest, except the 3.11 [all] leg that every pull request
+    runs and the 3.11 [all-lowest] leg, which stay on ubuntu-24.04 so the older LTS
+    image (compiler, libarchive, rpm) keeps a run."""
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(CI.read_text())["jobs"]
+
+    def rows(name: str) -> set[tuple[str, str, str]]:
+        return {
+            (row["os"], row["python-version"], row["install"])
+            for row in jobs[name]["strategy"]["matrix"]["include"]
+        }
+
+    assert ("ubuntu-24.04", "3.11", "all") in rows("test")
+    assert ("ubuntu-24.04", "3.11", "all-lowest") in rows("test-lowest")
+    for name in ("test", "test-queue", "test-lowest", "test-daily"):
+        assert jobs[name]["runs-on"] == "${{ matrix.os }}", name

@@ -20,7 +20,10 @@ from archivey import (
     ArchiveyConfig,
     ContainerFormat,
     CorruptionError,
+    DecoderLimits,
+    EncryptionError,
     ListingLimits,
+    PackageNotInstalledError,
     ResourceLimitError,
     StreamFormat,
     TruncatedError,
@@ -33,7 +36,9 @@ from archivey.diagnostics import DiagnosticCode
 from archivey.formats import SequentialReader
 from archivey.internal.backends import makeself_reader
 from archivey.internal.backends.makeself_reader import MakeselfReader
+from archivey.internal.streams import crypto
 from tests.conftest import requires_zstd
+from tests.memory_util import traced_peak
 from tests.streams_util import NonSeekableBytesIO
 
 MAKESELF = archivey.ArchiveFormat.MAKESELF
@@ -143,9 +148,14 @@ def test_extracts(tmp_path: Path) -> None:
     assert os.readlink(tmp_path / "link") == "a.txt"
 
 
-def test_an_encrypted_payload_is_refused_by_name() -> None:
-    with pytest.raises(UnsupportedFeatureError, match="encrypted with openssl"):
-        open_archive(DATA / "openssl-2.7.1.run")
+def test_a_gpg_payload_is_refused_by_name() -> None:
+    data = _edited(
+        b'decrypt_cmd="openssl enc -aes-256-cbc -d -salt -pbkdf2 -md sha256"',
+        b'decrypt_cmd="gpg --yes -d"',
+        name="openssl-2.7.1.run",
+    )
+    with pytest.raises(UnsupportedFeatureError, match="encrypted with gpg"):
+        open_archive(io.BytesIO(data), password="secret")
 
 
 def test_the_reader_is_a_sequential_reader() -> None:
@@ -225,6 +235,43 @@ def test_a_variable_set_twice_is_damage() -> None:
     data = _edited(b'totalsize="224"', b'totalsize="224"\nfilesizes="10"')
     with pytest.raises(CorruptionError, match="assigns 'filesizes' twice"):
         open_archive(io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'  filesizes="10"', id="indented"),
+        pytest.param(b'\tfilesizes="10"', id="tab"),
+        pytest.param(b': ; filesizes="10"', id="after-semicolon"),
+        pytest.param(b'export filesizes="10"', id="export"),
+        pytest.param(b"if true; then skip=3; fi", id="unquoted-in-if"),
+        pytest.param(b'quiet="n"; label=x', id="after-another-value"),
+    ],
+)
+def test_a_used_variable_set_where_the_parse_does_not_look_is_damage(
+    line: bytes,
+) -> None:
+    # The shell runs these lines, so the value they set is the one makeself uses;
+    # the parse does not read them as assignments, so it must refuse them.
+    data = _edited(b'totalsize="224"', b'totalsize="224"\n' + line)
+    with pytest.raises(CorruptionError, match="where this reader does not read it"):
+        open_archive(io.BytesIO(data))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param(b'    print_cmd="printf"', id="indented-other-variable"),
+        pytest.param(b"echo filesizes and skip", id="names-without-equals"),
+        pytest.param(b'scriptargs="$script"', id="longer-name"),
+        pytest.param(b"# see --skip=3 in the help", id="option-in-comment"),
+        pytest.param(b"echo $skip=x", id="expansion"),
+    ],
+)
+def test_other_lines_in_the_variables_still_read(line: bytes) -> None:
+    data = _edited(b'totalsize="224"', b'totalsize="224"\n' + line)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert _contents(reader) == FILES
 
 
 @pytest.mark.parametrize(
@@ -498,15 +545,123 @@ def test_payload_commands(
     assert makeself_reader._decoders(command, decrypt) == expected
 
 
-def test_a_payload_built_here_reads() -> None:
-    """A header from the 2.7.1 fixture over a TAR built here, digests recomputed."""
+def _empty_tar_gz() -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w"):
+        pass
+    return gzip.compress(buffer.getvalue(), mtime=0)
+
+
+def _with_payloads(payloads: list[bytes]) -> bytes:
+    """The 2.7.1 fixture's header over ``payloads``, its sizes and digests listed for
+    each (all-zero digests: makeself writes those where it computed none)."""
+    header, _ = _split((DATA / "gzip-2.7.1.run").read_bytes())
+    lists = {
+        b"CRCsum": b" ".join(b"0" for _ in payloads),
+        b"MD5": b" ".join(b"0" * 32 for _ in payloads),
+        b"SHA": b"",
+        b"filesizes": b" ".join(b"%d" % len(p) for p in payloads),
+        b"totalsize": b"%d" % sum(len(p) for p in payloads),
+    }
+    for name, value in lists.items():
+        header, count = re.subn(
+            rb'^%s="[^"]*"$' % name,
+            lambda _, n=name, v=value: b'%s="%s"' % (n, v),
+            header,
+            flags=re.MULTILINE,
+        )
+        assert count == 1, name
+    return header + b"".join(payloads)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(b"Terms of use.\n" * 70_000, id="lines"),
+        pytest.param(b"a" * 1_000_000, id="one-line"),
+        # An escape every 3 bytes, across many chunk ends: the value's read stops
+        # before an escape that a chunk end cuts and resumes there.
+        pytest.param(b'a\\"' * 330_000, id="escapes"),
+    ],
+)
+def test_a_long_value_is_read_in_memory_linear_in_it(value: bytes) -> None:
+    # A regex that repeats a group with an alternation keeps state for each
+    # repetition: about 150 bytes per byte of the value.
+    data = _edited(b'licensetxt=""', b'licensetxt="' + value + b'"')
+
+    def read() -> None:
+        with open_archive(io.BytesIO(data)) as reader:
+            assert _contents(reader) == FILES
+
+    read()
+    assert traced_peak(read) < 8 * len(data)
+
+
+def test_the_payload_count_is_checked_before_the_lists_are_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each listed value becomes an object, so a long list costs memory before any
+    # check on its length could run.
+    parsed: list[str] = []
+    real = makeself_reader._number
+    real_hex = makeself_reader._hex
+
+    def number(raw: bytes, what: str) -> int:
+        parsed.append(what)
+        return real(raw, what)
+
+    def hex_digest(raw: bytes, what: str, length: int) -> bytes:
+        parsed.append(what)
+        return real_hex(raw, what, length)
+
+    monkeypatch.setattr(makeself_reader, "_number", number)
+    monkeypatch.setattr(makeself_reader, "_hex", hex_digest)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(_with_payloads([_empty_tar_gz()] * 11)), config=config)
+    assert "filesizes" not in parsed
+    parsed.clear()
+    data = _with_payloads([_empty_tar_gz()] * 2)
+    data = re.sub(rb'^CRCsum="0 0"$', b'CRCsum="0 0 0"', data, flags=re.MULTILINE)
+    with pytest.raises(CorruptionError, match="CRCsum lists 3 values for 2 payloads"):
+        open_archive(io.BytesIO(data))
+    assert "CRCsum" not in parsed
+    # A SHA list of zeros may be any length (2.4.0's --append leaves it short), and
+    # zeros state no digest, so a long one is accepted without being parsed.
+    parsed.clear()
+    data = _with_payloads([_empty_tar_gz()] * 2)
+    zeros = b" ".join([b"0" * 64] * 5)
+    data = re.sub(rb'^SHA=""$', b'SHA="%s"' % zeros, data, flags=re.MULTILINE)
+    with open_archive(io.BytesIO(data)) as reader:
+        assert reader.members() == []
+    assert "SHA" not in parsed
+
+
+def test_payloads_count_against_max_members() -> None:
+    # Each payload builds a TAR reader, which costs far more than its few bytes of
+    # header, and an empty one lists nothing for max_members to count.
+    data = _with_payloads([_empty_tar_gz()] * 11)
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with pytest.raises(ResourceLimitError, match="max_members=10"):
+        open_archive(io.BytesIO(data), config=config)
+    with open_archive(
+        io.BytesIO(_with_payloads([_empty_tar_gz()] * 10)), config=config
+    ):
+        pass
+
+
+def _tar(name: str, data: bytes) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as tar:
-        info = tarfile.TarInfo("x.txt")
-        info.size = 3
-        tar.addfile(info, io.BytesIO(b"xyz"))
-    payload = gzip.compress(buffer.getvalue(), mtime=0)
-    header, _ = _split((DATA / "gzip-2.7.1.run").read_bytes())
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _with_payload(name: str, payload: bytes) -> bytes:
+    """``name``'s header over ``payload``, its CRC, MD5 and sizes recomputed."""
+    header, _ = _split((DATA / name).read_bytes())
     crc = makeself_reader._Cksum()
     crc.update(payload)
     header = re.sub(
@@ -518,13 +673,209 @@ def test_a_payload_built_here_reads() -> None:
         header,
         flags=re.MULTILINE,
     )
-    for name in (b"filesizes", b"totalsize"):
+    for variable in (b"filesizes", b"totalsize"):
         header = re.sub(
-            rb"^%s=\"[0-9]+\"$" % name,
-            b'%s="%d"' % (name, len(payload)),
+            rb"^%s=\"[0-9]+\"$" % variable,
+            b'%s="%d"' % (variable, len(payload)),
             header,
             flags=re.MULTILINE,
         )
-    with open_archive(io.BytesIO(header + payload)) as reader:
+    return header + payload
+
+
+def test_a_payload_built_here_reads() -> None:
+    """A header from the 2.7.1 fixture over a TAR built here, digests recomputed."""
+    payload = gzip.compress(_tar("x.txt", b"xyz"), mtime=0)
+    with open_archive(io.BytesIO(_with_payload("gzip-2.7.1.run", payload))) as reader:
         assert reader.read("x.txt") == b"xyz"
         assert reader.verify_all().failures == ()
+
+
+# openssl ------------------------------------------------------------------------
+
+OPENSSL = [
+    "openssl-2.7.1.run",  # PBKDF2
+    "openssl-2.4.5.run",  # EVP_BytesToKey with -md sha256
+    "openssl-nomd-2.4.5.run",  # EVP_BytesToKey, openssl's default digest
+    "openssl-2.4.0.run",  # openssl as the compressor, base64-armored, plain TAR
+]
+
+
+@_requires("cryptography")
+@pytest.mark.parametrize("name", OPENSSL)
+def test_openssl_payloads_read_with_the_password(name: str) -> None:
+    with open_archive(DATA / name, password="secret") as reader:
+        assert _contents(reader) == FILES
+        assert reader.verify_all().failures == ()
+        assert reader.info.extra["makeself.encryption"] == "openssl"
+
+
+@_requires("cryptography")
+@pytest.mark.parametrize("name", OPENSSL)
+def test_openssl_payloads_read_from_a_pipe(name: str) -> None:
+    data = (DATA / name).read_bytes()
+    with open_archive(
+        NonSeekableBytesIO(data), streaming=True, password="secret"
+    ) as reader:
+        got = {m.name: s.read() for m, s in reader.stream_members() if s is not None}
+    assert {k: v for k, v in got.items() if k in FILES} == FILES
+
+
+@_requires("cryptography")
+@pytest.mark.parametrize("name", OPENSSL)
+def test_a_wrong_password_is_named(name: str) -> None:
+    with pytest.raises(EncryptionError, match="Wrong password for makeself"):
+        open_archive(DATA / name, password="wrong")
+
+
+@_requires("cryptography")
+def test_no_password_asks_for_one() -> None:
+    with pytest.raises(EncryptionError, match="pass password= to read it"):
+        open_archive(DATA / "openssl-2.7.1.run")
+
+
+@_requires("cryptography")
+def test_candidates_are_tried_in_turn() -> None:
+    with open_archive(
+        DATA / "openssl-2.4.5.run", password=["wrong", "secret"]
+    ) as reader:
+        assert _contents(reader) == FILES
+
+
+def _evp_md5(
+    password: bytes, salt: bytes, plain: bytes, pad: bytes | None = None
+) -> bytes:
+    """``openssl enc -aes-256-cbc -md md5`` (openssl before 1.1.0); ``pad`` in place
+    of the PKCS#7 padding."""
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    material, block = b"", b""
+    while len(material) < 48:
+        block = hashlib.md5(block + password + salt).digest()
+        material += block
+    if pad is None:
+        count = 16 - len(plain) % 16
+        pad = bytes([count]) * count
+    encryptor = Cipher(
+        algorithms.AES(material[:32]), modes.CBC(material[32:48])
+    ).encryptor()
+    return b"Salted__" + salt + encryptor.update(plain + pad) + encryptor.finalize()
+
+
+@_requires("cryptography")
+def test_without_md_an_md5_key_reads() -> None:
+    """makeself 2.4.5 without ``-md`` left the digest to openssl, md5 before 1.1.0."""
+    plain = gzip.compress(_tar("x.txt", b"xyz"), mtime=0)
+    payload = _evp_md5(b"secret", b"12345678", plain)
+    data = _with_payload("openssl-nomd-2.4.5.run", payload)
+    with open_archive(io.BytesIO(data), password="secret") as reader:
+        assert reader.read("x.txt") == b"xyz"
+
+
+@_requires("cryptography")
+def test_damaged_padding_is_corruption() -> None:
+    plain = gzip.compress(_tar("x.txt", b"xyz"), mtime=0)
+    pad = bytes(16 - len(plain) % 16)  # zeros: PKCS#7 has no zero padding
+    payload = _evp_md5(b"secret", b"12345678", plain, pad)
+    data = _with_payload("openssl-nomd-2.4.5.run", payload)
+    with (
+        open_archive(io.BytesIO(data), password="secret") as reader,
+        pytest.raises(CorruptionError, match="padding is damaged"),
+    ):
+        reader.members()
+
+
+def test_a_payload_without_the_salt_header_is_corruption() -> None:
+    _, payload = _split((DATA / "openssl-2.7.1.run").read_bytes())
+    data = _with_payload("openssl-2.7.1.run", b"Unsalted" + payload[8:])
+    with pytest.raises(CorruptionError, match="Salted__"):
+        open_archive(io.BytesIO(data), password="secret")
+
+
+def test_a_payload_cut_in_the_salt_is_truncated() -> None:
+    data = _with_payload("openssl-2.7.1.run", b"Salted__1234")
+    with pytest.raises(TruncatedError, match="salt"):
+        open_archive(io.BytesIO(data), password="secret")
+
+
+def test_without_cryptography_the_package_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(crypto, "_crypto_available", lambda: False)
+    with pytest.raises(PackageNotInstalledError, match="cryptography"):
+        open_archive(DATA / "openssl-2.7.1.run", password="secret")
+
+
+def test_the_tar_check_needs_a_valid_header_checksum() -> None:
+    header = bytearray(_tar("x.txt", b"xyz")[:512])
+    starts = makeself_reader._starts_payload
+    assert starts(bytes(header), StreamFormat.UNCOMPRESSED)
+    header[0] ^= 1
+    assert not starts(bytes(header), StreamFormat.UNCOMPRESSED)
+    assert not starts(bytes(512), StreamFormat.UNCOMPRESSED)
+
+
+@_requires("cryptography")
+def test_pbkdf2_is_charged_to_the_key_derivation_budget() -> None:
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_key_derivation_rounds=9999)
+    )
+    with pytest.raises(ResourceLimitError, match="makeself openssl key derivation"):
+        open_archive(DATA / "openssl-2.7.1.run", password="secret", config=config)
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_key_derivation_rounds=10000)
+    )
+    with open_archive(
+        DATA / "openssl-2.7.1.run", password="secret", config=config
+    ) as r:
+        assert _contents(r) == FILES
+
+
+@_requires("cryptography")
+@pytest.mark.parametrize("name", ["openssl-2.7.1.run", "openssl-2.4.5.run"])
+def test_ciphertext_cut_mid_block_is_truncated(name: str) -> None:
+    """Sizes and digests match the cut payload; the cut must still be seen even
+    though the gzip reader above takes the first raise past the TAR's end."""
+    _, payload = _split((DATA / name).read_bytes())
+    data = _with_payload(name, payload[:-5])
+    with (
+        open_archive(io.BytesIO(data), password="secret") as reader,
+        pytest.raises(TruncatedError, match="part-way through a block"),
+    ):
+        reader.members()
+
+
+def test_base64_cut_mid_group_is_corruption() -> None:
+    _, payload = _split((DATA / "base64-2.7.1.run").read_bytes())
+    data = _with_payload("base64-2.7.1.run", payload.rstrip(b"\n")[:-2] + b"\n")
+    with (
+        open_archive(io.BytesIO(data)) as reader,
+        pytest.raises(CorruptionError, match="group of four"),
+    ):
+        reader.members()
+
+
+@_requires("cryptography")
+def test_a_provider_that_gives_nothing_asks_for_a_password() -> None:
+    with pytest.raises(EncryptionError, match="pass password= to read it"):
+        open_archive(DATA / "openssl-2.7.1.run", password=lambda _member: None)
+
+
+@pytest.mark.parametrize(
+    ("flags", "taken"),
+    [
+        (0x90, True),
+        (0x09, True),
+        (0x10, True),
+        (0x8C, True),
+        (0x00, False),
+        (0x1F, False),
+        (0x11, False),
+        (0x9F, False),
+    ],
+)
+def test_the_compress_check_takes_only_the_flags_compress_writes(
+    flags: int, taken: bool
+) -> None:
+    start = b"\x1f\x9d" + bytes([flags]) + bytes(13)
+    assert makeself_reader._starts_payload(start, StreamFormat.UNIX_COMPRESS) is taken
