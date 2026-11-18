@@ -470,6 +470,22 @@ def _read_symbol(decoder: _BitDecompressor, codes: dict) -> Generator[bool, None
     raise CorruptionError("Implode stream has a code its tree does not define")
 
 
+def _copy_match(history: bytearray, distance: int, count: int, end: int) -> None:
+    """Append a match, including the implicit zero history of Implode and Reduce."""
+    if distance > end:
+        zeros = min(count, distance - end)
+        history += bytes(zeros)
+        count -= zeros
+        if not count:
+            return
+    start = len(history) - distance
+    if count <= distance:
+        history += history[start : start + count]
+    else:
+        pattern = history[start:]
+        history += (pattern * ((count + distance - 1) // distance))[:count]
+
+
 class ImplodeDecompressor(_BitDecompressor):
     """Implode: a 4 KiB or 8 KiB window, and two or three Shannon-Fano trees."""
 
@@ -518,9 +534,7 @@ class ImplodeDecompressor(_BitDecompressor):
                 # ``trimmed`` bytes of output have left ``history``; a source before
                 # the start of the output reads zero, as Info-ZIP reads it.
                 end = trimmed + len(history)
-                for position in range(end, end + length):
-                    source = position - distance
-                    history.append(history[source - trimmed] if source >= 0 else 0)
+                _copy_match(history, distance, length, end)
                 self._emit(history[len(history) - length :])
             yield from self._budget()
             if len(history) > 4 * window:
@@ -629,9 +643,7 @@ class ReduceDecompressor(_BitDecompressor):
                 distance = ((escaped >> length_bits) << 8) + byte + 1
                 count = min(length + 3, size - self._produced)
                 end = trimmed + len(history)
-                for position in range(end, end + count):
-                    source = position - distance
-                    history.append(history[source - trimmed] if source >= 0 else 0)
+                _copy_match(history, distance, count, end)
                 self._emit(history[len(history) - count :])
             yield from self._budget()
             if len(history) > 4 * window:
@@ -770,8 +782,7 @@ class DclImplodeDecompressor(_BitDecompressor):
                         f"DCL Implode copy reaches {distance} bytes back, before the "
                         f"start of the output ({end} bytes)"
                     )
-                for position in range(end, end + length):
-                    history.append(history[position - distance - trimmed])
+                _copy_match(history, distance, length, end)
                 self._emit(history[len(history) - length :])
             else:
                 if coded:
