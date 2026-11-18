@@ -72,10 +72,13 @@ runs:
         # apt downloads as _apt, which must be able to write there.
         sudo rm -rf "$DEBS" && mkdir -p "$DEBS/partial" && chmod a+rwx "$DEBS" "$DEBS/partial"
         # A dead mirror makes apt retry every mirror and file for many minutes (17 on
-        # 11-11, until the job timed out), so each network call gets 2 minutes. A
-        # working mirror takes seconds.
+        # 11-11, until the job timed out), so each network call has a time limit. The
+        # index update takes seconds on a working mirror. The download gets more: the
+        # unar build dependencies are about 35 MB, and on 11-18 a slow but working
+        # mirror took over 2 minutes for them on two tries in a row (one 13 MB package
+        # still downloading at the cut).
         timeout 120 "${apt[@]}" update -q -o Acquire::Retries=3
-        timeout 120 "${apt[@]}" install "${flags[@]}" --download-only \
+        timeout 600 "${apt[@]}" install "${flags[@]}" --download-only \
           -o Dir::Cache::archives="$DEBS" $PACKAGES
         saved=skip  # The system may already have every package: nothing to cache.
         if compgen -G "$DEBS/*.deb" > /dev/null; then

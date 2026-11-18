@@ -39,7 +39,8 @@ import sys
 #: Besides the code, the list holds every file outside it that a library test or a
 #: skipped job reads: the doc files ci.yml's path filter re-includes for a test, the
 #: API surface file, the root LICENSE and publish.yml (the CLI package tests compare
-#: them), the benchmarks, and the checkout and interpreter settings every leg uses.
+#: them), the benchmarks, the local composite actions ci.yml's jobs use, and the
+#: checkout and interpreter settings every leg uses.
 #: The rest (other workflows, `.pre-commit-config.yaml`, agent and review files, docs)
 #: is read by no job a ``full=false`` run skips.
 FULL = (
@@ -54,6 +55,7 @@ FULL = (
     ".github/workflows/ci.yml",
     ".github/workflows/atheris-fuzz.yml",
     ".github/workflows/publish.yml",
+    ".github/actions/",
     "docs/api.md",
     "dev-docs/api-surface.txt",
     "dev-docs/tar-minefield-results.md",
