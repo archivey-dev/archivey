@@ -96,9 +96,10 @@ Where they are installed, the tests also compare archivey with `unar`, lhasa, `c
 [python-lzo](https://github.com/jd-boyd/python-lzo), on LZO data.
 
 7-Zip, RARLAB's `rar`, Info-ZIP's `zip`, `lzop`, `bsdtar`, ARJ for Unix, makeself, squashfs-tools,
-`rpmbuild`, `dpkg-deb`, xorriso, [ncompress](https://github.com/valgur/ncompress) and several of
-the libraries above write archivey's test archives. Some archives come from other projects,
-because no tool at hand writes them; each is credited in its folder's README:
+`rpmbuild`, `dpkg-deb`, xorriso, [ncompress](https://github.com/valgur/ncompress),
+[pyzipper](https://github.com/danifus/pyzipper) and several of the libraries above write
+archivey's test archives. Some archives come from other projects, because no tool at hand writes
+them; each is credited in its folder's README:
 
 - two old RAR archives from rarfile, and an LZ4 7z archive from py7zr;
 - an encrypted solid RAR archive and four CAB files from libarchive's tests;
