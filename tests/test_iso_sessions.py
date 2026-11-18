@@ -19,8 +19,8 @@ import pytest
 
 from archivey import DiagnosticCode, open_archive
 from archivey.formats import ReaderSource
-from archivey.internal.backends.cd_sectors import raw_sector_layout
-from archivey.internal.backends.cd_sessions import last_session_source, sector_address
+from archivey.internal.backends.cd_sectors import raw_sector_layout, sector_address
+from archivey.internal.backends.cd_sessions import last_session_source
 from tests.conftest import requires, requires_binary
 from tests.test_iso_raw_sectors import _sector, to_raw
 
@@ -291,3 +291,58 @@ def test_read_hints_name_the_sectors_of_the_bin(tmp_path: Path) -> None:
     )
     # A range across the gap is in no one track.
     assert disc.file_range((start - 1) * 2048, (start + 1) * 2048) is None
+
+
+def _pvd_sector(address: int, root: int) -> bytes:
+    """A raw sector at ``address`` whose user data is a primary volume descriptor
+    naming ``root`` as its root directory's sector."""
+    data = bytearray(2048)
+    data[:7] = b"\x01CD001\x01"
+    data[156] = 34
+    data[158:162] = root.to_bytes(4, "little")
+    sector = bytearray(_sector(address, mode=1))
+    sector[16 : 16 + 2048] = data
+    return bytes(sector)
+
+
+def test_crafted_descriptor_candidates_cost_two_reads_each() -> None:
+    # Every sector of the later session claims to be a primary volume descriptor with
+    # a root that never names itself: each candidate costs its batch share and one
+    # root read, not a volume descriptor set's worth.
+    start = 20 + _FIRST_GAP
+    first = b"".join(_sector(i, mode=1) for i in range(20))
+    later = b"".join(_pvd_sector(start + i, start + 5) for i in range(4200))
+    data = first + later
+    layout = raw_sector_layout(data[: 2448 + 12])
+    assert layout is not None
+    source = _source(data)
+    assert last_session_source(source, layout, None) is None
+    reads = source.reads  # type: ignore[attr-defined]
+    assert len(reads) < 4_300
+    assert sum(n for _, n in reads) < 2 * 4_096 * 2352 + 64 * 2352
+
+
+@requires("pycdlib")
+def test_a_sheet_over_a_blank_later_session_is_not_reported(tmp_path: Path) -> None:
+    # The addresses jump to a later session that holds no volume: without the sheet
+    # the image lists track 1 too, so the two readings agree and nothing is reported.
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3)
+    iso.add_fp(io.BytesIO(b"one\n"), 4, "/ONE.TXT;1")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    first = out.getvalue()
+    start = len(first) // 2048 + _FIRST_GAP
+    disc = tmp_path / "disc.bin"
+    disc.write_bytes(to_raw(first) + to_raw(b"\0" * 2048 * 300, first=start))
+    (tmp_path / "disc.cue").write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+        f"  TRACK 02 MODE1/2352\n    INDEX 01 {_msf(len(first) // 2048)}\n"
+    )
+    for source in (disc, io.BytesIO(disc.read_bytes())):
+        with open_archive(source) as archive:
+            assert [m.name for m in archive.members()] == ["ONE.TXT"]
+            assert archive.diagnostics.retained == ()

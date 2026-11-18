@@ -1850,19 +1850,19 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
 
         ``ARCHIVE_UNREAD_SESSION``, as for a raw image read from its first track: the
         sheet chose a track, but the sector addresses of a data track after it jump
-        by a session gap the sheet does not have (``cue_sheet._hidden_session``).
-        Read without the sheet, the same image lists the later session, so the two
-        readings differ; the listing follows the sheet."""
+        by a session gap the sheet does not have, and that session holds a volume
+        the sheet-less reading lists (``cue_sheet._hidden_session`` runs the same
+        check). The two readings differ; the listing follows the sheet."""
         if disc.hidden_session is None:
             return
-        track, address = disc.hidden_session
-        sector = address + 16
+        track, sector = disc.hidden_session
         self._context.report(
             DiagnosticCode.ARCHIVE_UNREAD_SESSION,
             (
                 f"The .cue sheet places track {track} in the session it reads, but "
-                "the track's sector addresses start a later session. The listing "
-                "follows the sheet; read without it, the image lists that session."
+                "the track's sector addresses start a later session, with an ISO "
+                f"9660 volume descriptor at address {sector}. The listing follows "
+                "the sheet; read without it, the image lists that session."
             ),
             UnreadSessionContext(
                 archive_name=self._archive_name, format="iso", sector=sector

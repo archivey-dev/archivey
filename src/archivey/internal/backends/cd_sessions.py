@@ -14,8 +14,8 @@ How the image is walked (:func:`last_session_source`):
 
 - The last data sector near the end of the file is read first. When its address is
   as far past sector 0's as its position is, no address jumps: the image is one
-  session and is read from its first track, as before. That is one read, for the
-  common case, and a mixed-mode disc (data, then audio to the end) costs the same.
+  session and is read from its first track. That costs two reads (sector 0 and the
+  tail), and a mixed-mode disc (data, then audio to the end) costs the same.
 - Otherwise the file is split into runs: data sectors whose address minus position
   is the same number (the run's offset). A run is followed by probing ahead in
   doubling steps and bisecting where a probe fails, so a run costs about two reads
@@ -25,7 +25,8 @@ How the image is walked (:func:`last_session_source`):
   sessions. The chosen track is the first run of the last session. Its volume
   descriptors are looked for from its sector 16 on (a pregap kept in the file puts
   them later), and checked as the sheet path checks them: the root directory's ``.``
-  record must name its own sector.
+  record must name its own sector (``cue_sheet.find_volume``, two sector reads per
+  candidate).
 
 Anything that does not fit (an address that goes backwards, more runs than a disc has
 tracks, no primary volume descriptor in the last session, a root that does not name
@@ -36,25 +37,17 @@ volume it sees after it (``ARCHIVE_UNREAD_SESSION``).
 from __future__ import annotations
 
 import io
-from collections.abc import Iterator
 from dataclasses import dataclass
 
-from archivey.exceptions import ArchiveyError
 from archivey.formats import ReaderSource
 from archivey.internal.backends.cd_sectors import (
+    HEADER_SIZE,
     LEAD_IN_SECTORS,
-    USER_DATA_SIZE,
     RawSectorLayout,
     _SectorChecker,
-    sector_address,
+    data_sector_address,
 )
-from archivey.internal.backends.cue_sheet import (
-    _ROOT_SEARCH_SECTORS,
-    DiscSource,
-    _Extent,
-    _names_itself,
-    _root_extent,
-)
+from archivey.internal.backends.cue_sheet import DiscSource, _Extent, find_volume
 
 _MAX_RUNS = 256
 """A disc holds at most 99 tracks; the run-out sectors of each can add a run. More
@@ -66,11 +59,6 @@ _TAIL_SECTORS = 32
 
 _BATCH_SECTORS = 64
 """Sectors read at once while looking for the next data sector."""
-
-_HEADER_SIZE = 24
-"""Sync, address, mode and the Mode 2 subheader: what tells a data sector."""
-
-_PVD_PREFIX = b"\x01CD001\x01"
 
 
 @dataclass(frozen=True)
@@ -93,13 +81,11 @@ class _Walk:
         self.sectors = sectors
 
     def _address_in(self, header: bytes) -> int | None:
-        if len(header) < _HEADER_SIZE or not self._checker.is_data_sector(header):
-            return None
-        return sector_address(header)
+        return data_sector_address(self._checker, header)
 
     def address(self, index: int) -> int | None:
         """The address of data sector ``index``, or ``None`` if it is not one."""
-        return self._address_in(self._source.read_at(index * self._size, _HEADER_SIZE))
+        return self._address_in(self._source.read_at(index * self._size, HEADER_SIZE))
 
     def offset(self, index: int) -> int | None:
         address = self.address(index)
@@ -111,7 +97,7 @@ class _Walk:
         raw = self._source.read_at(first * size, (end - first) * size)
         for index in reversed(range(first, end)):
             at = (index - first) * size
-            address = self._address_in(raw[at : at + _HEADER_SIZE])
+            address = self._address_in(raw[at : at + HEADER_SIZE])
             if address is not None:
                 return index, address
         return None
@@ -123,10 +109,7 @@ class _Walk:
             count = min(_BATCH_SECTORS, last + 1 - index)
             raw = self._source.read_at(index * size, count * size)
             for k in range(count):
-                if (
-                    self._address_in(raw[k * size : k * size + _HEADER_SIZE])
-                    is not None
-                ):
+                if self._address_in(raw[k * size : k * size + HEADER_SIZE]) is not None:
                     return index + k
             index += count
         return None
@@ -240,45 +223,15 @@ def last_session_source(
     chosen = extents[chosen_at]
     name = source.path.name if source.path is not None else archive_name or "image"
     image = _ImageFile(source, name)
-    for base in _descriptor_bases(source, layout, runs[chosen_at]):
-        try:
-            disc = DiscSource(
-                [image],
-                extents,
-                chosen,
-                archive_name,
-                base=chosen.lba + base,
-                path=source.path,
-                hints=True,
-            )
-            root = _root_extent(
-                lambda i, disc=disc: disc.read_at(i * USER_DATA_SIZE, USER_DATA_SIZE)
-            )
-            if root is not None and _names_itself(
-                disc.read_at(root * USER_DATA_SIZE, 34), root
-            ):
-                return disc
-        except ArchiveyError:
-            continue  # the root is in no data sector: not this volume
-    return None
-
-
-def _descriptor_bases(
-    source: ReaderSource, layout: RawSectorLayout, run: _Run
-) -> Iterator[int]:
-    """Where in ``run`` a volume may start: each sector ``n`` of its first ones whose
-    user data opens with a primary volume descriptor, as ``n - 16``. Read in batches
-    as the caller asks for more."""
-    size = layout.sector_size
-    assert size is not None
-    offset = layout.data_offset
-    limit = min(run.count, _ROOT_SEARCH_SECTORS)
-    index = 16
-    while index < limit:
-        count = min(_BATCH_SECTORS, limit - index)
-        raw = source.read_at((run.first + index) * size, count * size)
-        for k in range(count):
-            at = k * size + offset
-            if raw[at : at + len(_PVD_PREFIX)] == _PVD_PREFIX:
-                yield index + k - 16
-        index += count
+    base = find_volume([image], extents, chosen)
+    if base is None:
+        return None
+    return DiscSource(
+        [image],
+        extents,
+        chosen,
+        archive_name,
+        base=base,
+        path=source.path,
+        hints=True,
+    )

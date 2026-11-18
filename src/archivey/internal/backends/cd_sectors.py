@@ -71,6 +71,11 @@ def sector_address(header: bytes) -> int | None:
     return (minutes * 60 + seconds) * 75 + frames - _ADDRESS_ORIGIN
 
 
+HEADER_SIZE = 24
+"""Sync, address, mode and the Mode 2 subheader: what tells a data sector and its
+address."""
+
+
 # How many sectors one read of the underlying source covers (about 150 KB raw).
 _SECTORS_PER_READ = 64
 
@@ -385,3 +390,11 @@ def cooked_source(
         with source.view(0) as whole:
             size = whole.seek(0, io.SEEK_END)
     return CookedSource(source, layout, size, archive_name)
+
+
+def data_sector_address(checker: _SectorChecker, header: bytes) -> int | None:
+    """The address a data sector of ``checker``'s layout names, from its first
+    :data:`HEADER_SIZE` bytes; ``None`` for a sector that is not one, or is cut."""
+    if len(header) < HEADER_SIZE or not checker.is_data_sector(header):
+        return None
+    return sector_address(header)

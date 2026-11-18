@@ -639,8 +639,9 @@ class UnreadSessionContext(_JsonSafeContext):
     show no later session it can read is read from its first track, and another
     volume follows it: ``sector`` is the image's sector that holds that volume's
     primary volume descriptor. Or a ``.cue`` sheet chose a session, and the sector
-    addresses of a data track after it start a later one: ``sector`` is that track's
-    first address plus 16, where a volume of that session would start.
+    addresses of a data track after it start a later one that holds a volume:
+    ``sector`` is the address, by those sector headers, of that volume's primary
+    volume descriptor.
     """
 
     kind: Literal["unread_session"] = "unread_session"

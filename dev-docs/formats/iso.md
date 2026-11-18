@@ -116,10 +116,12 @@ postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a lea
 more are in different sessions. The first run of the last session is chosen, its volume
 descriptors are looked for from its sector 16 on (a pregap kept in the file puts them
 150 later), and a candidate is kept only when the root directory's `.` record names its
-own sector through that mapping. The result is a `DiscSource` over the `.bin` itself, so
-read hints map back to its sectors (`DiscSource.file_range`). Addresses that go
-backwards, more than 256 runs, or a last session without a volume that passes the check
-leave the image read from its first track (`cooked_source`), as before.
+own sector through that mapping (`cue_sheet.find_volume`: two sector reads per
+candidate, so 4 096 crafted candidates cost about 8 200 sector reads). The result is a
+`DiscSource` over the `.bin` itself, so read hints map back to its sectors
+(`DiscSource.file_range`). Addresses that go backwards, more than 256 runs, or a last
+session without a volume that passes the check leave the image read from its first track
+(`cooked_source`), as before.
 
 Read from its first track, the trailing-data scan stops at the first sector that is not
 a data sector, so a mixed-mode disc's audio is not reported. When a sector of that scan
@@ -148,13 +150,15 @@ handle, which is found by device and inode, so through a link or another case of
 name too. It also refuses track numbers that do not increase: the chosen track is found
 by number, so a repeated number picked the first session's track. When the sector
 addresses of a data track after the chosen one jump past the track before it by a
-session gap the sheet's addresses lack (a sheet with no `REM SESSION` lines),
-`ARCHIVE_UNREAD_SESSION` names that track's first address plus 16
-(`cue_sheet._hidden_session`, two header reads per track): without the sheet the image
-lists that session, and the listing follows the sheet. The trailing-data scan
-covers only the rest of the chosen track, and member hints are empty (the opened file is
-the sheet). A non-seekable source is also refused ahead of that check, with
-`StreamNotSeekableError`, because `pycdlib` could not read it either. The
+session gap the sheet's addresses lack (a sheet with no `REM SESSION` lines), and
+`cue_sheet.find_volume` finds a volume there (the same check the sheet-less reading
+runs, on the tracks placed by their addresses), `ARCHIVE_UNREAD_SESSION` names that
+volume's descriptor address (`cue_sheet._hidden_session`, two header reads per track):
+without the sheet the image lists that session, and the listing follows the sheet. A
+later session with no volume is not reported, since both readings agree. The
+trailing-data scan covers only the rest of the chosen track, and member hints are empty
+(the opened file is the sheet). A non-seekable source is also refused ahead of that
+check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
 extension is `.iso`.
 
 Neither magic is validated past the match; there is no SFX scan and no validator, because

@@ -198,9 +198,11 @@ sheet.
 
 When the sector addresses of a data track after the chosen one jump past the track
 before it by a session gap the sheet's addresses do not have (a sheet with no
-`REM SESSION` lines), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming that
-track's first address plus 16: the image read without the sheet lists that session. The
-listing SHALL follow the sheet.
+`REM SESSION` lines), and a volume in that track passes the check the sheet-less reading
+uses (previous requirement), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming
+the address of that volume's primary volume descriptor: the image read without the sheet
+lists that session. The listing SHALL follow the sheet. A later session with no volume
+that passes is not reported, since both readings list the same files.
 
 #### Scenario: cue matrix
 
@@ -212,6 +214,7 @@ listing SHALL follow the sheet.
 | Two data sessions, another gap | The same, through the root-directory search |
 | Audio session, then data session (Enhanced CD) | The data session |
 | Two data sessions whose sector addresses jump by the gap, sheet with no `REM SESSION` | Track 1 is listed; `ARCHIVE_UNREAD_SESSION` |
+| The same, with no volume in the later session | Track 1 is listed; no diagnostic |
 | `FILE "../x.bin"`, `"/etc/passwd"`, `"sub/x.bin"` | `UnsupportedFeatureError` |
 | Missing track file | `TruncatedError` |
 | A `FILE` with no `TRACK` after it; a track number not above the one before | `CorruptionError`; no track file opened |
