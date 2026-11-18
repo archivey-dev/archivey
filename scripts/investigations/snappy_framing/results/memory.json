@@ -1,0 +1,10 @@
+{
+ "compress-utils": {
+  "decoded": 67108864,
+  "extra_peak_rss_KiB": 6340
+ },
+ "cramjam": {
+  "decoded": 67108864,
+  "extra_peak_rss_KiB": 5332
+ }
+}

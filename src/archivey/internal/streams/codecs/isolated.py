@@ -18,7 +18,7 @@ from __future__ import annotations
 import lzma
 import zlib
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from archivey.config import ProcessIsolation
 from archivey.internal.overrides import override
@@ -68,6 +68,11 @@ class LzoChildError(ValueError):
     child process."""
 
 
+class SnappyChildError(ValueError):
+    """Stand-in for a Snappy package's refusal of a raw block in a child process
+    (cramjam's ``DecompressionError``, compress-utils' ``CompressError``)."""
+
+
 def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Exception]]:
     return {
         (cls.__module__, cls.__qualname__): cls for cls in classes if cls is not None
@@ -84,6 +89,10 @@ _LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {
 }
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError
+}
+_SNAPPY_ERRORS: dict[tuple[str, str], type[Exception]] = {
+    ("*", "DecompressionError"): SnappyChildError,
+    ("*", "CompressError"): SnappyChildError,
 }
 PPMD_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "PpmdError"): PpmdChildError
@@ -189,6 +198,23 @@ class ChildDecompressor(_ChildProxy):
     @property
     def unused_data(self) -> bytes:
         return self._child.unused_data()
+
+
+class ChildSnappyNatives(_ChildProxy):
+    """Snappy's native raw-block decoder and CRC-32C in a child, held for one stream
+    (the worker's ``_Snappy``). The framing stays in this process; a data chunk costs
+    one round trip, which decodes it and computes its CRC together."""
+
+    def chosen(self) -> tuple[str, str]:
+        """The decoder and the CRC package the child found, ``""`` for none."""
+        self._child.call("chosen", None)
+        decoder, crc = cast("tuple[str, str]", self._child.result)
+        return decoder, crc
+
+    def chunk(self, body: bytes, size: int) -> bytes:
+        """The worker's ``_Snappy.chunk``: decoded data (``size`` >= 0), then the
+        CRC-32C as 4 little-endian bytes when the child has a CRC package."""
+        return self._child.call("chunk", body, (size,))
 
 
 class ChildZlibDecompressor(ChildDecompressor):
@@ -450,6 +476,18 @@ class Natives:
         except DecoderChildStartError as exc:
             raise isolation_error(str(exc), setting, isolated_unless_none=True) from exc
         return ChildBzip3Decompressor(child)
+
+    def snappy_natives(
+        self, decoders: list[str], crcs: list[str]
+    ) -> ChildSnappyNatives:
+        """Snappy's native packages in a child, held for one stream; only when
+        isolated. ``decoders`` and ``crcs`` are the packages allowed, in order."""
+        assert self.isolated
+        return ChildSnappyNatives(
+            self._child(
+                "snappy", (), {"decoders": decoders, "crcs": crcs}, known=_SNAPPY_ERRORS
+            )
+        )
 
     def package_available(self, lazy: deps.LazyOptional) -> bool:
         """Whether a lazily imported package can decode. In-process this imports it

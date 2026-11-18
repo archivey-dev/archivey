@@ -1,0 +1,38 @@
+{
+ "kernel_64k_MBps": {
+  "text/compress-utils": 925.3,
+  "text/cramjam": 1178.3,
+  "text/google-ctypes": 837.6,
+  "random/compress-utils": 10704.0,
+  "random/cramjam": 10055.4,
+  "random/google-ctypes": 7319.2,
+  "zeros/compress-utils": 1917.6,
+  "zeros/cramjam": 1730.4,
+  "zeros/google-ctypes": 1327.6,
+  "zlib-ish/compress-utils": 1238.4,
+  "zlib-ish/cramjam": 1621.1,
+  "zlib-ish/google-ctypes": 1142.4
+ },
+ "framed_16MiB_MBps": {
+  "text/compress-utils/crc=google-crc32c": 530.8,
+  "text/compress-utils/crc=python": 19.9,
+  "text/cramjam/crc=google-crc32c": 639.4,
+  "text/cramjam/crc=python": 18.4,
+  "text/cramjam-own-framing": 838.0,
+  "random/compress-utils/crc=google-crc32c": 596.5,
+  "random/compress-utils/crc=python": 19.4,
+  "random/cramjam/crc=google-crc32c": 481.5,
+  "random/cramjam/crc=python": 19.3,
+  "random/cramjam-own-framing": 2178.4,
+  "zeros/compress-utils/crc=google-crc32c": 934.9,
+  "zeros/compress-utils/crc=python": 23.3,
+  "zeros/cramjam/crc=google-crc32c": 856.4,
+  "zeros/cramjam/crc=python": 22.7,
+  "zeros/cramjam-own-framing": 1227.0,
+  "zlib-ish/compress-utils/crc=google-crc32c": 648.0,
+  "zlib-ish/compress-utils/crc=python": 19.7,
+  "zlib-ish/cramjam/crc=google-crc32c": 704.2,
+  "zlib-ish/cramjam/crc=python": 19.3,
+  "zlib-ish/cramjam-own-framing": 1115.6
+ }
+}
