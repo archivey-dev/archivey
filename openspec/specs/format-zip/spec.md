@@ -810,6 +810,29 @@ SHALL stay refused as a split set.
 | Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
 
+### Requirement: Report ZIP64 extra fields that no header field uses
+
+APPNOTE 4.5.3 has a ZIP64 extra field (`0x0001`) hold only the values whose header
+field is all ones. When a central directory entry has such a field and none of its
+uncompressed size, compressed size, local header offset and disk number fields is all
+ones, the entry's own values SHALL be used, as unzip and `zipfile` read them. When the
+first ZIP64 field's values, read in APPNOTE's order as far as the field's length holds
+whole values, differ from the entry's, the listing SHALL report
+`MEMBER_HEADER_AMBIGUOUS` with `ambiguity="zip64_unused"`, `field` the first value that
+differs and `more_fields` the count of the others: a reader that takes the field
+whatever the entry holds lists another size or reads other bytes. A field whose values
+agree with the entry SHALL report nothing. The report SHALL come from a file read and a
+pipe read alike, and `STRICT` SHALL refuse the member, as for every
+`MEMBER_HEADER_AMBIGUOUS`.
+
+#### Scenario: unused ZIP64 values
+
+| Archive, one stored member of 5 bytes | Expected, from a file and from a pipe |
+| --- | --- |
+| A ZIP64 field of 16 bytes giving 10¹² for both sizes, entry fields 5 and 5 | Lists size 5 and reads the 5 bytes; `MEMBER_HEADER_AMBIGUOUS` with `field="uncompressed size"`, `more_fields=1` |
+| A ZIP64 field giving 5 and 5 | Lists and reads; no diagnostic |
+| The first case under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` |
+
 ### Requirement: Read ZIPs written past 4 GiB without ZIP64
 
 macOS Archive Utility (Finder's Compress, `ditto -c -k`) writes a classic ZIP past
