@@ -56,58 +56,60 @@ its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator 
 left out, because the default does not use one at this corpus size. The rows are the
 same cases as in [0.2.0 release figures](#020-release-figures-2026-10-21).
 
-### 0.4.1 against 0.4.0 and 0.3.0 (2026-11-17)
+### 0.4.1 against 0.4.0 and 0.3.0 (2026-11-18)
 
-Two runs, each with the 0.4.1 release branch at `ed7e9313` as the candidate. Each run
+Two runs, each with the 0.4.1 release branch at `2f0db5d8` as the candidate. Each run
 pairs its own baseline with the candidate on the same runner, so compare within a table,
-not across them: the second run's runner was about 1.5 times slower throughout.
+not across them: the two runners differ in speed, by up to 1.6 times, and not by the same
+factor for every case.
 
-Run 44190090067, baseline the `v0.4.0` tag (`5baeb00c`):
+Run 44220708965, baseline the `v0.4.0` tag (`5baeb00c`):
 
 | Case | archivey 0.4.0 | ratio 0.4.0 | archivey 0.4.1 | ratio 0.4.1 |
 | --- | ---: | ---: | ---: | ---: |
-| `gzip_read_all` | 26.9 ms | 1.13× | 26.9 ms | 1.15× |
-| `tar_read_all` | 5.3 ms | 3.66× | 5.4 ms | 3.57× |
-| `tarbz2_read_all_accel_off` | 91.2 ms | 1.16× | 95.8 ms | 1.22× |
-| `targz_read_all_accel_off` | 13.5 ms | 1.84× | 13.5 ms | 1.87× |
-| `zip_extract` | 26.5 ms | 2.24× | 27.2 ms | 2.27× |
-| `zip_read_all` | 14.5 ms | 2.35× | 14.1 ms | 2.30× |
-| `rar_many_open_list` | 17.3 ms | 2.21× | 17.1 ms | 2.21× |
-| `rar_nonsolid_open_list` | 5.0 ms | 2.55× | 4.9 ms | 2.48× |
-| `rar_open_list` | 0.8 ms | 11.31× | 0.8 ms | 11.57× |
-| `sevenzip_many_open_list` | 111.2 ms | 2.13× | 91.8 ms | 1.80× |
-| `sevenzip_nonsolid_open_list` | 17.8 ms | 2.05× | 14.4 ms | 1.46× |
-| `sevenzip_open_list` | 1.2 ms | 2.97× | 1.1 ms | 2.77× |
-| `tar_open_list` | 2.1 ms | 2.43× | 2.1 ms | 2.39× |
-| `zip_open_list` | 1.1 ms | 11.51× | 1.0 ms | 10.60× |
+| `gzip_read_all` | 28.6 ms | 1.12× | 26.6 ms | 1.03× |
+| `tar_read_all` | 7.3 ms | 3.49× | 7.3 ms | 3.45× |
+| `tarbz2_read_all_accel_off` | 218.5 ms | 1.07× | 222.9 ms | 1.12× |
+| `targz_read_all_accel_off` | 16.5 ms | 1.86× | 17.5 ms | 1.97× |
+| `zip_extract` | 34.4 ms | 2.70× | 35.0 ms | 2.75× |
+| `zip_read_all` | 18.5 ms | 2.42× | 18.1 ms | 2.36× |
+| `rar_many_open_list` | 22.9 ms | 2.20× | 22.7 ms | 2.20× |
+| `rar_nonsolid_open_list` | 6.6 ms | 2.53× | 6.4 ms | 2.45× |
+| `rar_open_list` | 1.0 ms | 11.01× | 0.9 ms | 10.71× |
+| `sevenzip_many_open_list` | 129.0 ms | 1.92× | 115.3 ms | 1.75× |
+| `sevenzip_nonsolid_open_list` | 16.8 ms | 1.14× | 18.7 ms | 1.59× |
+| `sevenzip_open_list` | 1.7 ms | 3.23× | 1.5 ms | 3.00× |
+| `tar_open_list` | 2.9 ms | 3.02× | 2.9 ms | 2.92× |
+| `zip_open_list` | 1.6 ms | 12.41× | 1.4 ms | 11.37× |
 
-Run 44190097482, baseline the `v0.3.0` tag (`f013eec9`):
+Run 44220715975, baseline the `v0.3.0` tag (`f013eec9`):
 
 | Case | archivey 0.3.0 | ratio 0.3.0 | archivey 0.4.1 | ratio 0.4.1 |
 | --- | ---: | ---: | ---: | ---: |
-| `gzip_read_all` | 34.7 ms | 0.97× | 42.3 ms | 1.17× |
-| `tar_read_all` | 9.7 ms | 3.83× | 9.3 ms | 3.69× |
-| `tarbz2_read_all_accel_off` | 205.2 ms | 1.08× | 217.1 ms | 1.14× |
-| `targz_read_all_accel_off` | 22.4 ms | 1.80× | 23.5 ms | 1.89× |
-| `zip_extract` | 45.0 ms | 2.50× | 44.0 ms | 2.46× |
-| `zip_read_all` | 25.8 ms | 2.47× | 24.4 ms | 2.33× |
-| `rar_many_open_list` | 26.6 ms | 2.03× | 30.9 ms | 2.36× |
-| `rar_nonsolid_open_list` | 7.4 ms | 2.18× | 8.7 ms | 2.58× |
-| `rar_open_list` | 1.1 ms | 6.34× | 1.3 ms | 10.59× |
-| `sevenzip_many_open_list` | 137.2 ms | 1.52× | 145.8 ms | 1.64× |
-| `sevenzip_nonsolid_open_list` | 20.1 ms | 1.47× | 20.9 ms | 1.51× |
-| `sevenzip_open_list` | 1.8 ms | 2.40× | 1.9 ms | 2.77× |
-| `tar_open_list` | 3.5 ms | 2.59× | 3.7 ms | 2.86× |
-| `zip_open_list` | 2.0 ms | 10.05× | 2.1 ms | 12.92× |
+| `gzip_read_all` | 37.4 ms | 0.98× | 40.9 ms | 1.07× |
+| `tar_read_all` | 11.4 ms | 3.62× | 11.2 ms | 3.34× |
+| `tarbz2_read_all_accel_off` | 140.6 ms | 1.19× | 153.0 ms | 1.29× |
+| `targz_read_all_accel_off` | 23.9 ms | 1.79× | 25.5 ms | 1.91× |
+| `zip_extract` | 50.0 ms | 2.35× | 49.0 ms | 2.31× |
+| `zip_read_all` | 27.3 ms | 2.40× | 26.6 ms | 2.29× |
+| `rar_many_open_list` | 29.7 ms | 2.09× | 33.6 ms | 2.36× |
+| `rar_nonsolid_open_list` | 8.4 ms | 2.26× | 9.6 ms | 2.63× |
+| `rar_open_list` | 1.2 ms | 6.34× | 1.5 ms | 10.91× |
+| `sevenzip_many_open_list` | 155.3 ms | 1.54× | 163.6 ms | 1.70× |
+| `sevenzip_nonsolid_open_list` | 22.7 ms | 1.50× | 23.4 ms | 1.54× |
+| `sevenzip_open_list` | 1.9 ms | 2.37× | 2.1 ms | 2.66× |
+| `tar_open_list` | 3.9 ms | 2.70× | 4.3 ms | 3.02× |
+| `zip_open_list` | 2.0 ms | 9.15× | 2.2 ms | 11.97× |
 
-Against 0.4.0, 7z listing is 16–19% faster in archivey's own time (#1580 and #1579), and
-the rest moved within noise. Outside the tables, `z_zeros_read_all` went from 141 to
-98 ms (#1574). Against 0.3.0, 7z listing is now 4–6% slower (10–14% in 0.4.0), and
-`z_zeros_read_all` is 7% faster (159 to 148 ms) where 0.4.0 was 40% slower. RAR listing
-is still 16–20% slower. `gzip_read_all` is 22% slower in all three rounds (34.7–35.6 ms
-against 42.3–42.8 ms); in the 0.4.0 release run this showed as 29.5 against 32.7 ms
-inside noisier rounds, and 0.4.1 reads it in the same time as 0.4.0, so the slowdown came
-with 0.4.0.
+Against 0.4.0, `gzip_read_all` is 7% faster in archivey's own time (#1627), and 7z
+listing of many members 11% faster (#1580 and #1579). `sevenzip_nonsolid_open_list` measured
+11% slower here, but its reference reader moved by as much between the two sides, and a
+run on 2026-11-17 at `ed7e9313` measured it 19% faster, so it is noise. Outside the
+tables, `z_zeros_read_all` went from 162 to 133 ms (#1574), and `tarbz2_read_all_accel_on`
+from 106 to 117 ms (9% in the 2026-11-17 run too). Against 0.3.0, `gzip_read_all` is 9%
+slower (37.4 against 40.9 ms), where the 2026-11-17 run, before #1627, measured 22%; 7z
+listing is 3–7% slower (10–14% in 0.4.0); and RAR listing is still 13–19% slower. The
+RAR listing slowdown came with 0.4.0.
 
 ### 0.4.0 and 0.3.0 (2026-11-15)
 
