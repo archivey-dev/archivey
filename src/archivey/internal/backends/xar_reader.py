@@ -82,10 +82,19 @@ _CKSUM_NAMES = {_CKSUM_SHA1: "sha1", _CKSUM_MD5: "md5"}
 _DIGESTS = {
     "md5": HashAlgorithm.MD5,
     "sha1": HashAlgorithm.SHA1,
+    "sha224": HashAlgorithm.SHA224,
     "sha256": HashAlgorithm.SHA256,
+    "sha384": HashAlgorithm.SHA384,
     "sha512": HashAlgorithm.SHA512,
 }
-_DIGEST_SIZES = {"md5": 16, "sha1": 20, "sha256": 32, "sha512": 64}
+_DIGEST_SIZES = {
+    "md5": 16,
+    "sha1": 20,
+    "sha224": 28,
+    "sha256": 32,
+    "sha384": 48,
+    "sha512": 64,
+}
 
 # The encodings Apple's xar and libarchive write. ``application/x-gzip`` is a zlib
 # stream, not gzip; ``application/x-lzma`` is LZMA Alone.
