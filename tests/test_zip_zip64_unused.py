@@ -96,11 +96,34 @@ def test_agreeing_or_absent_fields_report_nothing(
     assert _contexts(_zip(zip64_data), streaming=streaming) == []
 
 
-def test_strict_refuses_the_member() -> None:
+def test_the_message_pairs_each_value_with_the_entry_s() -> None:
+    archive = _zip(struct.pack("<QQQ", 10**12, 10**12, 7))
+    with open_archive(io.BytesIO(archive)) as ar:
+        ar.members()
+        (message,) = [
+            d.message
+            for d in ar.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+        ]
+    assert (
+        "gives uncompressed size 1000000000000 where the entry stores 5; "
+        "compressed size 1000000000000 where the entry stores 5; "
+        "local header offset 7 where the entry stores 0." in message
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["file", "pipe"])
+def test_strict_refuses_the_member(streaming: bool) -> None:
     archive = _zip(struct.pack("<QQ", 10**12, 10**12))
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
-    with (
-        open_archive(io.BytesIO(archive), config=config) as ar,
-        pytest.raises(DiagnosticRaisedError),
-    ):
-        ar.members()
+    source = NonSeekableBytesIO(archive) if streaming else io.BytesIO(archive)
+    with open_archive(source, streaming=streaming, config=config) as ar:
+        if streaming:
+            # A pipe applies the directory after the member is yielded, so the
+            # refusal comes when the pass reaches it.
+            with pytest.raises(DiagnosticRaisedError):
+                for _member, stream in ar.stream_members():
+                    stream.read()
+        else:
+            with pytest.raises(DiagnosticRaisedError):
+                ar.members()

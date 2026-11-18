@@ -3147,27 +3147,25 @@ class ZipReader(BaseArchiveReader):
         used, as APPNOTE, stdlib and unzip read them; a reader that takes the field
         anyway lists another size or reads other bytes. In ``ARCHIVE_INTEGRITY_CODES``:
         ``STRICT`` refuses it."""
-        field, stored, value = unused[0]
-        others = "".join(
-            f"; its {name} {other_value} against {other_stored}"
-            for name, other_stored, other_value in unused[1:]
+        values = "; ".join(
+            f"{name} {value} where the entry stores {stored}"
+            for name, stored, value in unused
         )
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
             message=(
                 f"ZIP central directory entry {quoted(member.name)} has a ZIP64 "
-                f"extra field that gives {field} {value}{others}, where the entry "
-                f"stores {stored}. No field of the entry defers to the ZIP64 field, "
-                "so the entry's values are used, as unzip and zipfile read them; a "
-                "reader that takes the ZIP64 field anyway lists another size or "
-                "reads other bytes."
+                f"extra field that gives {values}. No field of the entry defers to "
+                "the ZIP64 field, so the entry's values are used, as unzip and "
+                "zipfile read them; a reader that takes the ZIP64 field anyway "
+                "lists another size or reads other bytes."
             ),
             context=HeaderAmbiguityContext(
                 archive_name=self._archive_name,
                 member_name=member.name,
                 member_id=index,
                 ambiguity="zip64_unused",
-                field=field,
+                field=unused[0][0],
                 more_fields=len(unused) - 1,
             ),
             member=member,
