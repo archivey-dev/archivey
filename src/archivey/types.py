@@ -762,8 +762,12 @@ class HashAlgorithm(StrEnum):
     a XAR archive may check its files with it."""
     SHA1 = "sha1"
     """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
+    SHA224 = "sha224"
+    """SHA-224, 28 bytes. A XAR archive may check its files with it."""
     SHA256 = "sha256"
     """SHA-256, 32 bytes. A XAR archive may check its files with it."""
+    SHA384 = "sha384"
+    """SHA-384, 48 bytes. A XAR archive may check its files with it."""
     SHA512 = "sha512"
     """SHA-512, 64 bytes. A XAR archive may check its files with it."""
 

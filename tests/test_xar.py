@@ -122,7 +122,9 @@ def test_every_encoding_reads_and_is_checked(encoding: str) -> None:
         assert member.verified is Verification.CHECKSUM
 
 
-@pytest.mark.parametrize("digest", ["md5", "sha1", "sha256", "sha512"])
+@pytest.mark.parametrize(
+    "digest", ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"]
+)
 def test_every_file_checksum_is_a_member_hash(digest: str) -> None:
     raw = write_xar([XarFile("a.txt", TEXT, digest=digest)])
     with _open(raw) as reader:
@@ -134,13 +136,13 @@ def test_every_file_checksum_is_a_member_hash(digest: str) -> None:
 
 @pytest.mark.parametrize(
     ("attrs", "style"),
-    [(' style="sha224"', "sha224"), ("", ""), (' style=""', "")],
+    [(' style="whirlpool"', "whirlpool"), ("", ""), (' style=""', "")],
     ids=["unsupported style", "no style", "empty style"],
 )
 def test_a_file_checksum_archivey_cannot_check_is_reported(
     attrs: str, style: str
 ) -> None:
-    digest = hashlib.sha224(b"0123456789").hexdigest()
+    digest = hashlib.sha512(b"0123456789").hexdigest()
     toc = (
         '<?xml version="1.0"?><xar><toc><file id="1"><name>a</name><type>file</type>'
         "<data><length>10</length><offset>0</offset><size>10</size>"
@@ -319,21 +321,20 @@ def _named_algorithm(name: bytes, style: str, size: int, digest: bytes) -> bytes
     return pack_xar(toc, digest, algorithm=3, header_extra=name.ljust(36, b"\0"))
 
 
-def test_a_toc_checked_with_a_named_algorithm() -> None:
+@pytest.mark.parametrize("algorithm", ["sha224", "sha256", "sha384", "sha512"])
+def test_a_toc_checked_with_a_named_algorithm(algorithm: str) -> None:
+    size = hashlib.new(algorithm).digest_size
     toc_text = (
-        b'<xar><toc><checksum style="sha256"><offset>0</offset><size>32</size>'
-        b'</checksum><file id="1"><name>a</name><type>directory</type></file>'
-        b"</toc></xar>"
-    )
-    digest = hashlib.sha256(zlib.compress(toc_text)).digest()
-    raw = pack_xar(
-        toc_text, digest, algorithm=3, header_extra=b"sha256".ljust(36, b"\0")
-    )
+        f'<xar><toc><checksum style="{algorithm}"><offset>0</offset>'
+        f'<size>{size}</size></checksum><file id="1"><name>a</name>'
+        "<type>directory</type></file></toc></xar>"
+    ).encode()
+    digest = hashlib.new(algorithm, zlib.compress(toc_text)).digest()
+    name = algorithm.encode().ljust(36, b"\0")
+    raw = pack_xar(toc_text, digest, algorithm=3, header_extra=name)
     with _open(raw) as reader:
         assert [m.name for m in reader.members()] == ["a/"]
-    bad = pack_xar(
-        toc_text, bytes(32), algorithm=3, header_extra=b"sha256".ljust(36, b"\0")
-    )
+    bad = pack_xar(toc_text, bytes(size), algorithm=3, header_extra=name)
     with pytest.raises(CorruptionError, match="fails its checksum"):
         _open(bad)
 

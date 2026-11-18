@@ -79,13 +79,16 @@ _CKSUM_MD5 = 2
 _CKSUM_OTHER = 3
 _CKSUM_NAMES = {_CKSUM_SHA1: "sha1", _CKSUM_MD5: "md5"}
 
-_DIGESTS = {
-    "md5": HashAlgorithm.MD5,
-    "sha1": HashAlgorithm.SHA1,
-    "sha256": HashAlgorithm.SHA256,
-    "sha512": HashAlgorithm.SHA512,
+# The checksum styles archivey checks, by lowercase name: the member hash each one is,
+# and its digest size in bytes. Both file and TOC checksums use this table.
+_DIGESTS: dict[str, tuple[HashAlgorithm, int]] = {
+    "md5": (HashAlgorithm.MD5, 16),
+    "sha1": (HashAlgorithm.SHA1, 20),
+    "sha224": (HashAlgorithm.SHA224, 28),
+    "sha256": (HashAlgorithm.SHA256, 32),
+    "sha384": (HashAlgorithm.SHA384, 48),
+    "sha512": (HashAlgorithm.SHA512, 64),
 }
-_DIGEST_SIZES = {"md5": 16, "sha1": 20, "sha256": 32, "sha512": 64}
 
 # The encodings Apple's xar and libarchive write. ``application/x-gzip`` is a zlib
 # stream, not gzip; ``application/x-lzma`` is LZMA Alone.
@@ -436,7 +439,7 @@ class _TocParser:
                 value = bytes.fromhex(frame.digest)
             except ValueError:
                 value = b""
-            if len(value) != _DIGEST_SIZES[style]:
+            if len(value) != _DIGESTS[style][1]:
                 raise CorruptionError(
                     f"XAR file {quoted(path)} has a malformed {style} checksum"
                 )
@@ -543,7 +546,7 @@ class XarReader(IndexedReader[_Location]):
                 f"the XAR header names {self._algorithm} and the table of contents "
                 f"{quoted(style)}"
             )
-        if size != _DIGEST_SIZES[self._algorithm]:
+        if size != _DIGESTS[self._algorithm][1]:
             raise CorruptionError(f"the XAR {style} checksum is {size} bytes")
         expected = self._read(self._heap + offset, size, "the TOC checksum")
         actual = hashlib.new(self._algorithm, stored, usedforsecurity=False).digest()
@@ -616,7 +619,7 @@ class XarReader(IndexedReader[_Location]):
                 member.compressed_size = entry.data.length
                 if entry.data.digest is not None:
                     style, value = entry.data.digest
-                    member.hashes = {_DIGESTS[style]: value}
+                    member.hashes = {_DIGESTS[style][0]: value}
                 if entry.data.unchecked_style is not None:
                     self._report_unchecked(member, entry.data.unchecked_style)
         elif kind is MemberType.SYMLINK:
