@@ -153,6 +153,7 @@ from archivey.internal.backends.zip_parser import (
     locate_end_record,
     read_end_record,
     read_local_header,
+    unused_zip64_values,
     written_by_archive_utility,
 )
 from archivey.internal.backends.zipcrypto import (
@@ -3000,8 +3001,8 @@ class ZipReader(BaseArchiveReader):
             self._emit_size_wrapped(member, entry, index)
         if directory_by_attribute:
             self._report_directory_by_attribute(member, index, name_source)
-        if entry.zip64_unused:
-            self._report_zip64_unused(member, index, entry.zip64_unused)
+        if entry.undeferred_offset >= 0:
+            self._check_undeferred_zip64(member, index, entry, fields)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -3161,17 +3162,39 @@ class ZipReader(BaseArchiveReader):
             logger=integrity_logger,
         )
 
-    def _report_zip64_unused(
+    def _check_undeferred_zip64(
         self,
         member: ArchiveMember,
         index: int,
-        unused: tuple[tuple[str, int, int], ...],
+        entry: CentralEntry,
+        fields: Sequence[ExtraField],
     ) -> None:
-        """Report a ZIP64 extra field whose values differ from the header fields that
-        do not defer to it (``CentralEntry.zip64_unused``). The header's values are
-        used, as APPNOTE, stdlib and unzip read them; a reader that takes the field
-        anyway lists another size or reads other bytes. In ``ARCHIVE_INTEGRITY_CODES``:
-        ``STRICT`` refuses it."""
+        """Report a ZIP64 extra field whose values differ from the entry's, when no
+        field of the entry defers to it (``CentralEntry.undeferred_offset``). The
+        entry's values are used, as APPNOTE, stdlib and unzip read them; a reader that
+        takes the field anyway lists another size or reads other bytes. In
+        ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it. The first ZIP64 field is
+        the one such a reader takes."""
+        for field in fields:
+            if field.tag == _ZIP_EXTRA_ZIP64:
+                # Stored values throughout: the walk may have corrected the offset
+                # and, for macOS Archive Utility, the compressed size. That writer's
+                # blob is its UX field alone (written_by_archive_utility), so the
+                # size correction cannot meet a ZIP64 field today; taking it off
+                # keeps the comparison on stored values regardless.
+                unused = unused_zip64_values(
+                    field.data,
+                    file_size=entry.file_size,
+                    compressed_size=(
+                        entry.compressed_size - entry.compressed_size_correction
+                    ),
+                    header_offset=entry.undeferred_offset,
+                )
+                break
+        else:
+            return
+        if not unused:
+            return
         values = "; ".join(
             f"{name} {value} where the entry stores {stored}"
             for name, stored, value in unused
