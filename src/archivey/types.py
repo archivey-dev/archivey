@@ -242,6 +242,12 @@ class StreamFormat(StrEnum):
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
     Needs ``lz4``, as LZ4 does."""
+    SNAPPY = "sz"
+    """Snappy's framing format (``.sz``), as ``snzip`` and the Snappy libraries write
+    it: 64 KiB chunks, each with a CRC-32C. archivey decodes it in Python; ``cramjam``
+    or ``compress-utils`` makes it faster when installed, and ``google-crc32c`` or
+    ``crc32c`` speeds up the checksum. Hadoop's ``.snappy`` and raw Snappy have no
+    signature and are not read."""
     UU = "uu"
     """uuencoded files (``.uu``, ``.uue``), including the ``begin-base64`` variant
     ``uuencode -m`` writes. Text before the ``begin`` line (a mail or news post's
@@ -270,6 +276,7 @@ StreamFormatStr = Literal[
     "lzo",
     "bz3",
     "mozlz4",
+    "sz",
     "uu",
     "b64",
 ]
@@ -362,6 +369,7 @@ class ArchiveFormat:
     Z: ClassVar[ArchiveFormat]
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
+    SNAPPY: ClassVar[ArchiveFormat]
     BZIP3: ClassVar[ArchiveFormat]
     UU: ClassVar[ArchiveFormat]
     BASE64: ClassVar[ArchiveFormat]
@@ -453,6 +461,7 @@ ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BR
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
+ArchiveFormat.SNAPPY = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.SNAPPY)
 ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
 ArchiveFormat.UU = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UU)
 ArchiveFormat.BASE64 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BASE64)
@@ -523,6 +532,19 @@ class OptionalLibrary(StrEnum):
     LZO1X in Python without it, more slowly."""
     BZIP3 = "bz3"
     """The ``bzip3`` package (imported as ``bz3``): ``.bz3`` files."""
+    CRAMJAM = "cramjam"
+    """Snappy raw blocks in ``.sz`` files. archivey decodes them in Python without it,
+    more slowly."""
+    COMPRESS_UTILS = "compress_utils"
+    """``compress-utils``: Snappy raw blocks in ``.sz`` files, chosen over cramjam
+    when both are installed. archivey decodes them in Python without it, more
+    slowly."""
+    GOOGLE_CRC32C = "google_crc32c"
+    """``google-crc32c``: the CRC-32C of ``.sz`` files. archivey computes it in Python
+    without it, more slowly."""
+    CRC32C = "crc32c"
+    """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
+    installed."""
 
 
 OptionalLibraryStr = Literal[
@@ -537,6 +559,12 @@ OptionalLibraryStr = Literal[
     "cryptography",
     "lzo",
     "bz3",
+    "cramjam",
+    "compress_utils",
+    "compress-utils",
+    "google_crc32c",
+    "google-crc32c",
+    "crc32c",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -845,6 +873,8 @@ class CompressionAlgorithm(Enum):
     BZIP3 = "bzip3"
     """bzip3's block-sorting compression, the method of a ``.bz3`` file
     (``StreamFormat.BZIP3``). Not the same as ``BZIP2``."""
+    SNAPPY = "snappy"
+    """Snappy, the method of a ``.sz`` file (``StreamFormat.SNAPPY``)."""
     UNKNOWN = "unknown"
     """A method archivey does not recognise. Listing still works."""
 

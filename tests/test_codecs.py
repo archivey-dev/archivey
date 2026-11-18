@@ -3565,13 +3565,6 @@ _NOT_OPTIONAL_LIBRARIES = {
     "typing_extensions": "the type checkers' override, imported only under TYPE_CHECKING",
     "tqdm": "the CLI's progress bar, a dependency of archivey-cli, not a decoder",
     "fsspec": "the OpenFile source type, imported only under TYPE_CHECKING",
-    # The experimental Snappy plugin's backends and CRC: opt-in through
-    # internal.snappy_plugin, never registered by default. A built-in Snappy codec
-    # would make the chosen one an OptionalLibrary instead.
-    "cramjam": "a raw Snappy backend of the opt-in experimental Snappy plugin",
-    "compress_utils": "a raw Snappy backend of the opt-in experimental Snappy plugin",
-    "google_crc32c": "a CRC-32C of the opt-in experimental Snappy plugin",
-    "crc32c": "a CRC-32C of the opt-in experimental Snappy plugin",
 }
 
 

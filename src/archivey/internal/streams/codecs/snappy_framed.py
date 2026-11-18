@@ -1,5 +1,5 @@
-"""Snappy's framing format (``.sz``), parsed here, with the raw blocks decoded by a
-pluggable native backend. Experimental: nothing registers it unless a caller does.
+"""Snappy's framing format (``.sz``): the chunks parsed and checked here, the raw
+blocks decoded by a native package when one is installed, else in Python.
 
 The framing format (``framing_format.txt`` in google/snappy) is a stream identifier
 chunk followed by chunks, each a 1-byte type and a 3-byte little-endian length::
@@ -23,30 +23,32 @@ Snappy's worst case for 64 KiB is refused before it is buffered. Skippable chunk
 one chunk of input and one decoded chunk, whatever the input declares; nothing is left
 for ``DecoderLimits.max_decoder_memory`` to cap.
 
-**Backends.** The raw Snappy decode is the only native step: :data:`BACKENDS` maps a
-name to a small adapter for ``cramjam`` (Rust ``snap``) or ``compress-utils`` (its own C
-decoder), or to the pure-Python :func:`decode_raw_python`; ``"auto"`` picks the first
-installed one in :data:`AUTO_ORDER`, falling back to Python when neither package is
-installed. Every check of the framing, the sizes and the CRC is done here, the same for
-all of them, so a backend can
-differ only in which raw blocks it accepts and what bytes it returns. The decoded length
-must equal the length the block declares.
+**Raw blocks.** :func:`raw_block_decoder` picks ``compress-utils``, else ``cramjam``,
+else :func:`decode_raw_python`. Every check of the framing, the sizes and the CRC is
+done here, the same for all of them, and a block a native package refuses is decoded
+again in Python, which decides (:func:`checked_by_python`). So the installed packages
+change the speed, never which files read or what they read to.
 
 **CRC-32C.** The standard library has no CRC-32C (``zlib.crc32`` is a different
-polynomial). ``google-crc32c`` or ``crc32c`` is used when installed; otherwise a
+polynomial). ``google-crc32c``, else ``crc32c``, is used when installed; otherwise a
 table-driven Python CRC runs at about 21 MB/s, which then bounds the whole decode.
 """
 
 from __future__ import annotations
 
 import functools
-import importlib
-import importlib.util
 import struct
 from array import array
 from collections.abc import Callable
-from dataclasses import dataclass
 from types import ModuleType
+from typing import TYPE_CHECKING
+
+from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
+from archivey.types import OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.internal.resource_usage import ResourceUsageRecorder
 
 STREAM_IDENTIFIER = b"\xff\x06\x00\x00sNaPpY"
 
@@ -123,31 +125,35 @@ def crc32c_python(data: bytes | memoryview) -> int:
     return crc ^ 0xFFFFFFFF
 
 
-# The native CRC-32C packages ``"auto"`` tries, in order: (name, module, function).
+# The native CRC-32C packages, in the order they are tried: (library, function name).
 _NATIVE_CRC = (
-    ("google-crc32c", "google_crc32c", "value"),
-    ("crc32c", "crc32c", "crc32c"),
+    (OptionalLibrary.GOOGLE_CRC32C, "value"),
+    (OptionalLibrary.CRC32C, "crc32c"),
 )
 
 
-def crc32c_function(name: str = "auto") -> Callable[[bytes], int]:
-    """The CRC-32C implementation called ``name``: ``"python"``, ``"google-crc32c"``,
-    ``"crc32c"``, or ``"auto"`` for the first of those two packages that imports and
-    Python otherwise."""
-    if name == "python":
+def crc32c_function(
+    excluded: frozenset[OptionalLibrary] = frozenset(),
+    natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
+) -> Callable[[bytes], int]:
+    """The CRC-32C to check chunks with: ``google-crc32c``, else ``crc32c``, when one is
+    installed and not ``excluded``, else :func:`crc32c_python`.
+
+    Under ``ProcessIsolation.NATIVE_DECODERS`` (``natives.isolated``) the Python CRC
+    always runs: a call per 64 KiB chunk would cost more in a child process than the
+    Python CRC does, and the Python CRC needs no child.
+    """
+    if natives.isolated:
         return crc32c_python
-    for package, module_name, function in _NATIVE_CRC:
-        if name not in ("auto", package):
+    for library, function in _NATIVE_CRC:
+        if library in excluded:
             continue
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError:
-            if name == "auto":
-                continue
-            raise
-        return getattr(module, function)
-    if name != "auto":
-        raise ValueError(f"unknown CRC-32C implementation {name!r}")
+        module = deps.snappy_libraries[library].load()
+        if module is not None:
+            if usage is not None:
+                usage.note_backend("library", library.value, "snappy")
+            return getattr(module, function)
     return crc32c_python
 
 
@@ -178,24 +184,9 @@ def raw_length(block: bytes) -> int:
     raise SnappyFormatError("compressed chunk has no valid decoded-length varint")
 
 
-@dataclass(frozen=True)
-class Backend:
-    """One native raw Snappy decoder."""
-
-    name: str
-    module: str | None
-    """The module it imports, or ``None`` for the built-in Python decoder."""
-    package: str | None
-    """What to ``pip install`` for it, or ``None`` when nothing is needed."""
-    load: Callable[[], Callable[[bytes, int], bytes]]
-    """Import the module and return ``decode(block, size)``: the block's bytes,
-    exactly ``size`` of them, or :class:`SnappyFormatError`."""
-
-
-def _cramjam() -> Callable[[bytes, int], bytes]:
-    cramjam = importlib.import_module("cramjam")
-    decompress_raw = cramjam.snappy.decompress_raw
-    error = cramjam.DecompressionError
+def _cramjam(module: ModuleType) -> Callable[[bytes, int], bytes]:
+    decompress_raw = module.snappy.decompress_raw
+    error = module.DecompressionError
 
     def decode(block: bytes, size: int) -> bytes:
         try:
@@ -207,11 +198,10 @@ def _cramjam() -> Callable[[bytes, int], bytes]:
     return decode
 
 
-def _compress_utils() -> Callable[[bytes, int], bytes]:
-    cu: ModuleType = importlib.import_module("compress_utils")
-    decompress = cu.decompress
-    algorithm = cu.Algorithm.snappy
-    error = cu.CompressError
+def _compress_utils(module: ModuleType) -> Callable[[bytes, int], bytes]:
+    decompress = module.decompress
+    algorithm = module.Algorithm.snappy
+    error = module.CompressError
 
     def decode(block: bytes, size: int) -> bytes:
         try:
@@ -318,45 +308,66 @@ def decode_raw_python(block: bytes, size: int) -> bytes:
     return bytes(out)
 
 
-def _python() -> Callable[[bytes, int], bytes]:
-    return decode_raw_python
-
-
-BACKENDS: dict[str, Backend] = {
-    "cramjam": Backend("cramjam", "cramjam", "cramjam", _cramjam),
-    "compress-utils": Backend(
-        "compress-utils", "compress_utils", "compress-utils", _compress_utils
-    ),
-    "python": Backend("python", None, None, _python),
+# The native raw-block decoders, in the order they are tried. compress-utils first: it
+# matched Google Snappy on every input measured, while cramjam refuses three valid but
+# unusual raw encodings (dev-docs/investigations/snappy-framing-backends.md). cramjam
+# second: it has wheels for more interpreters, PyPy included. The Python decoder is
+# the fallback and needs nothing installed.
+NATIVE_DECODERS: dict[
+    OptionalLibrary, Callable[[ModuleType], Callable[[bytes, int], bytes]]
+] = {
+    OptionalLibrary.COMPRESS_UTILS: _compress_utils,
+    OptionalLibrary.CRAMJAM: _cramjam,
 }
 
 
-# The order ``"auto"`` tries the backends in. compress-utils first: it matched Google
-# Snappy on every input measured, while cramjam refuses three valid but unusual raw
-# encodings (dev-docs/investigations/snappy-framing-backends.md). cramjam second: it has
-# wheels for more interpreters, PyPy included.
-# The pure-Python decoder is last: it needs nothing installed, so "auto" always finds a
-# backend, but it is far slower than either native one.
-AUTO_ORDER = ("compress-utils", "cramjam", "python")
+def checked_by_python(
+    native: Callable[[bytes, int], bytes],
+) -> Callable[[bytes, int], bytes]:
+    """``native``, with any block it refuses, or decodes to the wrong length, decoded
+    again by :func:`decode_raw_python`, which then decides.
+
+    So which blocks are accepted, and what they decode to, does not depend on the
+    package installed (DR-1): cramjam refuses three valid encodings that Google Snappy
+    and the Python decoder accept. A valid block costs nothing more; only a refused one
+    is decoded twice.
+    """
+
+    def decode(block: bytes, size: int) -> bytes:
+        try:
+            out = native(block, size)
+        except SnappyFormatError:
+            return decode_raw_python(block, size)
+        if len(out) != size:
+            return decode_raw_python(block, size)
+        return out
+
+    return decode
 
 
-def _installed(backend: Backend) -> bool:
-    return (
-        backend.module is None or importlib.util.find_spec(backend.module) is not None
-    )
+def raw_block_decoder(
+    excluded: frozenset[OptionalLibrary] = frozenset(),
+    natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
+) -> Callable[[bytes, int], bytes]:
+    """The raw-block decoder to use: the first of :data:`NATIVE_DECODERS` that is
+    installed and not ``excluded``, checked by the Python decoder, else the Python
+    decoder alone.
 
-
-def installed_backends() -> list[str]:
-    """The backends that can run here, in ``AUTO_ORDER``. Does not import."""
-    return [name for name in AUTO_ORDER if _installed(BACKENDS[name])]
-
-
-def resolve_backend(name: str) -> Backend:
-    """The backend ``name`` names; ``"auto"`` is the first installed one in
-    ``AUTO_ORDER``, which is at worst the pure-Python decoder."""
-    if name != "auto":
-        return BACKENDS[name]
-    return BACKENDS[installed_backends()[0]]
+    Under ``ProcessIsolation.NATIVE_DECODERS`` (``natives.isolated``) the Python decoder
+    always runs, so no native code runs in this process and no child is needed.
+    """
+    if natives.isolated:
+        return decode_raw_python
+    for library, adapt in NATIVE_DECODERS.items():
+        if library in excluded:
+            continue
+        module = deps.snappy_libraries[library].load()
+        if module is not None:
+            if usage is not None:
+                usage.note_backend("library", library.value, "snappy")
+            return checked_by_python(adapt(module))
+    return decode_raw_python
 
 
 def decode_raw_chunk(decode: Callable[[bytes, int], bytes], block: bytes) -> bytes:

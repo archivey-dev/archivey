@@ -160,9 +160,7 @@ import io, sys
 sys.path.insert(0, sys.argv[1])
 import common as C
 from archivey import open_stream
-from archivey.formats import register_codec
-from archivey.internal.snappy_plugin import snappy_handler
-register_codec(snappy_handler(sys.argv[2], "google-crc32c"))
+config = C.snappy_config(sys.argv[2], "google-crc32c")
 data = bytes(64 << 20)
 sz = C.producers()["cramjam-framed"](data)
 del data
@@ -172,7 +170,7 @@ def hwm():
             return int(line.split()[1])
 base = hwm()
 n = 0
-with open_stream(io.BytesIO(sz), format="sz") as s:
+with open_stream(io.BytesIO(sz), format="sz", config=config) as s:
     while chunk := s.read(1 << 20):
         n += len(chunk)
 print(n, hwm() - base)

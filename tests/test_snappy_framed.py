@@ -11,27 +11,30 @@ import io
 import os
 import random
 import tarfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from archivey import open_archive, open_stream
+from archivey import ArchiveFormat, open_archive, open_stream
 from archivey.exceptions import CorruptionError, TruncatedError
-from archivey.formats import register_codec
-from archivey.internal.format_adapter import registration_scope
-from archivey.internal.snappy_plugin import SnappyStream, snappy_handler
+from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from archivey.internal.streams.codecs.snappy_framed import (
-    BACKENDS,
     MAX_CHUNK_DATA,
+    NATIVE_DECODERS,
     STREAM_IDENTIFIER,
     SnappyFormatError,
     SnappyFramedDecompressor,
+    checked_by_python,
     crc32c_function,
     crc32c_python,
     decode_raw_chunk,
+    decode_raw_python,
     masked_crc,
+    raw_block_decoder,
 )
+from archivey.types import OptionalLibrary
 from tests.conftest import importorskip
 
 _REPROS = (
@@ -42,27 +45,46 @@ _REPROS = (
     / "repros"
 )
 
-_BACKEND_NAMES = sorted(BACKENDS)
+_BACKENDS: dict[str, OptionalLibrary | None] = {
+    "compress-utils": OptionalLibrary.COMPRESS_UTILS,
+    "cramjam": OptionalLibrary.CRAMJAM,
+    "python": None,
+}
 
 
-@pytest.fixture(params=_BACKEND_NAMES)
+@pytest.fixture(params=sorted(_BACKENDS))
 def backend(request: pytest.FixtureRequest) -> str:
-    module = BACKENDS[request.param].module
-    if module is not None:
-        importorskip(module)
+    library = _BACKENDS[request.param]
+    if library is not None:
+        importorskip(library.value)
     return request.param
 
 
 @pytest.fixture
 def decode(backend: str) -> Callable[[bytes, int], bytes]:
-    return BACKENDS[backend].load()
+    """The backend's raw decoder alone, without the Python check of its refusals."""
+    library = _BACKENDS[backend]
+    if library is None:
+        return decode_raw_python
+    module = deps.snappy_libraries[library].load()
+    assert module is not None
+    return NATIVE_DECODERS[library](module)
+
+
+def _hide(monkeypatch: pytest.MonkeyPatch, *libraries: OptionalLibrary) -> None:
+    for library in libraries:
+        monkeypatch.setitem(
+            deps.snappy_libraries, library, deps.LazyOptional(library, present=False)
+        )
 
 
 @pytest.fixture
-def registered(backend: str) -> Iterator[str]:
-    with registration_scope():
-        register_codec(snappy_handler(backend))
-        yield backend
+def selected(backend: str, monkeypatch: pytest.MonkeyPatch) -> str:
+    """archivey reads ``.sz`` with ``backend``: the other native packages look absent."""
+    _hide(
+        monkeypatch, *(lib for lib in NATIVE_DECODERS if lib is not _BACKENDS[backend])
+    )
+    return backend
 
 
 # --- building streams -------------------------------------------------------------------
@@ -128,9 +150,7 @@ def test_python_crc32c_matches_the_check_value() -> None:
 
 
 def test_python_crc32c_matches_google_crc32c() -> None:
-    google = crc32c_function("google-crc32c") if _has("google_crc32c") else None
-    if google is None:
-        pytest.skip("google-crc32c is not installed")
+    google = importorskip("google_crc32c").value
     for size in [*range(40), 4095, 4096, 65535, 65536, 65537]:
         for data in (os.urandom(size), bytes(size), b"\xff" * size):
             assert crc32c_python(data) == google(data)
@@ -138,30 +158,44 @@ def test_python_crc32c_matches_google_crc32c() -> None:
             assert crc32c_python(memoryview(b"x" + data)[1:]) == google(data)
 
 
-def _has(module: str) -> bool:
-    try:
-        __import__(module)
-    except ImportError:
-        return False
-    return True
-
-
 # --- reading through archivey -----------------------------------------------------------
+
+
+def stored_frame(data: bytes) -> bytes:
+    """A ``.sz`` file of uncompressed chunks, which needs no Snappy package to write."""
+    return _frame(
+        *(
+            _data_chunk(data[i : i + MAX_CHUNK_DATA], compressed=False)
+            for i in range(0, len(data), MAX_CHUNK_DATA)
+        )
+    )
+
+
+def test_a_seekable_member_seeks_back_and_forward() -> None:
+    data = _sample(5 * MAX_CHUNK_DATA + 17)
+    with (
+        open_archive(io.BytesIO(stored_frame(data)), seekable_members=True) as archive,
+        archive.open(archive.members()[0]) as stream,
+    ):
+        stream.seek(4 * MAX_CHUNK_DATA + 3)
+        assert stream.read(50) == data[4 * MAX_CHUNK_DATA + 3 :][:50]
+        stream.seek(10)
+        assert stream.read(5) == data[10:15]
 
 
 # cramjam writes nothing at all, not even an identifier, for empty input.
 @pytest.mark.parametrize("size", [1, 1000, MAX_CHUNK_DATA, 5 * MAX_CHUNK_DATA + 17])
-def test_a_cramjam_written_file_reads_back(registered: str, size: int) -> None:
+def test_a_cramjam_written_file_reads_back(selected: str, size: int) -> None:
     cramjam = importorskip("cramjam")
     data = _sample(size)
     sz = bytes(cramjam.snappy.compress(data))
     with open_archive(io.BytesIO(sz)) as reader:
-        assert reader.format.stream == SnappyStream.SZ
+        assert reader.format == ArchiveFormat.SNAPPY
         (member,) = reader.members()
         assert reader.read(member) == data
 
 
-def test_a_tar_sz_lists_its_members(registered: str, tmp_path: Path) -> None:
+def test_a_tar_sz_lists_its_members(selected: str, tmp_path: Path) -> None:
     cramjam = importorskip("cramjam")
     raw = io.BytesIO()
     files = {"a.txt": _sample(100_000), "b/c.bin": os.urandom(70_000)}
@@ -176,7 +210,7 @@ def test_a_tar_sz_lists_its_members(registered: str, tmp_path: Path) -> None:
         assert {m.name: reader.read(m) for m in reader.members()} == files
 
 
-def test_open_stream_reads_concatenated_streams(registered: str) -> None:
+def test_open_stream_reads_concatenated_streams(selected: str) -> None:
     a, b = _sample(70_000, 1), _sample(3000, 2)
     sz = _frame(_data_chunk(a[:60000]), _data_chunk(a[60000:])) + _frame(
         _data_chunk(b, compressed=False)
@@ -346,7 +380,7 @@ _DAMAGED: dict[str, tuple[Callable[[], bytes], type[Exception], str]] = {
 
 
 @pytest.mark.parametrize("case", sorted(_DAMAGED))
-def test_damage_is_refused(registered: str, case: str) -> None:
+def test_damage_is_refused(selected: str, case: str) -> None:
     make, error, message = _DAMAGED[case]
     with (
         pytest.raises(error, match=message),
@@ -355,7 +389,7 @@ def test_damage_is_refused(registered: str, case: str) -> None:
         stream.read()
 
 
-def test_a_stream_without_its_identifier_is_refused(registered: str) -> None:
+def test_a_stream_without_its_identifier_is_refused(selected: str) -> None:
     with (
         pytest.raises(CorruptionError, match="does not start with a stream identifier"),
         open_stream(io.BytesIO(_data_chunk(_GOOD)), format="sz") as stream,
@@ -363,7 +397,7 @@ def test_a_stream_without_its_identifier_is_refused(registered: str) -> None:
         stream.read()
 
 
-def test_an_empty_input_is_truncated(registered: str) -> None:
+def test_an_empty_input_is_truncated(selected: str) -> None:
     with (
         pytest.raises(TruncatedError, match="before its stream identifier"),
         open_stream(io.BytesIO(b""), format="sz") as stream,
@@ -371,7 +405,7 @@ def test_an_empty_input_is_truncated(registered: str) -> None:
         stream.read()
 
 
-def test_an_identifier_alone_is_an_empty_stream(registered: str) -> None:
+def test_an_identifier_alone_is_an_empty_stream(selected: str) -> None:
     with open_stream(io.BytesIO(STREAM_IDENTIFIER), format="sz") as stream:
         assert stream.read() == b""
 
@@ -390,7 +424,7 @@ _FRAMED_REPROS = {
 
 
 @pytest.mark.parametrize("name", sorted(_FRAMED_REPROS))
-def test_study_framed_repros(registered: str, name: str) -> None:
+def test_study_framed_repros(selected: str, name: str) -> None:
     data = (_REPROS / name).read_bytes()
     error = _FRAMED_REPROS[name]
     if error is None:
@@ -423,54 +457,92 @@ def test_study_raw_repros(decode: Callable[[bytes, int], bytes], name: str) -> N
         assert decode_raw_chunk(decode, block) == expected
 
 
-# --- "auto" backend selection -----------------------------------------------------------
+# --- picking the backend ----------------------------------------------------------------
 
 
-def test_auto_prefers_compress_utils_then_cramjam_then_python(
+def test_the_first_installed_native_decoder_is_picked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from importlib import util
-
-    from archivey.internal.streams.codecs import snappy_framed
-
-    real = util.find_spec
-
-    def only(*present: str) -> None:
-        def find_spec(name: str, *args: object) -> object:
-            if name in {"cramjam", "compress_utils"}:
-                return real("json") if name in present else None
-            return real(name, *args)  # type: ignore[arg-type]
-
-        monkeypatch.setattr(snappy_framed.importlib.util, "find_spec", find_spec)
-
-    only("cramjam", "compress_utils")
-    assert snappy_framed.resolve_backend("auto").name == "compress-utils"
-    only("cramjam")
-    assert snappy_framed.resolve_backend("auto").name == "cramjam"
-    only("compress_utils")
-    assert snappy_framed.resolve_backend("auto").name == "compress-utils"
-    only()
-    assert snappy_framed.resolve_backend("auto").name == "python"
-    handler = snappy_handler()
-    assert handler.requires == ()
-    assert handler.install_hint is None
+    picked: list[OptionalLibrary] = []
+    for library in NATIVE_DECODERS:
+        monkeypatch.setitem(
+            deps.snappy_libraries, library, deps.LazyOptional(library, present=True)
+        )
+        monkeypatch.setattr(deps.snappy_libraries[library], "load", lambda: object())
+        monkeypatch.setitem(
+            NATIVE_DECODERS,
+            library,
+            lambda module, library=library: picked.append(library) or decode_raw_python,
+        )
+    raw_block_decoder()
+    assert picked == [OptionalLibrary.COMPRESS_UTILS]
+    raw_block_decoder(excluded=frozenset({OptionalLibrary.COMPRESS_UTILS}))
+    assert picked[-1] == OptionalLibrary.CRAMJAM
 
 
-def test_auto_reads_with_whichever_backend_is_installed() -> None:
-    cramjam = importorskip("cramjam")
-    data = _sample(100_000)
-    with registration_scope():
-        register_codec(snappy_handler())
-        with open_stream(
-            io.BytesIO(bytes(cramjam.snappy.compress(data))), format="sz"
-        ) as stream:
-            assert stream.read() == data
+def test_python_decodes_when_no_native_package_can(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hide(monkeypatch, *NATIVE_DECODERS)
+    assert raw_block_decoder() is decode_raw_python
+    # Excluded or isolated, an installed package is not used either.
+    assert raw_block_decoder(excluded=frozenset(NATIVE_DECODERS)) is decode_raw_python
 
 
-@pytest.mark.parametrize("name", ["google-crc32c", "crc32c"])
-def test_each_native_crc32c_matches_python(name: str) -> None:
-    importorskip(name.replace("-", "_"))
-    native = crc32c_function(name)
+def test_isolated_decodes_and_checks_in_python() -> None:
+    assert raw_block_decoder(natives=ISOLATED) is decode_raw_python
+    assert crc32c_function(natives=ISOLATED) is crc32c_python
+    assert (
+        crc32c_function(
+            natives=IN_PROCESS,
+            excluded=frozenset({OptionalLibrary.GOOGLE_CRC32C, OptionalLibrary.CRC32C}),
+        )
+        is crc32c_python
+    )
+
+
+# cramjam refuses a one- or two-byte literal at the end of a block written with a
+# longer length tag than it needs; Google Snappy and the Python decoder accept it.
+_LONG_TAG_LITERALS = {
+    bytes.fromhex("01f40000 00"): b"\x00",
+    bytes.fromhex("01f000 41"): b"A",
+    bytes.fromhex("02f001 4142"): b"AB",
+}
+
+
+@pytest.mark.parametrize("block", sorted(_LONG_TAG_LITERALS))
+def test_a_block_a_native_package_refuses_is_decided_in_python(block: bytes) -> None:
+    def refuses(block: bytes, size: int) -> bytes:
+        raise SnappyFormatError("refused")
+
+    expected = _LONG_TAG_LITERALS[block]
+    assert decode_raw_chunk(checked_by_python(refuses), block) == expected
+    assert decode_raw_chunk(checked_by_python(lambda b, n: b"x" * (n + 1)), block) == (
+        expected
+    )
+    with pytest.raises(SnappyFormatError, match="Python decoder"):
+        decode_raw_chunk(checked_by_python(refuses), b"\x04\x01\x00")
+
+
+def test_every_backend_reads_the_long_tag_literals(selected: str) -> None:
+    for block, data in _LONG_TAG_LITERALS.items():
+        crc = masked_crc(crc32c_python(data)).to_bytes(4, "little")
+        stream = _frame(_chunk(0x00, crc + block))
+        with open_stream(io.BytesIO(stream), format="sz") as reader:
+            assert reader.read() == data
+
+
+@pytest.mark.parametrize(
+    "library", [OptionalLibrary.GOOGLE_CRC32C, OptionalLibrary.CRC32C]
+)
+def test_each_native_crc32c_matches_python(
+    library: OptionalLibrary, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    importorskip(library.value)
+    if library is OptionalLibrary.CRC32C:
+        _hide(monkeypatch, OptionalLibrary.GOOGLE_CRC32C)
+    native = crc32c_function()
+    assert native is not crc32c_python
     for size in (0, 1, 9, 4096, 65536):
         data = os.urandom(size)
         assert native(data) == crc32c_python(data)

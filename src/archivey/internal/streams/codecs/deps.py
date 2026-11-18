@@ -180,3 +180,12 @@ rapidgzip = LazyOptional(
     OptionalLibrary.RAPIDGZIP,
     present=False if unused_reason(OptionalLibrary.RAPIDGZIP) else None,
 )
+# Snappy (``.sz``): the raw-block decoders and the CRC-32C packages. All optional, as
+# the Python decoder and CRC need nothing; lazy, as none has been measured to keep the
+# GIL disabled on a free-threaded build.
+snappy_libraries: dict[OptionalLibrary, LazyOptional] = {
+    OptionalLibrary.COMPRESS_UTILS: LazyOptional(OptionalLibrary.COMPRESS_UTILS),
+    OptionalLibrary.CRAMJAM: LazyOptional(OptionalLibrary.CRAMJAM),
+    OptionalLibrary.GOOGLE_CRC32C: LazyOptional(OptionalLibrary.GOOGLE_CRC32C),
+    OptionalLibrary.CRC32C: LazyOptional(OptionalLibrary.CRC32C),
+}

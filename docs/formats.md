@@ -78,10 +78,10 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
   the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
-  Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
-  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and base64 text in core.
-  One member. Members: direct. Readable from a pipe. Seeking inside the member
+- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo` and Snappy
+  `.sz` in core; Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4,
+  Firefox's mozlz4 files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and
+  base64 text in core. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -1640,7 +1640,7 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 ## Single-file compressors
 
-- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` are in core (`.Z` with
+- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo` and `.sz` are in core (`.Z` with
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
   `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
   decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
@@ -1659,6 +1659,16 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   has no checksum, and it decodes only when the whole file has arrived, so the first byte from a
   pipe waits for the end of the input. The decoded size must match the header, or the read raises
   `CorruptionError`.
+- **Snappy** (`.sz`) is Snappy's framing format, which `snzip`, python-snappy and the Snappy
+  libraries write: chunks of at most 64 KiB, each with a CRC-32C of its decoded data, checked
+  before the data is returned. archivey decodes it in Python, at about 20 MB/s. When `cramjam` or
+  `compress-utils` is installed it decodes the raw blocks, and `google-crc32c` or `crc32c`
+  computes the CRC; with both kinds installed a read reaches several hundred MB/s. None of them
+  is in an extra. Which packages are installed changes only the speed: a block a package refuses
+  is decoded again in Python, which decides. With `process_isolation=NATIVE_DECODERS` the
+  Python decoder and CRC always run. Nothing marks the end of the file, so a file cut between two
+  chunks reads short with no error; a cut inside a chunk raises `TruncatedError`. Hadoop's
+  `.snappy` files and raw Snappy blocks have no signature, and archivey does not read them.
 - **uuencode and base64** compress nothing, but they wrap a file as text the way a compressor
   wraps it, so archivey peels them the same way: `files.tar.uu` lists the tar.
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the

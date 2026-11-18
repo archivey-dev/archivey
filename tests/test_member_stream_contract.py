@@ -923,6 +923,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "snappy",
+        "no corpus builder for Snappy; tests/test_snappy_framed.py seeks in a file",
+    ),
+    (
         "uu",
         "no corpus builder for uuencode; tests/test_text_codecs.py seeks in a file",
     ),
@@ -995,6 +999,8 @@ _UNTESTED_FORMATS = {
     ArchiveFormat.SQUASHFS: "squashfs",
     ArchiveFormat.BZIP3: "bzip3",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
+    ArchiveFormat.SNAPPY: "snappy",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.SNAPPY): "snappy",
     ArchiveFormat.UU: "uu",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UU): "uu",
     ArchiveFormat.BASE64: "base64",

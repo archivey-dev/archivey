@@ -12,29 +12,44 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import importlib
 import io
 import random
 import zlib
 from collections.abc import Callable
 
-from archivey import open_stream
-from archivey.formats import register_codec
-from archivey.internal.format_adapter import registration_scope
-from archivey.internal.snappy_plugin import snappy_handler
+from archivey import ArchiveyConfig, FormatPolicy, OptionalLibrary, open_stream
 from archivey.internal.streams.codecs.snappy_framed import (
-    BACKENDS,
     MAX_CHUNK_DATA,
+    NATIVE_DECODERS,
     STREAM_IDENTIFIER,
     SnappyFormatError,
     SnappyFramedDecompressor,
     crc32c_python,
     decode_raw_chunk,
+    decode_raw_python,
     masked_crc,
 )
 
-BACKEND_NAMES = sorted(BACKENDS)
+# Each backend's raw decoder alone, without the Python re-check archivey adds to a
+# native refusal, so the comparison sees what the backend itself does.
+_LIBRARIES = {
+    "compress-utils": OptionalLibrary.COMPRESS_UTILS,
+    "cramjam": OptionalLibrary.CRAMJAM,
+}
+_MODULES = {"compress-utils": "compress_utils", "cramjam": "cramjam"}
+BACKEND_NAMES = ["compress-utils", "cramjam", "python"]
 DECODERS: dict[str, Callable[[bytes, int], bytes]] = {
-    name: BACKENDS[name].load() for name in BACKEND_NAMES
+    name: NATIVE_DECODERS[_LIBRARIES[name]](importlib.import_module(_MODULES[name]))
+    for name in _LIBRARIES
+}
+DECODERS["python"] = decode_raw_python
+_SNAPPY_LIBRARIES = frozenset(
+    {*_LIBRARIES.values(), OptionalLibrary.GOOGLE_CRC32C, OptionalLibrary.CRC32C}
+)
+_CRC_LIBRARIES = {
+    "google-crc32c": OptionalLibrary.GOOGLE_CRC32C,
+    "crc32c": OptionalLibrary.CRC32C,
 }
 
 
@@ -274,11 +289,24 @@ def decode_with(
     return bytes(out)
 
 
+def snappy_config(backend: str, crc: str = "auto") -> ArchiveyConfig:
+    """A config whose library policy leaves only ``backend`` and ``crc`` to the
+    built-in codec. ``crc`` is ``"auto"``, ``"python"`` or a package name."""
+    keep = {_LIBRARIES[backend]} if backend in _LIBRARIES else set()
+    if crc == "auto":
+        keep |= set(_CRC_LIBRARIES.values())
+    elif crc != "python":
+        keep.add(_CRC_LIBRARIES[crc])
+    return ArchiveyConfig(
+        formats=FormatPolicy(exclude_libraries=_SNAPPY_LIBRARIES - keep)
+    )
+
+
 def archivey_read(backend: str, data: bytes, crc: str = "auto") -> bytes:
-    with registration_scope():
-        register_codec(snappy_handler(backend, crc))
-        with open_stream(io.BytesIO(data), format="sz") as stream:
-            return stream.read()
+    with open_stream(
+        io.BytesIO(data), format="sz", config=snappy_config(backend, crc)
+    ) as stream:
+        return stream.read()
 
 
 def outcome(fn: Callable[[], bytes]) -> tuple[str, object]:

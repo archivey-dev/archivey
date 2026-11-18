@@ -9,12 +9,15 @@ unusual raw encodings that Google Snappy and compress-utils accept. No standard 
 writes them. The real speed question is CRC-32C, not the backend: with the Python CRC a
 read runs at about 20 MB/s, with `google-crc32c` at 480 to 930 MB/s.
 
-**Ruling (maintainer, 2026-11-17): keep both, selectable.** `snappy_handler()` defaults
-to `"auto"`: compress-utils when it is installed, since it matched Google Snappy on
-every input, else cramjam, which has wheels for more interpreters. A caller can still
-name one. Consequence: a cramjam-only install refuses the three unusual encodings below
-that a compress-utils install reads. The facts behind the choice are under
-[Choosing](#choosing).
+**Ruling (maintainer, 2026-11-17): keep both, selectable.** Later (2026-11-18) the
+maintainer chose to ship Snappy in 0.5.0 as a built-in format (`StreamFormat.SNAPPY`,
+`.sz`). The codec picks the first installed backend in the order compress-utils,
+cramjam, pure Python, and the first CRC-32C package in the order `google-crc32c`,
+`crc32c`, else the Python CRC. `exclude_libraries=` and `only_libraries=` turn any of
+them off. A native refusal is decided again by the Python decoder, so cramjam's three
+refusals below no longer change the result: every install reads the same files. Under
+process isolation the native packages are not used at all, because the Python decoder
+and CRC need no child. The facts behind the choice are under [Choosing](#choosing).
 
 ## What was built
 
@@ -25,13 +28,12 @@ that a compress-utils install reads. The facts behind the choice are under
   CRC-32C. It refuses unknown unskippable chunks and skips skippable ones as they
   arrive, without holding them. The stream ends only between chunks. A backend is one
   function, `decode(block, size) -> bytes`; everything else is shared.
-- `src/archivey/internal/snappy_plugin.py`: `snappy_handler(backend, crc)` returns a
-  `CodecHandler` for `register_codec`. Nothing registers it by default, so no public
-  enum, format list or dependency changes. `.sz` and `.tar.sz` then read through the
-  ordinary plugin-codec path.
-- `tests/test_snappy_framed.py`: 86 tests, run for both backends: round trips, feeding
-  patterns, every damage kind, the earlier study's repro files. They skip when a
-  backend is not installed; CI installs neither, so CI does not run them.
+- `src/archivey/internal/streams/codecs/snappy_codec.py`: the built-in codec (first
+  built as an opt-in `register_codec` plugin for the measurements below).
+- `tests/test_snappy_framed.py`: run for every backend: round trips, feeding patterns,
+  every damage kind, the earlier study's repro files, backend selection. The native
+  backends' cases skip when the package is not installed; CI installs none, so CI runs
+  only the Python backend's.
 - `scripts/investigations/snappy_framing/`: the comparison and the fuzzer
   ([README](../../scripts/investigations/snappy_framing/README.md)); results in
   `results/`.
@@ -164,11 +166,9 @@ The facts the choice was made on:
   can crash; neither crashed here, but a built-in codec would need the same decision as
   lz4 and brotli.
 
-## Before this could ship
+## Still open
 
-- Make it a built-in codec (a `StreamFormat`, an `OptionalLibrary`, an extra, docs,
-  format lists, detection tests) instead of an opt-in plugin, or keep it a plugin.
-- Decide the CRC-32C dependency.
-- Add a native backend to a CI leg so its tests run there (the Python backend's tests
-  already run everywhere).
+- No extra installs the native packages and no CI leg runs their tests.
+- The CRC-32C package (`google-crc32c`, Apache-2.0, or `crc32c`, LGPL-2.1-or-later) is
+  used when installed but not recommended anywhere yet.
 - Hadoop Snappy and bare raw Snappy stay out: neither has a magic to detect.

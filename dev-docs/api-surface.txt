@@ -67,6 +67,7 @@ attribute archivey.ArchiveFormat.MOZLZ4 = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RPM = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SEVEN_Z = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.SNAPPY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SQUASHFS = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR_BZ2 = ArchiveFormat(...)
@@ -241,6 +242,7 @@ value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.LZW = 'lzw'
 value archivey.CompressionAlgorithm.BZIP3 = 'bzip3'
+value archivey.CompressionAlgorithm.SNAPPY = 'snappy'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
 init archivey.CompressionMethod(algo: CompressionAlgorithm, level: int | None = None, properties: bytes | None = None) -> None
@@ -576,6 +578,10 @@ value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
 value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
 value archivey.OptionalLibrary.LZO = 'lzo'
 value archivey.OptionalLibrary.BZIP3 = 'bz3'
+value archivey.OptionalLibrary.CRAMJAM = 'cramjam'
+value archivey.OptionalLibrary.COMPRESS_UTILS = 'compress_utils'
+value archivey.OptionalLibrary.GOOGLE_CRC32C = 'google_crc32c'
+value archivey.OptionalLibrary.CRC32C = 'crc32c'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'
@@ -638,6 +644,7 @@ value archivey.StreamFormat.UNIX_COMPRESS = 'Z'
 value archivey.StreamFormat.LZOP = 'lzo'
 value archivey.StreamFormat.BZIP3 = 'bz3'
 value archivey.StreamFormat.MOZLZ4 = 'mozlz4'
+value archivey.StreamFormat.SNAPPY = 'sz'
 value archivey.StreamFormat.UU = 'uu'
 value archivey.StreamFormat.BASE64 = 'b64'
 class archivey.StreamNotSeekableError(OpenError)
