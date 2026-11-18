@@ -839,6 +839,12 @@ class CompressionAlgorithm(Enum):
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
+    LZW = "lzw"
+    """LZW as the Unix ``compress`` tool writes it, the method of a ``.Z`` file
+    (``StreamFormat.UNIX_COMPRESS``)."""
+    BZIP3 = "bzip3"
+    """bzip3's block-sorting compression, the method of a ``.bz3`` file
+    (``StreamFormat.BZIP3``). Not the same as ``BZIP2``."""
     UNKNOWN = "unknown"
     """A method archivey does not recognise. Listing still works."""
 

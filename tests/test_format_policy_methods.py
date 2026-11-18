@@ -310,6 +310,8 @@ def test_the_common_preset_refuses_legacy_zip_members() -> None:
         (A.LZMA, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZIP)),
         (A.LZ4, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)),
         (A.LZO, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)),
+        (A.LZW, ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)),
+        (A.BZIP3, ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3)),
     ],
     ids=lambda v: v.display_name if isinstance(v, ArchiveFormat) else v.name,
 )

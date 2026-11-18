@@ -374,7 +374,15 @@ _GUARD_STEP = 1 << 20
 # The room can reach gigabytes, and a decoder may allocate what a read asks for before
 # it reads: ``RawIOBase.read`` does, and under PyPy that buffer is real memory, not
 # pages the kernel hands out as they are touched.
-_READ_TO_END_STEP = _GUARD_STEP * 16
+#
+# One step, the most a ``DecompressorStream`` decoder call gives on a file
+# (``_SEEKABLE_FEED_OUTPUT``). When one decoder call fills the step (a feed slice that
+# decodes to 1 MiB or more, as on highly compressible data), the read comes back as the
+# decoder's own bytes, and the join below is the only copy of the output. A larger step
+# makes the decoder join several calls into it first, which copies the whole output a
+# second time. On data that compresses less, the decoder still joins several calls
+# into each step.
+_READ_TO_END_STEP = _GUARD_STEP
 
 
 class _RatioCheck:
@@ -389,7 +397,7 @@ class _RatioCheck:
     costs nothing here. Near the limit, reads and seeks forward go to the decoder in
     steps of at most 1 MiB, a seek to the end included, so a refusal comes within a step
     of the limit, from the call that crosses it, whose bytes are withheld. Further from
-    it, a read toward an end the check cannot see asks for at most 16 MiB per call
+    it, a read toward an end the check cannot see asks for at most 1 MiB per call
     (``_READ_TO_END_STEP``). A member's seek to the end moves a room at a time until a
     move stops at the end (``MemberRatioCheck._seek_end_target``).
     """
