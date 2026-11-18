@@ -4616,10 +4616,12 @@ class ExtractionCoordinator:
             # unlinking it, so the file is still in place and there is nothing to link.
             self._record_source_path(source_id, new_path)
             return new_path
-        # Each path was a regular file this run wrote, and ``_forget_source_path``
-        # drops one once another member replaces it. The one path that can be stale
-        # here is ``new_path``: the early return above takes it while it is a regular
-        # file, and the check below skips it when it is not. Checked again here because
+        # Each path was a regular file this run wrote. ``_forget_source_path`` drops
+        # one once another member replaces it under the same spelling;
+        # ``_drop_replaced_source_paths`` and the check below catch one replaced under
+        # another spelling (a case variant), by its recorded inode. ``new_path`` can be
+        # stale too: the early return above takes it while it is a regular file, and
+        # the check below skips it when it is not. The check also matters because
         # ``os.link`` follows a symlink (``follow_symlinks=False`` is not available on
         # every platform): a link made through one would name a file this run did not
         # write. Checked one path at a time as the loop reaches it, so the common case,
@@ -4630,9 +4632,12 @@ class ExtractionCoordinator:
             linked = False
             at_link_limit = False
             copy_from: Path | None = None
-            # Nothing below changes ``source_paths`` before the loop ends.
+            # Nothing below changes ``source_paths`` before the loop ends: a path
+            # found replaced is forgotten after it.
+            stale: list[Path] = []
             for candidate in reversed(self._state.source_paths.get(source_id, {})):
-                if not _is_regular_file(candidate):
+                if not self._source_path_current(candidate):
+                    stale.append(candidate)
                     continue
                 if copy_from is None:
                     copy_from = candidate
@@ -4647,6 +4652,8 @@ class ExtractionCoordinator:
                     continue
                 linked = True
                 break
+            for path in stale:
+                self._forget_stale_source_path(path)
             if not linked:
                 if copy_from is None:
                     raise ExtractionError(
@@ -4705,29 +4712,50 @@ class ExtractionCoordinator:
             state.source_identity.pop(path, None)
 
     def _drop_replaced_source_paths(self, source_id: int) -> None:
-        """Forget each path of ``source_id`` whose file a later member replaced without
-        ``_forget_source_path`` seeing it: under another spelling of the same entry, as
-        ``a`` replaces ``A`` on a case-insensitive filesystem. Such a path now holds
-        another member's bytes, or a directory. Where the filesystem reports inode 0 a
-        replaced file cannot be told from the recorded one, and the path is kept."""
+        """Forget the newest paths of ``source_id`` whose file a later member replaced
+        without ``_forget_source_path`` seeing it: under another spelling of the same
+        entry, as ``a`` replaces ``A`` on a case-insensitive filesystem. Such a path now
+        holds another member's bytes, or a directory.
+
+        Walks newest first, the order ``_place_link`` tries, and stops at the first path
+        that still holds the recorded file: a fan-out of n links to one source checks
+        one path per link, not n. A source left with no path takes the route of one not
+        on disk. ``_place_link`` checks each older path it reaches the same way."""
         state = self._state
         paths = state.source_paths.get(source_id)
         if not paths:
             return
-        for path in list(paths):
-            identity = state.source_identity.get(path)
-            if identity is None:
-                continue
-            try:
-                st = os.lstat(long_path(path))
-            except OSError:
-                st = None
-            if (
-                st is None
-                or not stat.S_ISREG(st.st_mode)
-                or (st.st_dev, st.st_ino) != identity
-            ):
-                self._forget_source_path(path)
+        stale: list[Path] = []
+        for path in reversed(paths):
+            if self._source_path_current(path):
+                break
+            stale.append(path)
+        for path in stale:
+            self._forget_stale_source_path(path)
+
+    def _forget_stale_source_path(self, path: Path) -> None:
+        """Forget ``path`` as a source path once ``_source_path_current`` finds it
+        stale. A placeholder made there stays to be filled while its own file is still
+        in place: its spelling can stop reaching it (a directory on the way became a
+        file) with the file left where it was made. One replaced under another
+        spelling fails ``_is_placeholder_file`` and is not filled."""
+        placeholder = self._state.placeholder_at.get(path)
+        self._forget_source_path(path)
+        if placeholder is not None and self._is_placeholder_file(placeholder):
+            placeholder.live = True
+
+    def _source_path_current(self, path: Path) -> bool:
+        """Whether ``path`` is still the regular file ``_record_source_path`` recorded.
+        Where the filesystem reports inode 0 a replaced file cannot be told from the
+        recorded one, so a regular file there counts as current."""
+        try:
+            st = os.lstat(long_path(path))
+        except OSError:
+            return False
+        if not stat.S_ISREG(st.st_mode):
+            return False
+        identity = self._state.source_identity.get(path)
+        return identity is None or (st.st_dev, st.st_ino) == identity
 
     def _already_exists(self, dest: Path, member: ArchiveMember) -> ExtractionError:
         """The error ``OverwritePolicy.ERROR`` raises for an entry at ``dest``, from the

@@ -5647,6 +5647,68 @@ def test_a_link_source_replaced_under_another_spelling_is_not_linked_to(
     assert (dest / "b").read_bytes() == b"1"
 
 
+def test_a_placeholder_whose_spelling_stops_reaching_it_is_still_filled(
+    tmp_path: Path,
+) -> None:
+    # `a/x` is written through the caller's symlink `a -> .`, so its placeholder is
+    # `x`. A file `a` then replaces the symlink: the spelling `a/x` no longer reaches
+    # `x`, but `x` is still the placeholder, and the second pass fills it. The link
+    # `a` finds no path to link to and is held back in its turn.
+    archive = _tar_bytes(
+        [
+            ("file", "src1", b"1"),
+            ("hard", "a/x", "src1"),
+            ("file", "a", b"f"),
+            ("hard", "a", "src1"),
+        ]
+    )
+    dest = tmp_path / "out"
+    dest.mkdir()
+    os.symlink(".", dest / "a")
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            policy=ExtractionPolicy.TRUSTED,
+            members=lambda m: m.name != "src1",
+            on_error=OnError.CONTINUE,
+        )
+    statuses = [(r.member.name, r.status) for r in report.results]
+    assert statuses[-1] == ("a", ExtractionStatus.EXTRACTED), statuses
+    assert (dest / "x").read_bytes() == b"1"
+    assert (dest / "a").read_bytes() == b"1"
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_link_fan_out_checks_one_source_path_per_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool
+) -> None:
+    # n links to one source record n paths. Checking every recorded path for a
+    # replaced file before each link would make n² checks; the newest path links, so
+    # each link checks one, and the held run's second pass the same.
+    n = 200
+    archive = _tar_bytes(
+        [("file", "src1", b"1")] + [("hard", f"l{i}", "src1") for i in range(n)]
+    )
+    calls = 0
+    original = ExtractionCoordinator._source_path_current
+
+    def counting(self: ExtractionCoordinator, path: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(self, path)
+
+    monkeypatch.setattr(ExtractionCoordinator, "_source_path_current", counting)
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest, members=(lambda m: m.name != "src1") if held else None
+        )
+    assert all(r.status is ExtractionStatus.EXTRACTED for r in report.results)
+    assert (dest / f"l{n - 1}").read_bytes() == b"1"
+    assert calls <= 4 * n
+
+
 def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
     tmp_path: Path,
 ) -> None:
