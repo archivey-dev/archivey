@@ -358,157 +358,32 @@ describes each case and the error it raises.
 
 ## TAR (and compressed TAR)
 
-- **Needs:** nothing for a plain `.tar`. A compressed TAR needs what its compressor needs
-  ([Single-file compressors](#single-file-compressors)).
-- **Listing:** archivey parses the headers itself, the same way on every Python version.
-- **Old tars with no magic:** a v7 tar (`tar --format=v7`, old bsdtar or star) has no `ustar`
-  signature. archivey recognises it by its first header's checksum, from a file, a pipe or a
-  `BytesIO`, with or without a `.tar` name, and inside a compressor (a gzipped one is `TAR_GZ`).
-  It is reported as `PROBABLE`, not `CERTAIN`.
-- **Reading members:** archivey reads each member of a plain TAR from a file straight from its place. A
-  compressed TAR is solid: reaching a member means decompressing everything before it, so a
-  single `stream_members()` pass is the fast way to read it.
-- **From a pipe:** yes. The listing reads up to 1 MiB past the end-of-archive blocks, so a sender
-  that keeps the connection open after the tar ends makes the listing wait for more bytes or for
-  the end of the stream. Close the sending side when the tar is done. A compressed TAR from a held
-  pipe can also wait at open ([Single-file compressors](#from-a-pipe-held-open)).
-- With `concurrent_operations=True`, member reads share one file handle and take turns on it, so
-  reads from several threads are safe but not parallel. ISO works the same way.
-- Hardlinks are extracted as hardlinks. An `extract_all` with no filter resolves them in one pass.
-- **Shapes real tarballs use, which other readers take differently**, are read as GNU tar reads
-  them and reported with `MEMBER_READERS_DISAGREE`: a regular file named `a/` (a directory, as v7
-  tars store them), a link name on a regular file, in the header or a PAX `linkpath` (not used), a star header whose prefix runs past
-  star's 131 bytes, old GNU times where ustar keeps the prefix, and a hard link to a symlink. A
-  member with the name of an earlier one is reported with `MEMBER_NAME_DUPLICATE`, in every
-  format. Neither is in `STRICT`, which would refuse archives GNU tar extracts; a caller who checks
-  an archive that another tool will extract can refuse them with `DiagnosticPolicy.PEDANTIC` or
-  `raise_on=`.
-- **Headers are read as GNU tar reads them.** Where tools disagree on a member's name, link target
-  or size, archivey gives GNU tar's answer. When the headers take a shape no known writer produces
-  (a GNU long name and a PAX `path` for one member, a field set twice, a global header setting a
-  name or size or dropping an earlier one's values, a NUL inside a PAX name, GNU long name and PAX headers both extending one member, a
-  global header inside a member's headers, an empty PAX `path` or number, a PAX size with a
-  leading zero, bytes after the end of a header's size, name or link name, a size on a
-  directory or link header that names no data, a checksum that matches only as a signed sum, a
-  ustar version other than `00` or NULs, a newline in a PAX keyword or in a value other than
-  an extended attribute's or an ACL's, a NUL in a PAX keyword),
-  the member is also reported with
-  `MEMBER_HEADER_AMBIGUOUS`, because another tool may list it under another name or size.
-  `STRICT` refuses the archive.
-- A tar from macOS `tar` can hold `._name` sidecar files
+- **Reading:** members of a plain `.tar` file are read directly. A compressed TAR is solid:
+  reaching a member means decompressing everything before it, so a single `stream_members()` pass
+  is the fast way to read many members. Reading one by name after listing resumes from the nearest
+  restart point ([Seeking in compressed files](#seeking-in-compressed-files)).
+- **From a pipe:** yes. Archivey reads up to 1 MiB past the end of the archive to check for
+  trailing data, so close the sending side when the tar is done, or the listing waits.
+- **Headers** are read the way GNU tar reads them, the same on every Python version. Where tools
+  disagree on a member's name, link target or size, archivey gives GNU tar's answer and reports a
+  diagnostic. Old v7 tars, which have no `ustar` signature, are recognised by their checksum.
+- **Hard links** are extracted as hard links.
+- **Sparse members** (`tar -S`) are extracted with their holes filled with zeros. That output
+  counts towards the ratio limit, so a very sparse file can raise `ResourceLimitError`.
+  `member.is_sparse` tells you which members are sparse. For an archive you trust, raise
+  `DecoderLimits.max_ratio`.
+- **A tar cut exactly between two members** looks complete, because a tar has no member count.
+  Archivey reports the missing end blocks as `ARCHIVE_EOF_MARKER_MISSING`, which
+  `DiagnosticPolicy.STRICT` raises, for when you need the listing proven complete. A cut inside a
+  member always raises `TruncatedError`.
+- A tar made by macOS `tar` can hold `._name` sidecar files
   ([macOS sidecar files](#macos-sidecar-files)).
 
-### How the archive ends
+Damaged headers, and header shapes no writer produces (a device or directory header that declares
+data, PAX records set twice, a lone zero block), are refused or reported with a diagnostic. The
+[TAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md)
+describes each case.
 
-A tar has no member count, so a damaged header after the first one could pass for the end of the
-archive and shorten the listing without an error. Archivey checks how the archive ends:
-
-- **A header that does not parse** where the walk stops raises `CorruptionError`, whatever the
-  diagnostic policy, because a well-formed tar never ends that way. This holds in random-access and
-  streaming reads, whatever follows the bad header: more members, nothing, or a block of zeros.
-- **A clean end on a member boundary without the two zero blocks** is reported as
-  `ARCHIVE_EOF_MARKER_MISSING`, not raised. A tar written without them, tars joined with `cat`, and
-  a tar cut exactly at a member boundary look the same. When you need a listing proven complete,
-  set that code to `RAISE` in the diagnostic policy (`DiagnosticPolicy.STRICT` does), which turns
-  it into `DiagnosticRaisedError`.
-- **A first zero block followed by a block that is not zero** is reported the same way, with
-  `context.expected_marker="second_zero_block"`. The zero block ends the members, so every member
-  is listed and reads normally, as GNU tar ("A lone zero block") and 7-Zip list them; `STRICT`
-  raises it. The trailing-bytes check then starts from the block after the damaged one. At least
-  one member must come before the zero block: a file that is only a zero block and other bytes is
-  not shown to be a TAR, and raises `CorruptionError`.
-- **Bytes after the end** are `ARCHIVE_TRAILING_DATA` (trailing junk, or a second archive joined
-  on; [Bytes after the end of an archive](#bytes-after-the-end-of-an-archive)). Zero padding passes
-  because `tar` writes 10 KiB records, so "nothing but zeros" is the strictest rule that does not
-  flag what `tar` itself writes. On a compressed tar, the 1 MiB checked is decompressed to inspect
-  it, and bytes after the compressed stream itself are reported the same way, with the codec's name
-  as `format` ([Single-file compressors](#single-file-compressors)).
-- **Truncation inside a member's data** always raises `TruncatedError`, whatever the policy: in a
-  listing or a pass when the walk reaches the cut, and from a member stream on the read that
-  reaches it. A read with a size returns the bytes before the cut first; `read()` with no size
-  raises and returns nothing.
-
-On a compressed tar, the stream's own checksum adds three cases:
-
-- A stream cut inside its footer (a missing gzip CRC-32, say) does not fail the listing, since
-  every member was read whole, but its checksum was never checked. That is `DIGEST_UNVERIFIABLE`,
-  which `STRICT` refuses.
-- A stream that fails to decompress past the end-of-archive blocks is `DIGEST_UNVERIFIABLE` too,
-  worded as "whether the checksum passed cannot be told": the failing bytes may be another
-  compressed member after the one holding the tar.
-- The check stops at trailing bytes, and says nothing about the stream's checksum past them. In a
-  concatenated `.tar.gz` they are a second gzip member, and the first one's checksum was already
-  checked. Junk inside the same gzip member can leave that checksum unchecked, so treat
-  `ARCHIVE_TRAILING_DATA` on a compressed tar as "the members may not have been checked" too.
-
-### Headers that declare data they should not have
-
-- **A device or FIFO header with data** (typeflag `3`, `4` or `6` with a non-zero size) raises
-  `CorruptionError` at that header, before the end-of-archive checks run. Such an entry has no data,
-  and GNU tar skips the header as damaged. Reading on from the next block, an all-zero payload would
-  look like the end of the archive and drop every member after it. A PAX `size` on such a header,
-  the member's own or a global one, is refused the same way. GNU tar skips the bytes it declares
-  and extracts the entry; archivey refuses a shape only a crafted archive has.
-- **A directory header (typeflag `5`) with data in its own size field** has no data area either, so the next header is
-  read straight after it. When that header parses, the directory lists with no size, as GNU tar,
-  bsdtar and 7-Zip list it, and `MEMBER_HEADER_AMBIGUOUS` reports the size, which no real writer
-  puts there. When the walk ends instead on a zero block inside the declared span,
-  the directory lists with no size and `MEMBER_DIRECTORY_DATA_IGNORED` is reported (`STRICT`
-  refuses the archive). The declared blocks, if they are there, were read as the end-of-archive
-  marker, and the members behind them are not listed, as GNU tar does. Nothing in the file tells
-  that from an end marker after blocks that were never written, so the report says what the header
-  declares, and the end checks above report the rest. `open()` refuses the directory, and
-  `stream_members()` yields no stream for it, since its bytes cannot be told from the end marker. A
-  block that is neither a header nor zero where the data would begin raises `CorruptionError`
-  naming the directory header. A walk that gets past the declared span (extended headers filled it)
-  has read all it could hide, and nothing is reported. A PAX `size`, the member's own or a global
-  one, is different: GNU tar skips the bytes it declares, and so does archivey. The directory then
-  keeps that `size` and is reported and read as an old-style directory with data is, below.
-- **An old-style directory with data:** a regular-file header (typeflag NUL, `0` or contiguous `7`)
-  whose name ends in `/` is a directory, as GNU tar reads it; 7-Zip agrees for NUL and `0`. When
-  its size is not zero, the directory keeps that `size` and `MEMBER_DIRECTORY_DATA_IGNORED` is
-  reported. Extraction creates the directory and skips the blocks, as GNU tar does, and `read()` on
-  the directory returns them, as does the stream `stream_members()` yields for it, in both access
-  modes. `STRICT` refuses the archive.
-- **A symlink or hard link header (typeflag `2` or `1`) with data in its own size field** has no
-  data area either. When
-  a member header follows it at once, the size names no data, and the link is listed as GNU tar and
-  `tarfile` read it, reported with `MEMBER_HEADER_AMBIGUOUS` (a tool that skips by the size
-  would lose the next member). Otherwise the declared blocks are skipped, so a zero
-  block among them does not end the archive, and `MEMBER_LINK_DATA_IGNORED` reports the link
-  (`STRICT` refuses the archive). GNU tar and `tarfile` skip nothing and stop at such a zero block,
-  dropping the later members. When the declared blocks are all zeros and no member header follows
-  them, they are also the end marker of a link whose blocks were never written: the end checks then
-  read them as the end marker, as after a file, so an intact one gets no warning, and the link is
-  reported the same way. Extraction creates the link. A PAX `size`, the member's own or a global
-  one, always frames the declared blocks, as GNU tar skips them: they are skipped whatever follows,
-  and `MEMBER_LINK_DATA_IGNORED` reports the link. An archive that ends inside them raises
-  `TruncatedError`, and one that ends right after them reports `ARCHIVE_EOF_MARKER_MISSING`.
-
-### Member types and fields
-
-- A device or FIFO follows [the shared rule](#device-files-fifos-and-sockets). A device keeps its
-  numbers in `extra["tar.devmajor"]` and `extra["tar.devminor"]`. A device number field that is not
-  a number is dropped and reported as `MEMBER_HEADER_RECORD_SKIPPED`, as GNU tar lists such a
-  device too.
-- **A header time of only NUL bytes or blanks is no time.** Unless a PAX record carries the time,
-  the member has no `modified` and nothing is reported, where GNU tar and `tarfile` show 1970-01-01.
-- **A member of an unknown type is a file when it has data.** A header whose type byte archivey
-  does not know (such as `9`) and that declares data is a `FILE` of that size, which reads and
-  extracts like any file, as GNU tar extracts it. One that declares no data is `OTHER`, and its
-  extraction result is `BLOCKED`. Both are reported with `MEMBER_TYPE_UNKNOWN`, which `STRICT` does
-  not refuse, and `extra["tar.type"]` keeps the byte.
-- **Sparse members are extracted dense.** A GNU or PAX sparse member (`tar -S`) is written with its
-  holes filled with zeros, so it takes its full size on disk. The zeros count as output for the
-  [ratio limit](security.md#hardening), which a TAR checks across the whole archive because a
-  member has no compressed size. A 10 MiB sparse file packs into a 10 KiB tar, 1024:1, and
-  `extract_all`, or reading the member, raises `ResourceLimitError` against the default
-  `max_ratio` of 800.
-  `member.is_sparse` tells you which members are sparse before you extract. For a sparse archive
-  you trust, raise the limit with
-  `ArchiveyConfig(decoder_limits=DecoderLimits(max_ratio=...))`, or `max_ratio=None`.
-- A PAX time record that does not parse leaves that time unset, and `MEMBER_TIMESTAMP_INVALID`
-  reports it.
 
 ## 7z
 
