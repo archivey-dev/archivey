@@ -513,44 +513,27 @@ covers the index, its limits, hard links, and the shapes archivey refuses.
 
 ## CAB
 
-Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and
-what `makecab` and `gcab` write.
+Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and what
+`makecab` and `gcab` write. Cabinets need nothing extra: MSZIP is read with Python's `zlib`, and
+LZX is decoded by archivey itself, in Python, at a few megabytes a second. The cabinet needs a
+source that can seek, so not a pipe.
 
-- **Needs:** nothing. MSZIP is deflate, read with Python's `zlib`; LZX is decoded by
-  archivey itself, in Python, at a few megabytes a second.
-- **Listing:** from the file table at the start of the cabinet.
-- **Reading members:** a cabinet groups its files into folders, and each folder is one
-  compressed stream, so a compressed folder is solid: reaching a file decodes the folder from
-  its start. Files read in order decode each folder once. A stored folder is direct.
-- **Member order:** the order of the cabinet's file table, which writers keep in the order
-  the files' bytes are stored. When reading the files in table order would decode part of a
-  folder twice (a table that is crafted or edited, for example reversed), the files are
-  listed by folder and by position in the folder instead, so each folder is decoded once.
-  When a name is listed twice, the entries that a later entry replaces come first, so each
-  folder is decoded at most twice and the entry listed last is still the one that counts.
-- **A name listed twice** is reported with `MEMBER_NAME_DUPLICATE_UNEXPECTED` as well as
-  `MEMBER_NAME_DUPLICATE`: a cabinet has no way to add or update a file, so no writer repeats a
-  name. `STRICT` refuses such a cabinet; the default policy lists it, and the entry listed last
-  is the one that counts.
-- **From a pipe:** no; the file table points at folders anywhere in the file, so the cabinet
-  needs a source that can seek.
-- `ArchiveInfo.format_version` is the cabinet's version, `"1.3"` for every current writer.
-  Members are files: a cabinet stores no directories, only paths. A path's `\` separators
-  become `/`. `member.windows_attrs` holds the stored attributes without the two that only
-  a cabinet defines, `0x40` (executable) and `0x80` (name is UTF-8), which a Windows
-  attribute mask uses for other things; `member.modified` holds the stored local time,
-  with no time zone.
-- Names are UTF-8 when valid, otherwise decoded with `encoding=` (a Japanese cabinet from
-  `makecab` is usually `encoding="cp932"`), as in every format.
-- Each data block stores a checksum of its bytes, which a read checks, so a member read to
-  its end is at `Verification.CHECKSUM` when its blocks carry one (some writers store 0, which
-  means none). The checksums cover the folder's bytes, not the file table that says where
-  each file starts, so archivey checks at open that the files of each folder sit back to
-  back with no gap or overlap, as every writer lays them out. A cabinet whose file table
-  fails that check raises `CorruptionError`.
-- Quantum-compressed members, an old method, are listed but raise
-  `UnsupportedFeatureError` when read. A cabinet that is part of a set spanning several files
-  (`file.cab`, `file2.cab`) raises `UnsupportedFeatureError` at open.
+- **Solid folders:** a cabinet groups its files into folders, each one compressed stream.
+  Reaching a file decodes its folder from the start. Reading the files in listed order, as
+  `stream_members()` does, decodes each folder once.
+- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. A Japanese cabinet from
+  `makecab` is usually `encoding="cp932"`. A cabinet stores paths, not folders, and `\` becomes
+  `/`.
+- **Checksums:** each data block stores a checksum, checked as it is read, so a member read to its
+  end is checked when its blocks carry one (some writers store 0, meaning none).
+- **Not read:** Quantum-compressed members are listed, and reading one raises
+  `UnsupportedFeatureError`. A cabinet split across several files (`file.cab`, `file2.cab`) raises
+  `UnsupportedFeatureError` at open.
+
+Archivey also refuses a cabinet whose file table doesn't match its folders, and lists edited or
+crafted cabinets in an order that decodes each folder once. The
+[CAB handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cab.md) has the
+details.
 
 ## LHA
 
