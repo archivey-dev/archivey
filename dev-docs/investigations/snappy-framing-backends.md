@@ -134,13 +134,16 @@ Whole `.sz` read of 8 MiB (MB/s, CPython 3.11, same machine as above):
 
 | Payload | Python decode, google-crc32c | Python decode, Python CRC | compress-utils, google-crc32c |
 |---|---|---|---|
-| text | 22 | 12 | 429 |
-| random (stored chunks) | 1142 | 25 | 880 |
-| zeros | 117 | 24 | 997 |
-| zlib-ish | 35 | 17 | 634 |
+| text | 29 | 14 | 289 to 429 |
+| random (stored chunks) | 1207 | 26 | 926 |
+| zeros | 164 | 25 | 958 |
+| zlib-ish | 36 | 15 | 624 |
 
 So on compressible data the Python decoder, not the CRC, is the bottleneck: about
-20 to 35 MB/s, roughly 20 to 40 times slower than a native backend.
+30 to 35 MB/s, roughly 10 to 20 times slower than a native backend. A 256-entry tag
+table and `struct` offset reads (Codex's experiment on PR 1629) gave 15 to 50% over
+the first version; a second 60 s differential run (519,786 cases) again found no
+difference from Google Snappy.
 
 ## Choosing
 

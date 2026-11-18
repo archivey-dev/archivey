@@ -230,6 +230,25 @@ def _python_refused(reason: str) -> SnappyFormatError:
     return SnappyFormatError(f"the Python decoder refused the raw block: {reason}")
 
 
+def _raw_tag_table() -> tuple[tuple[int, int, int], ...]:
+    # Kind, literal length minus one / copy length, and copy offset high bits / width.
+    tags = []
+    for tag in range(256):
+        kind = tag & 3
+        if kind == 0:
+            tags.append((kind, tag >> 2, 0))
+        elif kind == 1:
+            tags.append((kind, ((tag >> 2) & 7) + 4, (tag >> 5) << 8))
+        else:
+            tags.append((kind, (tag >> 2) + 1, 2 if kind == 2 else 4))
+    return tuple(tags)
+
+
+_RAW_TAGS = _raw_tag_table()
+_RAW_OFFSET16 = struct.Struct("<H").unpack_from
+_RAW_OFFSET32 = struct.Struct("<I").unpack_from
+
+
 def decode_raw_python(block: bytes, size: int) -> bytes:
     """Decode a raw Snappy block in pure Python (format_description.txt).
 
@@ -242,6 +261,7 @@ def decode_raw_python(block: bytes, size: int) -> bytes:
     """
     view = memoryview(block)
     end = len(block)
+    tags = _RAW_TAGS
     pos = 0
     while block[pos] & 0x80:  # skip the varint raw_length() already read
         pos += 1
@@ -250,9 +270,8 @@ def decode_raw_python(block: bytes, size: int) -> bytes:
     while pos < end:
         tag = block[pos]
         pos += 1
-        kind = tag & 3
+        kind, n, extra = tags[tag]
         if kind == 0:
-            n = tag >> 2
             if n >= 60:
                 width = n - 59
                 if pos + width > end:
@@ -270,15 +289,17 @@ def decode_raw_python(block: bytes, size: int) -> bytes:
         if kind == 1:
             if pos >= end:
                 raise _python_refused("raw block ends inside a copy")
-            n = ((tag >> 2) & 7) + 4
-            offset = ((tag >> 5) << 8) | block[pos]
+            offset = extra | block[pos]
             pos += 1
         else:
-            width = 2 if kind == 2 else 4
+            width = extra
             if pos + width > end:
                 raise _python_refused("raw block ends inside a copy")
-            n = (tag >> 2) + 1
-            offset = int.from_bytes(view[pos : pos + width], "little")
+            offset = (
+                _RAW_OFFSET16(block, pos)[0]
+                if kind == 2
+                else _RAW_OFFSET32(block, pos)[0]
+            )
             pos += width
         here = len(out)
         if offset == 0 or offset > here:
