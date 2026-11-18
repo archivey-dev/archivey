@@ -494,7 +494,10 @@ class _AloneDecompressor:
             # marker, with no byte after the declared size. Input that ends first is a
             # truncated stream, as for any decoder that is not at ``eof``.
             assert marker_dec is not None
+            failed = self._dec
             self._dec, self._marker_dec = marker_dec, None
+            # After the swap, so that the stream never holds a released decoder.
+            release_decoder(failed)
             self._switched = True
             self._out = self._marker_out
             return marker_out
