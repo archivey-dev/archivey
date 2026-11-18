@@ -494,37 +494,22 @@ the layout and how damaged images are handled.
 ## XAR
 
 The format of macOS installer packages (`.pkg`) and `.xip` files, written by Apple's `xar`,
-`pkgbuild` and `bsdtar --format xar`.
+`pkgbuild` and `productbuild`, and by `bsdtar --format xar`. It needs nothing extra. Members are
+read directly, each compressed on its own, but the archive needs a source that can seek, so not a
+pipe.
 
-- **Needs:** nothing. Each file's data is stored, or compressed with zlib, bzip2, LZMA or xz,
-  all read with Python's own modules.
-- **Listing:** from the table of contents, an XML document at the start of the archive. It
-  is read whole at open, and refused when its header gives it more than
-  `ListingLimits.max_metadata_bytes`, stored or decoded, or it lists more than
-  `max_members` files.
-- **Reading members:** direct; each file's data is compressed on its own.
-- **From a pipe:** no; the index points at data anywhere after it, so the archive needs a
-  source that can seek.
-- `ArchiveInfo.format_version` is `"1"`, the only version there is. Members carry the mode,
-  owners, and modification, access and change times the index stores, all in UTC.
-- An installer package is listed as the files its XAR layer holds: `Distribution`, and per
-  component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a gzip-compressed
-  CPIO archive (or a `pbzx` stream in newer packages); archivey lists and reads it as one
-  file and does not expand it.
-- The index's own checksum is checked at open, and a damaged index raises
-  `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
-  default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
-  is at `Verification.CHECKSUM`. A checksum of another style, or one that names no style,
-  is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` when it is
-  listed, which `DiagnosticPolicy.STRICT` raises.
-- A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
-  `encoding=` like a name in any other format.
-- Apple's `productbuild` stores the name of each top-level file twice, the same both times;
-  that is one name. A file with two different names raises `CorruptionError`.
-- A hard link lists the member that holds the data as its `link_target`. bsdtar can write
-  the link before that member; archivey then lists it after.
-- A file whose data uses an encoding archivey does not know is listed, with
-  `CompressionAlgorithm.UNKNOWN`, and raises `UnsupportedFeatureError` when read.
+- **Installer packages** are listed as the files their XAR layer holds: `Distribution`, and for
+  each component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a compressed CPIO
+  archive (or a `pbzx` stream in newer packages). Archivey reads it as one file and doesn't
+  expand it.
+- **Checksums:** the index's own checksum is checked at open. Each file stores a checksum of its
+  data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
+  its end.
+- **Names** stored as base64, as writers do for bytes that aren't UTF-8, are decoded with
+  `encoding=` like names in any other format.
+
+The [XAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
+covers the index, its limits, hard links, and the shapes archivey refuses.
 
 ## CAB
 
