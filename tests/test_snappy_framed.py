@@ -47,7 +47,9 @@ _BACKEND_NAMES = sorted(BACKENDS)
 
 @pytest.fixture(params=_BACKEND_NAMES)
 def backend(request: pytest.FixtureRequest) -> str:
-    importorskip(BACKENDS[request.param].module)
+    module = BACKENDS[request.param].module
+    if module is not None:
+        importorskip(module)
     return request.param
 
 
@@ -424,7 +426,7 @@ def test_study_raw_repros(decode: Callable[[bytes, int], bytes], name: str) -> N
 # --- "auto" backend selection -----------------------------------------------------------
 
 
-def test_auto_prefers_compress_utils_then_cramjam(
+def test_auto_prefers_compress_utils_then_cramjam_then_python(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from importlib import util
@@ -448,9 +450,10 @@ def test_auto_prefers_compress_utils_then_cramjam(
     only("compress_utils")
     assert snappy_framed.resolve_backend("auto").name == "compress-utils"
     only()
+    assert snappy_framed.resolve_backend("auto").name == "python"
     handler = snappy_handler()
-    assert handler.requires == ("cramjam",)
-    assert handler.install_hint == "pip install cramjam or compress-utils"
+    assert handler.requires == ()
+    assert handler.install_hint is None
 
 
 def test_auto_reads_with_whichever_backend_is_installed() -> None:

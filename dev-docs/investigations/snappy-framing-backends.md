@@ -118,6 +118,33 @@ the raw Snappy decode (about 1 GB/s), so the read speed barely depends on which 
 The 16-bit-table Python CRC (proposed by Codex on the PR, checked here on CPython 3.11,
 3.12 and 3.13) replaced the first version.
 
+## Pure-Python fallback backend
+
+`decode_raw_python` in `snappy_framed.py` is a third backend, `"python"`, last in
+`AUTO_ORDER`, so `"auto"` always finds one and reading `.sz` needs no package. It
+refuses what Google Snappy refuses (cut elements, copy offset 0 or before the output
+start, output past the declared length) and accepts the long-tag short literal that
+cramjam refuses. All the per-backend tests above run on it too.
+
+Differential check (60 s, 464,228 mutated raw blocks from Google-compressed payloads of
+0 to 64 KiB): Google Snappy, compress-utils and the Python decoder agreed on every
+accept or refuse and every output byte.
+
+Whole `.sz` read of 8 MiB (MB/s, CPython 3.11, same machine as above):
+
+| Payload | Python decode, google-crc32c | Python decode, Python CRC | compress-utils, google-crc32c |
+|---|---|---|---|
+| text | 29 | 14 | 289 to 429 |
+| random (stored chunks) | 1207 | 26 | 926 |
+| zeros | 164 | 25 | 958 |
+| zlib-ish | 36 | 15 | 624 |
+
+So on compressible data the Python decoder, not the CRC, is the bottleneck: about
+30 to 35 MB/s, roughly 10 to 20 times slower than a native backend. A 256-entry tag
+table and `struct` offset reads (Codex's experiment on PR 1629) gave 15 to 50% over
+the first version; a second 60 s differential run (519,786 cases) again found no
+difference from Google Snappy.
+
 ## Choosing
 
 The facts the choice was made on:
@@ -142,5 +169,6 @@ The facts the choice was made on:
 - Make it a built-in codec (a `StreamFormat`, an `OptionalLibrary`, an extra, docs,
   format lists, detection tests) instead of an opt-in plugin, or keep it a plugin.
 - Decide the CRC-32C dependency.
-- Add the backend to a CI leg so the tests run there.
+- Add a native backend to a CI leg so its tests run there (the Python backend's tests
+  already run everywhere).
 - Hadoop Snappy and bare raw Snappy stay out: neither has a magic to detect.
