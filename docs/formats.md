@@ -437,118 +437,41 @@ Damaged archives, and the details of how archivey runs `unrar` and `unar`, are c
 
 ## ISO 9660
 
-- **Needs:** `[recommended]` (`pycdlib` 1.22 or later).
-- **Listing:** from the image's directory records. The namespace is chosen automatically, Rock
-  Ridge, then Joliet, then plain ISO 9660, and reported in `ArchiveInfo.extra["iso.namespace"]`.
-- **Reading members:** direct. With `concurrent_operations=True`, reads share one file handle and
-  take turns on it, as in TAR.
-- **From a pipe:** no; an ISO needs a source that can seek.
-- `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
-- `ArchiveInfo.comment` is the volume identifier (`-V`), decoded as a plain ISO 9660 name is:
-  UTF-8 first, then `encoding=`, then escaped.
+Reading an ISO image needs `[recommended]` (`pycdlib`) and a source that can seek, so not a pipe.
+An image can carry several name trees over the same files. Archivey lists Rock Ridge first, then
+Joliet, then plain ISO 9660, and says which in `ArchiveInfo.extra["iso.namespace"]`.
 
-### Names
+- **Names:** Rock Ridge and plain names are read as UTF-8, then with `encoding=` when you pass
+  one. Without it, a name that isn't UTF-8 takes the matching Joliet name when the image has one,
+  and is escaped otherwise. Joliet names are UTF-16.
+- **File versions:** the `;1` at the end of a plain or Joliet file name is dropped, and the number
+  is kept in `extra["iso.version"]`. When a folder holds several versions of one name, the highest
+  takes the bare name, and older ones are listed as `FOO.;1` with `is_current=False`, as RAR file
+  versions are.
+- **Files in other trees:** a file that only an unlisted tree holds (such as Joliet or UDF, which
+  Windows and 7-Zip read) is not a member. Archivey reports it with `MEMBER_READERS_DISAGREE`.
+- **UDF** is not read. A DVD image that also has an ISO 9660 tree is listed from that tree, and
+  a UDF-only image (such as a Blu-ray) is not recognised.
+- **Contents:** zisofs compression (`mkzftree`, `genisoimage -z`, `xorriso --zisofs`) is read
+  decoded; zisofs2 members are listed, and reading one raises `UnsupportedFeatureError`. Files of
+  4 GiB or more, stored in several pieces, are one member. A bootable image's boot catalog is
+  listed as an ordinary file, as a mounted image shows it.
+- **CD images** (`.bin` with `.cue`): open the `.cue`, or the `.bin` by its path with its `.cue`
+  beside it. Archivey reads the session an operating system would mount, from one track file or
+  one per track. Mode 1 and Mode 2 Form 1 data can be read; a video or audio-only image raises
+  `UnsupportedFeatureError`. A `.bin` opened without its `.cue` is read from its first session,
+  and `ARCHIVE_UNREAD_SESSION` says when a later one exists.
+- **Damage:** ISO 9660 stores no checksums, so damaged data comes back without an error. A
+  truncated image still opens when its folders survive, and only the files the cut reaches raise
+  `TruncatedError`. An image with UDF doesn't open once truncated, because the UDF anchor sits in
+  its last block.
+- **Hybrid installer images**, whose EFI partition sits after the ISO data, open without a
+  trailing-data warning.
 
-- Rock Ridge and plain ISO 9660 names, and Rock Ridge link targets, decode as UTF-8 first. Bytes
-  that are not valid UTF-8 decode with `encoding=` when you pass one. Without it, a Rock Ridge name
-  takes the Joliet name of the same file or directory when the image has a Joliet tree and the two
-  line up, with a `member_name_encoding_inferred` diagnostic, and is escaped otherwise
-  ([Names in other encodings](opening.md#names-in-other-encodings)).
-- Joliet names are UTF-16 and ignore `encoding=`. They can hold an
-  [unpaired surrogate](#names-with-an-unpaired-surrogate).
-- Plain ISO 9660 and Joliet file names lose their `;N` version suffix (and the `.` of an empty
-  extension), and `extra["iso.version"]` keeps the number. Many writers put `;1` on Joliet names
-  too, and Windows and Linux drop it there as well. When a directory holds several versions of one
-  name, the highest takes the bare name, and the others list under their stored identifier
-  (`FOO.;1`) with `is_current=False`, the same shape as RAR file versions. Directory names have no
-  version and keep any `;N`, and so does a file name that is only dots before the `;N`
-  (`...;1`), so that no member is named `.` or `..`.
-- Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
-  That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
-  which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory
-  are listed in the order of their records on the disc.
-- An image carries up to three name trees over one set of files: Rock Ridge (on the plain ISO
-  9660 records), which Linux reads and archivey lists; Joliet, which 7-Zip and Windows read; and
-  UDF, which Windows reads first. Without Rock Ridge archivey lists Joliet, and a reader without
-  Joliet reads the plain tree. A file that only an unlisted tree holds is not a member, so it is
-  reported with `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
-  `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It is advisory:
-  `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses such an image.
-
-### Contents
-
-- **zisofs** (Rock Ridge transparent compression: `mkzftree` with `genisoimage -z`, or `xorriso
-  -set_filter_r --zisofs`) is supported. The member is listed with the size its data decodes to,
-  with `compression=(CompressionMethod(algo=DEFLATE),)`, and is read decoded, seeking by block. zisofs2
-  (`xorriso -zisofs version_2=on -set_filter_r --zisofs /`, under the `ZF` or the `Z2` tag), and a
-  zisofs entry too short to parse, are listed with `CompressionAlgorithm.UNKNOWN`, and reading one raises
-  `UnsupportedFeatureError`.
-- A file of 4 GiB or more, stored in several extents, is listed and read as one member, wherever
-  its extents sit in the image. Extents that overlap each other are refused with
-  `CorruptionError`.
-- The El Torito boot catalog of a bootable image (`boot.catalog`, `BOOT.CAT`) is listed as an ordinary
-  file, with the catalog's bytes as its data, as a mounted image shows it.
-- A Rock Ridge device node, FIFO or socket over an empty extent follows
-  [the shared rule](#device-files-fifos-and-sockets); over a non-empty extent it is a `FILE`.
-- The `rr_moved` directory that holds relocated deep subtrees is not listed; those subtrees appear
-  at their logical place.
-- `import archivey` wraps pycdlib's Rock Ridge parser, but the wrapper acts only while archivey
-  itself opens an image, so other code using pycdlib sees no change. Inside archivey, a System Use
-  entry of a type pycdlib does not know is skipped, as the SUSP specification says, instead of
-  failing the whole image. A malformed entry ends that record's Rock Ridge data: the member is listed
-  from the entries before it, with a `MEMBER_HEADER_RECORD_SKIPPED` diagnostic, and a symlink cut
-  this way lists with `link_target` unset and a `SYMLINK_TARGET_UNAVAILABLE` diagnostic.
-  genisoimage writes such an entry for a long symlink target (from about 400 bytes with genisoimage
-  1.1.11).
-
-### Damage and endings
-
-- An image whose directory tree loops back on itself, in any of its trees (ISO 9660, Joliet or UDF),
-  is refused at open with `CorruptionError`, even when the tree archivey lists from is intact.
-  pycdlib finds the loop. No tool writes such an image; a damaged or crafted one can.
-- A truncated image opens as long as its directories survive, and lists the sizes its records
-  declare. A file the cut reaches reads the bytes that survive and then raises `TruncatedError`;
-  files before the cut read normally. A file whose declared length cannot be recovered lists with
-  `size` set to `None`. A cut that reaches the volume descriptors, path tables or directories makes
-  `open_archive` raise `TruncatedError`.
-- An image with UDF does not open once it is truncated at all, even when the files before the cut
-  survive: `open_archive` raises `TruncatedError`, because the UDF anchor that pycdlib reads is in
-  the image's last block.
-- **Bytes after the image's end** are `ARCHIVE_TRAILING_DATA` with `format="iso"`. The end counts
-  the partitions the image's MBR lists, and those of its GPT when the GPT's checksums match, so a
-  hybrid installer image, whose EFI partition and GPT backup header sit after the ISO 9660 volume
-  space, opens clean (7-Zip warns "There are data after the end of archive" on those images). A GPT
-  damaged in transfer is not trusted, so the partition it lists is reported.
-- **Raw CD sector images** (the `.bin` of a `.bin`/`.cue` pair, 2352-byte sectors, or 2448 with
-  subchannel data) open as ISO when their data is Mode 1 or Mode 2 Form 1: archivey strips each
-  sector to its 2048 bytes of user data as it reads, which gives the same bytes as the plain
-  `.iso`. Each sector's sync and mode are checked when it is read; its EDC and ECC
-  error-correction bytes are not. A sector that is not a data sector (damage, or a Mode 2 Form 2
-  sector, as in Video CD and CD-XA files) fails the read that reaches it: reading the member that
-  holds it, or opening the image when the sector holds the volume descriptors or a directory. A
-  Mode 2 Form 2 image, which holds video or audio and no filesystem, or an unknown sector mode, is
-  refused with `UnsupportedFeatureError` naming the layout.
-- **`.cue` sheets.** Open the `.cue`, or the `.bin` when a `.cue` with the same name beside it
-  lists it, and archivey reads the disc the sheet describes, from one track file or one per track
-  (`MODE1/2352`, `MODE2/2352` and `MODE1/2048` data tracks; audio tracks hold no files). It lists
-  the filesystem an operating system mounts: the first data track of the last session that has
-  one. So a mixed-mode disc (data, then audio) lists track 1, an Enhanced CD (audio first, data in
-  a second session) lists its data session, and a multisession data disc lists its newest session,
-  whose tree also holds the files earlier sessions wrote, read from their own tracks. The track
-  files hold no gaps between sessions, so a later session's sector addresses are worked out from
-  the gap recorders leave and checked against the root directory, which names its own address;
-  when they disagree, the address is searched for. A `FILE` that is not a plain name beside the
-  sheet (a path, `..`) or not a regular file (a FIFO, a device) is refused; a symlink is followed.
-  A name not found exactly is matched without case (a sheet written on Windows may say `DISC.BIN`
-  for `disc.bin`), and a missing one is `TruncatedError`. A sheet with a `FILE` that holds no
-  `TRACK`, or with track numbers that do not go up, is `CorruptionError`. Without a `.cue`, a
-  `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
-  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). The `.cue` is used only
-  when you open the `.bin` by its path, so the same multisession `.bin` passed as a file object
-  lists its first session, not its last. When archivey finds another session's filesystem after the
-  first one, it reports `ARCHIVE_UNREAD_SESSION`, which `DiagnosticPolicy.STRICT` refuses. A `.cue`
-  has no magic: it is recognised by its name, and only from a path, since its tracks are files
-  beside it.
+Archivey also refuses folder trees that loop back on themselves, survives Rock Ridge entries
+`pycdlib` can't parse, and checks each CD sector's header as it reads. The details, and how
+`.cue` sheets and multisession discs are read, are in the
+[ISO handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md).
 
 ## SquashFS
 
