@@ -628,6 +628,33 @@ jobs:
           - { os: windows-latest, python-version: "3.11", install: all }
     steps: *test-steps
 
+  # The link parity property test (tests/test_link_parity_property.py) with many more
+  # examples than the 300 every leg runs, and a new random choice of them each time: the
+  # legs always draw the same fixed 300, and a held-versus-made mismatch can be rarer
+  # than 1 in 1,000 archives. Daily and dispatched runs only. A failure prints the
+  # archive and the @reproduce_failure line to pin as an @example.
+  link-parity-soak:
+    name: link parity soak
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Sync
+        run: uv sync --python 3.15
+      # About 17 ms an example on a runner-sized machine: 20,000 is about 6 minutes.
+      - name: Run the soak
+        env:
+          ARCHIVEY_LINK_PARITY_EXAMPLES: "20000"
+        run: >
+          uv run --python 3.15 --no-sync
+          pytest tests/test_link_parity_property.py -q --no-cov --timeout=0 -p no:randomly
+
   # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
   # tests against it. Kept apart from the test matrix and cheap: a container per
   # distribution, core install, two test files.
