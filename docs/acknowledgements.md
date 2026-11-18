@@ -47,7 +47,9 @@ the references for the formats themselves, and WinZip's AES specification for en
 down to how extended headers combine. A comparison with
 [Apache Commons Compress](https://commons.apache.org/proper/commons-compress/) showed formats and
 checks worth adding, such as XZ-compressed ZIP members and finding TAR archives that have no
-`ustar` magic.
+`ustar` magic. [Google Snappy](https://github.com/google/snappy)'s format and framing
+descriptions are the reference for the Snappy reader, and its library was the oracle the reader
+was fuzzed against.
 
 The indexed and seekable decompressors ([python-xz](https://github.com/Rogdham/python-xz),
 [indexed_bzip2](https://github.com/mxmlnkn/indexed_bzip2),
@@ -72,6 +74,10 @@ Archivey itself needs no third-party package. Optional packages add formats and 
 - **[pycdlib](https://github.com/clalancette/pycdlib):** ISO images.
 - **[bzip3](https://github.com/synodriver/python-bz3):** `.bz3` files, with the
   [bzip3](https://github.com/kspalaiologos/bzip3) library it bundles.
+- **[cramjam](https://github.com/milesgranger/cramjam),
+  [google-crc32c](https://github.com/googleapis/python-crc32c) and
+  [crc32c](https://github.com/ICRAR/crc32c):** faster Snappy (`.sz`) reading: cramjam decodes raw
+  Snappy blocks, and the other two compute the CRC-32C of each chunk.
 - **[tqdm](https://github.com/tqdm/tqdm):** progress bars in the command-line tool.
 - **[rapidgzip](https://github.com/mxmlnkn/rapidgzip):** faster seeking in large gzip, bzip2 and
   DEFLATE data, such as ZIP members, and faster reading of large DEFLATE data where it pays off.
