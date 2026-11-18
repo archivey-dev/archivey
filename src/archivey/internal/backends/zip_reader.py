@@ -323,6 +323,8 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     10: CompressionAlgorithm.DCL_IMPLODE,
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
+    # 20: Zstandard's id in APPNOTE 6.3.7, deprecated for 93 in 6.3.8; same data.
+    20: CompressionAlgorithm.ZSTD,
     93: CompressionAlgorithm.ZSTD,
     95: CompressionAlgorithm.XZ,
     98: CompressionAlgorithm.PPMD,
@@ -351,6 +353,7 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     10: Codec.DCL_IMPLODE,
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
+    20: Codec.ZSTD,  # APPNOTE 6.3.7's id, deprecated for 93
     93: Codec.ZSTD,
     95: Codec.XZ,
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
