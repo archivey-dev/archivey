@@ -556,7 +556,7 @@ jobs:
     # macOS gets 35: on 2026-11-18 two queue runs of the 3.15 [all] job hit 20 minutes.
     # One was cut off at 72% of the main test step after 17m40s (about 26 minutes
     # projected for the whole job); the other passed that step in 17m00s and was cut
-    # off in the PPMd step. Other runs that day took 12 to 19 minutes. Linux keeps 20.
+    # off in the PPMd step. Passing runs that day took about 5 to 19 minutes. Linux keeps 20.
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 35 || 20 }}
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
