@@ -24,7 +24,7 @@ methods.
 | You install | It reads |
 | --- | --- |
 | `archivey` | ZIP, TAR and 7z with their common compression methods, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
-| `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Progress bars in the command-line tool. |
+| `[recommended]` adds | ISO images, and LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. A faster CRC check for Snappy `.sz` files, on CPython. Progress bars in the command-line tool. |
 | `[bzip3]` adds | `.bz3` files, alone or inside a TAR ([bzip3](#bzip3)). |
 | `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. On Linux and macOS, also faster reading of large DEFLATE data that compresses 3:1 or less, without that option. |
 

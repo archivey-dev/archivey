@@ -29,6 +29,11 @@ done here, the same for all of them, and a block a native package refuses is dec
 again in Python, which decides (:func:`checked_by_python`). So the installed packages
 change the speed, never which files read or what they read to.
 
+**Process isolation.** Under ``ProcessIsolation.NATIVE_DECODERS`` the same packages
+run in a child process held for the stream (:func:`chunk_decoder`), and the framing
+and every check stay here; only the Python decoder and CRC run here when no package is
+usable.
+
 **CRC-32C.** The standard library has no CRC-32C (``zlib.crc32`` is a different
 polynomial). ``google-crc32c`` (only with its C extension), else ``crc32c``, is used
 when installed; otherwise a table-driven Python CRC runs at about 20 MB/s.
@@ -42,13 +47,19 @@ from __future__ import annotations
 
 import functools
 import struct
+import warnings
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from types import ModuleType
 from typing import TYPE_CHECKING
 
 from archivey.internal.streams.codecs import deps
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
+from archivey.internal.streams.codecs.isolated import (
+    IN_PROCESS,
+    ChildSnappyNatives,
+    Natives,
+    SnappyChildError,
+)
 from archivey.types import OptionalLibrary
 
 if TYPE_CHECKING:
@@ -147,22 +158,19 @@ def _is_native(library: OptionalLibrary, module: ModuleType) -> bool:
 
 def crc32c_function(
     excluded: frozenset[OptionalLibrary] = frozenset(),
-    natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes], int]:
-    """The CRC-32C to check chunks with: ``google-crc32c``, else ``crc32c``, when one is
-    installed and not ``excluded``, else :func:`crc32c_python`.
-
-    Under ``ProcessIsolation.NATIVE_DECODERS`` (``natives.isolated``) the Python CRC
-    always runs: a call per 64 KiB chunk would cost more in a child process than the
-    Python CRC does, and the Python CRC needs no child.
-    """
-    if natives.isolated:
-        return crc32c_python
+    """The CRC-32C to check chunks with in this process: ``google-crc32c``, else
+    ``crc32c``, when one is installed and not ``excluded``, else
+    :func:`crc32c_python`."""
     for library, function in _NATIVE_CRC:
         if library in excluded:
             continue
-        module = deps.snappy_libraries[library].load()
+        with warnings.catch_warnings():
+            # google-crc32c warns at import when it falls back to its Python CRC,
+            # which is then skipped here.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            module = deps.snappy_libraries[library].load()
         if module is not None and _is_native(library, module):
             if usage is not None:
                 usage.note_backend("library", library.value, "snappy")
@@ -360,18 +368,11 @@ def checked_by_python(
 
 def raw_block_decoder(
     excluded: frozenset[OptionalLibrary] = frozenset(),
-    natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
-    """The raw-block decoder to use: the first of :data:`NATIVE_DECODERS` that is
-    installed and not ``excluded``, checked by the Python decoder, else the Python
-    decoder alone.
-
-    Under ``ProcessIsolation.NATIVE_DECODERS`` (``natives.isolated``) the Python decoder
-    always runs, so no native code runs in this process and no child is needed.
-    """
-    if natives.isolated:
-        return decode_raw_python
+    """The raw-block decoder to use in this process: the first of
+    :data:`NATIVE_DECODERS` that is installed and not ``excluded``, checked by the
+    Python decoder, else the Python decoder alone."""
     for library, adapt in NATIVE_DECODERS.items():
         if library in excluded:
             continue
@@ -381,6 +382,120 @@ def raw_block_decoder(
                 usage.note_backend("library", library.value, "snappy")
             return checked_by_python(adapt(module))
     return decode_raw_python
+
+
+def _allowed(
+    libraries: Iterable[OptionalLibrary],
+    excluded: frozenset[OptionalLibrary],
+    natives: Natives,
+) -> list[OptionalLibrary]:
+    return [
+        library
+        for library in libraries
+        if library not in excluded
+        and not deps.snappy_libraries[library].child_import_failed
+        and natives.package_available(deps.snappy_libraries[library])
+    ]
+
+
+class LocalChunks:
+    """A data chunk's decode and CRC-32C in this process."""
+
+    def __init__(
+        self, decode: Callable[[bytes, int], bytes], crc32c: Callable[[bytes], int]
+    ) -> None:
+        self.decode = decode
+        self.crc32c = crc32c
+
+    def __call__(self, compressed: bool, body: bytes) -> tuple[bytes, int]:
+        """The chunk's data (``body`` decoded when ``compressed``) and its CRC-32C."""
+        data = decode_raw_chunk(self.decode, body) if compressed else body
+        return data, self.crc32c(data)
+
+
+class ChildChunks:
+    """A data chunk's decode and CRC-32C in a child process held for the stream, one
+    round trip per chunk (``ChildSnappyNatives.chunk``), whichever of the two has a
+    native package there; the other runs here, in Python.
+
+    A block the child's package refuses, or decodes to the wrong length, is decoded
+    again here in Python, which decides, as :func:`checked_by_python` does in process.
+    """
+
+    def __init__(self, child: ChildSnappyNatives, decoder: bool, crc: bool) -> None:
+        # An attribute, so that ``release_decoder_children`` finds the child.
+        self._child = child
+        self._decoder = decoder
+        self._crc = crc
+
+    def _crc32c(self, data: bytes) -> int:
+        if not self._crc:
+            return crc32c_python(data)
+        return int.from_bytes(self._child.chunk(data, -1), "little")
+
+    def __call__(self, compressed: bool, body: bytes) -> tuple[bytes, int]:
+        if compressed and self._decoder:
+            size = raw_length(body)
+            try:
+                out = self._child.chunk(body, size)
+            except SnappyChildError:
+                out = None
+            if out is not None:
+                data = out[:-_CRC] if self._crc else out
+                if len(data) == size:
+                    if self._crc:
+                        return data, int.from_bytes(out[-_CRC:], "little")
+                    return data, crc32c_python(data)
+            data = decode_raw_chunk(decode_raw_python, body)
+            return data, self._crc32c(data)
+        data = decode_raw_chunk(decode_raw_python, body) if compressed else body
+        return data, self._crc32c(data)
+
+
+ChunkDecoder = Callable[[bool, bytes], tuple[bytes, int]]
+
+
+def chunk_decoder(
+    excluded: frozenset[OptionalLibrary] = frozenset(),
+    natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
+) -> ChunkDecoder:
+    """What decodes a data chunk and computes its CRC-32C.
+
+    In this process, :func:`raw_block_decoder` and :func:`crc32c_function`. Under
+    ``ProcessIsolation.NATIVE_DECODERS`` (``natives.isolated``) the same packages, in
+    the same order, run in one child process held for the stream, and the framing stays
+    here: one round trip per chunk carries its block there and its data and CRC back,
+    far cheaper than the Python decoder and CRC. A package the child cannot import is
+    skipped, and with none left the Python decoder and CRC run here, with no child.
+    """
+    if not natives.isolated:
+        return LocalChunks(
+            raw_block_decoder(excluded, usage), crc32c_function(excluded, usage)
+        )
+    decoders = _allowed(NATIVE_DECODERS, excluded, natives)
+    crcs = _allowed((library for library, _ in _NATIVE_CRC), excluded, natives)
+    if not decoders and not crcs:
+        return LocalChunks(decode_raw_python, crc32c_python)
+    child = natives.snappy_natives(
+        [library.value for library in decoders], [library.value for library in crcs]
+    )
+    decoder, crc = child.chosen()
+    for tried, chosen in ((decoders, decoder), (crcs, crc)):
+        for library in tried:
+            if library.value == chosen:
+                if usage is not None:
+                    usage.note_backend("library", library.value, "snappy")
+                break
+            # The child takes the first it can use: this one was found here but not
+            # importable there (or google-crc32c without its C extension).
+            deps.snappy_libraries[library].failed_in_child(
+                ImportError(f"{library.value} is not usable in the decoder process")
+            )
+    if not decoder and not crc:
+        child.close()
+        return LocalChunks(decode_raw_python, crc32c_python)
+    return ChildChunks(child, bool(decoder), bool(crc))
 
 
 def decode_raw_chunk(decode: Callable[[bytes, int], bytes], block: bytes) -> bytes:
@@ -408,11 +523,9 @@ class SnappyFramedDecompressor:
     :meth:`end_input` finds the input ended between chunks, after an identifier.
     """
 
-    def __init__(
-        self, decode: Callable[[bytes, int], bytes], crc32c: Callable[[bytes], int]
-    ) -> None:
-        self._decode = decode
-        self._crc32c = crc32c
+    def __init__(self, chunks: ChunkDecoder) -> None:
+        # Decodes a data chunk and computes its CRC (``LocalChunks``, ``ChildChunks``).
+        self._chunks = chunks
         self._input = bytearray()
         # Bytes of a skippable chunk still to drop as they arrive.
         self._skip = 0
@@ -492,14 +605,10 @@ class SnappyFramedDecompressor:
                 body = bytes(self._input[_HEADER + _CRC : _HEADER + length])
                 self._consume(_HEADER + length)
                 try:
-                    data = (
-                        decode_raw_chunk(self._decode, body)
-                        if kind == _COMPRESSED
-                        else body
-                    )
+                    data, crc = self._chunks(kind == _COMPRESSED, body)
                 except SnappyFormatError as exc:
                     raise SnappyFormatError(f"chunk at offset {at}: {exc}") from exc
-                if masked_crc(self._crc32c(data)) != stored:
+                if masked_crc(crc) != stored:
                     raise SnappyFormatError(f"CRC-32C mismatch in chunk at offset {at}")
                 self._output = memoryview(data)
                 return True

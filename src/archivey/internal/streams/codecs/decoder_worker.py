@@ -226,6 +226,68 @@ def _load_bzip3() -> Callable[..., Any]:
     return importlib.import_module("bz3.backends").BZ3Decompressor
 
 
+class _Snappy:
+    """Snappy's native raw-block decoder and CRC-32C, for the parent's framing
+    (``snappy_framed``). ``decoders`` and ``crcs`` list the packages the parent allows,
+    in its order of preference; each is used only if it imports here, and google-crc32c
+    only with its C extension. :meth:`chosen` says which were found."""
+
+    def __init__(self, decoders: list[str], crcs: list[str]) -> None:
+        self._decoder = ""
+        self._module: Any = None
+        for name in decoders:
+            try:
+                self._module = importlib.import_module(name)
+            except ImportError:
+                continue
+            self._decoder = name
+            break
+        self._crc = ""
+        self._crc32c: Callable[[bytes], int] | None = None
+        for name in crcs:
+            try:
+                module = importlib.import_module(name)
+            except ImportError:
+                continue
+            if name == "google_crc32c":
+                if getattr(module, "implementation", None) != "c":
+                    continue
+                self._crc32c = module.value
+            else:
+                self._crc32c = module.crc32c
+            self._crc = name
+            break
+
+    def chosen(self) -> tuple[str, str]:
+        """The raw-block decoder and the CRC package in use, ``""`` for none."""
+        return self._decoder, self._crc
+
+    def chunk(self, body: bytes, size: int) -> bytes:
+        """One data chunk's work, so its bytes cross the pipe once each way: with
+        ``size`` >= 0, ``body`` is a raw block declaring ``size`` bytes, decoded here;
+        with ``size`` -1, ``body`` is the data itself and only its CRC is computed. The
+        reply is the decoded data (none for ``size`` -1), then, when a CRC package is
+        in use, the CRC-32C of the data as 4 little-endian bytes."""
+        if size >= 0:
+            if self._decoder == "compress_utils":
+                # expected_size is an upper bound, already checked by the parent.
+                algorithm = self._module.Algorithm.snappy
+                data = self._module.decompress(body, algorithm, expected_size=size)
+            else:
+                data = bytes(self._module.snappy.decompress_raw(body))
+            out = data
+        else:
+            data, out = body, b""
+        if self._crc32c is None:
+            return out
+        return out + self._crc32c(data).to_bytes(4, "little")
+
+
+def _load_snappy() -> Callable[..., Any]:
+    # The packages are imported by the constructor, each only if the parent allows it.
+    return _Snappy
+
+
 def _load_ppmd7() -> Callable[..., Any]:
     return importlib.import_module("pyppmd").Ppmd7Decoder
 
@@ -245,6 +307,7 @@ LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
     "lzo": _load_lzo,
     "inflate64": _load_inflate64,
     "bzip3": _load_bzip3,
+    "snappy": _load_snappy,
     "ppmd7": _load_ppmd7,
     "ppmd8": _load_ppmd8,
 }

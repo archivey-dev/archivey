@@ -2,7 +2,8 @@
 
 The chunks are parsed and checked in Python (``snappy_framed``); a raw block is decoded
 by ``compress-utils`` or ``cramjam`` when installed, else in Python, and the CRC-32C by
-``google-crc32c`` or ``crc32c``, else in Python. None of them is required.
+``google-crc32c`` or ``crc32c``, else in Python. None of them is required. Under
+``ProcessIsolation.NATIVE_DECODERS`` the packages run in a child process.
 """
 
 from __future__ import annotations
@@ -17,8 +18,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
     STREAM_IDENTIFIER,
     SnappyFormatError,
     SnappyFramedDecompressor,
-    crc32c_function,
-    raw_block_decoder,
+    chunk_decoder,
 )
 from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
 
@@ -48,10 +48,7 @@ class SnappyCodec(StreamCodec):
             config.natives,
             config.usage,
         )
-        return SnappyFramedDecompressor(
-            raw_block_decoder(excluded, natives, usage),
-            crc32c_function(excluded, natives, usage),
-        )
+        return SnappyFramedDecompressor(chunk_decoder(excluded, natives, usage))
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:

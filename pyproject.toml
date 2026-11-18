@@ -86,6 +86,12 @@ recommended = [
     "cryptography>=45.0.0",
     "pycdlib>=1.22.0",
     "tqdm>=4.67.0",
+    # CRC-32C of Snappy (.sz) chunks; archivey computes it in Python without it, about
+    # 20 MB/s against several GB/s. Apache-2.0. 1.9.0 publishes wheels for CPython 3.10
+    # to 3.15 on Linux x86-64/aarch64 (glibc), macOS and Windows x86-64; elsewhere its
+    # sdist builds the C extension or falls back to its own Python CRC, which archivey
+    # does not use. No free-threaded wheel, so not in [free-threaded].
+    "google-crc32c>=1.9.0; platform_python_implementation == 'CPython'",
 ]
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into

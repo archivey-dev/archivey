@@ -23,6 +23,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
     MAX_CHUNK_DATA,
     NATIVE_DECODERS,
     STREAM_IDENTIFIER,
+    LocalChunks,
     SnappyFormatError,
     SnappyFramedDecompressor,
     crc32c_python,
@@ -272,7 +273,7 @@ def decode_with(
     backend: str, data: bytes, step: int = 1 << 20, max_length: int = 1 << 16
 ) -> bytes:
     """The framed decompressor alone, driven like archivey's stream reader drives it."""
-    d = SnappyFramedDecompressor(DECODERS[backend], crc32c_python)
+    d = SnappyFramedDecompressor(LocalChunks(DECODERS[backend], crc32c_python))
     out = bytearray()
     pos = 0
     while not d.eof:

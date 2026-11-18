@@ -20,17 +20,26 @@ from pathlib import Path
 
 import pytest
 
-from archivey import ArchiveFormat, open_archive, open_stream
+from archivey import (
+    ArchiveFormat,
+    ArchiveyConfig,
+    ProcessIsolation,
+    open_archive,
+    open_stream,
+)
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal.streams.codecs import deps
-from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
+from archivey.internal.streams.codecs.isolated import ISOLATED
 from archivey.internal.streams.codecs.snappy_framed import (
     MAX_CHUNK_DATA,
     NATIVE_DECODERS,
     STREAM_IDENTIFIER,
+    ChildChunks,
+    LocalChunks,
     SnappyFormatError,
     SnappyFramedDecompressor,
     checked_by_python,
+    chunk_decoder,
     crc32c_function,
     crc32c_python,
     decode_raw_chunk,
@@ -38,6 +47,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
     masked_crc,
     raw_block_decoder,
 )
+from archivey.internal.streams.decompressor_stream import release_decoder_children
 from archivey.types import OptionalLibrary
 from tests.conftest import importorskip
 
@@ -181,7 +191,7 @@ def _read_all(
     decode: Callable[[bytes, int], bytes], data: bytes, step: int, max_length: int
 ) -> bytes:
     """Drive the decompressor as archivey's stream reader does."""
-    d = SnappyFramedDecompressor(decode, crc32c_python)
+    d = SnappyFramedDecompressor(LocalChunks(decode, crc32c_python))
     out = bytearray()
     pos = 0
     while not d.eof:
@@ -331,7 +341,7 @@ def test_feeding_pattern_does_not_change_the_output(
 
 
 def test_a_skippable_chunk_is_not_held(decode: Callable[[bytes, int], bytes]) -> None:
-    d = SnappyFramedDecompressor(decode, crc32c_python)
+    d = SnappyFramedDecompressor(LocalChunks(decode, crc32c_python))
     big = _chunk(0xFE, b"\0" * (4 << 20))
     stream = _frame(big, _data_chunk(b"after"))
     out = bytearray()
@@ -346,7 +356,7 @@ def test_a_skippable_chunk_is_not_held(decode: Callable[[bytes, int], bytes]) ->
 def test_an_impossible_chunk_length_is_refused_before_its_bytes_arrive(
     decode: Callable[[bytes, int], bytes],
 ) -> None:
-    d = SnappyFramedDecompressor(decode, crc32c_python)
+    d = SnappyFramedDecompressor(LocalChunks(decode, crc32c_python))
     header = b"\x00" + (0xFFFFFF).to_bytes(3, "little")
     d.decompress(STREAM_IDENTIFIER)
     with pytest.raises(SnappyFormatError, match="outside"):
@@ -577,16 +587,70 @@ def test_python_decodes_when_no_native_package_can(
     assert raw_block_decoder(excluded=frozenset(NATIVE_DECODERS)) is decode_raw_python
 
 
-def test_isolated_decodes_and_checks_in_python() -> None:
-    assert raw_block_decoder(natives=ISOLATED) is decode_raw_python
-    assert crc32c_function(natives=ISOLATED) is crc32c_python
-    assert (
-        crc32c_function(
-            natives=IN_PROCESS,
-            excluded=frozenset({OptionalLibrary.GOOGLE_CRC32C, OptionalLibrary.CRC32C}),
-        )
-        is crc32c_python
-    )
+_CRC_LIBRARIES = (OptionalLibrary.GOOGLE_CRC32C, OptionalLibrary.CRC32C)
+
+
+def test_excluded_native_crc_packages_leave_the_python_crc() -> None:
+    assert crc32c_function(frozenset(_CRC_LIBRARIES)) is crc32c_python
+
+
+def _crc_installed() -> bool:
+    return any(deps.snappy_libraries[lib].available() for lib in _CRC_LIBRARIES)
+
+
+def test_isolated_runs_the_native_packages_in_a_child(selected: str) -> None:
+    chunks = chunk_decoder(natives=ISOLATED)
+    if selected == "python" and not _crc_installed():
+        assert isinstance(chunks, LocalChunks)
+        assert (chunks.decode, chunks.crc32c) == (decode_raw_python, crc32c_python)
+        return
+    assert isinstance(chunks, ChildChunks)
+    try:
+        data = _sample(MAX_CHUNK_DATA)
+        assert chunks(True, _raw(data)) == (data, crc32c_python(data))
+        assert chunks(False, data) == (data, crc32c_python(data))
+        # A block a native package refuses is decided in Python here too.
+        for block, expected in _LONG_TAG_LITERALS.items():
+            assert chunks(True, block) == (expected, crc32c_python(expected))
+        with pytest.raises(SnappyFormatError):
+            chunks(True, b"\x05\x09\xff\xff")
+    finally:
+        release_decoder_children(chunks)
+
+
+def test_isolated_without_usable_packages_needs_no_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _hide(monkeypatch, *deps.snappy_libraries)
+    chunks = chunk_decoder(natives=ISOLATED)
+    assert isinstance(chunks, LocalChunks)
+    assert (chunks.decode, chunks.crc32c) == (decode_raw_python, crc32c_python)
+
+
+def test_a_package_the_child_cannot_import_is_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Found in this process but not importable in the child: here, cramjam where it is
+    # not installed.
+    if deps.snappy_libraries[OptionalLibrary.CRAMJAM].available():
+        pytest.skip("cramjam is installed")
+    others = [
+        lib for lib in deps.snappy_libraries if lib is not OptionalLibrary.CRAMJAM
+    ]
+    _hide(monkeypatch, *others)
+    lazy = deps.LazyOptional(OptionalLibrary.CRAMJAM, present=True)
+    monkeypatch.setitem(deps.snappy_libraries, OptionalLibrary.CRAMJAM, lazy)
+    assert isinstance(chunk_decoder(natives=ISOLATED), LocalChunks)
+    assert lazy.child_import_failed
+    # Not tried again: no child starts.
+    assert isinstance(chunk_decoder(natives=ISOLATED), LocalChunks)
+
+
+def test_open_stream_reads_through_the_child(selected: str) -> None:
+    data = _sample(3 * MAX_CHUNK_DATA + 5)
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    with open_stream(io.BytesIO(written_frame(data)), format="sz", config=config) as s:
+        assert s.read() == data
 
 
 # cramjam refuses a one- or two-byte literal at the end of a block written with a
