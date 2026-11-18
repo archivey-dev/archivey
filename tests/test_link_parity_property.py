@@ -12,18 +12,22 @@ ways, each of which the spec says gives the same outcome:
 Each must give the reference run's statuses and paths, and the same tree on disk. The
 one accepted difference is the streaming one: a hard link whose source has no written
 copy left fails on a forward-only stream ("cannot be recovered on a forward-only
-stream"), and a run that has one is not compared, since everything after it can differ.
+stream"). A streaming run that has one is not compared with the reference, since that
+failure changes members before it as well as after it (a name the link would have
+overwritten stays as it was). The test asserts what still holds there: only hard links
+fail that way, and never in the other runs.
 
 This started as the design's hand-run fuzzer (the archived
 ``link-extraction-redesign`` change, ``evidence/linkfuzz.py``). A shrunk
 counterexample is pinned as an ``@example``.
 
 CI budget: 300 examples with the shared ``archivey`` profile's fixed derandomized
-choice, or ``ARCHIVEY_FUZZ_EXAMPLES`` when that is larger: about 5 seconds. A
-mismatch is often rarer than 1 in 100 examples, so the daily CI run adds a soak:
+choice, or ``ARCHIVEY_FUZZ_EXAMPLES`` when that is larger: a few seconds. A mismatch can
+be rarer than 1 in 1,000 archives, so the daily CI run adds a soak:
 ``ARCHIVEY_LINK_PARITY_EXAMPLES=N`` runs N examples with a new random choice each time
-(``ci.yml``, ``link-parity-soak``). A failure prints the archive and the
-``@reproduce_failure`` line.
+(``ci.yml``, ``link-parity-soak``), on a case-sensitive and a case-insensitive
+filesystem. A failure prints the archive and the ``@reproduce_failure`` line. Either
+variable above the default turns off the suite's 60-second test timeout for this test.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ _SOURCES = ["src1", "src2"]
 _UNRECOVERABLE = "cannot be recovered on a forward-only stream"
 # The soak: a count of examples, drawn at random rather than the profile's fixed choice.
 _SOAK = int(os.environ.get("ARCHIVEY_LINK_PARITY_EXAMPLES", "0"))
+_EXAMPLES = _SOAK or max(settings.default.max_examples, 300)
 
 Spec = tuple[str, str, Any]
 
@@ -189,10 +194,9 @@ def _quiet() -> Iterator[None]:
     logging.disable(logging.NOTSET)
 
 
-@settings(
-    max_examples=_SOAK or max(settings.default.max_examples, 300),
-    derandomize=not _SOAK,
-)
+# A deeper run outlasts the suite's per-test timeout; the 300 stay under it.
+@pytest.mark.timeout(0 if _EXAMPLES > 300 else 60)
+@settings(max_examples=_EXAMPLES, derandomize=not _SOAK)
 @given(
     specs=_archives(),
     overwrite=st.sampled_from(list(OverwritePolicy)),
@@ -227,8 +231,20 @@ def test_held_streamed_and_dry_runs_match_the_made_run(
         assert _outcome(held) == _outcome(ref), "held-back links differ from made ones"
         dry = _extract(data, base / "dry", dry=True, **kw)
         assert _outcome(dry)[0] == _outcome(ref)[0], "the dry run differs"
+        for run in (ref, held, dry):
+            assert not any(_UNRECOVERABLE in error for *_, error in run[0])
         stream = _extract(data, base / "stream", streaming=True, **kw)
-        if not any(_UNRECOVERABLE in error for *_, error in stream[0]):
+        kinds = [(name, kind) for kind, name, _ in specs if name not in _SOURCES]
+        # A directory member's name has a trailing slash in the results.
+        assert [name.rstrip("/") for name, *_ in stream[0]] == [n for n, _ in kinds]
+        unrecoverable = [
+            kind
+            for (_, kind), (*_, error) in zip(kinds, stream[0], strict=True)
+            if _UNRECOVERABLE in error
+        ]
+        # The documented streaming difference, which only a hard link meets.
+        assert set(unrecoverable) <= {"hard"}
+        if not unrecoverable:
             assert _outcome(stream) == _outcome(ref), "the streaming run differs"
     finally:
         shutil.rmtree(base, ignore_errors=True)

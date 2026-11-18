@@ -9,6 +9,32 @@ mitigation imposes lives on the format handbook page ([`formats/`](formats/)), a
 behaviour lives in the handbook's sharp-edges tables and, when users hit it, in
 the user docs ([`docs/formats.md`](../docs/formats.md) for format behaviour).
 
+## Held-back hard link fails on a case-insensitive filesystem where the made link succeeds (open)
+
+**Symptom.** On a filesystem that folds case (macOS's default volume, Windows, ext4
+`casefold`), a hard link held back for the second pass can end `FAILED` with "Hardlink
+source is no longer on disk as a regular file" where the same archive with the source
+selected makes the link. Found by `tests/test_link_parity_property.py` on a casefold
+ext4 mount (#1638, round 1):
+
+```
+file src1, file src2, hard A -> src1, file a/x, file a, file a, file a, hard b -> src1
+REPLACE, STRICT, members excluding src1 and src2
+```
+
+The placeholder at `A` is the only copy of `src1`'s bytes, and `a/x` replaces it with
+the directory `a`. The later link `b` then finds no file to link to. In the run with the
+source selected, `b` links to `src1`. On a case-sensitive filesystem both runs agree.
+
+**Affects.** Found on `main` after placeholders (#1620); earlier versions not checked. Random access.
+
+**Suspected cause.** The record of where a source's bytes are (`source_paths`,
+`source_of`, `placeholder_at` in `extraction.py`) is keyed by the spelled path, so a
+member that replaces `A` through the spelling `a` does not drop it.
+
+**Remains.** A fix in its own pull request; the daily `link-parity-soak` macOS leg
+fails until then.
+
 ## Brotli probe past the completion window: a source of unknown size can detect differently (open)
 
 - **Symptom.** With `always_probe_content`, bytes over the completion window (64 KiB under
