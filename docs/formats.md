@@ -1161,11 +1161,13 @@ other members because of a member's name any more. Setting it to `True` warns.
   ([Names in other encodings](opening.md#names-in-other-encodings)).
 - Joliet names are UTF-16 and ignore `encoding=`. They can hold an
   [unpaired surrogate](#names-with-an-unpaired-surrogate).
-- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty extension), and
-  `extra["iso.version"]` keeps the number. When a directory holds several versions of one name, the
-  highest takes the bare name, and the others list under their stored identifier (`FOO.;1`) with
-  `is_current=False`, the same shape as RAR file versions. Plain directory names have no version
-  and keep any `;N`.
+- Plain ISO 9660 and Joliet file names lose their `;N` version suffix (and the `.` of an empty
+  extension), and `extra["iso.version"]` keeps the number. Many writers put `;1` on Joliet names
+  too, and Windows and Linux drop it there as well. When a directory holds several versions of one
+  name, the highest takes the bare name, and the others list under their stored identifier
+  (`FOO.;1`) with `is_current=False`, the same shape as RAR file versions. Directory names have no
+  version and keep any `;N`, and so does a file name that is only dots before the `;N`
+  (`...;1`), so that no member is named `.` or `..`.
 - Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
   which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory
@@ -1246,8 +1248,12 @@ other members because of a member's name any more. Setting it to `True` warns.
   for `disc.bin`), and a missing one is `TruncatedError`. A sheet with a `FILE` that holds no
   `TRACK`, or with track numbers that do not go up, is `CorruptionError`. Without a `.cue`, a
   `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
-  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
-  is recognised by its name, and only from a path, since its tracks are files beside it.
+  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). The `.cue` is used only
+  when you open the `.bin` by its path, so the same multisession `.bin` passed as a file object
+  lists its first session, not its last. When archivey finds another session's filesystem after the
+  first one, it reports `ARCHIVE_UNREAD_SESSION`, which `DiagnosticPolicy.STRICT` refuses. A `.cue`
+  has no magic: it is recognised by its name, and only from a path, since its tracks are files
+  beside it.
 
 ## SquashFS
 
@@ -1594,8 +1600,9 @@ Archivey reads the TARs and never runs the script.
   checked).
 - `format=TAR_GZ` (or any other format) on a makeself archive fails as on any file that is not
   one, and the error says the file is a makeself archive.
-- A header archivey cannot parse raises `CorruptionError`. The header counts against
-  `max_metadata_bytes`: a longer one raises `ResourceLimitError`.
+- A header archivey cannot parse raises `CorruptionError`. Archivey weighs the header against
+  `max_metadata_bytes` as it reads it, at open, and refuses a header that lists more payloads
+  than `max_members`: either raises `ResourceLimitError`.
 
 ## Disk images
 

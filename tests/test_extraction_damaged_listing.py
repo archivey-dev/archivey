@@ -256,8 +256,9 @@ def test_a_fresh_corruption_error_from_the_pass_propagates_at_once(
     tmp_path: Path,
 ) -> None:
     # Only the reader's own walk-error object marks listing damage. A pass that wraps
-    # it in a new CorruptionError is a member fault: it propagates at once, so the
-    # second pass does not run and the selected hard link stays unwritten.
+    # it in a new CorruptionError is a member fault: it propagates as it is. The
+    # selected hard link `b.txt` was placed before the damage, as the made link was,
+    # so it is filled before the error is raised.
     data = _tar_with_hardlink()
     dest = tmp_path / "out"
     with open_archive(io.BytesIO(data)) as reader:
@@ -274,7 +275,7 @@ def test_a_fresh_corruption_error_from_the_pass_propagates_at_once(
             reader.extract_all(dest, members=["b.txt"])
         assert excinfo.value is not reader._walk_error
     assert str(excinfo.value).startswith("wrapped: ")
-    assert _files_on_disk(dest) == {}
+    assert _files_on_disk(dest) == {"b.txt": b"aaa"}
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random-access", "streaming"])

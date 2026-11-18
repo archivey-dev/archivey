@@ -33,6 +33,7 @@ from archivey.internal.overrides import override
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.binaryio import (
+    decode_to,
     read_blocking,
     source_byte_size,
 )
@@ -185,15 +186,19 @@ class BombTracker:
     def member_bytes(self) -> int:
         return self._member_bytes
 
-    def start_member(self, member: ArchiveMember) -> None:
+    def start_member(self, member: ArchiveMember, *, entry: bool = True) -> None:
         """Start counting ``member``'s output, and count it toward the entry limit.
 
         The caller passes the original member, not a filter copy, so
         ``compressed_size`` and any late-bound fields are accurate. The entry-count
         guard, like the cumulative byte guard, halts even under ``OnError.CONTINUE``.
+        ``entry=False`` counts the output only: the hard-link fill reads an excluded
+        source into names whose links were counted as entries when they were placed.
         """
         self._member = member
         self._member_bytes = 0
+        if not entry:
+            return
         self._entry_count += 1
         if self._max_entries is not None and self._entry_count > self._max_entries:
             raise AlwaysStopResourceLimitError(
@@ -369,7 +374,15 @@ _GUARD_STEP = 1 << 20
 # The room can reach gigabytes, and a decoder may allocate what a read asks for before
 # it reads: ``RawIOBase.read`` does, and under PyPy that buffer is real memory, not
 # pages the kernel hands out as they are touched.
-_READ_TO_END_STEP = _GUARD_STEP * 16
+#
+# One step, the most a ``DecompressorStream`` decoder call gives on a file
+# (``_SEEKABLE_FEED_OUTPUT``). When one decoder call fills the step (a feed slice that
+# decodes to 1 MiB or more, as on highly compressible data), the read comes back as the
+# decoder's own bytes, and the join below is the only copy of the output. A larger step
+# makes the decoder join several calls into it first, which copies the whole output a
+# second time. On data that compresses less, the decoder still joins several calls
+# into each step.
+_READ_TO_END_STEP = _GUARD_STEP
 
 
 class _RatioCheck:
@@ -384,9 +397,9 @@ class _RatioCheck:
     costs nothing here. Near the limit, reads and seeks forward go to the decoder in
     steps of at most 1 MiB, a seek to the end included, so a refusal comes within a step
     of the limit, from the call that crosses it, whose bytes are withheld. Further from
-    it, a read toward an end the check cannot see asks for at most 16 MiB per call
-    (``_READ_TO_END_STEP``). A member's seek to the end moves a room at a time and
-    reads one byte (``MemberRatioCheck._seek_end_target``).
+    it, a read toward an end the check cannot see asks for at most 1 MiB per call
+    (``_READ_TO_END_STEP``). A member's seek to the end moves a room at a time until a
+    move stops at the end (``MemberRatioCheck._seek_end_target``).
     """
 
     # Whether the decoder's error after a whole step is held for the next call.
@@ -777,11 +790,11 @@ class MemberRatioCheck(_RatioCheck):
 
         The decoder serves that seek by decoding to its real end in one call, which a
         member can put far past its recorded size. Where a rule could refuse on the
-        way, the end is found from the decoder's cheap size, else a room at a time: a
-        seek forward and a one-byte read make the decoder decode the gap its own way,
-        then the offset reached is judged. Once a read finds nothing, the end is
-        inside the last room and ``SEEK_END`` costs the decoder nothing more. ``None``
-        leaves the seek to the decoder whole.
+        way, the end is found from the decoder's cheap size, else a room at a time
+        (``decode_to``): the decoder decodes the gap its own way, then the offset
+        reached is judged. Once a move stops short, it stopped at the end, and
+        ``SEEK_END`` costs the decoder nothing more. ``None`` leaves the seek to the
+        decoder whole.
         """
         if self._room() == math.inf:
             return None  # nothing on the way could be refused
@@ -793,14 +806,10 @@ class MemberRatioCheck(_RatioCheck):
             raise io.UnsupportedOperation("seek")
         while True:
             step_to = self._pos + int(self._room())
-            self._inner.seek(step_to)
-            if not read_blocking(self._inner, 1):
-                break
-            self._pos = step_to + 1
+            self._pos = decode_to(self._inner, step_to)
             self._check(self._pos)
-        self._pos = self._inner.seek(0, io.SEEK_END)
-        self._check(self._pos)
-        return self._pos + offset
+            if self._pos < step_to:
+                return self._pos + offset
 
     @override
     def _judge(self, position: int) -> None:

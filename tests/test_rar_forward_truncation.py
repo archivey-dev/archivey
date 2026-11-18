@@ -59,6 +59,8 @@ def test_a_late_source_cut_fails_the_member_read(
             if read == "all":
                 stream.read()
             elif read == "exact":
+                # One read that reaches the end of ``unrar``'s output: the member's
+                # own error, not the pass's (``_ForwardUnrarStream`` exit mapping).
                 stream.read(member.size)
             elif read == "chunks":
                 while stream.read(64 << 10):

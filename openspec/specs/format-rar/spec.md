@@ -1721,7 +1721,8 @@ first read.
 | RAR5 data encryption, several candidates | The candidate the first listed member's PswCheck accepts when `unrar` starts; an encrypted member it does not fit raises `UnsupportedFeatureError` on its first read |
 | RAR 1.5-4 data encryption, several candidates | Each encrypted member raises `UnsupportedFeatureError` on its first read |
 | A member whose output does not line up (cut short, wrong password, no size, RAR 1.5-4 past 4 GiB, unknown version in a solid archive) | That member raises; every later member with data raises too |
-| A member that fails its digest | That member raises; the later members read as from a seekable source |
+| A member that fails its digest | That member raises; the later members read as from a seekable source. After a compressed or encrypted one, whose output may have another length, each later member with output is first checked against its CRC32 (an empty member is read unchecked); the first that does not match, or that has none, raises `UnsupportedFeatureError`, and so does every later member with data. A member the caller does not read is not checked, so its failure is not seen, and a later member may then raise the error of a member read from the wrong place |
+| A stored member whose two sizes differ | `CorruptionError`, as from a seekable source; the later members read as from a seekable source |
 | A member cut short past the 4 MiB the source reads ahead | `TruncatedError` once the source cut is known; earlier reads may return the member's real leading bytes |
 | A member that fits in one rolling volume | Not split: it starts the next volume, and is listed after the walk reads the header after it |
 | A RAR 1.5-4 `UOW` or `CMT` after a member larger than a volume | The member is listed before it, with `member_state_final` false; the owner or comment is written into it once the next member is listed or the pass ends, as a seekable source lists it |

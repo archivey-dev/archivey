@@ -10,7 +10,7 @@ the choice in ``ArchiveInfo.extra["iso.namespace"]``:
 
 - Rock Ridge — POSIX mode/uid/gid and symlinks
 - Joliet / plain — those fields are ``None``; plain names are upper-case 8.3 with a
-  ``;version`` suffix
+  ``;version`` suffix, and Joliet names often carry one too; both drop it
 
 How a listing is built:
 
@@ -102,6 +102,7 @@ from archivey.diagnostics import (
     MemberTimestampContext,
     NameEncodingContext,
     ReaderDisagreementContext,
+    UnreadSessionContext,
     raw_name_to_base64,
 )
 from archivey.exceptions import (
@@ -989,6 +990,9 @@ _FIRST_DESCRIPTOR = 16 * _DESCRIPTOR_SECTOR
 # on an open that already failed. Real images put it first, or after one boot record; a
 # crafted image that puts it later keeps the plain ``CorruptionError`` label, cut or not.
 _MAX_DESCRIPTORS_SEARCHED = 64
+# The first bytes of a primary volume descriptor: type 1, standard identifier
+# ``CD001``, version 1.
+_PVD_PREFIX = b"\x01CD001\x01"
 
 
 def _declared_length(fp: BinaryIO, image_length: int) -> int | None:
@@ -1125,22 +1129,27 @@ def _rr_entry_groups(rr: RockRidge) -> tuple[RockRidgeEntries, ...]:
     return (rr.dr_entries,) if ce is None else (rr.dr_entries, ce)
 
 
-def _strip_version(name: str, *, iso9660: bool) -> tuple[str, int | None]:
+def _strip_version(name: str, *, listed: bool) -> tuple[str, int | None]:
     """``name`` without its ``;N`` version, and ``N`` (``None`` without one).
 
-    With ``iso9660`` (plain ISO 9660 identifiers), an empty extension's ``.`` goes too
-    (``FOO.;1`` is ``FOO``), and a bare ``;N`` is a name, not a version: it comes back
-    unchanged with ``None``. Without it (Joliet), the suffix always goes and its version
-    is reported, so ``;1`` becomes ``""`` with version 1. Neither Joliet caller lets that
-    empty name reach a member: ``_joliet_name`` drops it in ``_ascii_runs_match``, and
-    ``_joliet_text`` only feeds extent matching.
+    With ``listed`` (a name a member is listed under: a plain ISO 9660 identifier, or a
+    Joliet one in the Joliet namespace), an empty extension's ``.`` goes too
+    (``FOO.;1`` is ``FOO``), and a stem with nothing but dots in it (``;1``, ``.;1``,
+    ``...;1``) is a name, not a version: it comes back unchanged with ``None``, since
+    stripping it would make up an empty, ``.`` or ``..`` name the image does not store.
+    Without it (a Joliet name compared with another tree), the suffix always goes and
+    its version is reported, so ``;1`` becomes ``""`` with version 1. Neither such
+    caller lets that empty name reach a member: ``_joliet_name`` drops it in
+    ``_ascii_runs_match``, and ``_joliet_text`` only feeds extent matching.
     """
     match = _VERSION_SUFFIX.search(name)
-    if match is None or (iso9660 and match.start() == 0):
+    if match is None:
         return name, None
     stem = name[: match.start()]
-    if iso9660 and len(stem) > 1 and stem.endswith("."):
-        stem = stem[:-1]
+    if listed:
+        if not stem.strip("."):
+            return name, None
+        stem = stem.removesuffix(".")
     return stem, int(match.group(1))
 
 
@@ -1148,7 +1157,7 @@ def _iso_ident_name(record: DirectoryRecord) -> bytes:
     """A record's ISO 9660 identifier, version and empty-extension dot removed."""
     # Latin-1 maps each byte to one character, and none of 0x80-0xff is a digit.
     ident = bytes(record.file_identifier()).decode("latin-1")
-    return _strip_version(ident, iso9660=True)[0].encode("latin-1")
+    return _strip_version(ident, listed=True)[0].encode("latin-1")
 
 
 def _byte_ascii_runs(raw: bytes) -> tuple[str, ...]:
@@ -1796,6 +1805,44 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                 ),
             )
 
+    def _report_unread_session(self, start: int, stop: int) -> bool:
+        """Report another ISO 9660 volume in the data sectors from ``start`` to
+        ``stop`` of a raw image read without its ``.cue`` sheet; True when one is
+        there.
+
+        ``ARCHIVE_UNREAD_SESSION``: a disc with a later data session holds a volume
+        there, and a ``.cue`` sheet beside the file would choose that session, so a
+        read of the same file by its path beside the sheet can list other files. The
+        listing stays the first track's. Another ISO appended to the image, or a
+        sector that starts with the same bytes by chance, gets the same report. A
+        primary volume descriptor starts a sector with ``1``, ``CD001`` and version
+        ``1`` (:data:`_PVD_PREFIX`), which is all that is checked. That trade-off is
+        deliberate: a false match only changes which integrity code names bytes that
+        are reported either way. The report stands for the trailing data those
+        sectors are, which is not reported as well.
+        """
+        sector = -(-start // USER_DATA_SIZE)
+        while sector * USER_DATA_SIZE + len(_PVD_PREFIX) <= stop:
+            self._iso_fp.seek(sector * USER_DATA_SIZE)
+            if self._iso_fp.read(len(_PVD_PREFIX)) == _PVD_PREFIX:
+                break
+            sector += 1
+        else:
+            return False
+        self._context.report(
+            DiagnosticCode.ARCHIVE_UNREAD_SESSION,
+            (
+                "Raw CD image holds another ISO 9660 volume descriptor at sector "
+                f"{sector}, after the one listed, as a later session of a disc does. "
+                "Only the first track is read without a .cue sheet; a sheet beside "
+                "the file would choose its last session."
+            ),
+            UnreadSessionContext(
+                archive_name=self._archive_name, format="iso", sector=sector
+            ),
+        )
+        return True
+
     def _report_trailing_data(self) -> None:
         """Report a non-zero byte after the end of the image, as DR-3 asks.
 
@@ -1823,6 +1870,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # What follows the data track (audio, or another track's pregap) is the
             # disc's own; only data sectors that continue the track are scanned.
             image_length = self._source.data_end(end, MAX_TRAILING_SCAN)
+            if self._report_unread_session(end, image_length):
+                return
         if end >= image_length:
             return
         self._iso_fp.seek(end)
@@ -1855,11 +1904,14 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         return "/" + name if dirpath == "/" else f"{dirpath}/{name}"
 
     def _split_version(self, ns_path: str) -> tuple[str, int | None]:
-        """The path to show the caller, and the plain-ISO file version if it had one.
+        """The path to show the caller, and the file version if it had one.
 
-        The leading ``/`` is stripped. In the ``iso9660`` namespace a ``;N`` suffix is the
-        file *version*: it is removed and returned, and so is the ``.`` that separates an
-        empty extension (``FOO.;1`` is ``FOO``), since the two are one rule in ISO 9660.
+        The leading ``/`` is stripped. In the ``iso9660`` and ``joliet`` namespaces a
+        ``;N`` suffix is the file *version*: it is removed and returned, and so is the
+        ``.`` that separates an empty extension (``FOO.;1`` is ``FOO``), since the two
+        are one rule in ISO 9660. Joliet inherits the version syntax, and Windows-era
+        writers put ``;1`` on Joliet names too; Windows and Linux both drop it, so a
+        Joliet name follows the plain rule. A Rock Ridge ``NM`` name has no version.
 
         ``FOO.;1`` and ``FOO;1`` both map to ``("FOO", 1)``. Level 1 requires the dotted
         spelling but writers emit both, so a directory can hold the two. Where one of them
@@ -1868,16 +1920,33 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         spelling (see ``_make_member``), so the two stay apart there.
         """
         rel = ns_path.lstrip("/")
-        if self._namespace != "iso9660":
+        if self._namespace == "rock_ridge":
             return rel, None
         parent, sep, base = rel.rpartition("/")
-        stem, version = _strip_version(base, iso9660=True)
+        stem, version = _strip_version(base, listed=True)
         return parent + sep + stem, version
 
     def _version_order(self, item: tuple[str, bytes, object]) -> tuple[str, int]:
         """Sort key putting each plain-ISO name's versions in ascending order."""
         presented, version = self._split_version(item[0])
         return presented, version or 0
+
+    def _group_versions(
+        self, files: list[tuple[str, bytes, DirectoryRecord]]
+    ) -> list[tuple[str, bytes, DirectoryRecord]]:
+        """``files`` in record order, each name's versions together in ascending order.
+
+        For Joliet. The versions of one name move to where its first record is, so the
+        highest is listed last as in the plain namespace; every other file keeps its
+        place, since a Joliet directory's record order is not the sort of its names.
+        """
+        first_at: dict[str, int] = {}
+        keys: list[tuple[int, int]] = []
+        for index, (path, _, _) in enumerate(files):
+            presented, version = self._split_version(path)
+            keys.append((first_at.setdefault(presented, index), version or 0))
+        order = sorted(range(len(files)), key=keys.__getitem__)
+        return [files[i] for i in order]
 
     def _decode_bytes_name(
         self, raw: bytes, *, rr_record: DirectoryRecord | None = None
@@ -1945,7 +2014,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
             # A damaged Joliet name: the Rock Ridge record escapes its own bytes
             # rather than borrow a name that ``_decode_joliet`` ends with U+FFFD.
             return None
-        name, _ = _strip_version(_decode_joliet(ident), iso9660=False)
+        name, _ = _strip_version(_decode_joliet(ident), listed=False)
         if not _ascii_runs_match(raw, name):
             return None
         self._joliet_named[id(record)] = counterpart
@@ -2019,7 +2088,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
     def _joliet_text(record: DirectoryRecord) -> str:
         """A Joliet identifier as text, without its version; never raises."""
         name = _decode_joliet(bytes(record.file_identifier()))
-        return _strip_version(name, iso9660=False)[0]
+        return _strip_version(name, listed=False)[0]
 
     def _record_name(self, record: DirectoryRecord) -> tuple[str, bytes]:
         """One directory record's own name in the selected namespace, and its bytes.
@@ -2081,11 +2150,11 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
         close a cycle cannot loop.
 
         Within a directory, subdirectories come first and then files, each in record
-        order, except that plain ISO 9660 files are ordered by (name, version). Records
+        order, except that plain ISO 9660 files are ordered by (name, version) and the
+        versions of one Joliet name are brought together (``_group_versions``). Records
         that share an identifier but are separate entries each list
-        (``_entries_sharing_identifier``).
-        ``superseded`` is true for a plain ISO 9660 file when the same directory holds
-        a higher version of the same name.
+        (``_entries_sharing_identifier``). ``superseded`` is true for a plain ISO 9660
+        or Joliet file when the same directory holds a higher version of the same name.
         """
         root = self._iso.get_record(**{self._path_kw: "/"})
         use_rr = self._namespace == "rock_ridge"
@@ -2117,6 +2186,8 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
                     (dirs if child.is_dir() else files).append((path, raw_path, child))
             if self._namespace == "iso9660":
                 files.sort(key=self._version_order)
+            elif self._namespace == "joliet":
+                files = self._group_versions(files)
             newest: dict[str, int] = {}
             for path, _, _ in files:
                 presented, version = self._split_version(path)
@@ -2360,7 +2431,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
     def _plain_text(record: DirectoryRecord) -> str:
         """A plain ISO 9660 identifier as text, without its version; never raises."""
         name = bytes(record.file_identifier()).decode("latin-1")
-        return name if record.is_dir() else _strip_version(name, iso9660=True)[0]
+        return name if record.is_dir() else _strip_version(name, listed=True)[0]
 
     def _udf_tree_files(
         self,
@@ -2502,7 +2573,7 @@ class IsoReader(IndexedReader["DirectoryRecord"]):
     def _member_name(
         self, ns_path: str, member_type: MemberType, superseded: bool
     ) -> tuple[str, int | None]:
-        """The member name for ``ns_path``, and the plain ISO 9660 file version."""
+        """The member name for ``ns_path``, and its plain ISO 9660 or Joliet version."""
         # ISO 9660 / Joliet paths are POSIX-style ("/"): a backslash is a literal character.
         # ECMA-119 gives a version only to a file identifier. A directory's ``;N`` is
         # part of its name, and its children's paths keep it.

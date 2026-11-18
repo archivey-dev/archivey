@@ -12,6 +12,95 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-17
+
+A patch release: RAR archives read from a pipe, bzip2 and xz blocks checked before
+their bytes are handed out, makeself installers read in more of their forms, faster
+listing and small reads, and fixes from a sweep of the 0.4.0 code.
+
+### Added
+
+- With `streaming=True` and RARLAB `unrar` 7.00 or later, `stream_members()` and
+  `extract_all()` read a single-volume RAR archive from a pipe, a socket or any other
+  source that cannot seek. Before, RAR was refused there.
+- makeself installers written with `--ssl-encrypt` are decrypted with `password=`
+  instead of refused.
+- A compressed TAR (gzip, bzip2, xz, zstd, LZ4 or lzip) behind a `#!` shell script,
+  such as a CPack STGZ installer, is found and read.
+
+### Changed
+
+- RAR reads from a stream source no longer copy a whole member or archive to a
+  temporary file, and are no longer refused when that copy would pass
+  `SpoolLimits.max_bytes`. With `unrar` 7.00 or later, archivey feeds `unrar` rolling
+  16 MiB volumes, so the disk use peaks at one volume.
+- bzip2 hands out a block's bytes only after the block's CRC passes, so a damaged block
+  gives none of its bytes, where before up to about 900 kB of it came out before the
+  error. Each block is also a seek point. A block held back for its check counts
+  against `DecoderLimits.max_decoder_memory`.
+- A file in a `.tar.bz2`, a `.tar.bz3` or a `.tar.xz` written in several blocks reaches
+  `verified == CHECKSUM` once every block its data lies in passes its check, instead of
+  when the whole stream ends. A `.tar.bz2` read through the bzip2 accelerator still
+  waits for the end.
+- A single-file member (`.gz`, `.bz2`, `.xz`, `.lzma`, `.lz`, zlib, zstd, LZ4, Brotli,
+  lzop, `.Z`, bzip3) lists its stream's method in `member.compression`, the same method a
+  ZIP or 7z member compressed that way lists. The new `CompressionAlgorithm.LZW` and
+  `CompressionAlgorithm.BZIP3` name the methods of `.Z` and bzip3, and `exclude=` takes
+  them too. uuencode and base64 are encodings and still list `()`.
+- `seek(0, SEEK_END)` on a member whose recorded size is small is held to the ratio
+  limit, as a read is.
+- When no format is detected, the error names every format the leading-bytes scan
+  looked for.
+
+### Security
+
+- `FormatPolicy(exclude={CompressionAlgorithm.LZMA2})` also refuses xz, which always
+  holds LZMA2 data, and `exclude={BCJ}` or `exclude={DELTA}` stops an xz read at the
+  first block that declares that filter. Before, both were decoded.
+- A symlink target stored as member data (ZIP, 7z, RAR4) that went over
+  `ListingLimits.max_metadata_bytes`, or failed the control-character check, stayed on
+  the member uncounted, so a later listing could pass the cap.
+- A Debian package whose data symlinks lead into `DEBIAN/` is refused, as a data name
+  that extracts there already was.
+- A makeself header that sets a variable the reader uses on a line the reader skips, so
+  that the shell and the listing would disagree on where the payloads are, is refused.
+  A header that lists more payloads than `ListingLimits.max_members` is refused before
+  any payload is read.
+
+### Fixed
+
+- A hard link whose source is not extracted is made at its place in archive order as
+  an empty file, then filled from the source in a second pass, as GNU tar does. Later
+  members meet it on disk as they would meet the link, which fixes the cases where a
+  held-back link landed somewhere other than where the link would have been made.
+- About fifteen other bugs found by a sweep of the 0.4.0 code, among them cue sheets
+  with a `FILE` that holds no `TRACK` refused, and a long uuencode line or a MacLHA
+  member no longer costing far more time than its size.
+
+### Performance
+
+From two benchmark runs on 2026-11-18 at commit `2f0db5d8`, archivey takes 1.0 to 3.5
+times as long as the standard library or reference reader to read, and 1.6 to 11.4 times
+as long to list; the ratios above 4 are archives that list in under 2 ms. Against 0.4.0:
+
+- Reading a `.gz` file takes about 7% less time, and reading a `.Z` file of highly
+  repetitive data about 18% less. Listing a 7z archive with many members takes about 11%
+  less.
+- Reading a `.tar.bz2` file through the optional accelerator takes about 10% longer. The
+  other cases are within about 6%, apart from one 7z listing case that measured 11% more
+  here and 19% less in a run the day before, which is noise.
+
+Against 0.3.0, timed beside 0.4.1 in the second run, this recovers most of what 0.4.0
+lost:
+
+- Reading a `.gz` file takes about 9% longer, where 0.4.0 took about 20% longer. Listing
+  a 7z archive takes 3 to 7% longer, against 10 to 15% in 0.4.0. Reading a `.Z` file of
+  highly repetitive data takes less time, where 0.4.0 took 40% longer.
+- Listing a RAR archive still takes 13 to 19% longer, a slowdown that came with 0.4.0.
+  The other cases are within about 9%.
+
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full tables.
+
 ## [0.4.0] - 2026-11-15
 
 A minor release: more formats built in, archives read by range from fsspec URLs and

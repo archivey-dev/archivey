@@ -36,6 +36,7 @@ from archivey.internal.streams.decompressor_stream import (
     DataAfterEndError,
     DecompressorStream,
 )
+from archivey.internal.streams.streamtools.binaryio import decode_to
 from tests.conftest import requires
 
 pytestmark = requires("rapidgzip")
@@ -428,6 +429,36 @@ def test_a_seek_to_the_end_refuses_input_after_a_container_streams_end(
                 outcome.append(s.seek(0, io.SEEK_END))
                 s.seek(0)
                 outcome.append(len(s.read()))
+        except (CorruptionError, TruncatedError) as exc:
+            outcome.append(type(exc))
+        outcomes.append(outcome)
+    assert outcomes == [[DataAfterEndError], [DataAfterEndError]]
+
+
+@pytest.mark.parametrize("declared", [False, True], ids=["unsized", "declared"])
+@pytest.mark.parametrize("case", sorted(_AFTER_THE_END))
+def test_decode_to_past_the_end_refuses_input_after_a_container_streams_end(
+    case: str, declared: bool
+) -> None:
+    """``decode_to`` (the ratio check's way to the end) stops where a seek past the end
+    stops, so it runs the same end check and the same switch to the standard library:
+    input after the first stream's end is refused there, as with the accelerator
+    off."""
+    blob, size = _AFTER_THE_END[case]
+    outcomes = []
+    for mode in (AcceleratorMode.OFF, AcceleratorMode.ON):
+        config = StreamConfig(
+            seekable=True,
+            use_rapidgzip=mode,
+            refuse_input_after_end=True,
+            expected_decompressed_size=size if declared else None,
+        )
+        outcome: list[object] = []
+        try:
+            with open_codec_stream(Codec.DEFLATE, io.BytesIO(blob), config=config) as s:
+                # The decoder under the codec stream's own wrapper, as a member's ratio
+                # check holds it: that wrapper has no ``decode_to`` of its own.
+                outcome.append(decode_to(s._inner, 1 << 40))
         except (CorruptionError, TruncatedError) as exc:
             outcome.append(type(exc))
         outcomes.append(outcome)

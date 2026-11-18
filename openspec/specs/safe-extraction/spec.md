@@ -532,18 +532,27 @@ a solid archive decodes the solid stream a second time. A hardlink that merely p
 its selected source is linked after the source is written, with one read and one
 bomb-limit count for the source bytes.
 
-A link held back for the second pass SHALL hold its name from its place in archive
-order, so the outcome is the one a link made there would give. A later member that
-collides with it meets the overwrite policy against that link: refused under `ERROR`,
-skipped under `SKIP`, given a free name under `RENAME`, and under `REPLACE` it replaces
-the link, which the second pass then does not make (the link and the member it would
-have replaced are `OVERWRITTEN`). A second held-back link of the same key meets the
-first the same way, so under `REPLACE` it replaces the first. A directory, and a parent
-that a later member implies, meets the held-back link only where the filesystem would
-find the made link: at its own path, or under another case on a filesystem that folds
-case. A directory there meets the overwrite policy, and a member under the link's name
-fails, as a non-directory already extracted is in the way. If the second pass cannot
-make the link, no other member gets the name, as with any refused member.
+A link held back for the second pass SHALL be made at its place in archive order as an
+empty placeholder file, which the second pass fills with the source's bytes, so the
+outcome is the one a link made there would give. The placeholder is a regular file at
+the link's name, made as any file is: the overwrite policy and the parent directories
+apply to it there, and every later member meets it on disk as it would meet the made
+link, under every policy, through the run's symlinks and on a filesystem that folds case
+or not. A later link to the same source is made to the placeholder, so it shares the
+filled file. A placeholder that a later member replaces or supersedes is not filled, and
+its link's result is the one that member gives it. The second pass fills a placeholder
+only while its name still holds that empty file (the same device, inode and size), and
+writes it where it was physically made, so a later member that re-points one of the
+archive's symlinks on its way does not move it. A placeholder that the second pass cannot
+fill is removed: no empty file stands for a link that failed, and the run stops or goes
+on as `OnError` says. If the first pass stops on an error (not an interrupt), the
+placeholders made before the stop are filled, as the links made there would have been,
+and the error is raised after; a failure of that fill is attached to the error as a
+note, and any placeholder left empty is removed.
+
+A forward-only stream SHALL apply the overwrite policy at a held link's name before it
+fails the link for its unrecoverable source, except under `REPLACE`: a link that random
+access would skip or refuse at a taken name is skipped or refused in both modes.
 
 **A HARDLINK's target SHALL name an earlier member, and the member the link gets its
 bytes from SHALL NOT have been refused** (maintainer decision, 2026-10-07). That is the
@@ -599,9 +608,13 @@ refuses its links; any other is recovered as above.
 | Caller filter rewrites a HARDLINK's `link_target` | Ignored; the link is made to the member the stored target names |
 | `S`, `s` (not written: same key as `S` under `STRICT`), HARDLINK `h` → `s` (held back), then `H`, seekable | `h` written with `s`'s bytes in the second pass; `H` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)` under `RENAME` |
 | HARDLINK `H` → an excluded source (held back), then a file `h`, `REPLACE` | `h` replaces the held-back link: `H` `OVERWRITTEN`, never made; `h` `EXTRACTED` |
-| Directory `H/` after a held-back HARDLINK `h`, case-sensitive filesystem | Both written |
-| Directory `H/` after a held-back HARDLINK `h`, case-insensitive filesystem | `H/` meets `h` as an existing link: `FAILED` under `ERROR`, `NOT_OVERWRITTEN` under `SKIP`, `H (1)/` under `RENAME` |
 | File `h/x` after a held-back HARDLINK `h` | `h/x` `FAILED`, as `h` is a non-directory already extracted; `h` written in the second pass |
+| Directory `e/`, HARDLINK `d/X` to an excluded source (held back), then SYMLINK `d` → `e` | `d/X` creates the directory `d` at its place; the symlink `d` meets it (`FAILED` under `ERROR` and `REPLACE`, `NOT_OVERWRITTEN` under `SKIP`, `d (1)` under `RENAME`); `d/X` is made in `d`, never through a symlink |
+| Directory `H/` after a held-back HARDLINK `h` | `H/` meets `h` as it meets the made link, under every policy and on either kind of filesystem |
+| Directory `b/`, SYMLINK `a` → `b`, HARDLINK `a/x/y` to an excluded source, then directory `a/`, `REPLACE` | `a/x/y` made at `b/x/y` at its place and filled there; `a/` replaces the symlink |
+| A held-back HARDLINK's source fails in the second pass | Its placeholders are removed; its links `FAILED` as one failure group |
+| The first pass stops on an error (`OnError.STOP`, a limit, an abort) after a held-back HARDLINK was placed | The placeholder is filled before the error is raised |
+| Directory `b/`, file `b`, HARDLINK `b` → `b`, forward-only stream, `SKIP` | The link `NOT_OVERWRITTEN`, as in random access, not `FAILED` for its source |
 | HARDLINKs `ab` then `AB` to an excluded source (both held back), then a file `Ab`, `REPLACE` | `ab` and `AB` `OVERWRITTEN`, neither made; `Ab` `EXTRACTED` |
 | `REPLACE` routes a HARDLINK onto a path that holds its own source's content: `a`, then `A` → `a` under `STRICT`/`STANDARD`, either mode; or, in the seekable second pass, two links `L`, `l` whose source was excluded | The earlier member `OVERWRITTEN`, the link `EXTRACTED` at that path; the file is left as it is, content intact. On a forward-only stream the `L`, `l` links fail as the "Excluded source on a forward-only stream" row says |
 
@@ -747,7 +760,9 @@ members inside an explicit DIRECTORY entry that `ERROR` or `SKIP` left out. The 
 not a collision event, so `collided_with` stays `None`. A symlink of the caller's that
 resolves to a directory is a directory here and is followed, subject to the parent
 resolution check. A parent that is a non-directory this run wrote is not covered: the
-member fails as the `OnError` matrix states.
+member fails as the `OnError` matrix states. That holds however the archive spelled the
+earlier member: `s/f` written through the archive's own symlink `s -> e` is the run's
+file at `e/f`, so a later `e/f/x` fails against it under every policy.
 
 Replacing an existing directory with any member type removes the directory first, and
 only an **empty** one: a directory that holds entries SHALL NOT be removed, and the

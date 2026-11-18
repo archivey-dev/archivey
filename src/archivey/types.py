@@ -839,6 +839,12 @@ class CompressionAlgorithm(Enum):
     RAR = "rar"
     """RAR's own compression, any version. Not the same as ``ContainerFormat.RAR``,
     which is the archive format."""
+    LZW = "lzw"
+    """LZW as the Unix ``compress`` tool writes it, the method of a ``.Z`` file
+    (``StreamFormat.UNIX_COMPRESS``)."""
+    BZIP3 = "bzip3"
+    """bzip3's block-sorting compression, the method of a ``.bz3`` file
+    (``StreamFormat.BZIP3``). Not the same as ``BZIP2``."""
     UNKNOWN = "unknown"
     """A method archivey does not recognise. Listing still works."""
 
@@ -1106,7 +1112,7 @@ class MemberExtra(dict[str, object]):
     * ``uu.original_filename`` (``str``) — the name a uuencode ``begin`` line
       stores, decoded as UTF-8 (other bytes kept as surrogates). The member keeps the
       name it gets from the file's own name; ``raw_name`` holds the stored bytes.
-    * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
+    * ``iso.version`` (``int``) — plain ISO 9660 and Joliet: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
     * ``lha.method`` (``str``) — the LHA method id as stored (``"-lh5-"``), or
@@ -1347,11 +1353,11 @@ class ArchiveMember:
 
     The naming rules that make ``name`` differ from ``raw_name`` decoded:
 
-    - ISO: in a plain ISO 9660 image, ``name`` drops the ``;N`` version suffix (and
-      the ``.`` before an empty extension) that ``raw_name`` keeps; the version is in
-      ``extra["iso.version"]``. A superseded version keeps its stored spelling. A Rock
-      Ridge name that is not UTF-8 and takes its Joliet name keeps the Rock Ridge
-      bytes here.
+    - ISO: in a plain ISO 9660 or Joliet listing, ``name`` drops the ``;N`` version
+      suffix (and the ``.`` before an empty extension) that ``raw_name`` keeps; the
+      version is in ``extra["iso.version"]``. A superseded version keeps its stored
+      spelling. A Rock Ridge name that is not UTF-8 and takes its Joliet name keeps the
+      Rock Ridge bytes here.
     - A gzip file's member is named after the archive source (``"data"`` when the
       source has no file name); ``raw_name`` holds the original file name from the
       gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those

@@ -487,7 +487,7 @@ def test_tree_matches_extraction_on_links_and_collisions(
             # to a lost name reaches the winner. The tree does not model the disk.
             folded += ["C", "Q", "toa"]
             if policy is ExtractionPolicy.TRUSTED:
-                folded += ["a.txt", "HC", "r", "k"]
+                folded += ["a.txt", "HC", "r", "k", "K"]
         if os.name == "nt":
             # Windows also trims a trailing dot.
             folded.append("tof")
