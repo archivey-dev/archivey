@@ -917,7 +917,8 @@ def test_zip64_record_and_locator_disagreeing_on_disks_is_damage(
     # contradicting records, which are reported as damage.
     end = find_end_record(_read_at(bytes(data)), len(data))
     assert end.zip64_damage is not None
-    assert "locator counts 1 disks" in end.zip64_damage
+    assert "locator counts 1 disk" in end.zip64_damage
+    assert "1 disks" not in end.zip64_damage
     assert end.disk_starts == ()
 
 

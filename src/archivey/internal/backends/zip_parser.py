@@ -655,7 +655,7 @@ def _read_zip64_records(
         # part is missing or extra.
         raise CorruptionError(
             f"The ZIP64 end record is on disk {this_disk + 1}, and the ZIP64 end "
-            f"locator counts {locator_disks} disks"
+            f"locator counts {locator_disks} disk{'' if locator_disks == 1 else 's'}"
         )
     return adjacent - extensible, this_disk, cd_disk, entries_total, cd_size, cd_offset
 
