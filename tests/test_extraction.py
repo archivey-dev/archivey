@@ -5613,9 +5613,10 @@ def test_a_link_source_replaced_under_another_spelling_is_not_linked_to(
 ) -> None:
     # On a case-insensitive filesystem a member `a` replaces the file at `A` without
     # naming `A`. Here the filter stands in for that member: it replaces `A` before
-    # `b` is handled. `b` then gets `src1`'s bytes, not the new file's, and when `A`
-    # held the only copy (a placeholder, `src1` excluded) `b` is held back in its
-    # turn rather than failing.
+    # `b` is handled, with a file or a directory (the next test does it with an
+    # archive member, through a symlink). `b` then gets `src1`'s bytes, not the new
+    # file's, and when `A` held the only copy (a placeholder, `src1` excluded) `b` is
+    # held back in its turn rather than failing.
     archive = _tar_bytes(
         [
             ("file", "src1", b"1"),
@@ -5645,6 +5646,35 @@ def test_a_link_source_replaced_under_another_spelling_is_not_linked_to(
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses["b"] is ExtractionStatus.EXTRACTED
     assert (dest / "b").read_bytes() == b"1"
+
+
+def test_a_link_source_replaced_by_a_folded_name_through_a_symlink_is_not_linked_to(
+    tmp_path: Path,
+) -> None:
+    # On any filesystem: STRICT folds `s/A` and `s/a` onto one name, so `s/a` is
+    # written over `d/A`, the file `s/A` was written to through the caller's symlink
+    # `s -> d`. The source record keyed by `s/A` must not survive that: `s/h` gets
+    # `s/A`'s bytes, not `s/a`'s.
+    archive = _tar_bytes(
+        [
+            ("file", "s/A", b"ORIGINAL"),
+            ("file", "s/a", b"OTHER"),
+            ("hard", "s/h", "s/A"),
+        ]
+    )
+    dest = tmp_path / "out"
+    (dest / "d").mkdir(parents=True)
+    os.symlink("d", dest / "s")
+    with open_archive(io.BytesIO(archive)) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            policy=ExtractionPolicy.STRICT,
+            on_error=OnError.CONTINUE,
+        )
+    statuses = {r.member.name: r.status for r in report.results}
+    assert statuses["s/h"] is ExtractionStatus.EXTRACTED, statuses
+    assert (dest / "d" / "h").read_bytes() == b"ORIGINAL"
 
 
 def test_a_placeholder_whose_spelling_stops_reaching_it_is_still_filled(
