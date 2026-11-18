@@ -410,12 +410,9 @@ class LzhDecoder(LhaBitDecoder):
                 if count <= distance:
                     out += out[start : start + count]
                 else:
-                    # The match overlaps its own output: copy what exists, which
-                    # doubles each time.
-                    while count > 0:
-                        step = min(len(out) - start, count)
-                        out += out[start : start + step]
-                        count -= step
+                    # An overlapping match repeats the bytes at its source.
+                    pattern = out[start:]
+                    out += (pattern * ((count + distance - 1) // distance))[:count]
             self._bits, self._nbits = bits, nbits
             self._block_left = left
             self._left -= len(out) - before
