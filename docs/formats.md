@@ -167,7 +167,7 @@ The fields that change, by format:
 
 - **ZIP:** `link_target_member`. `is_current` from a pipe only: from a file, the pass reads the
   index first, so it is final when the member is yielded. The `size` of a large macOS member listed
-  as `None` ([Archives from macOS](#archives-from-macos)), until a checked full read fills it in.
+  as `None` ([ZIP](#zip)), until a checked full read fills it in.
   From a pipe, `size`, `compressed_size` and the CRC-32 in `hashes` of a member whose sizes come
   after its data, until the pass gets past its data. Also from a pipe, until the pass reads the
   index, every field only the index holds: `type`, `name` (where a DOS host makes `\` a separator),
@@ -325,254 +325,36 @@ in a real folder named `__MACOSX`.
 
 ## ZIP
 
-- **Needs:** nothing for stored, Deflate, BZip2, LZMA and XZ members, the old PKZIP methods
-  Shrink, Reduce and Implode, PKWARE DCL Implode (method 10), or ZipCrypto. `[recommended]`
-  adds Deflate64 and PPMd (`inflate64`, `pyppmd`, the packages the 7z reader uses too), WinZip AES
-  (`cryptography`), and Zstandard before Python 3.14 (`backports.zstd`). A missing package raises
-  `PackageNotInstalledError` when you read such a member.
-- **Listing:** archivey's own parser reads the central directory, the index at the end of the
-  file. Stdlib `zipfile` is not used.
-- **From a pipe:** with `streaming=True`, header by header ([below](#zip-from-a-pipe)).
-
-### ZIP from a pipe
-
-The pass finds each member by its local header, and reads the central directory after the last
-one. A member is yielded with what its local header says. Until the pass reaches the directory, a
-member's `mode`, `create_system`, `comment`, `uid` and `gid` are `None`, and a symlink is a `FILE`.
-Then every member is updated in place, and `member_state_final` turns `True`.
-
-A member whose sizes come after its data (general-purpose bit 3, which every writer to a pipe sets)
-is yielded with `size`, `compressed_size` and its CRC-32 unknown. Its data descriptor fills them in
-once the pass gets past its data.
-
-Extraction keeps each member's data in a private `.archivey-tmp-` folder inside the destination,
-and puts the members in place only once the pass has read the directory. It calls your `filter`
-once on each member as the directory describes it, so the files on disk match a read from a file.
-A member the directory does not list (an appended update, a planted entry) is still yielded when
-the pass meets it. When the pass reaches the directory, that member is dropped from the listing and
-reported as `ARCHIVE_UNLISTED_DATA`, and extraction does not keep it.
-
-What a pipe cannot read:
-
-- A bit-3 member compressed with LZMA without an end marker raises `UnsupportedFeatureError`,
-  since nothing marks its end.
-- A bit-3 PPMd member is fed to the decoder in pieces, since its size isn't known in advance.
-- A directory written with a data descriptor gets no stream for the data it declares: its size
-  comes after its data, so the pass cannot know the bytes are there, and the message says so.
-- With several candidate passwords, a member is confirmed on its first 1 MiB. When more than one
-  candidate is still possible after that, the first one is used.
-
-Where a pipe and a file differ, on damaged archives or ones no writer produces:
-
-- A data descriptor or local header whose CRC-32 or sizes differ from the central directory's (other
-  than a directory CRC-32 of 0, [below](#damaged-and-unusual-endings)) makes the pass raise
-  `CorruptionError` for that member once it reaches the directory. A read from a file checks the
-  data against the directory. So when the data matches the directory, a read from a file succeeds,
-  and from a pipe the member's own read already fails, since the pass checks the values next to the
-  data. When the data matches the local header or descriptor, a read from a pipe succeeds, and a
-  read from a file raises `CorruptionError`.
-- Bytes between the end of a member's compressed stream and its data descriptor (bit 3) count
-  into its compressed size, and are allowed. A read from a file raises `CorruptionError` on
-  them ([Damaged and unusual endings](#damaged-and-unusual-endings)).
-- Two members with the same name whose directory order reverses their order in the file list and
-  stream as from a file. Extraction raises `CorruptionError` for that name, where extraction from
-  a file writes the copy the directory lists last.
-- A member whose local header holds a name the safety checks refuse fails extraction, even when
-  the directory or your `filter` gives it a safe name, since its data was not kept.
-
-From a pipe, the pass reads to the end of the stream after the last member, so a sender that keeps
-the connection open after the ZIP ends makes the pass wait for the end of the stream. The members
-are final only then. When the sizes come after each member's data, the wait also comes in the read
-that ends the last member's data. A ZIP under 258 bytes waits at `open_archive` too: a tar header
-starts at offset 257, and until that byte has arrived the file could still be a tar. Close the
-sending side when the ZIP is done.
-
-### Damaged and unusual endings
-
-- **The end record is missing** (a download cut short): the members the local headers hold are
-  listed, without the mode, host or comment that only the directory has. Then the listing raises
-  `TruncatedError`, or `CorruptionError` when other bytes stand where the directory should be.
-- **The central directory is damaged partway:** the members before the damage are listed, then the
-  ones the local headers hold after it, and then the listing raises `CorruptionError`.
-  `members_report()` gives you both ([Damaged archives](errors-and-diagnostics.md#damaged-archives)).
-- **A ZIP64 end record is damaged:** archivey reads past it when the plain end record holds every
-  value itself and the directory's end can be found, and reports `ARCHIVE_EOF_MARKER_MISSING`.
-  Otherwise it lists the members the local headers hold, then raises `CorruptionError`.
-- **The end record disagrees with the directory**, on the entry count or with an archive comment
-  length past the end of the file: the members can still be listed and read, and
-  `ARCHIVE_EOF_MARKER_MISSING` is reported after the directory's last entry. From a file, the
-  listing is complete before any member is handed out, so `DiagnosticPolicy.STRICT` raises before
-  the first one. With `streaming=True`, the pass yields every member and then raises.
-- **Bytes after the end record and its comment** are `ARCHIVE_TRAILING_DATA`
-  ([Bytes after the end of an archive](#bytes-after-the-end-of-an-archive)).
-- **The local header disagrees with the directory on the name, or stores a real CRC-32 where the
-  directory stores 0:** the member is read, from a file and a pipe alike, as `unzip` reads it. The
-  directory's name is used and `MEMBER_LOCAL_NAME_DIFFERS` is reported, which `STRICT` refuses. The
-  data is checked against the local CRC-32 and `MEMBER_LOCAL_CRC_USED` is reported, which `STRICT`
-  allows: Adobe AIR packages store `META-INF/AIR/hash` this way.
-- **Bytes missing from the middle of the archive** (or added there) move the central directory, and
-  the offsets it gives with it. The members after the damage are where the directory says; each
-  member before it is read from the offset it stores, when a local header with its name, method,
-  CRC-32 and sizes is there. `MEMBER_LOCAL_OFFSET_SHIFTED` is reported for each, which `STRICT`
-  refuses, since the archive has lost or gained bytes. A member the damage cut through fails its
-  CRC-32 check.
-- **The local header names another compression method than the directory:** the member is
-  decoded by the local header's method, from a file and a pipe alike. The local header sits next to
-  the data and is all a pipe has, so both reads give the same bytes, still checked against the
-  CRC-32. `MEMBER_LOCAL_METHOD_DIFFERS` is reported, which `STRICT` refuses, since a tool that
-  trusts the directory reads the member differently. The member's `compression` still names the
-  directory's method, as the listing comes from the directory; the diagnostic gives both. WinZip
-  AES in the directory only is refused with `CorruptionError` from a file and `EncryptionError`
-  from a pipe, where the local header alone says how the data is encrypted. WinZip AES in the
-  local header only is refused with `CorruptionError` from both, from a pipe once the pass
-  reaches the directory. WinZip AES in both headers with AES records that differ (version, key
-  strength or method), or with one header's record missing, is refused with `CorruptionError`
-  from a file. A pipe decrypts by the local record and refuses it too: where that decryption
-  fails, with the error it meets (`EncryptionError` for another key strength), and where it
-  succeeds, once the pass reaches the directory.
-- **Both headers declare less than the data decodes to:** the member is refused with
-  `CorruptionError`.
-- **Bytes after a member's compressed stream:** a member's compressed data must hold its codec's
-  data and nothing else, as 7-Zip checks. For most methods that is one stream. For Zstandard and
-  XZ it is what their own formats define as the data, as in a `.zst` or `.xz` file: one or more
-  Zstandard frames, or one or more xz streams with stream padding (groups of four zero bytes)
-  between and after them. Junk, other zero bytes, or a second DEFLATE or BZip2 stream raise
-  `CorruptionError` once the data before them has been read, for every method, whatever the
-  declared size and CRC cover. So does an LZMA member without an end marker, or a PPMd member,
-  whose declared size stops short of its data. One zero byte after LZMA data without an end marker
-  is allowed, because 7-Zip's encoder sometimes writes it. From a pipe, bytes between the stream and
-  a data descriptor are the one exception ([ZIP from a pipe](#zip-from-a-pipe)). Under ZipCrypto
-  these raise the password-or-damage `EncryptionError` instead, caused by that `CorruptionError`,
-  because the bytes are encrypted. With rapidgzip, one crafted shape may be accepted instead: a long
-  second DEFLATE stream, with a size and CRC that cover both streams. See
-  [Where the guarantees stop](security.md#where-the-guarantees-stop).
-- `ListingLimits.max_members` is checked at open against the entry count the end record declares,
-  and again as the directory is read, in `stream_members()` too. From a pipe it is checked as the
-  pass meets each local header, and again on the directory's entries.
-
-### Archives from macOS
-
-- **A ZIP over 4 GiB that macOS wrote without ZIP64** can be read. Finder's Compress (Archive
-  Utility, `ditto -c -k`) stores every offset past 4 GiB with its top bits cut off, so 7-Zip and
-  Python's `zipfile` fail on such an archive. Archivey adds back the missing multiple of 4 GiB where
-  an offset falls below the end of the members before it, but only when a local header with the
-  member's name is at the corrected offset. The member's CRC-32 is still checked. Each correction
-  reports `ARCHIVE_OFFSET_WRAPPED`, which `STRICT` does not raise on, since macOS writes such
-  archives by default.
-- A single member over 4 GiB has its sizes cut too. For entries carrying Archive Utility's marks,
-  archivey corrects them with `MEMBER_SIZE_WRAPPED`: the compressed size from where the data really
-  ends, and the size from that where Deflate's ratio leaves only one value (members under about
-  4 MB compressed).
-- **Archive Utility stores each member's size modulo 4 GiB**, so for a deflated member over about
-  4 MB compressed, the listing cannot tell whether the size passed 4 GiB. This happens in a Mac ZIP
-  of any length. Such a member is listed with `size=None`, with the stored value in
-  `extra["size_mod_2_32"]` and `MEMBER_SIZE_WRAPPED` reported. A read to the end, checked against
-  that value and the CRC-32, fills in `size`; the key stays.
-- Finder and `ditto` add `__MACOSX/` sidecar files
+- **Reading:** archivey reads the index at the end of the file, so listing is quick and every
+  member can be read directly.
+- **From a pipe:** with `streaming=True`. A member's mode, comment and owner, and whether it is a
+  symlink, are stored only in the index at the end, so they arrive when the pass gets there, and
+  `member.member_state_final` turns `True` then. Extraction from a pipe keeps the files in a
+  temporary folder inside the destination, and puts them in place once the index has been read.
+- **Split sets:** a set split by 7-Zip (`name.zip.001`, `.002`, …) opens from any part, when all
+  parts are in one folder. A set spanned by `zip -s` (`.z01`, …, `.zip`) is refused: join it with
+  the tool that made it.
+- **Encryption:** ZipCrypto, and WinZip AES with `[recommended]`. ZipCrypto's password check lets
+  about one wrong password in 256 through, so a wrong password and a damaged member fail with the
+  same error, and its decryption is slow, a few MiB/s. PKWARE Strong Encryption is not supported.
+- **Names:** a name not flagged as UTF-8 is still read as UTF-8 when it is valid UTF-8, because
+  many tools write UTF-8 without setting the flag. Otherwise archivey uses `encoding=`, or cp437 by
+  default. Unlike `zipfile`'s `metadata_encoding`, `encoding=` applies only to names that are not
+  valid UTF-8.
+- **Archives from macOS:** archivey reads a ZIP over 4 GiB that Finder wrote without ZIP64, which
+  7-Zip and `zipfile` cannot. In such a file a member's size can be listed as `None` until a full
+  read fills it in. Finder also adds `__MACOSX/` sidecar files
   ([macOS sidecar files](#macos-sidecar-files)).
+- **Compression methods:** archivey reads every method in common use, the old PKZIP ones
+  included. It does not read WinZip's JPEG, WavPack and MP3 methods or IBM's mainframe methods: a
+  member that uses one is listed normally, and reading it raises `UnsupportedFeatureError`.
 
-### Split and spanned sets
+Damaged and unusual archives are read as far as they can be, and each problem is reported with a
+diagnostic: a missing or damaged index, local headers that disagree with the index, bytes missing
+from the middle, or data after a member's compressed stream. The
+[ZIP handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md)
+describes each case and the error it raises.
 
-- A set split by 7-Zip's `-v` (`name.zip.001` to `name.zip.00N`) opens from any part, when every
-  part is in the same directory. The parts are byte slices of one ordinary ZIP, and archivey joins
-  them. A missing part raises `TruncatedError`.
-- A spanned set written by `zip -s` (`.z01` to `.zip`) addresses its entries by disk number, and is
-  refused with `UnsupportedFeatureError`. Join it with the tool that made it.
-
-### Compression methods
-
-- A member whose method archivey cannot read is listed normally, and reading it raises
-  `UnsupportedFeatureError`. So does an LZMA member with `lc + lp` over 4 (which 7-Zip writes with
-  `-mm=LZMA:lc=8` and liblzma cannot decode), and a PPMd member with restore method 2. Under
-  ZipCrypto both raise the password-or-damage `EncryptionError` instead, because those settings
-  are encrypted.
-- "Version needed to extract" never refuses a member: only a method or encryption archivey cannot
-  read does.
-
-### Encryption
-
-- Encrypted members decode every compression method an unencrypted one does.
-- **ZipCrypto** checks a password against one byte, so a wrong one passes about one time in 256.
-  Its data then fails the CRC or the decompressor, and archivey raises `EncryptionError` saying the
-  password may be wrong or the member damaged, since a damaged member read with the right password
-  fails the same way. Decryption is pure Python and slow (a few MiB/s). A ZipCrypto member can seek,
-  but a backward seek decrypts it again from the start. Confirming one of several passwords can be
-  expensive on a stored member.
-- **WinZip AES** (method 99, AE-1 and AE-2) needs `[recommended]`. Without it, an AES member is
-  still listed as encrypted, and reading it raises `PackageNotInstalledError`. An AE-2 member has
-  no CRC-32 in `hashes`: its HMAC checks the data. A failing HMAC raises `CorruptionError`, with one
-  password or several: a wrong password gets past the two-byte check only once in 65 536 tries, so
-  damage is by far the likelier cause.
-- **PKWARE Strong Encryption** is not supported. Such members are listed as encrypted, and opening one
-  raises `UnsupportedFeatureError`. An archive whose central directory is itself encrypted this way
-  cannot be listed: archivey raises `UnsupportedFeatureError` when it recognises the layout, and
-  `CorruptionError` otherwise.
-- Both password checks admit some wrong passwords, so the CRC or HMAC at the end of the member is
-  the real test. With several candidate passwords, each one that passes is checked further before
-  it is used. Closing a member stream before its end reports `ENCRYPTED_MEMBER_UNVERIFIED` when
-  only the short check accepted the password.
-
-### Names and comments
-
-- **Names flagged UTF-8** (general-purpose bit 11) decode as UTF-8 when the stored bytes are valid
-  UTF-8.
-- **Unflagged names** should be cp437, but many tools write UTF-8 without setting the flag. So
-  archivey uses UTF-8 when the bytes are valid UTF-8, and otherwise the `encoding=` you passed to
-  `open_archive`, or without one `ArchiveyConfig.zip_unflagged_fallback_encoding` (default
-  `cp437`). When UTF-8 is inferred for an unflagged name, `member_name_encoding_inferred` records
-  it, and `STRICT` refuses it. So `encoding=` decodes only the unflagged names that are not valid
-  UTF-8, unlike `metadata_encoding` in Python's `zipfile` or `unzip -O`, which apply to every
-  unflagged name.
-- **A wrongly set UTF-8 flag is ignored.** When bit 11 claims UTF-8 but the bytes are not valid
-  UTF-8, the name decodes as an unflagged name that is not UTF-8 does. A
-  `member_name_encoding_inferred` diagnostic names the encoding used, with
-  `declared_encoding="utf-8"`, and `STRICT` refuses the archive. `raw_name` keeps the stored bytes.
-- **An Info-ZIP Unicode Path extra field** (`0x7075`) on an unflagged name, whose checksum
-  matches the stored bytes, outranks the guess and `encoding=`, and names the member in UTF-8.
-  `raw_name` is then the field's UTF-8 bytes, and `extra["alternate_raw_name"]` holds the stored
-  ones. On a flagged name the field is not read. A malformed field (too short, or matching
-  with an empty, cut-short or non-UTF-8 name) is dropped with a `member_header_record_skipped`
-  diagnostic, and the archive opens on every Python version. Python 3.12's `zipfile` refuses a
-  too-short field or a non-UTF-8 name.
-- **Comments** decode the same way. A member comment follows its name's flag (a flag the name's
-  bytes refute counts as unset for the comment too), and the archive comment, which has no flag,
-  decodes as an unflagged name. A byte the chosen encoding does not define stays in the comment as
-  a surrogate escape, as in a name. An Info-ZIP Unicode Comment field (`0x6375`) whose checksum
-  matches the stored comment gives a member comment whose bit 11 is clear in UTF-8, by the Unicode
-  Path field's rules, as 7-Zip reads it.
-
-### Times, owners and extra fields
-
-- Times start from the DOS fields, then NTFS, then the Unix fields (`0x000d`, `0x5855`), then the
-  Extended Timestamp field when present. The Unix fields are read as unzip 6.00 reads them. macOS
-  `ditto` and Archive Utility write only `0x5855`, so `modified` and `accessed` in their archives are
-  listed in UTC.
-- Owner ids: Info-ZIP `zip` on Unix records `uid` and `gid`, read as unzip 6.00 reads them.
-  `uname` and `gname` stay `None`, and Windows writers store no owner.
-- Extra fields archivey takes nothing from (a vendor's own, or a known one found malformed) stay
-  readable as `extra["zip.extra_fields"]`, as `{tag: data}`.
-
-### Member types
-
-- A Unix mode is read only when "version made by" says Unix. A device, FIFO or socket follows
-  [the shared rule](#device-files-fifos-and-sockets); `zip -FI` stores a named pipe's content as
-  data, which makes it a `FILE`.
-- **A directory entry that declares data** (APPNOTE gives a directory none) is listed as a directory
-  with that size, and `MEMBER_DIRECTORY_DATA_IGNORED` is reported; `STRICT` refuses the archive.
-  Extraction creates the directory, as unzip and 7-Zip do. `read()` returns the bytes, checked
-  against the stored CRC-32, and so does the stream `stream_members()` yields for it. A CRC of 0,
-  the usual value for a directory, is no digest: when it was the entry's only check (unencrypted or
-  ZipCrypto), `DIGEST_UNVERIFIABLE` says the bytes come back unchecked. A WinZip AES entry has its
-  HMAC check them, so nothing is reported. A directory that declares size 0 over a body larger than
-  an empty one of its method is reported too (`read()` has nothing to return for it). The Java
-  `jar` tool's deflated empty directory body (compressed size 2, size 0) is not.
-- **An entry whose attributes mark it a directory but whose name has no final `/`** (a Unix
-  directory mode, or the DOS directory bit) is a directory, as 7-Zip and libarchive read it and
-  as APPNOTE marks it; unzip and `zipfile` go by the name and write a file. The name gains its
-  `/`, and `MEMBER_READERS_DISAGREE` is reported. Data on such an entry is a directory's data,
-  as above. From a pipe, `stream_members()` yields it as the file its name says, with its
-  stream, since the attributes arrive with the central directory at the end; the member becomes
-  a directory then, and `extract_all()` writes a directory.
 
 ## TAR (and compressed TAR)
 
@@ -759,7 +541,7 @@ On a compressed tar, the stream's own checksum adds three cases:
   back, and some real archives use it: Git for Windows' PortableGit is one. liblzma, which archivey
   decodes LZMA with, takes `lc + lp` up to 4 only. Such an archive lists, but reading a member in
   that block raises `UnsupportedFeatureError`. Extract it with 7-Zip instead.
-- Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#damaged-and-unusual-endings)),
+- Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#zip)),
   except that a Zstandard or LZ4 coder reads concatenated frames as one stream, so a further frame is
   content that counts against the declared size.
 
