@@ -462,9 +462,10 @@ SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 
 The UDF parser SHALL follow at most 16 Volume Descriptor Sequence extents and 256
 descriptors in them, 64 indirect entries and 64 allocation extent continuations for one
-File Entry, 64 Volume Recognition descriptors and 64 partition maps, and SHALL read a
-symlink of at most 64 KiB; past any of these the image SHALL be refused with
-`CorruptionError` at open. These are structural bounds, not policy limits: each stops a
+File Entry and 64 partition maps, and SHALL read a symlink of at most 64 KiB; past any
+of these the image SHALL be refused with `CorruptionError` at open. It SHALL look at no
+more than 64 Volume Recognition descriptors: a UDF descriptor past them is not seen, and
+the image is not read as UDF. These are structural bounds, not policy limits: each stops a
 chain the format lets point anywhere, real writers record one descriptor extent, one or
 two partition maps and no indirect entries, and no system makes a symlink target over
 4096 bytes (Linux's `PATH_MAX`; its UDF driver reads at most one block). A directory has
