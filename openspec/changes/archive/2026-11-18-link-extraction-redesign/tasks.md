@@ -7,9 +7,14 @@
 
 ## 1. Fuzzer as a test
 
-- [~] 1.1 Not done. `evidence/linkfuzz.py` stayed a script, run by hand on #1620 and
-      #1622 (held and dry runs: 0 mismatches; streaming: only the D3 exception).
-- [~] 1.2 Not done, with 1.1.
+- [x] 1.1 `tests/test_link_parity_property.py` (#1638): the strategy from
+      `evidence/linkfuzz.py`; held, stream and dry runs against the made run; every
+      overwrite policy and extraction policy.
+- [x] 1.2 (#1638) No `xfail` list: the one known difference, the D3 streaming
+      exception, is checked as such, and the known-issues entry covers the
+      case-insensitive held-link mismatch until its fix. Every CI leg runs 300 fixed
+      examples; the daily `link-parity-soak` job runs 20,000 random ones on Linux and
+      8,000 on macOS.
 
 ## 2. Placeholders (D1): #1620
 
