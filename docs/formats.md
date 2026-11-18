@@ -35,25 +35,25 @@ read.
 
 | Format | Install |
 |---|---|
-| ZIP | Core. `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard before Python 3.14 |
-| TAR | Core |
-| Compressed TAR (`.tar.gz`, `.tar.zst`, …) | What its compressor needs (below) |
-| 7z | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before Python 3.14 |
-| RAR | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([below](#the-program-for-rar)) |
-| ISO 9660 | `[recommended]` |
-| SquashFS | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
-| XAR (macOS `.pkg`, `.xip`) | Core |
-| CAB | Core |
-| Debian packages (`.deb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
-| RPM | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
+| ZIP (`.zip`, `.jar`, `.whl`, `.apk`) | Core. `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard before Python 3.14 |
+| TAR (`.tar`) | Core |
+| Compressed TAR (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
+| 7z (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before Python 3.14 |
+| RAR (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([below](#the-program-for-rar)) |
+| ISO 9660 (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
+| SquashFS (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
+| XAR (`.xar`, macOS `.pkg` and `.xip`) | Core |
+| CAB (`.cab`) | Core |
+| Debian packages (`.deb`, `.udeb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
+| RPM (`.rpm`) | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
 | makeself (`.run`) | Core. The payload needs what its compressor needs |
-| LHA, ARJ | Core |
-| CPIO, ar | Core |
-| gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo`, Snappy (`.sz`) | Core. `[recommended]` makes `.lzo` and `.sz` faster |
-| Zstandard | Core on Python 3.14 and later, `[recommended]` before |
-| LZ4, Firefox's mozlz4, Brotli | `[recommended]` |
-| bzip3 | `[bzip3]` |
-| uuencode, base64 | Core |
+| LHA (`.lzh`, `.lha`), ARJ (`.arj`) | Core |
+| CPIO (`.cpio`), ar (`.a`, `.lib`) | Core |
+| gzip (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`) | Core. `[recommended]` makes `.lzo` and `.sz` faster |
+| Zstandard (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
+| LZ4 (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
+| bzip3 (`.bz3`) | `[bzip3]` |
+| uuencode (`.uu`, `.uue`), base64 (`.b64`) | Core |
 | A directory on disk | Core |
 
 A UDIF disk image (`.dmg`) is recognised and refused ([Disk images](#disk-images)).
