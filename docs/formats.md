@@ -39,7 +39,7 @@ read.
 | TAR (`.tar`) | Core |
 | Compressed TAR (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
 | 7z (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before Python 3.14 |
-| RAR (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([below](#the-program-for-rar)) |
+| RAR (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([RAR](#rar)) |
 | ISO 9660 (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
 | SquashFS (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
 | XAR (`.xar`, macOS `.pkg` and `.xip`) | Core |
@@ -62,28 +62,6 @@ The
 [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
 explains the choice of each compression library, and [Acknowledgements](acknowledgements.md)
 credits them.
-
-### The program for RAR
-
-No pip extra can read compressed RAR data. Archivey runs RARLAB's `unrar` or `rar`, version 6.0 or
-later, from `PATH`, or else The Unarchiver's `unar` 1.10 or later. Without either, RAR archives
-can still be listed and their uncompressed members read, and so can an uncompressed encrypted
-member in one part when `cryptography` is installed. `7z` and `unrar-free` are never used.
-
-`ArchiveyConfig.rar_decompressor` picks the program:
-
-```python
-ArchiveyConfig(rar_decompressor="auto")   # default: unrar when found, otherwise unar
-ArchiveyConfig(rar_decompressor="unrar")  # only unrar; unar is never run
-ArchiveyConfig(rar_decompressor="unar")   # only unar
-ArchiveyConfig(rar_decompressor="none")   # run no program
-```
-
-`unar` reads less than `unrar`, and it takes the password on its command line, where other users
-on the machine can see it ([`unar` instead of `unrar`](#unar-instead-of-unrar)).
-`format_availability("rar")` reports `PARTIAL`, with `unrar` in `missing`, when no RARLAB program
-of 6.0 or later is found, even when a usable `unar` is installed.
-[Getting unrar](install.md#getting-unrar) says how to install it.
 
 ## Seeking in compressed files
 
@@ -414,334 +392,48 @@ in the [7z handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs
 
 ## RAR
 
-- **Needs:** nothing to list, or to read an uncompressed member. `[recommended]` (`cryptography`)
-  adds archives with encrypted headers, RAR 1.5-4 and RAR5 alike, and uncompressed encrypted
-  members in one part (RAR 2.9 and later). Every other member needs `unrar` or `unar`
-  ([The program for RAR](#the-program-for-rar)). BLAKE2sp checking needs no package.
-- **Listing:** archivey's own parser reads RAR 1.5 to RAR5 headers, header by header. The one
-  exception is a compressed RAR 1.5-4 comment, which the selected program decodes; without it, or
-  when the decoded text fails its CRC, `comment` is `None`.
-- **Reading members:** archivey reads uncompressed members itself. Everything else goes through
-  the program. In a solid archive, `stream_members()` uses one `unrar p` run for the whole pass. A
-  random `open()` out of order is a separate run that decodes from the start of the member's
-  solid stream each time, so reading *n* members of one stream that way costs *n* decodes of the
-  stream up to each. With `seekable_members=True`, a backward `seek()` on a compressed member
-  costs the same: a new run from the stream start. `CostReceipt.access_cost` is `SOLID` to say so.
-- **From a pipe:** yes, with `streaming=True` and RARLAB `unrar` 7.00 or later, for an archive in
-  one volume ([RAR from a pipe](#rar-from-a-pipe)).
-- Read only: archivey writes no RAR.
+Archivey reads the RAR structure itself, RAR 1.5 to RAR5, but no Python package decodes RAR
+compression. Listing and reading uncompressed members need nothing extra. Compressed members are
+decoded by running RARLAB's `unrar` (or `rar`) 6.0 or later, found on `PATH` or, on Windows, in a
+WinRAR installation, or else The Unarchiver's `unar` 1.10 or later
+([Getting unrar](install.md#getting-unrar)). `ArchiveyConfig.rar_decompressor` picks the program:
 
-### RAR from a pipe
+```python
+ArchiveyConfig(rar_decompressor="auto")   # default: unrar when found, otherwise unar
+ArchiveyConfig(rar_decompressor="unrar")  # only unrar; unar is never run
+ArchiveyConfig(rar_decompressor="unar")   # only unar
+ArchiveyConfig(rar_decompressor="none")   # run no program
+```
 
-With `streaming=True`, `stream_members()` and `extract_all()` read a RAR archive from a pipe, a
-socket or any other source that can't seek. Archivey reads each header as it arrives and lists
-the member once its data is in hand. One `unrar` run decodes the whole pass. `unrar` reads only
-files, so archivey writes what arrives into RAR volumes and hands them to `unrar` one at a time
-(16 MiB each, or half of `SpoolLimits.max_bytes` when that is smaller). Only one volume is on disk
-at a time. Listing alone, with `members_report()`, writes no volume, and runs `unrar` only for a
-compressed RAR 1.5-4 comment, as from a file.
+- **`unar` exposes the password.** `unar` takes the password on its command line, where other
+  users on the same machine can see it. On a shared machine, install `unrar`, or set
+  `rar_decompressor="unrar"`. `unar` also gets some archives wrong, and archivey refuses those
+  reads before running it.
+- **Solid archives:** a `stream_members()` pass decodes the archive in one run. Opening members
+  out of order decodes the solid stream again from its start each time.
+- **Volume sets** (`.part1.rar`, or `.rar` with `.r00`) open from any volume when all are in one
+  folder. If a volume is missing, the members in the remaining volumes are listed, and reading a
+  member with data in the missing volume raises `TruncatedError`.
+- **From a pipe:** with `streaming=True` and `unrar` 7.00 or later, for an archive in a single
+  volume.
+- **Encryption:** `[recommended]` adds archives with encrypted headers. RAR5 stores a password
+  check, so a list of passwords is tried quickly. RAR 1.5-4 doesn't, so each wrong candidate costs
+  a decode, and putting the likely password first is faster.
+- **File versions** (`rar -ver`): older revisions are listed under names like `path;1`, as `unrar`
+  names them, with the number in `extra["rar.file_version"]` and `is_current=False`. Extraction
+  skips them by default.
+- **Names** in RAR 1.5-4 that are stored only as 8-bit bytes are read as UTF-8 when they are valid
+  UTF-8. Otherwise they're decoded with `encoding=`, or by default with cp437 for an archive from
+  DOS or Windows and windows-1252 otherwise.
+- **With `unrar` older than 7.00**, a large member or solid stream from an archive opened as a
+  stream (not a path) is copied whole to a temporary file before `unrar` reads it.
+  `SpoolLimits.max_bytes` (1 GiB by default) bounds the copy, and a read over it raises
+  `ResourceLimitError`. `unrar` 7.00 or later avoids the copy.
+- **No timeout:** a member read waits as long as `unrar` does. A solid archive can produce nothing
+  for a long time while `unrar` decodes the members ahead of the one you asked for.
 
-The members and their bytes are the same as from a file, except where a pipe can't go back:
-
-- A RAR5 file copy (`rar -oi`) raises `UnsupportedFeatureError` when read. Its bytes are an
-  earlier member's, which the pass doesn't keep.
-- `unrar` gets one password for the pass. From several candidates, archivey picks the one a RAR5
-  member's password check accepts, and the header password of an archive with encrypted headers.
-  RAR 1.5-4 data has no password check, so an encrypted member raises `UnsupportedFeatureError`
-  when there are several candidates: pass the one password.
-- Some failures stop `unrar`'s output from lining up with the members. Then that member and every
-  member after it that has data raise. These failures are a member cut short, a wrong password, a
-  member with no size in its header, a RAR 1.5-4 member of 4 GiB or more, and in a solid archive a
-  member compressed with an unknown RAR version. A member that only fails its checksum raises, and
-  the members after it are read as from a file.
-- A member cut short raises `TruncatedError` when the source ends within the 4 MiB archivey reads
-  ahead of it. A longer member cut short raises `CorruptionError` instead.
-- A member larger than one of those volumes is split across them, and is listed before archivey
-  has read the header after it. A RAR 1.5-4 owner (`rar -ow`) or file comment stored in that
-  header is written into the member once the next member is listed, or the pass ends, so read
-  `uname`, `gname` and `comment` after the loop. Until then `member.member_state_final` is
-  `False`, and `extract_all()` sets the owner when it places the file.
-- Closing the reader doesn't wait for a source that has stopped sending, but a read of the source
-  may still be pending afterwards, on the thread that writes the volumes. Closing or reading the
-  source then waits for that read to return, and the thread removes the temporary volumes when it
-  does. To bound the wait on a socket, give it a timeout, or call `shutdown()` on it before you
-  close it.
-- A volume set, `rar_decompressor="unar"` and a missing or older `unrar` raise
-  `StreamNotSeekableError` at open, naming the fix: a seekable source, or `unrar` 7.00.
-
-### Running `unrar`
-
-- `unrar` is preferred when both `unrar` and `rar` are on `PATH`. Archivey refuses a 5.x `unrar`.
-  To run one particular binary instead, set `ArchiveyConfig(unrar_path="/opt/rar/unrar")`, or
-  `unar_path=` for `unar`. Archivey then doesn't look on `PATH`, so a program put there later
-  can't be picked up, and the binary must still identify itself and meet the version floor.
-  Debian 12 and Ubuntu 22.04 package `unrar` 6.x, and Ubuntu 24.04 packages 7.00, all recent
-  enough; on an older release with 5.x, build from RARLAB's source. RARLAB's RAR for macOS download
-  also contains `unrar`. It is not notarized by Apple, so macOS may block it until you allow it in
-  System Settings. The "UnRAR for Mac OS X 64 bit" link on the RARLAB add-ons page is a 2018 Intel
-  build someone else contributed.
-- `unrar` gets the password as a bare `-p`, with the secret on stdin, not in its arguments.
-  `unrar` reads it as one line and would drop anything after a line break or a NUL character,
-  so a password containing either raises `UnsupportedFeatureError` instead of being cut short
-  ([Passwords](opening.md#passwords)).
-- Archivey passes a password to `unrar` or `unar` only when the read needs it: the member is
-  encrypted, the headers are, or an encrypted member comes before it in a solid archive.
-- An uncompressed encrypted member split across volumes, and any member encrypted with the RAR 2.0
-  cipher (archives from RAR 2.0 to 2.8), still need the program: each part of a split member has its
-  own encryption record, and archivey does not implement the old cipher.
-- **`unrar` reads a member from a small copy.** For each read it needs in an archive that is not
-  solid, archivey writes a temporary RAR file that holds only that member's header and its packed
-  (still compressed, still encrypted) bytes, and gives `unrar` that file. This means a read does
-  not slow down as the archive grows, and a member split across volumes is joined into one file.
-  The file is removed when the member stream closes. A member of an archive opened from a path
-  that packs more than 64 MiB is read in place instead. For a header-encrypted (`-hp`) archive the
-  temporary file holds the member's header decrypted: its sizes, times and checksum, but not its
-  name.
-- **With `unrar` 7.00 or later, a large copy is written 16 MiB at a time.** Where a read would
-  copy more than 64 MiB to one temporary file, or more than `SpoolLimits.max_bytes` has room for
-  (a member of an archive opened from a stream, or one without a plain name), archivey writes the
-  copy as a set of RAR volumes instead, and only one volume is on disk at a time: `unrar` asks for
-  each next volume (`-vp`), archivey deletes the volume `unrar` has finished, writes the next one
-  and answers. A volume is 16 MiB, or half of `SpoolLimits.max_bytes` when that is smaller. A
-  reread after a backward seek writes the volumes again from the source.
-- **A pass over an archive that is not solid reads members in batches.** `stream_members()` and
-  `extract_all()` put the compressed, unencrypted members that have a CRC32 into batches of up to
-  64 MiB of packed bytes, one temporary RAR file and one `unrar` run per batch, and split its
-  output by size. Each member's bytes are checked against its CRC32 as they pass, so if a damaged
-  member makes the output stop lining up, the members after it in the batch are read one at a
-  time instead. A batch runs only when one of its members is read, and reading one decodes the
-  members before it in that batch. A batch that doesn't fit `SpoolLimits.max_bytes` is read one
-  member at a time too. Encrypted members, members that pack more than 64 MiB, and members whose
-  dictionary is over `DecoderLimits.max_decoder_memory`, are read one at a time.
-- **A solid member is read from a copy of its solid stream.** `unrar` has to decode a solid
-  stream from its start, so the temporary file holds the stream's members from the start up to
-  the member read. There is one such file per solid stream, kept until the reader closes and
-  grown as reads reach further into the stream, so each packed byte is copied once. A member
-  stream still open holds the file, which then can't grow: a read further in starts a new file
-  for the stream, which later reads grow, and the held one is removed when it closes. So reads
-  that each go further in while every earlier one is still open copy the stream's start each
-  time. When a copy would pass `SpoolLimits.max_bytes` and removing the files of other
-  streams that no open member stream holds makes room, those files are removed, least recently
-  read first, and a later read of such a stream copies it again. For an archive opened from a path, a stream whose copy would pass 64 MiB is read in
-  place instead. From a stream source with `unrar` 7.00 or later, a stream whose copy doesn't fit
-  is written as volumes one at a time, as above, from the stream's start on each read.
-- **A pass over a large solid archive opened from a stream source is one `unrar` run.** With `unrar`
-  7.00 or later, `stream_members()` and `extract_all()` on a solid RAR opened from a `BytesIO` or a
-  file object write the archive's packed members as volumes, one on disk at a time, and run one
-  `unrar` over them, when the pass would otherwise take several runs (below) or a copy of the whole
-  archive that does not fit `SpoolLimits.max_bytes`. Otherwise, and with an older `unrar`, the
-  archive is copied a few solid streams at a time: it gets one `unrar` per run of whole solid
-  streams, each on a temporary file holding that run alone, removed when its output ends. A run
-  takes streams until it holds 64 MiB of packed bytes, so many small streams share one `unrar`
-  start; a larger stream runs alone, and so does every stream when `SpoolLimits.max_bytes` is under
-  128 MiB. An archive that would be a single run is copied whole and read with one `unrar` instead:
-  that run would hold every packed member anyway, and the whole copy reads faster. So is an archive
-  with a member of an unknown compression version, a volume missing, or a RAR 1.5-4 member past 4
-  GiB (a volume set is copied to a temporary directory); the copy is removed on close. A pass over
-  an archive opened from a path reads it in place, with one `unrar` run. Members archivey reads
-  itself are read in place and need no copy.
-- `ArchiveyConfig.spool_limits` (`SpoolLimits.max_bytes`, default 1 GiB) bounds every copy: over
-  it, the read raises `ResourceLimitError` before anything is written. A member of an archive
-  opened from a path is read in place instead.
-- **A member read waits as long as `unrar` does.** `read()` on a RAR member stream has no time
-  bound: archivey does not stop an `unrar` process that stalls. A solid archive can produce no bytes
-  for a long time while `unrar` decodes the members ahead of the one you asked for, so no idle
-  timeout would be safe.
-
-### `unar` instead of `unrar`
-
-Under `"auto"`, the program is chosen once, when the archive is opened, and a read `unar` refuses
-is not retried with `unrar`, nor one `unrar` refuses with `unar`. When `"auto"` picks `unar`,
-`archive.cost.notes` says so at open. With `"unar"` and no usable `unar`, a read raises
-`PackageNotInstalledError`.
-
-Archivey runs each `unar` once on a small RAR5 archive and does not use one that decodes it wrong,
-as the Debian and Ubuntu packages before 1.10.8+ds1-10 do (Ubuntu 22.04 to 26.04 among them).
-`"auto"` then treats `unar` as absent. `brew install unar` on macOS installs a version archivey
-accepts.
-
-**The password is visible to other local users.** `unar` accepts a password only on its command
-line (`-p <password>`), so while it runs, any user on the same machine can read it from the process
-list (`ps`, `/proc/<pid>/cmdline`). On a shared machine, install `unrar`, or set
-`rar_decompressor="unrar"` so that `unar` is never used. A wrong password makes `unar` write nothing
-and report success; archivey reports that as `EncryptionError`, and a RAR5 password check usually
-rejects a wrong password before `unar` runs at all.
-
-Archivey refuses these reads with `UnsupportedFeatureError` before `unar` runs, because `unar` gets
-them wrong, sometimes with a success exit:
-
-- encrypted data in a RAR 2.x-4.x archive, except an uncompressed encrypted member in one part,
-  which archivey decrypts itself. RAR5 encryption is read.
-- in a solid RAR 2.x-4.x archive, every compressed member after an encrypted one in the same solid
-  stream. A `stream_members()` pass refuses the encrypted member and the compressed members its
-  solid stream carries into, and reads the rest, those before the encrypted one included. With
-  encrypted headers it refuses every member;
-- a password that is not ASCII;
-- a multi-volume RAR5 set with encrypted headers (Homebrew's `unar` 1.10.8 returns nothing for it);
-- in a solid RAR5 archive, a member with data after an empty file, a directory or a junction (other links do not count);
-- a member compressed with the RAR 1.5 algorithm;
-- an old-style volume set (`.rar`, `.r00`, ...) of more than 901 volumes: `unar` stops at `.z99`;
-- a multi-volume set with data before the first volume (an SFX stub). A single file with such a
-  prefix is copied to a temporary file first;
-- in `stream_members()` over a solid archive that holds one of the members above, any readable
-  member past the 4000th: that pass names each member it reads on the `unar` command line, which
-  has a size limit. Such a member still opens on its own.
-
-With `"none"`, archivey runs no program. Listing still works, and so does reading an uncompressed
-member, also when it is split across volumes or sits in a solid archive, or when it is encrypted
-and in one part (that one needs `cryptography`, and raises `PackageNotInstalledError` without it).
-A compressed member, an encrypted one split across volumes, or a split one with a volume missing
-raises `UnsupportedFeatureError` before anything runs, and `archive.cost.notes` says so at open.
-
-### Member names and `unrar`
-
-Usually a member's name never reaches `unrar`: it gets a temporary RAR file in which the member has
-a placeholder name. So a name with `*` or `?`, a duplicate name, or a name `unrar` would read
-differently from archivey (one that is not valid UTF-8, has a backslash, or ends in `.`) reads like
-any other.
-
-A few reads use the original archive instead, with the member's name as an include *mask* telling
-`unrar` which member to write:
-
-- an archive opened from a path read in place: a member that packs more than 64 MiB, or a solid
-  stream whose copy would pass 64 MiB;
-- a solid stream with a member whose data is out of reach (a volume missing);
-- a member whose header a temporary RAR file can't hold: a RAR 1.5-4 member split past 4 GiB with
-  no 64-bit size fields. An archive opened from a stream source is then copied whole.
-
-These reads take the mask only for a *plain* name, one the mask selects alone. Every name in the
-archive has to decode cleanly (valid UTF-8 for RAR5, ASCII for an older 8-bit name) with no NUL,
-`:`, leading `/`, or empty, `.` or `..` part, and no `\` in a RAR5 name (in an older archive `\`
-is a separator and reads as `/`). The member's own name has no `*` or `?`, no
-part ending in `.`, is ASCII unless `unrar` can be given a UTF-8 name (on Windows, or where a
-UTF-8 locale is installed), and no other name equal to it or below it, ignoring case and Unicode
-normalization. On Windows the name also has to be in NFC, and when any folder name in the
-archive is not printable ASCII, no name inside a folder is plain there. A large
-member without a plain name is copied to a temporary file like a small one, within
-`SpoolLimits.max_bytes`. In the last two cases, which have no copy to fall back on, a member
-without a plain name raises `UnsupportedFeatureError`. `rar_decompressor="unar"` reads every member
-by position.
-
-`ArchiveyConfig.rar_allow_glob_member_concatenation` is deprecated and does nothing: no read decodes
-other members because of a member's name any more. Setting it to `True` warns.
-
-### Damage and endings
-
-- **A RAR5 archive cut exactly between two blocks** is reported, not raised. RAR5 ends each volume
-  with an end-of-archive block, so archivey lists the members before the cut and then reports
-  `ARCHIVE_EOF_MARKER_MISSING` (`expected_marker="end_of_archive_block"`), which `STRICT` raises.
-  RAR 1.5-4 archives may lack the end block, so an archive cut between its blocks is listed as complete.
-- **A cut inside a member's data or a header** lists the members before the cut, and the listing
-  raises `TruncatedError`.
-- **A damaged end-of-archive block keeps the listing.** When the block after the last member fails
-  its header checksum, every member is listed and reads normally, and archivey reports
-  `ARCHIVE_EOF_MARKER_MISSING` with `observed_kind="nonzero"` after them, which `STRICT` raises.
-  This is what `unrar t` does: each member tests OK, then it reports one error. A damaged header
-  counts as the end block only if it has an end block's shape and nothing but zeros follows it
-  within 1 MiB (`rar` pads a volume cut at exactly the `-v` size with zeros). The damaged block's
-  next-volume flag is not trusted, so a volume set goes on to the next volume only when a member's
-  own header says its data continues there.
-- **A damaged member header lists the members before it.** The members before it are listed and
-  read normally, and then the listing raises `CorruptionError`. No later member of that volume is
-  listed: the damaged header's size field cannot be trusted, so archivey does not know where the
-  next header starts. `unrar` searches on and lists them. In a volume set, a member before the
-  damage whose data continues is still followed into the next volume, whose members are listed
-  before the error. A damaged main header raises `CorruptionError` at open.
-- **Bytes after the end-of-archive block** are `ARCHIVE_TRAILING_DATA` with `format="rar"`, once
-  for each volume that has them. Zero padding passes, because `rar` pads volumes with zeros.
-  `unrar` says nothing about such bytes; 7-Zip warns "There are data after the end of archive", for
-  zeros too.
-- **A volume set with a volume missing lists what it has**, whether the missing volume is the
-  first, one in the middle, or the last. The members whose headers are in the volumes present are
-  listed, the set opens from any of them, and members wholly inside them read normally. A member
-  with data in the missing volume raises `TruncatedError` when read, and so does every member past
-  the gap in a solid archive. The listing then ends with `TruncatedError` naming the missing
-  volumes, as for a cut file and as `unrar t` does. A later volume opened on its own by path is read
-  the same way, as a set missing the rest. Opened as a stream, with no name to number it, it is
-  refused with "Need first volume".
-- **With encrypted headers**, telling damage from a wrong password needs the password proven
-  first: by RAR5's password check value, or in RAR 1.5-4 by an encrypted header whose checksum
-  matches, which in a volume set covers the later volumes too. Until then, a cut past a header's
-  first 16-byte block, or a header whose checksum does not match, looks the same as a wrong
-  password, so it raises `EncryptionError` ("wrong password?") at open and lists nothing, even with
-  the right password. That happens inside the first encrypted header of a RAR 1.5-4 archive or
-  volume set, and inside any header of a RAR5 archive whose encryption record has no password check
-  value. Once the password is proven, damage is reported as above, and other damage to an encrypted
-  header is `CorruptionError`.
-
-### Encryption
-
-- **Password lists:** RAR5 records a password check for each member, so a list is tried in order
-  and the matching password is used. RAR 3-4 records none, so with several passwords archivey
-  judges each by decoding the member: up to 64 KiB of `unrar` output, which a wrong password usually
-  fails, and, when several passwords get that far, the whole member against its CRC. An
-  uncompressed member in one part is checked by decrypting it in archivey and comparing its CRC,
-  when `cryptography` is installed. The order of the list does not matter for the result, but every
-  wrong password before the right one costs a decode, so putting the likely one first is faster.
-- **Partial reads of RAR 3-4 encrypted data** report `ENCRYPTED_MEMBER_UNVERIFIED`. With no password
-  check, only the member's CRC at its end catches a wrong password, and a wrong password can still
-  produce bytes before that: always for an uncompressed member, and for some wrong passwords on a
-  compressed one. Closing the stream before the end, or after a seek, skips the CRC. RAR5 members
-  and archives with encrypted headers have checked the password already and never report it.
-- RAR5 members with the HASHMAC flag check tweaked digests, as `unrar`'s `ConvertHashToMAC` does,
-  when a password is available. The tweaked values are not in `member.hashes`.
-- **Encrypted old-style comments are not decoded.** A RAR 1.5 or 2.x comment block with its
-  password or salt flag set gives `comment` as `None`. No available tool writes such a comment, so
-  there is nothing to test a decoder against.
-
-### Names and comments
-
-- RAR5 stores names as UTF-8, and RAR 1.5-4 usually as UTF-16 beside an 8-bit copy. A RAR 1.5-4
-  name with only the 8-bit bytes does not say which code page they are in. Archivey tries UTF-8
-  first. When the bytes are not valid UTF-8, it decodes them with `encoding=` when you pass one,
-  and otherwise with cp437 for a member written on DOS or Windows (WinRAR writes the OEM code page)
-  and windows-1252 for one written elsewhere. `raw_name` is always the stored bytes. `encoding=` has
-  no effect on a RAR5 name.
-- A RAR 1.5-4 UTF-16 name can hold an [unpaired surrogate](#names-with-an-unpaired-surrogate).
-  `unrar` 7.00 on Linux extracts such a name cut at that unit, so `hi\ud800.txt` becomes `hi`.
-- A RAR 1.5-4 comment is 8-bit text that does not say which code page it is in. Archivey reads it
-  up to the first NUL, as UTF-8 if it is valid, otherwise with the `encoding=` you passed, and
-  otherwise as windows-1252. A byte that code page does not define stays as a surrogate escape, as
-  in a name. A RAR 2.9-4 comment flagged as Unicode is UTF-16LE, and an unpaired surrogate in it
-  stays, as in a name. A RAR5 comment is UTF-8, and a byte in it that is not valid UTF-8 stays as a
-  surrogate escape.
-
-### Member types and fields
-
-- **File versions (`rar -ver`):** older revisions are listed under names like `path;1`, with
-  `extra["rar.file_version"]` and `is_current=False`; the live path is `is_current=True`.
-  Extraction skips the older revisions by default.
-- **Links and file copies.** A RAR5 hard link (`rar -oh`) is a `HARDLINK`. A RAR5 file copy
-  (`rar -oi`, which `unrar` lists as "File reference") stores a duplicate file once and names the
-  earlier member that holds the bytes. It is a `FILE` with `extra["is_file_copy"] = True`;
-  `link_target` is the source's stored path and `link_target_member` the source member. Reading it
-  gives the source's bytes, and extraction writes an independent file, as `unrar` does, by copying
-  the source's file when it has just written it. A copy whose source is not an earlier file member
-  raises `LinkTargetNotFoundError` when read. `stream_members(file_copy_streams=False)` yields `None`
-  for each copy; its bytes and digests are its source's. A RAR5 redirect of a type archivey does
-  not know (no RAR version writes one) is `OTHER` with no `size`, even with the directory
-  flag, holds no data and is not extracted, as `unrar` skips it with "Unknown extra field".
-  It is reported with `MEMBER_TYPE_UNKNOWN`. A redirect record of type 0 names no redirect,
-  and the member is an ordinary file, as in `unrar`.
-- **RAR 2.9-4 symlinks** store their target as member data. When that data is uncompressed and
-  encrypted, archivey decrypts it while listing if you gave the password and `cryptography` is
-  installed, and checks it against its CRC. Without either, `link_target` is unset, and a
-  `SYMLINK_TARGET_UNAVAILABLE` diagnostic says why.
-- **Compression:** method M0 is `STORED`. M1 to M5 are `CompressionAlgorithm.RAR` with `level` 1 to
-  5. Any other method byte stays `UNKNOWN`, with no `level`. The unpack version is in
-  `extra["rar.extract_version"]` on every member whose file header records one, stored members
-  included: RAR 3 copies the `UNP_VER` byte as stored, and RAR5 reports `50`.
-- **A compression version RAR does not know:** a RAR5 member whose compression version is newer
-  than RAR 7's, or a RAR 1.5-4 member whose unpack version is outside 13-29, lists normally and
-  raises `UnsupportedFeatureError` when read, where `unrar` says "Unknown method". An uncompressed
-  member is read whatever version it declares.
-- A device, FIFO or socket from a Unix host follows [the shared rule](#device-files-fifos-and-sockets).
-  `rar` itself skips such files when archiving.
-- **A directory entry that declares data** (`rar` never writes one) is reported with
-  `MEMBER_DIRECTORY_DATA_IGNORED`, and extraction creates the directory, as `unrar` does. `read()`,
-  and the stream `stream_members()` yields for the directory, return the bytes when they are stored
-  and not encrypted. Compressed or encrypted directory data raises `UnsupportedFeatureError` (from
-  the stream, on its first read), because `unrar` writes nothing for a directory entry.
+Damaged archives, and the details of how archivey runs `unrar` and `unar`, are covered in the
+[RAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md).
 
 ## ISO 9660
 

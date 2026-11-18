@@ -201,12 +201,13 @@ reports for a cut archive, without that advice.
 
 ## RAR archives
 
-Compressed RAR members are decoded by the `unrar` program ([The program for RAR](formats.md#the-program-for-rar)),
-which reads a local file. For each read, archivey fetches the member's packed bytes and writes
-them to a temporary file for `unrar`, so reading one member of a large RAR archive doesn't
-download the rest. A pass with `stream_members()` or `extract_all()` copies several small
-members at a time. A solid RAR archive needs the members before the one read, as in any solid
-archive. [Running `unrar`](formats.md#running-unrar) says what each temporary file holds.
+Compressed RAR members are decoded by the `unrar` program ([RAR](formats.md#rar)), which reads a
+local file. For each read, archivey fetches the member's packed bytes and writes them to a temporary
+file for `unrar`, so reading one member of a large RAR archive doesn't download the rest. A pass
+with `stream_members()` or `extract_all()` copies several small members at a time. A solid RAR
+archive needs the members before the one read, as in any solid archive. The [RAR
+handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md) says what each
+temporary file holds.
 
 `SpoolLimits.max_bytes` (default 1 GiB) caps each copy, and a remote archive has no way around
 it: an archive opened from a local path reads a large member in place, but a remote one can't.

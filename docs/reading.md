@@ -80,7 +80,7 @@ format, and so does `extract_all`. Streams from the pass never seek.
 
 A pipe, a socket or an HTTP response can only be read this way. TAR, ZIP, cpio, ar, deb, RPM and
 makeself archives and single compressed files can come from one, and so can a RAR archive when
-RARLAB `unrar` 7.00 or later is installed ([RAR from a pipe](formats.md#rar-from-a-pipe)). 7z, ISO,
+RARLAB `unrar` 7.00 or later is installed ([RAR](formats.md#rar)). 7z, ISO,
 SquashFS, CAB, XAR, LHA and ARJ archives need a file or another source that can seek.
 `archivey.format_availability(format).required_source` says which a format needs.
 
