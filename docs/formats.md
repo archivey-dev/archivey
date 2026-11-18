@@ -391,89 +391,26 @@ describes each case.
 
 ## 7z
 
-- **Needs:** nothing for LZMA, LZMA2, Deflate, BZip2, Delta, stored data and the executable
-  filters. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4 and AES, and Zstandard before Python
-  3.14 (3.14 has it in the standard library).
-- **Listing:** archivey's own parser reads the header. `py7zr` is used only to check archivey in
-  tests.
-- **Reading members:** a solid block is decoded once by `stream_members()`. A random `open()` of a
-  member in the middle of a block may decode again from the block's start.
-- **From a pipe:** no. The index is at the end of the file, so `open_archive` raises
-  `StreamNotSeekableError`.
+- **Reading:** archivey reads the index at the end of the file, so the archive needs a source
+  that can seek: a pipe raises `StreamNotSeekableError`. Members are solid unless the archive was
+  written without solid blocks (`7z -ms=off`). A `stream_members()` pass decodes each solid block
+  once. Opening a member in the middle of a block may decode the block again from its start.
+- **Compression methods:** the core install reads LZMA, LZMA2, Deflate, BZip2, Delta and the
+  executable filters, including BCJ2, ARM64 and RISC-V, which archivey decodes in Python and so
+  read more slowly. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before
+  Python 3.14. One setting can't be read: LZMA with `lc + lp` over 4, which 7-Zip writes only when
+  asked for it (for example `-mlc=8`). Such an archive can be listed, and reading its members
+  raises `UnsupportedFeatureError`.
+- **Encryption:** 7z stores no password check. A wrong password usually makes decompression fail,
+  or else the data fails its CRC. Only a member stored without compression and without a CRC can
+  come back as garbage, which archivey reports as unchecked data (`DIGEST_UNVERIFIABLE`). With
+  encrypted headers, a wrong password raises `EncryptionError`.
+- **Names** are stored as UTF-16, so `encoding=` has no effect.
+- **Self-extracting `.exe` files** open like a `.7z`, a code-signed one included.
 
-### Compression methods
+Damaged archives, and the details of confirming a password among several candidates, are covered
+in the [7z handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md).
 
-- **BCJ2** (which 7-Zip writes for x86 executables at `-mx9`) reads on a core install. An encrypted
-  BCJ2 archive also needs AES, as any encrypted 7z does. Its decoder is pure Python, about half the
-  speed of the same file under BCJ. It keeps no seek points, so a backward seek decodes again from
-  the block start.
-- **ARM64** (which 7-Zip 23 writes for AArch64 executables) reads on a core install. Python's
-  `lzma` cannot build that filter, so archivey decodes it in pure Python. On real AArch64 code a
-  read runs at roughly four fifths of the speed of the same file with no filter. The filter slows
-  with branch density: on data where every word is a branch, it runs about 15 times slower than on
-  real code.
-- **RISC-V** (a filter 7-Zip 24 added for RISC-V executables) reads on a core install, decoded in
-  pure Python like ARM64. On real RISC-V code a read runs at roughly half the speed of the same
-  file with no filter. The filter slows with branch density: on data where every word is a branch,
-  it runs about 15 times slower than on real code.
-- **LZMA with `lc + lp` over 4** cannot be read. 7-Zip writes it with `-m0=LZMA:lc=8` and reads it
-  back, and some real archives use it: Git for Windows' PortableGit is one. liblzma, which archivey
-  decodes LZMA with, takes `lc + lp` up to 4 only. Such an archive lists, but reading a member in
-  that block raises `UnsupportedFeatureError`. Extract it with 7-Zip instead.
-- Bytes after a coder's stream are corruption, as in a ZIP member ([ZIP](#zip)),
-  except that a Zstandard or LZ4 coder reads concatenated frames as one stream, so a further frame is
-  content that counts against the declared size.
-
-### Encryption
-
-- **AES with stored data, and neither a block digest nor a member CRC:** 7z has no password check
-  value, so a wrong password can give garbage, as in 7-Zip. Archivey reports `DIGEST_UNVERIFIABLE`
-  (`reason="no_integrity_anchor"`). Treat the data as unchecked.
-- **Confirming a password on an encrypted block** first decrypts the block's last 32 bytes. 7-Zip
-  and `py7zr` pad the encrypted data with zeros, and when the padding is 4 bytes or more (about
-  three blocks in four), zero padding confirms the password without decoding anything. It proves the
-  password, not the data: a block with no CRC still reports `DIGEST_UNVERIFIABLE`. With several
-  candidate passwords, or a password callback, the padding does not settle one first (a crafted
-  archive can make a wrong password find zero padding): the decode below runs first, and the padding
-  decides only when that decode cannot. Padding that is shorter or not zero proves nothing and
-  rejects no password. Then archivey decodes only until it can decide: the first member CRC covering
-  at least 4 bytes, or 64 KiB of output for a compressed block, whose codec rejects a wrong key
-  within a few bytes. Peak memory is one 64 KiB chunk. Time grows with the block's size only for
-  stored-plus-AES (or PPMd) blocks whose only CRC is at the end, with several candidates, and whose
-  padding confirmed nothing. Give a single known password there when you can. `ExtractionLimits` do
-  not apply to this step.
-- **Partial reads after an unconfirmed password** report `ENCRYPTED_MEMBER_UNVERIFIED`. When
-  confirmation stopped at its 64 KiB budget without reaching a CRC, the member's own CRC at its end
-  is the only check, and a stream closed before the end skips it.
-- **Encrypted headers with a wrong password:** a decoded header with no file records is rejected
-  as `EncryptionError`, never returned as an empty listing. The header's CRC is what catches a
-  wrong password. 7-Zip stores that CRC; `py7zr` does not, and for its archives a wrong password
-  can, rarely, decode to a header that parses with members in it, and that garbage listing is
-  returned.
-- `NumCyclesPower` (the key derivation's cost) is capped at 24, or the `0x3F` no-hash value, as
-  7-Zip clamps it. Values from 25 to 62 raise `UnsupportedFeatureError`.
-
-### Names and comments
-
-- **Member names** are UTF-16, so `encoding=` has no effect, and passing it reports
-  `ENCODING_ARGUMENT_UNUSED`. A name can hold an
-  [unpaired surrogate](#names-with-an-unpaired-surrogate).
-- **The archive comment** is UTF-16 too. An unpaired surrogate stays in `ArchiveInfo.comment`, so
-  be ready for it if you print the comment. Only a comment with an odd byte count raises
-  `CorruptionError`.
-
-### Endings and member types
-
-- **Bytes after the archive's end** (its next header or its last packed stream, whichever is later)
-  are `ARCHIVE_TRAILING_DATA` with `format="7z"`. Zero padding passes, although 7-Zip warns "There
-  are data after the end of archive" for zeros too. A code-signed self-extracting `.exe` carries
-  its signature after the archive. archivey reads the signature's position from the program's
-  header and does not report it, so `STRICT` opens a signed self-extractor. Other bytes between
-  the archive and the signature are still reported, except when the archive is stored as a
-  resource of the program ([SFX stubs](#detection)).
-- A device, FIFO or socket that 7-Zip or p7zip stored on Unix follows
-  [the shared rule](#device-files-fifos-and-sockets). The mode is trusted for this only when the
-  attribute's `0x8000` Unix-extension bit is set.
 
 ## RAR
 
