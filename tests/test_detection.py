@@ -592,6 +592,40 @@ def test_inner_tar_over_bzip2_large_block_is_tar_bz2() -> None:
     assert info.detected_by == "content_probe"
 
 
+def test_a_tar_bz2_with_a_wrong_first_block_crc_is_tar_bz2_and_its_read_raises() -> (
+    None
+):
+    # The inner-TAR probe reads bzip2 without the block CRC check (bzip2.md §2.1), so a
+    # first block with intact data and a wrong stored CRC is found as TAR_BZ2. The
+    # probe's bytes never reach the caller: the read checks the block and raises with
+    # none of its bytes.
+    import bz2
+    import tarfile
+
+    from archivey.exceptions import CorruptionError
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        data = b"archivey " * 20_000
+        info = tarfile.TarInfo("member.txt")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    blob = bytearray(bz2.compress(buf.getvalue(), 9))
+    blob[10] ^= 1  # inside the first block's stored CRC (bytes 10 to 13)
+
+    assert detect_format(io.BytesIO(bytes(blob))).format == ArchiveFormat.TAR_BZ2
+    got = bytearray()
+    with (
+        pytest.raises(CorruptionError),
+        open_archive(io.BytesIO(bytes(blob))) as archive,
+    ):
+        for _member, stream in archive.stream_members():
+            if stream is not None:
+                while chunk := stream.read(65536):
+                    got += chunk
+    assert got == b""
+
+
 def test_inner_tar_over_bzip2_large_block_non_seekable() -> None:
     # Same, from a non-seekable pipe wrapped as the opener does: the source's replay prefix buffers
     # enough of the prefix for the probe to reach the header region, and the source is not

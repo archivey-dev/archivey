@@ -395,3 +395,44 @@ def test_takeover_points_carry_their_stream_level_and_combined_crc(
         end = 300_000 if in_first else len(full)
         assert out == full[point.decompressed_offset : end]
         assert decomp.eof
+
+
+class _Bz2Spy:
+    """``bz2.BZ2Decompressor`` that counts the bytes it decodes."""
+
+    decoded = 0
+
+    def __init__(self) -> None:
+        self._inner = _REAL_BZ2_DECOMPRESSOR()
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        out = self._inner.decompress(data, max_length)
+        _Bz2Spy.decoded += len(out)
+        return out
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+_REAL_BZ2_DECOMPRESSOR = bz2.BZ2Decompressor
+
+
+@pytest.mark.parametrize(("probe", "decodes_the_block"), [(True, False), (False, True)])
+def test_a_detection_probe_reads_the_head_without_checking_the_first_block(
+    monkeypatch: pytest.MonkeyPatch, probe: bool, decodes_the_block: bool
+) -> None:
+    # A detection probe's 512 bytes never reach the caller, so it takes them before the
+    # block's CRC is checked, where a checked read decodes the whole first block (900
+    # kB at level 9) before it hands out a byte.
+    data = DATA * 2
+    blob = bz2.compress(data, 9)
+    monkeypatch.setattr(bz2, "BZ2Decompressor", _Bz2Spy)
+    monkeypatch.setattr(_Bz2Spy, "decoded", 0)
+    config = _config(
+        process_isolation=ProcessIsolation.NONE,
+        probe_read_bound=512 if probe else None,
+    )
+    with open_codec_stream(Codec.BZIP2, io.BytesIO(blob), config=config) as stream:
+        assert stream.read(512) == data[:512]
+    assert 0 < _Bz2Spy.decoded
+    assert (_Bz2Spy.decoded > 800_000) is decodes_the_block

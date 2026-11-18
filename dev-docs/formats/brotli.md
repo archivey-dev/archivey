@@ -72,11 +72,18 @@ when `brotli` is not installed.
 1. **The first-block gate**, when the source length is known: a first meta-block that
    declares more uncompressed or metadata bytes than the source holds is rejected
    (`brotli_framing.first_block_overruns_source`).
-2. **The chain walk**, when the source length is known: byte-aligned self-describing
-   meta-blocks after the first are followed, up to eight links, stopping at the first
-   compressed block. A link that overruns the source, or bytes left over after a declared
-   last block, reject the match (`walk_chain`). On a non-seekable source the walk
-   reads at most 1 MiB ahead.
+2. **The chain walk**, with or without a known source length: byte-aligned
+   self-describing meta-blocks after the first are followed, up to eight links, stopping
+   at the first compressed block. A link that overruns the source, or bytes left over
+   after a declared last block, reject the match (`walk_chain`). On a non-seekable
+   source the walk reads at most 1 MiB ahead under `THOROUGH`. Under `FAST` and
+   `BALANCED`, it inspects only bytes already buffered. Cheap seekable sources may skip
+   literal bodies to inspect headers at any offset. Expensive-seek sources keep their
+   existing bounded read-ahead, up to 1 MiB and the budget's read ceiling. Unknown-size
+   sources reject a missing successor or a wrong end only when a range read proves it; a
+   declined read leaves the earlier verdict unchanged. A short arrival on an open pipe
+   is not EOF. Optional end checks inspect buffered bytes without waiting for the writer
+   to close.
 3. **The decode**: the whole 4 KiB detection window is decoded and must succeed. A shorter
    sample let text through: 7 of 800 Perl modules decoded as Brotli for 256 bytes, none for
    4 096.
@@ -89,6 +96,12 @@ when `brotli` is not installed.
    a copy. It does not run when its end would pass 1 MiB or the budget's read ceiling, or
    when what is left of `max_decode_input` cannot cover it (most of these cases under
    `FAST`); the walk's verdict then stands and `content_probe_decode` is recorded.
+   The same forward-read allowance applies before charging this decode; a refused
+   forward read records `content_probe_read_at` instead.
+   On a pipe, the enabled trial feeds arrived chunks to one decoder until it fails,
+   finishes, or reaches its input/output bound. A short arrival does not end the
+   trial. A finished decoder does not fetch optional following bytes. The target
+   input ceiling is charged before the trial, including when it finishes early.
 5. **Completeness**: when the whole source is visible, it must decode to its end. A source
    no larger than `completion_window_bytes` (64 KiB under `BALANCED`, off under `FAST`) is
    decoded whole to check that.
@@ -174,7 +187,7 @@ detection census in the investigation linked in §9.
 | COFF object files | Can be claimed by a probe, LZMA Alone or Brotli ([`xz.md`](xz.md) §3) |
 | A 7z, ZIP or RAR behind a low-entropy stub | Found by the SFX scan, not claimed as Brotli |
 | CPython 3.11 / 3.14 `.pyc` over ~269 KiB, a Type 1 font (`.pfb`), random data over 64 KiB | Not claimed under `BALANCED`: the chain decode rejects them (§2.1). Before it, these were the 5 non-OLE false claims in 148 255 local files, and 1.2 % of random blobs |
-| Data whose compressed block sits past 1 MiB, or whose chain is longer than eight links | Can still be claimed at `GUESS`: nothing past the walk is checked there |
+| Data whose compressed block sits past 1 MiB, or whose chain is longer than eight links | Can still be claimed at `GUESS`: the chain decode cannot check there |
 
 ## 4. Threat surface
 
@@ -224,6 +237,20 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Require `brotli` 1.2.1 | Fixes a decoder buffer overflow (CVE-2026-111497) present from 1.0.3 through 1.2.0. The floor binds an install of `[recommended]` only: a brotli that is already present is used whatever its version, so `docs/security.md` §Hardening tells users to upgrade it | Staying on 1.2.0, which left the overflow reachable from a crafted stream; a runtime version check, which no other Python codec has |
 | Replay from the start to tell bytes after the end from damage | The library gives the same error for both and loses the call's output; a replay costs nothing on a clean file | Feeding one byte at a time always, which is slow on every file; refusing bytes after the end, unlike every other codec |
 | `brotli`, not `brotlicffi` | `brotli` is the reference binding; `brotlicffi` helps only on PyPy | Supporting both |
+
+Literal blocks have no 128 KiB encoder limit. The reference encoder emits larger
+blocks, and flushing can produce consecutive one-byte literals even for repeated
+text. Block size and entropy therefore cannot safely reject a stream. The forward
+allowance controls work instead (`max_probe_forward_bytes`: 0 under `FAST` and
+`BALANCED`, 1 MiB under `THOROUGH`).
+
+**Maintainer decision (davitf, 2026-11-15, PR #1573):** restore the framing walk's
+pre-PR reach, with the unknown-size checks added on top. Cheap header seeks may
+inspect any offset. Seekable expensive-seek sources retain bounded read-ahead.
+Only forward-only sources use the new forward allowance. The broader limits
+raised false positives by skipping existing checks. The maintainer requested
+regressions that pass before the change, fail with those limits, and pass with
+the correction. Revisit this policy only with measured work and accuracy costs.
 
 ## 7. Open questions
 
