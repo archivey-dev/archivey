@@ -617,87 +617,47 @@ covers long names in each dialect and the streaming details.
 
 ## Debian packages
 
-- **Needs:** what the package's two tars are compressed with: nothing for xz, gzip, bzip2 and
-  LZMA, which `dpkg-deb` also accepts, and what a `.zst` file needs for Zstandard.
-- **Listing:** what `dpkg-deb -R` unpacks: the files the package installs under their own names,
-  and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. The
-  listing starts with the control files, then `.`, the data tar's root, then the data files.
-  Listing reads both tars, so it needs decompression.
-- **Reading members:** solid: a member is reached by reading the package from the start, as in a
-  compressed TAR.
-- **From a pipe:** yes, with `streaming=True`.
-- `format=ArchiveFormat.AR` lists the package's three ar members instead (`debian-binary`,
-  `control.tar.xz`, `data.tar.xz`), to read a tar whole.
-- `ArchiveInfo.format_version` is the `debian-binary` version (`"2.0"`), and
-  `ArchiveInfo.extra` has `deb.package`, `deb.version` and `deb.architecture`, from the control
-  file. They appear once the listing or iteration has read the control tar, on any source:
-  `info.extra` is empty right after `open_archive`, until `members()` or the first members of
-  `stream_members()`.
-- Each file that `DEBIAN/md5sums` lists gets its MD5 in `member.hashes`, and a full read checks
-  it: a file that does not match raises `CorruptionError`. A line of `md5sums` that is not an
-  MD5 and a name is skipped, and a file it does not list has no digest.
-- As `dpkg-deb` does, a package whose format version is not 2.x raises `UnsupportedFeatureError`,
-  members whose names start with `_` (a signature, for example) are skipped, any other member
-  before the data tar raises `CorruptionError`, and nothing after the data tar is read.
-- A file of the data tar that would land in `DEBIAN/`, whatever its spelling, raises
-  `CorruptionError`, and so does a symlink or hard link of the data tar that points there, or a
-  file that reaches `DEBIAN/` through such a symlink. A later symlink that makes an earlier one
-  point there (`x -> y/DEBIAN/control`, then `y -> .`) raises it too, and so does a symlink whose
-  target reaches `DEBIAN/` once its `..` are taken literally (`x -> y/../DEBIAN/control`). The
-  control files are always the control tar's.
-- So that this holds whichever members you extract and whatever `overwrite` says, a data file
-  under a data symlink (`y -> a/b`, then `y/z`) raises `CorruptionError`, and so does a data
-  symlink at the path of a directory or of another symlink. Packages built by `dpkg-deb` have
-  neither. A hard link to a data symlink is checked as the symlink extraction writes for it.
-- Following one data symlink through another, and checking earlier symlinks again when a later
-  symlink moves them, count against `ListingLimits.max_members`, one per path step, and raise
-  `ResourceLimitError` past it. A symlink that follows no other costs nothing.
-- The control file and `md5sums` are held whole while the package is read, and together may be
-  no larger than `ListingLimits.max_metadata_bytes`.
+A `.deb` is an ar archive holding two tars: the control files and the files the package
+installs. Archivey lists it as `dpkg-deb -R` unpacks it: the installed files under their own
+names, and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. xz,
+gzip, bzip2 and LZMA packages need nothing extra, and Zstandard ones need `[recommended]` before
+Python 3.14. Listing decompresses both tars, and members are read one after another, as in a
+compressed TAR. Packages can be read from a pipe with `streaming=True`.
+
+- **Package fields:** `ArchiveInfo.extra` has `deb.package`, `deb.version` and
+  `deb.architecture` from the control file, once the listing or `stream_members()` has read it.
+- **Checksums:** each file that `DEBIAN/md5sums` lists gets its MD5 in `member.hashes`, checked
+  when you read it to its end.
+- **The raw layout:** `format=ArchiveFormat.AR` lists the three ar members instead
+  (`debian-binary`, `control.tar.xz`, `data.tar.xz`), to read a tar whole.
+
+Archivey follows `dpkg-deb` on which members it reads, and refuses a package whose data files
+or links would land in `DEBIAN/` or let one extraction write through another's symlink. The
+[Debian handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md) has
+the rules and their limits.
 
 ## RPM
 
-- **Needs:** nothing for gzip, bzip2, xz and LZMA payloads; a Zstandard payload (Fedora's
-  default) needs what a `.zst` file needs.
-- **Listing:** from the package header alone. Nothing is decompressed until you read a
-  member's data.
-- **Reading members:** solid: one compression stream holds every file, so opening a member
-  out of order decodes the files before it again. Members are listed in the order `rpm`
-  writes their data (hard-linked files last), so `stream_members()` and `extract_all` read
-  the payload once, front to back. A package with an uncompressed payload, which `rpmbuild`
-  writes only when asked, is not solid.
-- **From a pipe:** yes, with `streaming=True`.
-- Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for the package's
-  `/usr/bin/tool`, which is the member's `raw_name`. A source package's names are relative.
-- Each member's type, mode, size, time and owner names come from the package header, as `rpm`
-  installs them. Owners are names (`uname`, `gname`); `uid` and `gid` are `None`.
-- Both payload forms read: newc CPIO, and the stripped form of RPM 6 packages and of RPM 4
-  packages with a file of 4 GiB or more.
-- The package header's own digests (SHA-256 and SHA-1, each one the package stores) are
-  checked when the package is opened: a damaged name, mode, owner or link target raises
-  `CorruptionError`. They detect damage, not tampering: they are not signed, and signatures
-  are not checked. A package that stores no such digest is read unchecked.
-- Each regular file's digest from the header (SHA-256 in current packages, MD5 in old ones)
-  is checked as its data is read.
-- `%ghost` files are listed in the package but never stored, and are not members.
-- A symlink's target comes from the header, as `rpm` installs it. The payload stores the
-  target again; when a read of a later file passes that copy and it differs,
-  `MEMBER_HEADER_AMBIGUOUS` is reported for the link, which `STRICT` raises.
-  `rpm2cpio | cpio` would make the payload's target.
-- **Hard links.** Files that share an inode are one file. The package stores the data with
-  the last of them, so archivey lists that one as the `FILE` and the others after it as
-  `HARDLINK` members to it.
-- `ArchiveInfo.format_version` is `"6"` for an RPM 6 package, `"4"` for an RPM 4 one, and
-  `"3"` for an old header with no immutable region. `ArchiveInfo.extra` holds `rpm.name`,
-  `rpm.version`, `rpm.release`, `rpm.arch`, `rpm.epoch` (when set), `rpm.source`,
-  `rpm.signed` and `rpm.payload_compressor`. Signatures are reported, not checked: use
-  `rpm -K` for that.
-- Delta RPMs, and payloads compressed with something archivey cannot decode, raise
-  `UnsupportedFeatureError`. Damage to the payload is found only when a member's data is
-  read, since listing never reads it. A file the payload lacks raises `CorruptionError` when
-  its data is read, and the files after it still read. A payload whose structure is damaged
-  (an entry that does not parse, a file the header does not list, a size other than the
-  header's) raises `CorruptionError` for the file being read and every file after it.
+An RPM package is a header listing every file, followed by a compressed CPIO payload. gzip,
+bzip2, xz and LZMA payloads need nothing extra, and Zstandard ones (Fedora's default) need
+`[recommended]` before Python 3.14. Packages can be read from a pipe with `streaming=True`.
+
+- **Listing** comes from the header alone, so nothing is decompressed until you read a member.
+  Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for `/usr/bin/tool`.
+- **Reading:** one compression stream holds every file. Members are listed in the order the
+  payload stores them, so `stream_members()` and `extract_all()` read it once, front to back;
+  opening members out of order decodes the files before them again.
+- **Fields** come from the header, as `rpm` installs them. Owners are names (`uname`, `gname`),
+  and `uid` and `gid` are `None`. `%ghost` files are not stored, and are not members.
+  `ArchiveInfo.extra` holds `rpm.name`, `rpm.version`, `rpm.release`, `rpm.arch` and more.
+- **Checksums:** the header's own digests are checked at open, and each file's digest as it is
+  read. They catch damage, not tampering: signatures are not checked, so use `rpm -K` for that.
+- **Not read:** delta RPMs, and payloads in a compression archivey can't decode, raise
+  `UnsupportedFeatureError`.
+
+Damage to the payload is found only when a member is read, since listing never reads it. The
+[RPM handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rpm.md) covers
+payload forms, hard links, symlink targets and how damage is reported.
 
 ## makeself
 
