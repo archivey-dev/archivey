@@ -771,6 +771,11 @@ class RangeSource(io.RawIOBase):
         # The message of the first ``SourceChangedError`` a fetch raised (design D7).
         self.change: str | None = None
         self._bounded_cat = _bounded_http_cat(fs)
+        # What :meth:`fetch` has asked the file system for: one per request (a
+        # request sent again counts again), and the bytes the file system returned.
+        # Read by ``--track-io`` (``IoStats``).
+        self.fetch_count = 0
+        self.bytes_fetched = 0
 
     @classmethod
     def from_open_file(
@@ -909,9 +914,14 @@ class RangeSource(io.RawIOBase):
         """
         bounded = self._bounded_cat
         if bounded is None:
-            return cast(bytes, self.fs.cat_file(self.path, start=start, end=end))
+            data = cast(bytes, self.fs.cat_file(self.path, start=start, end=end))
+            self.fetch_count += 1
+            self.bytes_fetched += len(data)
+            return data
         for _ in range(RANGE_IGNORED_RETRIES + 1):
             data, honoured = bounded(self.path, start, end)
+            self.fetch_count += 1
+            self.bytes_fetched += len(data)
             if honoured:
                 return cast(bytes, data)
             streams_logger.info(

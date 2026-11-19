@@ -1877,10 +1877,16 @@ class BaseArchiveReader(ArchiveReader):
         if not self._measure:
             return None
         consumed = self._live_consumed()
+        ranges = self._source.remote_sources if self._source is not None else ()
         return IoStats(
             bytes_decompressed=self.bytes_decompressed,
             compressed_bytes_consumed=consumed() if consumed is not None else None,
             source_seek_count=self.source_seek_count,
+            remote_requests=sum(r.fetch_count for r in ranges) if ranges else None,
+            remote_bytes_fetched=(
+                sum(r.bytes_fetched for r in ranges) if ranges else None
+            ),
+            remote_size=sum(r.size for r in ranges) if ranges else None,
         )
 
     # --- Building member streams ------------------------------------------------------

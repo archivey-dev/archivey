@@ -311,10 +311,23 @@ def _report_track_io(reader: ForwardArchiveReader, err: TextIO) -> None:
         if stats.compressed_bytes_consumed is None
         else str(stats.compressed_bytes_consumed)
     )
+    remote = ""
+    if stats.remote_requests is not None:
+        # A URL source: a seek is free there, a request is what costs.
+        fetched = stats.remote_bytes_fetched or 0
+        size = stats.remote_size or 0
+        share = f"{100 * fetched / size:.2f}%" if size else "-"
+        remote = (
+            f" remote_requests={stats.remote_requests}"
+            f" remote_bytes_fetched={fetched}"
+            f" remote_size={size}"
+            f" remote_fetched_share={share}"
+        )
     print(
         "track-io:"
         f" bytes_decompressed={stats.bytes_decompressed}"
         f" compressed_bytes_consumed={consumed_s}"
-        f" source_seek_count={stats.source_seek_count}",
+        f" source_seek_count={stats.source_seek_count}"
+        f"{remote}",
         file=err,
     )
