@@ -510,9 +510,9 @@ def test_zeros_to_the_end_are_padding(
     selected: str, zeros: int, isolated: bool
 ) -> None:
     """Zero bytes that run to the end of the file are padding, the zero-tail rule
-    of the other codecs (tape, ``dd`` and ``tar`` pad to a block size). A zero byte reads as the
-    type of a compressed chunk, and its length 0 was refused. Four zeros are needed,
-    since fewer may be a header cut short."""
+    of the other codecs (tape, ``dd`` and ``tar`` pad to a block size). A zero
+    byte reads as the type of a compressed chunk, and its length 0 was refused.
+    Four zeros are needed, since fewer may be a header cut short."""
     data = _frame(_data_chunk(_GOOD)) + b"\0" * zeros
     diagnostics: list[Diagnostic] = []
     isolation = ProcessIsolation.NATIVE_DECODERS if isolated else ProcessIsolation.NONE
