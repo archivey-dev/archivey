@@ -29,6 +29,7 @@ from archivey.internal.streams.codecs.decoder_child import (
     decoder_child_unavailable_reason,
     isolation_error,
 )
+from archivey.internal.streams.codecs.decoder_worker import compress_utils_has
 from archivey.internal.streams.native_memory import note_native_memory
 
 if TYPE_CHECKING:
@@ -205,11 +206,12 @@ class ChildSnappyNatives(_ChildProxy):
     (the worker's ``_Snappy``). The framing stays in this process; a data chunk costs
     one round trip, which decodes it and computes its CRC together."""
 
-    def chosen(self) -> tuple[str, str]:
-        """The decoder and the CRC package the child found, ``""`` for none."""
+    def chosen(self) -> tuple[str, str, list[str]]:
+        """The decoder and the CRC package the child found, ``""`` for none, and the
+        decoders it skipped because their build has no Snappy."""
         self._child.call("chosen", None)
-        decoder, crc = cast("tuple[str, str]", self._child.result)
-        return decoder, crc
+        decoder, crc, without = cast("tuple[str, str, list[str]]", self._child.result)
+        return decoder, crc, without
 
     def chunk(self, body: bytes, size: int) -> bytes:
         """The worker's ``_Snappy.chunk``: decoded data (``size`` >= 0), then the
@@ -415,6 +417,20 @@ class Natives:
         child = self._child("lzo", known=_LZO_ERRORS)
         try:
             return child.call("decompress", block, ("lzo", limit))
+        finally:
+            child.close()
+
+    def lzo_available(self) -> bool:
+        """Whether compress-utils, where :meth:`lzo_decompress` runs, was built with
+        LZO1X. Needs compress-utils; isolated, the child is asked."""
+        if not self.isolated:
+            module = deps.compress_utils.load()
+            assert module is not None
+            return compress_utils_has(module, "lzo")
+        child = self._child("lzo", known=_LZO_ERRORS)
+        try:
+            child.call("available", None, ("lzo",))
+            return child.result is True
         finally:
             child.close()
 

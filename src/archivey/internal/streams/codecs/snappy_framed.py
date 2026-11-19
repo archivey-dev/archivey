@@ -54,6 +54,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.decoder_worker import compress_utils_has
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     ChildSnappyNatives,
@@ -366,6 +367,14 @@ def checked_by_python(
     return decode
 
 
+def _has_snappy(library: OptionalLibrary, module: ModuleType) -> bool:
+    """Whether ``module`` decodes Snappy. compress-utils builds each algorithm as an
+    option, and a build without Snappy refuses every block."""
+    if library is OptionalLibrary.COMPRESS_UTILS:
+        return compress_utils_has(module, "snappy")
+    return True
+
+
 def raw_block_decoder(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     usage: ResourceUsageRecorder | None = None,
@@ -377,7 +386,7 @@ def raw_block_decoder(
         if library in excluded:
             continue
         module = deps.snappy_libraries[library].load()
-        if module is not None:
+        if module is not None and _has_snappy(library, module):
             if usage is not None:
                 usage.note_backend("library", library.value, "snappy")
             return checked_by_python(adapt(module))
@@ -394,6 +403,7 @@ def _allowed(
         for library in libraries
         if library not in excluded
         and not deps.snappy_libraries[library].child_import_failed
+        and deps.snappy_libraries[library].child_has.get("snappy") is not False
         and natives.package_available(deps.snappy_libraries[library])
     ]
 
@@ -480,13 +490,17 @@ def chunk_decoder(
     child = natives.snappy_natives(
         [library.value for library in decoders], [library.value for library in crcs]
     )
-    decoder, crc = child.chosen()
+    decoder, crc, without = child.chosen()
     for tried, chosen in ((decoders, decoder), (crcs, crc)):
         for library in tried:
             if library.value == chosen:
                 if usage is not None:
                     usage.note_backend("library", library.value, "snappy")
                 break
+            if library.value in without:
+                # It imports there, but its build has no Snappy.
+                deps.snappy_libraries[library].child_has["snappy"] = False
+                continue
             # The child takes the first it can use: this one was found here but not
             # importable there (or google-crc32c without its C extension).
             deps.snappy_libraries[library].failed_in_child(
