@@ -18,13 +18,17 @@ user and group names) SHALL NOT change the guess, and SHALL NOT fix the text of 
 bytes. Each distinct stored name, and each directory prefix of a name up to a `/` or `\`
 at a character boundary, SHALL decode to one text for the life of the reader. A member
 with no data SHALL be decoded with the evidence up to the next member that has data, the
-end of the archive or the 256th evidence name, whichever comes first.
+end of the walk, the 256th evidence name, the 64th waiting member, or the member that
+would cross a listing cap, whichever comes first. The wait SHALL NOT parse a header that
+the walk would not parse without `"auto"`.
 
-The same archive bytes SHALL give the same names under any `max_members`, in any order
-of calls, and under `streaming=True` and `streaming=False`. The one exception is a ZIP
-whose central directory lists entries in another order than its local headers, where the
-names met before the guess is frozen, and the names under a directory first met before
-then, MAY differ between the two modes.
+The same archive bytes SHALL give the same names in any order of calls, and under
+`streaming=True` and `streaming=False`. Damage SHALL NOT change a name listed before it.
+There are two exceptions. In a ZIP whose central directory lists entries in another
+order than its local headers, the names met before the guess is frozen, and the names
+under a directory first met before then, MAY differ between the two modes. When a
+listing cap raises, the members without data listed just before it MAY have names that
+differ from an unlimited listing.
 
 A name decoded with a guessed codec SHALL report `MEMBER_NAME_ENCODING_INFERRED`, with
 `inferred_encoding` set to the guess and `declared_encoding` set to the codec the name
@@ -40,7 +44,8 @@ report `ENCODING_ARGUMENT_UNUSED`, as any other value does.
 | Archive whose first legacy name is ambiguous alone and whose later names are clearly Big5 | First name decodes as with `encoding=None`; later names in Big5 |
 | Big5 directory entry ambiguous alone, then its children | The directory entry is decoded with its first file's evidence; the children's directory part is the directory entry's text; one tree |
 | Big5 ZIP holding `新/`, then `新/報告書.txt`, `新/會議記錄.txt`, `新/預算.xlsx` | Every name starts with `新/` |
-| Single-root archive, `max_members=1` | The root's name equals its name in an unlimited listing |
+| Single-root archive, `ListingLimits(max_members=5)`, more than 5 members | `ResourceLimitError` at the 6th member, as today; the TAR walk reads at most 6 headers |
+| TAR: `新/` in Big5, then 200 empty ASCII directories, then a file | The wait ends at 64 waiting entries; `新/` decodes on the evidence met by then (its own name) |
 | TAR, symbolic link before the freeze to a member met later, guess unchanged between them | `link_target` equals the member's name; the link resolves |
 | TAR, symbolic link before the freeze to a member met later, guess changed between them | `link_target` keeps the link's guess; the link does not resolve, as any link to a missing member |
 | ZIP symbolic link whose target data is cp932, `encoding="auto"` or `encoding="cp932"` | `link_target` in cp932; the link resolves |
@@ -49,7 +54,7 @@ report `ENCODING_ARGUMENT_UNUSED`, as any other value does.
 | cp437 German or French names, `encoding="auto"` | Names as with `encoding=None`; no `MEMBER_NAME_ENCODING_INFERRED` |
 | Name that is valid UTF-8 | UTF-8, whatever the guess for the other names |
 | ISO Rock Ridge name not UTF-8, Joliet twin present | The Joliet name; the name adds nothing to the guess |
-| `max_members=2` on an archive with 10 cp949 names | The 2 listed names equal the first 2 names of an unlimited listing |
+| Streaming walk of an archive with 10 cp949 files, damaged after the 2nd | The 2 listed names equal the first 2 names of an undamaged copy |
 | ZIP whose central directory order differs from its local headers' | Names met before the guess is frozen, and names under a directory first met before then, may differ between modes |
 | `encoding="auto"` under `DiagnosticPolicy.STRICT`, a name guessed | Refused, as any inferred name is |
 | `encoding="auto"` on a format that does not read `encoding=` | Opens; `ENCODING_ARGUMENT_UNUSED`; names unchanged |

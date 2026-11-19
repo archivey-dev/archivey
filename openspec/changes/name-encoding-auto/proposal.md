@@ -18,8 +18,9 @@ written in archivey can do it with no dependency (see design.md, Investigations)
   without `encoding=`. Latin code pages are never guessed.
 - A guess is made from the legacy names met so far, in archive order, up to the
   first 256. Each distinct stored name is decoded once per reader. So the same bytes
-  give the same names in streaming and non-streaming reads, and under any `max_members`
-  (design.md, decisions 3 and 4).
+  give the same names in streaming and non-streaming reads (design.md, decisions 3
+  and 4). A directory waits for the next member with data before it is decoded, within
+  the listing caps.
 - Each name decoded with a guessed codec reports `MEMBER_NAME_ENCODING_INFERRED`. The
   `inferred_encoding` field holds the guess, and `declared_encoding` holds the codec the
   name would otherwise have had. STRICT refuses it, as it refuses every inferred name

@@ -23,8 +23,9 @@ Investigations.
 
 - An opt-in guess for CJK legacy names, with no new dependency, that almost never
   guesses wrong and abstains when it cannot tell.
-- The same archive bytes give the same names in streaming and random access, under any
-  `max_members`, and in any order of calls (DR-5).
+- The same archive bytes give the same names in streaming and random access, and in
+  any order of calls (DR-5). Damage and listing caps never change a name already
+  listed.
 - One decoder shared by every format that reads `encoding=`, built-in or plugin.
 
 **Non-Goals:**
@@ -145,13 +146,26 @@ is guessed from the evidence collected up to and including that name:
   takes the text its children gave it.
 - **An entry without data waits for the next entry with data.** A directory, or any
   other member with no data to read, is decoded only once the reader has met the next
-  member that has data, or the end of the archive, or the freeze. Its decode uses the
-  evidence up to that member. Both modes can do this without buffering data: a forward
-  walk reads only headers in between, and an indexed read looks ahead in its index. The
-  lookahead holds at most 256 evidence names, because the freeze ends it. A walk cut
-  short by `max_members` still reads ahead to that point before it yields the last
-  entry without data, so the limit doesn't change its name. Damage or the end of the
-  archive ends the lookahead at the same point in both modes.
+  member that has data. Its decode uses the evidence up to that member. Both modes can
+  do this without buffering data: a forward walk reads only headers in between, and an
+  indexed read looks ahead in its index. The lookahead ends early, and the waiting
+  entries decode with the evidence met so far, at the first of:
+  - the end of the archive, or damage that ends the walk;
+  - the freeze;
+  - 64 waiting entries, of any kind. Only names that are not valid UTF-8 count towards
+    the freeze, so without this bound a legacy-named directory followed by a million
+    ASCII directories would hold a million headers;
+  - a listing cap (`ListingLimits`). Every member the lookahead reads is charged to the
+    listing tracker as it is today, and a plugin holds waiting entries through
+    `ReaderContext.hold()`, which is charged too. When the next member would cross a
+    cap, the waiting entries are decoded and listed, and then the cap raises
+    `ResourceLimitError` at that member, as it does now. So the lookahead never parses a
+    header that today's walk wouldn't parse: a TAR walk with `max_members=5` still reads
+    at most 6 headers.
+
+  The end and damage come at the same point in both modes. A cap can come before the
+  next entry with data, and then the entries just before it decode with less evidence
+  than in an unlimited listing. The spec states this as an exception.
 
 Why this rule:
 
@@ -160,11 +174,15 @@ Why this rule:
   order, and the ZIP central directory lists entries in local-header order. So both
   reads give the same names. The only lookahead is over entries without data, so no
   reader buffers member data, which a TAR stream can't do within its memory bound.
-- **`max_members` and damage can't change a name.** A cut-short walk stops adding
-  evidence after the cut, and names before the cut already have their final decode.
+- **Damage and caps can't change a name already listed.** A walk cut short by damage
+  stops adding evidence at the cut, and the entries waiting at the cut decode with the
+  evidence before it, in both modes. A listing cap raises, as it does today. The only
+  names it can change are those of the entries without data waiting just before it,
+  because their wait ends early (the second spec exception).
 - **Order of calls doesn't matter.** Thanks to the memo, a re-walk, a `get()`, or a
   second `members()` never sees a different decode for bytes it already decoded.
-- **Bounded cost.** Evidence stops at 256 names. Accuracy plateaus by about 10 names.
+- **Bounded cost.** Evidence stops at 256 names, and the wait at 64 entries and at the
+  listing caps. Accuracy plateaus by about 10 names.
 
 The cost: early names get less evidence than a whole-archive guess would give them. The
 first legacy name is decoded on its own evidence (the N=1 column: right 61-94%,
