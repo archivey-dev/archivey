@@ -271,8 +271,13 @@ def test_a_payload_the_configuration_turns_off_is_listed_as_it_is(
         "xz-bcj",
         (
             "application/x-xz",
+            # An explicit check: PyPy's lzma passes the default check (-1) through to
+            # liblzma for a filter chain, which refuses it ("Internal error"). CRC64
+            # is the default, so CPython writes the same bytes either way.
             lambda data: lzma.compress(
-                data, filters=[{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}]
+                data,
+                check=lzma.CHECK_CRC64,
+                filters=[{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}],
             ),
         ),
     )
