@@ -138,6 +138,9 @@ resolve through it back into the destination.
   (`_stage_then_place`); nothing else of the run is in the destination before then.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
+- A superseded copy is taken back where it was written, never where its name leads
+  now (`_take_back_written`): a later member may have re-pointed a caller's symlink on
+  that name, to a directory of the caller's or, under `TRUSTED`, one outside.
 
 **Residual.** A local process racing the destination (out of scope, §1). A hard kill, or a removal the filesystem
 refuses (logged), can leave `.archivey-tmp-*` files, or a pipe ZIP's staging directory of them,
@@ -155,7 +158,8 @@ which are safe to delete once no extraction is running.
 `test_hardlink_replaces_a_destination_symlink_without_following_it`,
 `test_error_when_dest_is_a_file_never_deletes_it`,
 `test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`,
-`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`.
+`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`,
+`test_taking_back_a_copy_leaves_the_directory_its_name_leads_to_now`.
 `tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`,
 `test_name_that_leads_out`, `test_link_that_leads_out`, `test_tar_link_that_leads_out`,
 `test_link_planted_in_the_destination`.

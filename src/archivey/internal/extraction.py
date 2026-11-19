@@ -1817,11 +1817,12 @@ class ExtractionCoordinator:
         Its file is parked (see ``_park_earlier_copies``). Its claim, its place in the
         hardlink source map and its bomb-limit counts are released now. A hardlink
         already made to it is its own directory entry and stays, and its bytes stay
-        counted against the byte cap while it holds them. A directory is removed now if
-        it is empty; one that other members were written into stays, as their parent,
-        as it would in random access. A held hardlink's placeholder is parked as a file
-        is, and the second pass no longer fills it. An error recorded on the earlier
-        result is dropped with it: random access never tried that copy.
+        counted against the byte cap while it holds them. A directory is removed now,
+        where it was written, if it is empty and still this run's; one that other
+        members were written into stays, as their parent, as it would in random access,
+        and one that is gone is left gone. A held hardlink's placeholder is parked as a
+        file is, and the second pass no longer fills it. An error recorded on the
+        earlier result is dropped with it: random access never tried that copy.
         """
         self._take_back_written(index)
         prior = self._state.results[index]
@@ -1842,8 +1843,10 @@ class ExtractionCoordinator:
         pass wrote and must now handle otherwise (``_supersede_written_copy``); the
         caller records its new result.
 
-        A file is parked in ``_current``, a directory removed when empty, and the
-        claim, hardlink-source entries and bomb-limit counts are released.
+        A file is parked in ``_current``. A directory is removed where it was written
+        (``written_dir_places``), never where its name leads now, and only while it is
+        empty and still this run's. The claim, hardlink-source entries and bomb-limit
+        counts are released.
         """
         state = self._state
         prior = state.results[index]
@@ -1877,6 +1880,10 @@ class ExtractionCoordinator:
                     st = os.lstat(on_disk)
                 except OSError:
                     st = None
+                # No archive input makes ``place`` a directory the run did not write:
+                # every later member that changes it leaves a file, a symlink or
+                # the run's own directory. The identity check is defence in depth
+                # against an outside change to the destination (threat model §1).
                 if (
                     st is not None
                     and stat.S_ISDIR(st.st_mode)
