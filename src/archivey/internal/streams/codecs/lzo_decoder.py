@@ -2,7 +2,8 @@
 
 LZO1X has no stream framing of its own: a block is decoded whole, to a size the
 container stores (a SquashFS block, an lzop block). ``compress-utils`` (its LZO1X
-decoder is derived from lzokay) decodes a block when it is installed; archivey also
+decoder is derived from lzokay) decodes a block when it is installed and built with
+LZO1X, which is a build option (``is_available``); archivey also
 carries the decoder in Python (:func:`lzo1x_decompress_python`). It
 follows ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
 without the LZO-RLE extension, which neither lzop nor SquashFS writes.
@@ -60,24 +61,66 @@ class LzoError(ValueError):
 _SIZE_LIMIT = "decompressed size exceeds configured limit"
 
 
+def _child_has_lzo(package: deps.LazyOptional, natives: Natives) -> bool:
+    """Whether compress-utils in a decoder child imports and has LZO1X, asked once."""
+    if package.child_import_failed:
+        return False
+    has = package.child_has.get("lzo")
+    if has is None:
+        try:
+            has = natives.lzo_available()
+        except ResourceUnavailableError as exc:
+            # Isolated, the package is only looked up here, not imported, so one
+            # that is found but does not import fails in the child. Fall back as
+            # ``deps.compress_utils.load()`` does in this process: the Python decoder
+            # needs no child (DR-11). Any other reason no child starts still raises.
+            # Only isolated decoders take note: this process may import it all the
+            # same.
+            if not isinstance(exc.__cause__, DecoderChildImportError):
+                raise
+            package.failed_in_child(exc.__cause__)
+            return False
+        package.child_has["lzo"] = has
+    return has
+
+
 def _compress_utils(
-    excluded: frozenset[OptionalLibrary], natives: Natives = IN_PROCESS
+    excluded: frozenset[OptionalLibrary],
+    natives: Natives = IN_PROCESS,
+    usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes] | None:
     """compress-utils' LZO1X decoder, in this process or a child as ``natives`` says,
-    or ``None`` when it is absent or ``excluded``."""
+    or ``None`` when it is absent, ``excluded`` or built without LZO1X.
+
+    In this process that is known here, and the caller records the backend. A child is
+    asked on the first block, which falls back to the Python decoder when the answer
+    is no; ``usage`` records ``compress_utils`` only once a child has it.
+    """
     package = deps.compress_utils
     if OptionalLibrary.COMPRESS_UTILS in excluded or not natives.package_available(
         package
     ):
         return None
-    if natives.isolated and package.child_import_failed:
+    if natives.isolated:
+        if package.child_import_failed or package.child_has.get("lzo") is False:
+            return None
+    elif not natives.lzo_available():
+        # compress-utils builds each algorithm as an option; without LZO1X it
+        # refuses every block as it refuses damaged ones.
         return None
     errors = natives.lzo_errors()
+    noted = not natives.isolated
 
     def decompress(data: bytes, limit: int) -> bytes:
-        if natives.isolated and package.child_import_failed:
-            # A child could not import it for an earlier block.
+        nonlocal noted
+        if natives.isolated and not _child_has_lzo(package, natives):
             return lzo1x_decompress_python(data, limit)
+        if not noted:
+            noted = True
+            if usage is not None:
+                usage.note_backend(
+                    "library", OptionalLibrary.COMPRESS_UTILS.value, "lzo"
+                )
         try:
             return natives.lzo_decompress(data, limit)
         except errors as exc:
@@ -88,12 +131,7 @@ def _compress_utils(
                 return lzo1x_decompress_python(data, limit)
             raise LzoError(str(exc)) from None
         except ResourceUnavailableError as exc:
-            # Isolated, the package is only looked up here, not imported, so one
-            # that is found but does not import fails in the child. Fall back as
-            # ``deps.compress_utils.load()`` does in this process: the Python decoder
-            # needs no child (DR-11). Any other reason no child starts still raises.
-            # Only isolated decoders take note: this process may import it all the
-            # same.
+            # As in ``_child_has_lzo``: a child that cannot import it now.
             if not isinstance(exc.__cause__, DecoderChildImportError):
                 raise
             package.failed_in_child(exc.__cause__)
@@ -107,13 +145,14 @@ def lzo1x_decompressor(
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
-    """The LZO1X block decoder to use: compress-utils when present and allowed, else
-    :func:`lzo1x_decompress_python`, which is Python and so runs in this process
-    whatever ``natives`` says. ``usage`` records ``compress_utils`` when it is chosen."""
-    package = _compress_utils(excluded, natives)
+    """The LZO1X block decoder to use: compress-utils when present, allowed and built
+    with LZO1X, else :func:`lzo1x_decompress_python`, which is Python and so runs in
+    this process whatever ``natives`` says. ``usage`` records ``compress_utils`` when
+    it decodes."""
+    package = _compress_utils(excluded, natives, usage)
     if package is None:
         return lzo1x_decompress_python
-    if usage is not None:
+    if usage is not None and not natives.isolated:
         usage.note_backend("library", OptionalLibrary.COMPRESS_UTILS.value, "lzo")
     return package
 

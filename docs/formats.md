@@ -1675,7 +1675,8 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
   `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop`
   writes, decodes LZO1X with the `compress-utils` package, which `[recommended]` installs on CPython
-  except on Intel macOS, and otherwise in Python, more than 20 times slower on text. Both refuse a
+  except on Intel macOS, and otherwise in Python (also when a `compress-utils` built from source
+  left LZO1X out), more than 20 times slower on text. Both refuse a
   block that ends with an end marker other than the one every LZO1X writer produces, which `lzop`
   itself accepts.
 - **bzip3** (`.bz3`, the format the `bzip3` tool writes) needs `[bzip3]`, which is in neither

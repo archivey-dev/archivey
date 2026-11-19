@@ -27,8 +27,7 @@ wherever the format leaves a choice, so that it reads what that tool reads:
 - **Shrink, Implode and Reduce in ZIP:** [Info-ZIP](https://infozip.sourceforge.net/)'s
   `unzip`. DCL Implode follows Mark Adler's `blast`, in [zlib](https://github.com/madler/zlib)'s
   `contrib/`.
-- **LZO1X, in `.lzo` files and SquashFS images:** the Linux kernel's LZO decoder, and Markus
-  Oberhumer's [LZO](https://www.oberhumer.com/opensource/lzo/) library for how a block ends.
+- **LZO1X, in `.lzo` files and SquashFS images:** the Linux kernel's LZO decoder.
 - **BCJ2 in 7z archives:** 7-Zip's.
 - **The ARM64 and RISC-V branch filters in 7z archives:** liblzma, from the
   [xz](https://github.com/tukaani-project/xz) project. Both are checked against 7-Zip's.
