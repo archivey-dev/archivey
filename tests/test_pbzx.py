@@ -12,6 +12,7 @@ import io
 import lzma
 import os
 import struct
+import zlib
 
 import pytest
 
@@ -170,14 +171,24 @@ def test_damage(blob: bytes, error: type[Exception], message: str) -> None:
         _read(blob)
 
 
+def _declare_dictionary(xz: bytes) -> bytes:
+    """``xz`` with its block header declaring a 64 MiB LZMA2 dictionary (code 28),
+    its CRC repaired. Rewritten, not encoded: PyPy's liblzma binding fails to encode
+    with a dictionary that large."""
+    out = bytearray(xz)
+    block = 12  # after the stream header
+    size = (out[block] + 1) * 4
+    assert out[block + 2 : block + 4] == b"\x21\x01", "not a lone LZMA2 filter"
+    out[block + 4] = 28
+    crc_at = block + size - 4
+    out[crc_at : crc_at + 4] = struct.pack("<L", zlib.crc32(bytes(out[block:crc_at])))
+    return bytes(out)
+
+
 def test_each_xz_chunk_is_held_to_the_decoder_memory_cap() -> None:
     """xz declares its dictionary; a chunk whose dictionary is over the cap is refused
     before liblzma allocates it."""
-    big_dictionary = lzma.compress(
-        b"abc",
-        format=lzma.FORMAT_XZ,
-        filters=[{"id": lzma.FILTER_LZMA2, "dict_size": 64 << 20}],
-    )
+    big_dictionary = _declare_dictionary(lzma.compress(b"abc", format=lzma.FORMAT_XZ))
     blob = _header() + _chunk(3, big_dictionary)
     config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=8 << 20))
     with (
