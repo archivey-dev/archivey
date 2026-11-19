@@ -193,7 +193,7 @@ wheels = [
 
 [[package]]
 name = "archivey"
-version = "0.5.0.dev0"
+version = "0.5.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
