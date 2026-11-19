@@ -9,6 +9,7 @@ of them the same way (checked when the builder was written). Bridge images come 
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import struct
 import subprocess
@@ -36,6 +37,7 @@ from archivey.internal.backends.udf import (
     Span,
     UdfEntry,
     UdfVolume,
+    _crc_itu,
     _Partition,
     decode_dstring,
     udf_timestamp,
@@ -217,8 +219,26 @@ def test_first_extent_skips_an_unrecorded_span() -> None:
     assert sparse.first_extent is None
 
 
+class _CountedSpans(tuple):  # type: ignore[type-arg]
+    walks = 0
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        type(self).walks += 1
+        return super().__iter__()
+
+
+def test_first_extent_walks_the_spans_once_per_entry() -> None:
+    """Every name on a shared entry reads ``first_extent`` while listing; an entry of
+    thousands of unrecorded spans must not be walked once per name."""
+    _CountedSpans.walks = 0
+    spans = _CountedSpans([Span(None, 2048)] * 1000 + [Span(8192, 2048)])
+    entry = UdfEntry(**{**_fields(_inline_directory(b"")), "spans": spans})
+    assert [entry.first_extent for _ in range(100)] == [8192] * 100
+    assert _CountedSpans.walks == 1
+
+
 def _fields(entry: UdfEntry) -> dict[str, object]:
-    return {name: getattr(entry, name) for name in UdfEntry.__slots__}
+    return {f.name: getattr(entry, f.name) for f in dataclasses.fields(entry) if f.init}
 
 
 class _Weigh:
@@ -421,6 +441,148 @@ def test_a_file_identifier_naming_the_root_is_a_loop() -> None:
     data[fid : fid + total] = retag(data[fid : fid + total])
     with pytest.raises(CorruptionError, match="forms a loop"):
         open_archive(io.BytesIO(bytes(data)))
+
+
+def _bitwise_crc(data: bytes) -> int:
+    """ECMA-167 7.2.6 CRC, one bit at a time, as the standard writes it."""
+    crc = 0
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
+            crc &= 0xFFFF
+    return crc
+
+
+@pytest.mark.parametrize("length", [0, 1, 2, 5, 100, 2032])
+def test_the_descriptor_crc_matches_the_bitwise_definition(length: int) -> None:
+    data = bytes((index * 151 + length) & 0xFF for index in range(length))
+    assert _crc_itu(data) == _bitwise_crc(data)
+    assert _crc_itu(b"\xff" * length) == _bitwise_crc(b"\xff" * length)
+
+
+_PARTITION_START = 300  # the builder's partition start, in blocks
+
+
+def _fan_out(
+    count: int,
+    *,
+    chain: int,
+    first: int = 0,
+    full_crc: bool = False,
+    extra: tuple[int, ...] = (),
+) -> bytes:
+    """A UDF-only image whose root holds ``count`` File Identifiers, each naming the
+    ICB at index ``first`` of a chain of ``chain`` Indirect Entries that ends at one
+    file's File Entry (index ``chain`` is the File Entry itself). ``extra`` names
+    more chain indexes, one File Identifier each, after those. With ``full_crc``
+    every descriptor of the chain has a CRC over its whole block."""
+    image = bytearray(build_udf(directory("", Node("f", data=b"x" * 10))))
+    volume = _volume(bytes(image))
+    root = volume.root
+    entry_at = volume.names[0].entry.location
+    entry_block = entry_at // BLOCK - _PARTITION_START
+    if full_crc:
+        entry = bytearray(image[entry_at : entry_at + BLOCK])
+        struct.pack_into("<H", entry, 10, BLOCK - 16)
+        image[entry_at : entry_at + BLOCK] = retag(entry)
+    base = len(image) // BLOCK - _PARTITION_START
+    for index in range(chain):
+        following = base + index + 1 if index < chain - 1 else entry_block
+        body = struct.pack("<IHHHBBIHH", 0, 4096, 0, 1, 0, 3, 0, 0, 0)
+        body += struct.pack("<IIH6x", BLOCK, following, 0)
+        if full_crc:
+            body = body.ljust(BLOCK - 16, b"\0")
+        image += tag(259, base + index, body).ljust(BLOCK, b"\0")
+
+    def icb(index: int) -> int:
+        return entry_block if index == chain else base + index
+
+    def fid(name: bytes, block: int, characteristics: int) -> bytes:
+        body = struct.pack("<HBB", 1, characteristics, len(name))
+        body += struct.pack("<IIH6x", BLOCK, block, 0)
+        body += struct.pack("<H", 0) + name
+        body += bytes((-(16 + len(body))) % 4)
+        return tag(257, 0, body)
+
+    root_block = root.location // BLOCK - _PARTITION_START
+    targets = [first] * count + list(extra)
+    data = fid(b"", root_block, 0x0A) + b"".join(
+        fid(b"\x08%06d" % number, icb(index), 0) for number, index in enumerate(targets)
+    )
+    directory_block = len(image) // BLOCK - _PARTITION_START
+    image += data.ljust(-(-len(data) // BLOCK) * BLOCK, b"\0") + bytes(BLOCK)
+    length = len(image) // BLOCK - _PARTITION_START
+    for block in (33, 49):  # the main and reserve Partition Descriptors
+        descriptor = bytearray(image[block * BLOCK : (block + 1) * BLOCK])
+        struct.pack_into("<I", descriptor, 192, length)
+        image[block * BLOCK : (block + 1) * BLOCK] = retag(descriptor)
+    entry = bytearray(image[root.location : root.location + BLOCK])
+    struct.pack_into("<Q", entry, 56, len(data))
+    struct.pack_into("<II", entry, 176, len(data), directory_block)
+    image[root.location : root.location + BLOCK] = retag(entry)
+    return bytes(image)
+
+
+def test_file_identifiers_naming_one_indirect_chain_read_it_once() -> None:
+    """Many File Identifiers can name one ICB. Each ICB is parsed once: 200 names on
+    a chain of 63 Indirect Entries read 64 entry blocks, not 200 times as many."""
+    image = _fan_out(200, chain=63)
+    reads: list[int] = []
+
+    def read_at(offset: int, n: int) -> bytes:
+        reads.append(offset)
+        return image[offset : offset + n]
+
+    volume = UdfVolume(read_at, len(image), archive_name=None, budget=None)
+    assert len(volume.names) == 200
+    assert {name.entry.location for name in volume.names} == {
+        volume.names[0].entry.location
+    }
+    assert len(reads) < 150
+    with open_archive(io.BytesIO(image)) as reader:
+        assert [member.size for member in reader.members()] == [10] * 200
+
+
+def _weight(image: bytes) -> int:
+    weigh = _Weigh()
+    UdfVolume(
+        lambda offset, n: image[offset : offset + n],
+        len(image),
+        archive_name=None,
+        budget=weigh,
+    )
+    return weigh.nbytes
+
+
+def test_indirect_entries_and_descriptor_crcs_are_weighed() -> None:
+    """An Indirect Entry is weighed as its tag and what its CRC covers, and a File
+    Entry as what its CRC covers when that is more than it declares: the CRC is
+    work done on every byte it covers."""
+    plain = _weight(_fan_out(1, chain=0))
+    chained = _weight(_fan_out(1, chain=63))
+    assert chained - plain == 63 * (16 + 36)
+    full = _weight(_fan_out(1, chain=63, full_crc=True))
+    # 63 whole blocks, and the File Entry's whole block instead of the 184 bytes
+    # (176 fixed, one short allocation descriptor) it declares.
+    assert full - plain == 63 * BLOCK + BLOCK - 184
+    # Named again, a parsed chain is not weighed again.
+    # 48 bytes per File Identifier: 38 fixed, a 7-byte name, padding to 4.
+    assert _weight(_fan_out(50, chain=63, full_crc=True)) - full == 49 * 48
+    cap = ListingLimits(max_metadata_bytes=plain + BLOCK)
+    image = _fan_out(1, chain=63, full_crc=True)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes.*UDF"):
+        open_archive(io.BytesIO(image), config=ArchiveyConfig(listing_limits=cap))
+
+
+def test_a_chain_running_into_one_already_followed_is_counted_whole() -> None:
+    """The bound of 64 indirect entries holds for a chain that ends in one parsed
+    before: 63 entries pass, the 64th refuses as an uncached walk would."""
+    assert len(_volume(_fan_out(1, chain=64, first=1)).names) == 1
+    with pytest.raises(CorruptionError, match="chain too long"):
+        _volume(_fan_out(1, chain=64, first=1, extra=(0,)))
+    with pytest.raises(CorruptionError, match="chain too long"):
+        _volume(_fan_out(1, chain=64))
 
 
 def _nested(depth: int, name: bytes = b"\x08a") -> bytes:

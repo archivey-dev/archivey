@@ -474,9 +474,10 @@ checksum, so its entries are taken as written, as the volume space size is.
 `pycdlib` parses the PVD tree and a Joliet tree of an image inside `open_archive`, and
 archivey's UDF parser the UDF tree when present, and every tree is kept, so the ISO
 backend SHALL check `ListingLimits` while they parse. The bytes it weighs (directory
-records as stored, Rock Ridge continuation areas, path tables, UDF directories and
-File Entries) SHALL be one sum for the whole image, held to `max_metadata_bytes`; a
-tree under the cap SHALL NOT make an image over it open. `max_members` SHALL be counted
+records as stored, Rock Ridge continuation areas, path tables, UDF directories, File
+Entries and Indirect Entries, each UDF entry parsed once however many names lead to it)
+SHALL be one sum for the whole image, held to `max_metadata_bytes`; a tree under the
+cap SHALL NOT make an image over it open. `max_members` SHALL be counted
 per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
 SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 
@@ -498,6 +499,8 @@ listing would fit.
 | PVD, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | The same image with `max_metadata_bytes` above the sum | Opens and lists |
 | A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |
+| UDF chain of Indirect Entries whose blocks take the image over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
+| Many UDF File Identifiers naming one ICB or one chain of Indirect Entries | Opens; each entry is read and weighed once |
 | UDF tree of nested directories whose full paths total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 
 ### Requirement: Bound the UDF chains structurally
