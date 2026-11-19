@@ -1778,10 +1778,19 @@ def test_the_last_step_scan_does_not_wait_on_a_held_open_pipe() -> None:
     done = threading.Event()
 
     def write() -> None:
-        with os.fdopen(w_fd, "wb") as w:
-            w.write(data)
-            w.flush()
-            done.wait(30)  # hold the pipe open until the test is over
+        # The scan may stop reading before the writer is done: it fails once it has
+        # what it needs, and the test then closes the read end. A write after that
+        # gets EPIPE. Raw writes, so the error lands here and not in a buffered
+        # file's close or finalizer, where pytest reports it as an unraisable
+        # exception (seen on PyPy).
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(w_fd, view) :]
+        except BrokenPipeError:
+            pass
+        done.wait(30)  # hold the pipe open until the test is over
+        os.close(w_fd)
 
     writer = threading.Thread(target=write, daemon=True)
     writer.start()
