@@ -509,8 +509,8 @@ def test_damage_is_refused(selected: str, case: str) -> None:
 def test_zeros_to_the_end_are_padding(
     selected: str, zeros: int, isolated: bool
 ) -> None:
-    """Zero bytes that run to the end of the file are padding, as for every other
-    codec (tape, ``dd`` and ``tar`` pad to a block size). A zero byte reads as the
+    """Zero bytes that run to the end of the file are padding, the zero-tail rule
+    of the other codecs (tape, ``dd`` and ``tar`` pad to a block size). A zero byte reads as the
     type of a compressed chunk, and its length 0 was refused. Four zeros are needed,
     since fewer may be a header cut short."""
     data = _frame(_data_chunk(_GOOD)) + b"\0" * zeros
@@ -524,6 +524,22 @@ def test_zeros_to_the_end_are_padding(
     with open_stream(NonSeekableBytesIO(data), format="sz", config=config) as stream:
         assert b"".join(iter(lambda: stream.read(7), b"")) == _GOOD
     assert diagnostics == []
+
+
+@pytest.mark.parametrize("zeros", [600, 70_000])
+def test_a_padded_stream_seeks_to_the_end_and_the_middle(
+    selected: str, zeros: int
+) -> None:
+    """A seek to the end finds the size by reading through the padding; a seek to the
+    middle resumes at a chunk boundary and meets the zeros in a fresh decoder."""
+    payload = _sample(5 * 60_000, 7)
+    data = written_frame(payload) + b"\0" * zeros
+    with open_stream(io.BytesIO(data), format="sz", seekable=True) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(payload)
+        middle = len(payload) // 2 + 123
+        assert stream.seek(middle) == middle
+        assert stream.read() == payload[middle:]
+        assert stream.seek(0, io.SEEK_END) == len(payload)
 
 
 def test_a_stream_without_its_identifier_is_refused(selected: str) -> None:

@@ -12,12 +12,12 @@ chunk followed by chunks, each a 1-byte type and a 3-byte little-endian length::
 
 The CRC-32C covers the **decoded** data of a chunk, masked as the format describes.
 There is no end mark: the stream ends where the input does, which must be between
-chunks, or in four or more zero bytes after a chunk that run to the end: padding, as
-for every codec. Four zeros are a compressed chunk of length 0, which is otherwise
-invalid; fewer may be a header cut short, and stay a truncation. A non-zero byte after
-the zeros is refused. A repeated identifier is how
-concatenated streams look, so the whole input is one stream here and nothing follows
-it.
+chunks, or in four or more zero bytes after a chunk that run to the end. Those zeros
+are padding, the zero-tail rule of ``dev-docs/formats/single-file.md`` §6. Four zeros
+are a compressed chunk of length 0, which is otherwise invalid; fewer may be a header
+cut short, and stay a truncation. A non-zero byte after the zeros is refused. A
+repeated identifier is how concatenated streams look, so the whole input is one stream
+here and nothing follows it.
 
 **What the input can make this allocate.** A data chunk decodes to at most 64 KiB
 (the format's limit). The raw block's own length varint is read here and checked
