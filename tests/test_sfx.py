@@ -1782,15 +1782,17 @@ def test_the_last_step_scan_does_not_wait_on_a_held_open_pipe() -> None:
         # what it needs, and the test then closes the read end. A write after that
         # gets EPIPE. Raw writes, so the error lands here and not in a buffered
         # file's close or finalizer, where pytest reports it as an unraisable
-        # exception (seen on PyPy).
+        # exception (seen on PyPy). Windows can report the closed read end as
+        # EINVAL rather than EPIPE, so any OSError ends the write.
         try:
             view = memoryview(data)
             while view:
                 view = view[os.write(w_fd, view) :]
-        except BrokenPipeError:
+        except OSError:
             pass
-        done.wait(30)  # hold the pipe open until the test is over
-        os.close(w_fd)
+        finally:
+            done.wait(30)  # hold the pipe open until the test is over
+            os.close(w_fd)
 
     writer = threading.Thread(target=write, daemon=True)
     writer.start()
