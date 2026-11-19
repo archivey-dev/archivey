@@ -570,7 +570,8 @@ def test_the_first_installed_native_decoder_is_picked(
         monkeypatch.setitem(
             deps.snappy_libraries, library, deps.LazyOptional(library, present=True)
         )
-        monkeypatch.setattr(deps.snappy_libraries[library], "load", lambda: object())
+        module = types.SimpleNamespace(is_available=lambda _algorithm: True)
+        monkeypatch.setattr(deps.snappy_libraries[library], "load", lambda m=module: m)
         monkeypatch.setitem(
             NATIVE_DECODERS,
             library,

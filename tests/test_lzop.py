@@ -19,6 +19,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    BackendUse,
     CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
@@ -182,6 +183,19 @@ def test_compress_utils_runs_in_a_child_under_native_decoders() -> None:
     assert POOL.idle_count() == 1
 
 
+def test_compress_utils_in_a_child_is_recorded_once_it_decodes() -> None:
+    """Under NATIVE_DECODERS whether the child's build has LZO1X is known only on the
+    first block, so compress-utils is recorded then, not when the decoder is built."""
+    pytest.importorskip("compress_utils")
+    usage = ResourceUsageRecorder()
+    decode = lzo_decoder.lzo1x_decompressor(natives=ISOLATED, usage=usage)
+    assert usage.backends() == ()
+    assert decode(_BLOCK, 6) == b"hello\n"
+    assert usage.backends() == (
+        BackendUse("library", OptionalLibrary.COMPRESS_UTILS.value, "lzo"),
+    )
+
+
 def test_a_damaged_block_in_a_child_is_corruption() -> None:
     pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
@@ -254,6 +268,7 @@ def test_a_child_import_failure_leaves_this_process_its_compress_utils(
     ``sys.path``. Its failure turned the package off for in-process reads too."""
     (tmp_path / "compress_utils.py").write_text(
         "class CompressError(Exception):\n    pass\n\n"
+        "def is_available(algorithm):\n    return True\n\n"
         "def decompress(data, algorithm, expected_size=None):\n"
         "    return b'FAKE-COMPRESS-UTILS'\n"
     )
@@ -290,8 +305,11 @@ def test_a_child_import_that_raises_os_error_falls_back(
     )
     POOL.close_idle()  # children inherit the environment when they start
     try:
-        isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED)
+        usage = ResourceUsageRecorder()
+        isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED, usage=usage)
         assert isolated(_BLOCK, 6) == b"hello\n"
+        # The Python decoder read the block, so compress-utils is not recorded.
+        assert usage.backends() == ()
     finally:
         monkeypatch.undo()
         POOL.close_idle()

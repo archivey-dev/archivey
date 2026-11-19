@@ -212,13 +212,10 @@ def compress_utils_has(module: Any, algorithm: str) -> bool:
     """Whether the compress-utils ``module`` decodes ``algorithm`` (``"lzo"``,
     ``"snappy"``). Each algorithm is a build option of compress-utils, and a build
     without one raises ``CompressError`` for every input, as it does for damaged data.
-    A module without ``is_available`` is taken to have it."""
-    is_available = getattr(module, "is_available", None)
-    if is_available is None:
-        return True
+    ``is_available`` is in every version archivey accepts (0.12.1 and later)."""
     try:
-        return bool(is_available(algorithm))
-    except Exception:  # noqa: BLE001 - a name this build does not know
+        return bool(module.is_available(algorithm))
+    except ValueError:  # "Unknown algorithm": a name this build does not know
         return False
 
 
