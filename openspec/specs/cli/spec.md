@@ -775,8 +775,11 @@ file-type checks to decide whether detection can run again.
 fsspec SHALL remain optional and be imported only when URL resolution needs it.
 Local operations and CLI help MUST work without it. No runtime dependency or extra
 SHALL be added. Backend options and credentials SHALL use fsspec's normal defaults and
-backend configuration. The CLI provides no storage-options syntax. The
-library's string-source contract SHALL remain local-path-only.
+backend configuration. The CLI provides no storage-options syntax. One exception:
+each `http` or `https` link SHALL send `User-Agent: archivey/<version>`, passed as that
+protocol's `client_kwargs` merged over the `client_kwargs` of the fsspec configuration,
+and a `User-Agent` the configuration sets SHALL win. The library's string-source
+contract SHALL remain local-path-only.
 
 An archive URL names one source as interpreted by fsspec. The CLI MUST NOT search
 for remote volume siblings or provide a syntax for explicit remote volume lists.

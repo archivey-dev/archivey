@@ -417,11 +417,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     files: ClassVar[dict[str, bytes]] = {}
     poison: ClassVar[dict[str, tuple[int, int]]] = {}
+    agents: ClassVar[list[str]] = []
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
     def _body(self) -> bytes | None:
+        self.agents.append(self.headers.get("User-Agent", ""))
         path = self.path.partition("?")[0]
         data = self.files.get(path)
         if data is None:
@@ -467,7 +469,7 @@ class _Handler(BaseHTTPRequestHandler):
 def http_base() -> Iterator[str]:
     pytest.importorskip("aiohttp")
     pytest.importorskip("fsspec")
-    _Handler.files, _Handler.poison = {}, {}
+    _Handler.files, _Handler.poison, _Handler.agents = {}, {}, []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -598,3 +600,37 @@ def test_https_to_a_plain_server_is_not_a_missing_object(http_base: str) -> None
     assert "no such file" not in result.err, result.err
     assert "s3cr3t" not in result.err
     assert "Traceback" not in result.err
+
+
+def test_http_requests_send_an_archivey_user_agent(http_base: str) -> None:
+    import archivey
+
+    _Handler.files["/data.zip"] = _zip_bytes(TWO)
+    for url in (f"{http_base}/data.zip", f"simplecache::{http_base}/data.zip"):
+        _Handler.agents.clear()
+        result = _run(["list", url])
+        assert result.code == EXIT_OK, result.err
+        assert _Handler.agents
+        assert set(_Handler.agents) == {f"archivey/{archivey.__version__}"}
+
+
+def test_a_configured_user_agent_and_client_options_are_kept(
+    http_base: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fsspec.config import conf
+
+    _Handler.files["/data.zip"] = _zip_bytes(TWO)
+    configured = {
+        "client_kwargs": {"headers": {"user-agent": "mine/1", "X-Extra": "1"}}
+    }
+    monkeypatch.setitem(conf, "http", configured)
+    options = sources._http_options(f"{http_base}/data.zip")
+    assert options["http"]["client_kwargs"]["headers"] == {
+        "user-agent": "mine/1",
+        "X-Extra": "1",
+    }
+    assert configured == {
+        "client_kwargs": {"headers": {"user-agent": "mine/1", "X-Extra": "1"}}
+    }
+    assert _run(["list", f"{http_base}/data.zip"]).code == EXIT_OK
+    assert set(_Handler.agents) == {"mine/1"}

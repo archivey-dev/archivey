@@ -200,8 +200,9 @@ The `archivey-cli` package installs `fsspec` and `aiohttp`, so `http` and `https
 comes. With the `archivey` package alone, install `fsspec`, and `aiohttp` for `http` and `https`.
 Other stores need their own package, such as `s3fs` or `gcsfs`. Credentials, regions and other
 settings come from where that package normally finds them, such as the environment or its
-configuration file; the command line has no option for them. Without fsspec, a URL fails with exit
-`1` and a message saying what to install.
+configuration file; the command line has no option for them. HTTP and HTTPS requests send
+`User-Agent: archivey/<version>`, unless your fsspec configuration sets its own. Without fsspec, a
+URL fails with exit `1` and a message saying what to install.
 
 A URL is one file, exactly as you typed it. `?`, `*` and `[` in it are not patterns, archivey
 looks for no other volumes of a split archive beside it, and the member patterns after it keep

@@ -113,7 +113,7 @@ def resolve_archive(arg: str) -> Any:
         return arg
     _register_redactions(arg)
     try:
-        source = fsspec.open(arg, mode="rb")
+        source = fsspec.open(arg, mode="rb", **_http_options(arg))
     except ImportError as exc:
         # A known protocol whose backend package is missing (s3fs, aiohttp, …): not a
         # local path, so no fallback to one.
@@ -123,6 +123,36 @@ def resolve_archive(arg: str) -> Any:
         ) from exc
     _resolved[arg] = source
     return source
+
+
+_HTTP_PROTOCOLS = frozenset({"http", "https"})
+
+
+def _http_options(arg: str) -> dict[str, Any]:
+    """fsspec options that send ``User-Agent: archivey/<version>`` on HTTP(S) links.
+
+    Keyed by protocol, so they reach each ``http``/``https`` link of a chain too. fsspec
+    replaces a configured ``client_kwargs`` with the one passed here rather than merging
+    the two, so the user's own ``client_kwargs`` from the fsspec configuration (a
+    proxy, an auth header) are copied in first, and a ``User-Agent`` they set wins.
+    """
+    from fsspec.config import conf
+
+    import archivey
+
+    options: dict[str, Any] = {}
+    for link in arg.split("::"):
+        match = _URL_PREFIX.match(link)
+        protocol = match.group(1).lower() if match is not None else ""
+        if protocol not in _HTTP_PROTOCOLS or protocol in options:
+            continue
+        client = dict(conf.get(protocol, {}).get("client_kwargs") or {})
+        headers = dict(client.get("headers") or {})
+        if not any(str(key).lower() == "user-agent" for key in headers):
+            headers["User-Agent"] = f"archivey/{archivey.__version__}"
+        client["headers"] = headers
+        options[protocol] = {"client_kwargs": client}
+    return options
 
 
 def is_remote(arg: str) -> bool:
