@@ -178,17 +178,26 @@ class SpannedPartsError(TruncatedError):
     ``TruncatedError`` with the same message.
     """
 
-    def __init__(self, disks: int, given: int, *, cut: bool = False) -> None:
+    def __init__(
+        self, disks: int, given: int, *, cut: bool = False, end_early: bool = False
+    ) -> None:
         # ``cut``: ``given`` parts were joined, but the archive does not start at the
         # start of the first, so the parts were never offered (``disk_starts``).
+        # ``end_early``: as many parts as disks, but the end record is not in the
+        # last one.
         self.disks = disks
-        if cut:
+        if cut or end_early:
+            where = (
+                "the archive does not start at the start of the first part: the parts "
+                "are out of order, or data comes before the first part"
+                if cut
+                else "the end record is not in the last part: the parts are out of "
+                "order"
+            )
             message = (
                 f"The ZIP end record names a spanned set of {disks} parts, and "
-                f"{given} parts were given, but the archive does not start at the "
-                "start of the first part: the parts are out of order, or data comes "
-                "before the first part. Pass every part, in order: name.z01, "
-                "name.z02, ..., then name.zip"
+                f"{given} parts were given, but {where}. Pass every part, in order: "
+                "name.z01, name.z02, ..., then name.zip"
             )
         elif given <= 1:
             message = (
@@ -337,7 +346,7 @@ def read_end_record(
                 f"The ZIP end record places the central directory on disk "
                 f"{cd_disk + 1}, after the disk the record is on ({last_disk + 1})"
             )
-        spanned = _spanned_disk_starts(last_disk, disk_starts)
+        spanned = _spanned_disk_starts(last_disk, disk_starts, eocd_offset)
         cd_offset += spanned[cd_disk]
     base = records_start - cd_size - cd_offset
     end = EndRecord(
@@ -363,11 +372,17 @@ def read_end_record(
     return end
 
 
-def _spanned_disk_starts(last_disk: int, disk_starts: Sequence[int]) -> tuple[int, ...]:
-    """The part starts of a spanned set whose end record is on ``last_disk`` (from 0),
-    or :class:`SpannedPartsError` when ``disk_starts`` does not hold one per disk."""
+def _spanned_disk_starts(
+    last_disk: int, disk_starts: Sequence[int], end_at: int
+) -> tuple[int, ...]:
+    """The part starts of a spanned set whose end record is on ``last_disk`` (from 0)
+    at ``end_at`` in the join, or :class:`SpannedPartsError` when ``disk_starts`` does
+    not hold one per disk, or the record is not in the last of them (parts given out
+    of order, which would move every offset by the wrong part's start)."""
     if len(disk_starts) != last_disk + 1:
         raise SpannedPartsError(last_disk + 1, len(disk_starts))
+    if end_at < disk_starts[-1]:
+        raise SpannedPartsError(last_disk + 1, len(disk_starts), end_early=True)
     return tuple(disk_starts)
 
 
@@ -569,7 +584,7 @@ def read_zip64_locator(
     if sig != ZIP64_LOCATOR_SIGNATURE:
         return None
     if disks > 1:
-        spanned = _spanned_disk_starts(disks - 1, disk_starts)
+        spanned = _spanned_disk_starts(disks - 1, disk_starts, eocd_offset)
         if disk_with_record >= disks:
             raise CorruptionError(
                 f"The ZIP64 end locator places the ZIP64 end record on disk "

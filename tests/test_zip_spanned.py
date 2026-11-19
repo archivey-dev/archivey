@@ -242,6 +242,20 @@ def test_infozip_set_out_of_order_says_so() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "order", [("set.zip", "set.z01", "set.z02"), ("set.z01", "set.zip", "set.z02")]
+)
+def test_infozip_set_with_the_zip_not_last_is_refused(order: tuple[str, ...]) -> None:
+    """With as many parts as disks but the .zip not last, the end record was read in
+    the middle of the join and each offset moved by the wrong part's start: the
+    members listed, with trailing data reported, and then failed to read."""
+    _refused_with_format_confirmed(
+        [_FIXTURE / name for name in order],
+        r"3 parts were given, but the end record is not in the last part: the parts "
+        r"are out of order",
+    )
+
+
 def test_infozip_set_listed_with_a_part_missing(tmp_path: Path) -> None:
     _refused_with_format_confirmed(
         [_FIXTURE / "set.z01", _FIXTURE / "set.zip"],

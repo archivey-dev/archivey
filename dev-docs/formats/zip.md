@@ -1384,7 +1384,7 @@ move.
 | From a pipe: extraction settled at the end of the pass, selection made again, failures at the end |
 | Every fixture read from a pipe and from a file gives the same members, data and files, except the recorded differences |
 | Spanned set read from any part, wherever the cuts fall, classic and ZIP64, past `.z99`, real `zip -s` set against 7-Zip (`tests/test_zip_spanned.py`) |
-| Spanned set with a part missing names it; its last part alone, an explicit list of the wrong length or out of order, and an unjoinable segment are `TruncatedError`; the message for parts out of order says so |
+| Spanned set with a part missing names it; its last part alone, an explicit list of the wrong length or out of order (the archive starting inside the join, or the end record not in the last part), and an unjoinable segment are `TruncatedError`; the message for parts out of order says so |
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set |
 | Split checks do not fire on single-volume archives |
 | `7z -v` set joined, read across a part boundary, opened from any part |
