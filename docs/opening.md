@@ -170,6 +170,93 @@ it can't yet tell whether a later copy replaces it. Each member then has `is_cur
 until the loop ends, and the members you kept are updated then. `member.member_state_final` tells
 you which case you have: it's `False` while a member's fields can still change.
 
+## Times
+
+A time has no zone when the format records local time: a ZIP with only the DOS time, RAR 4, CAB, and
+LHA and ARJ archives from DOS or Windows. Other formats record UTC or an offset. To compare times
+from different archives, use `member.modified_utc()`, `accessed_utc()`, `created_utc()` and
+`ctime_utc()`. They take a time with no zone as your local time, or as the zone you pass
+(`tz_for_naive=`).
+
+`ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (the time of the last
+inode change). Several writers store `st_ctime` where a reader might expect a creation time, such
+as a Rock Ridge ISO, a Unix RAR, a PAX TAR, and a 7z or ZIP written on Unix. That time is in
+`ArchiveMember.ctime` instead.
+
+## Stored digests
+
+`member.hashes` holds the digests the archive already stores, so they can be read without
+decompressing anything. A CRC-32 is four big-endian bytes, so one you computed compares as
+`zlib.crc32(data).to_bytes(4, "big")`.
+
+- **CRC-32** (`HashAlgorithm.CRC32`): ZIP, 7z and ARJ files, RAR5 files that store one, and `.lz`
+  files read from a source that can seek.
+- **BLAKE2sp**: RAR5 files that store one.
+- **MD5**: Debian package files listed in `DEBIAN/md5sums`.
+- **SHA-1, SHA-256 and the others XAR names**: XAR files.
+- **None:** TAR, SquashFS, CPIO, LHA, ar, RPM, macOS installer packages, directories, and every
+  other single compressed file. Many of them still check their data as it is read, with a
+  checksum per block, or per file in a form `member.hashes` doesn't hold.
+
+When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
+best one available:
+
+```python
+import hashlib
+import archivey
+from archivey import HashAlgorithm
+
+def content_key(reader, member):
+    """Best available digest for a first-pass dedupe index."""
+    if HashAlgorithm.BLAKE2SP in member.hashes:
+        return ("stored", "blake2sp", member.hashes[HashAlgorithm.BLAKE2SP])
+    if HashAlgorithm.CRC32 in member.hashes:
+        return ("stored", "crc32", member.hashes[HashAlgorithm.CRC32])
+    # No stored digest (e.g. tar, bzip2): compute while reading.
+    h = hashlib.sha256()
+    with reader.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            h.update(chunk)
+    return ("computed", "sha256", h.digest())
+
+with archivey.open_archive("backups.zip") as reader:
+    for member in reader:
+        if member.is_file and member.is_current:
+            print(member.name, content_key(reader, member))
+```
+
+A stored CRC-32 is weak, and a computed digest is stronger but costs a full decode. Keeping
+`stored` and `computed` apart in the key lets your index decide how far to trust each.
+
+## Format-specific fields
+
+`ArchiveMember.extra` and `ArchiveInfo.extra` hold what only some formats store, such as
+`extra["gzip.original_filename"]` or `extra["deb.package"]`. Both are dicts, typed so that a type
+checker knows each documented key's type. The format sections mention a key only when it matters
+for that format. The full list is on [`MemberExtra` and
+`ArchiveInfoExtra`](api.md#members-and-archive-details).
+
+## macOS sidecar files
+
+A ZIP or TAR made on a Mac often holds AppleDouble sidecars: a `._name` file with the extended
+attributes and resource fork of `name`, next to it (macOS `tar`) or under `__MACOSX/` (Finder,
+`ditto`). Archivey lists them as ordinary files, as `unzip` does. To leave them out, skip them by
+name with `members=`:
+
+```python
+from archivey import open_archive
+
+def is_macos_sidecar(member):
+    base = member.name.rsplit("/", 1)[-1]
+    return member.name.startswith("__MACOSX/") or base.startswith("._")
+
+with open_archive("photos.zip") as reader:
+    reader.extract_all("out", members=lambda m: not is_macos_sidecar(m))
+```
+
+The test goes by name only, so it also skips a file that was really called `._notes`, and anything
+in a real folder named `__MACOSX`.
+
 ## Configuration
 
 Settings you'd keep the same across many archives live in `archivey.ArchiveyConfig`, passed as
