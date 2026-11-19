@@ -445,13 +445,21 @@ class ListingDecodeCount:
     or on another thread, do not count. :meth:`start_pass` starts the count over for
     each later walk. Draws come through :class:`StageDraws`, from the decode stages
     that also draw a :class:`~archivey.internal.nesting.NestDraws`.
+
+    A reader that ``ReaderContext.open_nested`` builds has the outer reader's count as
+    its ``parent``. While the outer listing runs on the same thread, what the inner
+    reader's listing decodes is drawn from both, so one outer listing pass holds all
+    its levels to one cap (maintainer ruling, 2026-11-08: "charge across the
+    nesting"). An inner walk outside the outer listing, as ``open_member`` reading a
+    payload again, counts on the inner count alone.
     """
 
-    __slots__ = ("_cap", "_drawn", "_started", "_thread")
+    __slots__ = ("_cap", "_drawn", "_parent", "_started", "_thread")
 
-    def __init__(self, cap: int) -> None:
+    def __init__(self, cap: int, parent: ListingDecodeCount | None = None) -> None:
         self._cap = cap
         self._drawn = 0
+        self._parent = parent
         self._started = False
         self._thread: int | None = None
 
@@ -479,24 +487,45 @@ class ListingDecodeCount:
     def _active(self) -> bool:
         return self._thread is not None and self._thread == threading.get_ident()
 
+    def _outer(self) -> ListingDecodeCount | None:
+        """The outer listing's count, when it runs on this thread."""
+        parent = self._parent
+        return parent if parent is not None and parent._active() else None
+
     def room(self) -> int | None:
         """Bytes left in this pass, or ``None`` when no listing work runs on this thread."""
         if not self._active():
             return None
-        return max(0, self._cap - self._drawn)
+        room = max(0, self._cap - self._drawn)
+        outer = self._outer()
+        outer_room = outer.room() if outer is not None else None
+        return room if outer_room is None else min(room, outer_room)
 
     def check_left(self) -> None:
-        if self._active() and self._drawn > self._cap:
+        if not self._active():
+            return
+        outer = self._outer()
+        if outer is not None:
+            outer.check_left()
+        if self._drawn > self._cap:
             raise self._error(0)
 
     def draw(self, n: int) -> None:
         if n <= 0 or not self._active():
             return
         self._drawn += n
+        outer = self._outer()
+        if outer is not None:
+            outer.draw(n)
         if self._drawn > self._cap:
             raise self._error(0)
 
     def refuse(self, n: int, what: str) -> None:
+        outer = self._outer()
+        if outer is not None:
+            outer_room = outer.room()
+            if outer_room is not None and n > outer_room:
+                outer.refuse(n, what)
         raise self._error(n, what)
 
     def _error(self, n: int, what: str = "") -> AlwaysStopResourceLimitError:

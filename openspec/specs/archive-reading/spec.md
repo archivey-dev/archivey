@@ -573,11 +573,16 @@ and a reparse prefix), a solid folder decoded up to the symlinks whose targets t
 listing reads, the first header a reader parses at open, and a 7z header stored
 compressed, decoded at open. Each
 reader's listing SHALL count from zero, and so SHALL a walk started over after a
-failure. Bytes a caller reads from a member SHALL NOT
-count, whether between walk steps or on another thread. The step that crosses the cap
-SHALL decode at most one byte past it and raise `ResourceLimitError` naming
-`max_decoded_bytes`; a 7z header that does not fit SHALL be refused before it is
-decoded. Detection's decoding is held by `DetectionBudget`, not by this cap.
+failure. A reader that `ReaderContext.open_nested` builds SHALL also charge what its
+listing decodes to the enclosing listing while that listing runs, so one listing pass of
+the outermost archive decodes at most `max_decoded_bytes` across all its levels (a
+`.pkg`'s payloads, a `.deb`'s tars). An inner reader's walk outside the enclosing
+listing (reading a nested member again) SHALL count on its own. Bytes a caller reads
+from a member SHALL NOT count, whether between walk steps or on another thread. The step
+that crosses the cap SHALL decode at most one byte past it and raise
+`ResourceLimitError` naming `max_decoded_bytes`; a 7z header that does not fit SHALL be
+refused before it is decoded. Detection's decoding is held by `DetectionBudget`, not by
+this cap.
 
 #### Scenario: listing a .tar.gz past the decode cap
 

@@ -1049,9 +1049,18 @@ class BaseArchiveReader(ArchiveReader):
         )
         # What one listing pass decodes (``ListingLimits.max_decoded_bytes``), and what
         # a decode stage draws from: that and the reader's budget (``_budget_drawn``).
+        # A reader ``open_nested`` builds also draws from the outer listing's count
+        # while that listing runs (``ListingDecodeCount``).
         decode_cap = self._config.listing_limits.max_decoded_bytes
         self._listing_decode = (
-            ListingDecodeCount(decode_cap) if decode_cap is not None else None
+            ListingDecodeCount(
+                decode_cap,
+                parent=None
+                if self._nest_outer is None
+                else self._nest_outer._listing_decode,
+            )
+            if decode_cap is not None
+            else None
         )
         self._stage_draws = StageDraws.of(self._nest, self._listing_decode)
         # How close this reader came to each reader-lifetime limit (private; read by
