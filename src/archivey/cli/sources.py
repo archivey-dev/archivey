@@ -37,7 +37,7 @@ import unicodedata
 from typing import Any
 
 from archivey.cli.errors import CliError
-from archivey.terminal import display_path
+from archivey.terminal import display_path, quoted
 
 _SCHEME = r"[A-Za-z][A-Za-z0-9+.-]+"
 _URL_PREFIX = re.compile(rf"({_SCHEME})://")
@@ -134,6 +134,45 @@ def remote_label() -> str | None:
     """The label of the URL resolved in this invocation, or ``None`` when none was."""
     # The CLI resolves one archive argument per run, so the last one is the source.
     return url_label(next(reversed(_resolved))) if _resolved else None
+
+
+def remote_error_text(exc: OSError) -> str | None:
+    """The message for an ``OSError`` that the resolved URL raised, or ``None``.
+
+    fsspec back ends raise without a ``filename``, with the URL or the object's path
+    as the whole text. Only an error of that shape is named after the URL: any other
+    filename-less ``OSError`` (a full disk under stdout) did not come from the source.
+
+    fsspec's HTTP back end turns every failure to reach the object into
+    ``FileNotFoundError(url)`` and chains the real error, so the cause is reported
+    instead: a refused connection or a failed TLS handshake is not a missing object.
+    The cause's own text is never printed for an aiohttp error, which re-encodes the
+    URL (:func:`http_error_text`).
+    """
+    if not _resolved:
+        return None
+    arg = next(reversed(_resolved))
+    text = str(exc)
+    path = str(getattr(_resolved[arg], "path", ""))
+    if text not in (arg, path) and redact(text) == text:
+        return None
+    label = url_label(arg)
+    cause = exc.__cause__
+    while isinstance(exc, FileNotFoundError) and cause is not None:
+        if (
+            isinstance(cause, FileNotFoundError)
+            or getattr(cause, "status", None) == 404
+        ):
+            break  # a real 404: the object is missing
+        http_text = http_error_text(cause)
+        if http_text is not None:
+            return http_text
+        if isinstance(cause, OSError):
+            return f"{label}: {redact(cause.strerror or str(cause))}"
+        cause = cause.__cause__
+    if isinstance(exc, FileNotFoundError):
+        return f"cannot open {quoted(label)}: no such file or object"
+    return f"{label}: {type(exc).__name__}: {redact(exc.strerror or text)}"
 
 
 def shown_archive(arg: str) -> str:

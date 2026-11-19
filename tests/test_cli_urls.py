@@ -505,7 +505,7 @@ def test_http_smart_extraction_names_the_folder_from_the_url_path(
 def test_http_404_on_a_signed_url_hides_the_signature(http_base: str) -> None:
     result = _run(["list", f"{http_base}/missing.zip?{SECRET}"])
     assert result.code == EXIT_FAIL
-    assert "missing.zip" in result.err
+    assert f"cannot open '{http_base}/missing.zip': no such file" in result.err
     assert "s3cr3t" not in result.err
     assert "Traceback" not in result.err
 
@@ -539,5 +539,62 @@ def test_http_403_at_setup_is_a_clean_failure(http_base: str) -> None:
     result = _run(["info", f"{http_base}/denied.zip?{SECRET}"])
     assert result.code == EXIT_FAIL
     assert "403" in result.err
+    assert "s3cr3t" not in result.err
+    assert "Traceback" not in result.err
+
+
+# --- review round 1 -------------------------------------------------------------------
+
+
+class _FullDisk(io.RawIOBase):
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b: Any) -> int:
+        raise OSError(28, "No space left on device")
+
+
+def test_a_local_write_error_is_not_blamed_on_the_url(memfs: Any) -> None:
+    memfs.pipe("/cli-urls/data.zip", _zip_bytes(TWO))
+    out = io.TextIOWrapper(io.BufferedWriter(_FullDisk(), buffer_size=1))
+    err = io.StringIO()
+    code = main(["cat", "memory://cli-urls/data.zip", "a.txt"], out=out, err=err)
+    assert code == EXIT_FAIL
+    assert "No space left on device" in err.getvalue()
+    assert "memory://" not in err.getvalue()
+
+
+def test_info_prints_the_identity_of_a_url_that_fails_to_open(memfs: Any) -> None:
+    # A 7z signature header with nothing behind it: detection knows the format, and
+    # the open fails with an ArchiveyError.
+    memfs.pipe("/cli-urls/broken.7z", b"7z\xbc\xaf\x27\x1c" + bytes(64))
+    result = _run(["info", "memory://cli-urls/broken.7z"])
+    assert result.code == EXIT_FAIL
+    assert "path:        memory://cli-urls/broken.7z" in result.out, result.err
+    assert "format:      7z" in result.out
+
+
+def _closed_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def test_http_refused_connection_is_not_a_missing_object(http_base: str) -> None:
+    result = _run(["list", f"http://127.0.0.1:{_closed_port()}/x.zip?{SECRET}"])
+    assert result.code == EXIT_FAIL
+    assert "no such file" not in result.err, result.err
+    assert "s3cr3t" not in result.err
+    assert "Traceback" not in result.err
+
+
+def test_https_to_a_plain_server_is_not_a_missing_object(http_base: str) -> None:
+    _Handler.files["/data.zip"] = _zip_bytes(TWO)
+    url = http_base.replace("http://", "https://")
+    result = _run(["list", f"{url}/data.zip?{SECRET}"])
+    assert result.code == EXIT_FAIL
+    assert "no such file" not in result.err, result.err
     assert "s3cr3t" not in result.err
     assert "Traceback" not in result.err

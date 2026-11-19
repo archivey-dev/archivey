@@ -791,14 +791,9 @@ def _format_os_error(exc: OSError) -> str:
     """
     path = exc.filename
     if path is None:
-        remote = sources.remote_label()
+        remote = sources.remote_error_text(exc)
         if remote is not None:
-            # fsspec back ends raise without a filename, often with only the
-            # object's path as the text: name the URL the user typed instead.
-            if isinstance(exc, FileNotFoundError):
-                return f"archivey: cannot open {quoted(remote)}: no such file or object"
-            detail = redact(exc.strerror or str(exc))
-            return f"archivey: {remote}: {type(exc).__name__}: {detail}"
+            return f"archivey: {remote}"
         return f"archivey: {redact(exc.strerror or str(exc))}"
     shown = str(path) if isinstance(path, int) else os.fsdecode(path)
     redacted = redact(shown)
