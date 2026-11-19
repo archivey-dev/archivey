@@ -72,8 +72,9 @@ on:
 # failure in any queued job takes the pull request out of the queue, except in the 3.16
 # prerelease leg, which is allowed to fail. Only on the daily run and a dispatch (so
 # before each release): the `test-daily` legs (Linux [all] on 3.12, 3.13 and 3.14,
-# macOS and Windows 3.11), and the minimum versions whatever changed. The Atheris fuzz
-# runs nightly in atheris-fuzz.yml, not here. The split exists because the
+# macOS and Windows 3.11), the minimum versions whatever changed, and the link parity
+# soak (`link-parity-soak`). The Atheris fuzz runs nightly in atheris-fuzz.yml, not
+# here. The split exists because the
 # organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
 # every push kept the queue's runs waiting for a runner until they timed out
 # (2026-10-29). Dispatch this workflow on a branch to run everything before queueing.
@@ -631,6 +632,42 @@ jobs:
           - { os: macos-latest, python-version: "3.11", install: all }
           - { os: windows-latest, python-version: "3.11", install: all }
     steps: *test-steps
+
+  # The link parity property test (tests/test_link_parity_property.py) with many more
+  # examples than the 300 every leg runs, and a new random choice of them each time: the
+  # legs always draw the same fixed 300, and a held-versus-made mismatch can be rarer
+  # than 1 in 1,000 archives. Daily and dispatched runs only. A failure prints the
+  # archive and the @reproduce_failure line to pin as an @example. Linux is
+  # case-sensitive and macOS's default volume is not: the `A`/`a` names in the test
+  # collide only there.
+  link-parity-soak:
+    name: link parity soak / ${{ matrix.os }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, examples: "20000" }
+          # macOS runners are about twice as slow, and fewer.
+          - { os: macos-latest, examples: "8000" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Sync
+        run: uv sync --python 3.15 --group dev
+      # A few minutes on Linux: about 12 ms an example measured locally.
+      - name: Run the soak
+        env:
+          ARCHIVEY_LINK_PARITY_EXAMPLES: ${{ matrix.examples }}
+        run: >
+          uv run --python 3.15 --no-sync
+          pytest tests/test_link_parity_property.py -q --no-cov -p no:randomly
 
   # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
   # tests against it. Kept apart from the test matrix and cheap: a container per
