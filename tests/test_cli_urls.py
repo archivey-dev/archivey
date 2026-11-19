@@ -634,3 +634,53 @@ def test_a_configured_user_agent_and_client_options_are_kept(
     }
     assert _run(["list", f"{http_base}/data.zip"]).code == EXIT_OK
     assert set(_Handler.agents) == {"mine/1"}
+
+
+# --- review round 2 -------------------------------------------------------------------
+
+SIGNED = "http://user:pw@10.255.255.1/d.zip?X-Amz-Signature=s3cr3t%2Fpart&a=b"
+
+
+@pytest.fixture
+def resolved_signed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A run that resolved ``SIGNED``, without any network."""
+
+    class _Stub:
+        path = SIGNED
+
+    monkeypatch.setitem(sources._resolved, SIGNED, _Stub())
+    sources._register_redactions(SIGNED)
+    try:
+        yield
+    finally:
+        sources.reset()
+
+
+def test_a_reencoded_url_in_aiohttp_text_is_redacted(resolved_signed: None) -> None:
+    aiohttp = pytest.importorskip("aiohttp")
+    yarl = pytest.importorskip("yarl")
+    reencoded = str(yarl.URL(SIGNED, encoded=False).with_user(None))
+    assert "s3cr3t/part" in reencoded  # the shape aiohttp prints
+    timeout = aiohttp.ConnectionTimeoutError(f"Connection timeout to host {reencoded}")
+    wrapped = FileNotFoundError(SIGNED)
+    wrapped.__cause__ = timeout
+    text = sources.remote_error_text(wrapped)
+    assert text is not None and "ConnectionTimeoutError" in text
+    assert "s3cr3t" not in text and "pw" not in text
+    invalid = aiohttp.InvalidUrlClientError(reencoded)
+    shown = sources.http_error_text(invalid)
+    assert shown is not None and "s3cr3t" not in shown
+
+
+def test_an_empty_cause_is_named_by_its_type(resolved_signed: None) -> None:
+    wrapped = FileNotFoundError(SIGNED)
+    wrapped.__cause__ = TimeoutError()
+    assert (
+        sources.remote_error_text(wrapped) == "http://10.255.255.1/d.zip: TimeoutError"
+    )
+
+
+def test_url_tokens_are_left_alone_in_a_local_run() -> None:
+    sources.reset()
+    text = "member http://x/y?z=1 is odd"
+    assert sources.redact(text) == text

@@ -42,6 +42,8 @@ from archivey.terminal import display_path, quoted
 # A scheme: a letter, then at least one more of letters, digits, ``+``, ``.`` or ``-``.
 _URL_PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9+.-]+)://", re.ASCII)
 _BARE_PROTOCOL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+", re.ASCII)
+# A URL inside a message: a scheme, ``://`` and everything up to whitespace or a quote.
+_URL_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+://[^\s'\"<>]+", re.ASCII)
 
 # Arguments resolved in this invocation: the argument → its OpenFile.
 _resolved: dict[str, Any] = {}
@@ -198,11 +200,11 @@ def remote_error_text(exc: OSError) -> str | None:
         if http_text is not None:
             return http_text
         if isinstance(cause, OSError):
-            return f"{label}: {redact(cause.strerror or str(cause))}"
+            return _typed_detail(label, cause)
         cause = cause.__cause__
     if isinstance(exc, FileNotFoundError):
         return f"cannot open {quoted(label)}: no such file or object"
-    return f"{label}: {type(exc).__name__}: {redact(exc.strerror or text)}"
+    return _typed_detail(label, exc)
 
 
 def shown_archive(arg: str) -> str:
@@ -262,14 +264,19 @@ def _register_redactions(arg: str) -> None:
 
 
 def redact(text: str) -> str:
-    """``text`` with every exact occurrence of a resolved URL replaced by its label.
+    """``text`` with every resolved URL in it replaced by its label.
 
-    Longest first, so a whole chain is replaced before one of its links. Only exact
-    text is found: a backend that re-encodes the URL, or prints a credential on its
-    own, is not covered.
+    First every exact occurrence, longest first, so a whole chain is replaced before
+    one of its links. Then, in a run that resolved a URL, every other ``scheme://``
+    token goes through :func:`display_url` too: aiohttp re-encodes the request URL in
+    some messages (``user:pw@`` dropped, ``%2F`` decoded to ``/``), so the exact text
+    is not there to find, but the query is still cut at its ``?``. A backend that
+    prints a credential on its own, outside a URL, is not covered.
     """
     for original in sorted(_redactions, key=len, reverse=True):
         text = text.replace(original, _redactions[original])
+    if _resolved:
+        text = _URL_TOKEN.sub(lambda match: display_url(match.group(0)), text)
     return text
 
 
@@ -308,7 +315,15 @@ def http_error_text(exc: BaseException) -> str | None:
         status = getattr(exc, "status", None)
         reason = getattr(exc, "message", "") or ""
         return f"{where}: HTTP {status} {reason}".rstrip()
-    return f"{where}: {type(exc).__name__}: {redact(str(exc))}"
+    return _typed_detail(where, exc)
+
+
+def _typed_detail(label: str, exc: BaseException) -> str:
+    """``label: Type: detail``, or ``label: Type`` when the error has no text."""
+    detail = redact(getattr(exc, "strerror", None) or str(exc))
+    if not detail:
+        return f"{label}: {type(exc).__name__}"
+    return f"{label}: {type(exc).__name__}: {detail}"
 
 
 # --- names for extraction -------------------------------------------------------------
