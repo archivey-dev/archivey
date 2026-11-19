@@ -71,8 +71,9 @@ Enough for a cold agent or a cold you:
 Put it in the PR body inside the sections of `.github/pull_request_template.md`: the
 **For dummies** section stays first, the goal and non-goals go in What changes and Why,
 the verify commands go in Tests, and Risk and the checklist stay as the template writes
-them. Cut from it what the diff already shows (a file list, a line-by-line recap). Use `openspec new change … --schema minimalist` when main
-specs must change; keep scenario farms out of what you are asked to read.
+them. Cut from it what the diff already shows (a file list, a line-by-line recap). Use
+`openspec new change … --schema minimalist` when main specs must change; keep scenario
+farms out of what you are asked to read.
 
 ---
 
