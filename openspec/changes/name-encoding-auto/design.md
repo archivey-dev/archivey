@@ -135,20 +135,31 @@ is guessed from the evidence collected up to and including that name:
   the names met before the freeze, and lookups after it need no lock.
 - **Directories keep one text.** A directory's path decodes to one text per reader, and
   every name under it reuses that text for the directory part. Only the rest of the name
-  is decoded with the current guess. The memo is keyed on the byte prefix that ends just
-  before a `/` separator. For the formats that use `\` (CAB, LHA, ZIP from DOS tools),
-  it is keyed on a `\` that the codec used for the prefix reads as a separator, and not
-  as the trail byte of a character such as `ソ` (`83 5C`) or `表` (`95 5C`). This also
-  works in the other order: a directory entry met after its children takes the text its
-  children gave it.
+  is decoded with the current guess. The memo is keyed on each byte prefix that ends
+  just before a `/` or a `\`, in every format, when that byte falls at a character
+  boundary of the codec used for the prefix. So the trail byte of `ソ` (`83 5C`) or `表`
+  (`95 5C`) never splits a name. Keying on `\` in a format where it is not a separator
+  (TAR) only makes a prefix's text more consistent: a decode split at character
+  boundaries gives the same text as a whole decode. So the decoder needs no per-format
+  flag. This also works in the other order: a directory entry met after its children
+  takes the text its children gave it.
+- **An entry without data waits for the next entry with data.** A directory, or any
+  other member with no data to read, is decoded only once the reader has met the next
+  member that has data, or the end of the archive, or the freeze. Its decode uses the
+  evidence up to that member. Both modes can do this without buffering data: a forward
+  walk reads only headers in between, and an indexed read looks ahead in its index. The
+  lookahead holds at most 256 evidence names, because the freeze ends it. A walk cut
+  short by `max_members` still reads ahead to that point before it yields the last
+  entry without data, so the limit doesn't change its name. Damage or the end of the
+  archive ends the lookahead at the same point in both modes.
 
 Why this rule:
 
 - **Streaming matches random access** (DR-5). A forward walk and an indexed listing meet
   the same names in the same order. TAR, cpio, ar, LHA and ARJ write names in walk
   order, and the ZIP central directory lists entries in local-header order. So both
-  reads give the same names. No reader needs lookahead, which a TAR stream can't have
-  without buffering member data.
+  reads give the same names. The only lookahead is over entries without data, so no
+  reader buffers member data, which a TAR stream can't do within its memory bound.
 - **`max_members` and damage can't change a name.** A cut-short walk stops adding
   evidence after the cut, and names before the cut already have their final decode.
 - **Order of calls doesn't matter.** Thanks to the memo, a re-walk, a `get()`, or a
@@ -158,13 +169,37 @@ Why this rule:
 The cost: early names get less evidence than a whole-archive guess would give them. The
 first legacy name is decoded on its own evidence (the N=1 column: right 61-94%,
 otherwise abstains, wrong at most 1%). By the third name the guess matches the
-whole-archive guess in 92-100% of archives. Early names are mostly directories, the
-parents of later names, because TAR, 7-Zip, WinRAR and most ZIP writers put `資料/` before
-`資料/報告書.txt`. Without the directory rule, an abstaining first guess would list a
-folder `╕Ω«╞/` with no children, next to children under a `資料/` that has no entry. The
-tree would split in two on extraction. With the rule the tree stays whole, but a
-directory first met before the guess formed keeps today's text for the archive's life.
-That is the price of DR-5. A caller who knows the codec passes it.
+whole-archive guess in 92-100% of archives.
+
+Early names are mostly directories, the parents of later names, because TAR, 7-Zip,
+WinRAR and most ZIP writers put `資料/` before `資料/報告書.txt`. Without the directory
+rule, an abstaining first guess would list a folder `╕Ω«╞/` with no children, next to
+children under a `資料/` that has no entry. The tree would split in two on extraction.
+With the directory rule alone, the tree stays whole, but the root folder of a
+single-folder archive, the most common layout, keeps the text of a guess made from its
+own name. A one-character root (`新/`) always abstains, because of the 2-character
+minimum. The wait for the next entry with data fixes most of that. It gives the root the
+evidence of its first file too. Measured on single-root archives (a root folder entry
+first, then 3 or 10 files under it; `single_root.py` in the investigation), as the share
+of archives whose every path comes out right:
+
+| Codec | Root name | Whole-archive guess | Directory rule alone | With the wait |
+| --- | --- | --- | --- | --- |
+| cp932 | realistic | 100 | 89-91 | 98 |
+| cp932 | 1-4 characters | 100 | 47-48 | 95-97 |
+| EUC-JP | realistic | 100 | 83-89 | 93-98 |
+| EUC-JP | 1-4 characters | 100 | 19-22 | 90-94 |
+| GBK | realistic | 99-100 | 73-78 | 91-94 |
+| GBK | 1-4 characters | 99-100 | 26-32 | 86-87 |
+| Big5 | realistic | 92-93 | 51-52 | 82-85 |
+| Big5 | 1-4 characters | 90-93 | 21-24 | 76-78 |
+| cp949 | realistic | 100 | 83-85 | 99-100 |
+| cp949 | 1-4 characters | 100 | 15 | 95-96 |
+
+The rest of the gap to the whole-archive guess is the price of DR-5: getting it would
+mean buffering member data on a stream. In the archives that don't come out right, the
+path either keeps today's text (an abstention) or, rarely, has one wrong component. A
+caller who knows the codec passes it.
 
 **Rejected:**
 
@@ -181,6 +216,9 @@ That is the price of DR-5. A caller who knows the codec passes it.
 - **A sticky first guess.** Once a codec is chosen, it would never change. It is
   simpler, but an early wrong guess (at most 1-3% at N=1) would then stick for the rest
   of the archive. The frozen running guess corrects itself as evidence grows.
+- **The directory rule without the wait.** It needs no lookahead at all, but the table
+  above shows the root folder decoding wrong or as today in up to 85% of single-root
+  archives with short root names.
 
 ### 4. Which decodes feed the evidence
 
@@ -195,23 +233,57 @@ or annotate:
   or after the listing;
 - user and group names, and RAR's alternate names.
 
-These use the current guess and the memo, and add no evidence. So the listing alone
-fixes the guess, and the order of calls doesn't matter. Which name is the member name
-depends on the read. In a seekable ZIP it is the central directory's name. In a forward
-walk (a pipe) it is the local header's name, because that walk builds each member from
-its local header. The two give the same evidence when the central directory lists the
-entries in local-header order, which is how every writer measured writes them.
+These use the current guess and read the memo, including the directory-prefix memo. They
+add no evidence and write nothing to the memo. So the listing alone fixes the guess and
+the memo, and the order of calls doesn't matter: an ARJ archive comment that `info`
+decodes before the listing leaves every member name as it would be after it. Which name
+is the member name depends on the read. In a seekable ZIP it is the central directory's
+name. In a forward walk (a pipe) it is the local header's name, because that walk builds
+each member from its local header. The two give the same evidence when the central
+directory lists the entries in local-header order, which is how every writer measured
+writes them.
+
+Link targets need one more rule. Reading the memo makes a link target that names a
+member met earlier decode to that member's text, whole or by directory prefix. TAR hard
+links only point backwards, so they always resolve. A symbolic link met before the
+freeze that names a member met after it gets the guess at the link's position, and the
+member gets the guess at its own. If the guess changed between the two, the link
+doesn't resolve, and a member that names a missing target reports what it reports
+today. Measured, the guess matches the whole-archive guess from the third legacy name
+on in 92-100% of archives, so this needs a forward link among the first few names.
+**Rejected:** resolving links by their stored bytes. Link targets are normalised as
+text (relative paths, `..`), so every resolver would need a second, byte-level path for
+one rare case. The case is pinned by a test (task 4.7).
+
+ZIP stores a symbolic link's target as the member's data, and reads it today as UTF-8
+with `surrogateescape` (`base_reader.py`, the ZIP link-target read), outside the name
+decoder. This change sends it through `decode_text` under every `encoding=`. Valid UTF-8
+still wins, so a target that reads today as UTF-8 doesn't change. A cp932 target in a
+cp932 ZIP then resolves to its cp932-named member, under `"auto"` and under an explicit
+`encoding="cp932"` alike. Today it resolves under neither.
 
 Plugins tell the two kinds apart through two methods (format-plugins spec):
 `ReaderContext.decode_name(raw)` decodes a member name and adds evidence, and
 `ReaderContext.decode_text(raw)` decodes any other stored text with the same guess and
 memo, and adds none. The built-in callers that decode link targets, comments, and user
 and group names switch to `decode_text`: ARJ, LHA, SquashFS and RPM. Without `"auto"`
-the two methods decode the same way. **Rejected:** a keyword,
-`decode_name(raw, *, evidence=False)`. It is easy to leave out, and the default would
-then be the wrong kind for every comment. **Rejected:** feeding link targets too. They
-would give more evidence, but a TAR stream meets a link target at a different point than
-the listing does in some readers, which reopens the question decision 3 settles.
+the two methods decode the same way.
+
+LHA stores a symbolic link as one field, `name|target`, and splits it after decoding.
+The bytes can't be split on `|` first, because 0x7C is also a trail byte: `ポ` is
+`83 7C` in cp932, and `倒`, `培`, `弓` (cp932) and `四`, `咽` (Big5) end in it too. So
+a third method, `ReaderContext.decode_name_and_target(raw, separator)`, decodes such a
+field. It splits at the first separator that falls at a character boundary of the codec
+the field decodes with, and returns the name and the target, or `None` for the target
+when there is no separator. Only the name part adds evidence. Each candidate codec
+finds its own split when the guesser scores it, so the evidence is never a name with a
+target attached.
+
+**Rejected:** a keyword, `decode_name(raw, *, evidence=False)`. It is easy to leave out,
+and the default would then be the wrong kind for every comment. **Rejected:** feeding
+link targets too. They would give more evidence, but a TAR stream meets a link target at
+a different point than the listing does in some readers, which reopens the question
+decision 3 settles.
 
 ### 5. One decoder per reader, shared by built-ins and plugins
 
@@ -281,13 +353,19 @@ no new context field are needed.
   one codec wins clearly. Measured wrong rates are at most 1% on CJK at N=1 and 0.1% on
   Latin archives. The diagnostic names the guess and keeps `raw_name`, so a caller can
   re-decode.
-- [Early names decode on less evidence than later ones] → Accepted for DR-5 (decision
-  3). A caller who knows the codec passes it.
+- [Early names decode on less evidence than later ones, and a root folder's text holds
+  for the whole archive] → The wait for the next entry with data gives the root the
+  evidence of its first file: 76-100% of single-root archives come out right on every
+  path, against 90-100% for a whole-archive guess (decision 3). The rest is accepted
+  for DR-5. A caller who knows the codec passes it.
+- [A symbolic link met before the freeze that names a later member may not resolve] →
+  Accepted and pinned (decision 4).
 - [A ZIP whose central directory lists entries in a different order from its local
-  headers] → Then a forward walk and a listing meet the names in different orders, and
-  the names met before the freeze may decode differently. The spec states this as the
-  one exception to equal names in both modes. Tests pin both the common case and the
-  exception.
+  headers] → Then a forward walk and a listing meet the names in different orders. The
+  names met before the freeze may decode differently, and so may every name under a
+  directory first met before the freeze, because the directory keeps the text it got
+  then. The spec states this as the one exception to equal names in both modes. Tests
+  pin both the common case and the exception.
 - [Thread safety] → The `NameDecoder` lock covers the evidence and the memo until the
   freeze. After it, a decode reads only the frozen guess and the memo, which no longer
   change, so it takes no lock.

@@ -17,13 +17,17 @@ the name decodes exactly as it does today.
 wrong where the default was right. Each name is guessed from the legacy names met so
 far, in archive order, and the guess freezes after the first 256. Each stored name, and
 each directory path, decodes once per reader, so a folder and its children always stay
-one tree. Streaming and random access give the same names, and so does any member limit,
-with no lookahead on TAR streams. The one exception is a ZIP whose central directory is
-in another order than its local headers. Link targets and comments never change the
-guess. Plugins decode member names with decode name and other text with a new decode
-text. ISO takes the Joliet name before guessing. Every guessed name reports the existing
-inferred-encoding diagnostic, and the strict policy refuses it. Cyrillic, Greek and
-Hebrew need the chardet library and wait for a later change.
+one tree. A folder waits for its first file before it is decoded, so a one-folder
+archive gets its folder name right in 76-100% of archives, against 15-91% without the
+wait. Streaming and random access give the same names, and so does any member limit,
+with no member data buffered on TAR streams. The one exception is a ZIP whose central
+directory is in another order than its local headers. A symbolic link among the first
+few names that points forward may not resolve, which is accepted and tested. Link
+targets and comments never change the guess. Plugins decode member names with decode
+name, other text with a new decode text, and LHA's name-and-target field with a new
+decode name and target. ISO takes the Joliet name before guessing. Every guessed name
+reports the existing inferred-encoding diagnostic, and the strict policy refuses it.
+Cyrillic, Greek and Hebrew need the chardet library and wait for a later change.
 
 **Your call later:** None. The design is settled. The frequency tables come from
 Wikipedia titles, as measured, and names that happen to be valid UTF-8 stay out of the

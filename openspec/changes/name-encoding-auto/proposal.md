@@ -26,7 +26,9 @@ written in archivey can do it with no dependency (see design.md, Investigations)
   today.
 - Plugins: `ReaderContext.decode_name()` applies the guess and adds the name to its
   evidence. A new `ReaderContext.decode_text()` decodes other stored text (link targets,
-  comments, user names) with the same guess and adds nothing. `ReaderContext.encoding`
+  comments, user names) with the same guess, adds nothing and fixes no text. A new
+  `ReaderContext.decode_name_and_target()` splits a field that holds both, such as
+  LHA's `name|target`, at a character boundary. `ReaderContext.encoding`
   is `None` under `"auto"`, so a plugin that decodes with it never sees `"auto"`.
 - A directory's path keeps one text per reader, so a directory and its children never
   split into two trees. ISO takes a Rock Ridge name's Joliet twin before the guess.
@@ -42,7 +44,8 @@ written in archivey can do it with no dependency (see design.md, Investigations)
 
 - `archive-reading`: `encoding=` accepts `"auto"`.
 - `format-plugins`: `ReaderContext.decode_name()`, the new `ReaderContext.decode_text()`
-  and `ReaderContext.encoding` under `"auto"`.
+  and `ReaderContext.decode_name_and_target()`, and `ReaderContext.encoding` under
+  `"auto"`.
 
 ## Impact
 
