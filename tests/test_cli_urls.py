@@ -684,3 +684,53 @@ def test_url_tokens_are_left_alone_in_a_local_run() -> None:
     sources.reset()
     text = "member http://x/y?z=1 is odd"
     assert sources.redact(text) == text
+
+
+@pytest.mark.parametrize(
+    ("sections", "url", "headers"),
+    [
+        (
+            {
+                "http": {
+                    "client_kwargs": {"headers": {"X-Auth": "tok"}, "trust_env": True}
+                }
+            },
+            "https://h/x.zip",
+            {"X-Auth": "tok", "User-Agent": "archivey/{v}"},
+        ),
+        (
+            {"https": {"client_kwargs": {"headers": {"User-Agent": "mine/1"}}}},
+            "http://h/x.zip",
+            {"User-Agent": "mine/1"},
+        ),
+        (
+            {
+                "http": {"client_kwargs": {"headers": {"A": "1"}}},
+                "https": {"client_kwargs": {"headers": {"B": "2"}}},
+            },
+            "http://h/x.zip",
+            {"B": "2", "User-Agent": "archivey/{v}"},
+        ),
+    ],
+)
+def test_http_options_read_both_http_sections_as_fsspec_does(
+    sections: dict[str, Any],
+    url: str,
+    headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import archivey
+
+    pytest.importorskip("fsspec")
+    from fsspec.config import conf
+
+    monkeypatch.delitem(conf, "http", raising=False)
+    monkeypatch.delitem(conf, "https", raising=False)
+    for name, section in sections.items():
+        monkeypatch.setitem(conf, name, section)
+    protocol = url.partition(":")[0]
+    client = sources._http_options(url)[protocol]["client_kwargs"]
+    expected = {k: v.format(v=archivey.__version__) for k, v in headers.items()}
+    assert client["headers"] == expected
+    if "trust_env" in str(sections):
+        assert client["trust_env"] is True

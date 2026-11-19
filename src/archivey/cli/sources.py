@@ -148,7 +148,12 @@ def _http_options(arg: str) -> dict[str, Any]:
         protocol = match.group(1).lower() if match is not None else ""
         if protocol not in _HTTP_PROTOCOLS or protocol in options:
             continue
-        client = dict(conf.get(protocol, {}).get("client_kwargs") or {})
+        # As fsspec's ``apply_config`` builds it for HTTPFileSystem, whose protocols
+        # are ``("http", "https")``: both sections, in that order, for either link.
+        configured: dict[str, Any] = {}
+        for section in ("http", "https"):
+            configured.update(conf.get(section, {}))
+        client = dict(configured.get("client_kwargs") or {})
         headers = dict(client.get("headers") or {})
         if not any(str(key).lower() == "user-agent" for key in headers):
             headers["User-Agent"] = f"archivey/{archivey.__version__}"
