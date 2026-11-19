@@ -20,7 +20,8 @@ runs:
     # entries are filled must not restore the old ones.
     # A hit installs the package versions from the run that first saved the key, so
     # an Ubuntu update to a cached package reaches CI only when GitHub rolls out a
-    # new runner image (ImageVersion, about weekly).
+    # new runner image (ImageVersion, about weekly) and a run on main saves a fresh
+    # entry for it from the mirror.
     # ImageVersion comes last, so `restore` (same OS, arch, packages and action, any
     # image version) takes the newest entry from an earlier image when this one has
     # none. Its .debs usually still install; when they do not, the miss path runs.
@@ -28,6 +29,10 @@ runs:
     # and main's, and main saves an entry once a day (the scheduled run), so a new
     # image would otherwise send every queue run to the mirror (6 of 13 queue runs
     # failed in apt on 2026-11-19 between 08:00 and 12:00 UTC).
+    # Runs on main never take an earlier image's entry: they go to the mirror and
+    # save a fresh one, so the cached versions follow the image. An entry restored
+    # from an earlier image is not saved again either: outside main, the save is in
+    # a scope no other run reads.
     - id: key
       shell: bash
       env:
@@ -49,14 +54,13 @@ runs:
       with:
         path: ${{ steps.key.outputs.dir }}
         key: ${{ steps.key.outputs.key }}
-        restore-keys: ${{ steps.key.outputs.restore }}
+        restore-keys: ${{ github.ref != 'refs/heads/main' && steps.key.outputs.restore || '' }}
     - id: install
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
         RECOMMENDS: ${{ inputs.install-recommends }}
         DEBS: ${{ steps.key.outputs.dir }}
-        EXACT: ${{ steps.cache.outputs.cache-hit }}
         # cache-hit is "true" only for the exact key; matched-key is set for a
         # restore-keys match too.
         HIT: ${{ steps.cache.outputs.cache-matched-key != '' }}
@@ -76,10 +80,7 @@ runs:
           # the entry was saved. If that is not enough, the install fails offline
           # and the miss path below runs.
           if "${local_install[@]}" "$DEBS"/*.deb; then
-            # An entry from an earlier image worked: save it under this image's
-            # key, so the next run here hits exactly.
-            if [ "$EXACT" = true ]; then saved=skip; else saved=yes; fi
-            echo "saved=$saved" >> "$GITHUB_OUTPUT"
+            echo "saved=skip" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "::warning::Cached .deb files did not install; fetching from the mirror."
