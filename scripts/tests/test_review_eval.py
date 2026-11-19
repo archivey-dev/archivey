@@ -177,3 +177,9 @@ def test_summary_totals_turns_and_guide_reads(tmp_path: Path) -> None:
     (work / "reads.json").write_text(json.dumps({"files": files}))
     text = review_eval.summary([case], tmp_path)
     assert "Turns: 9. Guide characters read: 7, of them `CONTRIBUTING.md`: 5." in text
+
+
+def test_the_replay_prompt_keeps_subagents_in_the_foreground() -> None:
+    # The replay runs headless like the loop, so it carries the loop prompt's rule.
+    assert "`run_in_background: false`" in review_eval.REVIEW_PROMPT
+    assert "Never end a turn to wait for a subagent" in review_eval.REVIEW_PROMPT
