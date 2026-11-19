@@ -239,11 +239,12 @@ These need statistics. With chardet 7, kept only when it names one of those code
 and the names hold at least 8 non-ASCII bytes, `"auto"` gets 91-100% right on 3
 realistic names and 0% wrong on Latin names. On 1-4 letter names it is much weaker:
 26-57% right, with up to 17% wrong for Greek and Hebrew. That runs against DR-1 (a wrong
-answer is the worst failure), and it needs a dependency decision: chardet 7 is 0BSD, 3.3
-MB, and needs Python 3.10 or later. As far as I recall, its relicensing in 7.0 was
-publicly disputed. All of that belongs in its own change, after this one ships.
-**Rejected:** a hand-written single-byte rule (letters plus casing). It was right on
-Cyrillic, but it was 0-100% wrong on Hebrew and Turkish.
+answer is the worst failure), and it needs a dependency decision. chardet 7.7.0's
+package metadata says 0BSD and Python 3.10 or later, and it installs as 3.3 MB. The
+follow-up change checks its licence history with sources before adding it. All of that
+belongs in its own change, after this one ships. **Rejected:** a hand-written
+single-byte rule (letters plus casing). It was right on Cyrillic, but it was 0-100%
+wrong on Hebrew and Turkish.
 
 ### 7. ISO: the Joliet name comes before the guess
 
