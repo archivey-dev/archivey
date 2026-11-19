@@ -144,9 +144,15 @@ is guessed from the evidence collected up to and including that name:
   boundaries gives the same text as a whole decode. So the decoder needs no per-format
   flag. This also works in the other order: a directory entry met after its children
   takes the text its children gave it.
-- **An entry without data waits for the next entry with data.** A directory, or any
-  other member with no data to read, is decoded only once the reader has met the next
-  member that has data. Its decode uses the evidence up to that member. Both modes can
+- **A directory waits for the next entry that is not a directory.** A directory entry
+  is decoded only once the reader has met the next member that is not a directory. Its
+  decode uses the evidence up to that member. A directory is told by the member's own
+  header in every mode: a ZIP name ending in `/`, a TAR or cpio directory type, and so
+  on. An empty file or a link does not wait, because a streamed ZIP (flag bit 3) writes
+  no sizes in its local headers, and a pipe walk learns that a member is a link only
+  from the central directory at the end. Waiting on "no data" would end the wait at
+  different members in the two modes. The single-root measurements below have no empty
+  files, so this narrowing doesn't move them. Both modes can
   do this without buffering data: a forward walk reads only headers in between, and an
   indexed read looks ahead in its index. The lookahead ends early, and the waiting
   entries decode with the evidence met so far, at the first of:
@@ -163,22 +169,29 @@ is guessed from the evidence collected up to and including that name:
     header that today's walk wouldn't parse: a TAR walk with `max_members=5` still reads
     at most 6 headers.
 
-  The end and damage come at the same point in both modes. A cap can come before the
-  next entry with data, and then the entries just before it decode with less evidence
-  than in an unlimited listing. The spec states this as an exception.
+  In TAR and the other formats that list by walking, the end and damage come at the
+  same point in both modes. In ZIP they don't: a seekable read lists from the central
+  directory and keeps a member whose local header is damaged, while a pipe walk loses
+  it. Then a waiting directory can take its evidence from different members in the two
+  modes, and every name after the damage can differ too, because the pipe's evidence
+  lacks the lost name. The spec states this as an exception, under DR-5a: malformed
+  corner cases may differ a little. A cap can come before the next entry that is not a
+  directory, and then the directories just before it decode with less evidence than in
+  an unlimited listing. The spec states this as an exception too.
 
 Why this rule:
 
 - **Streaming matches random access** (DR-5). A forward walk and an indexed listing meet
   the same names in the same order. TAR, cpio, ar, LHA and ARJ write names in walk
   order, and the ZIP central directory lists entries in local-header order. So both
-  reads give the same names. The only lookahead is over entries without data, so no
-  reader buffers member data, which a TAR stream can't do within its memory bound.
+  reads give the same names. The only lookahead is over directory entries, which have
+  no data, so no reader buffers member data, which a TAR stream can't do within its
+  memory bound.
 - **Damage and caps can't change a name already listed.** A walk cut short by damage
-  stops adding evidence at the cut, and the entries waiting at the cut decode with the
-  evidence before it, in both modes. A listing cap raises, as it does today. The only
-  names it can change are those of the entries without data waiting just before it,
-  because their wait ends early (the second spec exception).
+  stops adding evidence at the cut, and the directories waiting at the cut decode with
+  the evidence before it. A listing cap raises, as it does today. The only names it can
+  change are those of the directories waiting just before it, because their wait ends
+  early (a spec exception). A damaged ZIP local header is the other spec exception.
 - **Order of calls doesn't matter.** Thanks to the memo, a re-walk, a `get()`, or a
   second `members()` never sees a different decode for bytes it already decoded.
 - **Bounded cost.** Evidence stops at 256 names, and the wait at 64 entries and at the
@@ -251,10 +264,16 @@ or annotate:
   or after the listing;
 - user and group names, and RAR's alternate names.
 
-These use the current guess and read the memo, including the directory-prefix memo. They
-add no evidence and write nothing to the memo. So the listing alone fixes the guess and
-the memo, and the order of calls doesn't matter: an ARJ archive comment that `info`
-decodes before the listing leaves every member name as it would be after it. Which name
+These read the memo, including the directory-prefix memo. They add no evidence and write
+nothing to the memo. Their guess is fixed by the text's place in the archive, not by the
+time of the call: it is the guess as of the member whose header holds the text, the
+evidence up to and including that member's name. A plugin decodes a member's text while
+it parses that member, as every built-in does. Text that belongs to no member, such as
+ARJ's main-header archive comment, which `info` decodes whenever the caller reads it,
+uses no guess and decodes as without `"auto"`. So the listing alone fixes the guess and
+the memo, and the order of calls changes neither a member name nor a text: an ARJ
+archive comment reads the same before and after the listing. The cost is that an
+archive comment is never guessed, even in an archive whose names are. Which name
 is the member name depends on the read. In a seekable ZIP it is the central directory's
 name. In a forward walk (a pipe) it is the local header's name, because that walk builds
 each member from its local header. The two give the same evidence when the central
@@ -378,6 +397,9 @@ no new context field are needed.
   for DR-5. A caller who knows the codec passes it.
 - [A symbolic link met before the freeze that names a later member may not resolve] →
   Accepted and pinned (decision 4).
+- [An archive comment is never guessed] → It belongs to no member, so it has no place
+  in the evidence order. Guessing it at the time of the call would make it depend on
+  whether `info` is read before or after the listing (decision 4).
 - [A ZIP whose central directory lists entries in a different order from its local
   headers] → Then a forward walk and a listing meet the names in different orders. The
   names met before the freeze may decode differently, and so may every name under a

@@ -21,9 +21,11 @@ UTF-8 with `surrogateescape`. Under `encoding="auto"` both SHALL decode the way 
 built-in formats do (archive-reading, "encoding="auto" guesses the codec of legacy
 names"), sharing one guess per reader. Only `decode_name` SHALL add its bytes to the
 evidence the guess is made from, and only the name part of `decode_name_and_target`.
-`decode_text` SHALL read the names already decoded, so a link target that names a
-member met earlier gets that member's text, and SHALL NOT fix the text of any bytes.
-`ReaderContext.encoding` SHALL be `None` under
+`decode_text` SHALL decode with the guess as of the last `decode_name` call, so a plugin
+SHALL call it for a member's text while it parses that member. Called from
+`archive_info()`, it SHALL use no guess. `decode_text` SHALL read the names already
+decoded, so a link target that names a member met earlier gets that member's text, and
+SHALL NOT fix the text of any bytes. `ReaderContext.encoding` SHALL be `None` under
 `"auto"`, so a plugin that decodes with it never receives `"auto"` as a codec name.
 
 #### Scenario: plugin under auto
@@ -31,7 +33,8 @@ member met earlier gets that member's text, and SHALL NOT fix the text of any by
 | Case | Expected |
 | --- | --- |
 | Plugin calls `ctx.decode_name()` on cp932 bytes, `encoding="auto"` | Japanese text; `MEMBER_NAME_ENCODING_INFERRED` on that member |
-| Plugin calls `ctx.decode_text()` on a link target or comment, `encoding="auto"` | Decoded with the current guess; the guess is unchanged |
+| Plugin calls `ctx.decode_text()` on a link target or comment while parsing a member, `encoding="auto"` | Decoded with the guess as of that member; the guess is unchanged |
+| Plugin calls `ctx.decode_text()` from `archive_info()`, `encoding="auto"` | Decoded as without `"auto"`, whenever `info` is read |
 | Plugin calls `ctx.decode_text()` before `ctx.decode_name()` on the same bytes | `decode_name` returns what it would have returned without the earlier `decode_text` |
 | LHA `ポ\|target` field in cp932, `decode_name_and_target(raw, b"\|")` under `encoding="auto"` | Name `ポ`, target `target`; only `ポ` adds evidence |
 | Plugin reads `ctx.encoding`, `encoding="auto"` | `None` |

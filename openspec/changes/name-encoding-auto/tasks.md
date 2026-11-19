@@ -25,16 +25,17 @@
 - [ ] 2.1 `check_encoding` accepts `"auto"`; `open_archive` and fsspec pass it through
 - [ ] 2.2 ZIP, TAR, RAR and ISO decode legacy names through `NameDecoder`; only the
   decode that gives a member's `name` adds evidence: the central name in a seekable ZIP,
-  the local name in a forward walk (decision 4). A member with no data waits for the
-  next member with data, ended early by the end, damage, the freeze, 64 waiting entries
-  or a listing cap; every member read is charged to the listing tracker as today, and
-  plugins hold waiting entries through `ReaderContext.hold()` (decision 3). ZIP link
-  targets read from member data go through `decode_text` (decision 4)
+  the local name in a forward walk (decision 4). A directory entry waits for the next
+  member that is not a directory, ended early by the end, damage, the freeze, 64 waiting
+  entries or a listing cap; every member read is charged to the listing tracker as
+  today, and plugins hold waiting entries through `ReaderContext.hold()` (decision 3).
+  ZIP link targets read from member data go through `decode_text` (decision 4)
 - [ ] 2.3 ISO under `"auto"`: UTF-8, then the Joliet twin, then the guess (decision 7)
 - [ ] 2.4 `ReaderContext.decode_name()` uses the reader's `NameDecoder` and adds
-  evidence; add `ReaderContext.decode_text()`, which adds none; `ReaderContext.encoding`
-  is `None` under `"auto"`; the adapter emits `MEMBER_NAME_ENCODING_INFERRED` for the
-  member whose `raw_name` was guessed
+  evidence; add `ReaderContext.decode_text()`, which adds none and uses the guess as of
+  the last `decode_name` call, or no guess inside `archive_info()`;
+  `ReaderContext.encoding` is `None` under `"auto"`; the adapter emits
+  `MEMBER_NAME_ENCODING_INFERRED` for the member whose `raw_name` was guessed
 - [ ] 2.5 Switch the built-in callers that decode text other than member names to
   `decode_text`: ARJ link targets and comments (archive comment included), LHA comments
   and user and group names, SquashFS and RPM link targets. LHA's `name|target` field
@@ -62,9 +63,11 @@
   `streaming=True`
 - [ ] 4.3 A ZIP whose central directory lists entries in another order than its local
   headers: the documented exception, pinned, including a name under a directory first
-  met before the freeze in one mode only
-- [ ] 4.4 ARJ with an archive comment: `info` read before and after the listing gives
-  the same member names
+  met before the freeze in one mode only. A ZIP with a damaged local header and an
+  intact central directory: the second exception, pinned. A streamed ZIP (bit 3) with a
+  directory, an empty file and a file: the same names piped and seekable
+- [ ] 4.4 ARJ with a cp932 archive comment: `info` read before and after the listing
+  gives the same member names and the same comment, decoded as without `"auto"`
 - [ ] 4.5 Concurrency: two threads listing the same reader under
   `concurrent_operations=True` get the same names
 - [ ] 4.6 libarchive's cp932, EUC-JP, cp866 and KOI8-R fixtures: the cp932 ones are

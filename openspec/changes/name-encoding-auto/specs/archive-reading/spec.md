@@ -16,19 +16,22 @@ valid UTF-8, in the order the reader meets them, up to and including that name, 
 at most the first 256 of them. Text that is not a member name (link targets, comments,
 user and group names) SHALL NOT change the guess, and SHALL NOT fix the text of any
 bytes. Each distinct stored name, and each directory prefix of a name up to a `/` or `\`
-at a character boundary, SHALL decode to one text for the life of the reader. A member
-with no data SHALL be decoded with the evidence up to the next member that has data, the
-end of the walk, the 256th evidence name, the 64th waiting member, or the member that
-would cross a listing cap, whichever comes first. The wait SHALL NOT parse a header that
-the walk would not parse without `"auto"`.
+at a character boundary, SHALL decode to one text for the life of the reader. A
+directory entry SHALL be decoded with the evidence up to the next member that is not a
+directory, the end of the walk, the 256th evidence name, the 64th waiting member, or the
+member that would cross a listing cap, whichever comes first. The wait SHALL NOT parse a
+header that the walk would not parse without `"auto"`. Text that is not a member name
+SHALL be decoded with the guess as of the member that holds it. Text that belongs to no
+member, such as an archive comment, SHALL decode as without `"auto"`.
 
 The same archive bytes SHALL give the same names in any order of calls, and under
 `streaming=True` and `streaming=False`. Damage SHALL NOT change a name listed before it.
-There are two exceptions. In a ZIP whose central directory lists entries in another
+There are three exceptions. In a ZIP whose central directory lists entries in another
 order than its local headers, the names met before the guess is frozen, and the names
-under a directory first met before then, MAY differ between the two modes. When a
-listing cap raises, the members without data listed just before it MAY have names that
-differ from an unlimited listing.
+under a directory first met before then, MAY differ between the two modes. In a ZIP
+whose local headers are damaged where its central directory is intact, the names MAY
+differ between the two modes (DR-5a). When a listing cap raises, the directories listed
+just before it MAY have names that differ from an unlimited listing.
 
 A name decoded with a guessed codec SHALL report `MEMBER_NAME_ENCODING_INFERRED`, with
 `inferred_encoding` set to the guess and `declared_encoding` set to the codec the name
@@ -49,7 +52,9 @@ report `ENCODING_ARGUMENT_UNUSED`, as any other value does.
 | TAR, symbolic link before the freeze to a member met later, guess unchanged between them | `link_target` equals the member's name; the link resolves |
 | TAR, symbolic link before the freeze to a member met later, guess changed between them | `link_target` keeps the link's guess; the link does not resolve, as any link to a missing member |
 | ZIP symbolic link whose target data is cp932, `encoding="auto"` or `encoding="cp932"` | `link_target` in cp932; the link resolves |
-| ARJ, `info` read before the listing | Member names equal those of a listing read first |
+| ARJ with a cp932 archive comment, `info` read before the listing | Member names equal those of a listing read first; the comment decodes as with `encoding=None`, the same before and after the listing |
+| Streamed ZIP (flag bit 3) holding a Big5 directory, an empty file and a file, piped and seekable | The same names in both modes |
+| ZIP holding Big5 `d/`, `d/a`, `d/b`, with the local header of `d/a` damaged, piped and seekable | Names may differ between modes; the pipe raises `CorruptionError` at `d/a` as today |
 | cp932 archive with one name cut inside its last character | The other names in cp932; the cut name in cp932 with its last byte escaped |
 | cp437 German or French names, `encoding="auto"` | Names as with `encoding=None`; no `MEMBER_NAME_ENCODING_INFERRED` |
 | Name that is valid UTF-8 | UTF-8, whatever the guess for the other names |
