@@ -22,11 +22,13 @@ and registered as a built-in, as ISO, SquashFS and ar are.
 | Refuses | Version other than 1; a DOCTYPE in the TOC; a pipe, with `StreamNotSeekableError` |
 | Spec | `openspec/specs/format-xar/spec.md` |
 
-Not here, though a reader might look for it: a package's `Payload` (a gzip CPIO, or a
-`pbzx` stream in newer packages) is not expanded: the reader lists the XAR members only,
-for now; the `archived-checksum` over the encoded bytes is not
-checked, since the decoded bytes' checksum and the decoder's own check already cover them;
-extended attributes (`<ea>`) and Finder info are not read; signatures are not verified.
+A macOS installer package or `.xip` is read as `ArchiveFormat.PKG`, with its payloads
+expanded (§4); `format=ArchiveFormat.XAR` keeps the XAR members as they are.
+
+Not here, though a reader might look for it: the `archived-checksum` over the encoded
+bytes is not checked, since the decoded bytes' checksum and the decoder's own check
+already cover them; extended attributes (`<ea>`) and Finder info are not read;
+signatures are not verified.
 
 ## 1. Shape
 
@@ -112,7 +114,9 @@ not gzip), `application/x-bzip2`, `application/x-lzma` (LZMA Alone) and
 checksum and TOC checksum, hard links in either order, base64 names, and each refusal.
 The fuzz target `xar` (`tests/atheris_fuzz/targets.py`) opens mutated bsdtar archives.
 7-Zip cannot list bsdtar's archives, so the test suite has no second reader to compare
-against.
+against. `tests/test_pkg.py` reads packages `tests/xar_util.py` writes around CPIOs and
+pbzx streams from `tests/pbzx_util.py`; `tests/test_pbzx.py` covers the codec. No real
+`pkgbuild` package is committed yet.
 
 Apple's `xar` and bsdtar are compared by hand:
 `scripts/investigations/xar_multistream_oracle.py` writes one-file archives whose member
@@ -128,3 +132,45 @@ and extracts them with all three readers. The manual
   after an xz stream. It hangs on any byte after a gzip stream and fails on any byte after
   a bzip2 or LZMA stream.
 - archivey refuses every byte after a gzip, bzip2 or LZMA stream (§2), and junk after xz.
+
+## 4. Installer packages (`PKG`)
+
+`internal/backends/pkg_reader.py`: a `PkgHandler` and a `PkgReader` that subclasses
+`XarReader`. Maintainer ruling 2026-11-18: list a package's payloads like a `.deb`'s
+tars, as a new format, with `format=XAR` keeping the raw view (the deb-versus-ar
+choice).
+
+- **Layout.** A component package (`pkgbuild`) holds `Bom`, `PackageInfo`, `Payload` and
+  often `Scripts`; a product archive (`productbuild`) holds a `Distribution` and one
+  folder per component (`app.pkg/`) with those inside. A `.xip` holds `Content` and
+  `Metadata`. `Payload` and `Scripts` are odc CPIOs, gzip-compressed (older packages,
+  and `Scripts` today) or pbzx (`Payload` since about 10.10); `Content` is a pbzx CPIO.
+- **Listing.** Each `Payload` and `Scripts` at the top or in a top-level folder, and a
+  top-level `Content`, is replaced by its CPIO's files under a folder of its own name
+  (`app.pkg/Payload/Applications/...`), the layout `pkgutil --expand-full` writes; the
+  CPIO's `.` is that folder. The format is told from the payload's first bytes (gzip,
+  `pbzx`, `0707`); anything else, or a payload whose first CPIO header cannot be read
+  (`CorruptionError` before the first member), is listed as the file it is. A failure
+  after the first member raises, since files are already listed. The CPIO is read
+  through `ReaderContext.open_nested`, so listing decodes every payload. The payload's
+  XAR checksum is computed as the listing reads it, the rest of the payload drained
+  after the CPIO ends, and a mismatch raises `CorruptionError`. A payload file, or a
+  hard link's target, that extracts outside its folder (`../Bom`, `a/../../Scripts/x`)
+  is refused: it would replace another member of the package. Symlinks inside a payload
+  are not followed for that check; extraction's own link checks apply.
+- **Opening a file.** `open_member` opens the payload again and calls `open_nested`,
+  which yields the one span asked for (`format-plugins`, "An indexed reader reads an
+  archive stored inside its archive"). The adapter mutes the inner reader's reports on
+  the way, since the listing delivered them, and parks the inner walk when the member's
+  stream closes, so `extract_all` and `stream_members()` read each payload once more,
+  not once per file.
+- **Detection.** XAR magic is refined to `PKG` (`ReadBackend.MAGIC_REFINEMENTS`) when
+  the name ends in `.pkg`, `.mpkg` or `.xip`, or, for a name that is not `.xar`, when
+  the table of contents' first 256 KiB, decoded from the bytes detection already holds,
+  names a `Distribution` or `PackageInfo`, or both `Content` and `Metadata`.
+- **pbzx** (`StreamFormat.PBZX`, `streams/codecs/pbzx_codec.py`). `pbzx`, a 64-bit chunk
+  size (Apple writes 16 MiB), then per chunk a 64-bit decoded size, a 64-bit stored
+  length and the bytes: stored when the two sizes are equal, else one xz stream. A chunk
+  shorter than the chunk size is the last, as the `pbzx` tools read it; a stream whose
+  size is a multiple of the chunk size ends with the input. Each xz chunk decodes under
+  `max_decoder_memory` (`new_capped_decompressor`), and nothing is held whole.

@@ -414,6 +414,22 @@ class BackendRegistry:
             for sig in cls.SFX_MAGIC
         )
 
+    def magic_refinements(
+        self,
+    ) -> dict[
+        ArchiveFormat, list[tuple[ArchiveFormat, Callable[[bytes, str | None], bool]]]
+    ]:
+        """For a format whose magic matched, the narrower formats that may claim the
+        file instead, with each one's check (``ReadBackend.MAGIC_REFINEMENTS``)."""
+        refinements: dict[
+            ArchiveFormat,
+            list[tuple[ArchiveFormat, Callable[[bytes, str | None], bool]]],
+        ] = {}
+        for cls in self._reader_classes:
+            for base, check in cls.MAGIC_REFINEMENTS:
+                refinements.setdefault(base, []).append((cls.FORMATS[0], check))
+        return refinements
+
     def trailer_entries(self) -> list[TrailerSignature]:
         """Trailer magic declared by registered backends.
 

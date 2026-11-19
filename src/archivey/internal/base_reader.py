@@ -640,6 +640,13 @@ class ReadBackend(ABC):
     # Exact magic at the start of a fixed-length block at EOF. A hit is ``magic`` /
     # ``CERTAIN``, and it outranks a near-magic format listed in ``preempts``.
     TRAILER: tuple[TrailerSignature, ...] = ()
+    # A narrower reading of another format's exact magic: (format, check) pairs, where
+    # ``format`` is the one whose magic matched and ``check(prefix, name)`` says, from
+    # the peeked prefix and the source's name (or ``None``), that the file is this
+    # backend's format instead (a XAR that is a macOS installer package).
+    MAGIC_REFINEMENTS: tuple[
+        tuple[ArchiveFormat, Callable[[bytes, str | None], bool]], ...
+    ] = ()
     # False when the backend exists so detection can name the format, and open
     # refuses it. Availability is NONE with nothing to install.
     READ_IMPLEMENTED: bool = True

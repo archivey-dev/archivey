@@ -76,6 +76,7 @@ _STREAM_METHODS: dict[StreamFormat, CompressionAlgorithm] = {
     StreamFormat.UNIX_COMPRESS: CompressionAlgorithm.LZW,
     StreamFormat.BZIP3: CompressionAlgorithm.BZIP3,
     StreamFormat.SNAPPY: CompressionAlgorithm.SNAPPY,
+    StreamFormat.PBZX: CompressionAlgorithm.XZ,
 }
 
 

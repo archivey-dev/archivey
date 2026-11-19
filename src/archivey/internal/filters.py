@@ -1043,6 +1043,13 @@ def _collapse_dotdot(name: str) -> str:
     return joined.lstrip("/\\") or "."
 
 
+def extracted_segments(name: str) -> list[str]:
+    """The segments of the furthest-reaching path that ``name`` can extract to, as
+    stored: the rewrites of :func:`extracted_top_segment`, every segment kept."""
+    resolved = _collapse_dotdot(strip_absolute_root(name))
+    return [s for s in _SEP_SPLIT.split(resolved) if s not in ("", ".")]
+
+
 def extracted_top_segment(name: str) -> str:
     """The first segment of the furthest-reaching path that ``name`` can extract to, as
     stored, or ``""`` when that path is the destination itself.
@@ -1054,11 +1061,8 @@ def extracted_top_segment(name: str) -> str:
     rewrites. The segment keeps its spelling. :func:`extracted_top_key` also folds it
     as the filesystem may, for a test that must catch every spelling.
     """
-    resolved = _collapse_dotdot(strip_absolute_root(name))
-    for segment in _SEP_SPLIT.split(resolved):
-        if segment not in ("", "."):
-            return segment
-    return ""
+    segments = extracted_segments(name)
+    return segments[0] if segments else ""
 
 
 def extracted_top_key(name: str) -> str:

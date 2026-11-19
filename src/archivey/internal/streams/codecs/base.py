@@ -104,6 +104,7 @@ class Codec(Enum):
     MOZLZ4 = "mozlz4"  # Firefox's mozLz40 files: one raw LZ4 block
     BZIP3 = "bzip3"  # the .bz3 files the bzip3 tool writes
     SNAPPY = "snappy"  # Snappy's framing format (.sz)
+    PBZX = "pbzx"  # Apple's chunked xz framing (a .pkg Payload, a .xip Content)
     UU = "uu"  # uuencoded files, and their begin-base64 variant
     BASE64 = "base64"  # bare base64 text
     LZO = "lzo"  # raw LZO1X (a SquashFS block)
