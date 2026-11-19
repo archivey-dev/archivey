@@ -1547,8 +1547,9 @@ so 8 levels cannot use 8 times the caps:
   declaration stands for the level, ended decoders included, so the count errs toward
   refusing. Within one level the cap is still one decoder's. xz, LZMA Alone and zstd
   declarations are recorded from the first block header, the stream header and each
-  frame header; a later xz block with a larger dictionary is checked by liblzma against
-  the level's cap alone.
+  frame header, and a pbzx stream's from the first block header of each xz chunk; a
+  later xz block with a larger dictionary is checked by liblzma against the level's cap
+  alone.
 - `max_ratio`: every level is held to the ratio of the outermost archive's compressed
   size (or the bytes taken from it so far, from a pipe), not of its own input, so a nest
   of `n` levels decodes at most `n` times the ratio of the caller's bytes, not the ratio
