@@ -206,8 +206,8 @@ local file. For each read, archivey fetches the member's packed bytes and writes
 file for `unrar`, so reading one member of a large RAR archive doesn't download the rest. A pass
 with `stream_members()` or `extract_all()` copies several small members at a time. A solid RAR
 archive needs the members before the one read, as in any solid archive. The [RAR
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md) says what each
-temporary file holds.
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md) say
+what each temporary file holds.
 
 `SpoolLimits.max_bytes` (default 1 GiB) caps each copy, and a remote archive has no way around
 it: an archive opened from a local path reads a large member in place, but a remote one can't.
