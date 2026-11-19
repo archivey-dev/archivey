@@ -1,9 +1,9 @@
 name: Install apt packages (cached)
 description: >
   Installs Ubuntu packages from .deb files kept in the Actions cache. A cache hit
-  does not contact the Ubuntu mirror or download the package indexes. The first run
-  on a new runner image (about weekly), and the fallback after a cached install
-  fails, still use the mirror, so a mirror outage can still fail those runs.
+  does not contact the Ubuntu mirror or download the package indexes. A miss, and
+  the fallback after a cached install fails, use the mirror, and retry a failed
+  index update or download within a time budget.
 inputs:
   packages:
     description: Space-separated package names, as given to apt-get install.
@@ -21,6 +21,13 @@ runs:
     # A hit installs the package versions from the run that first saved the key, so
     # an Ubuntu update to a cached package reaches CI only when GitHub rolls out a
     # new runner image (ImageVersion, about weekly).
+    # ImageVersion comes last, so `restore` (same OS, arch, packages and action, any
+    # image version) takes the newest entry from an earlier image when this one has
+    # none. Its .debs usually still install; when they do not, the miss path runs.
+    # This matters in the merge queue: each queue branch sees only its own entries
+    # and main's, and main saves an entry once a day (the scheduled run), so a new
+    # image would otherwise send every queue run to the mirror (6 of 13 queue runs
+    # failed in apt on 2026-11-19 between 08:00 and 12:00 UTC).
     - id: key
       shell: bash
       env:
@@ -31,7 +38,9 @@ runs:
         list=$(printf '%s\n' $PACKAGES | sort -u | tr '\n' ' ')
         self=$(sha256sum "$GITHUB_ACTION_PATH/action.yml" | cut -c1-64)
         hash=$(printf '%s|%s|%s' "$list" "$RECOMMENDS" "$self" | sha256sum | cut -c1-16)
-        echo "key=apt-${ImageOS:-unknown}-${ImageVersion:-unknown}-${RUNNER_ARCH}-${hash}" >> "$GITHUB_OUTPUT"
+        prefix="apt-${ImageOS:-unknown}-${RUNNER_ARCH}-${hash}-"
+        echo "key=${prefix}${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "restore=${prefix}" >> "$GITHUB_OUTPUT"
         echo "dir=${RUNNER_TEMP}/apt-debs-${hash}" >> "$GITHUB_OUTPUT"
     # A cache-service error must not fail the job: it only means a miss.
     - id: cache
@@ -40,13 +49,17 @@ runs:
       with:
         path: ${{ steps.key.outputs.dir }}
         key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.restore }}
     - id: install
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
         RECOMMENDS: ${{ inputs.install-recommends }}
         DEBS: ${{ steps.key.outputs.dir }}
-        HIT: ${{ steps.cache.outputs.cache-hit }}
+        EXACT: ${{ steps.cache.outputs.cache-hit }}
+        # cache-hit is "true" only for the exact key; matched-key is set for a
+        # restore-keys match too.
+        HIT: ${{ steps.cache.outputs.cache-matched-key != '' }}
       run: |
         set -euo pipefail
         flags=(-y -q -o Acquire::Retries=3)
@@ -63,7 +76,10 @@ runs:
           # the entry was saved. If that is not enough, the install fails offline
           # and the miss path below runs.
           if "${local_install[@]}" "$DEBS"/*.deb; then
-            echo "saved=skip" >> "$GITHUB_OUTPUT"
+            # An entry from an earlier image worked: save it under this image's
+            # key, so the next run here hits exactly.
+            if [ "$EXACT" = true ]; then saved=skip; else saved=yes; fi
+            echo "saved=$saved" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "::warning::Cached .deb files did not install; fetching from the mirror."
@@ -72,13 +88,34 @@ runs:
         # apt downloads as _apt, which must be able to write there.
         sudo rm -rf "$DEBS" && mkdir -p "$DEBS/partial" && chmod a+rwx "$DEBS" "$DEBS/partial"
         # A dead mirror makes apt retry every mirror and file for many minutes (17 on
-        # 11-11, until the job timed out), so each network call has a time limit. The
-        # index update takes seconds on a working mirror. The download gets more: the
-        # unar build dependencies are about 35 MB, and on 11-18 a slow but working
-        # mirror took over 2 minutes for them on two tries in a row (one 13 MB package
-        # still downloading at the cut).
-        timeout 120 "${apt[@]}" update -q -o Acquire::Retries=3
-        timeout 600 "${apt[@]}" install "${flags[@]}" --download-only \
+        # 11-11, until the job timed out), so the network calls share a time limit:
+        # 10 minutes for the index update and the download together. The unar build
+        # dependencies are about 35 MB, and on 11-18 a slow but working mirror took
+        # over 2 minutes for them. A call that fails ("Connection failed", "Some
+        # files failed to download") is tried again while time is left, 15 s later;
+        # a download that is tried again keeps the files it already has in $DEBS.
+        # A stalled connection is dropped after 30 s, so a retry can reach another
+        # mirror from the runner's mirror list.
+        net=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30)
+        deadline=$((SECONDS + 600))
+        with_retries() {
+          local attempt=1 left
+          while :; do
+            left=$((deadline - SECONDS))
+            if [ "$left" -le 0 ]; then
+              echo "::error::apt: out of time after $((attempt - 1)) attempts: $*"
+              return 1
+            fi
+            if timeout "$left" "$@"; then return 0; fi
+            [ "$attempt" -ge 4 ] && return 1
+            echo "::warning::apt attempt $attempt failed; trying again in 15 s."
+            attempt=$((attempt + 1))
+            sleep 15
+          done
+        }
+        with_retries "${apt[@]}" update -q "${net[@]}"
+        with_retries "${apt[@]}" install "${flags[@]}" "${net[@]}" --download-only \
           -o Dir::Cache::archives="$DEBS" $PACKAGES
         saved=skip  # The system may already have every package: nothing to cache.
         if compgen -G "$DEBS/*.deb" > /dev/null; then
