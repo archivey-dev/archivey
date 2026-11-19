@@ -5803,6 +5803,63 @@ def test_a_link_fan_out_checks_one_source_path_per_link(
     assert calls <= 4 * n
 
 
+@pytest.mark.parametrize(
+    ("specs", "excluded"),
+    [
+        ([("file", "A", b"f0"), ("file", "a/x", b"x")], None),
+        ([("file", "A", b"f0"), ("hard", "a/x", "A")], None),
+        (
+            [
+                ("file", "src1", b"1"),
+                ("file", "A", b"f0"),
+                ("hard", "a", "src1"),
+                ("hard", "a/x", "src1"),
+            ],
+            None,
+        ),
+        (
+            [
+                ("file", "src1", b"1"),
+                ("file", "A", b"f0"),
+                ("hard", "a", "src1"),
+                ("hard", "a/x", "src1"),
+            ],
+            "src1",
+        ),
+    ],
+    ids=["file", "link", "made", "held"],
+)
+@pytest.mark.parametrize("policy", list(ExtractionPolicy))
+def test_a_case_variant_parent_of_a_file_the_run_wrote_is_not_replaced(
+    tmp_path: Path,
+    specs: list[tuple],
+    excluded: str | None,
+    policy: ExtractionPolicy,
+) -> None:
+    # On a case-insensitive filesystem only. `a` reaches the file the run wrote at
+    # `A`, so `a/x` meets it as a file this archive extracted, as it would meet `a`
+    # on a case-sensitive one: the member fails and the file stays, rather than
+    # REPLACE removing it as if the caller had put it there.
+    if case_sensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem")
+    dest = tmp_path / "out"
+    with open_archive(io.BytesIO(_tar_bytes(specs))) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            policy=policy,
+            members=(lambda m: m.name != excluded) if excluded else None,
+            on_error=OnError.CONTINUE,
+        )
+    last = report.results[-1]
+    assert (last.member.name, last.status) == ("a/x", ExtractionStatus.FAILED)
+    assert "already extracted from this archive" in str(last.error)
+    assert (dest / "A").is_file()
+    assert all(r.status is not ExtractionStatus.FAILED for r in report.results[:-1]), (
+        report.results
+    )
+
+
 def test_a_held_link_is_filled_where_it_was_made_not_in_a_callers_empty_file(
     tmp_path: Path,
 ) -> None:
