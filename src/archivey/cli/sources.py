@@ -39,9 +39,9 @@ from typing import Any
 from archivey.cli.errors import CliError
 from archivey.terminal import display_path, quoted
 
-_SCHEME = r"[A-Za-z][A-Za-z0-9+.-]+"
-_URL_PREFIX = re.compile(rf"({_SCHEME})://")
-_BARE_PROTOCOL = re.compile(rf"{_SCHEME}")
+# A scheme: a letter, then at least one more of letters, digits, ``+``, ``.`` or ``-``.
+_URL_PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9+.-]+)://", re.ASCII)
+_BARE_PROTOCOL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+", re.ASCII)
 
 # Arguments resolved in this invocation: the argument → its OpenFile.
 _resolved: dict[str, Any] = {}
