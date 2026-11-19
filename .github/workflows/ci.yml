@@ -855,9 +855,10 @@ jobs:
     # packages (core-only), and with every one that installs on PyPy (extras). As one
     # job they had grown from 28 minutes (2026-11-14) to about 50 on a slow runner
     # (2026-11-19: core-only 19 minutes, extras still running at the old 45-minute
-    # limit). Extras is the longer leg, about 1.5x core-only. Size this limit from the
-    # slowest leg on a slow runner, not from a typical run.
-    timeout-minutes: 45
+    # limit). Extras is the longer leg: 1.5x to 2.3x core-only on the finished runs of
+    # 2026-11-13 to 11-18, so up to about 45 minutes on that slow runner. Size this
+    # limit from the slowest leg on a slow runner, not from a typical run.
+    timeout-minutes: 60
     env:
       UV_PYTHON: ${{ matrix.python }}
     strategy:
