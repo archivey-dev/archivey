@@ -634,14 +634,30 @@ def test_a_held_walk_is_dropped_when_its_missing_name_is_made(
             assert fs.cat("A") == b"Z"
 
 
-def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
+def test_a_link_that_many_paths_go_through_is_walked_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A link's walk is kept once it met no missing component: 2000 links through a
     link to a directory 400 deep took 5 s to list when each walked the target
     again.
 
+    Counted, not timed: a walk of a link's target is one ``_Tree._walk`` call with
+    ``hops`` above 0. With the walk kept there is 1; walking ``l``'s target again
+    for each link through it takes 4000. A wall-time bound (2 s against 0.15 s
+    measured) failed on a slow Windows runner.
+
     400 deep, not deeper: the strict check resolves the link's target as a path,
     and on macOS (``PATH_MAX`` 1024) a longer one cannot be looked up, so
     extraction there refuses the link."""
+    walks = 0
+    real_walk = fsspec_module._Tree._walk
+
+    def counting_walk(self: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal walks
+        if kwargs.get("hops"):
+            walks += 1
+        return real_walk(self, *args, **kwargs)
+
     deep = "d/" * 400
     entries: list[tuple[str, str, bytes | str]] = [
         ("dir", deep, ""),
@@ -652,13 +668,13 @@ def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
-        start = time.perf_counter()
+        monkeypatch.setattr(fsspec_module._Tree, "_walk", counting_walk)
         assert fs.info("x1999")["type"] == "file"
-        elapsed = time.perf_counter() - start
+        monkeypatch.undo()
         assert fs.cat("x7") == b"7"
         assert fs.cat(deep + "1999") == b"1999"
-    # Measured: under 0.15 s.
-    assert elapsed < 2.0
+    assert walks > 0
+    assert walks < 100
 
 
 def test_a_walk_kept_for_a_refused_link_is_dropped() -> None:
