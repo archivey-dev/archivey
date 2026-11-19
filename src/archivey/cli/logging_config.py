@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TextIO
 
+from archivey.cli.sources import redact
 from archivey.diagnostics import DiagnosticCode
 
 # The library logs this when ``extract_all`` skips a member under CONTINUE (both sites in
@@ -48,6 +49,17 @@ class _MemberSkipHold(logging.Filter):
 _hold: ContextVar[_MemberSkipHold | None] = ContextVar("_hold", default=None)
 
 
+class _RedactingFormatter(logging.Formatter):
+    """Replaces a resolved URL argument with its sanitized label in each record.
+
+    A backend's log line, or an exception logged with its traceback, can hold the URL as
+    typed, with its credentials or signed query (:func:`~archivey.cli.sources.redact`).
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact(super().format(record))
+
+
 @contextmanager
 def cli_logging(*, verbose: bool, err: TextIO) -> Generator[None, None, None]:
     """Route the ``archivey`` logger tree to ``err`` for one CLI invocation (D4).
@@ -71,7 +83,7 @@ def cli_logging(*, verbose: bool, err: TextIO) -> Generator[None, None, None]:
     """
     root = logging.getLogger("archivey")
     handler: logging.StreamHandler[TextIO] = logging.StreamHandler(err)
-    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    handler.setFormatter(_RedactingFormatter("%(levelname)s: %(message)s"))
     hold = _MemberSkipHold(handler)
     handler.addFilter(hold)
     old_level = root.level

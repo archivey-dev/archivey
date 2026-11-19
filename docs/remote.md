@@ -32,6 +32,9 @@ them from nowhere else: a string passed to `open_archive` is always a local path
 raises `FileNotFoundError` and fetches nothing. A program that passes file names from its users to
 `open_archive` can't be made to fetch a URL.
 
+The `archivey` command takes the same URLs in place of a path, as in
+`archivey list s3://bucket/dataset.zip` ([Command line](cli.md#reading-from-a-url)).
+
 ## An archive as a file system
 
 Archivey also adds an fsspec protocol, `archivey`, that shows the members of an archive as files.

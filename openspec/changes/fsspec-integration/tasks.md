@@ -150,7 +150,7 @@
       the garbage-filled-holes test, before any code.
 - [ ] 7.2 A changed remote object, tiers 1 and 2 (design D7): version pinning and
       `If-Match`, per file system.
-- [ ] 7.3 CLI URL arguments (maintainer, 2026-10-25: yes; design §Decisions 2), as its
+- [x] 7.3 CLI URL arguments (maintainer, 2026-10-25: yes; design §Decisions 2), as its
       own OpenSpec change with a `cli` delta.
 
 ## 8. Verify

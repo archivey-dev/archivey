@@ -37,6 +37,11 @@ classifiers = [
 ]
 dependencies = [
     "archivey[recommended]==0.5.0.dev0",
+    # URL arguments (`archivey list https://…`): the CLI reads them through fsspec, and
+    # fsspec's http/https backend needs aiohttp. The library itself adds no dependency or
+    # extra for them; other stores (s3fs, gcsfs, adlfs) stay the user's to install.
+    "fsspec>=2024.0.0",
+    "aiohttp>=3.9.0",
 ]
 
 [project.urls]

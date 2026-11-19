@@ -44,6 +44,7 @@ from archivey import (
     format_availability,
     list_known_formats,
 )
+from archivey.cli import sources
 from archivey.cli.cat_cmd import run_cat
 from archivey.cli.choices import cli_choices
 from archivey.cli.errors import CliError
@@ -63,6 +64,7 @@ from archivey.cli.format import (
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
+from archivey.cli.sources import redact
 from archivey.cli.test_cmd import run_test
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import display_path, quoted
@@ -789,12 +791,19 @@ def _format_os_error(exc: OSError) -> str:
     """
     path = exc.filename
     if path is None:
-        return f"archivey: {exc.strerror or str(exc)}"
-    shown = str(path) if isinstance(path, int) else display_path(os.fsdecode(path))
+        remote = sources.remote_error_text(exc)
+        if remote is not None:
+            return f"archivey: {remote}"
+        return f"archivey: {redact(exc.strerror or str(exc))}"
+    shown = str(path) if isinstance(path, int) else os.fsdecode(path)
+    redacted = redact(shown)
+    # A URL is not a local path: only a local one is rendered ``/``-separated.
+    shown = redacted if redacted != shown else display_path(shown)
     if exc.errno == errno.ENOENT:
         return f"archivey: cannot open {quoted(shown)}: no such file or directory"
     # Not ``str(exc)`` as the fallback: it embeds the filename through ``repr``.
     reason = exc.strerror or (os.strerror(exc.errno) if exc.errno else "I/O error")
+    reason = redact(reason)
     return f"archivey: cannot open {quoted(shown)}: {reason}"
 
 
@@ -961,6 +970,7 @@ def _parse_and_dispatch(
     # the notices and counts that follow the fault line (stop notices,
     # ``N member(s) extracted before the stop``, ``files left in …/``) and
     # ``interrupted`` keep their own shape.
+    sources.reset()
     try:
         with cli_logging(verbose=bool(args.verbose), err=err):
             return _dispatch(args, out=out, err=err)
@@ -968,7 +978,7 @@ def _parse_and_dispatch(
         # CliError is a plain Exception, outside the archivey hierarchy, so it does not
         # escape its own message the way ArchiveyError does — and an archive-derived name
         # reaches here inside that message, not as a separate argument.
-        print(f"archivey: {escape_member_name(exc.message)}", file=err)
+        print(f"archivey: {escape_member_name(redact(exc.message))}", file=err)
         return exc.code
     except ArchiveyError as exc:
         print(f"archivey: {format_error_detail(exc)}", file=err)
@@ -989,6 +999,13 @@ def _parse_and_dispatch(
     except KeyboardInterrupt:
         print("interrupted", file=err)
         return EXIT_INTERRUPTED
+    except sources.http_error_type() as exc:
+        # aiohttp is loaded only by fsspec's HTTP backend, for a URL argument; its
+        # errors are not OSErrors, so they need their own arm.
+        print(f"archivey: {format_error_detail(exc)}", file=err)
+        return EXIT_FAIL
+    finally:
+        sources.reset()
 
 
 class _BackslashReplacingWriter:
