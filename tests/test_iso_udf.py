@@ -471,8 +471,8 @@ def _nested(depth: int, name: bytes = b"\x08a") -> bytes:
 
 def test_the_full_paths_of_a_deep_tree_are_weighed_at_open() -> None:
     """Every full path is built at open, and nested directories make them grow with
-    the square of the depth (24,000 levels took 1.2 GB before): each path, text and
-    stored bytes, is weighed as it is built, apart from the tree's bytes."""
+    the square of the depth: each path, text and stored bytes, is weighed as it is
+    built, apart from the tree's bytes."""
     image = _nested(500)
     weigh = _Weigh()
     volume = UdfVolume(
