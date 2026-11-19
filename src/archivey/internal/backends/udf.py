@@ -33,6 +33,7 @@ image and takes the source's lock. What the walk keeps is weighed against
 
 from __future__ import annotations
 
+import binascii
 import bisect
 import io
 import stat
@@ -236,14 +237,16 @@ def _tag_checksum(data: bytes) -> int:
 
 
 def _crc_itu(data: bytes) -> int:
-    """CRC-16/CCITT as ECMA-167 7.2.6 defines it (polynomial 0x1021, start 0)."""
-    crc = 0
-    for byte in data:
-        crc ^= byte << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
-            crc &= 0xFFFF
-    return crc
+    """CRC-16/CCITT as ECMA-167 7.2.6 defines it (polynomial 0x1021, start 0).
+
+    ``binascii.crc_hqx`` is that CRC, in C: a Python loop costs about 0.7 µs a
+    byte, and every descriptor of the tree goes through it at open."""
+    return binascii.crc_hqx(data, 0)
+
+
+def _crc_length(descriptor: bytes) -> int:
+    """How many bytes after its 16-byte tag a descriptor's CRC covers."""
+    return struct.unpack_from("<H", descriptor, 10)[0]
 
 
 class ZeroRun(io.RawIOBase):
@@ -382,6 +385,11 @@ class UdfVolume:
         self._integrity_end = 0
         self.block_size, anchor = self._find_anchor()
         self._partitions: list[_Partition] = []
+        # Every File Entry parsed, by each ICB (partition, block) that led to it,
+        # with how many indirect entries lie between: many File Identifiers can name
+        # one ICB, or ICBs of one indirect chain, and each block is then read,
+        # checked and weighed once.
+        self._entries: dict[tuple[int, int], tuple[UdfEntry, int]] = {}
         self.volume_identifier = ""
         fsd_location = self._read_volume_descriptors(anchor)
         self.end = self._volume_end(anchor)
@@ -740,20 +748,42 @@ class UdfVolume:
     # --- file entries -----------------------------------------------------------
 
     def _read_entry(self, partition: int, block: int) -> UdfEntry:
-        """Read and parse the File Entry at an ICB, following indirect entries."""
+        """Read and parse the File Entry at an ICB, following indirect entries.
+
+        Each ICB is parsed once (``_entries``); a File Identifier naming an ICB
+        already parsed, or one on an indirect chain already followed, costs a dict
+        lookup. Each Indirect Entry is weighed as its tag and the bytes its CRC
+        covers."""
+        chain: list[tuple[int, int]] = []
         for _ in range(_MAX_INDIRECT):
-            offset = self._block_offset(partition, block, "a file entry")
-            data = self._read(offset, self.block_size, "file entry")
-            ident = self._tagged(
-                data, (_TAG_FE, _TAG_EFE, _TAG_IE, _TAG_TE), block, "a file entry"
-            )
-            if ident == _TAG_IE:
-                # ECMA-167 4/14.7: the next ICB of a strategy 4096 hierarchy.
-                _len, block, partition = struct.unpack_from("<IIH", data, 36)
-                continue
-            if ident == _TAG_TE:
-                raise self._corrupt("a file identifier names a terminal entry")
-            return self._parse_entry(data, offset, partition=partition)
+            key = (partition, block)
+            known = self._entries.get(key)
+            if known is not None:
+                entry, hops = known
+                if len(chain) + hops >= _MAX_INDIRECT:
+                    # The same bound as an uncached walk: a chain that runs into
+                    # one already followed is counted whole.
+                    break
+            else:
+                hops = 0
+                offset = self._block_offset(partition, block, "a file entry")
+                data = self._read(offset, self.block_size, "file entry")
+                ident = self._tagged(
+                    data, (_TAG_FE, _TAG_EFE, _TAG_IE, _TAG_TE), block, "a file entry"
+                )
+                if ident == _TAG_IE:
+                    if self._budget is not None:
+                        self._budget.add_udf_bytes(16 + _crc_length(data))
+                    # ECMA-167 4/14.7: the next ICB of a strategy 4096 hierarchy.
+                    chain.append(key)
+                    _len, block, partition = struct.unpack_from("<IIH", data, 36)
+                    continue
+                if ident == _TAG_TE:
+                    raise self._corrupt("a file identifier names a terminal entry")
+                entry = self._parse_entry(data, offset, partition=partition)
+            for index, link in enumerate((*chain, key)):
+                self._entries[link] = (entry, len(chain) - index + hops)
+            return entry
         raise self._corrupt("its indirect entries form a chain too long")
 
     def _parse_entry(
@@ -788,8 +818,9 @@ class UdfVolume:
         if self._budget is not None:
             # What the entry declares, not the block it sits in: a File Entry is
             # weighed as its fixed part, extended attributes and allocation
-            # descriptors.
-            self._budget.add_udf_bytes(start + ad_length)
+            # descriptors, or as the bytes its tag's CRC covers when that is more
+            # (a writer makes them equal).
+            self._budget.add_udf_bytes(max(start + ad_length, 16 + _crc_length(data)))
         if start + ad_length > len(data) or start < base:
             raise self._corrupt(
                 "a file entry declares extended attributes and allocation "

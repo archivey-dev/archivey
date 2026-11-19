@@ -473,9 +473,11 @@ class _ParseBudget:
     The UDF tree, when the image has one, is counted as one more tree, parsed at open
     by ``udf.UdfVolume`` whether or not it is the tree listed. Every File Identifier
     but the parent entry and deleted entries counts as a member of the UDF tree, and
-    each directory's data as stored plus each File Entry's fixed part, extended
-    attributes and allocation descriptors as the entry declares them add to the
-    image's bytes, a directory weighed before it is read.
+    each directory's data as stored, each File Entry's fixed part, extended
+    attributes and allocation descriptors as the entry declares them (or the bytes
+    its tag's CRC covers, when more), and each Indirect Entry's tag and CRC-covered
+    bytes add to the image's bytes, a directory weighed before it is read. Each ICB
+    is parsed and weighed once, however many names lead to it.
     """
 
     def __init__(self, limits: ListingLimits) -> None:
