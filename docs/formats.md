@@ -5,7 +5,8 @@ reading it. The table below lists every format and its extra. Each format then h
 that starts with what is supported and what isn't. It ends with a link to the format's
 development docs, which explain how archivey parses it, which damaged or unusual archives it
 refuses and why, and where it differs from the format's own tools. The last sections cover
-what holds across formats: detection, reading from a pipe, and self-extracting archives.
+what holds across formats: seeking in compressed files, detection, reading from a pipe,
+and self-extracting archives.
 
 ## Overview
 
@@ -44,43 +45,6 @@ The
 [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
 explains the choice of each compression library, and [Acknowledgements](acknowledgements.md)
 credits them.
-
-## Seeking in compressed files
-
-A member stream can seek when you pass `seekable_members=True`
-([Seeking inside a member](reading.md#seeking-inside-a-member)). A seek forward decodes the bytes
-in between. A seek backward resumes from the last point before its target where decoding can
-restart. If there is no such point, it decodes again from the start of the stream. Reading a
-member of a `.tar.gz` or other compressed TAR by name uses the same points.
-
-**Always near the target:**
-
-- **gzip, zlib, and Deflate members of ZIP and 7z:** from a point archivey keeps about every MiB
-  that a read has passed, except on PyPy ([PyPy](install.md#pypy)). `[seekable]` adds an
-  accelerator that keeps its own points.
-- **bzip2:** from the start of the block, which holds at most 900 kB of data.
-- **bzip3:** from the start of the block. Its size is set by the writer, and is 16 MiB by default.
-- **lzop:** from the start of the block, 256 KiB of data by default.
-- **Snappy:** from the start of the chunk, which holds at most 64 KiB of data.
-- **Legacy LZ4** (`lz4 -l`): from the start of the block, which holds 8 MiB of data.
-
-**Near the target only if the file was written in pieces:**
-
-- **xz:** from the start of a block, found from the file's index without decoding.
-  Single-threaded `xz` writes one block. `xz -T0` writes one every 24 MiB at the default level.
-- **lzip:** from the start of a member. `lzip` writes one, and `plzip` writes several for a large
-  file.
-- **LZ4:** from the start of a frame. `lz4` writes one frame per file.
-- **Zstandard:** from the start of a frame. `zstd` writes one frame per file. Files in the
-  Seekable Zstandard format have many frames, and archivey finds them without decoding.
-- **Unix compress (`.Z`):** from a reset code (CLEAR), which the writer adds only when compression
-  gets worse.
-
-**Always from the start:** LZMA Alone, Brotli and mozlz4. Archivey keeps no restart points in
-them.
-
-If you'll seek backwards often in a file from the last two groups, extracting the member to a file
-first is usually faster.
 
 ## Everyday archives
 
@@ -573,6 +537,43 @@ as an archive's: forward-only, one at a time, until you pass `seekable_members=T
 The [directory
 development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md)
 cover the walk order and symlinks.
+
+## Seeking in compressed files
+
+A member stream can seek when you pass `seekable_members=True`
+([Seeking inside a member](reading.md#seeking-inside-a-member)). A seek forward decodes the bytes
+in between. A seek backward resumes from the last point before its target where decoding can
+restart. If there is no such point, it decodes again from the start of the stream. Reading a
+member of a `.tar.gz` or other compressed TAR by name uses the same points.
+
+**Always near the target:**
+
+- **gzip, zlib, and Deflate members of ZIP and 7z:** from a point archivey keeps about every MiB
+  that a read has passed, except on PyPy ([PyPy](install.md#pypy)). `[seekable]` adds an
+  accelerator that keeps its own points.
+- **bzip2:** from the start of the block, which holds at most 900 kB of data.
+- **bzip3:** from the start of the block. Its size is set by the writer, and is 16 MiB by default.
+- **lzop:** from the start of the block, 256 KiB of data by default.
+- **Snappy:** from the start of the chunk, which holds at most 64 KiB of data.
+- **Legacy LZ4** (`lz4 -l`): from the start of the block, which holds 8 MiB of data.
+
+**Near the target only if the file was written in pieces:**
+
+- **xz:** from the start of a block, found from the file's index without decoding.
+  Single-threaded `xz` writes one block. `xz -T0` writes one every 24 MiB at the default level.
+- **lzip:** from the start of a member. `lzip` writes one, and `plzip` writes several for a large
+  file.
+- **LZ4:** from the start of a frame. `lz4` writes one frame per file.
+- **Zstandard:** from the start of a frame. `zstd` writes one frame per file. Files in the
+  Seekable Zstandard format have many frames, and archivey finds them without decoding.
+- **Unix compress (`.Z`):** from a reset code (CLEAR), which the writer adds only when compression
+  gets worse.
+
+**Always from the start:** LZMA Alone, Brotli and mozlz4. Archivey keeps no restart points in
+them.
+
+If you'll seek backwards often in a file from the last two groups, extracting the member to a file
+first is usually faster.
 
 ## Detection
 
