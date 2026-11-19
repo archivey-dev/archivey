@@ -12,8 +12,10 @@ chunk followed by chunks, each a 1-byte type and a 3-byte little-endian length::
 
 The CRC-32C covers the **decoded** data of a chunk, masked as the format describes.
 There is no end mark: the stream ends where the input does, which must be between
-chunks, or in zero bytes after a chunk that run to the end (padding, as for every
-codec; a non-zero byte after them is refused). A repeated identifier is how
+chunks, or in four or more zero bytes after a chunk that run to the end: padding, as
+for every codec. Four zeros are a compressed chunk of length 0, which is otherwise
+invalid; fewer may be a header cut short, and stay a truncation. A non-zero byte after
+the zeros is refused. A repeated identifier is how
 concatenated streams look, so the whole input is one stream here and nothing follows
 it.
 
@@ -626,7 +628,8 @@ class SnappyFramedDecompressor:
                 self._identified = True
                 continue
             if kind == _COMPRESSED and length == 0:
-                # A header of four zero bytes: padding, if only zeros follow.
+                # A header of four zero bytes, a length no chunk has: padding, if
+                # only zeros follow.
                 self._zeros_from = at
                 self._consume(_HEADER)
                 continue
@@ -711,21 +714,20 @@ class SnappyFramedDecompressor:
         return not self._output and not self._chunk_buffered()
 
     def end_input(self) -> None:
-        """The input ended: the stream is complete only between chunks, after a stream
-        identifier."""
+        """The input ended: the stream is complete only between chunks, or in zero
+        padding after one (``_zeros_from``), after a stream identifier."""
         if self._ended:
             return
         if self._skip:
             raise EOFError(
                 f"Snappy stream ends inside a skippable chunk, {self._skip} bytes short"
             )
-        if self._input and (not self._identified or self._input.strip(b"\x00")):
+        if self._input:
+            # Fewer than four zero bytes are not padding: they may be the start of a
+            # compressed chunk's header, cut.
             raise EOFError(
                 f"Snappy stream ends inside a chunk at offset {self._offset}"
             )
-        # Zero bytes up to the end, after a chunk, are padding (tape, ``dd`` and
-        # ``tar`` pad files to a block size), as for every other codec.
-        self._input.clear()
         if not self._identified:
             raise EOFError("Snappy stream ends before its stream identifier")
         self._ended = True

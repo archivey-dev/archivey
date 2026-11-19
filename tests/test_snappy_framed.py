@@ -447,6 +447,11 @@ _DAMAGED: dict[str, tuple[Callable[[], bytes], type[Exception], str]] = {
         TruncatedError,
         "ends inside a chunk",
     ),
+    "one to three zeros at the end, a header cut short": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0\0\0",
+        TruncatedError,
+        "ends inside a chunk",
+    ),
     "cut inside a chunk": (
         lambda: _frame(_data_chunk(_GOOD))[:-5],
         TruncatedError,
@@ -499,14 +504,15 @@ def test_damage_is_refused(selected: str, case: str) -> None:
         stream.read()
 
 
-@pytest.mark.parametrize("zeros", [1, 3, 4, 512, 70_000])
+@pytest.mark.parametrize("zeros", [4, 5, 512, 70_000])
 @pytest.mark.parametrize("isolated", [False, True])
 def test_zeros_to_the_end_are_padding(
     selected: str, zeros: int, isolated: bool
 ) -> None:
     """Zero bytes that run to the end of the file are padding, as for every other
     codec (tape, ``dd`` and ``tar`` pad to a block size). A zero byte reads as the
-    type of a compressed chunk, and its length 0 was refused."""
+    type of a compressed chunk, and its length 0 was refused. Four zeros are needed,
+    since fewer may be a header cut short."""
     data = _frame(_data_chunk(_GOOD)) + b"\0" * zeros
     diagnostics: list[Diagnostic] = []
     isolation = ProcessIsolation.NATIVE_DECODERS if isolated else ProcessIsolation.NONE
@@ -547,9 +553,7 @@ _FRAMED_REPROS = {
     "bad-crc.sz": CorruptionError,
     "missing-identifier.sz": CorruptionError,
     "oversized-uncompressed-chunk.sz": CorruptionError,
-    # A whole stream and one zero byte: that byte may be the start of a compressed
-    # chunk's header, but zeros that run to the end are padding (single-file.md §6).
-    "partial-header.sz": None,
+    "partial-header.sz": TruncatedError,
     "partial-identifier.sz": TruncatedError,
     "unknown-mandatory.sz": CorruptionError,
     "skippable.sz": None,

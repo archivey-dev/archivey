@@ -1701,8 +1701,9 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   Which packages are installed changes only the speed: a block a package refuses is decoded again in
   Python, which decides. With `process_isolation=NATIVE_DECODERS` the packages run in a child
   process. Nothing marks the end of the file, so a file cut between two chunks reads short with no
-  error; a cut inside a chunk raises `TruncatedError`. Zero bytes at the end of the file are
-  padding, as for the other formats here. Any other bytes after the last chunk, zeros followed by
+  error; a cut inside a chunk raises `TruncatedError`. Four or more zero bytes at the end of the
+  file are padding, as for the other formats here; fewer may be a cut chunk header and raise
+  `TruncatedError`. Any other bytes after the last chunk, zeros followed by
   something else included, raise `CorruptionError`. Hadoop's `.snappy` files and raw Snappy
   blocks have no signature, and archivey does not read them.
 - **pbzx** is Apple's framing of xz, the compression of a macOS installer package's payload:

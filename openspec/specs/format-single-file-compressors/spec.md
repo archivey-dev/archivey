@@ -663,11 +663,12 @@ shorter than its CRC or longer than a 64 KiB chunk can be, a raw block that decl
 more than 65,536 decoded bytes (before decoding it), and a chunk whose masked CRC-32C
 does not match its decoded data. It SHALL skip reserved skippable chunks and padding
 (`0x80` to `0xfe`) without holding them in memory. Input that ends inside a chunk SHALL
-raise `TruncatedError`; input that ends between chunks SHALL end the stream. Zero bytes
-after a chunk that run to the end of the input SHALL be padding, read past with no
-diagnostic, as for the codecs in "Bytes after a compressed stream are read past and
-reported"; zero bytes followed by a non-zero byte SHALL raise `CorruptionError`, as
-other bytes after the last chunk do.
+raise `TruncatedError`; input that ends between chunks SHALL end the stream. Four or
+more zero bytes after a chunk that run to the end of the input SHALL be padding, read
+past with no diagnostic, as for the codecs in "Bytes after a compressed stream are read
+past and reported"; one to three zero bytes there are a chunk header cut short and SHALL
+raise `TruncatedError`; zero bytes followed by a non-zero byte SHALL raise
+`CorruptionError`, as other bytes after the last chunk do.
 
 #### Scenario: A bad CRC is refused
 - **GIVEN** a `.sz` file whose chunk CRC does not match its data
