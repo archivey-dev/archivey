@@ -23,6 +23,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    Diagnostic,
     ProcessIsolation,
     open_archive,
     open_stream,
@@ -50,6 +51,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
 from archivey.internal.streams.decompressor_stream import release_decoder_children
 from archivey.types import OptionalLibrary
 from tests.conftest import importorskip
+from tests.streams_util import NonSeekableBytesIO
 
 _REPROS = (
     Path(__file__).parent.parent
@@ -430,10 +432,20 @@ _DAMAGED: dict[str, tuple[Callable[[], bytes], type[Exception], str]] = {
         CorruptionError,
         "unskippable chunk type 0x54",
     ),
-    "trailing zeros": (
-        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 8,
+    "trailing zeros then a non-zero byte": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 8 + b"\x01",
         CorruptionError,
-        "outside",
+        "neither padding nor a chunk",
+    ),
+    "trailing zeros then another stream": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 512 + _frame(_data_chunk(_GOOD)),
+        CorruptionError,
+        "neither padding nor a chunk",
+    ),
+    "trailing zeros cut short then a non-zero byte": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0\0\x01",
+        TruncatedError,
+        "ends inside a chunk",
     ),
     "cut inside a chunk": (
         lambda: _frame(_data_chunk(_GOOD))[:-5],
@@ -487,6 +499,27 @@ def test_damage_is_refused(selected: str, case: str) -> None:
         stream.read()
 
 
+@pytest.mark.parametrize("zeros", [1, 3, 4, 512, 70_000])
+@pytest.mark.parametrize("isolated", [False, True])
+def test_zeros_to_the_end_are_padding(
+    selected: str, zeros: int, isolated: bool
+) -> None:
+    """Zero bytes that run to the end of the file are padding, as for every other
+    codec (tape, ``dd`` and ``tar`` pad to a block size). A zero byte reads as the
+    type of a compressed chunk, and its length 0 was refused."""
+    data = _frame(_data_chunk(_GOOD)) + b"\0" * zeros
+    diagnostics: list[Diagnostic] = []
+    isolation = ProcessIsolation.NATIVE_DECODERS if isolated else ProcessIsolation.NONE
+    config = ArchiveyConfig(
+        process_isolation=isolation, on_diagnostic=diagnostics.append
+    )
+    with open_stream(io.BytesIO(data), format="sz", config=config) as stream:
+        assert stream.read() == _GOOD
+    with open_stream(NonSeekableBytesIO(data), format="sz", config=config) as stream:
+        assert b"".join(iter(lambda: stream.read(7), b"")) == _GOOD
+    assert diagnostics == []
+
+
 def test_a_stream_without_its_identifier_is_refused(selected: str) -> None:
     with (
         pytest.raises(CorruptionError, match="does not start with a stream identifier"),
@@ -514,7 +547,9 @@ _FRAMED_REPROS = {
     "bad-crc.sz": CorruptionError,
     "missing-identifier.sz": CorruptionError,
     "oversized-uncompressed-chunk.sz": CorruptionError,
-    "partial-header.sz": TruncatedError,
+    # A whole stream and one zero byte: that byte may be the start of a compressed
+    # chunk's header, but zeros that run to the end are padding (single-file.md §6).
+    "partial-header.sz": None,
     "partial-identifier.sz": TruncatedError,
     "unknown-mandatory.sz": CorruptionError,
     "skippable.sz": None,

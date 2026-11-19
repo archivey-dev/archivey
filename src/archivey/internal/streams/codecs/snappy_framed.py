@@ -12,8 +12,10 @@ chunk followed by chunks, each a 1-byte type and a 3-byte little-endian length::
 
 The CRC-32C covers the **decoded** data of a chunk, masked as the format describes.
 There is no end mark: the stream ends where the input does, which must be between
-chunks. A repeated identifier is how concatenated streams look, so the whole input is
-one stream here and nothing follows it.
+chunks, or in zero bytes after a chunk that run to the end (padding, as for every
+codec; a non-zero byte after them is refused). A repeated identifier is how
+concatenated streams look, so the whole input is one stream here and nothing follows
+it.
 
 **What the input can make this allocate.** A data chunk decodes to at most 64 KiB
 (the format's limit). The raw block's own length varint is read here and checked
@@ -520,7 +522,8 @@ class SnappyFramedDecompressor:
 
     A chunk is decoded when all of it has arrived and the caller wants output; its
     data is then returned in ``max_length`` pieces. The stream is complete only when
-    :meth:`end_input` finds the input ended between chunks, after an identifier.
+    :meth:`end_input` finds the input ended between chunks, or in zero padding after
+    one, after an identifier.
     """
 
     def __init__(self, chunks: ChunkDecoder) -> None:
@@ -531,6 +534,10 @@ class SnappyFramedDecompressor:
         self._skip = 0
         self._identified = False
         self._ended = False
+        # Where a run of zero bytes after a chunk started, once a whole chunk header
+        # of zeros was seen; ``None`` before. Zeros that run to the end of the input
+        # are padding (``end_input``); a non-zero byte after them is refused.
+        self._zeros_from: int | None = None
         self._output = memoryview(b"")
         # Offset in the stream of the start of ``_input``, for error messages and seek
         # points; where this decompressor started in the stream (not 0 after
@@ -587,6 +594,9 @@ class SnappyFramedDecompressor:
         """Decode the next buffered data chunk into ``_output``, dropping identifiers
         and skippable chunks on the way. False when no data chunk is complete yet."""
         while True:
+            if self._zeros_from is not None:
+                self._drop_zeros()
+                return False
             if self._skip:
                 n = min(self._skip, len(self._input))
                 self._consume(n)
@@ -614,6 +624,11 @@ class SnappyFramedDecompressor:
                     raise SnappyFormatError(f"bad stream identifier at offset {at}")
                 self._consume(len(STREAM_IDENTIFIER))
                 self._identified = True
+                continue
+            if kind == _COMPRESSED and length == 0:
+                # A header of four zero bytes: padding, if only zeros follow.
+                self._zeros_from = at
+                self._consume(_HEADER)
                 continue
             if kind in (_COMPRESSED, _UNCOMPRESSED):
                 most = _CRC + (
@@ -651,8 +666,22 @@ class SnappyFramedDecompressor:
             self._consume(_HEADER)
             self._skip = length
 
+    def _drop_zeros(self) -> None:
+        """Drop the zero bytes buffered after a zero chunk header, or refuse the first
+        byte that is not zero: zeros are padding only where they run to the end."""
+        nonzero = self._input.lstrip(b"\x00")
+        if nonzero:
+            at = self._offset + len(self._input) - len(nonzero)
+            raise SnappyFormatError(
+                f"zero bytes from offset {self._zeros_from} are followed by a "
+                f"non-zero byte at offset {at}: they are neither padding nor a chunk"
+            )
+        self._consume(len(self._input))
+
     def _chunk_buffered(self) -> bool:
         """Whether a call with no new input can make progress (or raise)."""
+        if self._zeros_from is not None:
+            return bool(self._input)
         if self._skip:
             return bool(self._input)
         if len(self._input) < _HEADER:
@@ -690,10 +719,13 @@ class SnappyFramedDecompressor:
             raise EOFError(
                 f"Snappy stream ends inside a skippable chunk, {self._skip} bytes short"
             )
-        if self._input:
+        if self._input and (not self._identified or self._input.strip(b"\x00")):
             raise EOFError(
                 f"Snappy stream ends inside a chunk at offset {self._offset}"
             )
+        # Zero bytes up to the end, after a chunk, are padding (tape, ``dd`` and
+        # ``tar`` pad files to a block size), as for every other codec.
+        self._input.clear()
         if not self._identified:
             raise EOFError("Snappy stream ends before its stream identifier")
         self._ended = True

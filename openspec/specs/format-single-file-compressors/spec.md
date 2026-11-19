@@ -663,12 +663,23 @@ shorter than its CRC or longer than a 64 KiB chunk can be, a raw block that decl
 more than 65,536 decoded bytes (before decoding it), and a chunk whose masked CRC-32C
 does not match its decoded data. It SHALL skip reserved skippable chunks and padding
 (`0x80` to `0xfe`) without holding them in memory. Input that ends inside a chunk SHALL
-raise `TruncatedError`; input that ends between chunks SHALL end the stream.
+raise `TruncatedError`; input that ends between chunks SHALL end the stream. Zero bytes
+after a chunk that run to the end of the input SHALL be padding, read past with no
+diagnostic, as for the codecs in "Bytes after a compressed stream are read past and
+reported"; zero bytes followed by a non-zero byte SHALL raise `CorruptionError`, as
+other bytes after the last chunk do.
 
 #### Scenario: A bad CRC is refused
 - **GIVEN** a `.sz` file whose chunk CRC does not match its data
 - **WHEN** it is read
 - **THEN** `CorruptionError` is raised before that chunk's data is returned
+
+#### Scenario: Zero padding at the end is read past
+- **GIVEN** a `.sz` file followed by 512 zero bytes, and the same file followed by 512
+  zero bytes and a further `.sz` stream
+- **WHEN** each is read
+- **THEN** the first reads the file's data with no diagnostic, and the second raises
+  `CorruptionError`
 
 ### Requirement: pbzx streams are read as xz chunks
 
