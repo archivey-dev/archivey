@@ -606,7 +606,8 @@ experimental.
   follow as `"library"` entries.
 - An optional package SHALL be listed as `("library", <import name>, <what>)` once it
   decodes: a codec's package (the zstd module in use, `pyppmd`, `lz4`, `brotli`, …),
-  the rapidgzip accelerator when a child decodes, `compress_utils` when chosen,
+  the rapidgzip accelerator when a child decodes, `compress_utils` when chosen (a
+  build without the algorithm, LZO1X or Snappy, is never chosen),
   SquashFS's `lz4.block`, and `cryptography` once a reader decrypts AES with it.
 - A plugin codec SHALL be listed as `("codec", "module.QualName", <stream>)`, followed
   by one `("library", <module>, <stream>)` entry per module its `requires` names, as a

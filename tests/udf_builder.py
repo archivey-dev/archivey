@@ -21,6 +21,7 @@ Layout of an image::
 
 from __future__ import annotations
 
+import binascii
 import struct
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,13 +36,8 @@ _DATA_BASE = 64
 
 
 def _crc(data: bytes) -> int:
-    crc = 0
-    for byte in data:
-        crc ^= byte << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
-            crc &= 0xFFFF
-    return crc
+    """CRC-16/CCITT (ECMA-167 7.2.6); ``test_iso_udf`` checks it bit by bit."""
+    return binascii.crc_hqx(data, 0)
 
 
 def tag(ident: int, location: int, body: bytes) -> bytes:

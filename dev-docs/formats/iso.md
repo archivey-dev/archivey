@@ -207,13 +207,16 @@ the listing's (a multi-extent file's extra records and `rr_moved` count), so an 
 right at a cap can be refused at open; `ListingLimits.UNLIMITED` turns the hook off. The
 UDF tree counts as one more tree, listed or not: each File Identifier but the parent
 entry and deleted ones counts against the UDF tree's own `max_members` count, and each
-directory's data (weighed before it is read) and each File Entry (its fixed part plus
-the extended-attribute and allocation-descriptor lengths it declares) add to the image's
-`max_metadata_bytes` sum. After it, listing touches only records already in memory,
-which is what lets the member walk run without the handle lock. Two exceptions read a
-directory's extent once more, under the handle lock (§2.3): a directory holding a
-repeated identifier, to check the multi-extent flags as written, and a directory holding
-a file whose data ends at the end of the image, to recover its declared length.
+directory's data (weighed before it is read), each File Entry (its fixed part plus the
+extended-attribute and allocation-descriptor lengths it declares, or the bytes its tag's
+CRC covers when that is more) and each Indirect Entry (its tag plus the bytes its CRC
+covers) add to the image's `max_metadata_bytes` sum. Each ICB is parsed and weighed
+once, however many File Identifiers name it or a point on its indirect chain. After it,
+listing touches only records already in memory, which is what lets the member walk run
+without the handle lock. Two exceptions read a directory's extent once more, under the
+handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent
+flags as written, and a directory holding a file whose data ends at the end of the
+image, to recover its declared length.
 
 **The namespace is picked once for the image: Rock Ridge, then UDF, then Joliet, then
 plain** (davi, 2026-11-18, decision card in the thread "Add UDF reading to ISO images").

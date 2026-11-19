@@ -19,6 +19,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    BackendUse,
     CompressionAlgorithm,
     ContainerFormat,
     CorruptionError,
@@ -37,6 +38,7 @@ from archivey import (
 )
 from archivey.formats import register_format
 from archivey.internal.format_adapter import registration_scope
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.codecs import deps, lzo_decoder
 from archivey.internal.streams.codecs.decoder_child import POOL
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
@@ -181,6 +183,19 @@ def test_compress_utils_runs_in_a_child_under_native_decoders() -> None:
     assert POOL.idle_count() == 1
 
 
+def test_compress_utils_in_a_child_is_recorded_once_it_decodes() -> None:
+    """Under NATIVE_DECODERS whether the child's build has LZO1X is known only on the
+    first block, so compress-utils is recorded then, not when the decoder is built."""
+    pytest.importorskip("compress_utils")
+    usage = ResourceUsageRecorder()
+    decode = lzo_decoder.lzo1x_decompressor(natives=ISOLATED, usage=usage)
+    assert usage.backends() == ()
+    assert decode(_BLOCK, 6) == b"hello\n"
+    assert usage.backends() == (
+        BackendUse("library", OptionalLibrary.COMPRESS_UTILS.value, "lzo"),
+    )
+
+
 def test_a_damaged_block_in_a_child_is_corruption() -> None:
     pytest.importorskip("compress_utils")
     config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
@@ -253,6 +268,7 @@ def test_a_child_import_failure_leaves_this_process_its_compress_utils(
     ``sys.path``. Its failure turned the package off for in-process reads too."""
     (tmp_path / "compress_utils.py").write_text(
         "class CompressError(Exception):\n    pass\n\n"
+        "def is_available(algorithm):\n    return True\n\n"
         "def decompress(data, algorithm, expected_size=None):\n"
         "    return b'FAKE-COMPRESS-UTILS'\n"
     )
@@ -289,8 +305,78 @@ def test_a_child_import_that_raises_os_error_falls_back(
     )
     POOL.close_idle()  # children inherit the environment when they start
     try:
-        isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED)
+        usage = ResourceUsageRecorder()
+        isolated = lzo_decoder.lzo1x_decompressor(natives=ISOLATED, usage=usage)
         assert isolated(_BLOCK, 6) == b"hello\n"
+        # The Python decoder read the block, so compress-utils is not recorded.
+        assert usage.backends() == ()
+    finally:
+        monkeypatch.undo()
+        POOL.close_idle()
+
+
+# compress-utils builds each algorithm as a CMake option. A build without one says so
+# in ``is_available`` and refuses every input with ``CompressError``.
+_COMPRESS_UTILS_WITHOUT_LZO_OR_SNAPPY = """
+class CompressError(Exception):
+    pass
+
+class Algorithm:
+    snappy = "snappy"
+
+def is_available(algorithm):
+    return str(algorithm) not in ("lzo", "snappy")
+
+def decompress(data, algorithm, expected_size=None):
+    raise CompressError(
+        "algorithm not compiled into this build: operation unsupported for this "
+        "algorithm"
+    )
+"""
+
+
+def use_compress_utils_without_lzo_or_snappy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Make this process and the decoder children find a compress-utils built without
+    LZO1X and Snappy. Children inherit ``PYTHONPATH`` when they start, so the caller
+    closes the idle ones before and after."""
+    path = tmp_path / "compress_utils.py"
+    path.write_text(_COMPRESS_UTILS_WITHOUT_LZO_OR_SNAPPY)
+    spec = importlib.util.spec_from_file_location("compress_utils", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "compress_utils", module)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    lazy = deps.LazyOptional(OptionalLibrary.COMPRESS_UTILS, present=True)
+    monkeypatch.setattr(deps, "compress_utils", lazy)
+    monkeypatch.setitem(deps.snappy_libraries, OptionalLibrary.COMPRESS_UTILS, lazy)
+
+
+@pytest.mark.parametrize(
+    "isolation", [ProcessIsolation.NONE, ProcessIsolation.NATIVE_DECODERS]
+)
+def test_a_compress_utils_built_without_lzo_is_not_used(
+    isolation: ProcessIsolation, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """compress-utils was used whenever it imported, and a build without LZO1X
+    refused every valid block as damaged. The Python decoder reads instead, and the
+    usage record does not name compress-utils."""
+    POOL.close_idle()
+    try:
+        use_compress_utils_without_lzo_or_snappy(tmp_path, monkeypatch)
+        natives = (
+            ISOLATED if isolation is ProcessIsolation.NATIVE_DECODERS else (IN_PROCESS)
+        )
+        usage = ResourceUsageRecorder()
+        decode = lzo_decoder.lzo1x_decompressor(natives=natives, usage=usage)
+        assert decode(_BLOCK, 6) == b"hello\n"
+        assert usage.backends() == ()
+        config = ArchiveyConfig(process_isolation=isolation)
+        with open_stream(_DATA / "text.txt.lzo", config=config) as stream:
+            assert stream.read() == _TEXT
     finally:
         monkeypatch.undo()
         POOL.close_idle()
