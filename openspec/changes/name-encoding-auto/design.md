@@ -221,7 +221,7 @@ A new module, `internal/name_encoding.py`, holds:
 - `NameDecoder(encoding, fallback)`, which holds the evidence, the memo and a lock.
   Readers under `concurrent_operations=True` decode from several threads.
 - The frequency tables, as package data of about 12 KB. A committed script rebuilds them
-  from the source corpus (open question 1).
+  from Wikipedia titles (decision 9).
 
 `NameDecoder.decode(raw)` returns the text and the codec it used when that codec was
 inferred. ZIP, TAR, RAR and ISO replace their `self._encoding` branches with it. ZIP
@@ -275,7 +275,8 @@ no new context field are needed.
 
 - [The tables come from Wikipedia titles, which lean towards proper nouns] → Accuracy is
   measured on held-out titles. Real file names use more everyday characters, which
-  should only help. Open question 1 covers swapping in public standard lists.
+  should only help. Article text is the fallback if real false positives appear
+  (decision 9).
 - [A wrong guess gives a wrong name, which DR-1 ranks worst] → The guess abstains unless
   one codec wins clearly. Measured wrong rates are at most 1% on CJK at N=1 and 0.1% on
   Latin archives. The diagnostic names the guess and keeps `raw_name`, so a caller can
@@ -291,25 +292,15 @@ no new context field are needed.
   freeze. After it, a decode reads only the frozen guess and the memo, which no longer
   change, so it takes no lock.
 
-## Open Questions
+### 9. The frequency tables come from Wikipedia titles
 
-1. **Table source (question for the reviewer).** The measured tables are the top-1000
-   characters of Wikipedia titles per language, built by a committed script. The
-   alternative is public standard lists: Jōyō kanji for Japanese, 通用规范汉字表 level 1
-   for Simplified Chinese, 常用國字標準字體表 for Traditional Chinese, and a frequency
-   ranking of the KS X 1001 hangul for Korean. The trade-offs:
-   - Wikipedia titles: measured as above. Reproducible from a public dump. They lean
-     towards proper nouns. A ranking of characters is data, not text, so licensing
-     should not apply, but it comes from a CC BY-SA corpus.
-   - Standard lists: an authority, and no corpus provenance. But they are unranked sets
-     of 2000-3500 characters, not top-1000 rankings. The Korean one still needs a
-     frequency source, and they would have to be re-measured, because a larger set
-     lowers the margin between codecs.
-
-   The author's recommendation is Wikipedia. davi asked for the reviewer's view before
-   deciding. The round-1 reviewer also recommends Wikipedia titles: it is the only
-   source with measurements behind it, a larger standard set narrows the margin between
-   codecs that share the EUC byte layout, and Korean needs a frequency corpus either
-   way. Its conditions: pin the dump date, commit the build script, and keep a
-   provenance note next to the data (task 1.2). Its third option, Wikipedia article text
-   instead of titles, is worth trying only if real-world false positives appear.
+The tables are the top-1000 characters per language from Wikipedia article titles, as
+measured. A committed script rebuilds them from a pinned dump date, and a one-line
+provenance note sits next to the data (task 1.2). davi chose this on 2026-11-19, after
+the round-1 reviewer recommended it. It is the only source with measurements behind it,
+and Korean needs a frequency corpus either way. **Rejected:** national standard lists
+(Jōyō kanji, 通用规范汉字表 level 1, 常用國字標準字體表, KS X 1001 hangul). They are
+unranked sets of 2000-3500 characters, and a larger set narrows the margin between the
+codecs that share the EUC byte layout. Every number in this design would have to be
+measured again. **Deferred:** Wikipedia article text instead of titles. It is worth
+trying only if real-world false positives appear.

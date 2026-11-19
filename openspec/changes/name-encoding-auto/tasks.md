@@ -5,8 +5,8 @@
   frequency score, the 0.5 threshold, the 0.15 margin, the 2-character minimum, the
   Latin-word guard and the rival guard
 - [ ] 1.2 Commit the frequency tables as package data, plus the script that rebuilds
-  them (decision 5; open question 1 decides the source). For Wikipedia tables: pin the
-  dump date, and add a one-line provenance note next to the data
+  them (decisions 5 and 9): Wikipedia titles, from a pinned dump date, with a one-line
+  provenance note next to the data
 - [ ] 1.3 Add `NameDecoder`: evidence in meeting order, frozen after 256 evidence names,
   a memo of the names met before the freeze, one text per directory prefix (split on
   `/`, and on `\` only at a character boundary of the codec used), a lock until the

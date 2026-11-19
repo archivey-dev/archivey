@@ -25,9 +25,8 @@ text. ISO takes the Joliet name before guessing. Every guessed name reports the 
 inferred-encoding diagnostic, and the strict policy refuses it. Cyrillic, Greek and
 Hebrew need the chardet library and wait for a later change.
 
-**Your call later:** Whether the frequency tables come from Wikipedia titles, as
-measured, or from public standard character lists. davi asked for the reviewer's view
-first. Settled since the draft: names that happen to be valid UTF-8 stay out of the
+**Your call later:** None. The design is settled. The frequency tables come from
+Wikipedia titles, as measured, and names that happen to be valid UTF-8 stay out of the
 guess.
 
 **Bottom line:** A small, well-measured feature, with the hard consistency question
