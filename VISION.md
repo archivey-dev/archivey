@@ -66,7 +66,7 @@ That origin story encodes priorities that remain core:
   `dev-docs/IDEAS.md`).
 - **Hashes without decompression where possible.** Formats already store CRC32/BLAKE2
   digests; a dedupe pass can use `member.hashes` without reading data (recipe:
-  [`docs/formats.md`](docs/formats.md#stored-digests)).
+  [`docs/opening.md`](docs/opening.md#stored-digests)).
 
 ## What "no surprises" means concretely
 

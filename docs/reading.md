@@ -93,7 +93,7 @@ when the sender closes the pipe, so the loop doesn't finish while the sender kee
 
 A compressed file or a compressed tar from a pipe that the sender keeps open is decompressed from
 what has arrived. A short one can still wait at open, and a read past its last byte waits for the
-sender to close the pipe ([Single-file compressors](formats.md#single-file-compressors) says
+sender to close the pipe ([Reading from a pipe](formats.md#reading-from-a-pipe) says
 where).
 
 Damaged compressed data can raise sooner from a pipe than from a file. From a file, a read with a
@@ -189,8 +189,7 @@ tools such as 7-Zip and unzip, except for a few files built on purpose, which no
 a ZIP or 7z member holding two DEFLATE streams under one CRC
 ([Where the guarantees stop](security.md#where-the-guarantees-stop)), a `.zz` file holding several
 zlib streams under a last checksum that covers them all, read with `use_rapidgzip=ON`, and a cut
-`.gz` whose last bytes are made to look like its trailer
-([Single-file compressors](formats.md#single-file-compressors)). For the first, the result can also
+`.gz` whose last bytes are made to look like its trailer. For the first, the result can also
 change with how many cores the machine has and with the platform. If your code must give the same
 answer as other tools, on every machine, and you would rather it be slower than differ, turn the
 accelerator off:

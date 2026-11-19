@@ -21,7 +21,7 @@ read.
 | [TAR](#tar-and-compressed-tar) (`.tar`) | Core |
 | [Compressed TAR](#tar-and-compressed-tar) (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
 | [7z](#7z) (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard* |
-| [RAR](#rar) (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program |
+| [RAR](#rar) (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program, and encrypted headers need `[recommended]` |
 | [gzip](#single-file-compressors) (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`), Apple's pbzx | Core. `[recommended]` makes `.lzo` and `.sz` faster |
 | [Zstandard](#single-file-compressors) (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
 | [LZ4](#single-file-compressors) (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
@@ -34,7 +34,7 @@ read.
 | [XAR](#xar) (`.xar`) | Core |
 | [macOS installer packages](#macos-installer-packages) (`.pkg`, `.mpkg`, `.xip`) | Core |
 | [CAB](#cab) (`.cab`) | Core |
-| [makeself](#makeself) (`.run`) | Core. The payload needs what its compressor needs |
+| [makeself](#makeself) (`.run`) | Core. The payload needs what its compressor needs, and `--ssl-encrypt` payloads need `[recommended]` |
 | [LHA](#lha) (`.lzh`, `.lha`), [ARJ](#arj) (`.arj`) | Core |
 | [CPIO](#cpio) (`.cpio`), [ar](#ar) (`.a`, `.lib`) | Core |
 | [A directory on disk](#directory) | Core |
@@ -138,7 +138,9 @@ may decode the block again from its start.
 - **Encryption:** 7z stores no password check. A wrong password usually makes decompression fail,
   or else the data fails its CRC. Only a member stored without compression and without a CRC can
   come back as garbage, which archivey reports as unchecked data (`DIGEST_UNVERIFIABLE`). With
-  encrypted headers, a wrong password raises `EncryptionError`.
+  encrypted headers, a wrong password raises `EncryptionError`, except in archives written by
+  `py7zr`, which store no header checksum: there a wrong password can, rarely, list garbage
+  members.
 - **Names** are stored as UTF-16, so `encoding=` has no effect.
 
 Damaged archives, and the details of confirming a password among several candidates, are covered
@@ -210,14 +212,16 @@ files](#seeking-in-compressed-files)).
   `member.hashes`. Brotli, `.Z`, LZMA Alone, mozlz4 and legacy LZ4 files have none, so damaged data
   can decode to wrong bytes with no error.
 - **Cut files:** `.Z`, `.bz3`, Snappy and legacy LZ4 files have no end marker, so a file cut
-  between two blocks reads short with no error. In the other formats a cut raises `TruncatedError`.
+  between two blocks reads short with no error. A cut mozlz4 file raises `CorruptionError`, and in
+  the other formats a cut raises `TruncatedError`.
 - **Concatenated files** (`cat a.gz b.gz > ab.gz`) are read as one payload in every format that
   allows it: gzip, bzip2, xz, lzip, LZMA Alone, Zstandard, LZ4 and Snappy. zlib and Brotli hold one
   stream each.
-- **Bytes after the stream**, such as a signature appended to a download, don't stop the read.
-  Archivey returns the whole payload, then reports `ARCHIVE_TRAILING_DATA`. `.Z` and `.bz3` have no
-  end marker, so they can't tell where the data stops: `.Z` decodes appended bytes as data, and
-  `.bz3` raises `CorruptionError` on them, as the `bzip3` tool does.
+- **Bytes after the stream**, such as a signature appended to a download, don't stop the read in
+  most formats. Archivey returns the whole payload, then reports `ARCHIVE_TRAILING_DATA`. `.Z`,
+  `.bz3` and Snappy have no end marker, so they can't tell where the data stops: `.Z` decodes
+  appended bytes as data, and `.bz3` and Snappy raise `CorruptionError` on them. mozlz4 decodes the
+  whole file as one block, so it raises `CorruptionError` too.
 - **Memory:** a Zstandard window, a mozlz4 size and a bzip3 block size are declared by the file.
   `DecoderLimits.max_decoder_memory` (2 GiB by default) caps the memory they ask for, and a file
   over the cap raises `ResourceLimitError`.
@@ -270,6 +274,9 @@ which in `ArchiveInfo.extra["iso.namespace"]`.
   versions are.
 - **Files in other trees:** a file that only an unlisted tree holds (such as Joliet or UDF, which
   Windows and 7-Zip read) is not a member. Archivey reports it with `MEMBER_READERS_DISAGREE`.
+- **pycdlib:** `import archivey` wraps a few of pycdlib's parsing methods, to bound what they
+  read. The wrappers act only while archivey opens an image, so other code that uses pycdlib sees
+  no change.
 - **Boot catalog:** a bootable image's boot catalog is listed as an ordinary file, as a mounted
   image shows it.
 - **CD images:** archivey reads the session an operating system would mount, from one track file
@@ -628,6 +635,13 @@ Some formats behave differently from a pipe:
   from a pipe they arrive when the pass gets there, and `member.member_state_final` turns `True`
   then. Extraction keeps the files in a temporary folder inside the destination until the index
   has been read.
+- **RAR** writes what arrives into temporary volumes for `unrar`, 16 MiB each, one on disk at a
+  time. `unrar` gets one password, so with several candidates an encrypted RAR 1.5-4 member raises
+  `UnsupportedFeatureError`: pass the one password. A RAR5 file copy (`rar -oi`) raises
+  `UnsupportedFeatureError`, since its bytes are an earlier member's. After a member cut short, a
+  wrong password or a member with no size, that member and every later member with data raise.
+  Closing the reader can leave a read of the source pending, so give a socket a timeout, or call
+  `shutdown()` on it before you close it.
 - **TAR** reads up to 1 MiB past the end of the archive to check for trailing data, so the listing
   ends only when the sender closes the pipe.
 - **Compressed files** are decoded from what has arrived. bzip2 and bzip3 decode only whole blocks
