@@ -1551,8 +1551,11 @@ so 8 levels cannot use 8 times the caps:
   the level's cap alone.
 - `max_decoded_bytes`: an inner level's listing count has the enclosing level's count as
   its parent (`ListingDecodeCount`). While the outer listing runs on the same thread,
-  every byte the inner listing decodes is drawn from both, so one listing pass of the
-  outermost archive decodes at most the cap across all its levels. A `.pkg` with many
+  every byte an inner decode stage produces is drawn from the outer count, also when
+  the outer walk drains an inner member's data, so one listing pass of the outermost
+  archive decodes at most the cap across all its levels. The outer walk does not draw
+  that member data again (`_PluginAdapter._decoded_stream`, `HeldInnerData` for the
+  `.deb` control files it reads whole), so each byte counts once. A `.pkg` with many
   payloads otherwise decoded payload count times the cap, and a `.deb`'s tar headers
   went uncharged to the outer listing. An inner walk outside the outer listing (an
   `open_member` that reads a payload again) counts on its own count alone, as any

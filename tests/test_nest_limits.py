@@ -1172,3 +1172,31 @@ def test_reading_members_again_after_the_listing_does_not_charge_it(
             for name in names:
                 assert name in listed
                 assert reader.read(name) == bytes(400_000)
+
+
+@pytest.mark.parametrize("size", [1_000, 400_000], ids=["small", "large"])
+def test_a_nested_member_drained_by_the_outer_walk_is_charged_once(size: int) -> None:
+    """A ``.deb``'s tars decode their files' data once: inside the inner listing step
+    (read ahead with a header) or when the outer walk drains the member. Each byte is
+    charged once, so one listing draws what the tars decompress to, and a cap just
+    above that lists."""
+    data = _deb_of(size)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        tars = [m for m in reader.members() if m.is_file]
+    assert len(tars) == 2
+    from tests.test_deb import _tar
+
+    decoded = 2 * len(_tar([("./usr/f", bytes(size))]))
+    with archivey.open_archive(
+        io.BytesIO(data), config=_decode_capped(decoded + 1_000)
+    ) as reader:
+        reader.members()
+        assert reader._listing_decode is not None
+        assert reader._listing_decode.drawn == decoded
+    with (
+        archivey.open_archive(
+            io.BytesIO(data), config=_decode_capped(decoded - 1)
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="max_decoded_bytes"),
+    ):
+        reader.members()
