@@ -671,6 +671,10 @@ class _RunState:
     # Kept so a REPLACE that removes an empty directory this run wrote can revise
     # that result to OVERWRITTEN.
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
+    # Where each directory member this run wrote physically is, by result index, so
+    # taking it back (``_take_back_written``) acts on that directory even after a
+    # later member re-pointed a caller's symlink on its spelled path.
+    written_dir_places: dict[int, Path] = field(default_factory=dict)
     # Hardlinks made as placeholders because their source has no written copy on
     # disk, by source member id, in archive order of each source's first link
     # (``_write_hardlink``): the second pass fills them (``_fill_held_sources``).
@@ -1816,11 +1820,12 @@ class ExtractionCoordinator:
         Its file is parked (see ``_park_earlier_copies``). Its claim, its place in the
         hardlink source map and its bomb-limit counts are released now. A hardlink
         already made to it is its own directory entry and stays, and its bytes stay
-        counted against the byte cap while it holds them. A directory is removed now if
-        it is empty; one that other members were written into stays, as their parent,
-        as it would in random access. A held hardlink's placeholder is parked as a file
-        is, and the second pass no longer fills it. An error recorded on the earlier
-        result is dropped with it: random access never tried that copy.
+        counted against the byte cap while it holds them. A directory is removed now,
+        where it was written, if it is empty and still this run's; one that other
+        members were written into stays, as their parent, as it would in random access,
+        and one that is gone is left gone. A held hardlink's placeholder is parked as a
+        file is, and the second pass no longer fills it. An error recorded on the
+        earlier result is dropped with it: random access never tried that copy.
         """
         self._take_back_written(index)
         prior = self._state.results[index]
@@ -1841,8 +1846,10 @@ class ExtractionCoordinator:
         pass wrote and must now handle otherwise (``_supersede_written_copy``); the
         caller records its new result.
 
-        A file is parked in ``_current``, a directory removed when empty, and the
-        claim, hardlink-source entries and bomb-limit counts are released.
+        A file is parked in ``_current``. A directory is removed where it was written
+        (``written_dir_places``), never where its name leads now, and only while it is
+        empty and still this run's. The claim, hardlink-source entries and bomb-limit
+        counts are released.
         """
         state = self._state
         prior = state.results[index]
@@ -1863,16 +1870,41 @@ class ExtractionCoordinator:
             )
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
-            on_disk = long_path(path)
-            if os.path.isdir(on_disk) and not os.path.islink(on_disk):
+            if prior.member.type == MemberType.DIRECTORY:
+                # Removed where it was written, and only while that is still this
+                # run's directory: ``path`` may lead somewhere else by now, through
+                # a caller's symlink a later member re-pointed.
+                place = state.written_dir_places.get(index, path)
                 # Random access never writes the superseded copy, so its metadata
                 # is not applied, whether or not the directory stays as a parent.
-                self._drop_pending_dir(path)
-                with contextlib.suppress(OSError):  # not empty: members live under it
-                    os.rmdir(on_disk)
+                # Found from where it was written too: the directory ``path`` leads
+                # to now keeps its own.
+                self._drop_pending_dir(place)
+                on_disk = long_path(place)
+                try:
+                    st = os.lstat(on_disk)
+                except OSError:
+                    st = None
+                # No archive input makes ``place`` a directory the run did not write:
+                # every later member that changes it leaves a file, a symlink or
+                # the run's own directory. Asking ``_is_run_directory`` (``place``
+                # is recorded in ``run_dirs``) only guards against a later change to
+                # this code; it does not see another process replacing the
+                # directory at that path, which threat model §1 leaves out of scope.
+                if (
+                    st is not None
+                    and stat.S_ISDIR(st.st_mode)
+                    and self._is_run_directory(place, st)
+                ):
+                    with contextlib.suppress(OSError):  # not empty: members under it
+                        os.rmdir(on_disk)
+                        state.written_paths.discard(path)
+                        # A later link may take the name (``_record_run_symlink``).
+                        self._resolutions_changed()
+                else:
+                    # Gone, or no longer the directory this run wrote: nothing of
+                    # this copy is left there to take back.
                     state.written_paths.discard(path)
-                    # A later link may take the name (``_record_run_symlink``).
-                    self._resolutions_changed()
             else:
                 state.written_paths.discard(path)
                 if physical != path and physical != self._physical_path(path):
@@ -2299,6 +2331,9 @@ class ExtractionCoordinator:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
                 ).append(result_index)
+                self._state.written_dir_places[result_index] = self._physical_path(
+                    result.path
+                )
                 # Written under a derived name rather than merged into a prior path:
                 # members inside it follow it there.
                 if prior is None and result.path != target:
