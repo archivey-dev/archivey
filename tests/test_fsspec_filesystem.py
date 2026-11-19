@@ -7,6 +7,7 @@ links, errors and the consumers that motivate it.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import io
 import os
@@ -570,6 +571,23 @@ def test_a_target_of_4096_bytes_resolves() -> None:
         assert fs.cat("s/f") == b"F"
 
 
+@contextlib.contextmanager
+def _counting_target_walks(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[int]]:
+    """Count the walks of a link's target inside the block: ``_Tree._walk`` calls
+    with ``hops`` above 0. The count is the yielded list's one item."""
+    walks = [0]
+    real_walk = fsspec_module._Tree._walk
+
+    def counting_walk(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("hops"):
+            walks[0] += 1
+        return real_walk(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fsspec_module._Tree, "_walk", counting_walk)
+        yield walks
+
+
 @pytest.mark.parametrize("end", ["nope", "f"], ids=["missing", "file"])
 def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
     end: str, monkeypatch: pytest.MonkeyPatch
@@ -583,15 +601,6 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
     ``hops`` above 0. The held walks take about 2100 of them; walking every link's
     target again for each of the 2000 links through the chain takes over 40 000.
     A wall-time bound (2 s against 0.3 s measured) failed on a slow Windows runner."""
-    walks = 0
-    real_walk = fsspec_module._Tree._walk
-
-    def counting_walk(self: Any, *args: Any, **kwargs: Any) -> Any:
-        nonlocal walks
-        if kwargs.get("hops"):
-            walks += 1
-        return real_walk(self, *args, **kwargs)
-
     entries: list[tuple[str, str, bytes | str]] = [
         ("dir", "d", ""),
         ("file", "f", b"F"),
@@ -602,11 +611,9 @@ def test_a_link_whose_walk_ends_on_no_directory_is_walked_once(
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
-        monkeypatch.setattr(fsspec_module._Tree, "_walk", counting_walk)
-        assert fs.info("x1999")["type"] == ("file" if end == "f" else "other")
-        monkeypatch.undo()
-    assert walks > 0
-    assert walks < 5000
+        with _counting_target_walks(monkeypatch) as walks:
+            assert fs.info("x1999")["type"] == ("file" if end == "f" else "other")
+    assert 0 < walks[0] < 5000
 
 
 @pytest.mark.parametrize(
@@ -634,10 +641,17 @@ def test_a_held_walk_is_dropped_when_its_missing_name_is_made(
             assert fs.cat("A") == b"Z"
 
 
-def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
+def test_a_link_that_many_paths_go_through_is_walked_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A link's walk is kept once it met no missing component: 2000 links through a
     link to a directory 400 deep took 5 s to list when each walked the target
     again.
+
+    Counted, not timed: a walk of a link's target is one ``_Tree._walk`` call with
+    ``hops`` above 0. With the walk kept there is 1; walking ``l``'s target again
+    for each link through it takes 4000. A wall-time bound (2 s against 0.15 s
+    measured) failed on a slow Windows runner.
 
     400 deep, not deeper: the strict check resolves the link's target as a path,
     and on macOS (``PATH_MAX`` 1024) a longer one cannot be looked up, so
@@ -652,13 +666,11 @@ def test_a_link_that_many_paths_go_through_is_walked_once() -> None:
     data = _tar_entries(entries)
     with ArchiveyFileSystem(io.BytesIO(data)) as fs:
         fs.reader.members()
-        start = time.perf_counter()
-        assert fs.info("x1999")["type"] == "file"
-        elapsed = time.perf_counter() - start
+        with _counting_target_walks(monkeypatch) as walks:
+            assert fs.info("x1999")["type"] == "file"
         assert fs.cat("x7") == b"7"
         assert fs.cat(deep + "1999") == b"1999"
-    # Measured: under 0.15 s.
-    assert elapsed < 2.0
+    assert 0 < walks[0] < 100
 
 
 def test_a_walk_kept_for_a_refused_link_is_dropped() -> None:
