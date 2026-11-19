@@ -684,37 +684,31 @@ the header forms, the encryption schemes and the limits.
 
 ## Disk images
 
-A UDIF image (`.dmg`) is recognised by its `koly` block, in its last 512 bytes, or its first 12 when
-an old image puts the block at the start, and refused with `UnsupportedFeatureError`. A compressed
-image stores its blocks as zlib, bzip2 or xz, so without this check, opening one would extract the
-first block and treat the rest as trailing bytes. To get at the files, convert or mount the image
-first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
+A macOS disk image (`.dmg`, UDIF) is recognised and refused with `UnsupportedFeatureError`, so it
+isn't mistaken for the zlib, bzip2 or xz stream its first block happens to be. To get at the
+files, convert or mount the image first, for example with `7z x`, `dmg2img`, or `hdiutil attach`
+on macOS. An uncompressed image that holds an ISO 9660 filesystem is read as that ISO.
 
-- An uncompressed image whose disk is an ISO 9660 filesystem is read as that ISO: `CD001` at byte
-  32 769 is checked first.
-- The end is read from a file, an in-memory stream, an fsspec `OpenFile` (one more range request),
-  and a stored ZIP entry or uncompressed TAR member opened with `seekable_members=True`.
-- A pipe is not rewound to read the end. A short image from a pipe is still refused, because
-  detection has already read through to its end. A longer one whose first block is bzip2 or xz
-  opens as that stream. One whose first block is zlib fails with `FormatDetectionError`, because no
-  content probe runs on a source with no name.
+A `.dmg` read from a pipe can't be recognised this way, because its marker is in the last 512 bytes.
+The [DMG handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) says
+what happens then.
 
 ## Directory
 
-- **Needs:** nothing. A filesystem tree is read as a pseudo-archive, with the same API, for tests
-  and for code that handles directories and archives alike.
-- **Listing:** walks the tree.
-- **Reading members:** the same defaults as an archive: forward-only streams and one live stream,
-  until you pass `seekable_members=True` or `concurrent_operations=True`.
-- Hardlinks are listed as tar lists them. When several names inside the root share one file, the first
-  name the walk reaches is a `FILE`, and each later name is a `HARDLINK` to it, with `size` `None`.
-  The walk visits a directory's files by name, then its subdirectories, so which name keeps the
-  data is fixed. With `streaming=True`, extracting a later name whose first name a filter left out
-  fails, as for a streamed tar.
-- Names come from the filesystem, so `encoding=` has no effect, and passing it reports
-  `ENCODING_ARGUMENT_UNUSED`.
-- Files on Linux's `/proc` and `/sys` filesystems report a size that isn't their content's
-  (0 or 4096), so they are listed with `size` `None` and read to the end.
+A folder on disk can be opened like an archive, with the same API, which helps tests and code that
+handles folders and archives alike. It needs nothing extra. Member streams have the same defaults
+as an archive's: forward-only, one at a time, until you pass `seekable_members=True` or
+`concurrent_operations=True`.
+
+- **Hard links:** when several names in the folder share one file, the first name the walk reaches
+  is a `FILE` and the others are `HARDLINK` members to it, as `tar` lists them.
+- **Names** come from the filesystem, so `encoding=` has no effect.
+- **`/proc` and `/sys`** files report sizes that aren't their content's, so they are listed with
+  `size` set to `None` and read to their end.
+
+The [directory
+handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md) covers
+the walk order and symlinks.
 
 ## Single-file compressors
 
