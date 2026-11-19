@@ -652,6 +652,9 @@ _CLI_PRINT_ALLOWED = {
     "common.py: stats.bytes_decompressed": "int counter",
     "common.py: str(stats.compressed_bytes_consumed)": "int counter",
     "common.py: stats.source_seek_count": "int counter",
+    "common.py: stats.remote_requests": "int counter",
+    "common.py: stats.remote_bytes_fetched": "int counter",
+    "common.py: stats.remote_size": "int size",
     "extract_cmd.py: ', '.join(parts)": "counts, built two lines above",
     "extract_cmd.py: '; '.join(parts)": (
         "_usage_line: int counts, and the declaring text through escape_member_name"

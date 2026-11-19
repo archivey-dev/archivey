@@ -152,6 +152,50 @@ def test_track_io_counts_the_requests_of_a_url(memfs: Any) -> None:
     assert fields["remote_fetched_share"] == "100.00%"
 
 
+def test_track_io_counts_every_request_and_every_part(
+    memfs: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fsspec
+    from fsspec.implementations.memory import MemoryFileSystem
+
+    from archivey import open_archive
+    from archivey.internal.measurement import enable_measurement, io_stats
+
+    calls: list[int] = []
+    cat_file = MemoryFileSystem.cat_file
+
+    def counted(
+        self: Any, path: str, start: Any = None, end: Any = None, **kw: Any
+    ) -> Any:
+        data = cat_file(self, path, start=start, end=end, **kw)
+        calls.append(len(data))
+        return data
+
+    monkeypatch.setattr(MemoryFileSystem, "cat_file", counted)
+    # Larger than the first window, so the listing takes more than one request.
+    data = _zip_bytes({"a.bin": os.urandom(400_000)}, stored=True)
+    memfs.pipe("/cli-urls/big.zip", data)
+    run = _run(["--track-io", "memory://cli-urls/big.zip"])
+    assert run.code == EXIT_OK, run.err
+    line = next(x for x in run.err.splitlines() if x.startswith("track-io:"))
+    fields = dict(f.split("=", 1) for f in line.split()[1:])
+    assert len(calls) > 1
+    assert int(fields["remote_requests"]) == len(calls)
+    assert int(fields["remote_bytes_fetched"]) == sum(calls)
+
+    # A volume list: the size is the sum of the parts.
+    half = len(data) // 2
+    memfs.pipe("/cli-urls/big.zip.001", data[:half])
+    memfs.pipe("/cli-urls/big.zip.002", data[half:])
+    parts = [fsspec.open(f"memory://cli-urls/big.zip.00{i}") for i in (1, 2)]
+    with enable_measurement(), open_archive(parts) as reader:
+        reader.members()
+        stats = io_stats(reader)
+    assert stats is not None
+    assert stats.remote_size == len(data)
+    assert stats.remote_requests is not None and stats.remote_requests >= 1
+
+
 def test_track_io_of_a_local_path_has_no_request_counts(tmp_path: Path) -> None:
     path = tmp_path / "data.zip"
     path.write_bytes(_zip_bytes(TWO))
