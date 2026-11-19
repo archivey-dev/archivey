@@ -40,11 +40,12 @@
   `decode_text`: ARJ link targets and comments (archive comment included), LHA comments
   and user and group names, SquashFS and RPM link targets. LHA's `name|target` field
   moves to `decode_name_and_target`
-- [ ] 2.5a The adapter does the wait for plugin-shaped formats: under `"auto"` the memo
-  is written when a member is listed; a yielded directory whose `name` is the
-  `decode_name` text for its `raw_name` (or that text with `\` turned into `/`) is
-  held, charged, decoded again when the wait ends, and listed before a cap raises
-  (decision 3)
+- [ ] 2.5a The adapter does the wait for plugin-shaped formats: the whole-name memo is
+  written at the first decode with the guess recorded, the directory-prefix memo when a
+  member under it is listed; a yielded directory whose `name` is the `decode_name` text
+  for its `raw_name` (or that text with `\` turned into `/`) is held, charged, takes the
+  ending member's prefix text or that member's guess, and is listed before a cap raises
+  (decision 3). Pin XAR (children joined from the parent) and a CAB repeated name
 - [ ] 2.6 A nested reader inherits `"auto"` and starts its own `NameDecoder`
 - [ ] 2.7 `MEMBER_NAME_ENCODING_INFERRED` with `declared_encoding` set to the codec the
   name would otherwise have had (decision 8)

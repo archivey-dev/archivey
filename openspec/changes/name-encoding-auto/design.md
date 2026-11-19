@@ -131,9 +131,11 @@ is guessed from the evidence collected up to and including that name:
 - After 256 evidence names the guess is **frozen**, and later names neither add to it
   nor change it.
 - **Memo:** each distinct stored byte string met before the freeze is decoded once per
-  reader, and every later decode of the same bytes returns the same text. After the
-  freeze a decode depends only on the bytes, so the memo stops growing: it holds at most
-  the names met before the freeze, and lookups after it need no lock.
+  reader, and every later decode of the same bytes returns the same text. The one
+  exception is a plugin directory that waits (below): from its listing on, its bytes
+  decode to its listed text. After the freeze a decode depends only on the bytes, so the
+  memo stops growing: it holds at most the names met before the freeze, and lookups
+  after it need no lock.
 - **Directories keep one text.** A directory's path decodes to one text per reader, and
   every name under it reuses that text for the directory part. Only the rest of the name
   is decoded with the current guess. The memo is keyed on each byte prefix that ends
@@ -172,21 +174,26 @@ is guessed from the evidence collected up to and including that name:
   ZIP, TAR, RAR and ISO do the wait in their own readers. For the plugin-shaped formats
   (cpio, ar, LHA, ARJ, CAB and the rest) and third-party plugins, the adapter does it,
   so no plugin has to:
-  - Under `"auto"`, a name that `decode_name` returns is provisional until the adapter
-    lists the member. The decoder writes its memo, whole name and directory prefixes,
-    only when a member is listed. A decode before that reads the memo, and decodes what
-    the memo lacks with the current guess.
+  - `decode_name` writes the whole-name memo at the first decode, as everywhere else,
+    so a plugin that compares names before it yields them (CAB's repeated-name check)
+    sees one text per byte string. It also records the guess each name was decoded
+    with. Only the directory-prefix memo waits: a prefix's text is written when a
+    member under it is listed. Until then, a decode reads the prefix memo and decodes
+    what it lacks with the current guess.
   - When a plugin yields a directory member whose `name` is the text `decode_name`
     returned for its `raw_name`, or that text with `\` turned into `/` (what CAB and LHA
     do), the adapter holds it. It charges it to the listing tracker, as `hold()` does,
     and keeps the plugin's walk going.
-  - When the wait ends, the adapter decodes `raw_name` again with the evidence at that
-    point, makes the same `\` change if the plugin made it, sets the member's name to
-    that text, and lists it. At a cap it lists the waiting directories first, and then
-    raises as it does now.
-  - The next member's own `decode_name` call came before this, with the same evidence.
-    Since the memo held nothing for the directory's prefix yet, that call decoded the
-    prefix with the same guess, so the child and the directory agree.
+  - When the wait ends, the directory agrees with the member that ended it. If that
+    member's `raw_name` lies under the directory's, the directory takes the text that
+    member's `name` gives that prefix, so the two stay one tree even when the plugin
+    joined the child's path from the directory's first text (XAR builds its table
+    before it yields anything). Otherwise the adapter decodes `raw_name` again with the
+    guess recorded for that member's name, and makes the same `\` change if the plugin
+    made it. The listed text replaces the directory's whole-name memo entry. At the
+    freeze, at 64 waiting directories or at the end, the current guess is used. At a
+    cap, the adapter lists the waiting directories first, and then raises as it does
+    now.
   - A directory whose name the plugin built in some other way (joined from parts, or
     normalised) doesn't wait. It keeps the text `decode_name` gave, as with the
     directory rule alone.
@@ -220,7 +227,9 @@ Why this rule:
   before that point is final. The spec states this as one exception. A damaged ZIP
   local header is another.
 - **Order of calls doesn't matter.** Thanks to the memo, a re-walk, a `get()`, or a
-  second `members()` never sees a different decode for bytes it already decoded.
+  second `members()` never sees a different decode for bytes it already decoded. A
+  plugin directory that waited is listed once, with its final text, before any caller
+  sees it.
 - **Bounded cost.** Evidence stops at 256 names, and the wait at 64 entries and at the
   listing caps. Accuracy plateaus by about 10 names.
 
