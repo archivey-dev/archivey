@@ -9,6 +9,7 @@ of them the same way (checked when the builder was written). Bridge images come 
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import struct
 import subprocess
@@ -218,8 +219,26 @@ def test_first_extent_skips_an_unrecorded_span() -> None:
     assert sparse.first_extent is None
 
 
+class _CountedSpans(tuple):  # type: ignore[type-arg]
+    walks = 0
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        type(self).walks += 1
+        return super().__iter__()
+
+
+def test_first_extent_walks_the_spans_once_per_entry() -> None:
+    """Every name on a shared entry reads ``first_extent`` while listing; an entry of
+    thousands of unrecorded spans must not be walked once per name."""
+    _CountedSpans.walks = 0
+    spans = _CountedSpans([Span(None, 2048)] * 1000 + [Span(8192, 2048)])
+    entry = UdfEntry(**{**_fields(_inline_directory(b"")), "spans": spans})
+    assert [entry.first_extent for _ in range(100)] == [8192] * 100
+    assert _CountedSpans.walks == 1
+
+
 def _fields(entry: UdfEntry) -> dict[str, object]:
-    return {name: getattr(entry, name) for name in UdfEntry.__slots__}
+    return {f.name: getattr(entry, f.name) for f in dataclasses.fields(entry) if f.init}
 
 
 class _Weigh:
@@ -501,8 +520,7 @@ def _fan_out(
 
 def test_file_identifiers_naming_one_indirect_chain_read_it_once() -> None:
     """Many File Identifiers can name one ICB. Each ICB is parsed once: 200 names on
-    a chain of 63 Indirect Entries read 64 entry blocks, not 200 times as many (17 s
-    at open before)."""
+    a chain of 63 Indirect Entries read 64 entry blocks, not 200 times as many."""
     image = _fan_out(200, chain=63)
     reads: list[int] = []
 

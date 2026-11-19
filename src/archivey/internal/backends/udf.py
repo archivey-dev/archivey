@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import binascii
 import bisect
+import dataclasses
 import io
 import stat
 import struct
@@ -296,9 +297,10 @@ class Span:
     length: int
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class UdfEntry:
-    """One File Entry, as the listing needs it."""
+    """One File Entry, as the listing needs it. Frozen: every name that leads to the
+    entry's ICB shares one instance (``UdfVolume._entries``)."""
 
     location: int  # the entry's absolute byte offset, its identity
     file_type: int
@@ -313,6 +315,22 @@ class UdfEntry:
     spans: tuple[Span, ...]
     inline: bytes | None
     partition: int
+    # The image offset of the first recorded byte of the data, or ``None`` when no
+    # extent is recorded (no data, or zeros only). Worked out once here: the listing
+    # reads it once per name, and an entry can hold thousands of unrecorded spans
+    # before its first recorded one.
+    first_extent: int | None = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        first = next(
+            (
+                span.offset
+                for span in self.spans
+                if span.length and span.offset is not None
+            ),
+            None,
+        )
+        object.__setattr__(self, "first_extent", first)
 
     @property
     def is_directory(self) -> bool:
@@ -331,15 +349,6 @@ class UdfEntry:
         perms = self.permissions
         bits = (perms & 0o7) | ((perms >> 5) & 0o7) << 3 | ((perms >> 10) & 0o7) << 6
         return _FILE_TYPE_MODE.get(self.file_type, 0) | bits
-
-    @property
-    def first_extent(self) -> int | None:
-        """The image offset of the first recorded byte of the data, or ``None`` when
-        no extent is recorded (no data, or zeros only)."""
-        for span in self.spans:
-            if span.length and span.offset is not None:
-                return span.offset
-        return None
 
 
 @dataclass(slots=True)
@@ -388,7 +397,7 @@ class UdfVolume:
         # Every File Entry parsed, by each ICB (partition, block) that led to it,
         # with how many indirect entries lie between: many File Identifiers can name
         # one ICB, or ICBs of one indirect chain, and each block is then read,
-        # checked and weighed once.
+        # checked and weighed once. Every such name shares the one frozen entry.
         self._entries: dict[tuple[int, int], tuple[UdfEntry, int]] = {}
         self.volume_identifier = ""
         fsd_location = self._read_volume_descriptors(anchor)
