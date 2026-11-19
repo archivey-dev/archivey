@@ -193,10 +193,11 @@ decompressing anything. A CRC-32 is four big-endian bytes, so one you computed c
   files read from a source that can seek.
 - **BLAKE2sp**: RAR5 files that store one.
 - **MD5**: Debian package files listed in `DEBIAN/md5sums`.
-- **SHA-1, SHA-256 and the others XAR names**: XAR files.
-- **None:** TAR, SquashFS, CPIO, LHA, ar, RPM, macOS installer packages, directories, and every
-  other single compressed file. Many of them still check their data as it is read, with a
-  checksum per block, or per file in a form `member.hashes` doesn't hold.
+- **MD5, SHA-1 or a SHA-2 digest**: XAR files, and the files of a macOS installer package outside
+  its payloads.
+- **None:** TAR, SquashFS, CPIO, LHA, ar, RPM, the files in a macOS installer package's payloads,
+  directories, and every other single compressed file. Many of them still check their data as it is
+  read, with a checksum per block, or per file in a form `member.hashes` doesn't hold.
 
 When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
 best one available:
