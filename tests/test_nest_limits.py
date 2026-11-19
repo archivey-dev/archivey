@@ -1197,6 +1197,10 @@ def test_a_nested_member_drained_by_the_outer_walk_is_charged_once(size: int) ->
         archivey.open_archive(
             io.BytesIO(data), config=_decode_capped(decoded - 1)
         ) as reader,
-        pytest.raises(ResourceLimitError, match="max_decoded_bytes"),
+        pytest.raises(ResourceLimitError, match="max_decoded_bytes") as raised,
     ):
         reader.members()
+    # The data tar crosses the cap; its share is all of it, the body the outer walk
+    # drained included.
+    share = int(str(raised.value).split(", ")[1].split(" of them")[0])
+    assert share == decoded // 2

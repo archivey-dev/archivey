@@ -459,12 +459,15 @@ class ListingDecodeCount:
     again, counts on the inner count alone.
     """
 
-    __slots__ = ("_cap", "_drawn", "_parent", "_started", "_thread")
+    __slots__ = ("_cap", "_drawn", "_forwarded", "_parent", "_started", "_thread")
 
     def __init__(self, cap: int, parent: ListingDecodeCount | None = None) -> None:
         self._cap = cap
         self._drawn = 0
         self._parent = parent
+        # Every byte this count has passed to its parent, its own count active or
+        # not: this archive's share of the outer listing's total (``_own``).
+        self._forwarded = 0
         self._started = False
         self._thread: int | None = None
 
@@ -524,6 +527,7 @@ class ListingDecodeCount:
             self._drawn += n
         outer = self._outer()
         if outer is not None:
+            self._forwarded += n
             outer.draw(n, self._own(inner))
         if active and self._drawn > self._cap:
             raise self._error(0, inner=inner)
@@ -538,9 +542,10 @@ class ListingDecodeCount:
 
     def _own(self, inner: int | None) -> int:
         """What the innermost archive of a call that reaches the outer count has
-        decoded itself: this count's, unless an archive inside this one made the
-        call."""
-        return self._drawn if inner is None else inner
+        passed to it: this count's share (``_forwarded``, which includes what the
+        outer walk drained of this archive's members), unless an archive inside this
+        one made the call."""
+        return self._forwarded if inner is None else inner
 
     def _error(
         self, n: int, what: str = "", *, inner: int | None = None
