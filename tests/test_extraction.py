@@ -5618,6 +5618,8 @@ def test_taking_back_a_copy_leaves_the_directory_its_name_leads_to_now(
     # TRUSTED, to a directory outside it. There `X` is an empty directory the run
     # never wrote. Taking back the first copy removes it from `e/X` and leaves that
     # directory alone.
+    if outside and sys.platform == "win32":
+        pytest.skip("a link target with a drive letter is refused on every OS")
     there = tmp_path / "outside" if outside else tmp_path / "out" / "f"
     (there / "X").mkdir(parents=True)
     payload = b"first" if kind == "file" else None
