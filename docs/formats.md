@@ -27,7 +27,7 @@ read.
 | [LZ4](#single-file-compressors) (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
 | [bzip3](#single-file-compressors) (`.bz3`) | `[bzip3]` |
 | [uuencode](#single-file-compressors) (`.uu`, `.uue`), base64 (`.b64`) | Core |
-| [ISO 9660](#iso-9660) (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
+| [ISO 9660 and UDF](#iso-9660) (`.iso`, and CD images as `.bin`, with or without `.cue`) | `[recommended]` |
 | [SquashFS](#squashfs) (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard* and LZ4 images need `[recommended]` |
 | [Debian packages](#debian-packages) (`.deb`, `.udeb`) | Core. Zstandard* packages need `[recommended]` |
 | [RPM](#rpm) (`.rpm`) | Core. Zstandard* payloads (Fedora's default) need `[recommended]` |
@@ -253,21 +253,24 @@ why, and the checks archivey adds around the accelerators.
 ### ISO 9660
 
 Reading an ISO image needs `[recommended]` (`pycdlib`). An image can carry several name trees
-over the same files. Archivey lists Rock Ridge first, then Joliet, then plain ISO 9660, and says
-which in `ArchiveInfo.extra["iso.namespace"]`.
+over the same files. Archivey lists Rock Ridge first, then UDF, then Joliet, then plain ISO 9660,
+and says which in `ArchiveInfo.extra["iso.namespace"]`.
 
-- **Supported:** Rock Ridge, Joliet and plain ISO 9660 names. zisofs compression (`mkzftree`,
+- **Supported:** Rock Ridge, UDF, Joliet and plain ISO 9660 names. Images with only UDF, as on
+  most Blu-ray discs. zisofs compression (`mkzftree`,
   `genisoimage -z`, `xorriso --zisofs`). Files of 4 GiB or more, stored in several pieces, read as
   one member. Raw CD images (`.bin` with or without its `.cue`) in Mode 1 or Mode 2 Form 1,
   multisession discs included. Hybrid installer images, with an EFI partition after the ISO data.
-- **Not supported:** UDF: a DVD image that also has an ISO 9660 tree is listed from that tree,
-  and a UDF-only image (such as a Blu-ray) is not recognised. zisofs2 members are listed, and
+- **Not supported:** UDF on a rewritable or incrementally written disc (a sparable or virtual
+  partition), or with extended allocation descriptors: the image is listed from another tree when
+  it has one, and otherwise raises `UnsupportedFeatureError`. zisofs2 members are listed, and
   reading one raises `UnsupportedFeatureError`. Video and audio-only CD images raise
   `UnsupportedFeatureError`.
 
 - **Names:** Rock Ridge and plain names are read as UTF-8, then with `encoding=` when you pass
   one. Without it, a name that isn't UTF-8 takes the matching Joliet name when the image has one,
-  and is escaped otherwise. Joliet names are UTF-16.
+  and is escaped otherwise. Joliet names are UTF-16, and UDF names are Latin-1 or UTF-16, as each
+  name says, so `encoding=` has no effect on them.
 - **File versions:** the `;1` at the end of a plain or Joliet file name is dropped, and the number
   is kept in `extra["iso.version"]`. When a folder holds several versions of one name, the highest
   takes the bare name, and older ones are listed as `FOO.;1` with `is_current=False`, as RAR file
@@ -284,8 +287,8 @@ which in `ArchiveInfo.extra["iso.namespace"]`.
   session, it reads the first and reports `ARCHIVE_UNREAD_SESSION`.
 - **Damage:** ISO 9660 stores no checksums, so damaged data comes back without an error. A
   truncated image still opens when its folders survive, and only the files the cut reaches raise
-  `TruncatedError`. An image with UDF doesn't open once truncated, because the UDF anchor sits in
-  its last block.
+  `TruncatedError`. A cut that reaches the folders, or the UDF anchor at block 256, makes
+  `open_archive` raise `TruncatedError`.
 
 Archivey also refuses folder trees that loop back on themselves. The details, and how `.cue`
 sheets and multisession discs are read, are in the
