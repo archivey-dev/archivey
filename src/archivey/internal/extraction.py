@@ -605,7 +605,10 @@ class _RunState:
     run_symlinks: set[tuple[int, int]] = field(default_factory=set)
     run_symlink_keys: set[str] = field(default_factory=set)
     # Parent directory (as spelled) -> whether its path goes through one of
-    # ``run_symlinks``; cleared with ``resolved_parents``.
+    # ``run_symlinks``, on its own components or in the resolution of a caller's
+    # symlink among them; cleared with ``resolved_parents`` when a link or directory
+    # is removed, and when a run link is made where such a resolution looked
+    # (``_record_run_symlink``).
     through_run_link: dict[str, bool] = field(default_factory=dict)
     # Progress totals; see ``_run``.
     members_total: int | None = None
@@ -2909,8 +2912,9 @@ class ExtractionCoordinator:
         2026-11-17): none of 82,635 release tarballs in tar-minefield's
         ``tree.through-symlink`` scan does this, bsdtar refuses it too, and a member's
         path is then fixed by its name and the caller's destination, never by a link
-        the archive made. A symlink the caller had in the destination is followed as
-        before."""
+        the archive made. A symlink the caller had in the destination is followed,
+        unless its own resolution goes through a link of this run
+        (``_is_run_symlink``)."""
         if not self._state.run_symlinks and not self._state.run_symlink_keys:
             return
         if self._goes_through_run_link(os.path.dirname(os.fspath(path))):
@@ -2921,11 +2925,14 @@ class ExtractionCoordinator:
 
     def _goes_through_run_link(self, parent: str) -> bool:
         """Whether the directory ``parent`` (as spelled under the destination) is, or
-        is under, a symlink this run created. A loop, not recursion: a name can be
+        is under, a symlink this run created, or a caller's symlink that resolves
+        through one (``_is_run_symlink``). A loop, not recursion: a name can be
         thousands of components deep.
 
-        Cached per directory or link on disk, so each costs one ``lstat`` until one
-        is removed or replaced (``_resolutions_changed``). Any other name is not
+        Cached per directory or link on disk, so each costs one ``lstat`` (and a
+        caller's symlink one walk) until one is removed or replaced
+        (``_resolutions_changed``), or a run link is made at a name a caller's
+        symlink's walk looked up (``_record_run_symlink``). Any other name is not
         cached: a later member may make a link there."""
         state = self._state
         cache = state.through_run_link
@@ -4136,8 +4143,10 @@ class ExtractionCoordinator:
 
     def _resolutions_changed(self, *, created: bool = False) -> None:
         """Forget the cached parent resolutions: a symlink was created or removed.
-        A symlink created at a free name changes no ``through_run_link`` answer,
-        which holds only names that are on disk."""
+        A symlink created at a free name changes no ``through_run_link`` answer for
+        a name it caches, which is on disk; it can change the answer for a caller's
+        symlink whose resolution passed that free name, which
+        ``_record_run_symlink`` checks once the link is recorded."""
         self._state.resolved_parents.clear()
         if not created:
             self._state.through_run_link.clear()

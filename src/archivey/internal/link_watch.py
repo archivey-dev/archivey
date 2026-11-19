@@ -170,8 +170,9 @@ class LinkWatch:
         self, dest_path: Path, hit: Callable[[str, os.stat_result], bool]
     ) -> bool:
         """Whether resolving the symlink at ``dest_path``, one the caller had in the
-        destination, meets a symlink for which ``hit(path, lstat)`` is true: the walk
-        of ``track``, bounded by the same number of follows.
+        destination, meets a symlink inside the destination for which
+        ``hit(path, lstat)`` is true: the walk of ``track``, bounded by the same number
+        of follows.
 
         When it does not, the paths it looked up are kept until
         ``forget_caller_walks``, so that ``caller_walk_moved`` can tell when a symlink
@@ -313,7 +314,8 @@ class LinkWatch:
         """The nodes of ``index`` (the run's links' index when ``None``) for every
         destination path that resolving ``target`` from ``link``'s directory
         ``lstat``-s, the nodes each part of the walk started from, and whether the
-        walk stopped at a symlink for which ``hit(path, lstat)`` is true.
+        walk stopped at a symlink inside the destination for which
+        ``hit(path, lstat)`` is true.
 
         It follows ``os.path.realpath``: a missing component is kept as a name, a
         ``..`` drops the last component of the path resolved so far, and a symlink is
@@ -377,7 +379,9 @@ class LinkWatch:
                 st = os.lstat(long_path(path))
                 if not stat.S_ISLNK(st.st_mode):
                     continue
-                if hit is not None and hit(path, st):
+                # Only inside the destination: every symlink ``hit`` looks for is
+                # one this run created there.
+                if hit is not None and nodes is not None and hit(path, st):
                     return list(visited.values()), starts, True
                 link_target = plain(os.readlink(long_path(path)))
             except OSError:
