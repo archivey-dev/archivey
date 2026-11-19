@@ -244,12 +244,18 @@ def _fields(entry: UdfEntry) -> dict[str, object]:
 class _Weigh:
     def __init__(self) -> None:
         self.nbytes = 0
+        self.path_bytes = 0
 
     def add_udf_member(self) -> None:
         pass
 
     def add_udf_bytes(self, nbytes: int) -> None:
         self.nbytes += nbytes
+
+    def add_udf_path(self, path: str, raw_path: bytes) -> None:
+        self.path_bytes += (len(path) if path.isascii() else 4 * len(path)) + len(
+            raw_path
+        )
 
 
 def test_an_extent_over_many_metadata_runs_costs_one_step_per_run() -> None:
@@ -577,6 +583,95 @@ def test_a_chain_running_into_one_already_followed_is_counted_whole() -> None:
         _volume(_fan_out(1, chain=64, first=1, extra=(0,)))
     with pytest.raises(CorruptionError, match="chain too long"):
         _volume(_fan_out(1, chain=64))
+
+
+def _nested(depth: int, name: bytes = b"\x08a") -> bytes:
+    """A UDF-only image of ``depth`` nested directories, each named ``name`` (a CS0
+    dstring): one File Entry block per level, its directory data inside the entry."""
+    image = bytearray(build_udf(directory("")))
+    root_at = _volume(bytes(image)).root.location
+    template = image[root_at : root_at + 176]  # a File Entry's fixed part
+    start = 300  # the builder's partition start, in blocks
+
+    def fid(name: bytes, block: int, characteristics: int) -> bytes:
+        body = struct.pack("<HBB", 1, characteristics, len(name))
+        body += struct.pack("<IIH6x", BLOCK, block, 0)
+        body += struct.pack("<H", 0) + name
+        body += bytes((-(16 + len(body))) % 4)
+        return tag(257, 0, body)
+
+    def entry(block: int, data: bytes) -> bytes:
+        fields = bytearray(template)
+        struct.pack_into("<H", fields, 16 + 18, 3)  # data inside the entry
+        struct.pack_into("<Q", fields, 56, len(data))
+        struct.pack_into("<II", fields, 168, 0, len(data))
+        fields += data
+        struct.pack_into("<H", fields, 10, len(fields) - 16)
+        struct.pack_into("<I", fields, 12, block)
+        return retag(fields).ljust(BLOCK, b"\0")
+
+    root = root_at // BLOCK - start
+    base = len(image) // BLOCK - start
+    levels = []
+    parent = root
+    for level in range(depth):
+        block = base + level
+        child = fid(name, block + 1, 0x02) if level < depth - 1 else b""
+        levels.append(entry(block, fid(b"", parent, 0x0A) + child))
+        parent = block
+    image[root_at : root_at + BLOCK] = entry(
+        root, fid(b"", root, 0x0A) + fid(name, base, 0x02)
+    )
+    image += b"".join(levels) + bytes(BLOCK)
+    length = len(image) // BLOCK - start
+    for block in (33, 49):  # the main and reserve Partition Descriptors
+        descriptor = bytearray(image[block * BLOCK : (block + 1) * BLOCK])
+        struct.pack_into("<I", descriptor, 192, length)
+        image[block * BLOCK : (block + 1) * BLOCK] = retag(descriptor)
+    return bytes(image)
+
+
+def test_the_full_paths_of_a_deep_tree_are_weighed_at_open() -> None:
+    """Every full path is built at open, and nested directories make them grow with
+    the square of the depth: each path, text and stored bytes, is weighed as it is
+    built, apart from the tree's bytes."""
+    image = _nested(500)
+    weigh = _Weigh()
+    volume = UdfVolume(
+        lambda offset, n: image[offset : offset + n],
+        len(image),
+        archive_name=None,
+        budget=weigh,
+    )
+    assert len(volume.names) == 500
+    assert weigh.path_bytes == sum(
+        len(name.path) + len(name.raw_path) for name in volume.names
+    )
+    assert weigh.nbytes < 200_000 < weigh.path_bytes
+    cap = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=200_000))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=200000.*paths"):
+        open_archive(io.BytesIO(image), config=cap)
+    roomy = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=weigh.path_bytes)
+    )
+    with open_archive(io.BytesIO(image), config=roomy) as reader:
+        assert reader.info.extra["iso.namespace"] == "udf"
+
+
+def test_a_non_ascii_path_is_weighed_as_the_listing_weighs_its_name() -> None:
+    """The text of a path is weighed by the listing's rule for a name: 4 bytes a
+    character when it is not ASCII. The stored bytes are 2 a character here."""
+    image = _nested(300, "é".encode("utf-16_be").join((b"\x10", b"")))
+    volume = _volume(image)
+    assert volume.names[-1].path == "/".join(["é"] * 300)
+    stored = sum(len(name.raw_path) for name in volume.names)
+    text = sum(len(name.path) for name in volume.names)
+    weight = 4 * text + stored
+    over = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=weight - 1))
+    with pytest.raises(ResourceLimitError, match="bytes of paths"):
+        open_archive(io.BytesIO(image), config=over)
+    exact = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=weight))
+    open_archive(io.BytesIO(image), config=exact).close()
 
 
 def test_listing_limits_count_a_udf_only_tree() -> None:

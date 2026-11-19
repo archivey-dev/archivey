@@ -28,7 +28,8 @@ discs) are refused with ``UnsupportedFeatureError``.
 
 Every read goes through the ``read_at`` the caller hands in, so it is bounded by the
 image and takes the source's lock. What the walk keeps is weighed against
-``ListingLimits`` as it goes (:class:`UdfBudget`), before the bytes are read.
+``ListingLimits`` as it goes (:class:`UdfBudget`), before the bytes are read, and so
+is each full path it builds.
 """
 
 from __future__ import annotations
@@ -150,11 +151,14 @@ _ReadAt = Callable[[int, int], bytes]
 
 
 class UdfBudget(Protocol):
-    """Where the walk weighs what it parses: one member per name, and bytes."""
+    """Where the walk weighs what it parses: one member per name, bytes, and the full
+    paths it builds."""
 
     def add_udf_member(self) -> None: ...
 
     def add_udf_bytes(self, nbytes: int) -> None: ...
+
+    def add_udf_path(self, path: str, raw_path: bytes) -> None: ...
 
 
 def has_volume_recognition(read_at: _ReadAt) -> bool:
@@ -1018,6 +1022,12 @@ class UdfVolume:
             for name, raw, entry in self._children(directory):
                 path = f"{dirpath}{name}"
                 raw_path = raw_dir + raw
+                if self._budget is not None:
+                    # Every full path is kept from open, and a chain of nested
+                    # directories makes them grow with the square of the depth, far
+                    # past the directory data and File Entry bytes the budget weighs
+                    # as they are read: each path is weighed as it is built.
+                    self._budget.add_udf_path(path, raw_path)
                 if entry.is_directory:
                     if entry.location in seen:
                         raise self._corrupt(

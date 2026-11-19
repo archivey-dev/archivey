@@ -211,7 +211,15 @@ directory's data (weighed before it is read), each File Entry (its fixed part pl
 extended-attribute and allocation-descriptor lengths it declares, or the bytes its tag's
 CRC covers when that is more) and each Indirect Entry (its tag plus the bytes its CRC
 covers) add to the image's `max_metadata_bytes` sum. Each ICB is parsed and weighed
-once, however many File Identifiers name it or a point on its indirect chain. After it,
+once, however many File Identifiers name it or a point on its indirect chain. Every
+full UDF path is built at open too, so each one, its text by the listing's rule for a
+name plus its stored bytes, is weighed as it is built against `max_metadata_bytes` in a
+sum of its own, as the XAR reader weighs its paths: nested directories make the paths
+grow with the square of the depth (24,000 levels in a 50 MB image took 1.2 GB before).
+The sum weighs the paths the parser keeps, and the listing weighs the same paths as
+normalized member names (a directory's gains a `/`, a `.` or empty segment is dropped),
+so an ordinary tree's listing weighs at least as much, and only a tree whose names
+normalization shortens can be refused at open first. After it,
 listing touches only records already in memory, which is what lets the member walk run
 without the handle lock. Two exceptions read a directory's extent once more, under the
 handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent

@@ -342,8 +342,9 @@ class ListingLimits:
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
-    before decoding them), and ISO the directory records, path tables and UDF
-    descriptors ``pycdlib`` parses, and XAR applies ``max_members`` and weighs its
+    before decoding them), and ISO the directory records and path tables ``pycdlib``
+    parses and the UDF descriptors and File Entries archivey parses, and XAR
+    applies ``max_members`` and weighs its
     table of contents' size and every path it builds there against
     ``max_metadata_bytes``, so ``open_archive`` raises. A ZIP read from a
     stream that cannot seek has no directory to read at open: its pass charges
@@ -354,11 +355,15 @@ class ListingLimits:
     charges ``max_members`` on each local header.
     ISO also counts each path-table entry against ``max_members`` (a table of more than
     ``max_members + 1`` entries is refused): every entry is a directory, which is a
-    member anyway, so real images never notice. ISO counts the UDF tree ``pycdlib``
-    parses against ``max_members`` too, one per UDF name, although ``members()`` does
-    not list UDF: an image whose UDF tree has more names than its ISO 9660 tree can be
-    refused for the UDF tree. ISO counts members per tree but weighs bytes as one sum
-    for the whole image, every tree together.
+    member anyway, so real images never notice. ISO counts the UDF tree it parses
+    against ``max_members`` too, one per UDF name, whether or not ``members()`` lists
+    UDF: an image whose UDF tree has more names than its ISO 9660 tree can be refused
+    for the UDF tree. ISO counts members per tree but weighs bytes as one sum for the
+    whole image, every tree together. ISO also weighs every full path of the UDF tree
+    as it builds it at open, in a separate sum against ``max_metadata_bytes``, whether
+    or not UDF is the listed tree. The listing weighs the same paths as member names,
+    normalized (a ``.`` or empty segment dropped), so a UDF tree whose names that
+    shortens can be refused at open although its listing would fit.
     RPM refuses a header that lists more files than ``max_members`` at open, before it
     builds the file list.
     makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
