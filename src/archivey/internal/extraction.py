@@ -606,9 +606,9 @@ class _RunState:
     run_symlink_keys: set[str] = field(default_factory=set)
     # Parent directory (as spelled) -> whether its path goes through one of
     # ``run_symlinks``, on its own components or in the resolution of a caller's
-    # symlink among them; cleared with ``resolved_parents`` when a link or directory
-    # is removed, and when a run link is made where such a resolution looked
-    # (``_record_run_symlink``).
+    # symlink among them. A link or directory removed clears it together with
+    # ``resolved_parents`` (``_resolutions_changed``). A run link made at a name such
+    # a resolution looked up clears it alone (``_record_run_symlink``).
     through_run_link: dict[str, bool] = field(default_factory=dict)
     # Progress totals; see ``_run``.
     members_total: int | None = None
