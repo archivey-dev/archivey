@@ -12,9 +12,10 @@ What it holds, and where each number comes from:
   it. Noted before the comparison, so a refused declaration is recorded at its true
   size. xz, LZMA Alone and zstd hand the cap to liblzma / libzstd, which read the
   declaration themselves; archivey notes it from the same header (an xz stream's
-  first block, the ``.lzma`` header, each zstd frame), since an archive read inside
-  this one gets the cap less this number (``_PluginAdapter._nested_config``). A
-  known-size ``.lzma`` stream that needs a second decoder notes both dictionaries.
+  first block, the first block of each pbzx xz chunk, the ``.lzma`` header, each zstd
+  frame), since an archive read inside this one gets the cap less this number
+  (``_PluginAdapter._nested_config``). A known-size ``.lzma`` stream that needs a second
+  decoder notes both dictionaries.
 - ``key_derivation_rounds``: the rounds the reader's
   :class:`~archivey.internal.config.KeyDerivationBudget` spent (7z AES, RAR).
 - ``spool_bytes``: the most the reader's :class:`~archivey.internal.spool.SpoolBudget`

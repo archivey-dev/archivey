@@ -37,9 +37,9 @@ from archivey.internal.streams.archive_stream import ExceptionTranslator
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.internal.streams.codecs.declared_memory import noting
 from archivey.internal.streams.codecs.xz_decoder import (
-    _BLOCK_HEADER_MAX,
-    _STREAM_HEADER_SIZE,
-    _block_dictionary,
+    BLOCK_HEADER_MAX,
+    STREAM_HEADER_SIZE,
+    first_block_dictionary,
     lzma_error_to_archivey,
     new_capped_decompressor,
 )
@@ -223,12 +223,7 @@ def _chunk_dictionary(head: bytes) -> int | None:
     """The LZMA2 dictionary the first block header of the xz chunk ``head`` starts
     declares, or ``None`` when ``head`` does not hold that header whole yet, or it
     declares none."""
-    if len(head) <= _STREAM_HEADER_SIZE or head[_STREAM_HEADER_SIZE] == 0:
-        return None
-    size = (head[_STREAM_HEADER_SIZE] + 1) * 4
-    if len(head) < _STREAM_HEADER_SIZE + size:
-        return None
-    return _block_dictionary(head[_STREAM_HEADER_SIZE : _STREAM_HEADER_SIZE + size])
+    return first_block_dictionary(head[STREAM_HEADER_SIZE:])[1]
 
 
 def _new_chunk_decompressor(config: StreamConfig) -> Decompressor:
@@ -237,7 +232,7 @@ def _new_chunk_decompressor(config: StreamConfig) -> Decompressor:
     return noting(
         new_capped_decompressor(config.decoder_limits, natives=config.natives),
         config.usage,
-        header_size=_STREAM_HEADER_SIZE + _BLOCK_HEADER_MAX,
+        header_size=STREAM_HEADER_SIZE + BLOCK_HEADER_MAX,
         declared=_chunk_dictionary,
         what="a pbzx chunk's LZMA2 dictionary",
     )
