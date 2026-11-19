@@ -31,8 +31,9 @@ runs:
     # failed in apt on 2026-11-19 between 08:00 and 12:00 UTC).
     # Runs on main never take an earlier image's entry: they go to the mirror and
     # save a fresh one, so the cached versions follow the image. An entry restored
-    # from an earlier image is not saved again either: outside main, the save is in
-    # a scope no other run reads.
+    # from an earlier image is not saved again under this image's key either: a
+    # later run in the same scope (a later push to the same pull request) would hit
+    # it exactly, ahead of main's fresh entry.
     - id: key
       shell: bash
       env:

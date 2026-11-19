@@ -851,7 +851,9 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The two full-suite passes take about 40 minutes together (2026-11-18), and a
+    # rerun on 2026-11-19 hit a 45-minute limit in the second pass.
+    timeout-minutes: 60
     env:
       UV_PYTHON: ${{ matrix.python }}
     strategy:
