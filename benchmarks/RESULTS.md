@@ -48,9 +48,9 @@ uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 
 ## Release figures for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1
 
-The figures quoted in the CHANGELOG entries for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each comes from
-a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs, Python
-3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
+The figures quoted in the CHANGELOG entries for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each
+comes from a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs,
+Python 3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
 three rounds per side. A cell is the fastest of the three rounds, for archivey and for
 its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator on are
 left out, because the default does not use one at this corpus size. The rows are the
