@@ -7480,6 +7480,36 @@ _THROUGH_RUN_LINK_SHAPES = {
         ("s", "e"),
         ["EXTRACTED", "EXTRACTED", "EXTRACTED", "BLOCKED"],
     ),
+    # The caller's `c -> s/sub` resolves through the run's `s -> e`: refused, as
+    # `s/sub/x` would be.
+    "a-callers-link-through-a-run-link": (
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")],
+        {},
+        ("c", "s/sub"),
+        ["EXTRACTED", "EXTRACTED", "BLOCKED"],
+    ),
+    # `c/x` fails while `s` is missing (the caller's `c` dangles), and the answer
+    # kept for `c` is dropped when the run's `s -> e` is made at a name its
+    # resolution looked up.
+    "a-callers-link-checked-before-the-run-link": (
+        [
+            ("dir", "e/sub", None),
+            ("sym", "q", "e"),
+            ("file", "c/x", b"x"),
+            ("sym", "s", "e"),
+            ("file", "c/y", b"y"),
+        ],
+        {},
+        ("c", "s/sub"),
+        ["EXTRACTED", "EXTRACTED", "FAILED", "EXTRACTED", "BLOCKED"],
+    ),
+    # A caller's link that resolves past the run's links is followed.
+    "a-callers-link-beside-a-run-link": (
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")],
+        {},
+        ("c", "e/sub"),
+        ["EXTRACTED", "EXTRACTED", "EXTRACTED"],
+    ),
     # A directory that replaces the run's link is a directory: written into.
     "a-directory-replaces-the-link": (
         [
@@ -7603,6 +7633,36 @@ def test_a_run_link_is_refused_where_the_filesystem_reports_inode_0(
         "EXTRACTED",
     ]
     assert sorted(os.listdir(dest / "e")) == ["y"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_callers_link_through_a_symlink_outside_dest_where_inode_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    # The caller's `c` leaves dest through `o/back`, a symlink outside it, and comes
+    # back to the run's `s`. The symlink outside is never taken for a run link, and
+    # the member is refused for the run's `s`.
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (tmp_path / "o").mkdir()
+    os.symlink(dest / "s", tmp_path / "o" / "back")
+    os.symlink(tmp_path / "o" / "back" / "sub", dest / "c")
+    lstat = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    archive = _tar_bytes(
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")]
+    )
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, on_blocked="skip")
+    monkeypatch.undo()
+    assert [r.status.name for r in report.results] == [
+        "EXTRACTED",
+        "EXTRACTED",
+        "BLOCKED",
+    ]
+    assert "this extraction created" in str(report.results[-1].error)
+    assert list((dest / "e" / "sub").iterdir()) == []
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
