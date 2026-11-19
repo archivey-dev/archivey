@@ -36,7 +36,7 @@ five rounds at most, and a decision packet stops the rounds until it is answered
 | Phase | Human sees | Agents may also use |
 | --- | --- | --- |
 | Investigate / grill | Conversation + handbook edits | code map, threat model, tests, old ADRs/investigations as sources |
-| Brief | One short markdown brief, as the PR description (not committed to the repo) | Optional OpenSpec **minimalist** change if a living main-spec contract must move |
+| Brief | One short markdown brief, inside the PR description's template sections (not committed to the repo) | Optional OpenSpec **minimalist** change if a living main-spec contract must move |
 | Implement | Diff + handbook/user-doc updates in the same PR when claims change | Existing OpenSpec apply skills only when a change folder exists |
 | Review | **Decision packets only** | Full three-block / inline review on the PR for the implementor agent |
 | Address | Next packet, cold-start readable | `address-review-findings` dispositions on the PR |
@@ -68,9 +68,10 @@ Enough for a cold agent or a cold you:
 4. **Verify** — commands/tests that prove it
 5. Out of scope
 
-Prefer this as the PR body, under the template's **For dummies** section
-(`.github/pull_request_template.md`), and cut from it what the diff already shows (a file
-list, a line-by-line recap). Use `openspec new change … --schema minimalist` when main
+Put it in the PR body inside the sections of `.github/pull_request_template.md`: the
+**For dummies** section stays first, the goal and non-goals go in What changes and Why,
+the verify commands go in Tests, and Risk and the checklist stay as the template writes
+them. Cut from it what the diff already shows (a file list, a line-by-line recap). Use `openspec new change … --schema minimalist` when main
 specs must change; keep scenario farms out of what you are asked to read.
 
 ---

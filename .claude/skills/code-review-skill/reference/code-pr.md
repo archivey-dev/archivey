@@ -110,9 +110,10 @@ Now open the narrative and contracts:
    `design.md`) / `review/` brief or finding. Check each claim the PR body makes (what it
    fixes, tests, leaves alone) against the diff; a claim the diff does not bear out is a
    finding. That covers the **For dummies** section at the top of the body
-   (`.github/pull_request_template.md`): a missing one, one in code names a reader
-   cannot follow, or one without a concrete example is 🟢; one that misstates what the
-   change does or who notices is 🟡, since the maintainer reads it first.
+   (`.github/pull_request_template.md`). A missing one, one in code names a reader cannot
+   follow, or one without a concrete example is 🟢; one that misstates what the change
+   does or who notices is 🟡, since the maintainer reads it first. The bodies
+   `scripts/release/release.py` writes have no such section, and that is not a finding.
 2. Applicable sections below (VISION ranking, contract checks, domain checklist)
    and the authoritative sources `SKILL.md` §1 lists when a finding touches them. For a
    contract-moving change, run the **values & contracts consistency check** — the same
