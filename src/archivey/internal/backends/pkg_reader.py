@@ -13,8 +13,9 @@ and ``Content`` member is listed as the files its CPIO holds, under a folder of 
 member's name (``app.pkg/Payload/Applications/App.app/...``), and every other member
 as it is (``Distribution``, ``PackageInfo``, ``Bom``). Opening the file with
 ``format=ArchiveFormat.XAR`` gives the XAR members instead. A payload that is not one
-of those CPIO forms is listed as it is: one whose first bytes are no gzip, pbzx or
-CPIO magic, or whose first CPIO header cannot be read.
+of those CPIO forms is listed as it is: one stored with a XAR encoding archivey does not
+read or the configuration turns off, one whose first bytes are no gzip, pbzx or CPIO
+magic, or one whose first CPIO header cannot be read.
 
 The payloads are read through :meth:`ReaderContext.open_nested`, so listing decodes
 each one, and the XAR checksum of a payload is checked as the listing reads it. A
@@ -32,10 +33,10 @@ import io
 import itertools
 import re
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, BinaryIO, cast
 
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import CorruptionError, UnsupportedFeatureError
 from archivey.formats import (
     IndexedFormatHandler,
     MemberData,
@@ -79,26 +80,34 @@ _SNIFF = 4
 # Names only an installer package's table of contents holds, for detection.
 _PACKAGE_NAMES = re.compile(rb"<name>(?:Distribution|PackageInfo)</name>")
 _PACKAGE_EXTENSIONS = (".pkg", ".mpkg", ".xip")
-# The most of the table of contents detection decodes from the bytes it has.
+# The most of the stored (compressed) table of contents detection reads. A signed
+# package or ``.xip`` puts its certificate chain (``<signature>``, ``<x-signature>``)
+# before the first ``<file>``, and base64 certificates hardly compress, so the names
+# can sit well past the 4 KiB near window.
+_TOC_READ = 1 << 16
+# The most of the table of contents detection decodes from what it read.
 _TOC_PEEK = 1 << 18
 
 
-def is_package(prefix: bytes, name: str | None) -> bool:
+def is_package(peek: Callable[[int], bytes], name: str | None) -> bool:
     """Whether a XAR is an installer package (``ReadBackend.MAGIC_REFINEMENTS``): by its
     name when it has a package's extension or ``.xar``, else by the names at the start
-    of its table of contents."""
+    of its table of contents. ``peek(end)`` returns the source's first ``end`` bytes,
+    or on a forward-only source what detection already holds; this asks once for at
+    most the header and ``_TOC_READ`` bytes of the stored table of contents."""
     if name is not None:
         lowered = name.lower()
         if lowered.endswith(_PACKAGE_EXTENSIONS):
             return True
         if lowered.endswith(".xar"):
             return False
-    if len(prefix) < _HEADER.size or not prefix.startswith(MAGIC):
+    head = peek(_HEADER.size)
+    if len(head) < _HEADER.size or not head.startswith(MAGIC):
         return False
     _magic, header_size, _version, toc_stored, _toc_size, _algo = _HEADER.unpack_from(
-        prefix
+        head
     )
-    stored = prefix[header_size : header_size + toc_stored]
+    stored = peek(header_size + min(toc_stored, _TOC_READ))[header_size:]
     try:
         xml = zlib.decompressobj().decompress(stored, _TOC_PEEK)
     except zlib.error:
@@ -192,9 +201,22 @@ class PkgReader(XarReader):
         """The files of the payload ``record``, or ``record`` itself when it does not
         hold a CPIO."""
         payload, location = record
-        stream = cast(BinaryIO, super().open_member(payload, location).stream)
+        try:
+            stream = cast(BinaryIO, super().open_member(payload, location).stream)
+        except UnsupportedFeatureError:
+            # A XAR encoding archivey does not read, or one the configuration turns
+            # off (``FormatPolicy``): the file it is, which reading refuses with the
+            # same error.
+            yield record
+            return
         with contextlib.closing(stream):
-            head = stream.read(_SNIFF) or b""
+            try:
+                head = stream.read(_SNIFF) or b""
+            except UnsupportedFeatureError:
+                # The same, found only once the decoder reads: an xz encoding whose
+                # block runs a filter the configuration turns off (BCJ).
+                yield record
+                return
             fmt = _inner_format(head)
             if fmt is None:
                 yield record

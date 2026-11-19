@@ -417,13 +417,20 @@ class BackendRegistry:
     def magic_refinements(
         self,
     ) -> dict[
-        ArchiveFormat, list[tuple[ArchiveFormat, Callable[[bytes, str | None], bool]]]
+        ArchiveFormat,
+        list[
+            tuple[ArchiveFormat, Callable[[Callable[[int], bytes], str | None], bool]]
+        ],
     ]:
         """For a format whose magic matched, the narrower formats that may claim the
         file instead, with each one's check (``ReadBackend.MAGIC_REFINEMENTS``)."""
         refinements: dict[
             ArchiveFormat,
-            list[tuple[ArchiveFormat, Callable[[bytes, str | None], bool]]],
+            list[
+                tuple[
+                    ArchiveFormat, Callable[[Callable[[int], bytes], str | None], bool]
+                ]
+            ],
         ] = {}
         for cls in self._reader_classes:
             for base, check in cls.MAGIC_REFINEMENTS:

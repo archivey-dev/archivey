@@ -640,7 +640,9 @@ names only its own layer.
 The system SHALL read Snappy's framing format (`.sz`, stream identifier
 `ff 06 00 00 73 4e 61 50 70 59`) with no third-party package, and SHALL use
 `compress-utils` or `cramjam` for raw blocks and `google-crc32c` or `crc32c` for the
-CRC-32C when they are installed and not excluded by the format policy. Under
+CRC-32C when they are installed and not excluded by the format policy. A
+`compress-utils` built without Snappy (its `is_available("snappy")` is false) SHALL be
+treated as absent, in the caller's process and in a child. Under
 `process_isolation=NATIVE_DECODERS` the packages SHALL run in a child process held for
 the stream, one round trip per data chunk for its decode and its CRC together, and the
 framing and every check SHALL stay in the caller's process; a package the child cannot
@@ -655,6 +657,12 @@ whose result SHALL be used.
 - **WHEN** it is read with only cramjam installed, and with no package installed
 - **THEN** both reads return the same byte
 
+#### Scenario: A compress-utils built without Snappy is not used
+- **GIVEN** a `compress-utils` whose build leaves Snappy out, and no other package
+- **WHEN** a `.sz` file is read, with `process_isolation` `NONE` or `NATIVE_DECODERS`
+- **THEN** the Python decoder reads it, and the backends used do not name
+  `compress_utils`
+
 ### Requirement: Snappy framed streams are checked chunk by chunk
 
 The decoder SHALL refuse with `CorruptionError` a stream that does not start with the
@@ -663,12 +671,24 @@ shorter than its CRC or longer than a 64 KiB chunk can be, a raw block that decl
 more than 65,536 decoded bytes (before decoding it), and a chunk whose masked CRC-32C
 does not match its decoded data. It SHALL skip reserved skippable chunks and padding
 (`0x80` to `0xfe`) without holding them in memory. Input that ends inside a chunk SHALL
-raise `TruncatedError`; input that ends between chunks SHALL end the stream.
+raise `TruncatedError`; input that ends between chunks SHALL end the stream. Four or
+more zero bytes after a chunk that run to the end of the input SHALL be padding, read
+past with no diagnostic, as for the codecs in "Bytes after a compressed stream are read
+past and reported"; one to three zero bytes there are a chunk header cut short and SHALL
+raise `TruncatedError`; zero bytes followed by a non-zero byte SHALL raise
+`CorruptionError`, as other bytes after the last chunk do.
 
 #### Scenario: A bad CRC is refused
 - **GIVEN** a `.sz` file whose chunk CRC does not match its data
 - **WHEN** it is read
 - **THEN** `CorruptionError` is raised before that chunk's data is returned
+
+#### Scenario: Zero padding at the end is read past
+- **GIVEN** a `.sz` file followed by 512 zero bytes, and the same file followed by 512
+  zero bytes and a further `.sz` stream
+- **WHEN** each is read
+- **THEN** the first reads the file's data with no diagnostic, and the second raises
+  `CorruptionError`
 
 ### Requirement: pbzx streams are read as xz chunks
 

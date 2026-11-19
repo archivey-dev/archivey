@@ -66,6 +66,9 @@ class LazyOptional:
         self._import_failed = False
         # A decoder child could not import it (``failed_in_child``).
         self.child_import_failed = False
+        # Whether the package in a decoder child decodes an algorithm, by name, once a
+        # child has been asked (compress-utils, whose algorithms are build options).
+        self.child_has: dict[str, bool] = {}
 
     def available(self) -> bool:
         """Whether the package is installed. Does not import it."""

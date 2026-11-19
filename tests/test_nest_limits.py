@@ -1072,3 +1072,135 @@ def test_a_nest_with_no_byte_cap_puts_no_counting_layer_on_reads() -> None:
     with nest.open(io.BytesIO(_zip(1, size=1000))) as reader:
         assert len(reader.read("m0.bin")) == 1000
     assert nest.decoded_bytes == 0
+
+
+# --- ListingLimits.max_decoded_bytes across ``open_nested`` ---------------------------
+
+
+def _pkg_of(payloads: int, size: int) -> bytes:
+    """A product archive with ``payloads`` component packages, each a pbzx payload
+    holding one file of ``size`` zero bytes."""
+    from tests.pbzx_util import make_pbzx, odc_cpio
+    from tests.xar_util import XarFile, write_xar
+
+    components = [
+        XarFile(
+            f"a{k}.pkg",
+            type="directory",
+            children=[
+                XarFile("PackageInfo", b"<pkg-info/>"),
+                XarFile(
+                    "Payload",
+                    make_pbzx(odc_cpio([(f"./f{k}", bytes(size))])),
+                    encoding="none",
+                ),
+            ],
+        )
+        for k in range(payloads)
+    ]
+    return write_xar([XarFile("Distribution", b"<x/>"), *components])
+
+
+def _deb_of(size: int) -> bytes:
+    """A ``.deb`` whose control and data tars are gzip-compressed, each holding one
+    file of ``size`` zero bytes."""
+    from tests.test_deb import _ar, _tar
+
+    return _ar(
+        (b"debian-binary", b"2.0\n"),
+        (b"control.tar.gz", _tar([("./control", bytes(size))], "gz")),
+        (b"data.tar.gz", _tar([("./usr/f", bytes(size))], "gz")),
+    )
+
+
+def _deb_of_headers(count: int) -> bytes:
+    """A ``.deb`` whose control and data tars each hold ``count`` empty files: what
+    their listings decode is the tar headers, which the inner readers decode."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    control = [("./control", CONTROL)] + [(f"./c{i}", b"") for i in range(count)]
+    data = [(f"./usr/f{i}", b"") for i in range(count)]
+    return _ar(
+        (b"debian-binary", b"2.0\n"),
+        (b"control.tar.gz", _tar(control, "gz")),
+        (b"data.tar.gz", _tar(data, "gz")),
+    )
+
+
+def _decode_capped(cap: int) -> ArchiveyConfig:
+    return ArchiveyConfig(listing_limits=ListingLimits(max_decoded_bytes=cap))
+
+
+@pytest.mark.parametrize(
+    "data",
+    [_pkg_of(4, 400_000), _deb_of_headers(1_200)],
+    ids=["pkg", "deb"],
+)
+def test_one_listing_charges_what_its_nested_readers_decode(data: bytes) -> None:
+    """Each inner archive fits the cap on its own; together they do not, and one
+    listing of the outer archive is held to one cap."""
+    with (
+        archivey.open_archive(io.BytesIO(data), config=_decode_capped(1_000_000)) as r,
+        pytest.raises(
+            ResourceLimitError,
+            match=r"max_decoded_bytes=1000000 \(listing an archive and the archives "
+            r"inside it has decoded 1000001 bytes, \d+ of them by the inner archive",
+        ),
+    ):
+        r.members()
+
+
+@pytest.mark.parametrize(
+    ("data", "names"),
+    [
+        (_pkg_of(2, 400_000), ["a0.pkg/Payload/f0", "a1.pkg/Payload/f1"]),
+        (_deb_of(400_000), ["DEBIAN/control", "usr/f"]),
+    ],
+    ids=["pkg", "deb"],
+)
+def test_reading_members_again_after_the_listing_does_not_charge_it(
+    data: bytes, names: list[str]
+) -> None:
+    """Reading a nested member opens its inner archive again outside the listing:
+    that walk counts on its own, so reading every member several times does not add
+    up against the cap the listing was held to."""
+    with archivey.open_archive(
+        io.BytesIO(data), config=_decode_capped(1_000_000)
+    ) as reader:
+        listed = [m.name for m in reader.members()]
+        for _ in range(3):
+            for name in names:
+                assert name in listed
+                assert reader.read(name) == bytes(400_000)
+
+
+@pytest.mark.parametrize("size", [1_000, 400_000], ids=["small", "large"])
+def test_a_nested_member_drained_by_the_outer_walk_is_charged_once(size: int) -> None:
+    """A ``.deb``'s tars decode their files' data once: inside the inner listing step
+    (read ahead with a header) or when the outer walk drains the member. Each byte is
+    charged once, so one listing draws what the tars decompress to, and a cap just
+    above that lists."""
+    data = _deb_of(size)
+    with archivey.open_archive(io.BytesIO(data)) as reader:
+        tars = [m for m in reader.members() if m.is_file]
+    assert len(tars) == 2
+    from tests.test_deb import _tar
+
+    decoded = 2 * len(_tar([("./usr/f", bytes(size))]))
+    with archivey.open_archive(
+        io.BytesIO(data), config=_decode_capped(decoded + 1_000)
+    ) as reader:
+        reader.members()
+        assert reader._listing_decode is not None
+        assert reader._listing_decode.drawn == decoded
+    with (
+        archivey.open_archive(
+            io.BytesIO(data), config=_decode_capped(decoded - 1)
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="max_decoded_bytes") as raised,
+    ):
+        reader.members()
+    # The data tar crosses the cap; its share is all of it, the body the outer walk
+    # drained included.
+    share = int(str(raised.value).split(", ")[1].split(" of them")[0])
+    assert share == decoded // 2

@@ -608,24 +608,31 @@ members, and the bytes are records as stored, System Use areas included, not onl
 text kept. An image right at a cap can therefore be refused at open. Below the caps
 `pycdlib` still builds the whole tree, so memory at open stays linear in the records the
 budget allows: about 0.8 KB per plain record measured, so roughly 210 MB per tree at the
-default `max_members`. The UDF tree `pycdlib` also walks is counted as one more tree,
-though archivey lists no UDF namespace: each File Identifier but the parent entry is a
-member, and each File Identifier and each File Entry, with the extended attributes and
-allocation descriptors it declares, is weighed against `max_metadata_bytes`, the File
-Entry before `pycdlib` parses it. `pycdlib` keeps every tree it walked, so
-`max_metadata_bytes` is one sum for the whole image, every tree together (ruled by davi,
-2026-10-10; reasons and the reopen condition in `dev-docs/formats/iso.md` §2.2). A
-budget per tree let an image carrying all three trees peak near 2.6 GiB at the limits of
-the time (`max_members` 1,048,576): a PVD tree and a Joliet tree at about 1 GiB each,
-plus a UDF tree, where a name weighs at least about 220 bytes and was measured at about
-2.1 KB retained, stopped by 64 MiB near 300,000 names and 0.6 GiB. `max_members` stays
-per tree, because a Joliet tree repeats every file and one count would halve the cap for
-such an image. At the default `max_members` of 262,144 the member cap per tree binds
-before the byte sum: two trees hold at most 524,288 records, about 0.42 GB at 0.8 KB
-each (an estimate from the per-record figure, not measured at this scale), while 64 MiB
-of minimal 34-byte records would allow about 2 million. The byte sum binds first only
-when `max_members` is raised past about a million per tree. Any UDF bytes come out of
-the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660 record.
+default `max_members`. The UDF tree, which archivey's own parser (`udf.py`) walks whole
+at open, listed or not, is counted as one more tree: each File Identifier but the parent
+entry and deleted ones is a member, and each directory's data, each File Entry (with the
+extended attributes and allocation descriptors it declares, or the bytes its tag's CRC
+covers when that is more) and each Indirect Entry (its tag and the bytes its CRC covers)
+is weighed against `max_metadata_bytes`, a directory before it is read. Each entry is
+parsed and weighed once, however many File Identifiers lead to it, so a hard link costs
+only its File Identifier, and nothing a name does while listing walks the entry again.
+Every tree is kept once parsed, so `max_metadata_bytes` is one sum for the whole image,
+every tree together (ruled by davi, 2026-10-10; reasons and the reopen condition in
+`dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying all three trees
+peak near 2.6 GiB at the limits of the time (`max_members` 1,048,576): a PVD tree and a
+Joliet tree at about 1 GiB each, plus a UDF tree, where a name with its own File Entry
+weighs at least about 220 bytes (measured at about 2.1 KB retained when `pycdlib` parsed
+it; archivey's parser keeps a few hundred bytes a name), stopped by 64 MiB near 300,000
+names. A name that shares an entry (a hard link) weighs only its File Identifier, about
+48 bytes, so 64 MiB would allow about 1.4 million of them; at the default `max_members`
+the member cap binds first. `max_members` stays per tree, because a Joliet tree repeats
+every file and one count would halve the cap for such an image. At the default
+`max_members` of 262,144 the member cap per tree binds before the byte sum: two trees
+hold at most 524,288 records, about 0.42 GB at 0.8 KB each (an estimate from the
+per-record figure, not measured at this scale), while 64 MiB of minimal 34-byte records
+would allow about 2 million. The byte sum binds first only when `max_members` is raised
+past about a million per tree. Any UDF bytes come out of the same 64 MiB, and they cost
+less per stored byte than a minimal ISO 9660 record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
@@ -1085,15 +1092,15 @@ pycdlib before 1.22 looped forever when corrupt directory records formed a back-
 in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
 UDF File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
 default limits. From 1.22, the minimum archivey requires, pycdlib detects the loop and
-raises "ISO Directory Records form a loop" or "UDF File Entries form a loop", which
-archivey reports as `CorruptionError`. So a looping tree is refused at open, in any tree
-pycdlib walks.
+raises "ISO Directory Records form a loop", which archivey reports as `CorruptionError`.
+archivey's own UDF walk (pycdlib's is off inside archivey's open) enters each directory
+once and refuses one named again. So a looping tree is refused at open, in any tree.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
 **Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
-Ridge and Joliet), `::test_pycdlib_udf_directory_cycle_does_not_hang` (UDF).
+Ridge and Joliet), `::test_a_udf_directory_cycle_is_refused_at_open` (UDF).
 `tests/test_cve_regressions_7z_rar.py` replays published 7z and RAR reader advisories
 on hand-built headers: a COPY folder short of its size, a cyclic coder graph, huge
 declared counts (with an allocation bound), pack-stream counts that must parse in
@@ -1550,6 +1557,17 @@ so 8 levels cannot use 8 times the caps:
   frame header, and a pbzx stream's from the first block header of each xz chunk; a
   later xz block with a larger dictionary is checked by liblzma against the level's cap
   alone.
+- `max_decoded_bytes`: an inner level's listing count has the enclosing level's count as
+  its parent (`ListingDecodeCount`). While the outer listing runs on the same thread,
+  every byte an inner decode stage produces is drawn from the outer count, also when
+  the outer walk drains an inner member's data, so one listing pass of the outermost
+  archive decodes at most the cap across all its levels. The outer walk does not draw
+  that member data again (`_PluginAdapter._decoded_stream`, `HeldInnerData` for the
+  `.deb` control files it reads whole), so each byte counts once. A `.pkg` with many
+  payloads otherwise decoded payload count times the cap, and a `.deb`'s tar headers
+  went uncharged to the outer listing. An inner walk outside the outer listing (an
+  `open_member` that reads a payload again) counts on its own count alone, as any
+  reader's member read does.
 - `max_ratio`: every level is held to the ratio of the outermost archive's compressed
   size (or the bytes taken from it so far, from a pipe), not of its own input, so a nest
   of `n` levels decodes at most `n` times the ratio of the caller's bytes, not the ratio
@@ -1560,7 +1578,8 @@ so 8 levels cannot use 8 times the caps:
 counts it. These readers draw decoded bytes from the nest's account, and add nothing to
 the nest ratio: their bytes are in the outer reader's number. Code:
 `archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
-`_PluginAdapter._nested_config`, `BaseArchiveReader._trusted_source_size`.
+`ListingDecodeCount` (its `parent`), `_PluginAdapter._nested_config`,
+`BaseArchiveReader._trusted_source_size`.
 
 ### Reads have no output bound
 

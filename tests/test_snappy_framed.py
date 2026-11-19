@@ -23,12 +23,15 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    Diagnostic,
     ProcessIsolation,
     open_archive,
     open_stream,
 )
 from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.internal.resource_usage import ResourceUsageRecorder
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.decoder_child import POOL
 from archivey.internal.streams.codecs.isolated import ISOLATED
 from archivey.internal.streams.codecs.snappy_framed import (
     MAX_CHUNK_DATA,
@@ -38,6 +41,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
     LocalChunks,
     SnappyFormatError,
     SnappyFramedDecompressor,
+    _allowed,
     checked_by_python,
     chunk_decoder,
     crc32c_function,
@@ -50,6 +54,8 @@ from archivey.internal.streams.codecs.snappy_framed import (
 from archivey.internal.streams.decompressor_stream import release_decoder_children
 from archivey.types import OptionalLibrary
 from tests.conftest import importorskip
+from tests.streams_util import NonSeekableBytesIO
+from tests.test_lzop import use_compress_utils_without_lzo_or_snappy
 
 _REPROS = (
     Path(__file__).parent.parent
@@ -430,10 +436,25 @@ _DAMAGED: dict[str, tuple[Callable[[], bytes], type[Exception], str]] = {
         CorruptionError,
         "unskippable chunk type 0x54",
     ),
-    "trailing zeros": (
-        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 8,
+    "trailing zeros then a non-zero byte": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 8 + b"\x01",
         CorruptionError,
-        "outside",
+        "neither padding nor a chunk",
+    ),
+    "trailing zeros then another stream": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 512 + _frame(_data_chunk(_GOOD)),
+        CorruptionError,
+        "neither padding nor a chunk",
+    ),
+    "trailing zeros cut short then a non-zero byte": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0\0\x01",
+        TruncatedError,
+        "ends inside a chunk",
+    ),
+    "one to three zeros at the end, a header cut short": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0\0\0",
+        TruncatedError,
+        "ends inside a chunk",
     ),
     "cut inside a chunk": (
         lambda: _frame(_data_chunk(_GOOD))[:-5],
@@ -485,6 +506,44 @@ def test_damage_is_refused(selected: str, case: str) -> None:
         open_stream(io.BytesIO(make()), format="sz") as stream,
     ):
         stream.read()
+
+
+@pytest.mark.parametrize("zeros", [4, 5, 512, 70_000])
+@pytest.mark.parametrize("isolated", [False, True])
+def test_zeros_to_the_end_are_padding(
+    selected: str, zeros: int, isolated: bool
+) -> None:
+    """Zero bytes that run to the end of the file are padding, the zero-tail rule
+    of the other codecs (tape, ``dd`` and ``tar`` pad to a block size). A zero
+    byte reads as the type of a compressed chunk, and its length 0 was refused.
+    Four zeros are needed, since fewer may be a header cut short."""
+    data = _frame(_data_chunk(_GOOD)) + b"\0" * zeros
+    diagnostics: list[Diagnostic] = []
+    isolation = ProcessIsolation.NATIVE_DECODERS if isolated else ProcessIsolation.NONE
+    config = ArchiveyConfig(
+        process_isolation=isolation, on_diagnostic=diagnostics.append
+    )
+    with open_stream(io.BytesIO(data), format="sz", config=config) as stream:
+        assert stream.read() == _GOOD
+    with open_stream(NonSeekableBytesIO(data), format="sz", config=config) as stream:
+        assert b"".join(iter(lambda: stream.read(7), b"")) == _GOOD
+    assert diagnostics == []
+
+
+@pytest.mark.parametrize("zeros", [600, 70_000])
+def test_a_padded_stream_seeks_to_the_end_and_the_middle(
+    selected: str, zeros: int
+) -> None:
+    """A seek to the end finds the size by reading through the padding; a seek to the
+    middle resumes at a chunk boundary and meets the zeros in a fresh decoder."""
+    payload = _sample(5 * 60_000, 7)
+    data = written_frame(payload) + b"\0" * zeros
+    with open_stream(io.BytesIO(data), format="sz", seekable=True) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(payload)
+        middle = len(payload) // 2 + 123
+        assert stream.seek(middle) == middle
+        assert stream.read() == payload[middle:]
+        assert stream.seek(0, io.SEEK_END) == len(payload)
 
 
 def test_a_stream_without_its_identifier_is_refused(selected: str) -> None:
@@ -566,7 +625,8 @@ def test_the_first_installed_native_decoder_is_picked(
         monkeypatch.setitem(
             deps.snappy_libraries, library, deps.LazyOptional(library, present=True)
         )
-        monkeypatch.setattr(deps.snappy_libraries[library], "load", lambda: object())
+        module = types.SimpleNamespace(is_available=lambda _algorithm: True)
+        monkeypatch.setattr(deps.snappy_libraries[library], "load", lambda m=module: m)
         monkeypatch.setitem(
             NATIVE_DECODERS,
             library,
@@ -644,6 +704,41 @@ def test_a_package_the_child_cannot_import_is_skipped(
     assert lazy.child_import_failed
     # Not tried again: no child starts.
     assert isinstance(chunk_decoder(natives=ISOLATED), LocalChunks)
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+def test_a_compress_utils_built_without_snappy_is_not_used(
+    isolated: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """compress-utils was picked whenever it imported. A build without Snappy refused
+    every block, so each was decoded twice and the usage record named the wrong
+    package; cramjam, when installed, was never tried."""
+    POOL.close_idle()
+    try:
+        use_compress_utils_without_lzo_or_snappy(tmp_path, monkeypatch)
+        _hide(monkeypatch, OptionalLibrary.CRAMJAM, *_CRC_LIBRARIES)
+        usage = ResourceUsageRecorder()
+        if isolated:
+            chunks = chunk_decoder(natives=ISOLATED, usage=usage)
+            assert isinstance(chunks, LocalChunks)
+            assert chunks.decode is decode_raw_python
+            # Not asked again: no child starts for the next stream.
+            assert not _allowed(NATIVE_DECODERS, frozenset(), ISOLATED)
+        else:
+            assert raw_block_decoder(usage=usage) is decode_raw_python
+        assert usage.backends() == ()
+        data = _sample(MAX_CHUNK_DATA + 5)
+        isolation = (
+            ProcessIsolation.NATIVE_DECODERS if isolated else ProcessIsolation.NONE
+        )
+        config = ArchiveyConfig(process_isolation=isolation)
+        with open_stream(
+            io.BytesIO(written_frame(data)), format="sz", config=config
+        ) as stream:
+            assert stream.read() == data
+    finally:
+        monkeypatch.undo()
+        POOL.close_idle()
 
 
 def test_open_stream_reads_through_the_child(selected: str) -> None:

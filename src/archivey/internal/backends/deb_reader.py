@@ -58,7 +58,7 @@ from archivey.internal.filters import (
     is_rooted,
     strip_absolute_root,
 )
-from archivey.internal.format_adapter import register_builtin_format
+from archivey.internal.format_adapter import HeldInnerData, register_builtin_format
 from archivey.internal.overrides import override
 from archivey.terminal import quoted
 from archivey.types import (
@@ -614,7 +614,7 @@ class DebReader(SequentialReader):
                     self._read_control(held)
                 else:
                     self._read_md5sums(held)
-                span = span._replace(data=io.BytesIO(held))
+                span = span._replace(data=HeldInnerData(held))
             yield span
 
     def _data(self, data: BinaryIO, fmt: ArchiveFormat) -> Iterator[MemberSpan]:

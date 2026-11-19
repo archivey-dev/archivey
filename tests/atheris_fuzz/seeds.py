@@ -155,7 +155,28 @@ def tar_seeds() -> list[bytes]:
 def iso_seeds() -> list[bytes]:
     tiny = [b"", b"\x00" * 32768, b"not an iso"]
     with tempfile.TemporaryDirectory(prefix="atheris-seed-iso-") as tmp:
-        return tiny + _corpus_seeds("iso", Path(tmp)) + _adversarial_seeds(".iso")
+        return (
+            tiny
+            + _corpus_seeds("iso", Path(tmp))
+            + _adversarial_seeds(".iso")
+            + _udf_seeds()
+        )
+
+
+def _udf_seeds() -> list[bytes]:
+    """UDF-only images, one with a metadata partition, from ``tests/udf_builder.py``:
+    the corpus has none, and their parser is archivey's own."""
+    from tests.udf_builder import Node, build_udf, directory
+
+    tree = directory(
+        "",
+        directory("d", Node("big", b"x" * 3000, split=True)),
+        Node("link", file_type=12, target="d/big"),
+        Node("inline", b"in", inline=True),
+        Node("sparse", b"s", sparse=4096),
+        Node("indirect", b"i", indirect=True),
+    )
+    return [build_udf(tree), build_udf(tree, metadata=True)]
 
 
 def ar_seeds() -> list[bytes]:

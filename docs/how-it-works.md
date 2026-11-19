@@ -35,9 +35,9 @@ included, can be read in a single forward pass with `stream_members()`.
 In archivey's tests, the ZIP, TAR, 7z and RAR parsers are checked against zipfile, tarfile, py7zr,
 rarfile and `unrar`, comparing both metadata and bytes. Archivey never imports zipfile, tarfile,
 py7zr or rarfile at run time. For each format's details, see the [format
-handbooks](https://github.com/archivey-dev/archivey/tree/main/dev-docs/formats) and the [library
-analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md), both written
-for people working on archivey itself.
+development docs](https://github.com/archivey-dev/archivey/tree/main/dev-docs/formats) and the
+[library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md),
+both written for people working on archivey itself.
 
 ## Decoding member data
 

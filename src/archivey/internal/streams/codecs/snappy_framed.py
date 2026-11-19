@@ -12,8 +12,12 @@ chunk followed by chunks, each a 1-byte type and a 3-byte little-endian length::
 
 The CRC-32C covers the **decoded** data of a chunk, masked as the format describes.
 There is no end mark: the stream ends where the input does, which must be between
-chunks. A repeated identifier is how concatenated streams look, so the whole input is
-one stream here and nothing follows it.
+chunks, or in four or more zero bytes after a chunk that run to the end. Those zeros
+are padding, the zero-tail rule of ``dev-docs/formats/single-file.md`` §6. Four zeros
+are a compressed chunk of length 0, which is otherwise invalid; fewer may be a header
+cut short, and stay a truncation. A non-zero byte after the zeros is refused. A
+repeated identifier is how concatenated streams look, so the whole input is one stream
+here and nothing follows it.
 
 **What the input can make this allocate.** A data chunk decodes to at most 64 KiB
 (the format's limit). The raw block's own length varint is read here and checked
@@ -54,6 +58,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.decoder_worker import compress_utils_has
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     ChildSnappyNatives,
@@ -366,6 +371,14 @@ def checked_by_python(
     return decode
 
 
+def _has_snappy(library: OptionalLibrary, module: ModuleType) -> bool:
+    """Whether ``module`` decodes Snappy. compress-utils builds each algorithm as an
+    option, and a build without Snappy refuses every block."""
+    if library is OptionalLibrary.COMPRESS_UTILS:
+        return compress_utils_has(module, "snappy")
+    return True
+
+
 def raw_block_decoder(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     usage: ResourceUsageRecorder | None = None,
@@ -377,7 +390,7 @@ def raw_block_decoder(
         if library in excluded:
             continue
         module = deps.snappy_libraries[library].load()
-        if module is not None:
+        if module is not None and _has_snappy(library, module):
             if usage is not None:
                 usage.note_backend("library", library.value, "snappy")
             return checked_by_python(adapt(module))
@@ -394,6 +407,7 @@ def _allowed(
         for library in libraries
         if library not in excluded
         and not deps.snappy_libraries[library].child_import_failed
+        and deps.snappy_libraries[library].child_has.get("snappy") is not False
         and natives.package_available(deps.snappy_libraries[library])
     ]
 
@@ -480,13 +494,17 @@ def chunk_decoder(
     child = natives.snappy_natives(
         [library.value for library in decoders], [library.value for library in crcs]
     )
-    decoder, crc = child.chosen()
+    decoder, crc, without = child.chosen()
     for tried, chosen in ((decoders, decoder), (crcs, crc)):
         for library in tried:
             if library.value == chosen:
                 if usage is not None:
                     usage.note_backend("library", library.value, "snappy")
                 break
+            if library.value in without:
+                # It imports there, but its build has no Snappy.
+                deps.snappy_libraries[library].child_has["snappy"] = False
+                continue
             # The child takes the first it can use: this one was found here but not
             # importable there (or google-crc32c without its C extension).
             deps.snappy_libraries[library].failed_in_child(
@@ -520,7 +538,8 @@ class SnappyFramedDecompressor:
 
     A chunk is decoded when all of it has arrived and the caller wants output; its
     data is then returned in ``max_length`` pieces. The stream is complete only when
-    :meth:`end_input` finds the input ended between chunks, after an identifier.
+    :meth:`end_input` finds the input ended between chunks, or in zero padding after
+    one, after an identifier.
     """
 
     def __init__(self, chunks: ChunkDecoder) -> None:
@@ -531,6 +550,10 @@ class SnappyFramedDecompressor:
         self._skip = 0
         self._identified = False
         self._ended = False
+        # Where a run of zero bytes after a chunk started, once a whole chunk header
+        # of zeros was seen; ``None`` before. Zeros that run to the end of the input
+        # are padding (``end_input``); a non-zero byte after them is refused.
+        self._zeros_from: int | None = None
         self._output = memoryview(b"")
         # Offset in the stream of the start of ``_input``, for error messages and seek
         # points; where this decompressor started in the stream (not 0 after
@@ -587,6 +610,9 @@ class SnappyFramedDecompressor:
         """Decode the next buffered data chunk into ``_output``, dropping identifiers
         and skippable chunks on the way. False when no data chunk is complete yet."""
         while True:
+            if self._zeros_from is not None:
+                self._drop_zeros()
+                return False
             if self._skip:
                 n = min(self._skip, len(self._input))
                 self._consume(n)
@@ -614,6 +640,12 @@ class SnappyFramedDecompressor:
                     raise SnappyFormatError(f"bad stream identifier at offset {at}")
                 self._consume(len(STREAM_IDENTIFIER))
                 self._identified = True
+                continue
+            if kind == _COMPRESSED and length == 0:
+                # A header of four zero bytes, a length no chunk has: padding, if
+                # only zeros follow.
+                self._zeros_from = at
+                self._consume(_HEADER)
                 continue
             if kind in (_COMPRESSED, _UNCOMPRESSED):
                 most = _CRC + (
@@ -651,8 +683,22 @@ class SnappyFramedDecompressor:
             self._consume(_HEADER)
             self._skip = length
 
+    def _drop_zeros(self) -> None:
+        """Drop the zero bytes buffered after a zero chunk header, or refuse the first
+        byte that is not zero: zeros are padding only where they run to the end."""
+        nonzero = self._input.lstrip(b"\x00")
+        if nonzero:
+            at = self._offset + len(self._input) - len(nonzero)
+            raise SnappyFormatError(
+                f"zero bytes from offset {self._zeros_from} are followed by a "
+                f"non-zero byte at offset {at}: they are neither padding nor a chunk"
+            )
+        self._consume(len(self._input))
+
     def _chunk_buffered(self) -> bool:
         """Whether a call with no new input can make progress (or raise)."""
+        if self._zeros_from is not None:
+            return bool(self._input)
         if self._skip:
             return bool(self._input)
         if len(self._input) < _HEADER:
@@ -682,8 +728,8 @@ class SnappyFramedDecompressor:
         return not self._output and not self._chunk_buffered()
 
     def end_input(self) -> None:
-        """The input ended: the stream is complete only between chunks, after a stream
-        identifier."""
+        """The input ended: the stream is complete only between chunks, or in zero
+        padding after one (``_zeros_from``), after a stream identifier."""
         if self._ended:
             return
         if self._skip:
@@ -691,6 +737,8 @@ class SnappyFramedDecompressor:
                 f"Snappy stream ends inside a skippable chunk, {self._skip} bytes short"
             )
         if self._input:
+            # Fewer than four zero bytes are not padding: they may be the start of a
+            # compressed chunk's header, cut.
             raise EOFError(
                 f"Snappy stream ends inside a chunk at offset {self._offset}"
             )
