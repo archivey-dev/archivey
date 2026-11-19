@@ -665,13 +665,14 @@ def test_a_reencoded_url_in_aiohttp_text_is_redacted(resolved_signed: None) -> N
     yarl = pytest.importorskip("yarl")
     reencoded = str(yarl.URL(SIGNED, encoded=False).with_user(None))
     assert "s3cr3t/part" in reencoded  # the shape aiohttp prints
-    timeout = aiohttp.ConnectionTimeoutError(f"Connection timeout to host {reencoded}")
+    # The 3.9 floor's base classes of ConnectionTimeoutError and InvalidUrlClientError.
+    timeout = aiohttp.ServerTimeoutError(f"Connection timeout to host {reencoded}")
     wrapped = FileNotFoundError(SIGNED)
     wrapped.__cause__ = timeout
     text = sources.remote_error_text(wrapped)
-    assert text is not None and "ConnectionTimeoutError" in text
+    assert text is not None and "ServerTimeoutError" in text
     assert "s3cr3t" not in text and "pw" not in text
-    invalid = aiohttp.InvalidUrlClientError(reencoded)
+    invalid = aiohttp.InvalidURL(reencoded)
     shown = sources.http_error_text(invalid)
     assert shown is not None and "s3cr3t" not in shown
 

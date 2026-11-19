@@ -115,7 +115,10 @@ def resolve_archive(arg: str) -> Any:
         return arg
     _register_redactions(arg)
     try:
-        source = fsspec.open(arg, mode="rb", **_http_options(arg))
+        # url_to_fs and OpenFile rather than fsspec.open: fsspec 2024.2 open()
+        # globbed a read path holding '*', so 'a*[1].zip' could open another object.
+        fs, path = fsspec.core.url_to_fs(arg, **_http_options(arg))
+        source = fsspec.core.OpenFile(fs, path, mode="rb")
     except ImportError as exc:
         # A known protocol whose backend package is missing (s3fs, aiohttp, …): not a
         # local path, so no fallback to one.
