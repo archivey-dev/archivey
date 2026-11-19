@@ -240,7 +240,9 @@ def test_local_paths_never_import_fsspec(arg: str, no_fsspec: None) -> None:
 def test_an_unknown_protocol_is_a_local_path(memfs: Any) -> None:
     result = _run(["list", "nosuchproto://x.zip"])
     assert result.code == EXIT_FAIL
-    assert "no such file or directory" in result.err
+    # The local open's own error: ENOENT on POSIX, EINVAL on Windows (``:`` in a name).
+    assert result.err.startswith("archivey: cannot open 'nosuchproto:"), result.err
+    assert "fsspec" not in result.err
 
 
 def test_a_known_protocol_with_a_missing_backend_is_a_dependency_error(
@@ -403,9 +405,11 @@ def test_url_stems_are_one_safe_segment(
     assert _archive_stem(UrlName(name), format=fmt) == stem
 
 
-def test_local_names_keep_their_rules() -> None:
-    # The URL checks do not reach a local path: ``a:b`` is a valid POSIX file name.
-    assert _archive_stem(Path("a:b.tar.gz"), format=ArchiveFormat.TAR_GZ) == "a:b"
+def test_local_names_keep_their_rules(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The URL checks do not reach a local path: a reserved Windows device name in a
+    # local file name keeps the existing local naming rules.
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _archive_stem(Path("con.tar.gz"), format=ArchiveFormat.TAR_GZ) == "con"
 
 
 # --- HTTP -----------------------------------------------------------------------------
