@@ -10,12 +10,13 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import BinaryIO, TextIO
+from typing import Any, BinaryIO, TextIO
 
 from archivey import detect_format, open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.cli.format import format_format_label
+from archivey.cli.sources import is_remote, resolve_archive, shown_archive
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, PasswordInput
 from archivey.exceptions import StreamNotSeekableError
 
@@ -65,10 +66,12 @@ def outer_format(
     unchanged. ``verb`` completes the "leave out --outer to …" advice.
     """
     reject_stdin_token(archive)
-    shown = display_path(archive)
-    if os.path.isdir(archive):
+    source = resolve_archive(archive)
+    shown = shown_archive(archive)
+    remote = is_remote(archive)
+    if not remote and os.path.isdir(archive):
         raise outer_directory_error(shown)
-    if is_read_once(archive):
+    if not remote and is_read_once(archive):
         # Detecting the format reads the start of the pipe, and the open after it
         # would not see those bytes again.
         raise CliError(
@@ -83,7 +86,7 @@ def outer_format(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", DeprecationWarning)
         probing = replace(config or DEFAULT_ARCHIVEY_CONFIG, always_probe_content=True)
-    fmt = detect_format(archive, config=probing).format
+    fmt = detect_format(source, config=probing).format
     outer = outer_layer_format(fmt)
     if outer is None:
         raise no_compression_layer(shown, fmt, verb=verb)
@@ -194,12 +197,15 @@ def open_for_cli(
     every other verb ``-`` is refused. ``format`` skips detection, as
     ``open_archive(format=)`` does.
     """
-    source: str | Path | BinaryIO
+    source: Any
     if archive == "-" and stdin is not None:
         source, streaming = stdin, True
     else:
         reject_stdin_token(str(archive))
-        source, streaming = archive, is_read_once(archive)
+        # A URL resolves to an fsspec OpenFile, which is never read-once: the library
+        # reads it with range requests.
+        source = resolve_archive(str(archive))
+        streaming = not is_remote(str(archive)) and is_read_once(archive)
     err = err if err is not None else sys.stderr
     if track_io:
         with (
@@ -226,7 +232,7 @@ def open_for_cli(
 
 
 def _open(
-    archive: str | Path | BinaryIO,
+    archive: Any,
     *,
     password: PasswordInput,
     streaming: bool,

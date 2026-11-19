@@ -210,6 +210,9 @@ dev = [
     # objects are ubiquitous in data pipelines (local/S3/GCS/HTTP behind one interface).
     "urllib3>=2.0.0",
     "fsspec>=2024.0.0",
+    # fsspec's http/https backend, for the CLI URL tests against a local range server
+    # (tests/test_cli_urls.py). Absent in the core-only leg, where those tests skip.
+    "aiohttp>=3.9.0",
     # Property-based tests for the safety logic (tests/test_property_safety.py); mirrors
     # the mutation harness as the second pre-Phase-6 fuzzing-scaffold gate.
     "hypothesis>=6.100.0",

@@ -53,6 +53,13 @@ from archivey.cli.format import escape_member_name, escape_path, format_error_de
 from archivey.cli.logging_config import member_skips_reported_elsewhere
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
+from archivey.cli.sources import (
+    http_error_type,
+    is_remote,
+    is_safe_url_stem,
+    resolve_archive,
+    url_file_name,
+)
 from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.exceptions import ArchiveyError
 from archivey.paths import numbered_name
@@ -65,7 +72,19 @@ from archivey.types import (
 )
 
 
-def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
+@dataclass(frozen=True)
+class UrlName:
+    """The file name a URL argument gives the smart extraction folder.
+
+    Kept apart from a local ``Path``: the name is the URL's last path segment as typed
+    (:func:`~archivey.cli.sources.url_file_name`), so it can hold a ``\\`` or a ``:``
+    that a ``Path`` would read as structure.
+    """
+
+    name: str
+
+
+def _archive_stem(archive: Path | UrlName, *, format: ArchiveFormat) -> str:
     """Stem used for the smart enclosing directory.
 
     Prefer the format's canonical extension (covers ``.tar.Z``, ``.tzst``, …); fall
@@ -73,20 +92,27 @@ def _archive_stem(path: Path, *, format: ArchiveFormat) -> str:
     ``.`` or ``..``: the result becomes a destination path, so an empty stem (a file
     named exactly ``.tar.gz``) or ``.`` (``..zip``) would splatter into the cwd, and
     ``..`` (``...zip``, ``...tar.gz``) would write into the parent directory. Those
-    names give ``"archive"`` instead.
+    names give ``"archive"`` instead. A stem from a URL must also be one safe local
+    segment (:func:`~archivey.cli.sources.is_safe_url_stem`), or it is ``"archive"``.
     """
-    name = path.name
+    stem = _safe_stem(_strip_extension(archive.name, format=format))
+    if isinstance(archive, UrlName) and not is_safe_url_stem(stem):
+        return "archive"
+    return stem
+
+
+def _strip_extension(name: str, *, format: ArchiveFormat) -> str:
     ext = format.file_extension()
     if ext:
         suffix = f".{ext}"
         if name.lower().endswith(suffix.lower()):
-            return _safe_stem(name[: -len(suffix)])
+            return name[: -len(suffix)]
     stem, suffix = _split_suffix(name)
     if suffix:
         stem, suffix = _split_suffix(stem)
         if suffix.lower() != ".tar":
             stem += suffix
-    return _safe_stem(stem)
+    return stem
 
 
 def _split_suffix(name: str) -> tuple[str, str]:
@@ -121,7 +147,7 @@ def _top_level_names(members: list[ArchiveMember]) -> set[str]:
     return tops
 
 
-def _enclosing_dir(archive: Path, *, format: ArchiveFormat) -> Path:
+def _enclosing_dir(archive: Path | UrlName, *, format: ArchiveFormat) -> Path:
     """The wrapper folder named after the archive: a name nothing has yet (D1).
 
     The CLI picks this folder on the user's behalf, so it is always one this run
@@ -138,7 +164,7 @@ def _enclosing_dir(archive: Path, *, format: ArchiveFormat) -> Path:
 
 
 def smart_dest(
-    archive: Path,
+    archive: Path | UrlName,
     *,
     format: ArchiveFormat,
     members: list[ArchiveMember],
@@ -162,7 +188,7 @@ class _SmartDestPlan:
 
 def resolve_smart_dest(
     reader: ForwardArchiveReader,
-    archive: Path,
+    archive: Path | UrlName,
     *,
     pred: Callable[[ArchiveMember], bool] | None,
 ) -> _SmartDestPlan:
@@ -1534,7 +1560,7 @@ def _exit_for_outcomes(*, blocked: int, failed: int, hoist_ok: bool) -> int:
 
 
 def _report_stop(
-    exc: ArchiveyError | OSError,
+    exc: BaseException,
     *,
     extracted: int,
     blocked: int,
@@ -1603,7 +1629,6 @@ def run_extract(
     overwrite_enum = from_cli_choice(OverwritePolicy, overwrite)
     on_error = OnError.STOP if stop_on_error else OnError.CONTINUE
     abort_on_enum = frozenset(from_cli_choice(AbortOn, item) for item in abort_on or ())
-    archive_path = Path(archive)
     # --outer opens the compression layer as a one-file archive: its member is the
     # tar of a .tar.gz, so the extraction writes that file, as gunzip -k would.
     fmt = (
@@ -1613,7 +1638,7 @@ def run_extract(
     )
 
     with open_for_cli(
-        archive_path,
+        archive,
         password=pwd,
         track_io=track_io,
         config=config,
@@ -1633,7 +1658,14 @@ def run_extract(
         if dest is not None:
             plan = _SmartDestPlan(Path(dest), may_hoist=False)
         else:
-            plan = resolve_smart_dest(reader, archive_path, pred=pred)
+            # A URL names the folder by its last path segment, never by a redirect or
+            # Content-Disposition; a local path by its file name.
+            named: Path | UrlName = (
+                UrlName(url_file_name(archive, resolve_archive(archive)))
+                if is_remote(archive)
+                else Path(archive)
+            )
+            plan = resolve_smart_dest(reader, named, pred=pred)
             if plan.target != Path("."):
                 verb = "would extract" if dry_run else "extracting"
                 print(f"{verb} into {escape_path(plan.target)}/", file=err)
@@ -1679,7 +1711,7 @@ def run_extract(
                 # main(), which exits 141 with no message; the handler below would
                 # report it as a failed extraction and exit 1.
                 raise
-            except (ArchiveyError, OSError) as exc:
+            except (ArchiveyError, OSError, http_error_type()) as exc:
                 # STOP-path member failure / always-stop (bomb guards,
                 # DiagnosticRaisedError). Exit 1 always on abort (Q8 Option A):
                 # exit 3 is reserved for a *completed* run with policy blocks and

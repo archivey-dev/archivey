@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import BinaryIO, TextIO
+from typing import Any, BinaryIO, TextIO
 
 from archivey import open_stream
 from archivey.cli.common import (
@@ -22,13 +22,18 @@ from archivey.cli.format import (
     format_error_detail,
 )
 from archivey.cli.password import resolve_password
+from archivey.cli.sources import (
+    http_error_type,
+    is_remote,
+    resolve_archive,
+    shown_archive,
+)
 from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.exceptions import (
     ArchiveyError,
     ArchiveyUsageError,
     FormatDetectionError,
 )
-from archivey.terminal import display_path
 
 # Bytes copied per read: large enough that the copy costs little per call, small
 # enough that one chunk held in memory does not matter.
@@ -103,13 +108,13 @@ def _cat_outer(
     config: ArchiveyConfig | None,
 ) -> int:
     if archive == "-" and stdin is not None:
-        source: str | BinaryIO = stdin
+        source: Any = stdin
         shown = "stdin"
     else:
         reject_stdin_token(archive)
-        source = archive
-        shown = display_path(archive)
-        if os.path.isdir(archive):
+        source = resolve_archive(archive)
+        shown = shown_archive(archive)
+        if not is_remote(archive) and os.path.isdir(archive):
             # The library refuses a directory too (caught below), but its message
             # points at open_archive(); this one names the CLI's view of it.
             raise outer_directory_error(shown)
@@ -185,7 +190,7 @@ def _cat_members(
                     # stdout failed (a closed pipe, a full disk): main() reports it,
                     # and exits 141 for a closed pipe.
                     raise exc.error from None
-                except (ArchiveyError, OSError) as exc:
+                except (ArchiveyError, OSError, http_error_type()) as exc:
                     # The concatenated output is already wrong past this point, so
                     # stop rather than go on writing the next members after it.
                     print(

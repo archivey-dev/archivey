@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
+from archivey.cli.sources import http_error_text, redact
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError
 from archivey.terminal import display_path, escape_control_chars
@@ -70,10 +71,18 @@ def format_error_detail(exc: BaseException) -> str:
     Call sites should not have to know which of the two they are holding; several hold
     a union (``ExtractionResult.error`` is ``ArchiveyError | OSError``). This is the
     one place that decides.
+
+    A URL the CLI resolved is replaced by its sanitized label first, so a signed URL's
+    query or a password in its authority is not printed
+    (:func:`~archivey.cli.sources.redact`). An aiohttp error gets a message the CLI
+    builds itself (:func:`~archivey.cli.sources.http_error_text`).
     """
     if isinstance(exc, (ArchiveyError, ArchiveyUsageError)):
-        return str(exc)
-    return escape_control_chars(str(exc))
+        return redact(str(exc))
+    http_text = http_error_text(exc)
+    if http_text is not None:
+        return escape_control_chars(http_text)
+    return escape_control_chars(redact(str(exc)))
 
 
 def format_mode(mode: int | None) -> str:
