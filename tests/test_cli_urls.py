@@ -417,11 +417,18 @@ def test_local_names_keep_their_rules(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class _Handler(BaseHTTPRequestHandler):
     """Serves ``files`` with range support; a path in ``poison`` answers 403 for any
-    range that touches its ``(start, end)`` span."""
+    range that touches its ``(start, end)`` span. While ``ignore_ranges[0]`` is not
+    zero, a range request gets the whole file with ``200``, as a CDN node that ignores
+    ``Range`` sends it (each such answer counts it down; below zero, it never stops).
+    ``ranges`` records each range request's header."""
 
     files: ClassVar[dict[str, bytes]] = {}
     poison: ClassVar[dict[str, tuple[int, int]]] = {}
     agents: ClassVar[list[str]] = []
+    ignore_ranges: ClassVar[list[int]] = [0]
+    # A ``Content-Range`` header to send instead of the right one, on every 206.
+    content_range: ClassVar[list[str | None]] = [None]
+    ranges: ClassVar[list[str]] = []
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -452,6 +459,11 @@ class _Handler(BaseHTTPRequestHandler):
         start, end = 0, len(data) - 1
         ranged = self.headers.get("Range")
         if ranged:
+            self.ranges.append(ranged)
+        if ranged and self.ignore_ranges[0] != 0:
+            self.ignore_ranges[0] -= 1
+            ranged = None
+        if ranged:
             first, _, last = ranged.removeprefix("bytes=").partition("-")
             start = int(first)
             end = min(int(last), len(data) - 1) if last else len(data) - 1
@@ -463,10 +475,16 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self.send_response(206 if ranged else 200)
         if ranged:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{len(data)}")
+            self.send_header(
+                "Content-Range",
+                self.content_range[0] or f"bytes {start}-{end}/{len(data)}",
+            )
         self.send_header("Content-Length", str(end - start + 1))
         self.end_headers()
-        self.wfile.write(data[start : end + 1])
+        try:
+            self.wfile.write(data[start : end + 1])
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client stopped reading a body it did not need
 
 
 @pytest.fixture
@@ -474,6 +492,9 @@ def http_base() -> Iterator[str]:
     pytest.importorskip("aiohttp")
     pytest.importorskip("fsspec")
     _Handler.files, _Handler.poison, _Handler.agents = {}, {}, []
+    _Handler.ignore_ranges[0] = 0
+    _Handler.content_range[0] = None
+    _Handler.ranges.clear()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -739,3 +760,80 @@ def test_http_options_read_both_http_sections_as_fsspec_does(
     assert client["headers"] == expected
     if "trust_env" in str(sections):
         assert client["trust_env"] is True
+
+
+# --- a server that ignores range requests ------------------------------------------
+
+
+def test_http_a_range_ignored_now_and_then_is_asked_again(http_base: str) -> None:
+    # A CDN node answered with the whole file twice, then honoured ranges: the read
+    # asks again and the listing succeeds.
+    big = {"a.bin": os.urandom(300_000)}
+    _Handler.files["/data.zip"] = _zip_bytes(big, stored=True)
+    _Handler.ignore_ranges[0] = 2
+    result = _run(["t", f"{http_base}/data.zip"])
+    assert result.code == EXIT_OK, result.err
+    assert "1 OK" in result.err
+    # The first answer (from byte 0) was used as it came; the second, past byte 0,
+    # was asked for again.
+    assert _Handler.ranges[1] == _Handler.ranges[2]
+    assert not _Handler.ranges[1].startswith("bytes=0-")
+
+
+def test_http_a_server_that_never_honours_ranges_is_refused(http_base: str) -> None:
+    # Larger than the first window, so the listing needs bytes past byte 0 (a small
+    # file comes whole with the first request and is listed).
+    big = {"a.bin": os.urandom(300_000)}
+    _Handler.files["/data.zip"] = _zip_bytes(big, stored=True)
+    _Handler.ignore_ranges[0] = -1
+    result = _run([f"{http_base}/data.zip"])
+    assert result.code == EXIT_FAIL
+    assert "does not honour range requests" in result.err
+    # One request past byte 0 is sent three times, then refused.
+    past_start = [r for r in _Handler.ranges if not r.startswith("bytes=0-")]
+    assert len(past_start) == 3 and len(set(past_start)) == 1
+
+
+def test_http_a_whole_body_answer_from_byte_0_is_read_only_as_far_as_needed(
+    http_base: str,
+) -> None:
+    import tracemalloc
+
+    import fsspec
+
+    from archivey.internal.remote import RangeSource, WindowPool
+
+    data = os.urandom(1 << 20) * 32  # 32 MiB
+    _Handler.files["/big.bin"] = data
+    _Handler.ignore_ranges[0] = -1
+    of = fsspec.open(f"{http_base}/big.bin")
+    src = RangeSource.from_open_file(of, pool=WindowPool(), max_read_through=1 << 20)
+    tracemalloc.start()
+    try:
+        assert src.read(100) == data[:100]
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        src.close()
+    # The first window (64 KiB), not the 32 MiB body.
+    assert peak < 4 << 20
+
+
+@pytest.mark.parametrize("header", ["bytes 0-99/1000", "bytes */1000", "garbage"])
+def test_http_a_partial_answer_for_other_bytes_is_refused(
+    http_base: str, header: str
+) -> None:
+    import fsspec
+
+    from archivey.internal.remote import RangeSource, WindowPool
+
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.content_range[0] = header
+    of = fsspec.open(f"{http_base}/big.bin")
+    src = RangeSource.from_open_file(of, pool=WindowPool(), max_read_through=1 << 20)
+    try:
+        src.seek(100_000)
+        with pytest.raises(OSError, match="does not match it"):
+            src.read(10)
+    finally:
+        src.close()
