@@ -1,3 +1,18 @@
+## For dummies
+
+<!-- Goes first, and is written for someone who uses archives but has not read this code,
+the issue or the review. Plain words: no function, class or file names, no finding IDs,
+no internal jargon. A short paragraph or a few bullets that answer:
+- What the thing is: the format, feature or part of archivey the change touches, in one
+  sentence ("pbzx is the compression wrapper inside macOS .pkg installers").
+- The bug or the gap, with a concrete example: an archive, a call, and what happened
+  ("listing a CD image whose second session was burned in another mode showed only the
+  first session's files").
+- What the change does about it, in one sentence.
+- Who notices, and what they see now. "Nobody: internal only" is a fine answer.
+A pull request with several fixes gets one short block per fix. The sections below keep
+the precise, technical record. -->
+
 ## What changes
 
 <!-- What the diff does, in a few sentences. Link the issue it fixes, if there is one. -->

@@ -155,7 +155,11 @@ from archivey.internal.backends.udf import (
 )
 from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.listing_limits import check_metadata_budget
+from archivey.internal.listing_limits import (
+    check_metadata_budget,
+    metadata_limit_error,
+    str_retained_bytes,
+)
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
@@ -478,6 +482,9 @@ class _ParseBudget:
     its tag's CRC covers, when more), and each Indirect Entry's tag and CRC-covered
     bytes add to the image's bytes, a directory weighed before it is read. Each ICB
     is parsed and weighed once, however many names lead to it.
+
+    Every full path of the UDF tree is weighed too, as the walk builds it, in a sum
+    of its own held to ``max_metadata_bytes`` (:meth:`add_udf_path`).
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -495,6 +502,8 @@ class _ParseBudget:
         self._tree = 0
         # Entries pycdlib has parsed from the path table it is parsing now.
         self._path_table_entries = 0
+        # The full paths of the UDF tree, weighed apart from the bytes above.
+        self._udf_path_bytes = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
@@ -508,6 +517,29 @@ class _ParseBudget:
 
     def add_udf_member(self) -> None:
         self._add_member(_UDF_TREE)
+
+    def add_udf_path(self, path: str, raw_path: bytes) -> None:
+        """Weigh one full UDF path, text and stored bytes together, as the walk
+        builds it, as the XAR reader weighs its paths.
+
+        A sum of its own, held to ``max_metadata_bytes``: it bounds the paths
+        ``UdfVolume.names`` keeps. The text is weighed by the listing's rule for a
+        member's name (``str_retained_bytes``), and the stored bytes as the listing
+        weighs a raw name. A listed member's name is this path normalized: a
+        directory's gains a trailing ``/``, which this does not weigh, and a ``.`` or
+        empty segment is dropped. So the listing of an ordinary tree weighs at least
+        as much, and only a tree whose names normalization shortens can be refused
+        here although its listing would fit. The walk weighs each path just after it
+        builds it, so a chain of nested directories, whose paths grow with the square
+        of its depth, is refused once they pass the cap."""
+        self._udf_path_bytes += str_retained_bytes(path) + len(raw_path)
+        max_meta = self._limits.max_metadata_bytes
+        if max_meta is not None and self._udf_path_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"its {_UDF_TREE_NAME} holds at least {self._udf_path_bytes} bytes "
+                f"of paths before the members are made, at {quoted(path[:200])}",
+            )
 
     def add_continuation(self, nbytes: int) -> None:
         self._add_bytes(nbytes, f"its {_ISO_TREE_NAME}")

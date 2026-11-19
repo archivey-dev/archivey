@@ -138,6 +138,9 @@ resolve through it back into the destination.
   (`_stage_then_place`); nothing else of the run is in the destination before then.
 - `_apply_metadata` strips setuid, setgid and sticky except under `TRUSTED`, and applies
   ownership only under `TRUSTED` as root.
+- A superseded copy is taken back where it was written, never where its name leads
+  now (`_take_back_written`): a later member may have re-pointed a caller's symlink on
+  that name, to a directory of the caller's or, under `TRUSTED`, one outside.
 
 **Residual.** A local process racing the destination (out of scope, §1). A hard kill, or a removal the filesystem
 refuses (logged), can leave `.archivey-tmp-*` files, or a pipe ZIP's staging directory of them,
@@ -155,7 +158,8 @@ which are safe to delete once no extraction is running.
 `test_hardlink_replaces_a_destination_symlink_without_following_it`,
 `test_error_when_dest_is_a_file_never_deletes_it`,
 `test_dest_symlink_to_dir_is_followed_into_target`, `test_strict_strips_setuid`,
-`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`.
+`test_resolve_or_raise_on_loop_raises_when_a_component_cannot_be_looked_up`,
+`test_taking_back_a_copy_leaves_the_directory_its_name_leads_to_now`.
 `tests/test_cve_regressions.py`: `test_cve_2025_4517_link_chain_past_path_max`,
 `test_name_that_leads_out`, `test_link_that_leads_out`, `test_tar_link_that_leads_out`,
 `test_link_planted_in_the_destination`.
@@ -404,7 +408,10 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
-  Before parsing, it refuses a table of contents that holds a NUL byte (so not UTF-8,
+  ISO weighs the UDF tree's directory data and File Entries in its image-wide
+  `max_metadata_bytes` sum, and every full UDF path as it builds it in a separate sum
+  held to the same cap, for the same reason (`udf.py`, `iso_reader.py`).
+  Before parsing, XAR refuses a table of contents that holds a NUL byte (so not UTF-8,
   such as UTF-16, which expat would read in a way the scan cannot see) and a tag of
   more than 65 536 pieces (characters outside quotes, or whole quoted values), since
   expat builds a tag's attributes before any handler can weigh them.
@@ -1554,8 +1561,20 @@ so 8 levels cannot use 8 times the caps:
   declaration stands for the level, ended decoders included, so the count errs toward
   refusing. Within one level the cap is still one decoder's. xz, LZMA Alone and zstd
   declarations are recorded from the first block header, the stream header and each
-  frame header; a later xz block with a larger dictionary is checked by liblzma against
-  the level's cap alone.
+  frame header, and a pbzx stream's from the first block header of each xz chunk; a
+  later xz block with a larger dictionary is checked by liblzma against the level's cap
+  alone.
+- `max_decoded_bytes`: an inner level's listing count has the enclosing level's count as
+  its parent (`ListingDecodeCount`). While the outer listing runs on the same thread,
+  every byte an inner decode stage produces is drawn from the outer count, also when
+  the outer walk drains an inner member's data, so one listing pass of the outermost
+  archive decodes at most the cap across all its levels. The outer walk does not draw
+  that member data again (`_PluginAdapter._decoded_stream`, `HeldInnerData` for the
+  `.deb` control files it reads whole), so each byte counts once. A `.pkg` with many
+  payloads otherwise decoded payload count times the cap, and a `.deb`'s tar headers
+  went uncharged to the outer listing. An inner walk outside the outer listing (an
+  `open_member` that reads a payload again) counts on its own count alone, as any
+  reader's member read does.
 - `max_ratio`: every level is held to the ratio of the outermost archive's compressed
   size (or the bytes taken from it so far, from a pipe), not of its own input, so a nest
   of `n` levels decodes at most `n` times the ratio of the caller's bytes, not the ratio
@@ -1566,7 +1585,8 @@ so 8 levels cannot use 8 times the caps:
 counts it. These readers draw decoded bytes from the nest's account, and add nothing to
 the nest ratio: their bytes are in the outer reader's number. Code:
 `archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
-`_PluginAdapter._nested_config`, `BaseArchiveReader._trusted_source_size`.
+`ListingDecodeCount` (its `parent`), `_PluginAdapter._nested_config`,
+`BaseArchiveReader._trusted_source_size`.
 
 ### Reads have no output bound
 

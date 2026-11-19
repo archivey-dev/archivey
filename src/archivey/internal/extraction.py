@@ -605,7 +605,10 @@ class _RunState:
     run_symlinks: set[tuple[int, int]] = field(default_factory=set)
     run_symlink_keys: set[str] = field(default_factory=set)
     # Parent directory (as spelled) -> whether its path goes through one of
-    # ``run_symlinks``; cleared with ``resolved_parents``.
+    # ``run_symlinks``, on its own components or in the resolution of a caller's
+    # symlink among them. A link or directory removed clears it together with
+    # ``resolved_parents`` (``_resolutions_changed``). A run link made at a name such
+    # a resolution looked up clears it alone (``_record_run_symlink``).
     through_run_link: dict[str, bool] = field(default_factory=dict)
     # Progress totals; see ``_run``.
     members_total: int | None = None
@@ -668,6 +671,10 @@ class _RunState:
     # Kept so a REPLACE that removes an empty directory this run wrote can revise
     # that result to OVERWRITTEN.
     written_dirs: dict[str, list[int]] = field(default_factory=dict)
+    # Where each directory member this run wrote physically is, by result index, so
+    # taking it back (``_take_back_written``) acts on that directory even after a
+    # later member re-pointed a caller's symlink on its spelled path.
+    written_dir_places: dict[int, Path] = field(default_factory=dict)
     # Hardlinks made as placeholders because their source has no written copy on
     # disk, by source member id, in archive order of each source's first link
     # (``_write_hardlink``): the second pass fills them (``_fill_held_sources``).
@@ -1813,11 +1820,12 @@ class ExtractionCoordinator:
         Its file is parked (see ``_park_earlier_copies``). Its claim, its place in the
         hardlink source map and its bomb-limit counts are released now. A hardlink
         already made to it is its own directory entry and stays, and its bytes stay
-        counted against the byte cap while it holds them. A directory is removed now if
-        it is empty; one that other members were written into stays, as their parent,
-        as it would in random access. A held hardlink's placeholder is parked as a file
-        is, and the second pass no longer fills it. An error recorded on the earlier
-        result is dropped with it: random access never tried that copy.
+        counted against the byte cap while it holds them. A directory is removed now,
+        where it was written, if it is empty and still this run's; one that other
+        members were written into stays, as their parent, as it would in random access,
+        and one that is gone is left gone. A held hardlink's placeholder is parked as a
+        file is, and the second pass no longer fills it. An error recorded on the
+        earlier result is dropped with it: random access never tried that copy.
         """
         self._take_back_written(index)
         prior = self._state.results[index]
@@ -1838,8 +1846,10 @@ class ExtractionCoordinator:
         pass wrote and must now handle otherwise (``_supersede_written_copy``); the
         caller records its new result.
 
-        A file is parked in ``_current``, a directory removed when empty, and the
-        claim, hardlink-source entries and bomb-limit counts are released.
+        A file is parked in ``_current``. A directory is removed where it was written
+        (``written_dir_places``), never where its name leads now, and only while it is
+        empty and still this run's. The claim, hardlink-source entries and bomb-limit
+        counts are released.
         """
         state = self._state
         prior = state.results[index]
@@ -1860,16 +1870,41 @@ class ExtractionCoordinator:
             )
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
-            on_disk = long_path(path)
-            if os.path.isdir(on_disk) and not os.path.islink(on_disk):
+            if prior.member.type == MemberType.DIRECTORY:
+                # Removed where it was written, and only while that is still this
+                # run's directory: ``path`` may lead somewhere else by now, through
+                # a caller's symlink a later member re-pointed.
+                place = state.written_dir_places.get(index, path)
                 # Random access never writes the superseded copy, so its metadata
                 # is not applied, whether or not the directory stays as a parent.
-                self._drop_pending_dir(path)
-                with contextlib.suppress(OSError):  # not empty: members live under it
-                    os.rmdir(on_disk)
+                # Found from where it was written too: the directory ``path`` leads
+                # to now keeps its own.
+                self._drop_pending_dir(place)
+                on_disk = long_path(place)
+                try:
+                    st = os.lstat(on_disk)
+                except OSError:
+                    st = None
+                # No archive input makes ``place`` a directory the run did not write:
+                # every later member that changes it leaves a file, a symlink or
+                # the run's own directory. Asking ``_is_run_directory`` (``place``
+                # is recorded in ``run_dirs``) only guards against a later change to
+                # this code; it does not see another process replacing the
+                # directory at that path, which threat model §1 leaves out of scope.
+                if (
+                    st is not None
+                    and stat.S_ISDIR(st.st_mode)
+                    and self._is_run_directory(place, st)
+                ):
+                    with contextlib.suppress(OSError):  # not empty: members under it
+                        os.rmdir(on_disk)
+                        state.written_paths.discard(path)
+                        # A later link may take the name (``_record_run_symlink``).
+                        self._resolutions_changed()
+                else:
+                    # Gone, or no longer the directory this run wrote: nothing of
+                    # this copy is left there to take back.
                     state.written_paths.discard(path)
-                    # A later link may take the name (``_record_run_symlink``).
-                    self._resolutions_changed()
             else:
                 state.written_paths.discard(path)
                 if physical != path and physical != self._physical_path(path):
@@ -2296,6 +2331,9 @@ class ExtractionCoordinator:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
                 ).append(result_index)
+                self._state.written_dir_places[result_index] = self._physical_path(
+                    result.path
+                )
                 # Written under a derived name rather than merged into a prior path:
                 # members inside it follow it there.
                 if prior is None and result.path != target:
@@ -2886,16 +2924,22 @@ class ExtractionCoordinator:
             st = os.lstat(long_path(path))
         except OSError:
             return
+        state = self._state
         if st.st_ino:
-            self._state.run_symlinks.add((st.st_dev, st.st_ino))
+            state.run_symlinks.add((st.st_dev, st.st_ino))
         else:
-            self._state.run_symlink_keys.add(self._physical_key(path))
-        # No cached answer changes: only a name that is on disk is cached
-        # (``_goes_through_run_link``), and a new link's name held nothing, or what
-        # it held was removed first. A file's name has no cached answer, and every
-        # other removal this run makes clears the cache: a link it replaces or
-        # removes (``_note_link_change``), and a directory it replaces, takes back or
-        # removes for an anti-item (``_note_link_change``, ``_resolutions_changed``).
+            state.run_symlink_keys.add(self._physical_key(path))
+        # Only a name that is on disk is cached (``_goes_through_run_link``), and a
+        # new link's name held nothing, or what it held was removed first. A file's
+        # name has no cached answer, and every other removal this run makes clears
+        # the cache: a link it replaces or removes (``_note_link_change``), and a
+        # directory it replaces, takes back or removes for an anti-item
+        # (``_note_link_change``, ``_resolutions_changed``). What changes is the
+        # answer for a caller's symlink whose resolution looked up this name: caller
+        # ``c -> s/sub``, then the run's ``s -> e``.
+        if state.links.caller_walk_moved(path):
+            state.through_run_link.clear()
+            state.links.forget_caller_walks()
 
     def _refuse_through_run_link(self, member: ArchiveMember, path: Path) -> None:
         """Refuse ``member`` when its path goes through a symlink this run created:
@@ -2903,8 +2947,9 @@ class ExtractionCoordinator:
         2026-11-17): none of 82,635 release tarballs in tar-minefield's
         ``tree.through-symlink`` scan does this, bsdtar refuses it too, and a member's
         path is then fixed by its name and the caller's destination, never by a link
-        the archive made. A symlink the caller had in the destination is followed as
-        before."""
+        the archive made. A symlink the caller had in the destination is followed,
+        unless its own resolution goes through a link of this run
+        (``_is_run_symlink``)."""
         if not self._state.run_symlinks and not self._state.run_symlink_keys:
             return
         if self._goes_through_run_link(os.path.dirname(os.fspath(path))):
@@ -2915,11 +2960,14 @@ class ExtractionCoordinator:
 
     def _goes_through_run_link(self, parent: str) -> bool:
         """Whether the directory ``parent`` (as spelled under the destination) is, or
-        is under, a symlink this run created. A loop, not recursion: a name can be
+        is under, a symlink this run created, or a caller's symlink that resolves
+        through one (``_is_run_symlink``). A loop, not recursion: a name can be
         thousands of components deep.
 
-        Cached per directory or link on disk, so each costs one ``lstat`` until one
-        is removed or replaced (``_resolutions_changed``). Any other name is not
+        Cached per directory or link on disk, so each costs one ``lstat`` (and a
+        caller's symlink one walk) until one is removed or replaced
+        (``_resolutions_changed``), or a run link is made at a name a caller's
+        symlink's walk looked up (``_record_run_symlink``). Any other name is not
         cached: a later member may make a link there."""
         state = self._state
         cache = state.through_run_link
@@ -2953,12 +3001,11 @@ class ExtractionCoordinator:
 
     def _is_run_symlink(self, path: Path) -> bool | None:
         """Whether the entry at ``path`` is a symlink this run created, the same
-        entry and not one put in its place since. Decided by identity, not by
-        spelling, so a case variant, a name Windows trims or an 8.3 short name that
-        reaches the link is caught too. Where the filesystem reports inode 0, by
-        ``_physical_key``, which folds case and trims a trailing dot or space. ``None``
-        when nothing, or a file, is at ``path``: a later member may put a link there
-        without removing a directory or link, which is what clears the cache."""
+        entry and not one put in its place since, or a symlink the caller had whose
+        resolution goes through one: the caller's ``c -> s/sub`` after the run's
+        ``s -> e`` (``LinkWatch.caller_link_reaches``). ``None`` when nothing, or a
+        file, is at ``path``: a later member may put a link there without removing a
+        directory or link, which is what clears the cache."""
         try:
             st = os.lstat(long_path(path))
         except OSError:
@@ -2967,6 +3014,18 @@ class ExtractionCoordinator:
             return False
         if not stat.S_ISLNK(st.st_mode):
             return None
+        if self._is_run_link_entry(path, st):
+            return True
+        return self._state.links.caller_link_reaches(
+            path, lambda found, found_st: self._is_run_link_entry(Path(found), found_st)
+        )
+
+    def _is_run_link_entry(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the symlink at ``path``, ``lstat``-ed as ``st``, is one this run
+        created. Decided by identity, not by spelling, so a case variant, a name
+        Windows trims or an 8.3 short name that reaches the link is caught too. Where
+        the filesystem reports inode 0, by ``_physical_key``, which folds case and
+        trims a trailing dot or space."""
         if st.st_ino:
             return (st.st_dev, st.st_ino) in self._state.run_symlinks
         return self._physical_key(path) in self._state.run_symlink_keys
@@ -4119,11 +4178,14 @@ class ExtractionCoordinator:
 
     def _resolutions_changed(self, *, created: bool = False) -> None:
         """Forget the cached parent resolutions: a symlink was created or removed.
-        A symlink created at a free name changes no ``through_run_link`` answer,
-        which holds only names that are on disk."""
+        A symlink created at a free name changes no ``through_run_link`` answer for
+        a name it caches, which is on disk; it can change the answer for a caller's
+        symlink whose resolution passed that free name, which
+        ``_record_run_symlink`` checks once the link is recorded."""
         self._state.resolved_parents.clear()
         if not created:
             self._state.through_run_link.clear()
+            self._state.links.forget_caller_walks()
 
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""

@@ -1053,9 +1053,18 @@ class BaseArchiveReader(ArchiveReader):
         )
         # What one listing pass decodes (``ListingLimits.max_decoded_bytes``), and what
         # a decode stage draws from: that and the reader's budget (``_budget_drawn``).
+        # A reader ``open_nested`` builds also draws from the outer listing's count
+        # while that listing runs (``ListingDecodeCount``).
         decode_cap = self._config.listing_limits.max_decoded_bytes
         self._listing_decode = (
-            ListingDecodeCount(decode_cap) if decode_cap is not None else None
+            ListingDecodeCount(
+                decode_cap,
+                parent=None
+                if self._nest_outer is None
+                else self._nest_outer._listing_decode,
+            )
+            if decode_cap is not None
+            else None
         )
         self._stage_draws = StageDraws.of(self._nest, self._listing_decode)
         # How close this reader came to each reader-lifetime limit (private; read by
@@ -1738,7 +1747,7 @@ class BaseArchiveReader(ArchiveReader):
     # --- Measurement counters and source read hints -----------------------------------
 
     def _track_decompressed(
-        self, stream: BinaryIO, *, draw_budget: bool = True
+        self, stream: BinaryIO, *, draw_budget: bool = True, listing: bool = True
     ) -> BinaryIO:
         """Wrap ``stream`` to count decoded/output bytes when measurement is on, and to
         draw them from the reader's nest account (``_nest``).
@@ -1751,6 +1760,9 @@ class BaseArchiveReader(ArchiveReader):
         below already draws (:meth:`_budget_drawn`): a compressed TAR's members, whose
         archive stream draws every byte it decodes, skipped members and headers too, a
         format adapter's compressed layer, a streaming ZIP's codec members.
+        ``listing=False`` draws the nest account only, for an inner archive's member
+        data (``ReaderContext.open_nested``), whose decode stages charge the listing
+        already (``ListingDecodeCount``'s parent).
         """
         counter = self._decompressed_counter
         if counter is not None:
@@ -1758,9 +1770,9 @@ class BaseArchiveReader(ArchiveReader):
         if draw_budget:
             # Opened for listing work (a link target the listing reads): that work
             # counts toward the listing's cap too.
-            listing = self._listing_decode
+            count = self._listing_decode if listing else None
             stream = self._budget_drawn(
-                stream, stage=listing is not None and listing.room() is not None
+                stream, stage=count is not None and count.room() is not None
             )
         return stream
 

@@ -265,6 +265,8 @@ propagate, a gap narrowed rather than closed, a comment edited and left stale. S
 you add the label again, and equally before you stop after an approving verdict, run
 `review_prep.py --base <the sha the round reviewed>`, re-read that fix-diff the way a
 reviewer would, and update the PR body in the same push so it no longer describes round 1.
+That includes the **For dummies** section at its top: when a fix changes what the PR does
+or who notices, rewrite it too.
 
 ### Before the `review` label: write down what the round taught
 

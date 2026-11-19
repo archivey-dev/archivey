@@ -117,7 +117,7 @@ def test_no_points_without_restart_points() -> None:
 def _walk(compressed: bytes) -> xz_decoder._XzBlockWalker:
     """Feed one stream's bytes after its header to a walker, as ``_XzState`` does."""
     walker = xz_decoder._XzBlockWalker(compressed[7] & 0x0F)
-    walker.feed(compressed[xz_decoder._STREAM_HEADER_SIZE :])
+    walker.feed(compressed[xz_decoder.STREAM_HEADER_SIZE :])
     return walker
 
 

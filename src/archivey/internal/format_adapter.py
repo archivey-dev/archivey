@@ -1432,6 +1432,14 @@ class SpanningCheck:
         return error
 
 
+class HeldInnerData(io.BytesIO):
+    """Bytes of an inner archive's member (``ReaderContext.open_nested``) that a
+    reader read whole and hands out again as the span's data (a ``.deb``'s
+    ``control``). The inner reader's decode stages charged them to the listing as
+    they decoded them, so the outer walk does not charge them again
+    (``_PluginAdapter._decoded_stream``)."""
+
+
 class _NestedData(io.RawIOBase):
     """An inner member's data (``ReaderContext.open_nested``): what the inner reader
     reports while it is read names the member as the outer listing numbers it."""
@@ -2864,14 +2872,21 @@ class SequentialReaderAdapter(_PluginAdapter):
 
         It draws from the nest account, except for a ``data_on_demand`` reader over a layer
         that draws already (``decompress()``): its data is a window of that layer's
-        bytes, drawn there, so each byte is drawn once, as a span's is."""
+        bytes, drawn there, so each byte is drawn once, as a span's is. An inner
+        archive's member data (``open_nested``) does not draw the listing's
+        ``max_decoded_bytes``: the inner reader's decode stages charge this listing as
+        they decode it, so each byte counts there once."""
         drawn = (
             layer is not None
             and layer.drawn
             and getattr(self._reader, "data_on_demand", False)
         )
         return self._ratio_guarded(
-            self._track_decompressed(_full_count(data), draw_budget=not drawn),
+            self._track_decompressed(
+                _full_count(data),
+                draw_budget=not drawn,
+                listing=not isinstance(data, (_NestedData, HeldInnerData)),
+            ),
             self._decoded_ratio_tally,
             index,
         )

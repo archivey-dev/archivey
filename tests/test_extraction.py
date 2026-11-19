@@ -5606,6 +5606,96 @@ def test_a_copy_superseded_after_a_re_point_is_taken_back(tmp_path: Path) -> Non
     assert not (dest / "f" / "X").exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("kind", ["file", "dir"])
+@pytest.mark.parametrize("outside", [False, True], ids=["inside", "outside"])
+def test_taking_back_a_copy_leaves_the_directory_its_name_leads_to_now(
+    tmp_path: Path, kind: str, streaming: bool, outside: bool
+) -> None:
+    # The first `s/X` is written to `e/X` through the caller's `s -> e`. The
+    # archive's `s` then re-points the name, to `f` in the destination or, under
+    # TRUSTED, to a directory outside it. There `X` is an empty directory the run
+    # never wrote. Taking back the first copy removes it from `e/X` and leaves that
+    # directory alone.
+    if outside and sys.platform == "win32":
+        pytest.skip("a link target with a drive letter is refused on every OS")
+    there = tmp_path / "outside" if outside else tmp_path / "out" / "f"
+    (there / "X").mkdir(parents=True)
+    payload = b"first" if kind == "file" else None
+    archive = _tar_bytes(
+        [
+            (kind, "s/X", payload),
+            ("sym", "s", str(there) if outside else "f"),
+            (kind, "s/X", payload),
+        ]
+    )
+    dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "e")
+    (dest / "e").mkdir()
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+            policy=ExtractionPolicy.TRUSTED if outside else ExtractionPolicy.STANDARD,
+        )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    ]
+    assert (there / "X").is_dir()
+    assert not (dest / "e" / "X").exists()
+
+
+@_posix_perms
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_taking_back_a_copy_keeps_the_metadata_of_the_directory_its_name_leads_to(
+    tmp_path: Path, streaming: bool
+) -> None:
+    # `f/X` is the archive's own directory. The first `s/X/` lands in `e/X` through
+    # the caller's `s -> e`; `s` is then re-pointed to `f`, and the second `s/X/`
+    # supersedes the first. Taking it back drops `e/X`'s deferred metadata, not
+    # `f/X`'s, which still gets its stored mode and mtime.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        for name, kind, target in [
+            ("f/X", tarfile.DIRTYPE, ""),
+            ("s/X", tarfile.DIRTYPE, ""),
+            ("s", tarfile.SYMTYPE, "f"),
+            ("s/X", tarfile.DIRTYPE, ""),
+        ]:
+            info = tarfile.TarInfo(name)
+            info.type = kind
+            info.linkname = target
+            info.mode = 0o700 if kind == tarfile.DIRTYPE else 0o777
+            info.mtime = _DIR_MTIME
+            t.addfile(info)
+    dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "e")
+    (dest / "e").mkdir()
+    with open_archive(io.BytesIO(buf.getvalue()), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+            policy=ExtractionPolicy.STANDARD,
+        )
+    assert [r.status for r in report.results][1:] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    ]
+    assert not (dest / "e" / "X").exists()
+    st = (dest / "f" / "X").stat()
+    assert st.st_mode & 0o7777 == 0o700
+    assert int(st.st_mtime) == _DIR_MTIME
+
+
 @pytest.mark.parametrize(
     "shape",
     [
@@ -7480,6 +7570,36 @@ _THROUGH_RUN_LINK_SHAPES = {
         ("s", "e"),
         ["EXTRACTED", "EXTRACTED", "EXTRACTED", "BLOCKED"],
     ),
+    # The caller's `c -> s/sub` resolves through the run's `s -> e`: refused, as
+    # `s/sub/x` would be.
+    "a-callers-link-through-a-run-link": (
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")],
+        {},
+        ("c", "s/sub"),
+        ["EXTRACTED", "EXTRACTED", "BLOCKED"],
+    ),
+    # `c/x` fails while `s` is missing (the caller's `c` dangles), and the answer
+    # kept for `c` is dropped when the run's `s -> e` is made at a name its
+    # resolution looked up.
+    "a-callers-link-checked-before-the-run-link": (
+        [
+            ("dir", "e/sub", None),
+            ("sym", "q", "e"),
+            ("file", "c/x", b"x"),
+            ("sym", "s", "e"),
+            ("file", "c/y", b"y"),
+        ],
+        {},
+        ("c", "s/sub"),
+        ["EXTRACTED", "EXTRACTED", "FAILED", "EXTRACTED", "BLOCKED"],
+    ),
+    # A caller's link that resolves past the run's links is followed.
+    "a-callers-link-beside-a-run-link": (
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")],
+        {},
+        ("c", "e/sub"),
+        ["EXTRACTED", "EXTRACTED", "EXTRACTED"],
+    ),
     # A directory that replaces the run's link is a directory: written into.
     "a-directory-replaces-the-link": (
         [
@@ -7603,6 +7723,36 @@ def test_a_run_link_is_refused_where_the_filesystem_reports_inode_0(
         "EXTRACTED",
     ]
     assert sorted(os.listdir(dest / "e")) == ["y"]
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")
+@pytest.mark.parametrize("streaming", [False, True])
+def test_a_callers_link_through_a_symlink_outside_dest_where_inode_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    # The caller's `c` leaves dest through `o/back`, a symlink outside it, and comes
+    # back to the run's `s`. The symlink outside is never taken for a run link, and
+    # the member is refused for the run's `s`.
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (tmp_path / "o").mkdir()
+    os.symlink(dest / "s", tmp_path / "o" / "back")
+    os.symlink(tmp_path / "o" / "back" / "sub", dest / "c")
+    lstat = os.lstat
+    monkeypatch.setattr(os, "lstat", lambda *a, **k: _NoInode(lstat(*a, **k)))
+    archive = _tar_bytes(
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")]
+    )
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(dest, on_error=OnError.CONTINUE, on_blocked="skip")
+    monkeypatch.undo()
+    assert [r.status.name for r in report.results] == [
+        "EXTRACTED",
+        "EXTRACTED",
+        "BLOCKED",
+    ]
+    assert "this extraction created" in str(report.results[-1].error)
+    assert list((dest / "e" / "sub").iterdir()) == []
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason="POSIX")

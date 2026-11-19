@@ -16,17 +16,22 @@ How the image is walked (:func:`last_session_source`):
   as far past sector 0's as its position is, no address jumps: the image is one
   session and is read from its first track. That costs two reads (sector 0 and the
   tail), and a mixed-mode disc (data, then audio to the end) costs the same.
-- Otherwise the file is split into runs: data sectors whose address minus position
-  is the same number (the run's offset). A run is followed by probing ahead in
-  doubling steps and bisecting where a probe fails, so a run costs about two reads
-  per doubling of its length, not one per sector. Sectors between runs that are not
-  data (audio, a Form 2 postgap) are read in batches until the next data sector.
+- Otherwise the file is split into runs: data sectors of one data mode whose address
+  minus position is the same number (the run's offset). A run is followed by probing
+  ahead in doubling steps and bisecting where a probe fails, so a run costs about two
+  reads per doubling of its length, not one per sector. Sectors between runs that are
+  not data (audio, a Form 2 postgap) are read in batches until the next data sector.
 - Runs whose offsets differ by at least a lead-in (4 500 sectors) are in different
   sessions. The chosen track is the first run of the last session. Its volume
   descriptors are looked for from its sector 16 on (a pregap kept in the file puts
   them later), and checked as the sheet path checks them: the root directory's ``.``
   record must name its own sector (``cue_sheet.find_volume``, two sector reads per
   candidate).
+
+A data sector is a Mode 1 or a Mode 2 Form 1 sector, whatever mode sector 0 is in: a
+later session may be written in the other mode (a Mode 1 first session, then CD-ROM XA),
+and each run is read in its own mode, as a sheet reads each track in the mode its
+``TRACK`` line names.
 
 Anything that does not fit (an address that goes backwards, more runs than a disc has
 tracks, no primary volume descriptor in the last session, a root that does not name
@@ -37,7 +42,7 @@ volume it sees after it (``ARCHIVE_UNREAD_SESSION``).
 from __future__ import annotations
 
 import io
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from archivey.formats import ReaderSource
 from archivey.internal.backends.cd_sectors import (
@@ -64,32 +69,45 @@ _BATCH_SECTORS = 64
 @dataclass(frozen=True)
 class _Run:
     """Data sectors ``first`` to ``first + count`` of the file, at address
-    ``first + offset`` and on."""
+    ``first + offset`` and on, read with ``checker`` (their data mode)."""
 
     first: int
     count: int
     offset: int
+    checker: _SectorChecker
 
 
 class _Walk:
     def __init__(
-        self, source: ReaderSource, checker: _SectorChecker, sectors: int
+        self, source: ReaderSource, checkers: tuple[_SectorChecker, ...], sectors: int
     ) -> None:
         self._source = source
-        self._checker = checker
-        self._size = checker.sector_size
+        # The data modes a sector may be in, sector 0's first.
+        self._checkers = checkers
+        self._size = checkers[0].sector_size
         self.sectors = sectors
 
-    def _address_in(self, header: bytes) -> int | None:
-        return data_sector_address(self._checker, header)
+    def _data_in(self, header: bytes) -> tuple[int, _SectorChecker] | None:
+        """The address a data sector names and the checker of its mode, or ``None``."""
+        for checker in self._checkers:
+            address = data_sector_address(checker, header)
+            if address is not None:
+                return address, checker
+        return None
 
-    def address(self, index: int) -> int | None:
-        """The address of data sector ``index``, or ``None`` if it is not one."""
-        return self._address_in(self._source.read_at(index * self._size, HEADER_SIZE))
+    def _address_in(self, header: bytes) -> int | None:
+        found = self._data_in(header)
+        return None if found is None else found[0]
+
+    def _place(self, index: int) -> tuple[int, _SectorChecker] | None:
+        """The offset of data sector ``index`` and the checker of its mode, or
+        ``None`` if it is not one."""
+        found = self._data_in(self._source.read_at(index * self._size, HEADER_SIZE))
+        return None if found is None else (found[0] - index, found[1])
 
     def offset(self, index: int) -> int | None:
-        address = self.address(index)
-        return None if address is None else address - index
+        place = self._place(index)
+        return None if place is None else place[0]
 
     def last_data(self, first: int, end: int) -> tuple[int, int] | None:
         """The last data sector in ``[first, end)`` and its address, from one read."""
@@ -114,22 +132,22 @@ class _Walk:
             index += count
         return None
 
-    def run_end(self, first: int, offset: int, last: int) -> int:
-        """The last sector up to ``last`` of the run with ``offset`` that holds
-        ``first``. Probes ahead in doubling steps, then bisects."""
+    def run_end(self, first: int, place: tuple[int, _SectorChecker], last: int) -> int:
+        """The last sector up to ``last`` of the run with ``place`` (its offset and
+        mode) that holds ``first``. Probes ahead in doubling steps, then bisects."""
         good, step = first, 1
         bad = None
         while bad is None:
             probe = min(good + step, last)
             if probe == good:
                 return good
-            if self.offset(probe) == offset:
+            if self._place(probe) == place:
                 good, step = probe, step * 2
             else:
                 bad = probe
         while bad - good > 1:
             middle = (good + bad) // 2
-            if self.offset(middle) == offset:
+            if self._place(middle) == place:
                 good = middle
             else:
                 bad = middle
@@ -141,18 +159,19 @@ class _Walk:
         runs: list[_Run] = []
         index = 0
         while index <= last:
-            offset = self.offset(index)
-            if offset is None:
+            place = self._place(index)
+            if place is None:
                 found = self.next_data(index, last)
                 if found is None:
                     break
                 index = found
-                offset = self.offset(index)
-                assert offset is not None
+                place = self._place(index)
+                assert place is not None
+            offset, checker = place
             if runs and offset < runs[-1].offset:
                 return None  # an address that goes backwards
-            end = self.run_end(index, offset, last)
-            runs.append(_Run(index, end + 1 - index, offset))
+            end = self.run_end(index, place, last)
+            runs.append(_Run(index, end + 1 - index, offset, checker))
             if len(runs) > _MAX_RUNS:
                 return None
             index = end + 1
@@ -189,11 +208,18 @@ def last_session_source(
     addresses do not show a later one that holds an ISO 9660 volume."""
     raw_size = _raw_size(source)
     checker = _SectorChecker(layout, archive_name, raw_size, where="CD sector")
+    # A later session may be in the other data mode (Mode 1, or Mode 2 Form 1).
+    other = _SectorChecker(
+        replace(layout, mode=3 - layout.mode, form2=False),
+        archive_name,
+        raw_size,
+        where="CD sector",
+    )
     size = checker.sector_size
     sectors = raw_size // size
     if sectors < 2:
         return None
-    walk = _Walk(source, checker, sectors)
+    walk = _Walk(source, (checker, other), sectors)
     first_offset = walk.offset(0)
     if first_offset is None:
         return None
@@ -215,7 +241,7 @@ def last_session_source(
             run.count,
             0,
             run.first * size,
-            checker,
+            run.checker,
             number,
         )
         for number, run in enumerate(runs, 1)

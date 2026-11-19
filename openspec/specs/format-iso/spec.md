@@ -167,6 +167,7 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
 | Two or three data sessions back to back, sector addresses jumping by the gap, no `.cue` used, from a path or a stream | The newest session, as with the `.cue`; files of earlier sessions read from their sectors; no diagnostic |
 | Non-data sectors, and a pregap of data sectors, between the sessions | The same; the volume found past the pregap |
+| A later session in the other data mode (Mode 1, then Mode 2 Form 1, or the reverse), no `.cue` used | The newest session, each read in its own mode, as with the `.cue` |
 | One session, or a data track then audio to the end | Two header reads (sector 0 and the last 32 sectors), then the first track |
 | A second ISO 9660 volume past the volume space whose addresses do not place it (they restart, or its root is not where they put it) | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
 | A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
@@ -481,6 +482,17 @@ cap SHALL NOT make an image over it open. `max_members` SHALL be counted
 per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
 SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 
+The UDF parser builds every name's full path at open. It SHALL weigh each full path as
+it builds it, its text by the listing's rule for a member name (its length when ASCII,
+four times its length otherwise) plus its stored bytes, in a sum of its own held to
+`max_metadata_bytes`, so that nested directories, whose paths grow with the square of
+the depth, are refused at `open_archive` once their paths pass the cap, before any
+member is listed. The sum weighs the paths the parser keeps. A listed member's name is
+that path normalized: a directory's name gains a trailing `/`, and a `.` or empty
+segment is dropped. So the listing of an ordinary UDF tree weighs at least this sum,
+and only a tree whose names normalization shortens can be refused at open although its
+listing would fit.
+
 #### Scenario: image-wide byte budget
 
 | Case | Expected |
@@ -490,6 +502,7 @@ SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 | A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |
 | UDF chain of Indirect Entries whose blocks take the image over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | Many UDF File Identifiers naming one ICB or one chain of Indirect Entries | Opens; each entry is read and weighed once |
+| UDF tree of nested directories whose full paths total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 
 ### Requirement: Bound the UDF chains structurally
 

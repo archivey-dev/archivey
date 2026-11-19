@@ -117,14 +117,17 @@ file position is constant inside a track and jumps by the session gap (11 400 or
 at a session boundary. `last_session_source` reads sector 0 and the last 32 sectors
 first: if the last data sector there has sector 0's offset, the image is one session and
 nothing else is read, which is also what a mixed-mode disc (audio to the end) costs.
-Otherwise it splits the file into runs of one offset, following each by probes at
-doubling distances and bisection, and reading only non-data sectors (audio, a Form 2
-postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a lead-in) or
-more are in different sessions. The first run of the last session is chosen, its volume
-descriptors are looked for from its sector 16 on (a pregap kept in the file puts them
-150 later), and a candidate is kept only when the root directory's `.` record names its
-own sector through that mapping and its descriptor set, through the terminator and one
-sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
+Otherwise it splits the file into runs of one offset and one data mode, following each
+by probes at doubling distances and bisection, and reading only non-data sectors (audio,
+a Form 2 postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a
+lead-in) or more are in different sessions. A data sector is a Mode 1 or a Mode 2 Form 1
+sector, whatever mode sector 0 is in, and each run is read in its own mode, as a sheet
+reads each track in the mode its `TRACK` line names: a Mode 1 first session, then a
+CD-ROM XA one, lists the later session. The first run of the last session is chosen, its
+volume descriptors are looked for from its sector 16 on (a pregap kept in the file puts
+them 150 later), and a candidate is kept only when the root directory's `.` record names
+its own sector through that mapping and its descriptor set, through the terminator and
+one sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
 candidate, so 4 096 crafted candidates cost about 8 200 sector reads). The result is a
 `DiscSource` over the `.bin` itself, so read hints map back to its sectors
 (`DiscSource.file_range`). Addresses that go backwards, more than 256 runs, or a last
@@ -211,7 +214,15 @@ directory's data (weighed before it is read), each File Entry (its fixed part pl
 extended-attribute and allocation-descriptor lengths it declares, or the bytes its tag's
 CRC covers when that is more) and each Indirect Entry (its tag plus the bytes its CRC
 covers) add to the image's `max_metadata_bytes` sum. Each ICB is parsed and weighed
-once, however many File Identifiers name it or a point on its indirect chain. After it,
+once, however many File Identifiers name it or a point on its indirect chain. Every
+full UDF path is built at open too, so each one, its text by the listing's rule for a
+name plus its stored bytes, is weighed as it is built against `max_metadata_bytes` in a
+sum of its own, as the XAR reader weighs its paths: nested directories make the paths
+grow with the square of the depth (24,000 levels in a 50 MB image took 1.2 GB before).
+The sum weighs the paths the parser keeps, and the listing weighs the same paths as
+normalized member names (a directory's gains a `/`, a `.` or empty segment is dropped),
+so an ordinary tree's listing weighs at least as much, and only a tree whose names
+normalization shortens can be refused at open first. After it,
 listing touches only records already in memory, which is what lets the member walk run
 without the handle lock. Two exceptions read a directory's extent once more, under the
 handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent

@@ -7,7 +7,8 @@ the command works the same, just without the bars.
 To run the command without setting up a project, use `uvx archivey-cli` (for example,
 `uvx archivey-cli extract photos.zip`), or `pipx install archivey-cli` to keep it. The
 `archivey-cli` package brings `[recommended]` with it, so the command reads every format that
-installs everywhere. [Install](install.md) has the details.
+installs everywhere, and `fsspec` and `aiohttp` for [HTTP and HTTPS URLs](#reading-from-a-url).
+[Install](install.md) has the details.
 
 ```bash
 archivey photos.zip                 # list the members (same as archivey list)
@@ -182,6 +183,47 @@ for TAR (compressed or not), ZIP, single compressed files such as `.gz`, and RAR
 exit `1` and a message to copy the input to a file first. `extract --outer` and `test --outer` also
 need a file; for a pipe, use `archivey cat - --outer`. A redirect from a file, as in
 `archivey cat - < backup.7z`, isn't a pipe, so every format works that way.
+
+## Reading from a URL
+
+Every command also takes a URL in place of the archive's path, read through
+[fsspec](https://filesystem-spec.readthedocs.io/) without downloading the whole file first
+([Remote archives](remote.md)):
+
+```bash
+archivey list https://example.com/releases/data.zip
+archivey x s3://bucket/backups/2026-11.tar.zst
+archivey cat https://example.com/logs.tar.gz app.log
+```
+
+The `archivey-cli` package installs `fsspec` and `aiohttp`, so `http` and `https` URLs work as it
+comes. With the `archivey` package alone, install `fsspec`, and `aiohttp` for `http` and `https`.
+Other stores need their own package, such as `s3fs` or `gcsfs`. Credentials, regions and other
+settings come from where that package normally finds them, such as the environment or its
+configuration file; the command line has no option for them. HTTP and HTTPS requests send
+`User-Agent: archivey/<version>`, unless your fsspec configuration sets its own. Without fsspec, a
+URL fails with exit `1` and a message saying what to install.
+
+A URL is one file, exactly as you typed it. `?`, `*` and `[` in it are not patterns, archivey
+looks for no other volumes of a split archive beside it, and the member patterns after it keep
+their usual meaning. fsspec's chained URLs work too, such as `simplecache::https://…` to keep a
+local copy, or `zip://inner.tar::https://example.com/outer.zip` to read an archive that is a
+member of a ZIP.
+
+Some arguments look like URLs but are paths. An existing local file or folder always wins, a path
+such as `C:\data.zip` is never a URL, and a URL whose protocol fsspec doesn't know is read as a
+path.
+
+Without `-d`, `extract` names a new folder after the last part of the URL's path, without its
+query, so `https://example.com/data.tar.gz?signature=…` extracts into `data/` when it needs a
+folder. A name that is not safe as one folder name on your system gives `archive/` instead. The
+files are always written locally.
+
+Archivey prints a URL without its `user:password@` part, and for `http` and `https` without the
+query and the fragment, where a signed URL keeps its signature. It also removes the URL from the
+errors fsspec and `aiohttp` raise, when they contain it as typed. A store library that rewrites the
+URL in its message, or prints a credential on its own, can still show it: pass credentials through
+the store's own configuration rather than in the URL.
 
 ## Exit codes
 

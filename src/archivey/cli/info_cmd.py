@@ -16,6 +16,7 @@ from archivey.cli.format import (
     format_format_label,
 )
 from archivey.cli.password import resolve_password
+from archivey.cli.sources import is_remote, resolve_archive, url_label
 from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.cost import CostReceipt
 from archivey.exceptions import ArchiveyError
@@ -64,7 +65,12 @@ def _print_cost_axes(cost: CostReceipt, out: TextIO) -> None:
 
 
 def _print_identity(archive: str, detected: FormatInfo, out: TextIO) -> None:
-    _field("path", escape_path(archive), out)
+    if is_remote(archive):
+        # A URL is not a local path: no separator normalization, and no credentials
+        # or signed query.
+        _field("path", escape_control_chars(url_label(archive)), out)
+    else:
+        _field("path", escape_path(archive), out)
     _line("format", _format_label(detected.format), out)
     _line("confidence", detected.confidence.value, out)
     _line("detected_by", detected.detected_by, out)
@@ -112,10 +118,12 @@ def run_info(
     identity_printed = False
     # A read-once path opens in streaming mode, as in the other verbs: nothing below
     # needs random access, and a random-access open of a pipe always fails.
-    streaming = is_read_once(archive)
+    source = resolve_archive(archive)
+    remote = is_remote(archive)
+    streaming = not remote and is_read_once(archive)
     try:
         with open_archive(
-            archive, password=pwd, streaming=streaming, config=config
+            source, password=pwd, streaming=streaming, config=config
         ) as reader:
             # The open already detected the format; print what it found rather than
             # detecting a second time. No format= is passed, so it is never None.
@@ -148,8 +156,10 @@ def run_info(
         # path again, so it is skipped for a pipe, a character device or a socket: those
         # are read once, so a second open gets different bytes or waits for a writer
         # that never comes.
-        if not identity_printed and _can_reread(archive):
-            _print_identity(archive, detect_format(archive, config=config), out)
+        # A URL is read with range requests, so it always rereads; local existence
+        # says nothing about it.
+        if not identity_printed and (remote or _can_reread(archive)):
+            _print_identity(archive, detect_format(source, config=config), out)
         refusal = read_once_refusal(archive, exc, streaming=streaming)
         if refusal is not None:
             _field("open", escape_control_chars(refusal), err)

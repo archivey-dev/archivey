@@ -47,6 +47,7 @@ import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from typing import Any, TypeVar
 
 from archivey.internal.dependency_index import DependencyIndex, IndexNode
 from archivey.internal.filters import resolve_or_raise_on_loop
@@ -62,6 +63,8 @@ _MAX_FOLLOWS = 64
 _SPLIT = re.compile(r"[\\/]") if os.sep == "\\" else re.compile("/")
 
 Key = tuple[str, ...]
+
+L = TypeVar("L")
 
 
 def _key(name: str) -> str:
@@ -120,6 +123,9 @@ class LinkWatch:
         # other is recorded would leave it unwatched.
         self._by_path: dict[Path, WatchedLink] = {}
         self._changed: dict[Path, None] = {}
+        # The paths the walks of ``caller_link_reaches`` looked up when they met no
+        # run link, each walk under its own key (``caller_walk_moved``).
+        self._caller_walks: DependencyIndex[object] = DependencyIndex()
         # Rechecks left before the run must stop (``None``: no bound). Each change can
         # recheck every link that depends on it, so a path changed many times with
         # many links behind it costs links x changes resolutions. The caller gives it
@@ -157,6 +163,50 @@ class LinkWatch:
     @property
     def has_changes(self) -> bool:
         return bool(self._changed)
+
+    # --- the caller's symlinks ----------------------------------------------------
+
+    def caller_link_reaches(
+        self, dest_path: Path, hit: Callable[[str, os.stat_result], bool]
+    ) -> bool:
+        """Whether resolving the symlink at ``dest_path``, one the caller had in the
+        destination, meets a symlink inside the destination for which
+        ``hit(path, lstat)`` is true: the walk of ``track``, bounded by the same number
+        of follows.
+
+        When it does not, the paths it looked up are kept until
+        ``forget_caller_walks``, so that ``caller_walk_moved`` can tell when a symlink
+        created later at one of them changes the answer."""
+        path = self._physical(dest_path)
+        try:
+            target = plain(os.readlink(long_path(path)))
+        except OSError:
+            return False
+        index = self._caller_walks
+        visited, starts, found = self._walk(path, target, index, hit)
+        if found:
+            for node in visited:
+                index.prune(node)
+        else:
+            index.record(object(), visited)
+        for start in starts:
+            index.prune(start)
+        return found
+
+    def caller_walk_moved(self, dest_path: Path) -> bool:
+        """Whether a walk of ``caller_link_reaches`` kept since the last
+        ``forget_caller_walks`` looked up ``dest_path``, where a symlink was just
+        created. A walk looks up every prefix of the paths it reaches, so a symlink
+        anywhere else cannot change where it leads."""
+        if not self._caller_walks.root.children:
+            return False
+        key = self._folded_key(self._physical(dest_path))
+        return key is not None and bool(self._caller_walks.dependents(key))
+
+    def forget_caller_walks(self) -> None:
+        """Drop the walks kept by ``caller_link_reaches``."""
+        if self._caller_walks.root.children:
+            self._caller_walks = DependencyIndex()
 
     # --- rechecking --------------------------------------------------------------
 
@@ -243,7 +293,7 @@ class LinkWatch:
             del self._by_path[link.path]
 
     def _register(self, link: WatchedLink) -> None:
-        visited, starts = self._walk(link.path, link.target)
+        visited, starts, _ = self._walk(link.path, link.target)
         self._index.record(link, visited)
         # The nodes the walk started from stay only if a link looked them up.
         for start in starts:
@@ -255,11 +305,17 @@ class LinkWatch:
     # --- the walk ----------------------------------------------------------------
 
     def _walk(
-        self, link: Path, target: str
-    ) -> tuple[list[IndexNode[WatchedLink]], list[IndexNode[WatchedLink]]]:
-        """The index nodes of every destination path that resolving ``target`` from
-        ``link``'s directory ``lstat``-s, and the nodes each part of the walk started
-        from.
+        self,
+        link: Path,
+        target: str,
+        index: DependencyIndex[L] | None = None,
+        hit: Callable[[str, os.stat_result], bool] | None = None,
+    ) -> tuple[list[IndexNode[L]], list[IndexNode[L]], bool]:
+        """The nodes of ``index`` (the run's links' index when ``None``) for every
+        destination path that resolving ``target`` from ``link``'s directory
+        ``lstat``-s, the nodes each part of the walk started from, and whether the
+        walk stopped at a symlink inside the destination for which
+        ``hit(path, lstat)`` is true.
 
         It follows ``os.path.realpath``: a missing component is kept as a name, a
         ``..`` drops the last component of the path resolved so far, and a symlink is
@@ -268,14 +324,15 @@ class LinkWatch:
         through it by name, but only paths inside it are recorded: nothing this
         extraction does can change the others.
         """
+        idx: DependencyIndex[Any] = self._index if index is None else index
         n = len(self._root_parts)
         cur = list(link.parent.parts)
         # Index nodes for ``cur`` from the root down, or ``None`` while ``cur`` is not
         # inside the destination.
-        nodes = self._nodes_for(cur)
+        nodes = self._nodes_for(cur, idx)
         starts = [nodes[-1]] if nodes is not None else []
         pending: list[str] = []
-        visited: dict[int, IndexNode[WatchedLink]] = {}
+        visited: dict[int, IndexNode[Any]] = {}
         follows = 0
 
         def push(target: str) -> None:
@@ -290,7 +347,7 @@ class LinkWatch:
                 # POSIX leaves a leading ``//`` to the implementation; Linux and macOS
                 # read it as ``/``, and the root comparison needs the same spelling.
                 cur = ["/" if joined.anchor == "//" else joined.anchor]
-                nodes = self._nodes_for(cur)
+                nodes = self._nodes_for(cur, idx)
                 if nodes is not None:
                     starts.append(nodes[-1])
                 pending.extend(reversed(joined.parts[1:]))
@@ -316,11 +373,16 @@ class LinkWatch:
                 nodes.append(node)
                 visited[id(node)] = node
             elif len(cur) == n and self._under_root(cur):
-                nodes = [self._index.root]
+                nodes = [idx.root]
             path = os.path.join(*cur)
             try:
-                if not stat.S_ISLNK(os.lstat(long_path(path)).st_mode):
+                st = os.lstat(long_path(path))
+                if not stat.S_ISLNK(st.st_mode):
                     continue
+                # Only inside the destination: every symlink ``hit`` looks for is
+                # one this run created there.
+                if hit is not None and nodes is not None and hit(path, st):
+                    return list(visited.values()), starts, True
                 link_target = plain(os.readlink(long_path(path)))
             except OSError:
                 # Missing, or unreadable: kept as a name, as realpath does.
@@ -335,15 +397,17 @@ class LinkWatch:
                 if not nodes:
                     nodes = None
             push(link_target)
-        return list(visited.values()), starts
+        return list(visited.values()), starts, False
 
-    def _nodes_for(self, parts: list[str]) -> list[IndexNode[WatchedLink]] | None:
-        """The index nodes from the root down to the path ``parts``, created where
-        missing, or ``None`` when that path is not inside the destination."""
+    def _nodes_for(
+        self, parts: list[str], index: DependencyIndex[L]
+    ) -> list[IndexNode[L]] | None:
+        """The nodes of ``index`` from the root down to the path ``parts``, created
+        where missing, or ``None`` when that path is not inside the destination."""
         n = len(self._root_parts)
         if not self._under_root(parts):
             return None
-        return self._index.path([_key(part) for part in parts[n:]])
+        return index.path([_key(part) for part in parts[n:]])
 
     # --- paths -------------------------------------------------------------------
 

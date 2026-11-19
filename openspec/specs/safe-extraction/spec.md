@@ -504,7 +504,12 @@ filesystem reports inode 0 the same place, with case folded), however the member
 it: a case variant or a name Windows trims reaches the link too (in a dry run, only
 where the temp directory's filesystem folds case as `dest`'s does; see the dry-run
 requirement). A symlink the caller had in `dest` before the run is followed, subject to
-the parent resolution check, until a member replaces it; and a member that replaces the
+the parent resolution check, until a member replaces it, except where its own resolution
+goes through a symlink of the run: the caller's `c -> s/sub` after the archive's
+`s -> e` leads where the archive decides, so `c/x` is refused as `s/sub/x` is. That
+resolution is followed through the caller's symlinks, up to the 64 follows of the
+symlink recheck, and the run's links on it are matched as on the member's own path; a
+run link made later at a name it passed through is seen. A member that replaces the
 run's link with a directory makes a directory, which later members are written into.
 Only a member's own path is checked: a symlink's target may run through another symlink
 of the run. A held-back hard link is refused before its placeholder is made.
@@ -527,6 +532,9 @@ the archive made. The `archivey://` tree leaves such a member out. Tests:
 | `e/`, SYMLINK `s -> e`, then HARDLINK `s/h` to a source left out of the selection | `s/h` `BLOCKED`; no placeholder |
 | The caller's `s -> e` in `dest`; `e/`, `f/`, SYMLINK `s -> f` under `REPLACE`, then `s/x` | `s` `EXTRACTED`; `s/x` `BLOCKED` |
 | The caller's `s -> e` in `dest`, then `s/x` | Written at `e/x` |
+| The caller's `c -> s/sub` in `dest`; `e/sub/`, SYMLINK `s -> e`, then `c/x` | `c/x` `BLOCKED`; nothing written in `e` |
+| The caller's `c -> s/sub` in `dest`; `e/sub/`, SYMLINK `q -> e`, `c/x` (fails: `c` dangles), SYMLINK `s -> e`, then `c/y` | `c/y` `BLOCKED` |
+| The caller's `c -> e/sub` in `dest`; `e/sub/`, SYMLINK `s -> e`, then `c/x` | Written at `e/sub/x` |
 | `e/`, SYMLINK `s -> e`, DIRECTORY `s/` under `REPLACE`, then `s/x` | `s` `OVERWRITTEN`; `s/x` `EXTRACTED` in the new directory `s` |
 
 ### Requirement: Hardlink Two-Pass Extraction

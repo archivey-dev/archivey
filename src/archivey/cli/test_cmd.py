@@ -22,6 +22,7 @@ from archivey.cli.format import escape_member_name, format_error_detail
 from archivey.cli.logging_config import cli_opens_members
 from archivey.cli.password import resolve_password
 from archivey.cli.progress import ProgressCallback, make_progress_callback
+from archivey.cli.sources import http_error_type
 from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
@@ -129,7 +130,7 @@ def run_test(
                         member, stream = next(it)
                     except StopIteration:
                         break
-                    except (ArchiveyError, OSError) as exc:
+                    except (ArchiveyError, OSError, http_error_type()) as exc:
                         pass_ended_early = True
                         if member_error is None:
                             failed += 1
@@ -199,7 +200,7 @@ def run_test(
                             f"{format_error_detail(exc)}",
                             file=err,
                         )
-                    except (ArchiveyError, OSError) as exc:
+                    except (ArchiveyError, OSError, http_error_type()) as exc:
                         failed += 1
                         member_error = exc
                         print(

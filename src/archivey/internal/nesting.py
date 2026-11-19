@@ -10,6 +10,9 @@ thread:
 
   - its listing tracker charges what it keeps beyond its members to the outermost
     tracker (:class:`~archivey.internal.listing_limits.ListingLimitTracker`);
+  - what its decode stages produce while the outer listing runs is charged to the
+    outer listing's ``max_decoded_bytes``, each byte once
+    (:class:`~archivey.internal.listing_limits.ListingDecodeCount`'s parent);
   - its ratio guards divide by the outermost archive's compressed bytes
     (``BaseArchiveReader._trusted_source_size`` and ``_live_consumed``);
   - its ``max_decoder_memory`` is what the outer levels left

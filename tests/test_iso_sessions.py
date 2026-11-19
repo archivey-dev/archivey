@@ -146,6 +146,22 @@ def test_a_stream_reads_the_last_session(mode: int, gap: int, tmp_path: Path) ->
 
 @requires("pycdlib")
 @requires_binary("xorriso")
+@pytest.mark.parametrize(("first", "later"), [(1, 2), (2, 1)])
+def test_a_later_session_in_the_other_data_mode_is_read(
+    first: int, later: int, tmp_path: Path
+) -> None:
+    """A Mode 1 first session, then a Mode 2 Form 1 one (or the reverse): each run
+    is read in its own mode, as a sheet reads each track in its own."""
+    sessions = _sessions(
+        tmp_path, [{"one.txt": b"one\n"}, {"two.txt": b"two\n"}], [_FIRST_GAP]
+    )
+    (s1, image1), (s2, image2) = sessions
+    data = to_raw(image1, mode=first, first=s1) + to_raw(image2, mode=later, first=s2)
+    assert _contents(io.BytesIO(data)) == {"one.txt": b"one\n", "two.txt": b"two\n"}
+
+
+@requires("pycdlib")
+@requires_binary("xorriso")
 def test_three_sessions_read_the_third(tmp_path: Path) -> None:
     sessions = _sessions(
         tmp_path,

@@ -196,3 +196,13 @@ def test_each_xz_chunk_is_held_to_the_decoder_memory_cap() -> None:
         open_stream(io.BytesIO(blob), config=config) as stream,
     ):
         stream.read()
+
+
+def test_an_xz_chunk_notes_its_declared_dictionary() -> None:
+    """Each xz chunk's first block header declares its LZMA2 dictionary, and the
+    reader's usage record notes it as it does for plain xz: an archive nested inside
+    pbzx output gets ``max_decoder_memory`` less it."""
+    blob = make_pbzx(odc_cpio([("./a", b"abc" * 1000)]), store=False)
+    with open_archive(io.BytesIO(blob)) as reader:
+        reader.members()
+        assert reader._resource_usage().decoder_memory == 8 << 20  # xz preset 6

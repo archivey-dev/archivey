@@ -43,12 +43,13 @@ yields each span in order, and SHALL be attached to that member, while its data 
 too; its errors SHALL raise from the walk. Name checks SHALL run once, on the members
 the outer listing lists. The inner reader SHALL join the outer reader's nest
 (`archive-reading`, "A reader opened inside another joins its nest"): it shares
-`max_metadata_bytes` through the outermost listing, gets the `max_decoder_memory` the
-open outer levels left, is held to `max_ratio` against the outermost archive, and counts
-toward the nest's totals ("Limits apply per nest"). A chain of more than nine archives,
-the outermost included and readers opened with `open_archive(..., parent=)` counted too
-(`MAX_NESTED_DEPTH` is 8 levels below the outermost), SHALL be refused with
-`UnsupportedFeatureError`.
+`max_metadata_bytes` through the outermost listing, charges what its listing decodes to
+the enclosing listing's `max_decoded_bytes` while that listing runs, gets the
+`max_decoder_memory` the open outer levels left, is held to `max_ratio` against the
+outermost archive, and counts toward the nest's totals ("Limits apply per nest"). A
+chain of more than nine archives, the outermost included and readers opened with
+`open_archive(..., parent=)` counted too (`MAX_NESTED_DEPTH` is 8 levels below the
+outermost), SHALL be refused with `UnsupportedFeatureError`.
 
 #### Scenario: nested reads
 
