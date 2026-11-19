@@ -484,9 +484,12 @@ The UDF parser builds every name's full path at open. It SHALL weigh each full p
 it builds it, its text by the listing's rule for a member name (its length when ASCII,
 four times its length otherwise) plus its stored bytes, in a sum of its own held to
 `max_metadata_bytes`, so that nested directories, whose paths grow with the square of
-the depth, are refused at `open_archive` before the paths are built. When UDF is the
-listed tree, the listing weighs each member's name and raw name, which are these paths,
-against the same cap, so this sum does not refuse a UDF tree that the listing accepts.
+the depth, are refused at `open_archive` once their paths pass the cap, before any
+member is listed. The sum weighs the paths the parser keeps. A listed member's name is
+that path normalized: a directory's name gains a trailing `/`, and a `.` or empty
+segment is dropped. So the listing of an ordinary UDF tree weighs at least this sum,
+and only a tree whose names normalization shortens can be refused at open although its
+listing would fit.
 
 #### Scenario: image-wide byte budget
 

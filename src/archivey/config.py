@@ -343,7 +343,7 @@ class ListingLimits:
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
     before decoding them), and ISO the directory records and path tables ``pycdlib``
-    parses and the UDF descriptors and File Entries it parses itself, and XAR
+    parses and the UDF descriptors and File Entries archivey parses, and XAR
     applies ``max_members`` and weighs its
     table of contents' size and every path it builds there against
     ``max_metadata_bytes``, so ``open_archive`` raises. A ZIP read from a
@@ -361,8 +361,9 @@ class ListingLimits:
     for the UDF tree. ISO counts members per tree but weighs bytes as one sum for the
     whole image, every tree together. ISO also weighs every full path of the UDF tree
     as it builds it at open, in a separate sum against ``max_metadata_bytes``, whether
-    or not UDF is the listed tree; when it is, that sum is what the listing weighs for
-    the same members' names and raw names.
+    or not UDF is the listed tree. The listing weighs the same paths as member names,
+    normalized (a ``.`` or empty segment dropped), so a UDF tree whose names that
+    shortens can be refused at open although its listing would fit.
     RPM refuses a header that lists more files than ``max_members`` at open, before it
     builds the file list.
     makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at

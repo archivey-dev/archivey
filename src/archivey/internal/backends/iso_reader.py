@@ -480,6 +480,9 @@ class _ParseBudget:
     each directory's data as stored plus each File Entry's fixed part, extended
     attributes and allocation descriptors as the entry declares them add to the
     image's bytes, a directory weighed before it is read.
+
+    Every full path of the UDF tree is weighed too, as the walk builds it, in a sum
+    of its own held to ``max_metadata_bytes`` (:meth:`add_udf_path`).
     """
 
     def __init__(self, limits: ListingLimits) -> None:
@@ -517,12 +520,16 @@ class _ParseBudget:
         """Weigh one full UDF path, text and stored bytes together, as the walk
         builds it, as the XAR reader weighs its paths.
 
-        A sum of its own, held to ``max_metadata_bytes``. The text is weighed by the
-        listing's rule for a member's name (``str_retained_bytes``), and the stored
-        bytes as the listing weighs a raw name: when UDF is the listed tree, each
-        path weighs what its member will, so this refuses only a tree whose listing
-        would be refused, but before a chain of nested directories has built paths
-        that grow with the square of its depth."""
+        A sum of its own, held to ``max_metadata_bytes``: it bounds the paths
+        ``UdfVolume.names`` keeps. The text is weighed by the listing's rule for a
+        member's name (``str_retained_bytes``), and the stored bytes as the listing
+        weighs a raw name. A listed member's name is this path normalized: a
+        directory's gains a trailing ``/``, which this does not weigh, and a ``.`` or
+        empty segment is dropped. So the listing of an ordinary tree weighs at least
+        as much, and only a tree whose names normalization shortens can be refused
+        here although its listing would fit. The walk weighs each path just after it
+        builds it, so a chain of nested directories, whose paths grow with the square
+        of its depth, is refused once they pass the cap."""
         self._udf_path_bytes += str_retained_bytes(path) + len(raw_path)
         max_meta = self._limits.max_metadata_bytes
         if max_meta is not None and self._udf_path_bytes > max_meta:
