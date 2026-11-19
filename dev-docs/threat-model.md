@@ -1561,8 +1561,9 @@ so 8 levels cannot use 8 times the caps:
   declaration stands for the level, ended decoders included, so the count errs toward
   refusing. Within one level the cap is still one decoder's. xz, LZMA Alone and zstd
   declarations are recorded from the first block header, the stream header and each
-  frame header; a later xz block with a larger dictionary is checked by liblzma against
-  the level's cap alone.
+  frame header, and a pbzx stream's from the first block header of each xz chunk; a
+  later xz block with a larger dictionary is checked by liblzma against the level's cap
+  alone.
 - `max_decoded_bytes`: an inner level's listing count has the enclosing level's count as
   its parent (`ListingDecodeCount`). While the outer listing runs on the same thread,
   every byte an inner decode stage produces is drawn from the outer count, also when

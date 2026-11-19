@@ -167,6 +167,7 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
 | Two or three data sessions back to back, sector addresses jumping by the gap, no `.cue` used, from a path or a stream | The newest session, as with the `.cue`; files of earlier sessions read from their sectors; no diagnostic |
 | Non-data sectors, and a pregap of data sectors, between the sessions | The same; the volume found past the pregap |
+| A later session in the other data mode (Mode 1, then Mode 2 Form 1, or the reverse), no `.cue` used | The newest session, each read in its own mode, as with the `.cue` |
 | One session, or a data track then audio to the end | Two header reads (sector 0 and the last 32 sectors), then the first track |
 | A second ISO 9660 volume past the volume space whose addresses do not place it (they restart, or its root is not where they put it) | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
 | A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |

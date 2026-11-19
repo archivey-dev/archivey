@@ -84,7 +84,7 @@ if TYPE_CHECKING:
 
 _XZ_STREAM_MAGIC = b"\xfd7zXZ\x00"
 _XZ_FOOTER_MAGIC = b"YZ"
-_STREAM_HEADER_SIZE = 12
+STREAM_HEADER_SIZE = 12
 _STREAM_FOOTER_SIZE = 12
 
 
@@ -138,7 +138,7 @@ class _XzBlockBounds:
 
 
 def _parse_xz_header(data: bytes) -> int:
-    if len(data) < _STREAM_HEADER_SIZE:
+    if len(data) < STREAM_HEADER_SIZE:
         raise CorruptionError(f"XZ stream header too short: {len(data)} bytes")
     if data[:6] != _XZ_STREAM_MAGIC:
         raise CorruptionError(
@@ -531,7 +531,7 @@ def _read_xz_index_backwards(
             blocks_compressed_total += _round_up_4(unpadded_size)
             stream_size += uncompressed_size
         stream_header_start = (
-            index_with_crc_start - blocks_compressed_total - _STREAM_HEADER_SIZE
+            index_with_crc_start - blocks_compressed_total - STREAM_HEADER_SIZE
         )
         if stream_header_start < 0:
             raise CorruptionError("XZ stream header start computes to negative offset")
@@ -541,8 +541,8 @@ def _read_xz_index_backwards(
             # stream is far from both the head and the tail windows.
             raise _MoreStreams
         stream.seek(stream_header_start)
-        header_data = stream.read(_STREAM_HEADER_SIZE)
-        if len(header_data) < _STREAM_HEADER_SIZE:
+        header_data = stream.read(STREAM_HEADER_SIZE)
+        if len(header_data) < STREAM_HEADER_SIZE:
             raise CorruptionError("XZ stream header truncated")
         header_check = _parse_xz_header(header_data)
         if header_check != check:
@@ -556,7 +556,7 @@ def _read_xz_index_backwards(
         in_stream: SpacedCollector[_XzBlockBounds] = SpacedCollector(
             lambda b: b.decompressed_start
         )
-        block_compressed_start = stream_header_start + _STREAM_HEADER_SIZE
+        block_compressed_start = stream_header_start + STREAM_HEADER_SIZE
         block_decompressed_start = 0
         last: _XzBlockBounds | None = None
         for unpadded_size, uncompressed_size in index.records():
@@ -792,7 +792,7 @@ class _XzBlockWalker:
     def __init__(self, check: int) -> None:
         self.check = check
         self._check_size = _check_size(check)
-        self._pos = _STREAM_HEADER_SIZE  # stream-relative offset of the next byte
+        self._pos = STREAM_HEADER_SIZE  # stream-relative offset of the next byte
         self._out = 0  # decompressed size of the blocks walked so far
         self._skip = 0  # bytes to pass over before the next field
         self._hashing = False  # whether skipped bytes go to the index digest
@@ -1349,18 +1349,11 @@ class _XzState:
         """
         head = self._block_head
         assert head is not None and self._usage is not None
-        head += chunk[: _BLOCK_HEADER_MAX - len(head)]
-        if not head:
-            return
-        if head[0] == 0:
-            # The index: a stream with no block declares no dictionary.
-            self._block_head = None
-            return
-        size = (head[0] + 1) * 4
-        if len(head) < size:
+        head += chunk[: BLOCK_HEADER_MAX - len(head)]
+        whole, declared = first_block_dictionary(bytes(head))
+        if not whole:
             return
         self._block_head = None
-        declared = _block_dictionary(bytes(head[:size]))
         if declared is not None:
             self._usage.note_decoder_memory(declared, "an xz block's LZMA2 dictionary")
 
@@ -1394,9 +1387,9 @@ class _XzState:
                     del self._buf[:padding]
                     self._padding_before_stream += padding
 
-                if len(self._buf) < _STREAM_HEADER_SIZE:
+                if len(self._buf) < STREAM_HEADER_SIZE:
                     break
-                header = bytes(self._buf[:_STREAM_HEADER_SIZE])
+                header = bytes(self._buf[:STREAM_HEADER_SIZE])
                 if header[:6] != _XZ_STREAM_MAGIC:
                     if self._streams_seen == 0:
                         raise CorruptionError(
@@ -1407,7 +1400,7 @@ class _XzState:
                         raise damaged_stream_error(self._header_offset())
                     self._end_at(bytes(self._buf))
                     break
-                del self._buf[:_STREAM_HEADER_SIZE]
+                del self._buf[:STREAM_HEADER_SIZE]
                 try:
                     self._dec = new_capped_decompressor(
                         self._limits, natives=self._natives
@@ -1429,10 +1422,10 @@ class _XzState:
                     self._walk_checks = _runs_check(check)
                 if self._filters_off:
                     self._guard = _XzFilterGuard(
-                        self._filters_off, check, pos=_STREAM_HEADER_SIZE
+                        self._filters_off, check, pos=STREAM_HEADER_SIZE
                     )
                 self._unchecked.clear()
-                self._bytes_fed = _STREAM_HEADER_SIZE
+                self._bytes_fed = STREAM_HEADER_SIZE
                 self._stream_decomp_bytes = len(plain)
                 output.extend(plain)
                 self._state = self._IN_STREAM
@@ -2137,7 +2130,22 @@ def _lzma2_dictionary(code: int) -> int:
 
 
 # The largest xz block header: its size byte counts 4-byte units, 1024 bytes at most.
-_BLOCK_HEADER_MAX = 1024
+BLOCK_HEADER_MAX = 1024
+
+
+def first_block_dictionary(head: bytes) -> tuple[bool, int | None]:
+    """What the first block header of an xz stream declares, from ``head``, the bytes
+    after the stream header: whether ``head`` holds enough to tell, and the LZMA2
+    dictionary (``None`` for the index, which a stream with no block starts with, or
+    a header that does not parse here)."""
+    if not head:
+        return False, None
+    if head[0] == 0:
+        return True, None
+    size = (head[0] + 1) * 4
+    if len(head) < size:
+        return False, None
+    return True, _block_dictionary(head[:size])
 
 
 def _block_dictionary(header: bytes) -> int | None:
@@ -2330,7 +2338,7 @@ def _decode_xz_head(
     ``XzDecoder`` does, and stops at ``size`` bytes or at the end of the xz data.
     """
     source = _HeadInput(read)
-    check = _parse_xz_header(source.take(_STREAM_HEADER_SIZE))
+    check = _parse_xz_header(source.take(STREAM_HEADER_SIZE))
     out = bytearray()
     while len(out) < size:
         first = source.take(1)
@@ -2338,7 +2346,7 @@ def _decode_xz_head(
             _skip_index_and_footer(source)
             if not _starts_next_stream(source):
                 break
-            check = _parse_xz_header(source.take(_STREAM_HEADER_SIZE))
+            check = _parse_xz_header(source.take(STREAM_HEADER_SIZE))
             continue
         header = first + source.take(first[0] * 4 + 3)
         (stored,) = struct.unpack_from("<I", header, len(header) - 4)

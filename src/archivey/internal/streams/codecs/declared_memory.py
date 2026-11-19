@@ -1,11 +1,13 @@
 """Note the working set a library-checked stream declares, for the reader's record.
 
-liblzma (LZMA Alone) and libzstd read the dictionary or window a stream declares
-themselves, and refuse one over ``max_decoder_memory`` before they allocate it, so
-archivey never sees the number. A nest of archives (``ReaderContext.open_nested``)
-needs it: its levels' decoders share ``max_decoder_memory``, and an archive inside
-this stream's output gets the cap less what this decoder declared
-(``_PluginAdapter._nested_config``). xz notes its block header in ``_XzState``.
+liblzma (LZMA Alone, and each xz chunk of a pbzx stream, decoded by
+``new_capped_decompressor``) and libzstd read the dictionary or window a stream
+declares themselves, and refuse one over ``max_decoder_memory`` before they allocate
+it, so archivey never sees the number. A nest of archives
+(``ReaderContext.open_nested``) needs it: its levels' decoders share
+``max_decoder_memory``, and an archive inside this stream's output gets the cap less
+what this decoder declared (``_PluginAdapter._nested_config``). A plain xz stream notes
+its first block header in ``_XzState``.
 """
 
 from __future__ import annotations
