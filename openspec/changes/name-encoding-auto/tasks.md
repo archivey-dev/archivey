@@ -28,7 +28,7 @@
   the local name in a forward walk (decision 4). A directory entry waits for the next
   member that is not a directory, ended early by the end, damage, the freeze, 64 waiting
   entries or a listing cap; every member read is charged to the listing tracker as
-  today, and plugins hold waiting entries through `ReaderContext.hold()` (decision 3).
+  today, the waiting ones included (decision 3).
   ZIP link targets read from member data go through `decode_text` (decision 4)
 - [ ] 2.3 ISO under `"auto"`: UTF-8, then the Joliet twin, then the guess (decision 7)
 - [ ] 2.4 `ReaderContext.decode_name()` uses the reader's `NameDecoder` and adds
@@ -40,6 +40,11 @@
   `decode_text`: ARJ link targets and comments (archive comment included), LHA comments
   and user and group names, SquashFS and RPM link targets. LHA's `name|target` field
   moves to `decode_name_and_target`
+- [ ] 2.5a The adapter does the wait for plugin-shaped formats: under `"auto"` the memo
+  is written when a member is listed; a yielded directory whose `name` is the
+  `decode_name` text for its `raw_name` (or that text with `\` turned into `/`) is
+  held, charged, decoded again when the wait ends, and listed before a cap raises
+  (decision 3)
 - [ ] 2.6 A nested reader inherits `"auto"` and starts its own `NameDecoder`
 - [ ] 2.7 `MEMBER_NAME_ENCODING_INFERRED` with `declared_encoding` set to the codec the
   name would otherwise have had (decision 8)
@@ -55,12 +60,13 @@
 ## 4. Verify
 
 - [ ] 4.1 One fixture per CJK codec through ZIP, TAR, cpio and LHA: the same names under
-  `streaming=True` and `streaming=False`, and with damage after the second member
-- [ ] 4.2 A Big5 ZIP and TAR whose first entry is a short directory that abstains alone,
-  followed by its children: one tree, no directory without its children (red-green
-  against a decoder with no directory rule). The same with `新/` then three files: every
-  name starts with `新/` (red-green against a decoder with no wait), also under
-  `streaming=True`
+  `streaming=True` and `streaming=False`, and with damage after the second member, a
+  file; plus a TAR with a Big5 directory just before damage (the stated exception)
+- [ ] 4.2 A Big5 ZIP, TAR, cpio and LHA whose first entry is a short directory that
+  abstains alone, followed by its children: one tree, no directory without its children
+  (red-green against a decoder with no directory rule). The same with `新/` then three
+  files: every name starts with `新/` (red-green against a decoder with no wait), also
+  under `streaming=True`
 - [ ] 4.3 A ZIP whose central directory lists entries in another order than its local
   headers: the documented exception, pinned, including a name under a directory first
   met before the freeze in one mode only. A ZIP with a damaged local header and an

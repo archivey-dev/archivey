@@ -25,7 +25,14 @@ evidence the guess is made from, and only the name part of `decode_name_and_targ
 SHALL call it for a member's text while it parses that member. Called from
 `archive_info()`, it SHALL use no guess. `decode_text` SHALL read the names already
 decoded, so a link target that names a member met earlier gets that member's text, and
-SHALL NOT fix the text of any bytes. `ReaderContext.encoding` SHALL be `None` under
+SHALL NOT fix the text of any bytes.
+
+Under `"auto"`, archivey SHALL make a plugin's directory members wait as the built-in
+formats do, with no new call from the plugin. A directory member whose `name` is the
+text `decode_name` returned for its `raw_name`, or that text with `\` turned into `/`,
+SHALL be held, charged against the listing limits, decoded again from `raw_name` when
+its wait ends, and listed before a listing cap raises. Any other directory member SHALL
+keep the plugin's name. `ReaderContext.encoding` SHALL be `None` under
 `"auto"`, so a plugin that decodes with it never receives `"auto"` as a codec name.
 
 #### Scenario: plugin under auto
@@ -37,5 +44,8 @@ SHALL NOT fix the text of any bytes. `ReaderContext.encoding` SHALL be `None` un
 | Plugin calls `ctx.decode_text()` from `archive_info()`, `encoding="auto"` | Decoded as without `"auto"`, whenever `info` is read |
 | Plugin calls `ctx.decode_text()` before `ctx.decode_name()` on the same bytes | `decode_name` returns what it would have returned without the earlier `decode_text` |
 | LHA `ポ\|target` field in cp932, `decode_name_and_target(raw, b"\|")` under `encoding="auto"` | Name `ポ`, target `target`; only `ポ` adds evidence |
+| cpio plugin-shaped reader, Big5 `新/` then `新/報告書.txt`, `encoding="auto"` | The directory waits; both names start with `新/` |
+| Plugin yields a directory whose name it joined from parts, `encoding="auto"` | The plugin's name, with no wait |
+| Plugin yields 6 directories in a row, `ListingLimits(max_members=5)` | 5 directories listed, then `ResourceLimitError` |
 | Plugin reads `ctx.encoding`, `encoding="auto"` | `None` |
 | Plugin reads `ctx.encoding`, `encoding="cp932"` | `"cp932"`, as today |

@@ -30,8 +30,10 @@ There are three exceptions. In a ZIP whose central directory lists entries in an
 order than its local headers, the names met before the guess is frozen, and the names
 under a directory first met before then, MAY differ between the two modes. In a ZIP
 whose local headers are damaged where its central directory is intact, the names MAY
-differ between the two modes (DR-5a). When a listing cap raises, the directories listed
-just before it MAY have names that differ from an unlimited listing.
+differ between the two modes (DR-5a). When a walk ends early, because of damage or
+because a listing cap raises, the directories waiting at that point decode with the
+evidence met before it, and MAY have names that differ from a whole, unlimited
+listing.
 
 A name decoded with a guessed codec SHALL report `MEMBER_NAME_ENCODING_INFERRED`, with
 `inferred_encoding` set to the guess and `declared_encoding` set to the codec the name
@@ -59,7 +61,8 @@ report `ENCODING_ARGUMENT_UNUSED`, as any other value does.
 | cp437 German or French names, `encoding="auto"` | Names as with `encoding=None`; no `MEMBER_NAME_ENCODING_INFERRED` |
 | Name that is valid UTF-8 | UTF-8, whatever the guess for the other names |
 | ISO Rock Ridge name not UTF-8, Joliet twin present | The Joliet name; the name adds nothing to the guess |
-| Streaming walk of an archive with 10 cp949 files, damaged after the 2nd | The 2 listed names equal the first 2 names of an undamaged copy |
+| Streaming walk of an archive with 10 cp949 files, damaged after the 2nd file | The 2 listed names equal the first 2 names of an undamaged copy |
+| TAR: Big5 `新/`, then damage before its first file | `新/` decodes on the evidence before the damage, then `CorruptionError`; the name may differ from an undamaged copy |
 | ZIP whose central directory order differs from its local headers' | Names met before the guess is frozen, and names under a directory first met before then, may differ between modes |
 | `encoding="auto"` under `DiagnosticPolicy.STRICT`, a name guessed | Refused, as any inferred name is |
 | `encoding="auto"` on a format that does not read `encoding=` | Opens; `ENCODING_ARGUMENT_UNUSED`; names unchanged |

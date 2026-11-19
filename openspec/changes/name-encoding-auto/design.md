@@ -158,16 +158,42 @@ is guessed from the evidence collected up to and including that name:
   entries decode with the evidence met so far, at the first of:
   - the end of the archive, or damage that ends the walk;
   - the freeze;
-  - 64 waiting entries, of any kind. Only names that are not valid UTF-8 count towards
-    the freeze, so without this bound a legacy-named directory followed by a million
-    ASCII directories would hold a million headers;
+  - 64 waiting directories, whether or not their names are valid UTF-8. Only names
+    that are not valid UTF-8 count towards the freeze, so without this bound a
+    legacy-named directory followed by a million ASCII directories would hold a million
+    headers;
   - a listing cap (`ListingLimits`). Every member the lookahead reads is charged to the
-    listing tracker as it is today, and a plugin holds waiting entries through
-    `ReaderContext.hold()`, which is charged too. When the next member would cross a
-    cap, the waiting entries are decoded and listed, and then the cap raises
-    `ResourceLimitError` at that member, as it does now. So the lookahead never parses a
-    header that today's walk wouldn't parse: a TAR walk with `max_members=5` still reads
-    at most 6 headers.
+    listing tracker as it is today, including the waiting ones. When the next member
+    would cross a cap, the waiting entries are decoded and listed, and then the cap
+    raises `ResourceLimitError` at that member, as it does now. So the lookahead never
+    parses a header that today's walk wouldn't parse: a TAR walk with `max_members=5`
+    still reads at most 6 headers.
+
+  ZIP, TAR, RAR and ISO do the wait in their own readers. For the plugin-shaped formats
+  (cpio, ar, LHA, ARJ, CAB and the rest) and third-party plugins, the adapter does it,
+  so no plugin has to:
+  - Under `"auto"`, a name that `decode_name` returns is provisional until the adapter
+    lists the member. The decoder writes its memo, whole name and directory prefixes,
+    only when a member is listed. A decode before that reads the memo, and decodes what
+    the memo lacks with the current guess.
+  - When a plugin yields a directory member whose `name` is the text `decode_name`
+    returned for its `raw_name`, or that text with `\` turned into `/` (what CAB and LHA
+    do), the adapter holds it. It charges it to the listing tracker, as `hold()` does,
+    and keeps the plugin's walk going.
+  - When the wait ends, the adapter decodes `raw_name` again with the evidence at that
+    point, makes the same `\` change if the plugin made it, sets the member's name to
+    that text, and lists it. At a cap it lists the waiting directories first, and then
+    raises as it does now.
+  - The next member's own `decode_name` call came before this, with the same evidence.
+    Since the memo held nothing for the directory's prefix yet, that call decoded the
+    prefix with the same guess, so the child and the directory agree.
+  - A directory whose name the plugin built in some other way (joined from parts, or
+    normalised) doesn't wait. It keeps the text `decode_name` gave, as with the
+    directory rule alone.
+
+  `decode_text` keeps the guess as of the last `decode_name` call, so a directory's own
+  text, such as a comment, uses the evidence up to its header, as before. A plugin calls
+  nothing new, and `hold()` keeps its current meaning.
 
   In TAR and the other formats that list by walking, the end and damage come at the
   same point in both modes. In ZIP they don't: a seekable read lists from the central
@@ -187,11 +213,12 @@ Why this rule:
   reads give the same names. The only lookahead is over directory entries, which have
   no data, so no reader buffers member data, which a TAR stream can't do within its
   memory bound.
-- **Damage and caps can't change a name already listed.** A walk cut short by damage
-  stops adding evidence at the cut, and the directories waiting at the cut decode with
-  the evidence before it. A listing cap raises, as it does today. The only names it can
-  change are those of the directories waiting just before it, because their wait ends
-  early (a spec exception). A damaged ZIP local header is the other spec exception.
+- **Damage and caps change no name already final.** A walk that ends early, by damage
+  or by a listing cap, stops adding evidence there, and a cap raises as it does today.
+  The directories waiting at that point decode with the evidence met before it, so
+  their names can differ from a whole, unlimited listing. Every other name listed
+  before that point is final. The spec states this as one exception. A damaged ZIP
+  local header is another.
 - **Order of calls doesn't matter.** Thanks to the memo, a re-walk, a `get()`, or a
   second `members()` never sees a different decode for bytes it already decoded.
 - **Bounded cost.** Evidence stops at 256 names, and the wait at 64 entries and at the
@@ -203,13 +230,13 @@ otherwise abstains, wrong at most 1%). By the third name the guess matches the
 whole-archive guess in 92-100% of archives.
 
 Early names are mostly directories, the parents of later names, because TAR, 7-Zip,
-WinRAR and most ZIP writers put `資料/` before `資料/報告書.txt`. Without the directory
-rule, an abstaining first guess would list a folder `╕Ω«╞/` with no children, next to
-children under a `資料/` that has no entry. The tree would split in two on extraction.
-With the directory rule alone, the tree stays whole, but the root folder of a
-single-folder archive, the most common layout, keeps the text of a guess made from its
-own name. A one-character root (`新/`) always abstains, because of the 2-character
-minimum. The wait for the next entry with data fixes most of that. It gives the root the
+WinRAR and most ZIP writers put `資料/` before `資料/報告書.txt`. Without the directory rule,
+an abstaining first guess would list a folder `╕Ω«╞/` with no children, next to children
+under a `資料/` that has no entry. The tree would split in two on extraction. With the
+directory rule alone, the tree stays whole, but the root folder of a single-folder
+archive, the most common layout, keeps the text of a guess made from its own name. A
+one-character root (`新/`) always abstains, because of the 2-character minimum. The wait
+for the next entry that is not a directory fixes most of that. It gives the root the
 evidence of its first file too. Measured on single-root archives (a root folder entry
 first, then 3 or 10 files under it; `single_root.py` in the investigation), as the share
 of archives whose every path comes out right:
@@ -391,10 +418,10 @@ no new context field are needed.
   Latin archives. The diagnostic names the guess and keeps `raw_name`, so a caller can
   re-decode.
 - [Early names decode on less evidence than later ones, and a root folder's text holds
-  for the whole archive] → The wait for the next entry with data gives the root the
-  evidence of its first file: 76-100% of single-root archives come out right on every
-  path, against 90-100% for a whole-archive guess (decision 3). The rest is accepted
-  for DR-5. A caller who knows the codec passes it.
+  for the whole archive] → The wait for the next entry that is not a directory gives the
+  root the evidence of its first file: 76-100% of single-root archives come out right on
+  every path, against 90-100% for a whole-archive guess (decision 3). The rest is
+  accepted for DR-5. A caller who knows the codec passes it.
 - [A symbolic link met before the freeze that names a later member may not resolve] →
   Accepted and pinned (decision 4).
 - [An archive comment is never guessed] → It belongs to no member, so it has no place
