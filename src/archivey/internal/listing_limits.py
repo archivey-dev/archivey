@@ -501,37 +501,55 @@ class ListingDecodeCount:
         outer_room = outer.room() if outer is not None else None
         return room if outer_room is None else min(room, outer_room)
 
-    def check_left(self) -> None:
+    def check_left(self, inner: int | None = None) -> None:
+        """Raise when this pass is over the cap. ``inner``: what the inner archive on
+        whose behalf the outer count is asked has decoded itself (``_error``)."""
         if not self._active():
             return
         outer = self._outer()
         if outer is not None:
-            outer.check_left()
+            outer.check_left(self._own(inner))
         if self._drawn > self._cap:
-            raise self._error(0)
+            raise self._error(0, inner=inner)
 
-    def draw(self, n: int) -> None:
+    def draw(self, n: int, inner: int | None = None) -> None:
         if n <= 0 or not self._active():
             return
         self._drawn += n
         outer = self._outer()
         if outer is not None:
-            outer.draw(n)
+            outer.draw(n, self._own(inner))
         if self._drawn > self._cap:
-            raise self._error(0)
+            raise self._error(0, inner=inner)
 
-    def refuse(self, n: int, what: str) -> None:
+    def refuse(self, n: int, what: str, inner: int | None = None) -> None:
         outer = self._outer()
         if outer is not None:
             outer_room = outer.room()
             if outer_room is not None and n > outer_room:
-                outer.refuse(n, what)
-        raise self._error(n, what)
+                outer.refuse(n, what, self._own(inner))
+        raise self._error(n, what, inner=inner)
 
-    def _error(self, n: int, what: str = "") -> AlwaysStopResourceLimitError:
-        detail = f"listing this archive has decoded {self._drawn} bytes" + (
-            f"; {what} would decode {n} more" if what else ""
-        )
+    def _own(self, inner: int | None) -> int:
+        """What the innermost archive of a call that reaches the outer count has
+        decoded itself: this count's, unless an archive inside this one made the
+        call."""
+        return self._drawn if inner is None else inner
+
+    def _error(
+        self, n: int, what: str = "", *, inner: int | None = None
+    ) -> AlwaysStopResourceLimitError:
+        if inner is None:
+            detail = f"listing this archive has decoded {self._drawn} bytes"
+        else:
+            # Raised for an archive inside this one: the total is every level's.
+            detail = (
+                f"listing an archive and the archives inside it has decoded "
+                f"{self._drawn} bytes, {inner} of them by the inner archive being "
+                "listed"
+            )
+        if what:
+            detail += f"; {what} would decode {n} more"
         # Archive-wide like the nest's totals: nothing that skips one member's failure
         # (``OnError.CONTINUE``, the forward ZIP's drain) may go on decoding past it.
         return AlwaysStopResourceLimitError(

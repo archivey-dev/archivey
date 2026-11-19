@@ -1141,7 +1141,11 @@ def test_one_listing_charges_what_its_nested_readers_decode(data: bytes) -> None
     listing of the outer archive is held to one cap."""
     with (
         archivey.open_archive(io.BytesIO(data), config=_decode_capped(1_000_000)) as r,
-        pytest.raises(ResourceLimitError, match="max_decoded_bytes=1000000"),
+        pytest.raises(
+            ResourceLimitError,
+            match=r"max_decoded_bytes=1000000 \(listing an archive and the archives "
+            r"inside it has decoded 1000001 bytes, \d+ of them by the inner archive",
+        ),
     ):
         r.members()
 
