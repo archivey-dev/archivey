@@ -319,8 +319,8 @@ class ReaderSource:
     # the bytes. Set by archivey only; a plugin's source always starts the file.
     _origin: int = 0
     # Tells archivey that ``[start, end)`` of this source is read next, so a remote
-    # source fetches the span in one request (``ArchiveSource.will_read``). Set by
-    # archivey only, for its built-in readers; ``None`` when nothing acts on it.
+    # source fetches the span in one request (``ArchiveSource.will_read``); a source
+    # that is not remote ignores it. Set by archivey only, for its built-in readers.
     _will_read: Callable[[int, int], None] | None = None
 
     def __init__(

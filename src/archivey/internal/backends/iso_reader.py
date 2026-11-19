@@ -160,6 +160,7 @@ from archivey.internal.listing_limits import (
     metadata_limit_error,
     str_retained_bytes,
 )
+from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
@@ -685,7 +686,9 @@ def _install_pycdlib_path_table_bound() -> None:
             _check_path_table(self, ptr_size, extent)
         result = original(self, ptr_size, extent)
         hint = _DIRECTORY_HINT.get()
-        if hint is not None:
+        # pycdlib parses each tree's table twice, little-endian then big-endian, and
+        # walks the tree from the first; the second is parsed only to compare with it.
+        if hint is not None and _is_little_endian_table(self, extent):
             _hint_directory_extents(self, result, hint)
         return result
 
@@ -782,17 +785,27 @@ def _gpt_end(fp: BinaryIO, gpt: bytes, *, image_length: int) -> int:
     return end
 
 
-# Set only while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``, and only
-# when the source acts on read hints (a remote one): ``ReaderSource._will_read``.
+# Set while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``, to the source's
+# ``ReaderSource._will_read``, except for a raw sector image. A source that is not
+# remote ignores the hints.
 _DIRECTORY_HINT: ContextVar[Callable[[int, int], None] | None] = ContextVar(
     "archivey_iso_directory_hint", default=None
 )
 
-# Directory extents closer than this are hinted as one span: a remote source reads
-# through a gap this size anyway (``ArchiveyConfig.max_read_through``'s default).
+# Directory extents closer than this are hinted as one span. A clustering threshold:
+# small enough that a span is mostly directories, large enough that a mastering tool's
+# padding or a few small files between directories do not split it. A span is capped
+# at the planner's maximum fetch whatever its length.
 _DIRECTORY_CLUSTER_GAP = 1024 * 1024
-# A remote source keeps this many pending hints (``remote.MAX_PENDING_HINTS``).
-_MAX_DIRECTORY_HINTS = 8
+
+
+def _is_little_endian_table(iso: PyCdlib, extent: int) -> bool:
+    """Whether ``extent`` is where a volume descriptor puts its little-endian path
+    table: the one pycdlib walks the tree from."""
+    descriptors = [getattr(iso, "pvd", None), *(getattr(iso, "svds", None) or ())]
+    return any(
+        getattr(vd, "path_table_location_le", None) == extent for vd in descriptors
+    )
 
 
 def _hint_directory_extents(
@@ -829,7 +842,7 @@ def _hint_directory_extents(
     # The clusters holding the most directories, at most as many as the source keeps.
     chosen = sorted(
         (c for c in clusters if c[2] > 1), key=lambda c: c[2], reverse=True
-    )[:_MAX_DIRECTORY_HINTS]
+    )[:MAX_PENDING_HINTS]
     for first, last, _ in sorted(chosen):
         # The last directory's extent is at least one block; a longer one is read on
         # past the span as an ordinary forward read.

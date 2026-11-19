@@ -74,3 +74,18 @@ def test_directory_hints_cut_the_requests_of_a_remote_listing(
         assert names == unhinted_names == [m.name for m in reader.members()]
     assert hinted < unhinted
     assert hinted <= 6
+
+
+def test_each_tree_is_hinted_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pycdlib parses each tree's path table twice (little- and big-endian); only
+    # the first, which it walks the tree from, gives hints.
+    calls: list[object] = []
+    hint = iso_reader._hint_directory_extents
+
+    def counted(*args: Any) -> None:
+        calls.append(args[1])
+        hint(*args)
+
+    monkeypatch.setattr(iso_reader, "_hint_directory_extents", counted)
+    _list_remote(_image(3), monkeypatch)
+    assert len(calls) == 2  # the ISO 9660 tree and the Joliet tree
