@@ -835,8 +835,8 @@ jobs:
 
   # PyPy. It is still not a supported interpreter (docs/install.md §PyPy), but the whole
   # suite has to pass there, once with the zero-dependency core and once with every
-  # optional package that installs, so a PyPy regression fails the run instead of sitting
-  # in a log. The check and test steps carry `if: ${{ !cancelled() }}` so a failure in
+  # optional package that installs (the two matrix legs below), so a PyPy regression
+  # fails the run instead of sitting in a log. The check and test steps carry `if: ${{ !cancelled() }}` so a failure in
   # one does not hide the later ones; any failed step still fails the job, and a
   # superseded run stops at once.
   # Dependencies come one at a time rather than through `--extra all`, because several
@@ -847,22 +847,27 @@ jobs:
   # failure from it (scripts/ci/junit_failure_lines.py), so the whole result fits in the
   # part of the log the GitHub API returns. Not on pull requests.
   pypy:
-    name: ${{ matrix.python }}
+    name: ${{ matrix.python }} / ${{ matrix.suite }}
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
-    # The two full-suite passes have grown from 28 minutes together (2026-11-14) to
-    # 40 (2026-11-18). On 2026-11-19 a slow runner took 19 minutes for core-only and
-    # was still in the second pass at the old 45-minute limit; at the usual ratio
-    # (second pass about 1.5x core-only) it needed about 50. Raise this from that
-    # worst case, not from a typical run.
-    timeout-minutes: 75
+    # Two legs in parallel, each with its own limit: the suite without optional
+    # packages (core-only), and with every one that installs on PyPy (extras). As one
+    # job they had grown from 28 minutes (2026-11-14) to about 50 on a slow runner
+    # (2026-11-19: core-only 19 minutes, extras still running at the old 45-minute
+    # limit). Extras is the longer leg, about 1.5x core-only. Size this limit from the
+    # slowest leg on a slow runner, not from a typical run.
+    timeout-minutes: 45
     env:
       UV_PYTHON: ${{ matrix.python }}
     strategy:
       fail-fast: false
       matrix:
         python: ["pypy3.11"]
+        # Core-only on PyPy runs on the daily run and on a dispatched run (a release
+        # gate, scripts/release/release.py), not in the merge queue: the CPython
+        # core-only legs already cover the fallback paths.
+        suite: ${{ github.event_name == 'merge_group' && fromJSON('["extras"]') || fromJSON('["core-only", "extras"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -883,12 +888,8 @@ jobs:
       - name: Assert zero-dependency core
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
-      # Core-only on PyPy runs on the daily run and on a dispatched run (a release gate,
-      # scripts/release/release.py), not in the merge queue: it is a third to two fifths
-      # of this job's time, and the CPython core-only legs already cover the fallback
-      # paths.
       - name: Run full suite (core-only)
-        if: ${{ !cancelled() && github.event_name != 'merge_group' }}
+        if: ${{ !cancelled() && matrix.suite == 'core-only' }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -897,10 +898,10 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-core.xml -o junit_family=xunit1
       - name: Failures (core-only), one line each
-        if: ${{ !cancelled() && github.event_name != 'merge_group' }}
+        if: ${{ !cancelled() && matrix.suite == 'core-only' }}
         run: python3 scripts/ci/junit_failure_lines.py pypy-core.xml
       - name: Install what installs (runtime extras, then test-only packages)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'extras' }}
         run: |
           {
             echo "### ${{ matrix.python }}: optional packages"
@@ -925,7 +926,7 @@ jobs:
             fi
           done
       - name: Run full suite (with what installed)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'extras' }}
         env:
           PYTHONFAULTHANDLER: "1"
         run: >
@@ -933,7 +934,7 @@ jobs:
           pytest tests/ -q -n auto --timeout=300 -o addopts= --tb=no -p no:warnings
           -m 'not ppmd_native_stress' --junitxml=pypy-extras.xml -o junit_family=xunit1
       - name: Failures (with what installed), one line each
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.suite == 'extras' }}
         run: python3 scripts/ci/junit_failure_lines.py pypy-extras.xml
 
   # Two quick Linux checks that share one runner, one Python and one sync, so a pull
