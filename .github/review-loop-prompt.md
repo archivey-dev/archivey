@@ -37,11 +37,12 @@ function and its docstring, the helpers in the same file it calls, the code next
 to it that a new helper may duplicate, and the tests of a touched function. Send
 the wider searches (callers across the tree, sibling formats and codecs, shared
 state in other modules, history) to `Task` subagents with `model: "sonnet"` and
-`subagent_type: "Explore"`, several in parallel, and pass
-`run_in_background: false` on every one: this session has no later turn, so a
-turn that ends while a subagent is still running ends the review before the
-verdict is written. Never end a turn to wait for a subagent; a foreground call
-returns its report as the tool result. Ask a subagent what the code
+`subagent_type: "Explore"`, several in parallel. Pass `run_in_background: false` on every subagent call,
+including a `general-purpose` one. A background call returns at once, and its
+report arrives on a later turn. The process exits when you stop calling tools,
+so stopping to wait ends the review before the verdict is written.
+Never end a turn to wait for a subagent. A foreground call returns its report as
+the tool result. Foreground calls sent in one message still run in parallel. Ask a subagent what the code
 does, not to confirm a suspicion, and for `file:line` facts with the lines that
 show them and what it looked for and did not find. Re-read the lines a finding
 cites before you file it: a subagent's summary is a lead, not evidence. Read
