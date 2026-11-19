@@ -5606,6 +5606,48 @@ def test_a_copy_superseded_after_a_re_point_is_taken_back(tmp_path: Path) -> Non
     assert not (dest / "f" / "X").exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+@pytest.mark.parametrize("kind", ["file", "dir"])
+@pytest.mark.parametrize("outside", [False, True], ids=["inside", "outside"])
+def test_taking_back_a_copy_leaves_the_directory_its_name_leads_to_now(
+    tmp_path: Path, kind: str, streaming: bool, outside: bool
+) -> None:
+    # The first `s/X` is written to `e/X` through the caller's `s -> e`. The
+    # archive's `s` then re-points the name, to `f` in the destination or, under
+    # TRUSTED, to a directory outside it. There `X` is an empty directory the run
+    # never wrote. Taking back the first copy removes it from `e/X` and leaves that
+    # directory alone.
+    there = tmp_path / "outside" if outside else tmp_path / "out" / "f"
+    (there / "X").mkdir(parents=True)
+    payload = b"first" if kind == "file" else None
+    archive = _tar_bytes(
+        [
+            (kind, "s/X", payload),
+            ("sym", "s", str(there) if outside else "f"),
+            (kind, "s/X", payload),
+        ]
+    )
+    dest = tmp_path / "out"
+    _callers_symlink(dest, "s", "e")
+    (dest / "e").mkdir()
+    with open_archive(io.BytesIO(archive), streaming=streaming) as reader:
+        report = reader.extract_all(
+            dest,
+            overwrite=OverwritePolicy.REPLACE,
+            on_error=OnError.CONTINUE,
+            on_blocked="skip",
+            policy=ExtractionPolicy.TRUSTED if outside else ExtractionPolicy.STANDARD,
+        )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.SUPERSEDED,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.BLOCKED,
+    ]
+    assert (there / "X").is_dir()
+    assert not (dest / "e" / "X").exists()
+
+
 @pytest.mark.parametrize(
     "shape",
     [
