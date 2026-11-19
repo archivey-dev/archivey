@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from archivey.internal.nesting import NestDraws
 
 
-def _str_retained_bytes(value: str) -> int:
+def str_retained_bytes(value: str) -> int:
     """Cheap upper bound on UTF-8 size for listing bomb accounting.
 
     ``max_metadata_bytes`` is a safety cap, not a precise allocator — encoding
@@ -38,7 +38,7 @@ def _str_retained_bytes(value: str) -> int:
 def _retained_bytes(value: object) -> int:
     """Retained size of a ``str``/``bytes`` value; anything else weighs nothing."""
     if isinstance(value, str):
-        return _str_retained_bytes(value)
+        return str_retained_bytes(value)
     if isinstance(value, bytes):
         return len(value)
     return 0
@@ -46,7 +46,7 @@ def _retained_bytes(value: object) -> int:
 
 def text_bytes(value: str | bytes | None) -> int:
     """Retained weight of one stored text field, by the rule :class:`ListingLimitTracker`
-    uses for member fields: ``bytes`` by length, ``str`` per :func:`_str_retained_bytes`.
+    uses for member fields: ``bytes`` by length, ``str`` per :func:`str_retained_bytes`.
 
     For a parser that weighs what it keeps before members are registered (7z, RAR).
     """
@@ -104,7 +104,7 @@ def _extra_bytes(extra: Mapping[str, object]) -> int:
 def member_metadata_bytes(member: ArchiveMember) -> int:
     """Retained metadata weight for one member (listing bomb accounting)."""
     # Hot path for every listing: most optional string fields are None, and the
-    # ``_str_retained_bytes`` rule is inlined for the name.
+    # ``str_retained_bytes`` rule is inlined for the name.
     name = member.name
     total = len(name) if name.isascii() else len(name) * 4
     raw_name = member.raw_name
@@ -112,16 +112,16 @@ def member_metadata_bytes(member: ArchiveMember) -> int:
         total += len(raw_name)
     comment = member.comment
     if comment is not None:
-        total += _str_retained_bytes(comment)
+        total += str_retained_bytes(comment)
     link_target = member.link_target
     if link_target is not None:
-        total += _str_retained_bytes(link_target)
+        total += str_retained_bytes(link_target)
     uname = member.uname
     if uname is not None:
-        total += _str_retained_bytes(uname)
+        total += str_retained_bytes(uname)
     gname = member.gname
     if gname is not None:
-        total += _str_retained_bytes(gname)
+        total += str_retained_bytes(gname)
     extra = member.extra
     if extra:
         total += _extra_bytes(extra)
@@ -131,7 +131,7 @@ def member_metadata_bytes(member: ArchiveMember) -> int:
 def archive_comment_bytes(comment: str | None) -> int:
     if comment is None:
         return 0
-    return _str_retained_bytes(comment)
+    return str_retained_bytes(comment)
 
 
 class ListingLimitTracker:
@@ -361,7 +361,7 @@ class ListingLimitTracker:
         for it. Weighing it here is what makes ``max_metadata_bytes`` hold for the
         ``link_target`` field the spec names.
         """
-        self._add_bytes(_str_retained_bytes(target), enforce=enforce)
+        self._add_bytes(str_retained_bytes(target), enforce=enforce)
 
     def account_retained_bytes(self, nbytes: int, *, enforce: bool = True) -> None:
         """Add metadata a backend retains for a member outside its public fields.

@@ -156,7 +156,7 @@ class UdfBudget(Protocol):
 
     def add_udf_bytes(self, nbytes: int) -> None: ...
 
-    def add_udf_path(self, nbytes: int, path: str) -> None: ...
+    def add_udf_path(self, path: str, raw_path: bytes) -> None: ...
 
 
 def has_volume_recognition(read_at: _ReadAt) -> bool:
@@ -985,8 +985,9 @@ class UdfVolume:
                 if self._budget is not None:
                     # Every full path is kept from open, and a chain of nested
                     # directories makes them grow with the square of the depth, far
-                    # past the bytes weighed above: each is weighed as it is built.
-                    self._budget.add_udf_path(len(path) + len(raw_path), path)
+                    # past the directory data and File Entry bytes the budget weighs
+                    # as they are read: each path is weighed as it is built.
+                    self._budget.add_udf_path(path, raw_path)
                 if entry.is_directory:
                     if entry.location in seen:
                         raise self._corrupt(

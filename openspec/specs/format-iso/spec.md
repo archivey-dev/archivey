@@ -480,8 +480,9 @@ tree under the cap SHALL NOT make an image over it open. `max_members` SHALL be 
 per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
 SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 
-The UDF parser builds every name's full path at open. It SHALL weigh each full path, its
-text length plus its stored bytes, as it builds it, in a sum of its own held to
+The UDF parser builds every name's full path at open. It SHALL weigh each full path as
+it builds it, its text by the listing's rule for a member name (its length when ASCII,
+four times its length otherwise) plus its stored bytes, in a sum of its own held to
 `max_metadata_bytes`, so that nested directories, whose paths grow with the square of
 the depth, are refused at `open_archive` before the paths are built. When UDF is the
 listed tree, the listing weighs each member's name and raw name, which are these paths,

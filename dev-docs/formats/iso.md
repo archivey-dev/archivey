@@ -209,16 +209,17 @@ UDF tree counts as one more tree, listed or not: each File Identifier but the pa
 entry and deleted ones counts against the UDF tree's own `max_members` count, and each
 directory's data (weighed before it is read) and each File Entry (its fixed part plus
 the extended-attribute and allocation-descriptor lengths it declares) add to the image's
-`max_metadata_bytes` sum. Every full UDF path is built at open too, so each one, text
-plus stored bytes, is weighed as it is built against `max_metadata_bytes` in a sum of
-its own, as the XAR reader weighs its paths: nested directories make the paths grow with
-the square of the depth (24,000 levels in a 50 MB image took 1.2 GB before), and a
-separate sum refuses only a tree the listing would refuse, since the listing weighs the
-same names against the same cap. After it, listing touches only records already in
-memory, which is what lets the member walk run without the handle lock. Two exceptions
-read a directory's extent once more, under the handle lock (§2.3): a directory holding a
-repeated identifier, to check the multi-extent flags as written, and a directory holding
-a file whose data ends at the end of the image, to recover its declared length.
+`max_metadata_bytes` sum. Every full UDF path is built at open too, so each one, its
+text by the listing's rule for a name plus its stored bytes, is weighed as it is built
+against `max_metadata_bytes` in a sum of its own, as the XAR reader weighs its paths:
+nested directories make the paths grow with the square of the depth (24,000 levels in a
+50 MB image took 1.2 GB before), and a separate sum refuses only a tree the listing
+would refuse, since the listing weighs the same names against the same cap. After it,
+listing touches only records already in memory, which is what lets the member walk run
+without the handle lock. Two exceptions read a directory's extent once more, under the
+handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent
+flags as written, and a directory holding a file whose data ends at the end of the
+image, to recover its declared length.
 
 **The namespace is picked once for the image: Rock Ridge, then UDF, then Joliet, then
 plain** (davi, 2026-11-18, decision card in the thread "Add UDF reading to ISO images").
