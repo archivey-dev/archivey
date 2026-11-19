@@ -109,7 +109,14 @@ runs:
               return 1
             fi
             if timeout "$left" "$@"; then return 0; fi
-            [ "$attempt" -ge 4 ] && return 1
+            if [ "$attempt" -ge 4 ]; then
+              echo "::error::apt: failed $attempt attempts: $*"
+              return 1
+            fi
+            if [ $((deadline - SECONDS)) -le 15 ]; then
+              echo "::error::apt: out of time after $attempt attempts: $*"
+              return 1
+            fi
             echo "::warning::apt attempt $attempt failed; trying again in 15 s."
             attempt=$((attempt + 1))
             sleep 15
