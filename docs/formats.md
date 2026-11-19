@@ -796,100 +796,30 @@ wait and why, and the checks archivey adds around the accelerators.
 
 ## Detection
 
-- **Strongest signal first**, and the file name last; wrong extensions are expected. In order:
-  exact magic in the first 4 KiB, then an SFX scan behind an executable stub, then exact magic
-  further in (ISO 9660's `CD001` at 32 769, on one extended peek that a source too small for it
-  never pays for), then the 512-byte `koly` block at the end of a seekable source
-  ([Disk images](#disk-images)), then a TAR header with no magic
-  ([TAR](#tar-and-compressed-tar)), then content probes for the formats with no magic (next
-  item), then the same 2 MiB scan for a ZIP, 7z or RAR behind leading bytes of any kind, then the
-  extension. A bzip2 or xz header that is the first block of a disk image loses
-  to its `koly` block. A step that matches nothing falls through to the next; nothing is rejected for
-  failing an earlier one. When only the extension matched and the decode then fails, the error has
-  `format_unconfirmed=True`, and archivey reports `EXTENSION_FORMAT_UNCONFIRMED`.
-- **Content probes run only for a matching name by default.** LZMA Alone, zlib and Brotli have no
-  magic, so a trial decode of the first bytes (a content probe) is the only thing that recognises
-  them, and ordinary binary files sometimes pass one. By default `open_archive` and `detect_format`
-  run a probe only when the name ends in one of that format's extensions: `.lzma` or `.tlz` for LZMA
-  Alone, `.zz` or `.zlib` for zlib, `.br` or `.brotli` for Brotli, and the `.tar.` form of each
-  except `.tlz`. A matching probe confirms the name and still finds a TAR inside. A source with no
-  name, or another extension, runs no probe: a raw stream of these formats with no name raises
-  `FormatDetectionError`, and one named for another format gets that format's guess. To read such
-  sources, give the file its format's extension, pass `format=`, use `open_stream()` (which always
-  runs every probe), or set `ArchiveyConfig(always_probe_content=True)` (`--probe-content` on the
-  command line). No probe runs on a file that starts with a valid executable header or an OLE (old
-  Office) header, even when it is named for one of these formats.
-- **Brotli** detection adds framing checks to the probe when the source length is known (paths,
-  `BytesIO`, and short non-seekable peeks): a first meta-block that declares more bytes than the
-  source holds is rejected; when the source is 64 KiB or less, the whole of it is decoded, and a
-  stream that still wants more input after a declared output drain is rejected; and a bounded walk
-  of self-describing meta-blocks rejects a later link that overruns, or a declared end with bytes
-  after it. On a non-seekable stream of unknown length those checks are skipped. When the decoded
-  start is a TAR header, the format is `tar.br` with confidence `PROBABLE`. Otherwise, without a
-  Brotli extension, the confidence is `PROBABLE` when the first meta-block is compressed and `GUESS`
-  when it is not, and a later decode failure sets `ArchiveyError.format_unconfirmed` and reports
-  `PROBE_FORMAT_UNCONFIRMED`: the bytes may never have been Brotli, and some made-up output may
-  already have been returned before the error. A `tar.br` found this way is not flagged. With a
-  Brotli extension (`.br`, `.brotli`, `.tar.br`) it is `PROBABLE`.
-- **zstd skippable frames** (a magic from `0x184D2A50` to `0x184D2A5F` plus a declared payload
-  size) may come before the first real frame, so detection walks past them by their declared sizes
-  within the bytes it peeked, and matches the regular frame behind. Skippable frames alone are not
-  a zstd claim: there is nothing to open.
-- **zlib** is recognised by the RFC 1950 header rules (`CM == 8`, `CINFO <= 7`, and the mod-31
-  check, `FDICT` included) rather than a list of common headers, so all seven legal window sizes are
-  recognised. A preset dictionary archivey does not hold fails the decode, and detection moves on.
-- **LZMA Alone** accepts any 32-bit dictionary size, zero included: the format allows every value,
-  and decoders round anything below 4 KiB up to 4 KiB. It does not claim a header declaring an
-  uncompressed size of exactly zero: that stream holds no payload, and 18 zero bytes are a valid
-  empty one, so zero padding would otherwise be detected as `.lzma`. A real size and the all-ones
-  "unknown" value are both accepted, and an empty `.lzma` still opens through its extension.
-- **Self-extracting (SFX) stubs** are detected when the archive sits behind an executable header
-  (Windows `MZ`/PE, Linux ELF, or a macOS Mach-O header that parses) or a `#!` launcher line (a
-  zipapp `.pyz`, a Spring Boot jar). The 2 MiB scan behind the stub reports where the archive starts
-  as `payload_offset`, and sets `prefixed`. For a code-signed Windows program, `payload_end` is
-  where its signature starts: the ZIP, 7z, RAR, LHA and ARJ readers stop there, so the signature is not
-  reported as data after the archive. Some installers (Squirrel's, used by GitHub Desktop, Slack
-  and Discord) store the archive as a resource inside the program instead of after it. When the
-  archive ends inside a resource, the ZIP, 7z and RAR readers stop the trailing-data check at the
-  resource's end: other resources, sections and the signature follow it and are not reported.
-  Bytes inside the resource after the archive still are. A ZIP further into a Windows installer than the scan
-  reaches is found from its end, when the program's header shows that something was
-  appended past the window. A launcher is text, so behind `#!` only formats with a structural check
-  (ZIP, 7z, RAR, LHA, ARJ) are searched for, and so are gzip, bzip2, xz, zstd, LZ4 and lzip
-  streams whose header fields pass their checks: a CPack `.sh` installer, or another shell
-  installer, is a script followed by a compressed TAR. That stream is reported as the TAR inside
-  it (`TAR_GZ`), or as the bare stream (`GZ`) when it holds nothing archivey recognizes, and is
-  read from where it starts, from a pipe too. An uncompressed TAR behind a script is not found,
-  and `format=TAR_GZ` on such a script fails, as on any file that does not start with the
-  stream. Behind a Windows, Linux or macOS program whose header says
-  where its own image ends, an archive that starts exactly there is taken first, ahead of
-  anything else in the window. That holds under every detection budget: a smaller one, such as
-  `FAST`, still looks there, with a seek. Read from a pipe, under a budget whose window ends before
-  that point, detection gives up instead (`FormatDetectionError` when nothing else names the
-  format), because answering from the program image could open a different archive. Raise
-  `max_scan_bytes`, or pass `format=`. Otherwise,
-  among several 7z candidates, one that ends exactly at the end of
-  the file is preferred over an earlier one that ends short of it.
-- **An archive behind any leading bytes** (an image, zeros, text) is found too, as 7-Zip, `unrar`
-  and `unzip` find it: when no other step matched, the same 2 MiB scan runs without an executable
-  cue, for ZIP, 7z, RAR, LHA and ARJ, each with its structural check (LHA's is its header sum or
-  CRC, ARJ's its main header's CRC-32; a DOS `.COM`, Amiga or Atari self-extractor has no
-  executable header to cue on). It is the last content step, so a file
-  archivey recognizes pays nothing for it; a file it does not recognize pays a read of up to 2 MiB.
-  On a source that cannot seek and whose length is not known yet, such as a pipe, the scan covers
-  only the bytes detection has already read, and `sfx_scan` is listed in `unavailable_tiers` as
-  `CAPABILITY_UNAVAILABLE`.
-  A file whose name has a known extension skips it and gets the extension's guess; the ZIP, 7z,
-  RAR, LHA and ARJ readers find an archive behind leading bytes themselves.
-- **Ties go to the earlier step, then to registration order.** Detection stops at the first step
-  that matches, and within a step the first backend registered wins. A file that is two formats at
-  once (a polyglot) gets one fixed answer; pass `format=` to read it as the other.
-- **`confidence` may change in 0.2.x**: what each step reports may be regraded later (a two-byte
-  magic such as gzip's reported below `CERTAIN`, say). Branch on `format`, not on `confidence`.
-  **`detected_by` is an open set**: new detection steps may add values, so handle an unknown one
-  rather than matching every value.
-- `detect_format` returns the confidence and evidence on `FormatInfo`; the
-  [API reference](api.md#detection-budgets) lists what detection may read.
+Archivey decides the format from the file's contents first and its name last, so a wrong extension
+doesn't matter. `detect_format()` returns the answer without opening the archive
+([Opening](opening.md)).
+
+- **Magic first:** most formats start with a fixed signature, and archivey checks it before
+  anything else. When only the name matched and decoding then fails, the error has
+  `format_unconfirmed=True`.
+- **Formats with no signature** (LZMA Alone, zlib and Brotli) can only be recognised by trying to
+  decode them, and ordinary binary files sometimes pass that test. So archivey tries only when the
+  name ends in one of their extensions (`.lzma`, `.zz`, `.br`, and their `.tar.` forms). To read
+  one with no name or another name, pass `format=`, use `open_stream()`, or set
+  `ArchiveyConfig(always_probe_content=True)`.
+- **Archives behind other bytes** are found, as 7-Zip and `unzip` find them: a ZIP, 7z, RAR, LHA or
+  ARJ behind a self-extracting program, a `#!` launcher, an image or any other bytes, within the
+  first 2 MiB, and a compressed TAR behind a shell-script installer. `FormatInfo.prefixed` is
+  `True` and `payload_offset` says where the archive starts. From a pipe, only the bytes that have
+  arrived when detection runs are searched, so an archive that starts further in can be missed.
+- **A file that is two formats at once** gets one fixed answer. Pass `format=` to read it as the
+  other.
+
+The [detection
+handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/detection.md) gives the
+full order of the checks, each format's probe, and how signed and resource-packed installers are
+handled.
 
 ## What archivey does not do
 
