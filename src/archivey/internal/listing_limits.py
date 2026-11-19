@@ -445,13 +445,29 @@ class ListingDecodeCount:
     or on another thread, do not count. :meth:`start_pass` starts the count over for
     each later walk. Draws come through :class:`StageDraws`, from the decode stages
     that also draw a :class:`~archivey.internal.nesting.NestDraws`.
+
+    A reader that ``ReaderContext.open_nested`` builds has the outer reader's count as
+    its ``parent``. While the outer listing runs on the same thread, every byte the
+    inner reader's decode stages produce is drawn from the outer count, so one outer
+    listing pass holds all its levels to one cap (maintainer ruling, 2026-11-08:
+    "charge across the nesting"). That holds also when the inner count is not active
+    itself: the outer walk drains an inner member's data, which the inner stages
+    decode then. The outer walk does not draw that data again
+    (``_PluginAdapter._decoded_stream``), so each byte counts once. While its own
+    listing work runs, the inner count draws too, against its own copy of the cap.
+    An inner walk outside the outer listing, as ``open_member`` reading a payload
+    again, counts on the inner count alone.
     """
 
-    __slots__ = ("_cap", "_drawn", "_started", "_thread")
+    __slots__ = ("_cap", "_drawn", "_forwarded", "_parent", "_started", "_thread")
 
-    def __init__(self, cap: int) -> None:
+    def __init__(self, cap: int, parent: ListingDecodeCount | None = None) -> None:
         self._cap = cap
         self._drawn = 0
+        self._parent = parent
+        # Every byte this count has passed to its parent, its own count active or
+        # not: this archive's share of the outer listing's total (``_own``).
+        self._forwarded = 0
         self._started = False
         self._thread: int | None = None
 
@@ -479,30 +495,72 @@ class ListingDecodeCount:
     def _active(self) -> bool:
         return self._thread is not None and self._thread == threading.get_ident()
 
+    def _outer(self) -> ListingDecodeCount | None:
+        """The outer listing's count, when it runs on this thread."""
+        parent = self._parent
+        return parent if parent is not None and parent._active() else None
+
     def room(self) -> int | None:
-        """Bytes left in this pass, or ``None`` when no listing work runs on this thread."""
+        """Bytes left in this pass, or ``None`` when no listing work runs on this
+        thread, here or in the outer listing."""
+        outer = self._outer()
+        outer_room = outer.room() if outer is not None else None
         if not self._active():
-            return None
-        return max(0, self._cap - self._drawn)
+            return outer_room
+        room = max(0, self._cap - self._drawn)
+        return room if outer_room is None else min(room, outer_room)
 
-    def check_left(self) -> None:
+    def check_left(self, inner: int | None = None) -> None:
+        """Raise when this pass is over the cap. ``inner``: what the inner archive on
+        whose behalf the outer count is asked has decoded itself (``_error``)."""
+        outer = self._outer()
+        if outer is not None:
+            outer.check_left(self._own(inner))
         if self._active() and self._drawn > self._cap:
-            raise self._error(0)
+            raise self._error(0, inner=inner)
 
-    def draw(self, n: int) -> None:
-        if n <= 0 or not self._active():
+    def draw(self, n: int, inner: int | None = None) -> None:
+        if n <= 0:
             return
-        self._drawn += n
-        if self._drawn > self._cap:
-            raise self._error(0)
+        active = self._active()
+        if active:
+            self._drawn += n
+        outer = self._outer()
+        if outer is not None:
+            self._forwarded += n
+            outer.draw(n, self._own(inner))
+        if active and self._drawn > self._cap:
+            raise self._error(0, inner=inner)
 
-    def refuse(self, n: int, what: str) -> None:
-        raise self._error(n, what)
+    def refuse(self, n: int, what: str, inner: int | None = None) -> None:
+        outer = self._outer()
+        if outer is not None:
+            outer_room = outer.room()
+            if outer_room is not None and n > outer_room:
+                outer.refuse(n, what, self._own(inner))
+        raise self._error(n, what, inner=inner)
 
-    def _error(self, n: int, what: str = "") -> AlwaysStopResourceLimitError:
-        detail = f"listing this archive has decoded {self._drawn} bytes" + (
-            f"; {what} would decode {n} more" if what else ""
-        )
+    def _own(self, inner: int | None) -> int:
+        """What the innermost archive of a call that reaches the outer count has
+        passed to it: this count's share (``_forwarded``, which includes what the
+        outer walk drained of this archive's members), unless an archive inside this
+        one made the call."""
+        return self._forwarded if inner is None else inner
+
+    def _error(
+        self, n: int, what: str = "", *, inner: int | None = None
+    ) -> AlwaysStopResourceLimitError:
+        if inner is None:
+            detail = f"listing this archive has decoded {self._drawn} bytes"
+        else:
+            # Raised for an archive inside this one: the total is every level's.
+            detail = (
+                f"listing an archive and the archives inside it has decoded "
+                f"{self._drawn} bytes, {inner} of them by the inner archive being "
+                "listed"
+            )
+        if what:
+            detail += f"; {what} would decode {n} more"
         # Archive-wide like the nest's totals: nothing that skips one member's failure
         # (``OnError.CONTINUE``, the forward ZIP's drain) may go on decoding past it.
         return AlwaysStopResourceLimitError(

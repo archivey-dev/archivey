@@ -1556,6 +1556,17 @@ so 8 levels cannot use 8 times the caps:
   declarations are recorded from the first block header, the stream header and each
   frame header; a later xz block with a larger dictionary is checked by liblzma against
   the level's cap alone.
+- `max_decoded_bytes`: an inner level's listing count has the enclosing level's count as
+  its parent (`ListingDecodeCount`). While the outer listing runs on the same thread,
+  every byte an inner decode stage produces is drawn from the outer count, also when
+  the outer walk drains an inner member's data, so one listing pass of the outermost
+  archive decodes at most the cap across all its levels. The outer walk does not draw
+  that member data again (`_PluginAdapter._decoded_stream`, `HeldInnerData` for the
+  `.deb` control files it reads whole), so each byte counts once. A `.pkg` with many
+  payloads otherwise decoded payload count times the cap, and a `.deb`'s tar headers
+  went uncharged to the outer listing. An inner walk outside the outer listing (an
+  `open_member` that reads a payload again) counts on its own count alone, as any
+  reader's member read does.
 - `max_ratio`: every level is held to the ratio of the outermost archive's compressed
   size (or the bytes taken from it so far, from a pipe), not of its own input, so a nest
   of `n` levels decodes at most `n` times the ratio of the caller's bytes, not the ratio
@@ -1566,7 +1577,8 @@ so 8 levels cannot use 8 times the caps:
 counts it. These readers draw decoded bytes from the nest's account, and add nothing to
 the nest ratio: their bytes are in the outer reader's number. Code:
 `archivey.internal.nesting`, `ListingLimitTracker._charge_outward`,
-`_PluginAdapter._nested_config`, `BaseArchiveReader._trusted_source_size`.
+`ListingDecodeCount` (its `parent`), `_PluginAdapter._nested_config`,
+`BaseArchiveReader._trusted_source_size`.
 
 ### Reads have no output bound
 
