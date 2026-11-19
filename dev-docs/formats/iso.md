@@ -110,14 +110,17 @@ file position is constant inside a track and jumps by the session gap (11 400 or
 at a session boundary. `last_session_source` reads sector 0 and the last 32 sectors
 first: if the last data sector there has sector 0's offset, the image is one session and
 nothing else is read, which is also what a mixed-mode disc (audio to the end) costs.
-Otherwise it splits the file into runs of one offset, following each by probes at
-doubling distances and bisection, and reading only non-data sectors (audio, a Form 2
-postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a lead-in) or
-more are in different sessions. The first run of the last session is chosen, its volume
-descriptors are looked for from its sector 16 on (a pregap kept in the file puts them
-150 later), and a candidate is kept only when the root directory's `.` record names its
-own sector through that mapping and its descriptor set, through the terminator and one
-sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
+Otherwise it splits the file into runs of one offset and one data mode, following each
+by probes at doubling distances and bisection, and reading only non-data sectors (audio,
+a Form 2 postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a
+lead-in) or more are in different sessions. A data sector is a Mode 1 or a Mode 2 Form 1
+sector, whatever mode sector 0 is in, and each run is read in its own mode, as a sheet
+reads each track in the mode its `TRACK` line names: a Mode 1 first session, then a
+CD-ROM XA one, lists the later session. The first run of the last session is chosen, its
+volume descriptors are looked for from its sector 16 on (a pregap kept in the file puts
+them 150 later), and a candidate is kept only when the root directory's `.` record names
+its own sector through that mapping and its descriptor set, through the terminator and
+one sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
 candidate, so 4 096 crafted candidates cost about 8 200 sector reads). The result is a
 `DiscSource` over the `.bin` itself, so read hints map back to its sectors
 (`DiscSource.file_range`). Addresses that go backwards, more than 256 runs, or a last

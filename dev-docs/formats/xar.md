@@ -173,4 +173,6 @@ choice).
   length and the bytes: stored when the two sizes are equal, else one xz stream. A chunk
   shorter than the chunk size is the last, as the `pbzx` tools read it; a stream whose
   size is a multiple of the chunk size ends with the input. Each xz chunk decodes under
-  `max_decoder_memory` (`new_capped_decompressor`), and nothing is held whole.
+  `max_decoder_memory` (`new_capped_decompressor`) and notes the dictionary its first
+  block declares to the usage record (`declared_memory.noting`), as plain xz does, so
+  an archive read inside pbzx output gets the cap less it. Nothing is held whole.

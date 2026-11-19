@@ -15,7 +15,9 @@ anything after it is trailing data; the tools stop there too. A stream whose siz
 multiple of ``C`` ends with the input. Apple writes ``C`` = 16 MiB.
 
 xz decodes each chunk under ``DecoderLimits.max_decoder_memory``
-(:func:`~archivey.internal.streams.codecs.xz_decoder.new_capped_decompressor`). Nothing
+(:func:`~archivey.internal.streams.codecs.xz_decoder.new_capped_decompressor`), and the
+dictionary each chunk's first block declares is noted to the usage record
+(``declared_memory.noting``), as plain xz notes its own. Nothing
 is held whole: a stored chunk passes through as it arrives, and an xz chunk is fed to
 liblzma as it arrives, so a chunk size the header declares allocates nothing.
 """
@@ -33,7 +35,11 @@ from archivey.internal.config import DecoderLimits, StreamConfig
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import ExceptionTranslator
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
+from archivey.internal.streams.codecs.declared_memory import noting
 from archivey.internal.streams.codecs.xz_decoder import (
+    _BLOCK_HEADER_MAX,
+    _STREAM_HEADER_SIZE,
+    _block_dictionary,
     lzma_error_to_archivey,
     new_capped_decompressor,
 )
@@ -213,6 +219,30 @@ class PbzxDecompressor:
         raise EOFError("pbzx stream ends inside a chunk")
 
 
+def _chunk_dictionary(head: bytes) -> int | None:
+    """The LZMA2 dictionary the first block header of the xz chunk ``head`` starts
+    declares, or ``None`` when ``head`` does not hold that header whole yet, or it
+    declares none."""
+    if len(head) <= _STREAM_HEADER_SIZE or head[_STREAM_HEADER_SIZE] == 0:
+        return None
+    size = (head[_STREAM_HEADER_SIZE] + 1) * 4
+    if len(head) < _STREAM_HEADER_SIZE + size:
+        return None
+    return _block_dictionary(head[_STREAM_HEADER_SIZE : _STREAM_HEADER_SIZE + size])
+
+
+def _new_chunk_decompressor(config: StreamConfig) -> Decompressor:
+    """A decoder for one xz chunk, under ``max_decoder_memory``, noting the dictionary
+    its first block declares to ``config.usage`` as plain xz notes it."""
+    return noting(
+        new_capped_decompressor(config.decoder_limits, natives=config.natives),
+        config.usage,
+        header_size=_STREAM_HEADER_SIZE + _BLOCK_HEADER_MAX,
+        declared=_chunk_dictionary,
+        what="a pbzx chunk's LZMA2 dictionary",
+    )
+
+
 def _translate(
     exc: Exception, limits: DecoderLimits | None = None
 ) -> ArchiveyError | None:
@@ -233,10 +263,7 @@ class PbzxCodec(StreamCodec):
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
         del params
-        new_xz = functools.partial(
-            new_capped_decompressor, config.decoder_limits, natives=config.natives
-        )
-        return PbzxDecompressor(new_xz)
+        return PbzxDecompressor(functools.partial(_new_chunk_decompressor, config))
 
     @override
     def translate(self, exc: Exception) -> ArchiveyError | None:
