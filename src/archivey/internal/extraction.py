@@ -2886,16 +2886,22 @@ class ExtractionCoordinator:
             st = os.lstat(long_path(path))
         except OSError:
             return
+        state = self._state
         if st.st_ino:
-            self._state.run_symlinks.add((st.st_dev, st.st_ino))
+            state.run_symlinks.add((st.st_dev, st.st_ino))
         else:
-            self._state.run_symlink_keys.add(self._physical_key(path))
-        # No cached answer changes: only a name that is on disk is cached
-        # (``_goes_through_run_link``), and a new link's name held nothing, or what
-        # it held was removed first. A file's name has no cached answer, and every
-        # other removal this run makes clears the cache: a link it replaces or
-        # removes (``_note_link_change``), and a directory it replaces, takes back or
-        # removes for an anti-item (``_note_link_change``, ``_resolutions_changed``).
+            state.run_symlink_keys.add(self._physical_key(path))
+        # Only a name that is on disk is cached (``_goes_through_run_link``), and a
+        # new link's name held nothing, or what it held was removed first. A file's
+        # name has no cached answer, and every other removal this run makes clears
+        # the cache: a link it replaces or removes (``_note_link_change``), and a
+        # directory it replaces, takes back or removes for an anti-item
+        # (``_note_link_change``, ``_resolutions_changed``). What changes is the
+        # answer for a caller's symlink whose resolution looked up this name: caller
+        # ``c -> s/sub``, then the run's ``s -> e``.
+        if state.links.caller_walk_moved(path):
+            state.through_run_link.clear()
+            state.links.forget_caller_walks()
 
     def _refuse_through_run_link(self, member: ArchiveMember, path: Path) -> None:
         """Refuse ``member`` when its path goes through a symlink this run created:
@@ -2953,12 +2959,11 @@ class ExtractionCoordinator:
 
     def _is_run_symlink(self, path: Path) -> bool | None:
         """Whether the entry at ``path`` is a symlink this run created, the same
-        entry and not one put in its place since. Decided by identity, not by
-        spelling, so a case variant, a name Windows trims or an 8.3 short name that
-        reaches the link is caught too. Where the filesystem reports inode 0, by
-        ``_physical_key``, which folds case and trims a trailing dot or space. ``None``
-        when nothing, or a file, is at ``path``: a later member may put a link there
-        without removing a directory or link, which is what clears the cache."""
+        entry and not one put in its place since, or a symlink the caller had whose
+        resolution goes through one: the caller's ``c -> s/sub`` after the run's
+        ``s -> e`` (``LinkWatch.caller_link_reaches``). ``None`` when nothing, or a
+        file, is at ``path``: a later member may put a link there without removing a
+        directory or link, which is what clears the cache."""
         try:
             st = os.lstat(long_path(path))
         except OSError:
@@ -2967,6 +2972,18 @@ class ExtractionCoordinator:
             return False
         if not stat.S_ISLNK(st.st_mode):
             return None
+        if self._is_run_link_entry(path, st):
+            return True
+        return self._state.links.caller_link_reaches(
+            path, lambda found, found_st: self._is_run_link_entry(Path(found), found_st)
+        )
+
+    def _is_run_link_entry(self, path: Path, st: os.stat_result) -> bool:
+        """Whether the symlink at ``path``, ``lstat``-ed as ``st``, is one this run
+        created. Decided by identity, not by spelling, so a case variant, a name
+        Windows trims or an 8.3 short name that reaches the link is caught too. Where
+        the filesystem reports inode 0, by ``_physical_key``, which folds case and
+        trims a trailing dot or space."""
         if st.st_ino:
             return (st.st_dev, st.st_ino) in self._state.run_symlinks
         return self._physical_key(path) in self._state.run_symlink_keys
@@ -4124,6 +4141,7 @@ class ExtractionCoordinator:
         self._state.resolved_parents.clear()
         if not created:
             self._state.through_run_link.clear()
+            self._state.links.forget_caller_walks()
 
     def _note_link_change(self, path: Path) -> None:
         """Report a symlink or directory at ``path`` replaced or removed this member."""

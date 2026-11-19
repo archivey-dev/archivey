@@ -7480,6 +7480,36 @@ _THROUGH_RUN_LINK_SHAPES = {
         ("s", "e"),
         ["EXTRACTED", "EXTRACTED", "EXTRACTED", "BLOCKED"],
     ),
+    # The caller's `c -> s/sub` resolves through the run's `s -> e`: refused, as
+    # `s/sub/x` would be.
+    "a-callers-link-through-a-run-link": (
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")],
+        {},
+        ("c", "s/sub"),
+        ["EXTRACTED", "EXTRACTED", "BLOCKED"],
+    ),
+    # `c/x` fails while `s` is missing (the caller's `c` dangles), and the answer
+    # kept for `c` is dropped when the run's `s -> e` is made at a name its
+    # resolution looked up.
+    "a-callers-link-checked-before-the-run-link": (
+        [
+            ("dir", "e/sub", None),
+            ("sym", "q", "e"),
+            ("file", "c/x", b"x"),
+            ("sym", "s", "e"),
+            ("file", "c/y", b"y"),
+        ],
+        {},
+        ("c", "s/sub"),
+        ["EXTRACTED", "EXTRACTED", "FAILED", "EXTRACTED", "BLOCKED"],
+    ),
+    # A caller's link that resolves past the run's links is followed.
+    "a-callers-link-beside-a-run-link": (
+        [("dir", "e/sub", None), ("sym", "s", "e"), ("file", "c/x", b"x")],
+        {},
+        ("c", "e/sub"),
+        ["EXTRACTED", "EXTRACTED", "EXTRACTED"],
+    ),
     # A directory that replaces the run's link is a directory: written into.
     "a-directory-replaces-the-link": (
         [
