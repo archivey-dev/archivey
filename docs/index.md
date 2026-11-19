@@ -120,3 +120,10 @@ the underlying library would stop quietly and hand back short data.
 
 If archivey reads, lists or extracts an archive wrongly, please
 [open a bug report](https://github.com/archivey-dev/archivey/issues/new/choose).
+
+## What archivey doesn't do
+
+- **Change an archive in place.** Archivey reads archives and extracts them. It does not add,
+  remove or replace members in an existing archive, and it doesn't write archives yet.
+- **Offer an async API.** The API is synchronous, and an async one is not planned before 1.0. In
+  async code, run archivey calls in a worker thread, for example with `asyncio.to_thread`.

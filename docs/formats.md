@@ -644,12 +644,3 @@ The [prefixed-archives
 development
 docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/prefixed-archives.md) cover
 how far the search goes and how installers that pack the archive as a resource are read.
-
-## What archivey does not do
-
-- **Change an archive in place.** Archivey reads archives and extracts them. It does not add,
-  remove or replace members in an existing archive, and it doesn't write archives yet.
-- **Offer an async API.** The API is synchronous, and an async one is not planned before 1.0. In
-  async code, run archivey calls in a worker thread, for example with `asyncio.to_thread`.
-- **Make backups.** Archivey reads the members and metadata a backup tool needs, but it is not a
-  backup engine by itself.
