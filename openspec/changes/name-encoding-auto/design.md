@@ -31,7 +31,8 @@ Investigations.
 - Guessing Latin code pages (cp437, cp850, cp1252, cp852, cp1250, cp857). Every guesser
   measured is often wrong where today's default is right.
 - Cyrillic, Greek and Hebrew code pages: a follow-up change (decision 6).
-- Re-decoding names that are valid UTF-8 (open question 2).
+- Re-decoding names that are valid UTF-8. A valid UTF-8 name stays out of the guess,
+  even in an archive confidently guessed as EUC-JP or GBK (DR-7; davi, 2026-11-19).
 - A CLI `--encoding` option.
 - Guessing as the default. `"auto"` is opt-in.
 
@@ -68,7 +69,8 @@ keeps today's behaviour.
 - Cost: 0.03 ms per archive for the built-in check, against 0.6-0.9 ms for chardet or
   charset-normalizer.
 - Today's per-name UTF-8 check decodes 0.53% of EUC-JP names and 0.21% of GBK names as
-  UTF-8, because those bytes happen to be valid UTF-8 (open question 2).
+  UTF-8, because those bytes happen to be valid UTF-8. They stay out of the guess
+  (Non-Goals).
 
 ## Decisions
 
@@ -235,12 +237,18 @@ no new context field are needed.
 
 ## Open Questions
 
-1. **Table source.** The measured tables are the top-1000 characters of Wikipedia titles
-   per language. A ranking of characters is data, not text, but public standard lists
-   exist too: Jōyō kanji, 通用规范汉字表 level 1, 常用國字標準字體表, and the KS X 1001 hangul ranked by
-   frequency. Recommendation: keep the Wikipedia-derived ranking, built by a committed
-   script, unless davi prefers standard lists. If so, re-measure before switching.
-2. **Valid-UTF-8 names in an archive that is confidently EUC-JP or GBK.** These are
-   0.2-0.5% of names, and they decode as mojibake today. Under `"auto"` they could take
-   the guessed codec. But that overrides "valid UTF-8 wins" (DR-7) for a guess, so it is
-   left out of this change. Recommendation: leave it out unless a real archive shows it.
+1. **Table source (question for the reviewer).** The measured tables are the top-1000
+   characters of Wikipedia titles per language, built by a committed script. The
+   alternative is public standard lists: Jōyō kanji for Japanese, 通用规范汉字表 level 1
+   for Simplified Chinese, 常用國字標準字體表 for Traditional Chinese, and a frequency
+   ranking of the KS X 1001 hangul for Korean. The trade-offs:
+   - Wikipedia titles: measured as above. Reproducible from a public dump. They lean
+     towards proper nouns. A ranking of characters is data, not text, so licensing
+     should not apply, but it comes from a CC BY-SA corpus.
+   - Standard lists: an authority, and no corpus provenance. But they are unranked sets
+     of 2000-3500 characters, not top-1000 rankings. The Korean one still needs a
+     frequency source, and they would have to be re-measured, because a larger set
+     lowers the margin between codecs.
+
+   The author's recommendation is Wikipedia. davi asked for the reviewer's view before
+   deciding.

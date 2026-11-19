@@ -23,9 +23,8 @@ guess through their decode-name helper, and their encoding property reads None.
 Cyrillic, Greek and Hebrew need the chardet library and wait for a later change.
 
 **Your call later:** Whether the frequency tables come from Wikipedia titles, as
-measured, or from public standard character lists. And whether names that happen to be
-valid UTF-8, in an archive confidently guessed as EUC-JP or GBK, should take the guess.
-The recommendation is no.
+measured, or from public standard character lists. davi asked for the reviewer's view
+first. Settled since the draft: names that happen to be valid UTF-8 stay out of the guess.
 
 **Bottom line:** A small, well-measured feature, with the hard consistency question
 settled in the design. It is ready once the review agrees.
