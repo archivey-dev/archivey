@@ -221,7 +221,9 @@ files](#seeking-in-compressed-files)).
   most formats. Archivey returns the whole payload, then reports `ARCHIVE_TRAILING_DATA`. `.Z`,
   `.bz3` and Snappy have no end marker, so they can't tell where the data stops: `.Z` decodes
   appended bytes as data, and `.bz3` and Snappy raise `CorruptionError` on them. mozlz4 decodes the
-  whole file as one block, so it raises `CorruptionError` too.
+  whole file as one block, so it raises `CorruptionError` too. Snappy makes one exception, for zero
+  bytes that run to the end of the file, such as the padding `dd` or a tape write adds: four or
+  more are read past, and fewer may be a cut chunk header, so they raise `TruncatedError`.
 - **Memory:** a Zstandard window, a mozlz4 size and a bzip3 block size are declared by the file.
   `DecoderLimits.max_decoder_memory` (2 GiB by default) caps the memory they ask for, and a file
   over the cap raises `ResourceLimitError`.

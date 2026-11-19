@@ -23,6 +23,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    Diagnostic,
     ProcessIsolation,
     open_archive,
     open_stream,
@@ -53,6 +54,7 @@ from archivey.internal.streams.codecs.snappy_framed import (
 from archivey.internal.streams.decompressor_stream import release_decoder_children
 from archivey.types import OptionalLibrary
 from tests.conftest import importorskip
+from tests.streams_util import NonSeekableBytesIO
 from tests.test_lzop import use_compress_utils_without_lzo_or_snappy
 
 _REPROS = (
@@ -434,10 +436,25 @@ _DAMAGED: dict[str, tuple[Callable[[], bytes], type[Exception], str]] = {
         CorruptionError,
         "unskippable chunk type 0x54",
     ),
-    "trailing zeros": (
-        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 8,
+    "trailing zeros then a non-zero byte": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 8 + b"\x01",
         CorruptionError,
-        "outside",
+        "neither padding nor a chunk",
+    ),
+    "trailing zeros then another stream": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0" * 512 + _frame(_data_chunk(_GOOD)),
+        CorruptionError,
+        "neither padding nor a chunk",
+    ),
+    "trailing zeros cut short then a non-zero byte": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0\0\x01",
+        TruncatedError,
+        "ends inside a chunk",
+    ),
+    "one to three zeros at the end, a header cut short": (
+        lambda: _frame(_data_chunk(_GOOD)) + b"\0\0\0",
+        TruncatedError,
+        "ends inside a chunk",
     ),
     "cut inside a chunk": (
         lambda: _frame(_data_chunk(_GOOD))[:-5],
@@ -489,6 +506,44 @@ def test_damage_is_refused(selected: str, case: str) -> None:
         open_stream(io.BytesIO(make()), format="sz") as stream,
     ):
         stream.read()
+
+
+@pytest.mark.parametrize("zeros", [4, 5, 512, 70_000])
+@pytest.mark.parametrize("isolated", [False, True])
+def test_zeros_to_the_end_are_padding(
+    selected: str, zeros: int, isolated: bool
+) -> None:
+    """Zero bytes that run to the end of the file are padding, the zero-tail rule
+    of the other codecs (tape, ``dd`` and ``tar`` pad to a block size). A zero
+    byte reads as the type of a compressed chunk, and its length 0 was refused.
+    Four zeros are needed, since fewer may be a header cut short."""
+    data = _frame(_data_chunk(_GOOD)) + b"\0" * zeros
+    diagnostics: list[Diagnostic] = []
+    isolation = ProcessIsolation.NATIVE_DECODERS if isolated else ProcessIsolation.NONE
+    config = ArchiveyConfig(
+        process_isolation=isolation, on_diagnostic=diagnostics.append
+    )
+    with open_stream(io.BytesIO(data), format="sz", config=config) as stream:
+        assert stream.read() == _GOOD
+    with open_stream(NonSeekableBytesIO(data), format="sz", config=config) as stream:
+        assert b"".join(iter(lambda: stream.read(7), b"")) == _GOOD
+    assert diagnostics == []
+
+
+@pytest.mark.parametrize("zeros", [600, 70_000])
+def test_a_padded_stream_seeks_to_the_end_and_the_middle(
+    selected: str, zeros: int
+) -> None:
+    """A seek to the end finds the size by reading through the padding; a seek to the
+    middle resumes at a chunk boundary and meets the zeros in a fresh decoder."""
+    payload = _sample(5 * 60_000, 7)
+    data = written_frame(payload) + b"\0" * zeros
+    with open_stream(io.BytesIO(data), format="sz", seekable=True) as stream:
+        assert stream.seek(0, io.SEEK_END) == len(payload)
+        middle = len(payload) // 2 + 123
+        assert stream.seek(middle) == middle
+        assert stream.read() == payload[middle:]
+        assert stream.seek(0, io.SEEK_END) == len(payload)
 
 
 def test_a_stream_without_its_identifier_is_refused(selected: str) -> None:
