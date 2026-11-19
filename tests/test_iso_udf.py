@@ -10,7 +10,6 @@ of them the same way (checked when the builder was written). Bridge images come 
 from __future__ import annotations
 
 import io
-import shutil
 import struct
 import subprocess
 import time
@@ -42,7 +41,13 @@ from archivey.internal.backends.udf import (
     udf_timestamp,
 )
 from archivey.types import ArchiveFormat, MemberType
-from tests.conftest import requires, requires_binary, run_7z
+from tests.conftest import (
+    requires,
+    requires_binary,
+    run_7z,
+    sevenzip_version,
+    sevenzip_version_text,
+)
 from tests.udf_builder import BLOCK, WHEN, Node, build_udf, directory, retag
 
 pytestmark = requires("pycdlib")
@@ -608,8 +613,14 @@ def test_a_virtual_allocation_table_is_unsupported(tmp_path: Path) -> None:
 
 def test_7z_lists_the_builder_images_the_same_way(tmp_path: Path) -> None:
     """The builder's images are what 7-Zip reads too, for the shapes it supports."""
-    if shutil.which("7z") is None:
-        pytest.skip("requires 7z")
+    version = sevenzip_version()
+    if version is None or version < (23, 0):
+        # The image has a UDF 2.50 metadata partition and the listing asks for UTF-8
+        # (-scc); p7zip 16.02 (Homebrew's 7z on macOS) exits 2 on it. 23.01 is what
+        # the builder was checked against.
+        pytest.skip(
+            f"requires 7-Zip 23 or later, found {sevenzip_version_text(version)}"
+        )
     image = build_udf(
         directory("", directory("d", Node("f", b"x")), Node("Ünï ✓", b"y")),
         metadata=True,
