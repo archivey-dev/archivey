@@ -69,15 +69,19 @@ no exception); Archivey backstops gzip from any seekable source by switching to 
 silent empty EOF, plus a single-member ISIZE compare on non-empty soft EOF
 (`seekable-decompressor-streams`; see `rapidgzip-upstream-report.md`). Multi-member ISIZE
 summing is deferred. Container members still rely on container CRC/`VerifyingStream`.
+
 ² brotli has no length/CRC trailer, so a truncated stream is detected only when the
 decompressor never reports "finished" at EOF (surfaced as `TruncatedError`), not by a stored
 size.
+
 ³ `.Z` has no length/checksum; finished compressors zero-pad after the last complete code, so
 nonzero leftover bits at EOF are a best-effort `TruncatedError` (raised on the next empty
 `read()` after delivering bytes). Cuts that leave only zero leftover bits stay silent.
+
 When a verifying member is short *and* carries a digest, Archivey raises `TruncatedError`
 (best-effort: shortfall vs digest mismatch are not always separable; a corrupt stream may
 surface as truncation and vice versa). `except ReadError` catches both.
+
 ---
 
 ## zstd — settled: stdlib `compression.zstd` / `backports.zstd` (ADR 0009)

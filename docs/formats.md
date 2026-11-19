@@ -21,8 +21,8 @@ read.
 | [TAR](#tar-and-compressed-tar) (`.tar`) | Core |
 | [Compressed TAR](#tar-and-compressed-tar) (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
 | [7z](#7z) (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard* |
-| [RAR](#rar) (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program, and encrypted headers need `[recommended]` |
-| [gzip](#single-file-compressors) (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`), Apple's pbzx | Core. `[recommended]` makes `.lzo` and `.sz` faster |
+| [RAR](#rar) (`.rar`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program, and encrypted headers need `[recommended]` |
+| [gzip](#single-file-compressors) (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`) | Core. `[recommended]` makes `.lzo` and `.sz` faster |
 | [Zstandard](#single-file-compressors) (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
 | [LZ4](#single-file-compressors) (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
 | [bzip3](#single-file-compressors) (`.bz3`) | `[bzip3]` |
@@ -234,8 +234,6 @@ Some formats have more to know:
   (`sessionstore.jsonlz4`, `search.json.mozlz4`). Archivey finds it by its header, whatever the
   extension. It decodes only once the whole file has arrived.
 - **Snappy** (`.sz`) is the framing format that `snzip` and the Snappy libraries write.
-- **pbzx** is Apple's framing of xz, used for the payloads of macOS installer packages. Archivey
-  finds it by its `pbzx` signature.
 - **lzop** (`.lzo`) and Snappy decode in Python, many times slower, unless `[recommended]` is
   installed. A `compress-utils` built from source that leaves out LZO1X or Snappy is skipped for
   that format.
