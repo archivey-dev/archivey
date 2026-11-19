@@ -160,6 +160,7 @@ from archivey.internal.listing_limits import (
     metadata_limit_error,
     str_retained_bytes,
 )
+from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
@@ -683,7 +684,13 @@ def _install_pycdlib_path_table_bound() -> None:
     def parse_path_table(self: PyCdlib, ptr_size: int, extent: int) -> object:
         if _inside_our_open():  # not a limit, so it holds under UNLIMITED too
             _check_path_table(self, ptr_size, extent)
-        return original(self, ptr_size, extent)
+        result = original(self, ptr_size, extent)
+        hint = _DIRECTORY_HINT.get()
+        # pycdlib parses each tree's table twice, little-endian then big-endian, and
+        # walks the tree from the first; the second is parsed only to compare with it.
+        if hint is not None and _is_little_endian_table(self, extent):
+            _hint_directory_extents(self, result, hint)
+        return result
 
     setattr(pcd_module.PyCdlib, "_parse_path_table", parse_path_table)
 
@@ -776,6 +783,70 @@ def _gpt_end(fp: BinaryIO, gpt: bytes, *, image_length: int) -> int:
         _first, last = struct.unpack_from("<QQ", table, at + 32)
         end = max(end, (last + 1) * _PARTITION_SECTOR)
     return end
+
+
+# Set while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``, to the source's
+# ``ReaderSource._will_read``, except for a raw sector image. A source that is not
+# remote ignores the hints.
+_DIRECTORY_HINT: ContextVar[Callable[[int, int], None] | None] = ContextVar(
+    "archivey_iso_directory_hint", default=None
+)
+
+# Directory extents closer than this are hinted as one span. A clustering threshold:
+# small enough that a span is mostly directories, large enough that a mastering tool's
+# padding or a few small files between directories do not split it. A span is capped
+# at the planner's maximum fetch whatever its length.
+_DIRECTORY_CLUSTER_GAP = 1024 * 1024
+
+
+def _is_little_endian_table(iso: PyCdlib, extent: int) -> bool:
+    """Whether ``extent`` is where a volume descriptor puts its little-endian path
+    table: the one pycdlib walks the tree from."""
+    descriptors = [getattr(iso, "pvd", None), *(getattr(iso, "svds", None) or ())]
+    return any(
+        getattr(vd, "path_table_location_le", None) == extent for vd in descriptors
+    )
+
+
+def _hint_directory_extents(
+    iso: PyCdlib, parsed: object, hint: Callable[[int, int], None]
+) -> None:
+    """Hint where the tree's directories lie, from the path table just parsed.
+
+    pycdlib walks a tree's directories next, one extent at a time, back and forth
+    across the area the mastering tool put them in. A remote source would fetch that
+    area in growing pieces and fetch parts of it again, as each piece replaces the
+    last. The path table names every directory's first block, so the walk's area is
+    known before it starts: each cluster of directories (blocks closer than
+    ``_DIRECTORY_CLUSTER_GAP``) becomes one hint, and the source fetches it in one
+    request, up to its maximum fetch. A cluster of one directory is not hinted: its
+    read costs one request either way. A hint never changes the bytes a read returns.
+    """
+    if not isinstance(parsed, tuple) or len(parsed) != 2:
+        return
+    extent_to_ptr = parsed[1]
+    if not isinstance(extent_to_ptr, dict) or len(extent_to_ptr) < 2:
+        return
+    block_size = cast(int, getattr(iso, "logical_block_size"))
+    blocks = sorted(e for e in extent_to_ptr if isinstance(e, int) and e > 0)
+    clusters: list[tuple[int, int, int]] = []  # (first block, last block, directories)
+    for block in blocks:
+        if (
+            clusters
+            and (block - clusters[-1][1]) * block_size <= _DIRECTORY_CLUSTER_GAP
+        ):
+            first, _, count = clusters[-1]
+            clusters[-1] = (first, block, count + 1)
+        else:
+            clusters.append((block, block, 1))
+    # The clusters holding the most directories, at most as many as the source keeps.
+    chosen = sorted(
+        (c for c in clusters if c[2] > 1), key=lambda c: c[2], reverse=True
+    )[:MAX_PENDING_HINTS]
+    for first, last, _ in sorted(chosen):
+        # The last directory's extent is at least one block; a longer one is read on
+        # past the span as an ordinary forward read.
+        hint(first * block_size, (last + 1) * block_size)
 
 
 def _check_path_table(iso: PyCdlib, ptr_size: int, extent: int) -> None:
@@ -1785,6 +1856,10 @@ class IsoReader(IndexedReader["DirectoryRecord | UdfEntry"]):
         budget_token = _PARSE_BUDGET.set(budget)
         padding_notes: list[int] = []
         padding_token = _PADDING_NOTES.set(padding_notes)
+        # A raw sector image's offsets are not the file's, so it is not hinted.
+        hint_token = _DIRECTORY_HINT.set(
+            None if isinstance(source, CookedSource) else source._will_read
+        )
         try:
             self._iso.open_fp(self._iso_fp)
         except _PYCDLIB_ERRORS as exc:
@@ -1797,6 +1872,7 @@ class IsoReader(IndexedReader["DirectoryRecord | UdfEntry"]):
                 raise
             raise truncated from exc
         finally:
+            _DIRECTORY_HINT.reset(hint_token)
             _PADDING_NOTES.reset(padding_token)
             _PARSE_BUDGET.reset(budget_token)
             _SYSTEM_USE_NOTES.reset(token)
