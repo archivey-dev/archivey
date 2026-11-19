@@ -330,12 +330,17 @@ end record's disk fields when there is one, else the classic record's, with `0xF
 treated as the ZIP64 sentinel), or a ZIP64 locator counting more than one disk, needs
 one part per disk. A `.zip` read alone that is the last part of a spanned set — it would
 list cleanly, because it holds the central directory — is `TruncatedError` saying how
-many parts the set has, and so is an explicit list with a different number of parts. The
-parser raises `SpannedPartsError` for it, which the reader turns into a plain
+many parts the set has, and so is an explicit list with a different number of parts. An
+explicit list of every part out of order, where the archive starts inside the join or
+the end record is not in the last part, is `TruncatedError` saying the parts are out of
+order. The parser raises `SpannedPartsError` for it, which the reader turns into a plain
 `TruncatedError`, so that the local-header walk that lists members after a damaged end
 record does not list a part's members as the archive. A directory placed on a disk after
 the record's own, or an entry on a disk the set does not have, is damage
-(`CorruptionError`).
+(`CorruptionError`). Two parts swapped between the first and the last are not found: the
+end records cannot see the swap, and only the disk numbers of the local headers could.
+Such a list opens, and a member that crosses the swapped parts fails its CRC on read
+(§5).
 
 Two things narrow the filename refusals. A joined set keeps part one's name, so they key
 off *whether the set was joined*, not off the name alone; otherwise they would fire on
@@ -1308,6 +1313,7 @@ ours.
 | A ZIP missing its first bytes lists every member, reads the members whose local headers survive, and raises `CorruptionError` for each member whose header was cut, saying how many bytes the archive seems to be missing | **format** | The central directory still names every member, but its offsets count from the lost start, so the first local headers fall before byte 0; the directory holds no copy of the lost bytes, so nothing recovers them. The number is `-EndRecord.base`, one for the whole archive. A directory offset or size field that is too large gives the same shape with nothing missing, so the message says "seems". Found in real files (a backup-drive scan, [§4](../investigations/2026-10-backup-scan.md)); `unzip` reports "missing N bytes in zipfile" and then fails every member |
 | A ZIP missing bytes in its middle (or with bytes added there) reads every member whose bytes survive: the ones after the damage where the directory puts them, the ones before it from their stored offsets when a header confirms them, each reporting `MEMBER_LOCAL_OFFSET_SHIFTED` (which `STRICT` refuses) | **format** | The lost bytes move the directory, so `EndRecord.base` shifts every offset, but the members before the damage stay where they were written. When the header where the directory puts a member is refused or names another member, the reader reads one more header, at the stored offset, and keeps it only when its name, method, CRC-32 and sizes match the directory (bit 3: name and method), with the data ending before the next stored offset. No search: the stored offset is the one other place the format names. Info-ZIP's `unzip` makes the same second try (`extra_bytes` set to 0) but then refuses the archive as overlapped; 7-Zip walks the local headers and reads the members before the damage only. Measured on 120 members with 64 KiB cut from the middle: 95 read, every member whose bytes survive (27 before this; 7-Zip 68, `unzip` 0); salvage design draft (#1399) F3. A pipe read places the local header it walked at the stored offset under the same conditions, overlap bound included (`ZipForwardReader._shifted_offset`, `_shifted_bound`), so both reads write the same members; an entry whose listed header a shifted member took fails alone from a pipe, as its file read fails its CRC-32. A pipe still cannot see a local header that a member cut through swallowed, which a file read finds by the directory: unchanged by this rule. The same applies to a directory offset field that is too large, with nothing missing: every member reads from its stored offset, where before neither read wrote anything |
 | A member whose local header stores another name, or a real CRC-32 where the directory stores 0, reads with `MEMBER_LOCAL_NAME_DIFFERS` (which `STRICT` refuses) or `MEMBER_LOCAL_CRC_USED` (which `STRICT` reads); one whose two headers both understate its size is refused with `CorruptionError` | **archivey** | Found in real archives (a backup-drive scan, [§3.3-3.5](../investigations/2026-10-backup-scan.md)). `unzip` reads all three. The name case is another code page, or `\` against `/`; the directory's name is used, so the local one decides nothing. The CRC case is every Adobe AIR package's `META-INF/AIR/hash`; the data is checked against the local value. The size case is refused because the declared size is the bound that stops decoding (DR-9a). A file read sees the name only when it opens the member's data, and only a file or link reports it: extraction reads no directory's data, so neither read reports a directory's. A file read reads the local header of a zero-CRC file or link (not AE-2, whose HMAC checks it) when it lists it, one positioned read per such member; a directory's zero CRC keeps no digest from either read (`DIGEST_UNVERIFIABLE`). A local header naming another compression method is decoded by it and reports `MEMBER_LOCAL_METHOD_DIFFERS`, which `STRICT` refuses (§6). From a pipe, the pass reports these at the directory; under `STRICT` only the name and method cases raise there, after every member was staged and before any is placed, so nothing of the run is in the destination; the CRC case is recorded |
+| A spanned set given as a list with two parts swapped between the first and the `.zip` opens and lists, and a member that crosses those parts fails its CRC on read | **archivey** | Only the local headers' disk numbers show the order, and nothing reads them. The `.zip` out of place, or the archive starting inside the join, is refused as out of order (§2.2). Pass the parts in order, or open the `.zip` with discovery on |
 
 ## 6. Decisions
 
@@ -1384,7 +1390,7 @@ move.
 | From a pipe: extraction settled at the end of the pass, selection made again, failures at the end |
 | Every fixture read from a pipe and from a file gives the same members, data and files, except the recorded differences |
 | Spanned set read from any part, wherever the cuts fall, classic and ZIP64, past `.z99`, real `zip -s` set against 7-Zip (`tests/test_zip_spanned.py`) |
-| Spanned set with a part missing names it; its last part alone, an explicit list of the wrong length and an unjoinable segment are `TruncatedError` |
+| Spanned set with a part missing names it; its last part alone, an explicit list of the wrong length or out of order (the archive starting inside the join, or the end record not in the last part), and an unjoinable segment are `TruncatedError`; the message for parts out of order says so |
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set |
 | Split checks do not fire on single-volume archives |
 | `7z -v` set joined, read across a part boundary, opened from any part |
