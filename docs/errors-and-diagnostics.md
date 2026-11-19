@@ -144,7 +144,7 @@ raises sooner, and some of the bytes just before the damage, at most one interna
 lost. Formats whose decoder already returns those bytes at no extra cost (`.Z`, lzop, bzip3 and the
 old ZIP methods) still return them. The error is the same either way. A compressed tar in a file
 still gives you every member that ends before the damage, under either setting. bzip2 is the
-exception: it decompresses whole blocks of up to 900 kB, so one damaged byte fails every member
+exception: it decompresses whole blocks of about 900 kB, so one damaged byte fails every member
 with data in that block, and a small `.tar.bz2` is often a single block.
 
 A pipe can't be read twice, so there archivey can't decompress a second time. A `.tar.gz` and the

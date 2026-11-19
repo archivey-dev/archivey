@@ -571,7 +571,7 @@ restart, or from the start of the stream when there is none.
 - **gzip, zlib, and Deflate members of ZIP and 7z:** from a point archivey keeps about every MiB
   that a read has passed, except on PyPy ([PyPy](install.md#pypy)). `[seekable]` adds an
   accelerator that keeps its own points.
-- **bzip2:** from the start of the block, which holds at most 900 kB of data.
+- **bzip2:** from the start of the block, which holds about 900 kB of data at the default level.
 - **bzip3:** from the start of the block. Its size is set by the writer, and is 16 MiB by default.
 - **lzop:** from the start of the block, 256 KiB of data by default.
 - **Snappy:** from the start of the chunk, which holds at most 64 KiB of data.
@@ -645,7 +645,7 @@ Some formats behave differently from a pipe:
 - **TAR** reads up to 1 MiB past the end of the archive to check for trailing data, so the listing
   ends only when the sender closes the pipe.
 - **Compressed files** are decoded from what has arrived. bzip2 and bzip3 decode only whole blocks
-  (up to 900 kB, and 16 MiB by default), mozlz4 decodes only once the whole file has arrived, and
+  (about 900 kB, and 16 MiB by default), mozlz4 decodes only once the whole file has arrived, and
   `open_archive` on a file of a few KiB waits for the pipe to close. Close the sending side when
   the file is done.
 - **Detection** sees only the start of a pipe. A `.dmg` isn't recognised, because its marker is at
