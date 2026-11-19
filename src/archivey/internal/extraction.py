@@ -1868,13 +1868,15 @@ class ExtractionCoordinator:
             self._release_claim(path)
             content_kept = self._forget_source_path(path)
             if prior.member.type == MemberType.DIRECTORY:
-                # Random access never writes the superseded copy, so its metadata
-                # is not applied, whether or not the directory stays as a parent.
-                self._drop_pending_dir(path)
                 # Removed where it was written, and only while that is still this
                 # run's directory: ``path`` may lead somewhere else by now, through
                 # a caller's symlink a later member re-pointed.
                 place = state.written_dir_places.get(index, path)
+                # Random access never writes the superseded copy, so its metadata
+                # is not applied, whether or not the directory stays as a parent.
+                # Found from where it was written too: the directory ``path`` leads
+                # to now keeps its own.
+                self._drop_pending_dir(place)
                 on_disk = long_path(place)
                 try:
                     st = os.lstat(on_disk)
