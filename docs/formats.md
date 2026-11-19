@@ -663,39 +663,24 @@ payload forms, hard links, symlink targets and how damage is reported.
 
 A makeself archive is a `.run` installer: a shell script that unpacks the TARs stored after it.
 NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are shipped this way.
-Archivey reads the TARs and never runs the script.
+Archivey reads the TARs from makeself 2.2.0 and later, and never runs the script. It finds them by
+the script's first lines, whatever the file is called. The payload needs what its compressor needs
+(as for the same `.tar.gz`, `.tar.zst`, …). Listing decompresses it, members are read one after
+another, and archives can be read from a pipe with `streaming=True`.
 
-- **Needs:** nothing for gzip, bzip2, xz and uncompressed payloads; a Zstandard, LZ4, lzop or
-  bzip3 payload needs what the same `.tar.zst`, `.tar.lz4`, `.tar.lzo` or `.tar.bz3` needs;
-  an `--ssl-encrypt` payload needs `cryptography`.
-- **Listing:** needs decompression. The members are the TAR's, named as makeself extracts them
-  into its target folder.
-- **Reading members:** solid.
-- **From a pipe:** yes, with `streaming=True`.
-- Archives from makeself 2.2.0 and later are read. They are found by their first two lines,
-  whatever the file's name.
-- **Several payloads.** makeself 2.2.0 to 2.4.0 add a TAR to the archive at each `--append`.
-  Archivey lists each TAR's members after the previous one's, as makeself extracts them.
-- **Checksums.** The header stores a CRC, an MD5 and, with `--sha256`, a SHA-256 of each
-  payload. Archivey checks each one it finds when it reads to the end of the payload. They cover
-  every file of the payload, so a match raises each to `Verification.CHECKSUM`, and a mismatch
-  raises `CorruptionError` and makes `verify_all()` return each file of the payload.
-- **Encryption.** A payload written with `--base64` is read. One written with `--ssl-encrypt`
-  is read with `password=` and needs `cryptography`, as AES in a ZIP does. Without a password,
-  opening the archive raises `EncryptionError`, and with a wrong one it raises `EncryptionError`
-  saying the password is wrong. One written with `--gpg-encrypt` raises
-  `UnsupportedFeatureError`.
-- `ArchiveInfo.format_version` is the makeself version the header names (`"2.4.5"`).
-  `ArchiveInfo.extra` holds `makeself.label`, `makeself.script` (the command run after
-  extraction), `makeself.target_dir`, `makeself.compression` (`"gzip"`, `"xz"`, `"none"`, …),
-  `makeself.encryption` (when there is one: `"base64"`, `"openssl"` or `"gpg"`),
-  `makeself.payloads` and `makeself.signed` (the header has a gpg signature, which is not
-  checked).
-- `format=TAR_GZ` (or any other format) on a makeself archive fails as on any file that is not
-  one, and the error says the file is a makeself archive.
-- A header archivey cannot parse raises `CorruptionError`. Archivey weighs the header against
-  `max_metadata_bytes` as it reads it, at open, and refuses a header that lists more payloads
-  than `max_members`: either raises `ResourceLimitError`.
+- **Several payloads:** makeself 2.2.0 to 2.4.0 add a TAR at each `--append`. Archivey lists each
+  TAR's members after the previous one's, as makeself extracts them.
+- **Checksums:** the CRC, MD5 and SHA-256 that the script stores for each payload are checked
+  when the payload is read to its end. A mismatch raises `CorruptionError`.
+- **Encryption:** an `--ssl-encrypt` payload is read with `password=` and needs `cryptography`.
+  `--base64` payloads are read, and `--gpg-encrypt` ones raise `UnsupportedFeatureError`.
+- **Archive fields:** `ArchiveInfo.extra` holds the label, the command run after extraction
+  (`makeself.script`), the target folder and the compression.
+
+Since archivey doesn't run the script, a script that does more than unpack can leave a different
+result than running the `.run` file would. The [makeself
+handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/makeself.md) covers
+the header forms, the encryption schemes and the limits.
 
 ## Disk images
 
