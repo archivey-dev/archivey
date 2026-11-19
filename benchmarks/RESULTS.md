@@ -79,7 +79,9 @@ tag (`054d04cd`) as the baseline:
 | `zip_open_list` | 2.1 ms | 11.51× | 2.2 ms | 10.93× |
 
 `sevenzip_many_open_list` was 148 to 150 ms in all three candidate rounds and 164 to 170
-ms in all three baseline rounds; no 7z change explains it. Outside the table,
+ms in all three baseline rounds, but no 7z change explains it, and a local check (90
+listings of each, the two trees alternating) measured 140.4 ms for 0.4.1 and 139.9 ms for
+0.5.0, so it is runner noise. Outside the table,
 `z_text_read_all` went from 4.14 to 3.85 s (#1649). `z_zeros_read_all` measured 129 to
 170 ms for the baseline and 157 to 199 ms for the candidate, a spread too wide to call a
 change. `tarbz2_read_all_accel_on` went from 118 to 114 ms (#1631).

@@ -92,8 +92,9 @@ as long as the standard library or reference reader to read, and 1.5 to 10.9 tim
 long to list; the ratios above 4 are archives that list in under 2.5 ms. Against 0.4.1,
 timed beside it on the same runner:
 
-- Listing a 7z archive with many members takes about 10% less time, in all three rounds.
-  No change aimed at it, so the cause is not known.
+- Listing a 7z archive with many members measured about 10% less time on the runner,
+  but a local check that alternated the two versions found no difference, so it is
+  noise.
 - Reading a `.Z` file of text takes about 7% less time, from the faster LZW decoder.
 - Reading a `.Z` file of highly repetitive data measured 22% slower by the fastest round,
   but its rounds spread from 129 to 199 ms on both sides, and the middle rounds differ
