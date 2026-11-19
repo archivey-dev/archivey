@@ -176,8 +176,11 @@ Each idea carries a status:
   which does not check the frame's xxHash32 checksums. Archivey has no xxHash32. So it
   needs either the optional `xxhash` package, with the running checksum kept in each
   point, or a decode from the start of the frame whenever a resumed decode reaches the
-  frame's end. Not pursued for now because LZ4 decodes fast: about 500 MB/s here, so a
-  1 GB rewind costs about 2 s ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §2.3).
+  frame's end ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §2.3). Not pursued for now
+  because LZ4 decodes fast, so a rewind is cheap. Measured on 2026-11-18 in a cloud
+  container, reading a 27 MB `lz4.frame` file of base64 text (hard to compress) through
+  `open_archive`: about 500 MB/s, so a 1 GB rewind costs about 2 s. Compressible data
+  decodes faster.
 - **Lazy `ArchiveMember` derivation.** *Needs design.* The one known lever for faster ZIP
   open-and-list (`benchmarks/RESULTS.md`), and for the per-member memory that
   `max_members` has to account for (about 1 KB per 7z member).
