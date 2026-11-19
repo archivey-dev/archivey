@@ -250,8 +250,9 @@ offsets the image declares:
 - **SquashFS 4 only.** Big-endian images from SquashFS 3 and older have another layout;
   they are claimed by magic (`sqsh`) so the refusal names them, from a stream too.
 - **LZO goes through archivey's LZO codec.** An LZO image opens without any package;
-  `compress-utils` (MIT, in `[recommended]`) is an accelerator. When it is installed it
-  decodes in a child process under `NATIVE_DECODERS`, so `exclude_libraries` and
+  `compress-utils` (MIT, in `[recommended]`) is an accelerator. When it is installed,
+  and built with LZO1X (each of its algorithms is a build option, `is_available`), it
+  decodes, in a child process under `NATIVE_DECODERS`, so `exclude_libraries` and
   process isolation reach it as they reach every native decoder. An earlier version of
   this reader kept its own Python-only decoder; the shared codec made it unnecessary.
   The tests read the LZO images with each decoder. `python-lzo` (GPL) was the

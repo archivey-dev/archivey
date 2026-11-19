@@ -237,7 +237,8 @@ Some formats have more to know:
 - **pbzx** is Apple's framing of xz, used for the payloads of macOS installer packages. Archivey
   finds it by its `pbzx` signature.
 - **lzop** (`.lzo`) and Snappy decode in Python, many times slower, unless `[recommended]` is
-  installed.
+  installed. A `compress-utils` built from source that leaves out LZO1X or Snappy is skipped for
+  that format.
 - **bzip3** (`.bz3`) needs `[bzip3]`, which is in neither `[recommended]` nor `[all]` and doesn't
   install on macOS, PyPy or Python 3.15 ([Install](install.md#bzip3)).
 - **uuencode and base64** compress nothing, but they wrap a file as text, so archivey peels them

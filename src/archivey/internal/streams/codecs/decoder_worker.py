@@ -208,10 +208,32 @@ def _load_lz4_block() -> Callable[..., Any]:
     return lambda: block
 
 
+def compress_utils_has(module: Any, algorithm: str) -> bool:
+    """Whether the compress-utils ``module`` decodes ``algorithm`` (``"lzo"``,
+    ``"snappy"``). Each algorithm is a build option of compress-utils, and a build
+    without one raises ``CompressError`` for every input, as it does for damaged data.
+    ``is_available`` is in every version archivey accepts (0.12.1 and later)."""
+    try:
+        return bool(module.is_available(algorithm))
+    except ValueError:  # "Unknown algorithm": a name this build does not know
+        return False
+
+
+class _Lzo:
+    """compress-utils' LZO1X decoder: ``decompress`` is the module's, and
+    :meth:`available` says whether this build has LZO1X at all."""
+
+    def __init__(self, module: Any) -> None:
+        self.decompress = module.decompress
+        self._module = module
+
+    def available(self, algorithm: str) -> bool:
+        return compress_utils_has(self._module, algorithm)
+
+
 def _load_lzo() -> Callable[..., Any]:
-    # A module function, as for ``lz4.block``: compress-utils' ``decompress``.
     module = importlib.import_module("compress_utils")
-    return lambda: module
+    return lambda: _Lzo(module)
 
 
 def _load_brotli() -> Callable[..., Any]:
@@ -235,11 +257,17 @@ class _Snappy:
     def __init__(self, decoders: list[str], crcs: list[str]) -> None:
         self._decoder = ""
         self._module: Any = None
+        # Packages that import here but were built without Snappy.
+        self._without: list[str] = []
         for name in decoders:
             try:
-                self._module = importlib.import_module(name)
+                module = importlib.import_module(name)
             except ImportError:
                 continue
+            if name == "compress_utils" and not compress_utils_has(module, "snappy"):
+                self._without.append(name)
+                continue
+            self._module = module
             self._decoder = name
             break
         self._crc = ""
@@ -258,9 +286,10 @@ class _Snappy:
             self._crc = name
             break
 
-    def chosen(self) -> tuple[str, str]:
-        """The raw-block decoder and the CRC package in use, ``""`` for none."""
-        return self._decoder, self._crc
+    def chosen(self) -> tuple[str, str, list[str]]:
+        """The raw-block decoder and the CRC package in use, ``""`` for none, and the
+        decoders skipped because their build has no Snappy."""
+        return self._decoder, self._crc, self._without
 
     def chunk(self, body: bytes, size: int) -> bytes:
         """One data chunk's work, so its bytes cross the pipe once each way: with

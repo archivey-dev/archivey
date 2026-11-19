@@ -640,7 +640,9 @@ names only its own layer.
 The system SHALL read Snappy's framing format (`.sz`, stream identifier
 `ff 06 00 00 73 4e 61 50 70 59`) with no third-party package, and SHALL use
 `compress-utils` or `cramjam` for raw blocks and `google-crc32c` or `crc32c` for the
-CRC-32C when they are installed and not excluded by the format policy. Under
+CRC-32C when they are installed and not excluded by the format policy. A
+`compress-utils` built without Snappy (its `is_available("snappy")` is false) SHALL be
+treated as absent, in the caller's process and in a child. Under
 `process_isolation=NATIVE_DECODERS` the packages SHALL run in a child process held for
 the stream, one round trip per data chunk for its decode and its CRC together, and the
 framing and every check SHALL stay in the caller's process; a package the child cannot
@@ -654,6 +656,12 @@ whose result SHALL be used.
   length field, which Google Snappy accepts and cramjam 2.14 refuses
 - **WHEN** it is read with only cramjam installed, and with no package installed
 - **THEN** both reads return the same byte
+
+#### Scenario: A compress-utils built without Snappy is not used
+- **GIVEN** a `compress-utils` whose build leaves Snappy out, and no other package
+- **WHEN** a `.sz` file is read, with `process_isolation` `NONE` or `NATIVE_DECODERS`
+- **THEN** the Python decoder reads it, and the backends used do not name
+  `compress_utils`
 
 ### Requirement: Snappy framed streams are checked chunk by chunk
 

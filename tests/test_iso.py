@@ -652,11 +652,11 @@ def test_listing_limits_count_udf_entries_at_open() -> None:
 def test_listing_limits_count_udf_bytes_at_open() -> None:
     """``max_metadata_bytes`` weighs the UDF directories and File Entries too.
 
-    Each UDF name costs a File Identifier in its directory's data and a File Entry of at
-    least 176 bytes, so twenty names hold more than 4000 bytes while the ISO 9660 tree,
-    with one file, holds well under 2000.
+    Each UDF name costs a File Identifier of 48 bytes in its directory's data; the
+    File Entry the hard links share is weighed once. Sixty names hold more than 2800
+    bytes while the ISO 9660 tree, with one file, holds well under 2000.
     """
-    image = _udf_image_with_links(20)
+    image = _udf_image_with_links(60)
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2000))
     with pytest.raises(
         ResourceLimitError, match="max_metadata_bytes=2000.*UDF directory tree"
