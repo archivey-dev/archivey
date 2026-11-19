@@ -170,6 +170,97 @@ it can't yet tell whether a later copy replaces it. Each member then has `is_cur
 until the loop ends, and the members you kept are updated then. `member.member_state_final` tells
 you which case you have: it's `False` while a member's fields can still change.
 
+## Times
+
+A time has no zone when the format records local time: a ZIP with only the DOS time, RAR 4, CAB, and
+LHA and ARJ archives from DOS or Windows. Other formats record UTC or an offset. To compare times
+from different archives, use `member.modified_utc()`, `accessed_utc()`, `created_utc()` and
+`ctime_utc()`. They take a time with no zone as your local time, or as the zone you pass
+(`tz_for_naive=`).
+
+`ArchiveMember.created` is a birth time or `None`, never Unix `st_ctime` (the time of the last
+inode change). Several writers store `st_ctime` where a reader might expect a creation time, such
+as a Rock Ridge ISO, a Unix RAR, a PAX TAR, and a 7z or ZIP written on Unix. That time is in
+`ArchiveMember.ctime` instead.
+
+## Stored digests
+
+`member.hashes` holds the digests the archive already stores, so they can be read without
+decompressing anything. A CRC-32 is four big-endian bytes, so one you computed compares as
+`zlib.crc32(data).to_bytes(4, "big")`.
+
+- **CRC-32** (`HashAlgorithm.CRC32`): ZIP, 7z and ARJ files, RAR5 files that store one, and `.lz`
+  files read from a source that can seek.
+- **BLAKE2sp**: RAR5 files that store one.
+- **MD5**: Debian package files listed in `DEBIAN/md5sums`.
+- **MD5, SHA-1 or a SHA-2 digest**: XAR files, and the files of a macOS installer package outside
+  its payloads.
+- **None:** TAR, SquashFS, CPIO, LHA, ar, RPM, the files in a macOS installer package's payloads,
+  directories, and every other single compressed file. Many of them still check their data as it is
+  read, with a checksum per block, or per file in a form `member.hashes` doesn't hold.
+
+When a format stores none, compute one while reading. A dedupe index can key every member by its
+CRC-32, read from the archive when it's stored and computed otherwise, so the same file in a ZIP
+and in a TAR gets the same key:
+
+```python
+import zlib
+import archivey
+from archivey import HashAlgorithm
+
+def crc32_of(reader, member):
+    """The member's CRC-32: stored when the archive has one, computed otherwise."""
+    if HashAlgorithm.CRC32 in member.hashes:
+        return member.hashes[HashAlgorithm.CRC32]
+    crc = 0
+    with reader.open(member) as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            crc = zlib.crc32(chunk, crc)
+    return crc.to_bytes(4, "big")
+
+with archivey.open_archive("backups.zip") as reader:
+    for member in reader:
+        if member.is_file and member.is_current:
+            print(member.name, crc32_of(reader, member).hex())
+```
+
+Two different files can share a CRC-32, so treat a match as a candidate, and compare a SHA-256 of
+both members before counting them as the same file.
+
+## Format-specific fields
+
+`ArchiveMember.extra` and `ArchiveInfo.extra` hold what only some formats store, such as
+`extra["gzip.original_filename"]` or `extra["deb.package"]`. Both are dicts, typed so that a type
+checker knows each documented key's type. The format sections mention a key only when it matters
+for that format. The full list is on [`MemberExtra` and
+`ArchiveInfoExtra`](api.md#members-and-archive-details).
+
+## macOS sidecar files
+
+A ZIP or TAR made on a Mac often holds AppleDouble sidecars: a `._name` file with the extended
+attributes and resource fork of `name`, next to it (macOS `tar`) or under `__MACOSX/` (Finder,
+`ditto`). A folder archived on a Mac can also hold `.DS_Store` files, Finder's view settings.
+Archivey lists them all as ordinary files, as `unzip` does. To leave them out, skip them by name
+with `members=`:
+
+```python
+from archivey import open_archive
+
+def is_macos_sidecar(member):
+    base = member.name.rsplit("/", 1)[-1]
+    return (
+        member.name.startswith("__MACOSX/")
+        or base.startswith("._")
+        or base == ".DS_Store"
+    )
+
+with open_archive("photos.zip") as reader:
+    reader.extract_all("out", members=lambda m: not is_macos_sidecar(m))
+```
+
+The test goes by name only, so it also skips a file that was really called `._notes`, and anything
+in a real folder named `__MACOSX`.
+
 ## Configuration
 
 Settings you'd keep the same across many archives live in `archivey.ArchiveyConfig`, passed as

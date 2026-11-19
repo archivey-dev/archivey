@@ -46,12 +46,15 @@ MUST NOT implicitly buffer or copy the image to make it seekable.
 ### Requirement: Auto-select the richest available namespace
 
 The ISO backend SHALL select the richest available namespace in priority order:
-Rock Ridge, then Joliet, then plain ISO 9660. It SHALL report the selection in
-`ArchiveInfo.extra["iso.namespace"]`.
+Rock Ridge, then UDF, then Joliet, then plain ISO 9660. It SHALL report the selection in
+`ArchiveInfo.extra["iso.namespace"]`. A UDF tree that uses a sparable or virtual
+partition, or extended allocation descriptors, is not a candidate when the image has an
+ISO 9660 tree; a UDF-only image with one SHALL raise `UnsupportedFeatureError`.
 
 | Namespace | Reported value | Filename fidelity | POSIX metadata |
 | --- | --- | --- | --- |
 | Rock Ridge | `"rock_ridge"` | Original case and full length | mode, uid, gid, symlinks |
+| UDF | `"udf"` | Original case, up to 255 bytes of Unicode | mode (permission bits), uid, gid, symlinks |
 | Joliet | `"joliet"` | Case-preserved, up to 64 UCS-2 chars | none |
 | Plain ISO 9660 | `"iso9660"` | Upper-case 8.3 / level-1 names | none |
 
@@ -62,7 +65,11 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Case | Expected |
 | --- | --- |
 | Image contains Rock Ridge | Use Rock Ridge names/metadata; `iso.namespace="rock_ridge"` |
-| Image contains Joliet but no Rock Ridge | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
+| Image contains UDF but no Rock Ridge | Use UDF names and metadata; `iso.namespace="udf"` |
+| UDF-only image (no ISO 9660 primary volume descriptor; `BEA01` at offset 32 769) | Detected as ISO; UDF names and metadata; `iso.namespace="udf"` |
+| UDF tree in a metadata partition (UDF 2.50 and later), with Extended File Entries, data inside the File Entry, continued allocation extents or unrecorded extents | Lists and reads; an unrecorded extent reads as zeros |
+| UDF tree with a sparable or virtual partition or extended allocation descriptors, beside an ISO 9660 tree / alone | The next namespace is used / `UnsupportedFeatureError` at open |
+| Image contains Joliet but no Rock Ridge and no UDF | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
 | Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
 | Rock Ridge symlink | Symlink metadata is available through the selected namespace |
 | Rock Ridge TF record with an attribute-change time | `ctime` holds it; `created` comes only from a TF creation time, else `None` |
@@ -393,9 +400,10 @@ size), or, when the volume descriptor set itself runs past the end of the file, 
 of the descriptor that is cut. An open that fails because a read of the image's
 structures reached the end of such a file SHALL raise `TruncatedError`. This covers the
 volume descriptors, the path tables, the ISO 9660 and Joliet directory records with
-their Rock Ridge System Use areas, and the UDF anchor pycdlib reads in the volume's last
-block. A path table that runs past the end of the file but stays inside the volume space
-SHALL raise `TruncatedError` too.
+their Rock Ridge System Use areas, and the UDF anchor, descriptors, File Entries and
+directories archivey reads at open, which for UDF counts as cut when the file ends
+before the partitions the UDF volume declares do. A path table that runs past the end of
+the file but stays inside the volume space SHALL raise `TruncatedError` too.
 
 An open SHALL raise `CorruptionError`, not `TruncatedError`, when the failing read
 stopped inside the file (the bytes are present and do not parse), when the file holds
@@ -418,12 +426,12 @@ A cut inside the padding stays `TruncatedError`.
 | --- | --- |
 | Image cut inside a volume descriptor, or at the start of the set terminator | `TruncatedError` at open |
 | Image cut inside a path table, a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
-| UDF image cut inside its volume recognition sequence, its last anchor, or file data | `TruncatedError` at open |
-| Image cut inside file data, no UDF | Opens; reading a file the cut reaches raises `TruncatedError` |
+| UDF image cut inside its volume recognition sequence, its anchor at block 256, or a File Entry or directory of its tree | `TruncatedError` at open |
+| Image cut inside file data, or (UDF) after the tree, in its last-block anchor | Opens; reading a file the cut reaches raises `TruncatedError` |
 | Full-length image: a descriptor field, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
 | Full-length image: a non-zero byte in a directory block's padding | Opens and lists every record; `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`; refused under `STRICT` |
 | Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
-| Full-length UDF image whose volume space size is damaged upwards | `TruncatedError`: the file holds less than the image declares |
+| Full-length UDF bridge image whose volume space size is damaged upwards | Opens and reads: nothing archivey reads lies past the file |
 
 ### Requirement: Report bytes after the end of an ISO image
 
@@ -463,10 +471,10 @@ checksum, so its entries are taken as written, as the volume space size is.
 
 ### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
 
-`pycdlib` parses every directory tree of an image inside `open_archive` (the PVD tree,
-a Joliet tree, and a UDF tree when present) and keeps all of them, so the ISO backend
-SHALL check `ListingLimits` while `pycdlib` parses. The bytes it weighs (directory
-records as stored, Rock Ridge continuation areas, path tables, UDF File Identifiers and
+`pycdlib` parses the PVD tree and a Joliet tree of an image inside `open_archive`, and
+archivey's UDF parser the UDF tree when present, and every tree is kept, so the ISO
+backend SHALL check `ListingLimits` while they parse. The bytes it weighs (directory
+records as stored, Rock Ridge continuation areas, path tables, UDF directories and
 File Entries) SHALL be one sum for the whole image, held to `max_metadata_bytes`; a
 tree under the cap SHALL NOT make an image over it open. `max_members` SHALL be counted
 per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
@@ -479,3 +487,28 @@ SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 | PVD, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | The same image with `max_metadata_bytes` above the sum | Opens and lists |
 | A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |
+
+### Requirement: Bound the UDF chains structurally
+
+The UDF parser SHALL follow at most 16 Volume Descriptor Sequence extents and 256
+descriptors in them, 64 indirect entries and 64 allocation extent continuations for one
+File Entry and 64 partition maps, and SHALL read a symlink of at most 64 KiB; past any
+of these the image SHALL be refused with `CorruptionError` at open. It SHALL look at no
+more than 64 Volume Recognition descriptors: a UDF descriptor past them is not seen, and
+the image is not read as UDF. These are structural bounds, not policy limits: each stops
+a chain the format lets point anywhere, real writers record one descriptor extent, one
+or two partition maps and no indirect entries, and no system makes a symlink target over
+4096 bytes (Linux's `PATH_MAX`; its UDF driver reads at most one block). A directory has
+no such bound: `max_metadata_bytes` weighs it before it is read. An extent that a
+metadata partition splits over its runs SHALL cost one step per run it covers, not one
+per block, where runs that follow each other on disc count as one, and each run covered
+after the first SHALL be weighed against `max_metadata_bytes` as one long allocation
+descriptor (16 bytes).
+
+#### Scenario: UDF bounds
+
+| Case | Expected |
+| --- | --- |
+| A File Entry whose allocation extents continue more than 64 times, or more than 64 indirect entries in a row | `CorruptionError` at open |
+| A symlink over 64 KiB | `CorruptionError` at open |
+| Many 1 GiB allocation descriptors in a metadata partition of 200 runs | Open time grows with the runs covered, not the blocks; each run covered after the first counts against `max_metadata_bytes` |
