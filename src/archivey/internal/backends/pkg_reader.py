@@ -14,8 +14,8 @@ member's name (``app.pkg/Payload/Applications/App.app/...``), and every other me
 as it is (``Distribution``, ``PackageInfo``, ``Bom``). Opening the file with
 ``format=ArchiveFormat.XAR`` gives the XAR members instead. A payload that is not one
 of those CPIO forms is listed as it is: one stored with a XAR encoding archivey does not
-read, one whose first bytes are no gzip, pbzx or CPIO magic, or one whose first CPIO
-header cannot be read.
+read or the configuration turns off, one whose first bytes are no gzip, pbzx or CPIO
+magic, or one whose first CPIO header cannot be read.
 
 The payloads are read through :meth:`ReaderContext.open_nested`, so listing decodes
 each one, and the XAR checksum of a payload is checked as the listing reads it. A
@@ -92,9 +92,9 @@ _TOC_PEEK = 1 << 18
 def is_package(peek: Callable[[int], bytes], name: str | None) -> bool:
     """Whether a XAR is an installer package (``ReadBackend.MAGIC_REFINEMENTS``): by its
     name when it has a package's extension or ``.xar``, else by the names at the start
-    of its table of contents. ``peek(end)`` returns the source's first ``end`` bytes;
-    this reads at most the header and ``_TOC_READ`` bytes of the stored table of
-    contents."""
+    of its table of contents. ``peek(end)`` returns the source's first ``end`` bytes,
+    or on a forward-only source what detection already holds; this asks once for at
+    most the header and ``_TOC_READ`` bytes of the stored table of contents."""
     if name is not None:
         lowered = name.lower()
         if lowered.endswith(_PACKAGE_EXTENSIONS):
@@ -204,14 +204,17 @@ class PkgReader(XarReader):
         try:
             stream = cast(BinaryIO, super().open_member(payload, location).stream)
         except UnsupportedFeatureError:
-            # A XAR encoding archivey does not read: the file it is, which reading
-            # refuses with the same error.
+            # A XAR encoding archivey does not read, or one the configuration turns
+            # off (``FormatPolicy``): the file it is, which reading refuses with the
+            # same error.
             yield record
             return
         with contextlib.closing(stream):
             try:
                 head = stream.read(_SNIFF) or b""
             except UnsupportedFeatureError:
+                # The same, found only once the decoder reads: an xz encoding whose
+                # block runs a filter the configuration turns off (BCJ).
                 yield record
                 return
             fmt = _inner_format(head)

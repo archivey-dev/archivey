@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import gzip
 import io
+import lzma
 import random
 from pathlib import Path
 
@@ -19,6 +20,9 @@ import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
+    CompressionAlgorithm,
+    FormatPolicy,
     MemberType,
     detect_format,
     open_archive,
@@ -212,6 +216,9 @@ def test_a_signed_package_without_a_name_is_a_package(
     assert detect_format(io.BytesIO(blob)).format == ArchiveFormat.PKG
     with open_archive(io.BytesIO(blob)) as archive:
         assert listed in [m.name for m in archive.members()]
+    # A forward-only source gives the check only the near window: detection does not
+    # wait on a pipe for the rest, and a package cannot be opened from one anyway.
+    assert detect_format(NonSeekableBytesIO(blob)).format == ArchiveFormat.XAR
 
 
 def test_a_plain_xar_is_not_a_package() -> None:
@@ -240,6 +247,43 @@ def test_a_payload_in_an_encoding_archivey_does_not_read_is_listed_as_it_is(
         assert archive.format == ArchiveFormat.PKG
         assert [m.name for m in archive.members()] == ["Bom", "PackageInfo", "Payload"]
         assert archive.read("Bom") == b"BOMStore"
+        with pytest.raises(UnsupportedFeatureError):
+            archive.read("Payload")
+
+
+@pytest.mark.parametrize(
+    ("encoding", "excluded"),
+    [
+        # Refused when the member is opened.
+        ("gzip", CompressionAlgorithm.DEFLATE),
+        # Refused only once the decoder reads the block header.
+        ("xz-bcj", CompressionAlgorithm.BCJ),
+    ],
+    ids=["codec", "xz-filter"],
+)
+def test_a_payload_the_configuration_turns_off_is_listed_as_it_is(
+    monkeypatch: pytest.MonkeyPatch, encoding: str, excluded: CompressionAlgorithm
+) -> None:
+    """A payload whose XAR encoding ``FormatPolicy`` excludes is the file it is, as an
+    encoding archivey does not read is; reading it is refused by the policy."""
+    monkeypatch.setitem(
+        xar_util.ENCODINGS,
+        "xz-bcj",
+        (
+            "application/x-xz",
+            lambda data: lzma.compress(
+                data, filters=[{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}]
+            ),
+        ),
+    )
+    files = _component(scripts=None)
+    files[2] = XarFile("Payload", make_pbzx(_PAYLOAD), encoding=encoding)
+    blob = write_xar(files)
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert "Payload/Applications/App.txt" in [m.name for m in archive.members()]
+    config = ArchiveyConfig(formats=FormatPolicy(exclude=[excluded]))
+    with open_archive(io.BytesIO(blob), config=config) as archive:
+        assert [m.name for m in archive.members()] == ["Bom", "PackageInfo", "Payload"]
         with pytest.raises(UnsupportedFeatureError):
             archive.read("Payload")
 

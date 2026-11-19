@@ -2188,8 +2188,10 @@ def _near_magic_hit(detection: _DetectionPass, magic_fmt: ArchiveFormat) -> Form
         trailer_fmt = _match_trailer(workspace, trailers)
         if trailer_fmt is not None:
             magic_fmt = trailer_fmt
-    # A narrower format that shares the magic (a macOS installer package's XAR). The
-    # check may read past the near window, up to the budget's read ceiling.
+    # A narrower format that shares the magic (a macOS installer package's XAR). On a
+    # source that can seek, the check may read past the near window, up to the
+    # budget's read ceiling. A forward-only source gives it what has arrived: waiting
+    # on a pipe could hold detection, and a PKG cannot be opened from one anyway.
     refinements = detection.registry.magic_refinements().get(magic_fmt, ())
     if refinements:
         peek = workspace.candidate_view(
