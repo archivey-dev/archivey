@@ -190,7 +190,7 @@ a ZIP or 7z member holding two DEFLATE streams under one CRC
 ([Where the guarantees stop](security.md#where-the-guarantees-stop)), a `.zz` file holding several
 zlib streams under a last checksum that covers them all, read with `use_rapidgzip=ON`, and a cut
 `.gz` whose last bytes are made to look like its trailer
-([Limits and accelerators](formats.md#limits-and-accelerators)). For the first, the result can also
+([Single-file compressors](formats.md#single-file-compressors)). For the first, the result can also
 change with how many cores the machine has and with the platform. If your code must give the same
 answer as other tools, on every machine, and you would rather it be slower than differ, turn the
 accelerator off:
