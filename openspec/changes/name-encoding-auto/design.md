@@ -307,4 +307,9 @@ no new context field are needed.
      lowers the margin between codecs.
 
    The author's recommendation is Wikipedia. davi asked for the reviewer's view before
-   deciding.
+   deciding. The round-1 reviewer also recommends Wikipedia titles: it is the only
+   source with measurements behind it, a larger standard set narrows the margin between
+   codecs that share the EUC byte layout, and Korean needs a frequency corpus either
+   way. Its conditions: pin the dump date, commit the build script, and keep a
+   provenance note next to the data (task 1.2). Its third option, Wikipedia article text
+   instead of titles, is worth trying only if real-world false positives appear.
