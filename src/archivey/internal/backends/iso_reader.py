@@ -155,7 +155,10 @@ from archivey.internal.backends.udf import (
 )
 from archivey.internal.base_reader import special_file_has_data_report
 from archivey.internal.format_adapter import register_builtin_format
-from archivey.internal.listing_limits import check_metadata_budget
+from archivey.internal.listing_limits import (
+    check_metadata_budget,
+    metadata_limit_error,
+)
 from archivey.internal.streams.codecs.isolated import (
     IN_PROCESS,
     Natives,
@@ -493,6 +496,8 @@ class _ParseBudget:
         self._tree = 0
         # Entries pycdlib has parsed from the path table it is parsing now.
         self._path_table_entries = 0
+        # The full paths of the UDF tree, weighed apart from the bytes above.
+        self._udf_path_bytes = 0
 
     def add_record(self, vd: object, nbytes: int) -> None:
         self._tree = id(vd)
@@ -506,6 +511,23 @@ class _ParseBudget:
 
     def add_udf_member(self) -> None:
         self._add_member(_UDF_TREE)
+
+    def add_udf_path(self, nbytes: int, path: str) -> None:
+        """Weigh one full UDF path, text and stored bytes together, as the walk
+        builds it, as the XAR reader weighs its paths.
+
+        A sum of its own, held to ``max_metadata_bytes``: the listing weighs every
+        member's name and raw name against the same cap, so this refuses only a tree
+        whose listing would be refused, but before a chain of nested directories has
+        built paths that grow with the square of its depth."""
+        self._udf_path_bytes += nbytes
+        max_meta = self._limits.max_metadata_bytes
+        if max_meta is not None and self._udf_path_bytes > max_meta:
+            raise metadata_limit_error(
+                max_meta,
+                f"its {_UDF_TREE_NAME} holds at least {self._udf_path_bytes} bytes "
+                f"of paths before the members are made, at {quoted(path[:200])}",
+            )
 
     def add_continuation(self, nbytes: int) -> None:
         self._add_bytes(nbytes, f"its {_ISO_TREE_NAME}")

@@ -48,7 +48,7 @@ from tests.conftest import (
     sevenzip_version,
     sevenzip_version_text,
 )
-from tests.udf_builder import BLOCK, WHEN, Node, build_udf, directory, retag
+from tests.udf_builder import BLOCK, WHEN, Node, build_udf, directory, retag, tag
 
 pytestmark = requires("pycdlib")
 
@@ -224,12 +224,17 @@ def _fields(entry: UdfEntry) -> dict[str, object]:
 class _Weigh:
     def __init__(self) -> None:
         self.nbytes = 0
+        self.path_bytes = 0
 
     def add_udf_member(self) -> None:
         pass
 
     def add_udf_bytes(self, nbytes: int) -> None:
         self.nbytes += nbytes
+
+    def add_udf_path(self, nbytes: int, path: str) -> None:
+        del path
+        self.path_bytes += nbytes
 
 
 def test_an_extent_over_many_metadata_runs_costs_one_step_per_run() -> None:
@@ -415,6 +420,79 @@ def test_a_file_identifier_naming_the_root_is_a_loop() -> None:
     data[fid : fid + total] = retag(data[fid : fid + total])
     with pytest.raises(CorruptionError, match="forms a loop"):
         open_archive(io.BytesIO(bytes(data)))
+
+
+def _nested(depth: int) -> bytes:
+    """A UDF-only image of ``depth`` nested directories, each named ``a``: one File
+    Entry block per level, its directory data inside the entry."""
+    image = bytearray(build_udf(directory("")))
+    root_at = _volume(bytes(image)).root.location
+    template = image[root_at : root_at + 176]  # a File Entry's fixed part
+    start = 300  # the builder's partition start, in blocks
+
+    def fid(name: bytes, block: int, characteristics: int) -> bytes:
+        body = struct.pack("<HBB", 1, characteristics, len(name))
+        body += struct.pack("<IIH6x", BLOCK, block, 0)
+        body += struct.pack("<H", 0) + name
+        body += bytes((-(16 + len(body))) % 4)
+        return tag(257, 0, body)
+
+    def entry(block: int, data: bytes) -> bytes:
+        fields = bytearray(template)
+        struct.pack_into("<H", fields, 16 + 18, 3)  # data inside the entry
+        struct.pack_into("<Q", fields, 56, len(data))
+        struct.pack_into("<II", fields, 168, 0, len(data))
+        fields += data
+        struct.pack_into("<H", fields, 10, len(fields) - 16)
+        struct.pack_into("<I", fields, 12, block)
+        return retag(fields).ljust(BLOCK, b"\0")
+
+    root = root_at // BLOCK - start
+    base = len(image) // BLOCK - start
+    levels = []
+    parent = root
+    for level in range(depth):
+        block = base + level
+        child = fid(b"\x08a", block + 1, 0x02) if level < depth - 1 else b""
+        levels.append(entry(block, fid(b"", parent, 0x0A) + child))
+        parent = block
+    image[root_at : root_at + BLOCK] = entry(
+        root, fid(b"", root, 0x0A) + fid(b"\x08a", base, 0x02)
+    )
+    image += b"".join(levels) + bytes(BLOCK)
+    length = len(image) // BLOCK - start
+    for block in (33, 49):  # the main and reserve Partition Descriptors
+        descriptor = bytearray(image[block * BLOCK : (block + 1) * BLOCK])
+        struct.pack_into("<I", descriptor, 192, length)
+        image[block * BLOCK : (block + 1) * BLOCK] = retag(descriptor)
+    return bytes(image)
+
+
+def test_the_full_paths_of_a_deep_tree_are_weighed_at_open() -> None:
+    """Every full path is built at open, and nested directories make them grow with
+    the square of the depth (24,000 levels took 1.2 GB before): each path, text and
+    stored bytes, is weighed as it is built, apart from the tree's bytes."""
+    image = _nested(500)
+    weigh = _Weigh()
+    volume = UdfVolume(
+        lambda offset, n: image[offset : offset + n],
+        len(image),
+        archive_name=None,
+        budget=weigh,
+    )
+    assert len(volume.names) == 500
+    assert weigh.path_bytes == sum(
+        len(name.path) + len(name.raw_path) for name in volume.names
+    )
+    assert weigh.nbytes < 200_000 < weigh.path_bytes
+    cap = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=200_000))
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes=200000.*paths"):
+        open_archive(io.BytesIO(image), config=cap)
+    roomy = ArchiveyConfig(
+        listing_limits=ListingLimits(max_metadata_bytes=weigh.path_bytes)
+    )
+    with open_archive(io.BytesIO(image), config=roomy) as reader:
+        assert reader.info.extra["iso.namespace"] == "udf"
 
 
 def test_listing_limits_count_a_udf_only_tree() -> None:
