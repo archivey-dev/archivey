@@ -4303,9 +4303,9 @@ class ExtractionCoordinator:
         """Whether this run wrote the entry at ``path``, however the archive spelled
         it: ``s/d`` written through the caller's ``s -> e`` is the entry at
         ``e/d``. The collision map finds the claim where its file was written, and
-        the claim counts only at that exact physical path (``_Claim.physical``), not
-        under another case, and not where ``s/d`` resolves after the caller's ``s``
-        is replaced."""
+        the claim counts at that physical path (``_Claim.physical``), or under a name
+        the filesystem gives that same file (a case variant where case is folded),
+        and not where ``s/d`` resolves after the caller's ``s`` is replaced."""
         state = self._state
         written_paths = state.written_paths
         if path in written_paths:
@@ -4313,11 +4313,17 @@ class ExtractionCoordinator:
         if not state.collision_map or not path.is_relative_to(state.dest):
             return False
         claim = state.collision_map.get(self._collision_key(path))
-        return (
+        if (
             claim is not None
             and claim.path in written_paths
             and claim.physical == self._physical_path(path)
-        )
+        ):
+            return True
+        # Another name of the claimed file itself: a case variant on a case-insensitive
+        # filesystem, under any policy, matched by identity (``_alias_claim``). A case
+        # variant that is another file, on a case-sensitive filesystem, is not one.
+        alias = self._alias_claim(path)
+        return alias is not None and alias.path in written_paths
 
     def _occupied(self, path: Path) -> bool:
         """Whether ``path`` holds an entry, not counting a parked superseded copy."""
