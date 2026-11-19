@@ -167,6 +167,20 @@ Each idea carries a status:
   with no table (`pzstd`) could have its frames found by walking frame and block headers,
   without decoding. It helps only multi-frame files, so measure how common they are first
   ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §7).
+- **LZ4 restart points inside a frame.** *Open idea.* LZ4 seeks from the start of
+  each frame a forward read has reached, so a backward seek in a one-frame file, such as
+  a large `.tar.lz4`, decodes again from byte zero. The blocks inside a frame could be
+  restart points too. The `lz4` command writes independent 4 MiB blocks by default, and
+  `python-lz4`'s linked 64 KiB blocks can resume from the 64 KiB of output before them.
+  A decode that starts inside a frame has to decode blocks itself with `lz4.block`,
+  which does not check the frame's xxHash32 checksums. Archivey has no xxHash32. So it
+  needs either the optional `xxhash` package, with the running checksum kept in each
+  point, or a decode from the start of the frame whenever a resumed decode reaches the
+  frame's end ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §2.3). Not pursued for now
+  because LZ4 decodes fast, so a rewind is cheap. Measured on 2026-11-18 in a cloud
+  container, reading a 27 MB `lz4.frame` file of base64 text (hard to compress) through
+  `open_archive`: about 500 MB/s, so a 1 GB rewind costs about 2 s. Compressible data
+  decodes faster.
 - **Lazy `ArchiveMember` derivation.** *Needs design.* The one known lever for faster ZIP
   open-and-list (`benchmarks/RESULTS.md`), and for the per-member memory that
   `max_members` has to account for (about 1 KB per 7z member).
