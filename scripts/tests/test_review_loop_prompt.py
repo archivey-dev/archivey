@@ -77,3 +77,4 @@ def test_the_prompt_keeps_subagents_in_the_foreground() -> None:
     text, _, _ = prompt.render(ENV)
     assert "`run_in_background: false`" in text
     assert "Never end a turn to wait for a subagent" in text
+    assert "on every subagent call" in text
