@@ -1884,8 +1884,10 @@ class ExtractionCoordinator:
                     st = None
                 # No archive input makes ``place`` a directory the run did not write:
                 # every later member that changes it leaves a file, a symlink or
-                # the run's own directory. The identity check is defence in depth
-                # against an outside change to the destination (threat model §1).
+                # the run's own directory. Asking ``_is_run_directory`` (``place``
+                # is recorded in ``run_dirs``) only guards against a later change to
+                # this code; it does not see another process replacing the
+                # directory at that path, which threat model §1 leaves out of scope.
                 if (
                     st is not None
                     and stat.S_ISDIR(st.st_mode)
