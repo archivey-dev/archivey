@@ -57,6 +57,7 @@ from archivey.internal.streams.codecs.lzma_codec import (
 )
 from archivey.internal.streams.codecs.lzo_codec import Lzo1xCodec, LzopCodec
 from archivey.internal.streams.codecs.mozlz4_codec import MozLz4Codec
+from archivey.internal.streams.codecs.pbzx_codec import PbzxCodec
 from archivey.internal.streams.codecs.ppmd_codec import PpmdCodec
 from archivey.internal.streams.codecs.snappy_codec import SnappyCodec
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
@@ -122,6 +123,7 @@ _STREAM_CODECS: list[StreamCodec] = [
     MozLz4Codec(),
     Bzip3Codec(),
     SnappyCodec(),
+    PbzxCodec(),
     Lzo1xCodec(),
     UuCodec(),
     Base64Codec(),

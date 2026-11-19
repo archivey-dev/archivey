@@ -927,6 +927,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
         "no corpus builder for Snappy; tests/test_snappy_framed.py seeks in a file",
     ),
     (
+        "pbzx",
+        "no corpus builder for pbzx; tests/test_pbzx.py seeks in a file",
+    ),
+    (
         "uu",
         "no corpus builder for uuencode; tests/test_text_codecs.py seeks in a file",
     ),
@@ -956,6 +960,10 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     (
         "xar",
         "no corpus builder (needs bsdtar); tests/test_xar.py seeks inside members",
+    ),
+    (
+        "pkg",
+        "no corpus builder (needs pkgbuild); tests/test_pkg.py seeks inside members",
     ),
     (
         "cab",
@@ -1001,11 +1009,14 @@ _UNTESTED_FORMATS = {
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BZIP3): "bzip3",
     ArchiveFormat.SNAPPY: "snappy",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.SNAPPY): "snappy",
+    ArchiveFormat.PBZX: "pbzx",
+    ArchiveFormat(ContainerFormat.TAR, StreamFormat.PBZX): "pbzx",
     ArchiveFormat.UU: "uu",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.UU): "uu",
     ArchiveFormat.BASE64: "base64",
     ArchiveFormat(ContainerFormat.TAR, StreamFormat.BASE64): "base64",
     ArchiveFormat.XAR: "xar",
+    ArchiveFormat.PKG: "pkg",
     ArchiveFormat.CAB: "cab",
     ArchiveFormat.LHA: "lha",
     ArchiveFormat.ARJ: "arj",

@@ -114,9 +114,14 @@ class ContainerFormat(StrEnum):
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
     XAR = "xar"
-    """A XAR archive: a macOS installer package (``.pkg``) or ``.xip``, or a plain
-    ``.xar``. Its files are listed as the archive holds them; a package's ``Payload``
-    is a member, not expanded. Needs a source that can seek."""
+    """A XAR archive (``.xar``), listed as the archive holds it: a macOS installer
+    package's ``Payload`` is one member, not expanded. Needs a source that can seek."""
+    PKG = "pkg"
+    """A macOS installer package (``.pkg``) or Xcode ``.xip``: a XAR archive whose
+    ``Payload``, ``Scripts`` and ``Content`` members are listed as the files they hold,
+    under ``Payload/``, ``Scripts/`` and ``Content/``, as ``pkgutil --expand-full``
+    unpacks a package. ``format=ArchiveFormat.XAR`` reads the XAR layer instead.
+    Needs a source that can seek."""
     CAB = "cab"
     """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
@@ -162,6 +167,7 @@ ContainerFormatStr = Literal[
     "makeself",
     "squashfs",
     "xar",
+    "pkg",
     "cab",
     "lha",
     "arj",
@@ -248,6 +254,10 @@ class StreamFormat(StrEnum):
     or ``compress-utils`` makes it faster when installed, and ``google-crc32c`` or
     ``crc32c`` speeds up the checksum. Hadoop's ``.snappy`` and raw Snappy have no
     signature and are not read."""
+    PBZX = "pbzx"
+    """Apple's pbzx framing: xz chunks, or chunks stored as they are, behind a chunk
+    size. A macOS ``.pkg`` stores its ``Payload`` this way, and a ``.xip`` its
+    ``Content``, each around a CPIO archive."""
     UU = "uu"
     """uuencoded files (``.uu``, ``.uue``), including the ``begin-base64`` variant
     ``uuencode -m`` writes. Text before the ``begin`` line (a mail or news post's
@@ -277,6 +287,7 @@ StreamFormatStr = Literal[
     "bz3",
     "mozlz4",
     "sz",
+    "pbzx",
     "uu",
     "b64",
 ]
@@ -370,6 +381,7 @@ class ArchiveFormat:
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
     SNAPPY: ClassVar[ArchiveFormat]
+    PBZX: ClassVar[ArchiveFormat]
     BZIP3: ClassVar[ArchiveFormat]
     UU: ClassVar[ArchiveFormat]
     BASE64: ClassVar[ArchiveFormat]
@@ -383,6 +395,7 @@ class ArchiveFormat:
     MAKESELF: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
+    PKG: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
     LHA: ClassVar[ArchiveFormat]
     ARJ: ClassVar[ArchiveFormat]
@@ -463,6 +476,7 @@ ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
 ArchiveFormat.SNAPPY = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.SNAPPY)
 ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
+ArchiveFormat.PBZX = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.PBZX)
 ArchiveFormat.UU = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UU)
 ArchiveFormat.BASE64 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BASE64)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
@@ -481,6 +495,7 @@ ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.PKG = ArchiveFormat(ContainerFormat.PKG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ARJ = ArchiveFormat(ContainerFormat.ARJ, StreamFormat.UNCOMPRESSED)

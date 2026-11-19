@@ -42,14 +42,15 @@ read.
 | RAR (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([RAR](#rar)) |
 | ISO 9660 (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
 | SquashFS (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
-| XAR (`.xar`, macOS `.pkg` and `.xip`) | Core |
+| XAR (`.xar`) | Core |
+| macOS installer packages (`.pkg`, `.mpkg`, `.xip`) | Core |
 | CAB (`.cab`) | Core |
 | Debian packages (`.deb`, `.udeb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
 | RPM (`.rpm`) | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
 | makeself (`.run`) | Core. The payload needs what its compressor needs |
 | LHA (`.lzh`, `.lha`), ARJ (`.arj`) | Core |
 | CPIO (`.cpio`), ar (`.a`, `.lib`) | Core |
-| gzip (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`) | Core. `[recommended]` makes `.lzo` and `.sz` faster |
+| gzip (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`), Apple's pbzx | Core. `[recommended]` makes `.lzo` and `.sz` faster |
 | Zstandard (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
 | LZ4 (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
 | bzip3 (`.bz3`) | `[bzip3]` |
@@ -493,15 +494,12 @@ the layout and how damaged images are handled.
 
 ## XAR
 
-The format of macOS installer packages (`.pkg`) and `.xip` files, written by Apple's `xar`,
-`pkgbuild` and `productbuild`, and by `bsdtar --format xar`. It needs nothing extra. Members are
-read directly, each compressed on its own, but the archive needs a source that can seek, so not a
-pipe.
+The archive format written by Apple's `xar` and `bsdtar --format xar`. macOS installer packages
+and `.xip` files are XAR archives too: archivey opens them as
+[installer packages](#macos-installer-packages), and as XAR only with `format=ArchiveFormat.XAR`.
+XAR needs nothing extra. Members are read directly, each compressed on its own, but the archive
+needs a source that can seek, so not a pipe.
 
-- **Installer packages** are listed as the files their XAR layer holds: `Distribution`, and for
-  each component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a compressed CPIO
-  archive (or a `pbzx` stream in newer packages). Archivey reads it as one file and doesn't
-  expand it.
 - **Checksums:** the index's own checksum is checked at open. Each file stores a checksum of its
   data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
   its end.
@@ -510,6 +508,34 @@ pipe.
 
 The [XAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
 covers the index, its limits, hard links, and the shapes archivey refuses.
+
+## macOS installer packages
+
+macOS installer packages (`.pkg`, `.mpkg`), written by Apple's `pkgbuild` and
+`productbuild`, and Xcode's `.xip` archives. Each is a [XAR](#xar) archive whose payloads
+are CPIO archives; archivey lists the files inside them, the way `pkgutil --expand-full`
+unpacks a package. The format is `ArchiveFormat.PKG`.
+
+- **Needs:** nothing. Payloads are gzip or pbzx (Apple's xz in chunks), read with Python's
+  own modules.
+- **Listing:** each `Payload` and `Scripts`, in a component package or in a component's
+  folder of a product archive (`app.pkg/`), and the `Content` of a `.xip`, is listed as the
+  files its CPIO holds, under a folder of its own name:
+  `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and the
+  other files are listed as they are. Listing decodes every payload.
+- **Reading members:** solid within a payload: reading a file decodes its payload up to it,
+  and reading the files in order decodes each payload once.
+- **From a pipe:** no, as for XAR.
+- **Detection:** a XAR named `.pkg`, `.mpkg` or `.xip` is a package, and a `.xar` is not.
+  Without either name, a XAR whose index lists `Distribution` or `PackageInfo`, or both
+  `Content` and `Metadata`, is a package. `format=ArchiveFormat.XAR` opens a package as the
+  XAR files it holds, and `FormatPolicy` allows or refuses packages as `ContainerFormat.PKG`.
+- A payload's XAR checksum is checked as the listing reads it, and a payload that fails it
+  raises `CorruptionError`. A payload that is not a CPIO, or whose first CPIO header cannot
+  be read, is listed as the one file it is.
+- A file in a payload, or a hard link's target, whose name would extract outside the
+  payload's folder (`../Bom`) raises `CorruptionError`. A symlink in a payload is not
+  checked at listing; extraction applies its usual link checks.
 
 ## CAB
 
@@ -751,6 +777,8 @@ Some formats have more to know:
   extension. It decodes only once the whole file has arrived.
 - **Snappy** (`.sz`) is the framing format that `snzip` and the Snappy libraries write. Hadoop's
   `.snappy` files and raw Snappy blocks have no signature, and archivey doesn't read them.
+- **pbzx** is Apple's framing of xz, used for the payloads of macOS installer packages. Archivey
+  finds it by its `pbzx` signature.
 - **lzop** (`.lzo`) and Snappy decode in Python, many times slower, unless `[recommended]` is
   installed.
 - **bzip3** (`.bz3`) needs `[bzip3]`, which is in neither `[recommended]` nor `[all]` and doesn't

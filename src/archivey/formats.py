@@ -33,7 +33,8 @@ A sequential format is also read inside each single-file compression stream arch
 decodes (``.cpio.gz``), and its walk can hand the rest of the archive to one of
 archivey's codecs part-way (:meth:`ForwardStream.decompress`). Its walk can also read a
 member that is an archive in turn, a ``.deb``'s ``data.tar.xz`` say, as members of its
-own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`). A sequential
+own (:meth:`ForwardStream.take` and :meth:`ReaderContext.open_nested`), and an
+indexed reader can read a member that is an archive the same way. A sequential
 format whose library decodes each member hands archivey a stream of the decoded bytes
 (:attr:`MemberSpan.data`) instead of a count of stored bytes. What the first version
 leaves out: an indexed format inside a compression stream, self-extracting stubs,
@@ -787,6 +788,18 @@ class ReaderContext:
         ``MemberSpan.digests``. Stop early by closing the iterator; one left open is
         closed when Python collects it, and at the latest when the archive is closed.
 
+        An :class:`IndexedReader` calls it from :meth:`IndexedReader.iter_members` the
+        same way, and yields a :class:`MemberRecord` of each span's member at once, in
+        order, with a locator of its own that finds the inner archive again; it
+        leaves the span's ``data`` unread. To open such a member,
+        :meth:`IndexedReader.open_member` calls it again over the same inner archive's
+        bytes and format, and the iterator then yields one span, the member being
+        opened: return its ``data`` in :class:`MemberData`. archivey reads the inner
+        archive forward to the member, without reporting again what the listing
+        reported, and carries on from there when the next member opened is further
+        on in the same inner archive, so a pass over the members in order reads each
+        inner archive once.
+
         The caller's ``FormatPolicy`` holds as for :meth:`decompress`: a replaced
         format is read by its replacement, ``exclude_libraries`` and ``only_libraries``
         hold, and under
@@ -800,8 +813,9 @@ class ReaderContext:
         archive nested more than 8 deep (an inner reader calling ``open_nested`` in
         turn). What the inner reader attaches to a member while its data is read
         reaches the member the walk yielded. Call it from
-        :meth:`SequentialReader.walk` only; anywhere else it raises
-        ``ArchiveyUsageError``.
+        :meth:`SequentialReader.walk`, :meth:`IndexedReader.iter_members`, or
+        :meth:`IndexedReader.open_member` for a member listed from an inner archive;
+        anywhere else it raises ``ArchiveyUsageError``.
         """
         if self._open_nested is None:
             raise ArchiveyUsageError(

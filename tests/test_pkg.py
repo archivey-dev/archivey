@@ -1,0 +1,362 @@
+"""macOS installer packages (``.pkg``) and Xcode archives (``.xip``): a XAR whose
+``Payload``, ``Scripts`` and ``Content`` members are listed as the files they hold.
+
+The packages are written with ``tests/xar_util.py`` around payloads from
+``tests/pbzx_util.py``, laid out as ``pkgbuild`` and ``productbuild`` lay them out: a
+component package holds ``Bom``, ``PackageInfo``, ``Payload`` and ``Scripts``; a product
+archive holds a ``Distribution`` and one folder per component package.
+"""
+
+from __future__ import annotations
+
+import gzip
+import io
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ArchiveFormat,
+    MemberType,
+    detect_format,
+    open_archive,
+)
+from archivey.diagnostics import DiagnosticCode
+from archivey.exceptions import CorruptionError, StreamNotSeekableError
+from archivey.internal import format_adapter
+from archivey.internal.backends.pkg_reader import is_package
+from tests.pbzx_util import make_pbzx, odc_cpio
+from tests.streams_util import NonSeekableBytesIO
+from tests.xar_util import XarFile, write_xar
+
+_BIG = bytes(range(256)) * 400
+_PAYLOAD = odc_cpio(
+    [
+        (".", None),
+        ("./Applications", None),
+        ("./Applications/App.txt", b"hello"),
+        ("./Applications/big.bin", _BIG),
+    ]
+)
+_SCRIPTS = odc_cpio([("./postinstall", b"#!/bin/sh\nexit 0\n")])
+
+
+def _component(
+    payload: bytes = _PAYLOAD,
+    scripts: bytes | None = _SCRIPTS,
+    *,
+    pbzx: bool = True,
+    payload_encoding: str = "none",
+) -> list[XarFile]:
+    """A component package's members: the payload in pbzx (``pkgbuild`` today) or
+    gzip (older ones), the scripts in gzip."""
+    files = [
+        XarFile("Bom", b"BOMStore"),
+        XarFile("PackageInfo", b"<pkg-info/>"),
+        XarFile(
+            "Payload",
+            make_pbzx(payload) if pbzx else gzip.compress(payload),
+            encoding=payload_encoding,
+        ),
+    ]
+    if scripts is not None:
+        files.append(XarFile("Scripts", gzip.compress(scripts), encoding="none"))
+    return files
+
+
+def _product(*components: list[XarFile]) -> bytes:
+    folders = [
+        XarFile(f"app{n}.pkg", type="directory", children=files)
+        for n, files in enumerate(components)
+    ]
+    return write_xar([XarFile("Distribution", b"<installer-gui-script/>"), *folders])
+
+
+_PRODUCT = _product(_component())
+_LISTED = [
+    ("Distribution", MemberType.FILE),
+    ("app0.pkg/", MemberType.DIRECTORY),
+    ("app0.pkg/Bom", MemberType.FILE),
+    ("app0.pkg/PackageInfo", MemberType.FILE),
+    ("app0.pkg/Payload/", MemberType.DIRECTORY),
+    ("app0.pkg/Payload/Applications/", MemberType.DIRECTORY),
+    ("app0.pkg/Payload/Applications/App.txt", MemberType.FILE),
+    ("app0.pkg/Payload/Applications/big.bin", MemberType.FILE),
+    ("app0.pkg/Scripts/postinstall", MemberType.FILE),
+]
+
+
+def test_a_product_archive_lists_its_payloads_files() -> None:
+    with open_archive(io.BytesIO(_PRODUCT)) as archive:
+        assert archive.format == ArchiveFormat.PKG
+        assert [(m.name, m.type) for m in archive.members()] == _LISTED
+        assert archive.read("app0.pkg/Payload/Applications/App.txt") == b"hello"
+        assert archive.read("app0.pkg/Payload/Applications/big.bin") == _BIG
+        assert archive.read("app0.pkg/Scripts/postinstall").startswith(b"#!/bin/sh")
+        assert archive.read("app0.pkg/PackageInfo") == b"<pkg-info/>"
+        assert not archive.diagnostics.retained
+
+
+def test_format_xar_lists_the_payloads_as_they_are() -> None:
+    with open_archive(io.BytesIO(_PRODUCT), format=ArchiveFormat.XAR) as archive:
+        names = [m.name for m in archive.members()]
+    assert names == [
+        "Distribution",
+        "app0.pkg/",
+        "app0.pkg/Bom",
+        "app0.pkg/PackageInfo",
+        "app0.pkg/Payload",
+        "app0.pkg/Scripts",
+    ]
+
+
+def test_a_component_package_lists_its_payload_at_the_top() -> None:
+    blob = write_xar(_component(pbzx=False))
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert archive.format == ArchiveFormat.PKG
+        names = [m.name for m in archive.members()]
+        assert "Payload/Applications/App.txt" in names
+        assert "Scripts/postinstall" in names
+        assert archive.read("Payload/Applications/big.bin") == _BIG
+
+
+def test_a_payload_the_xar_layer_compresses_reads() -> None:
+    """``Payload`` itself stored with a XAR encoding: the CPIO is under both."""
+    blob = write_xar(_component(payload_encoding="gzip"))
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert archive.read("Payload/Applications/App.txt") == b"hello"
+
+
+def test_a_xip_lists_its_content() -> None:
+    content = odc_cpio([("./Xcode.app", None), ("./Xcode.app/Info.plist", b"plist")])
+    blob = write_xar(
+        [
+            XarFile("Content", make_pbzx(content), encoding="none"),
+            XarFile("Metadata", b"<plist/>"),
+        ]
+    )
+    assert detect_format(io.BytesIO(blob)).format == ArchiveFormat.PKG
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert [m.name for m in archive.members()] == [
+            "Content/Xcode.app/",
+            "Content/Xcode.app/Info.plist",
+            "Metadata",
+        ]
+        assert archive.read("Content/Xcode.app/Info.plist") == b"plist"
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (None, ArchiveFormat.PKG),
+        ("Installer.pkg", ArchiveFormat.PKG),
+        ("Installer.PKG", ArchiveFormat.PKG),
+        ("Xcode.xip", ArchiveFormat.PKG),
+        ("bundle.xar", ArchiveFormat.XAR),
+    ],
+)
+def test_detection(tmp_path: Path, name: str | None, expected: ArchiveFormat) -> None:
+    """A XAR is a package by its extension, else by the names its table of contents
+    starts with; one named ``.xar`` stays a XAR."""
+    if name is None:
+        assert detect_format(io.BytesIO(_PRODUCT)).format == expected
+        return
+    path = tmp_path / name
+    path.write_bytes(_PRODUCT)
+    assert detect_format(path).format == expected
+
+
+def test_a_plain_xar_is_not_a_package() -> None:
+    blob = write_xar([XarFile("a.txt", b"a"), XarFile("Payload", b"not a cpio")])
+    assert detect_format(io.BytesIO(blob)).format == ArchiveFormat.XAR
+    assert not is_package(blob, None)
+
+
+def test_a_payload_that_holds_no_cpio_is_listed_as_it_is() -> None:
+    files = _component()
+    files[2] = XarFile("Payload", b"something else", encoding="none")
+    with open_archive(io.BytesIO(write_xar(files))) as archive:
+        assert archive.read("Payload") == b"something else"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        gzip.compress(b"hello world, not a cpio" * 10),
+        make_pbzx(b"not cpio at all" * 10),
+        b"070707 but not a header",
+    ],
+    ids=["gzip", "pbzx", "cpio-magic"],
+)
+def test_a_payload_that_starts_like_a_cpio_but_holds_none_is_listed_as_it_is(
+    payload: bytes,
+) -> None:
+    """Its first bytes match, but no CPIO header follows: the payload is listed as
+    the file it is, and the other members stay readable."""
+    files = _component()
+    files[2] = XarFile("Payload", payload, encoding="none")
+    with open_archive(io.BytesIO(write_xar(files))) as archive:
+        assert archive.format == ArchiveFormat.PKG
+        assert "Payload" in [m.name for m in archive.members()]
+        assert archive.read("Payload") == payload
+        assert archive.read("Bom")
+
+
+def test_a_payload_that_fails_its_xar_checksum_is_refused() -> None:
+    """A byte of a file's data changed in a stored chunk: the CPIO still reads, and
+    the payload's XAR checksum catches it."""
+    files = _component()
+    files[2] = XarFile("Payload", make_pbzx(_PAYLOAD, store=True), encoding="none")
+    blob = bytearray(write_xar(files))
+    blob[blob.index(b"hello")] ^= 0x20
+    with (
+        pytest.raises(CorruptionError, match="Payload.*sha1 checksum"),
+        open_archive(io.BytesIO(bytes(blob)), format=ArchiveFormat.PKG) as archive,
+    ):
+        archive.members()
+
+
+@pytest.mark.parametrize(
+    ("entries", "links"),
+    [
+        ([("./../Bom", b"x")], None),
+        ([("./../../Distribution", b"x")], None),
+        ([("./a/../../Scripts/postinstall", b"x")], None),
+        ([("./a", b"x"), ("./../Bom", b"")], {"./../Bom": "./a"}),
+    ],
+    ids=["sibling", "package-top", "through-a-folder", "file-escapes"],
+)
+def test_a_payload_file_outside_its_folder_is_refused(
+    entries: list[tuple[str, bytes | None]], links: dict[str, str] | None
+) -> None:
+    blob = _product(_component(odc_cpio(entries, links=links)))
+    with (
+        pytest.raises(CorruptionError, match="outside its folder"),
+        open_archive(io.BytesIO(blob)) as archive,
+    ):
+        archive.members()
+
+
+def test_a_hard_link_to_a_path_outside_its_folder_is_refused() -> None:
+    payload = odc_cpio([("./../x", b"x"), ("./b", b"")], links={"./b": "./../x"})
+    blob = _product(_component(payload))
+    with (
+        pytest.raises(CorruptionError, match="outside its folder"),
+        open_archive(io.BytesIO(blob)) as archive,
+    ):
+        archive.members()
+
+
+def test_a_hard_link_inside_a_payload_names_its_prefixed_target() -> None:
+    payload = odc_cpio([("./a", b"data"), ("./b", b"data")], links={"./b": "./a"})
+    with open_archive(io.BytesIO(_product(_component(payload)))) as archive:
+        link = archive.get("app0.pkg/Payload/b")
+        assert link.type is MemberType.HARDLINK
+        assert link.link_target == "app0.pkg/Payload/a"
+        assert archive.read(link) == b"data"
+
+
+def test_members_open_in_any_order_and_again() -> None:
+    blob = _product(_component(), _component())
+    with open_archive(io.BytesIO(blob)) as archive:
+        archive.members()
+        assert archive.read("app1.pkg/Payload/Applications/big.bin") == _BIG
+        assert archive.read("app0.pkg/Scripts/postinstall").startswith(b"#!")
+        assert archive.read("app0.pkg/Payload/Applications/App.txt") == b"hello"
+        assert archive.read("app0.pkg/Payload/Applications/App.txt") == b"hello"
+        assert archive.read("app1.pkg/Payload/Applications/App.txt") == b"hello"
+
+
+def test_two_members_of_one_payload_read_at_once() -> None:
+    with open_archive(io.BytesIO(_PRODUCT), concurrent_operations=True) as archive:
+        archive.members()
+        with (
+            archive.open("app0.pkg/Payload/Applications/App.txt") as first,
+            archive.open("app0.pkg/Payload/Applications/big.bin") as second,
+        ):
+            assert second.read(10) == _BIG[:10]
+            assert first.read() == b"hello"
+            assert second.read() == _BIG[10:]
+
+
+def test_a_report_from_inside_a_payload_is_made_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CPIO reader reports the unknown type while listing. Reading the members
+    after it reads the payload again, and that report is not made again."""
+    payload = odc_cpio(
+        [("./a", b"a"), ("./odd", b"x"), ("./z", b"z")],
+        modes={"./odd": 0o170644},
+    )
+    with open_archive(io.BytesIO(_product(_component(payload)))) as archive:
+        members = archive.members()
+        assert archive.read("app0.pkg/Payload/z") == b"z"
+        assert archive.read("app0.pkg/Payload/odd") == b"x"
+        assert archive.read("app0.pkg/Payload/a") == b"a"
+        unknown = [
+            d
+            for d in archive.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN
+        ]
+    assert len(unknown) == 1
+    odd = next(m for m in members if m.name == "app0.pkg/Payload/odd")
+    assert unknown[0].context.member_id == odd._member_id  # type: ignore[attr-defined]
+
+
+def test_an_in_order_pass_reads_each_payload_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    opened: list[object] = []
+    original = format_adapter._PluginAdapter._nested_spans
+
+    def counting(self: object, *args: object, **kwargs: object) -> object:
+        opened.append(args[2])
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(format_adapter._PluginAdapter, "_nested_spans", counting)
+    blob = _product(_component(), _component())
+    with open_archive(io.BytesIO(blob)) as archive:
+        archive.members()
+        listed = len(opened)
+        assert listed == 4  # two payloads and two scripts
+        archive.extract_all(tmp_path)
+        # Each payload and scripts archive is read again once, from its first file
+        # to its last.
+        assert len(opened) == 2 * listed
+    assert (tmp_path / "app1.pkg/Payload/Applications/big.bin").read_bytes() == _BIG
+    assert (tmp_path / "app0.pkg/Scripts/postinstall").read_bytes().startswith(b"#!")
+    assert (tmp_path / "app0.pkg/PackageInfo").read_bytes() == b"<pkg-info/>"
+
+
+def test_stream_members_reads_every_file() -> None:
+    with open_archive(io.BytesIO(_PRODUCT)) as archive:
+        read = {
+            member.name: stream.read()
+            for member, stream in archive.stream_members()
+            if stream is not None
+        }
+    assert read["app0.pkg/Payload/Applications/big.bin"] == _BIG
+    assert read["Distribution"] == b"<installer-gui-script/>"
+
+
+def test_members_seek() -> None:
+    with (
+        open_archive(io.BytesIO(_PRODUCT), seekable_members=True) as archive,
+        archive.open("app0.pkg/Payload/Applications/big.bin") as stream,
+    ):
+        stream.seek(70_000)
+        assert stream.read(10) == _BIG[70_000:70_010]
+        stream.seek(5)
+        assert stream.read(10) == _BIG[5:15]
+
+
+def test_a_pipe_is_refused() -> None:
+    with pytest.raises(StreamNotSeekableError):
+        open_archive(NonSeekableBytesIO(_PRODUCT), format=ArchiveFormat.PKG)
+
+
+def test_listing_says_it_decodes() -> None:
+    with open_archive(io.BytesIO(_PRODUCT)) as archive:
+        cost = archive.cost
+    assert cost.listing_cost.name == "REQUIRES_SCANNING"
+    assert cost.access_cost.name == "SOLID"

@@ -1,5 +1,5 @@
-"""An XAR reader (``.xar``, macOS ``.pkg`` and ``.xip``), written against
-``archivey.formats``.
+"""An XAR reader (``.xar``; also the XAR layer of a macOS ``.pkg`` or ``.xip`` under
+``format=ArchiveFormat.XAR``), written against ``archivey.formats``.
 
 The layout, from Apple's ``xar`` sources (``include/xar.h.in``, ``lib/archive.c``) and
 libarchive's ``archive_read_support_format_xar.c``: a big-endian header (``xar!``, its
@@ -15,9 +15,9 @@ The reader reads the whole TOC at open, bounded by ``max_metadata_bytes`` before
 decoded and by ``max_members`` while it is parsed, and checks its checksum. The XML is
 parsed with expat, refusing a document type declaration, so no entity is ever
 expanded. A member's data is decoded through archivey's codecs, refusing any byte
-after the end of its stream, and checked against its extracted checksum. A ``.pkg``'s
-payloads are listed as the files they are (``Payload``, a gzip-compressed CPIO), not
-opened. Handbook page: ``dev-docs/formats/xar.md``.
+after the end of its stream, and checked against its extracted checksum. This reader
+lists a package's ``Payload`` (a gzip or pbzx CPIO) as one file; ``pkg_reader`` expands
+it. Handbook page: ``dev-docs/formats/xar.md``.
 """
 
 from __future__ import annotations
@@ -461,9 +461,20 @@ def _timestamp(text: str) -> datetime | None:
     return None
 
 
+class _Inner(NamedTuple):
+    """A file a package payload holds (``pkg_reader``): the payload's own member and
+    locator, and the format of the archive inside it."""
+
+    payload: ArchiveMember
+    location: _Location
+    format: ArchiveFormat
+
+
 class _Location(NamedTuple):
     data: _Data | None
     """``None`` for a member with no data, which opens empty."""
+    inner: _Inner | None = None
+    """Set for a file a package payload holds (``pkg_reader``)."""
 
 
 class XarReader(IndexedReader[_Location]):
@@ -742,10 +753,11 @@ def _empty() -> io.BytesIO:
 
 
 class XarHandler(IndexedFormatHandler):
-    """XAR archives: ``.xar``, and macOS ``.pkg`` and ``.xip``."""
+    """XAR archives (``.xar``), listed as the archive holds them. A macOS ``.pkg`` or
+    ``.xip`` is a XAR too, read with its payloads expanded by ``pkg_reader``."""
 
     format = ArchiveFormat.XAR
-    extensions = (".xar", ".pkg", ".xip")
+    extensions = (".xar",)
     magic = (Magic(0, MAGIC + b"\0"),)
     uses_encoding = True
     non_seekable_reason = "its files' data sit anywhere in the heap after the index"

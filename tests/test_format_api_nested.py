@@ -43,9 +43,14 @@ from archivey import (
 from archivey.diagnostics import DiagnosticCode
 from archivey.formats import (
     ForwardStream,
+    IndexedFormatHandler,
+    IndexedReader,
     Magic,
+    MemberData,
+    MemberRecord,
     MemberSpan,
     ReaderContext,
+    ReaderSource,
     SequentialFormatHandler,
     SequentialReader,
     register_format,
@@ -943,3 +948,116 @@ def test_every_level_is_held_to_the_ratio_of_the_outermost_archive(
         else:
             names = _names(data, PaddedBoxesHandler.format, config)
             assert names == ["0/0/0/a", "0/0/0/b"]
+
+
+# An indexed format over the same bytes: the boxes are found by seeking, and an inner
+# member's locator says which box holds it.
+
+
+class IndexedBoxesContainer(PluginContainer):
+    IBOXES = "iboxes"
+
+
+class IndexedBoxesReader(IndexedReader[tuple[int, int, ArchiveFormat]]):
+    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+        self._source = source
+        self._context = context
+        self._boxes: list[tuple[int, int, ArchiveFormat]] = []
+        offset = 5
+        while True:
+            size = int(source.read_exact(offset, 8))
+            if not size:
+                break
+            kind = _KINDS[source.read_exact(offset + 8, 1)]
+            self._boxes.append((offset + 9, size, kind))
+            offset += 9 + size
+
+    def iter_members(self) -> Iterator[MemberRecord[tuple[int, int, ArchiveFormat]]]:
+        for box, (start, size, kind) in enumerate(self._boxes):
+            data = self._source.view(start, size)
+            for span in self._context.open_nested(data, kind):
+                member = span.member
+                member.name = f"{box}/{member.name}"
+                if member.type is MemberType.HARDLINK and member.link_target:
+                    member.link_target = f"{box}/{member.link_target}"
+                yield MemberRecord(member, (start, size, kind))
+
+    def open_member(
+        self, member: ArchiveMember, locator: tuple[int, int, ArchiveFormat]
+    ) -> MemberData:
+        start, size, kind = locator
+        span = next(
+            iter(self._context.open_nested(self._source.view(start, size), kind))
+        )
+        assert span.data is not None
+        return MemberData(span.data)
+
+
+class IndexedBoxesHandler(IndexedFormatHandler):
+    format = ArchiveFormat(IndexedBoxesContainer.IBOXES, StreamFormat.UNCOMPRESSED)
+
+    def open(self, source: ReaderSource, context: ReaderContext) -> IndexedBoxesReader:
+        return IndexedBoxesReader(source, context)
+
+
+@pytest.fixture
+def indexed_boxes() -> Iterator[None]:
+    with registration_scope():
+        register_format(IndexedBoxesHandler)
+        yield
+
+
+@pytest.mark.usefixtures("indexed_boxes")
+def test_an_indexed_reader_lists_and_opens_inner_members() -> None:
+    with open_archive(io.BytesIO(_TWO), format=IndexedBoxesHandler.format) as reader:
+        members = reader.members()
+        assert [m.name for m in members] == list(_LISTED)
+        assert [m._member_id for m in members] == [0, 1, 2, 3]
+        assert reader.read("1/usr/share/y") == b"y"
+        assert reader.read("0/etc/conf") == b"conf"
+        assert reader.read("1/usr/bin/x") == b"x" * 5000
+        assert reader.read("1/usr/bin/x") == b"x" * 5000
+        assert members[1].link_target == "0/etc/conf"
+        assert reader.read(members[1]) == b"conf"
+
+
+@pytest.mark.usefixtures("indexed_boxes")
+def test_an_indexed_reader_reports_an_inner_finding_once() -> None:
+    inner = bytearray(_tar([("odd", b"data")]))
+    inner[156:157] = b"Q"
+    checksum = sum(inner[:148]) + 8 * 32 + sum(inner[156:512])
+    inner[148:156] = b"%06o\0 " % checksum
+    data = _boxes((b"T", _tar([("a", b"a"), ("b", b"b")])), (b"T", bytes(inner)))
+    with open_archive(io.BytesIO(data), format=IndexedBoxesHandler.format) as reader:
+        members = reader.members()
+        for name in ("0/b", "1/odd", "0/a", "1/odd"):
+            reader.read(name)
+        retained = reader.diagnostics.retained
+    unknown = [d for d in retained if d.code is DiagnosticCode.MEMBER_TYPE_UNKNOWN]
+    assert len(unknown) == 1
+    assert unknown[0].context.member_id == 2  # type: ignore[attr-defined]
+    assert unknown[0] in members[2].diagnostics
+
+
+def test_open_member_of_a_member_from_no_inner_archive_is_refused() -> None:
+    class Stray(IndexedBoxesReader):
+        def iter_members(
+            self,
+        ) -> Iterator[MemberRecord[tuple[int, int, ArchiveFormat]]]:
+            start, size, kind = self._boxes[0]
+            yield MemberRecord(
+                ArchiveMember(type=MemberType.FILE, name="plain", size=0),
+                (start, size, kind),
+            )
+
+    class StrayHandler(IndexedBoxesHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> Stray:
+            return Stray(source, context)
+
+    with registration_scope():
+        register_format(StrayHandler)
+        with (
+            open_archive(io.BytesIO(_TWO), format=StrayHandler.format) as reader,
+            pytest.raises(ArchiveyUsageError, match="open_nested"),
+        ):
+            reader.read("plain")
