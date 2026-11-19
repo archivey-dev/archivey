@@ -310,10 +310,6 @@ in a real folder named `__MACOSX`.
 
 - **Reading:** archivey reads the index at the end of the file, so listing is quick and every
   member can be read directly.
-- **From a pipe:** with `streaming=True`. A member's mode, comment and owner, and whether it is a
-  symlink, are stored only in the index at the end, so they arrive when the pass gets there, and
-  `member.member_state_final` turns `True` then. Extraction from a pipe keeps the files in a
-  temporary folder inside the destination, and puts them in place once the index has been read.
 - **Split sets:** a set split by 7-Zip (`name.zip.001`, `.002`, …), or spanned by `zip -s` or
   WinZip (`name.z01`, `.z02`, …, `name.zip`), opens from any part, when all parts are in one
   folder. A missing part raises `TruncatedError`.
@@ -345,8 +341,6 @@ describes each case and the error it raises.
   reaching a member means decompressing everything before it, so a single `stream_members()` pass
   is the fast way to read many members. Reading one by name after listing resumes from the nearest
   restart point ([Seeking in compressed files](#seeking-in-compressed-files)).
-- **From a pipe:** yes. Archivey reads up to 1 MiB past the end of the archive to check for
-  trailing data, so close the sending side when the tar is done, or the listing waits.
 - **Headers** are read the way GNU tar reads them, the same on every Python version. Where tools
   disagree on a member's name, link target or size, archivey gives GNU tar's answer and reports a
   diagnostic. Old v7 tars, which have no `ustar` signature, are recognised by their checksum.
@@ -370,10 +364,9 @@ describes each case.
 
 ## 7z
 
-- **Reading:** archivey reads the index at the end of the file, so the archive needs a source
-  that can seek: a pipe raises `StreamNotSeekableError`. Members are solid unless the archive was
-  written without solid blocks (`7z -ms=off`). A `stream_members()` pass decodes each solid block
-  once. Opening a member in the middle of a block may decode the block again from its start.
+- **Reading:** archivey reads the index at the end of the file. Members are solid unless the archive
+  was written without solid blocks (`7z -ms=off`). A `stream_members()` pass decodes each solid
+  block once. Opening a member in the middle of a block may decode the block again from its start.
 - **Compression methods:** the core install reads LZMA, LZMA2, Deflate, BZip2, Delta and the
   executable filters, including BCJ2, ARM64 and RISC-V, which archivey decodes in Python and so
   read more slowly. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before
@@ -415,8 +408,6 @@ ArchiveyConfig(rar_decompressor="none")   # run no program
 - **Volume sets** (`.part1.rar`, or `.rar` with `.r00`) open from any volume when all are in one
   folder. If a volume is missing, the members in the remaining volumes are listed, and reading a
   member with data in the missing volume raises `TruncatedError`.
-- **From a pipe:** with `streaming=True` and `unrar` 7.00 or later, for an archive in a single
-  volume.
 - **Encryption:** `[recommended]` adds archives with encrypted headers. RAR5 stores a password
   check, so a list of passwords is tried quickly. RAR 1.5-4 doesn't, so each wrong candidate costs
   a decode, and putting the likely password first is faster.
@@ -438,7 +429,7 @@ Damaged archives, and the details of how archivey runs `unrar` and `unar`, are c
 
 ## ISO 9660
 
-Reading an ISO image needs `[recommended]` (`pycdlib`) and a source that can seek, so not a pipe.
+Reading an ISO image needs `[recommended]` (`pycdlib`).
 An image can carry several name trees over the same files. Archivey lists Rock Ridge first, then
 Joliet, then plain ISO 9660, and says which in `ArchiveInfo.extra["iso.namespace"]`.
 
@@ -477,9 +468,8 @@ Archivey also refuses folder trees that loop back on themselves, survives Rock R
 ## SquashFS
 
 gzip, xz, LZMA and LZO images need nothing extra. Zstandard images need `[recommended]` before
-Python 3.14, and LZ4 images need `[recommended]`. Members are read directly, but the image needs a
-source that can seek, so not a pipe. `ArchiveInfo.extra` names the compressor
-(`"squashfs.compressor"`) and the block size (`"squashfs.block_size"`).
+Python 3.14, and LZ4 images need `[recommended]`. Members are read directly. `ArchiveInfo.extra`
+names the compressor (`"squashfs.compressor"`) and the block size (`"squashfs.block_size"`).
 
 - **Members:** files, folders, symlinks, hard links, sparse files (`is_sparse`), and devices,
   FIFOs and sockets (`OTHER`). Extended attributes are not read.
@@ -497,8 +487,7 @@ the layout and how damaged images are handled.
 The archive format written by Apple's `xar` and `bsdtar --format xar`. macOS installer packages
 and `.xip` files are XAR archives too: archivey opens them as
 [installer packages](#macos-installer-packages), and as XAR only with `format=ArchiveFormat.XAR`.
-XAR needs nothing extra. Members are read directly, each compressed on its own, but the archive
-needs a source that can seek, so not a pipe.
+XAR needs nothing extra. Members are read directly, each compressed on its own.
 
 - **Checksums:** the index's own checksum is checked at open. Each file stores a checksum of its
   data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
@@ -525,7 +514,6 @@ unpacks a package. The format is `ArchiveFormat.PKG`.
   other files are listed as they are. Listing decodes every payload.
 - **Reading members:** solid within a payload: reading a file decodes its payload up to it,
   and reading the files in order decodes each payload once.
-- **From a pipe:** no, as for XAR.
 - **Detection:** a XAR named `.pkg`, `.mpkg` or `.xip` is a package, and a `.xar` is not.
   Without either name, a XAR whose index lists `Distribution` or `PackageInfo`, or both
   `Content` and `Metadata`, is a package. `format=ArchiveFormat.XAR` opens a package as the
@@ -541,8 +529,7 @@ unpacks a package. The format is `ArchiveFormat.PKG`.
 
 Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and what
 `makecab` and `gcab` write. Cabinets need nothing extra: MSZIP is read with Python's `zlib`, and
-LZX is decoded by archivey itself, in Python, at a few megabytes a second. The cabinet needs a
-source that can seek, so not a pipe.
+LZX is decoded by archivey itself, in Python, at a few megabytes a second.
 
 - **Solid folders:** a cabinet groups its files into folders, each one compressed stream.
   Reaching a file decodes its folder from the start. Reading the files in listed order, as
@@ -566,7 +553,7 @@ details.
 LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari ST
 and Japanese PCs, and from LHa for UNIX. They need nothing extra: archivey decodes the methods
 itself, in Python, at about 4 to 8 MB a second. Each member is compressed on its own and read
-directly. The archive needs a source that can seek, so not a pipe, for now.
+directly.
 
 - **Methods:** header levels 0 to 3, stored members, `-lh1-` and `-lh4-` to `-lh7-`, `-lhx-`,
   `-lk7-`, `-lzs-` and `-lz5-` can be read. `-lh2-`, `-lh3-`, `-pm1-` and `-pm2-` members are
@@ -576,7 +563,7 @@ directly. The archive needs a source that can seek, so not a pipe, for now.
 - **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. An archive from a Japanese PC
   is usually `encoding="cp932"`.
 - **Self-extracting programs** for DOS, Windows, the Amiga, the Atari and the X68000 open as
-  archives ([Detection](#detection)).
+  archives ([Self-extracting archives](#self-extracting-archives)).
 - **Mac files** archived by MacLHA are read as their data fork, or their resource fork when the
   data fork is empty, as `lhasa` reads them.
 
@@ -587,8 +574,7 @@ covers header levels, the per-system fields, and how the MacLHA wrapper is recog
 
 ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Linux). They need
 nothing extra: archivey decodes methods 0 to 4 itself, in Python, at about 10 to 30 MB a second.
-Each member is compressed on its own and read directly. The archive needs a source that can seek,
-so not a pipe, for now.
+Each member is compressed on its own and read directly.
 
 - **Checksums:** each member stores a CRC-32 of its data, checked when you read it to its end.
 - **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
@@ -597,7 +583,7 @@ so not a pipe, for now.
   one raises `UnsupportedFeatureError`, as does reading a member split across the volumes of a
   multi-volume set.
 - **Self-extracting programs**, ARJ's DOS `.EXE` modules and ARJ for Unix's ELF programs, open as
-  archives.
+  archives ([Self-extracting archives](#self-extracting-archives)).
 
 The [ARJ handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md)
 covers the per-system fields and the ARJ-SECURITY envelope.
@@ -605,9 +591,8 @@ covers the per-system fields and the ARJ-SECURITY envelope.
 ## CPIO
 
 CPIO is the old Unix archive format still used inside RPM packages, Linux initramfs images and macOS
-installer payloads. CPIO archives need nothing extra, and can be read from a pipe with
-`streaming=True`. Members are read directly, or inside a compressor (`.cpio.gz`, …) one after
-another, as in a compressed TAR.
+installer payloads. CPIO archives need nothing extra. Members are read directly, or inside a
+compressor (`.cpio.gz`, …) one after another, as in a compressed TAR.
 
 - **Variants:** binary (either byte order), odc, newc and crc can be read.
   `ArchiveInfo.extra["cpio.variant"]` names the variant as GNU cpio's `-H` option does. In crc,
@@ -625,8 +610,8 @@ covers afio's large headers, detection inside a compressor, and data after the t
 
 ## ar
 
-ar archives (static libraries, Windows `.lib` files) need nothing extra, and can be read from a
-pipe with `streaming=True`. Every member is a file, read directly: ar has no folders or links.
+ar archives (static libraries, Windows `.lib` files) need nothing extra. Every member is a file,
+read directly: ar has no folders or links.
 
 - **Dialects:** both GNU (System V, Windows `.lib`) and BSD (macOS) can be read.
   `ArchiveInfo.extra["ar.dialect"]` says which.
@@ -648,7 +633,7 @@ installs. Archivey lists it as `dpkg-deb -R` unpacks it: the installed files und
 names, and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. xz,
 gzip, bzip2 and LZMA packages need nothing extra, and Zstandard ones need `[recommended]` before
 Python 3.14. Listing decompresses both tars, and members are read one after another, as in a
-compressed TAR. Packages can be read from a pipe with `streaming=True`.
+compressed TAR.
 
 - **Package fields:** `ArchiveInfo.extra` has `deb.package`, `deb.version` and
   `deb.architecture` from the control file, once the listing or `stream_members()` has read it.
@@ -666,7 +651,7 @@ the rules and their limits.
 
 An RPM package is a header listing every file, followed by a compressed CPIO payload. gzip,
 bzip2, xz and LZMA payloads need nothing extra, and Zstandard ones (Fedora's default) need
-`[recommended]` before Python 3.14. Packages can be read from a pipe with `streaming=True`.
+`[recommended]` before Python 3.14.
 
 - **Listing** comes from the header alone, so nothing is decompressed until you read a member.
   Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for `/usr/bin/tool`.
@@ -691,8 +676,8 @@ A makeself archive is a `.run` installer: a shell script that unpacks the TARs s
 NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are shipped this way.
 Archivey reads the TARs from makeself 2.2.0 and later, and never runs the script. It finds them by
 the script's first lines, whatever the file is called. The payload needs what its compressor needs
-(as for the same `.tar.gz`, `.tar.zst`, …). Listing decompresses it, members are read one after
-another, and archives can be read from a pipe with `streaming=True`.
+(as for the same `.tar.gz`, `.tar.zst`, …). Listing decompresses it, and members are read one after
+another.
 
 - **Several payloads:** makeself 2.2.0 to 2.4.0 add a TAR at each `--append`. Archivey lists each
   TAR's members after the previous one's, as makeself extracts them.
@@ -715,9 +700,8 @@ isn't mistaken for the zlib, bzip2 or xz stream its first block happens to be. T
 files, convert or mount the image first, for example with `7z x`, `dmg2img`, or `hdiutil attach`
 on macOS. An uncompressed image that holds an ISO 9660 filesystem is read as that ISO.
 
-A `.dmg` read from a pipe can't be recognised this way, because its marker is in the last 512 bytes.
 The [DMG handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) says
-what happens then.
+how the image is recognised.
 
 ## Directory
 
@@ -741,8 +725,8 @@ the walk order and symlinks.
 A compressed file holds one file, so archivey lists it as one member, named after the source
 without its compression extension (`notes.txt.gz` holds `notes.txt`, `sessionstore.jsonlz4` holds
 `sessionstore.json`), or `data` for a source with no name. The [Overview](#overview) says what each
-format needs. All of them can be read from a pipe, and a member stream can seek only with
-`seekable_members=True` ([Seeking in compressed files](#seeking-in-compressed-files)).
+format needs. A member stream can seek only with `seekable_members=True` ([Seeking in compressed
+files](#seeking-in-compressed-files)).
 
 - **Size:** most formats store no original size that can be read without decoding, so
   `member.size` is often `None` at listing and is filled in when a read reaches the end. `.xz` and
@@ -761,9 +745,6 @@ format needs. All of them can be read from a pipe, and a member stream can seek 
   Archivey returns the whole payload, then reports `ARCHIVE_TRAILING_DATA`. `.Z` and `.bz3` have no
   end marker, so they can't tell where the data stops: `.Z` decodes appended bytes as data, and
   `.bz3` raises `CorruptionError` on them, as the `bzip3` tool does.
-- **From a pipe the sender keeps open**, archivey decodes what has arrived. bzip2 and bzip3 decode
-  only whole blocks (up to 900 kB, and 16 MiB by default), and `open_archive` on a file of a few
-  KiB waits for the pipe to close. Close the sending side when the file is done.
 - **Memory:** a Zstandard window, a mozlz4 size and a bzip3 block size are declared by the file.
   `DecoderLimits.max_decoder_memory` (2 GiB by default) caps the memory they ask for, and a file
   over the cap raises `ResourceLimitError`.
@@ -808,11 +789,8 @@ doesn't matter. `detect_format()` returns the answer without opening the archive
   name ends in one of their extensions (`.lzma`, `.zz`, `.br`, and their `.tar.` forms). To read
   one with no name or another name, pass `format=`, use `open_stream()`, or set
   `ArchiveyConfig(always_probe_content=True)`.
-- **Archives behind other bytes** are found, as 7-Zip and `unzip` find them: a ZIP, 7z, RAR, LHA or
-  ARJ behind a self-extracting program, a `#!` launcher, an image or any other bytes, within the
-  first 2 MiB, and a compressed TAR behind a shell-script installer. `FormatInfo.prefixed` is
-  `True` and `payload_offset` says where the archive starts. From a pipe, only the bytes that have
-  arrived when detection runs are searched, so an archive that starts further in can be missed.
+- **Archives behind a program or other bytes** are found too
+  ([Self-extracting archives](#self-extracting-archives)).
 - **A file that is two formats at once** gets one fixed answer. Pass `format=` to read it as the
   other.
 
@@ -820,6 +798,54 @@ The [detection
 handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/detection.md) gives the
 full order of the checks, each format's probe, and how signed and resource-packed installers are
 handled.
+
+## Reading from a pipe
+
+A pipe, a socket or an HTTP response can be read once, from start to end, with `streaming=True`
+([Reading once](reading.md#reading-once)). Whether a format can be read that way depends on where
+it keeps what archivey needs.
+
+- **Can be read from a pipe:** ZIP, TAR and compressed TAR, CPIO, ar, Debian packages, RPM,
+  makeself, and every single-file compressor. RAR can too, for an archive in one volume, when
+  `unrar` 7.00 or later is installed.
+- **Need a source that can seek:** 7z, ISO 9660, SquashFS, XAR and macOS installer packages, CAB,
+  LHA and ARJ. Opening one from a pipe raises `StreamNotSeekableError`. Copy it to a file or an
+  `io.BytesIO` first.
+
+Some formats behave differently from a pipe:
+
+- **ZIP** keeps a member's mode, owner, comment and symlink flag only in the index at its end, so
+  from a pipe they arrive when the pass gets there, and `member.member_state_final` turns `True`
+  then. Extraction keeps the files in a temporary folder inside the destination until the index
+  has been read.
+- **TAR** reads up to 1 MiB past the end of the archive to check for trailing data, so the listing
+  ends only when the sender closes the pipe.
+- **Compressed files** are decoded from what has arrived. bzip2 and bzip3 decode only whole blocks
+  (up to 900 kB, and 16 MiB by default), mozlz4 decodes only once the whole file has arrived, and
+  `open_archive` on a file of a few KiB waits for the pipe to close. Close the sending side when
+  the file is done.
+- **Detection** sees only the start of a pipe. A `.dmg` isn't recognised, because its marker is at
+  the end. LZMA Alone, zlib and Brotli have no name to go by, so they need `format=`. An archive
+  behind other bytes is found only within the bytes that have arrived when detection runs.
+
+## Self-extracting archives
+
+A self-extracting archive is a program with an archive stored after it, or for some Windows
+installers inside it. Archivey reads the archive and never runs the program. It finds:
+
+- a ZIP, 7z, RAR, LHA or ARJ behind a Windows, Linux or macOS program;
+- the DOS, Windows, Amiga, Atari and X68000 self-extractors of LHA, and ARJ's own;
+- a ZIP, 7z, RAR, LHA or ARJ behind a `#!` launcher, such as a Python zipapp (`.pyz`), and a
+  compressed TAR behind a shell-script installer, such as CMake's CPack `.sh`;
+- a ZIP, 7z, RAR, LHA or ARJ behind any other bytes, such as an image, within the first 2 MiB.
+
+`FormatInfo.prefixed` is `True`, and `payload_offset` says where the archive starts. A signed
+Windows program's signature isn't reported as data after the archive. makeself `.run` installers
+are their own format ([makeself](#makeself)).
+
+The [prefixed-archives
+handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/prefixed-archives.md)
+covers how far the search goes and how installers that pack the archive as a resource are read.
 
 ## What archivey does not do
 
