@@ -15,16 +15,20 @@ the name decodes exactly as it does today.
 
 **Decided:** Latin code pages are never guessed, because every guesser tested was often
 wrong where the default was right. Each name is guessed from the legacy names met so
-far, in archive order, and the guess freezes after the first 256. Each stored name
-decodes once per reader. So streaming and random access give the same names, and so does
-any member limit, with no lookahead on TAR streams. Every guessed name reports the
-existing inferred-encoding diagnostic, and the strict policy refuses it. Plugins get the
-guess through their decode-name helper, and their encoding property reads None.
-Cyrillic, Greek and Hebrew need the chardet library and wait for a later change.
+far, in archive order, and the guess freezes after the first 256. Each stored name, and
+each directory path, decodes once per reader, so a folder and its children always stay
+one tree. Streaming and random access give the same names, and so does any member limit,
+with no lookahead on TAR streams. The one exception is a ZIP whose central directory is
+in another order than its local headers. Link targets and comments never change the
+guess. Plugins decode member names with decode name and other text with a new decode
+text. ISO takes the Joliet name before guessing. Every guessed name reports the existing
+inferred-encoding diagnostic, and the strict policy refuses it. Cyrillic, Greek and
+Hebrew need the chardet library and wait for a later change.
 
 **Your call later:** Whether the frequency tables come from Wikipedia titles, as
 measured, or from public standard character lists. davi asked for the reviewer's view
-first. Settled since the draft: names that happen to be valid UTF-8 stay out of the guess.
+first. Settled since the draft: names that happen to be valid UTF-8 stay out of the
+guess.
 
 **Bottom line:** A small, well-measured feature, with the hard consistency question
 settled in the design. It is ready once the review agrees.

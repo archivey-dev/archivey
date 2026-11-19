@@ -6,9 +6,10 @@ for ZIP (`zip_unflagged_fallback_encoding`), and UTF-8 with `surrogateescape` fo
 others. ZIP, TAR, RAR and ISO decode in their own readers, each holding
 `self._encoding`. The plugin-shaped built-ins (cpio, ar, RPM, deb, makeself, SquashFS,
 CAB, XAR, LHA, ARJ) and third-party plugins call `ReaderContext.decode_name()`
-(`src/archivey/formats.py`). ZIP and RAR already report a codec archivey chose itself
-with `MEMBER_NAME_ENCODING_INFERRED`, which is in `ARCHIVE_INTEGRITY_CODES`, so STRICT
-refuses it.
+(`src/archivey/formats.py`). ZIP, RAR and TAR already report a codec archivey chose
+itself with `MEMBER_NAME_ENCODING_INFERRED`. ISO reports it, with empty
+`inferred_encoding` and `declared_encoding`, for a Rock Ridge name taken from the Joliet
+tree. The code is in `ARCHIVE_INTEGRITY_CODES`, so STRICT refuses it.
 
 davi asked (2026-11-18) whether archivey could guess non-Western encodings from the
 bytes. The investigation measured a hand-written check against chardet,
@@ -86,10 +87,16 @@ own change if a caller needs it.
 ### 2. The guesser: strict decode, frequency score, guards, abstain
 
 For each candidate in (cp932, euc_jp, gbk, big5, cp949), every evidence name must decode
-strictly, or the candidate drops out. Score = the share of non-ASCII characters that are
-among that language's 1000 most frequent, or are CJK punctuation (U+3000-303F and
-full-width ASCII punctuation, but not full-width letters or digits). The guess is the
-best candidate, but only when all of these hold:
+strictly, or the candidate drops out. A name cut inside its last character is the
+exception (a 100-byte ustar field, a tool that truncates by bytes, a damaged header):
+when no candidate decodes the name but some candidate decodes it without its last byte,
+the name gives evidence from all but that byte. Any other name that no candidate decodes
+still rules every candidate out, because it is evidence that the archive is not CJK.
+Keeping such names out of the evidence instead raised the false positives on short cp866
+and cp862 names from 0% to 2-6%, so they stay in. Score = the share of non-ASCII
+characters that are among that language's 1000 most frequent, or are CJK punctuation
+(U+3000-303F and full-width ASCII punctuation, but not full-width letters or digits).
+The guess is the best candidate, but only when all of these hold:
 
 - its score is at least 0.5;
 - it beats every other candidate by at least 0.15;
@@ -102,9 +109,11 @@ best candidate, but only when all of these hold:
   cp1253.
 
 Each guard was added after it removed a measured false positive without costing CJK
-accuracy. They are all in the investigation's `detectors.cjk_freq`. A guess that a name
-cannot strictly decode under is never applied to that name: the name falls back as it
-does today. The counts are additive, so the score updates per name in constant time.
+accuracy. They are all in the investigation's `detectors.cjk_freq_cut`, which measures
+the same as `cjk_freq` on every set. A guess is applied to a name only when the name
+decodes strictly under it, or is cut inside its last character: then the cut byte
+decodes as a `surrogateescape` escape. Any other name falls back as it does today. The
+counts are additive, so the score updates per name in constant time.
 
 **Rejected:** chardet, charset-normalizer and uchardet for CJK. Each is a dependency,
 and each is weaker on 1-3 names (table above). chardet restricted to its CJK answers
@@ -120,8 +129,18 @@ is guessed from the evidence collected up to and including that name:
   reader meets them as member names.
 - After 256 evidence names the guess is **frozen**, and later names neither add to it
   nor change it.
-- **Memo:** each distinct stored byte string is decoded once per reader, and every later
-  decode of the same bytes returns the same text.
+- **Memo:** each distinct stored byte string met before the freeze is decoded once per
+  reader, and every later decode of the same bytes returns the same text. After the
+  freeze a decode depends only on the bytes, so the memo stops growing: it holds at most
+  the names met before the freeze, and lookups after it need no lock.
+- **Directories keep one text.** A directory's path decodes to one text per reader, and
+  every name under it reuses that text for the directory part. Only the rest of the name
+  is decoded with the current guess. The memo is keyed on the byte prefix that ends just
+  before a `/` separator. For the formats that use `\` (CAB, LHA, ZIP from DOS tools),
+  it is keyed on a `\` that the codec used for the prefix reads as a separator, and not
+  as the trail byte of a character such as `ソ` (`83 5C`) or `表` (`95 5C`). This also
+  works in the other order: a directory entry met after its children takes the text its
+  children gave it.
 
 Why this rule:
 
@@ -139,7 +158,13 @@ Why this rule:
 The cost: early names get less evidence than a whole-archive guess would give them. The
 first legacy name is decoded on its own evidence (the N=1 column: right 61-94%,
 otherwise abstains, wrong at most 1%). By the third name the guess matches the
-whole-archive guess in 92-100% of archives.
+whole-archive guess in 92-100% of archives. Early names are mostly directories, the
+parents of later names, because TAR, 7-Zip, WinRAR and most ZIP writers put `資料/` before
+`資料/報告書.txt`. Without the directory rule, an abstaining first guess would list a
+folder `╕Ω«╞/` with no children, next to children under a `資料/` that has no entry. The
+tree would split in two on extraction. With the rule the tree stays whole, but a
+directory first met before the guess formed keeps today's text for the archive's life.
+That is the price of DR-5. A caller who knows the codec passes it.
 
 **Rejected:**
 
@@ -162,18 +187,31 @@ whole-archive guess in 92-100% of archives.
 Only the decode that produces a member's `name` adds evidence. Some decodes only compare
 or annotate:
 
-- ZIP's local-header name, read for `MEMBER_LOCAL_NAME_DIFFERS`;
-- TAR's link targets;
-- comments;
-- RAR's alternate names.
+- the name read only for comparison: ZIP's local-header name in a seekable read
+  (`MEMBER_LOCAL_NAME_DIFFERS`), and the central directory's names that a forward walk
+  meets at the end of a pipe;
+- link targets;
+- comments, including the archive comment, which `ArchiveReader.info` may decode before
+  or after the listing;
+- user and group names, and RAR's alternate names.
 
 These use the current guess and the memo, and add no evidence. So the listing alone
-fixes the guess, and a read that skips the local headers or the link targets gives the
-same names. A plugin's `ReaderContext.decode_name()` can't say which kind of decode it
-is, so every call to it counts as a member name. The memo still keeps each byte string's
-text fixed. **Rejected:** feeding link targets too. They would give more evidence, but a
-TAR stream meets a link target at a different point than the listing does in some
-readers, which reopens the question decision 3 settles.
+fixes the guess, and the order of calls doesn't matter. Which name is the member name
+depends on the read. In a seekable ZIP it is the central directory's name. In a forward
+walk (a pipe) it is the local header's name, because that walk builds each member from
+its local header. The two give the same evidence when the central directory lists the
+entries in local-header order, which is how every writer measured writes them.
+
+Plugins tell the two kinds apart through two methods (format-plugins spec):
+`ReaderContext.decode_name(raw)` decodes a member name and adds evidence, and
+`ReaderContext.decode_text(raw)` decodes any other stored text with the same guess and
+memo, and adds none. The built-in callers that decode link targets, comments, and user
+and group names switch to `decode_text`: ARJ, LHA, SquashFS and RPM. Without `"auto"`
+the two methods decode the same way. **Rejected:** a keyword,
+`decode_name(raw, *, evidence=False)`. It is easy to leave out, and the default would
+then be the wrong kind for every comment. **Rejected:** feeding link targets too. They
+would give more evidence, but a TAR stream meets a link target at a different point than
+the listing does in some readers, which reopens the question decision 3 settles.
 
 ### 5. One decoder per reader, shared by built-ins and plugins
 
@@ -207,13 +245,28 @@ publicly disputed. All of that belongs in its own change, after this one ships.
 **Rejected:** a hand-written single-byte rule (letters plus casing). It was right on
 Cyrillic, but it was 0-100% wrong on Hebrew and Turkish.
 
-### 7. Reporting
+### 7. ISO: the Joliet name comes before the guess
+
+ISO falls back from a Rock Ridge name that is not UTF-8 in this order: UTF-8, then
+`encoding=`, then the Joliet twin's name, then UTF-8 with `surrogateescape`
+(`iso_reader._decode_bytes_name`). Under `"auto"` the order is UTF-8, the Joliet twin,
+the guess, and then today's fallback. The Joliet name is text the image's writer
+converted from the same name. That is evidence from the archive itself, which outranks a
+statistical guess (DR-7, DR-1). An explicit codec keeps its place before Joliet, because
+it is the caller's knowledge, not a guess. A name taken from Joliet adds no evidence,
+because the guess never decoded its bytes. **Rejected:** the guess before Joliet, in the
+place of `encoding=` today. It would replace a converted name with a guess, and the
+`_ascii_runs_match` check that pairs the two names does not catch a twin that differs in
+its non-ASCII part.
+
+### 8. Reporting
 
 Each name decoded with a guessed codec reports `MEMBER_NAME_ENCODING_INFERRED`, with
 `inferred_encoding` set to the guess. `declared_encoding` is the codec the name would
-otherwise have had: the format's default, or for ZIP the configured fallback. The code
-stays in `ARCHIVE_INTEGRITY_CODES`, so STRICT refuses an archive whose names needed a
-guess. This is the same rule as for the UTF-8 sniff today, and "STRICT" means no
+otherwise have had: for ZIP the configured fallback, and for the formats whose fallback
+is UTF-8 with `surrogateescape` (TAR, ISO, the plugin-shaped formats), `"utf-8"`. The
+code stays in `ARCHIVE_INTEGRITY_CODES`, so STRICT refuses an archive whose names needed
+a guess. This is the same rule as for the UTF-8 sniff today, and "STRICT" means no
 guessing. A caller who wants both STRICT and CJK names passes the codec. No new code and
 no new context field are needed.
 
@@ -230,10 +283,12 @@ no new context field are needed.
   3). A caller who knows the codec passes it.
 - [A ZIP whose central directory lists entries in a different order from its local
   headers] → Then a forward walk and a listing meet the names in different orders, and
-  may guess differently for the first few names. Such an archive already reports
-  `MEMBER_LOCAL_*` diagnostics. Tests pin the common case, where the order is the same.
-- [Thread safety] → The `NameDecoder` lock covers the evidence and the memo. A decode
-  costs microseconds, so contention is negligible.
+  the names met before the freeze may decode differently. The spec states this as the
+  one exception to equal names in both modes. Tests pin both the common case and the
+  exception.
+- [Thread safety] → The `NameDecoder` lock covers the evidence and the memo until the
+  freeze. After it, a decode reads only the frozen guess and the memo, which no longer
+  change, so it takes no lock.
 
 ## Open Questions
 

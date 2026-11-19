@@ -24,8 +24,12 @@ written in archivey can do it with no dependency (see design.md, Investigations)
   `inferred_encoding` field holds the guess, and `declared_encoding` holds the codec the
   name would otherwise have had. STRICT refuses it, as it refuses every inferred name
   today.
-- Plugins: `ReaderContext.decode_name()` applies the guess, and `ReaderContext.encoding`
+- Plugins: `ReaderContext.decode_name()` applies the guess and adds the name to its
+  evidence. A new `ReaderContext.decode_text()` decodes other stored text (link targets,
+  comments, user names) with the same guess and adds nothing. `ReaderContext.encoding`
   is `None` under `"auto"`, so a plugin that decodes with it never sees `"auto"`.
+- A directory's path keeps one text per reader, so a directory and its children never
+  split into two trees. ISO takes a Rock Ridge name's Joliet twin before the guess.
 - Not in this change: guessing Cyrillic, Greek or Hebrew code pages. That needs
   statistics (an optional `chardet` extra) and is a follow-up change (design.md,
   decision 6).
@@ -37,8 +41,8 @@ written in archivey can do it with no dependency (see design.md, Investigations)
 ### Modified Capabilities
 
 - `archive-reading`: `encoding=` accepts `"auto"`.
-- `format-plugins`: `ReaderContext.decode_name()` and `ReaderContext.encoding` under
-  `"auto"`.
+- `format-plugins`: `ReaderContext.decode_name()`, the new `ReaderContext.decode_text()`
+  and `ReaderContext.encoding` under `"auto"`.
 
 ## Impact
 
