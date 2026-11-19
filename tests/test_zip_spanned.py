@@ -232,6 +232,16 @@ def test_infozip_last_part_from_a_pipe_says_the_others_are_missing() -> None:
     assert type(excinfo.value) is TruncatedError
 
 
+def test_infozip_set_out_of_order_says_so() -> None:
+    """Given out of order, the archive starts inside the join, and the message said
+    this was the last part alone, with the other parts missing."""
+    _refused_with_format_confirmed(
+        [_FIXTURE / "set.z02", _FIXTURE / "set.z01", _FIXTURE / "set.zip"],
+        r"spanned set of 3 parts, and 3 parts were given, but the archive does not "
+        r"start at the start of the first part: the parts are out of order",
+    )
+
+
 def test_infozip_set_listed_with_a_part_missing(tmp_path: Path) -> None:
     _refused_with_format_confirmed(
         [_FIXTURE / "set.z01", _FIXTURE / "set.zip"],

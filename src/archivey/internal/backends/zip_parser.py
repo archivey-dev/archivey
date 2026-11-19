@@ -178,8 +178,19 @@ class SpannedPartsError(TruncatedError):
     ``TruncatedError`` with the same message.
     """
 
-    def __init__(self, disks: int, given: int) -> None:
-        if given <= 1:
+    def __init__(self, disks: int, given: int, *, cut: bool = False) -> None:
+        # ``cut``: ``given`` parts were joined, but the archive does not start at the
+        # start of the first, so the parts were never offered (``disk_starts``).
+        self.disks = disks
+        if cut:
+            message = (
+                f"The ZIP end record names a spanned set of {disks} parts, and "
+                f"{given} parts were given, but the archive does not start at the "
+                "start of the first part: the parts are out of order, or data comes "
+                "before the first part. Pass every part, in order: name.z01, "
+                "name.z02, ..., then name.zip"
+            )
+        elif given <= 1:
             message = (
                 f"This is the last part of a spanned ZIP set of {disks} parts (as "
                 "zip -s writes: name.z01, name.z02, ..., then name.zip, which holds "

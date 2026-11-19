@@ -1729,6 +1729,13 @@ class ZipReader(BaseArchiveReader):
             except SpannedPartsError as exc:
                 # Parts missing, not damage: the local headers of the parts given
                 # would list only some members, so nothing is listed.
+                joined = source.joined
+                if joined is not None and (start_offset or end_offset is not None):
+                    # Every part may be there, but the region detection cut does
+                    # not start the first one (``_disk_starts``).
+                    exc = SpannedPartsError(
+                        exc.disks, len(joined.volume_ranges), cut=True
+                    )
                 raise spanned_parts_missing(exc) from None
             except CorruptionError as exc:
                 # End records that cannot be used (a damaged ZIP64 record after a
