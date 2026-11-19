@@ -259,6 +259,11 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   case (re-decoding a whole member, an extra pass, much more memory) pauses for the
   maintainer first (`address-review-findings` §6).
 - The PR body is the record of a piece of work. Do not commit working plans to the repo.
+- Every PR body follows `.github/pull_request_template.md` and opens with its
+  **For dummies** section: what the thing is, the bug or gap with a concrete example,
+  what the change does, and who notices, in plain words for a reader who has not seen
+  the code (maintainer, 2026-11-19). The template's comment says what goes in it. Keep
+  it true as the PR changes, like the rest of the body.
 - Do not edit `CHANGELOG.md` in a PR; the release writes it.
 
 **Outside the repo.** Upstream bug reports are drafted by agents and filed by the
