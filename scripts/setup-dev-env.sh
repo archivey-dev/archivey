@@ -65,13 +65,15 @@ install_linux_packages() {
   #   scripts/ci/install-unar-from-source.sh, which builds one that passes.
   # xorriso: builds hybrid ISOs with an appended partition for
   #   tests/test_iso_trailing_data.py.
+  # genisoimage, udftools: genisoimage -udf writes UDF bridge images and mkudffs
+  #   empty UDF file systems for tests/test_iso_udf.py (the tests skip without them).
   # zip, unzip: `zip -A` and the `unzipsfx` stub build the real self-extractor in
   #   tests/test_sfx.py (macOS ships both); unzip is also the oracle
   #   tests/test_zip_extra_fields.py compares extra-field times with.
   # tabix: ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks the
   #   block walk against (the test skips without it).
   # liblzo2-dev: python-lzo builds against it (below).
-  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso zip unzip tabix liblzo2-dev
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso genisoimage udftools zip unzip tabix liblzo2-dev
   # 7zz 26.05: Ubuntu's 7z predates the RISC-V filter that tests/test_sevenzip_riscv.py
   # checks against. Built from source (about half a minute); a no-op once installed.
   # Non-fatal: without it only those live checks skip.

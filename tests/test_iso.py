@@ -489,7 +489,8 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
 
 # What pycdlib raises for a directory tree that loops back on itself.
 _ISO_LOOP = r"ISO Directory Records form a loop"
-_UDF_LOOP = r"UDF File Entries form a loop"
+# What archivey's UDF parser raises for a UDF directory tree that loops.
+_UDF_LOOP = r"UDF volume: .*the directory tree forms a loop"
 
 
 @pytest.mark.timeout(5)
@@ -593,14 +594,14 @@ def _udf_directory_cycle_image() -> bytes:
 
 
 @pytest.mark.timeout(10)
-def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
-    """A UDF directory naming an ancestor must not hang pycdlib's walk in ``open_fp``.
+def test_a_udf_directory_cycle_is_refused_at_open() -> None:
+    """A UDF directory naming an ancestor is refused at open, and does not hang.
 
-    ``PyCdlib._walk_udf_directories`` enqueues each directory's File Entry with no
-    visit tracking before 1.22, so this image made it parse the root's entries again and
-    again, with memory growing about 65 MB a second, under default limits. From 1.22 it
-    detects the loop and raises "UDF File Entries form a loop", so the image is refused
-    at open, although its ISO 9660 tree is intact.
+    pycdlib's own UDF walk looped forever on this image before 1.22, with memory
+    growing about 65 MB a second. archivey now parses UDF itself (pycdlib's UDF walk
+    is off inside archivey's open), and its walk enters each directory once, so the
+    image is refused as a loop. UDF is the listed tree here: the image has no Rock
+    Ridge.
     """
     image = _udf_directory_cycle_image()
     with pytest.raises(CorruptionError, match=_UDF_LOOP):
@@ -626,32 +627,34 @@ def _udf_image_with_links(count: int) -> bytes:
     return out.getvalue()
 
 
-def test_listing_limits_count_udf_entries_as_pycdlib_parses_them() -> None:
-    """``max_members`` counts the UDF tree pycdlib parses at open, per tree.
+def test_listing_limits_count_udf_entries_at_open() -> None:
+    """``max_members`` counts the UDF tree at open, per tree.
 
-    The ISO 9660 tree holds one file and the UDF tree twenty names. pycdlib parses 21
-    File Identifiers in the UDF root, the parent entry and the twenty names, and only
-    the twenty count: the parent entry is not a member. So a cap of exactly 20 opens,
-    which is what pins that exclusion.
+    The ISO 9660 tree holds one file and the UDF tree twenty names. The UDF root
+    holds 21 File Identifiers, the parent entry and the twenty names, and only the
+    twenty count: the parent entry is not a member. So a cap of exactly 20 opens,
+    which is what pins that exclusion. UDF is the listed tree.
     """
     image = _udf_image_with_links(20)
     fits = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
     with open_archive(io.BytesIO(image), config=fits) as reader:
-        assert [m.name for m in reader.members()] == ["F.TXT"]
+        assert sorted(m.name for m in reader.members()) == sorted(
+            f"F{index}.TXT" for index in range(20)
+        )
 
-    # A cap of five fits the one-member tree archivey lists, but pycdlib still parses
-    # every UDF entry inside ``open_fp``, so the UDF tree is held to the same cap.
+    # A cap of five fits the one-member ISO 9660 tree, but the whole UDF tree is
+    # parsed at open, so it is refused there, before any member is listed.
     below = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with pytest.raises(ResourceLimitError, match="max_members=5.*UDF"):
         open_archive(io.BytesIO(image), config=below)
 
 
-def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
-    """``max_metadata_bytes`` weighs the UDF File Identifiers and File Entries too.
+def test_listing_limits_count_udf_bytes_at_open() -> None:
+    """``max_metadata_bytes`` weighs the UDF directories and File Entries too.
 
-    Each UDF name costs a File Identifier and a File Entry of at least 176 bytes, so
-    twenty names hold more than 4000 bytes while the ISO 9660 tree, with one file,
-    holds well under 2000.
+    Each UDF name costs a File Identifier in its directory's data and a File Entry of at
+    least 176 bytes, so twenty names hold more than 4000 bytes while the ISO 9660 tree,
+    with one file, holds well under 2000.
     """
     image = _udf_image_with_links(20)
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2000))
@@ -660,7 +663,7 @@ def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
     ):
         open_archive(io.BytesIO(image), config=tight)
     with open_archive(io.BytesIO(_udf_image_with_links(1)), config=tight) as reader:
-        assert [m.name for m in reader.members()] == ["F.TXT"]
+        assert [m.name for m in reader.members()] == ["F0.TXT"]
 
 
 def _image_with_trees(count: int, *, joliet: bool = True, udf: bool = True) -> bytes:
@@ -686,14 +689,13 @@ def _image_with_trees(count: int, *, joliet: bool = True, udf: bool = True) -> b
 
 
 def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
-    """``max_metadata_bytes`` bounds the bytes of every tree pycdlib parses, together.
+    """``max_metadata_bytes`` bounds the bytes of every tree parsed at open, together.
 
-    pycdlib keeps every tree it parses, so a budget per tree let one image hold the
+    Every tree is kept once parsed, so a budget per tree let one image hold the
     budget once for each of its PVD, Joliet and UDF trees. With ten files, this image
     weighs about 540 bytes in its PVD tree, 580 in its Joliet tree and 2,540 in its
     UDF tree: each tree is under 3,000 bytes, and the three together are about 3,670.
-    ``max_members`` stays per tree
-    (``test_listing_limits_count_udf_entries_as_pycdlib_parses_them``).
+    ``max_members`` stays per tree (``test_listing_limits_count_udf_entries_at_open``).
 
     The first leg does not depend on UDF sizes: the same ten files weigh 542 bytes in a
     PVD-only image and 1,124 with a Joliet tree (542 + 582), so a cap of 800 opens the
@@ -720,29 +722,6 @@ def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
     fits = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=4000))
     with open_archive(io.BytesIO(image), config=fits) as reader:
         assert len(reader.members()) == 10
-
-
-@pytest.mark.parametrize(
-    ("tag", "fixed"),
-    [pytest.param(261, 176, id="file-entry"), pytest.param(266, 216, id="extended")],
-)
-def test_a_udf_file_entry_is_weighed_by_the_lengths_it_declares(
-    tag: int, fixed: int
-) -> None:
-    """The weight of a File Entry is its fixed part plus ``L_EA`` plus ``L_AD``.
-
-    ECMA-167 puts the two lengths in the last 8 bytes of the fixed part: 176 bytes for
-    a File Entry (4/14.9) and 216 for an Extended File Entry (4/14.17). pycdlib writes
-    only File Entries, so the Extended one is a synthetic header here; it fails if
-    tag 266 is read at the File Entry's offsets. The weight is capped by the bytes read.
-    """
-    from archivey.internal.backends.iso_reader import _udf_file_entry_size
-
-    header = bytearray(fixed)
-    struct.pack_into("<H", header, 0, tag)
-    struct.pack_into("<LL", header, fixed - 8, 10, 48)
-    assert _udf_file_entry_size(bytes(header) + bytes(1000)) == fixed + 58
-    assert _udf_file_entry_size(bytes(header) + bytes(20)) == fixed + 20
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
@@ -1034,10 +1013,11 @@ def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
 
     The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
     ``PyCdlib._parse_path_table``, ``PathTableRecord.parse``,
-    ``pycdlib.udf.parse_file_ident`` and ``pycdlib.udf.parse_file_entry`` act only
+    ``PyCdlib._parse_udf_descriptors`` and ``PyCdlib._walk_udf_directories`` act only
     while ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``;
     outside, both are unset, and a Rock Ridge and Joliet image (path tables included)
-    and a UDF image open and read through pycdlib as they would without archivey.
+    and a UDF image open and read through pycdlib as they would without archivey: the
+    UDF tree, which pycdlib skips inside archivey's open, is parsed.
     """
     import pycdlib
 
@@ -2035,9 +2015,19 @@ def _iso_cut_points(*, udf: bool) -> dict[str, int]:
     }
     if udf:
         assert image[18 * block + 1 : 18 * block + 6] == b"BEA01"
+        from archivey.internal.backends.udf import UdfVolume
+
+        volume = UdfVolume(
+            lambda offset, n: image[offset : offset + n],
+            len(image),
+            archive_name=None,
+            budget=None,
+        )
         points["udf-volume-recognition"] = 18 * block + 100
-        # pycdlib reads the anchor in the volume's last block once the ISO 9660
-        # trees are parsed.
+        points["udf-anchor"] = 256 * block + 10
+        points["udf-root-entry"] = volume.root.location + 10
+        # Past every structure archivey reads at open: the second anchor, in the
+        # volume's last block, and file data.
         points["udf-last-anchor"] = (pvd.space_size - 1) * block + 10
         points["udf-file-data"] = image.index(b"A" * 5000) + 100
     else:
@@ -2076,7 +2066,7 @@ _RICH_CUTS = (
     "subdirectory",
     "joliet-subdirectory-padding",
 )
-_UDF_CUTS = ("udf-volume-recognition", "udf-last-anchor", "udf-file-data")
+_UDF_CUTS = ("udf-volume-recognition", "udf-anchor", "udf-root-entry")
 
 
 @pytest.mark.parametrize(
@@ -2088,14 +2078,37 @@ def test_an_image_cut_inside_its_metadata_is_truncated(udf: bool, point: str) ->
     """An image that ends before a structure its own descriptors point to raises
     ``TruncatedError`` at open, as TAR, RAR and 7z do for a cut header. It raised a
     plain ``CorruptionError`` because pycdlib reports a short read as an invalid
-    image. A UDF image is refused at open even when the cut is in file data: pycdlib
-    reads the anchor in the volume's last block."""
+    image. archivey's UDF parser does the same for its anchor and File Entries."""
     from archivey.exceptions import TruncatedError
 
     image = _three_file_image(udf=udf)
     cut = _iso_cut_points(udf=udf)[point]
     with pytest.raises(TruncatedError, match="ends before"):
         open_archive(io.BytesIO(image[:cut]), format=ArchiveFormat.ISO)
+
+
+@pytest.mark.parametrize("point", ["udf-last-anchor", "udf-file-data"])
+def test_a_udf_image_cut_past_its_tree_opens(point: str) -> None:
+    """A UDF image cut after the structures archivey reads at open opens and lists
+    its UDF tree, as an ISO 9660 image cut in file data does: a file the cut
+    reaches raises ``TruncatedError`` when read, and a file wholly before it reads.
+    pycdlib refused both at open, because it read the anchor in the volume's last
+    block; archivey reads the one at block 256."""
+    from archivey.exceptions import TruncatedError
+
+    image = _three_file_image(udf=True)
+    cut = _iso_cut_points(udf=True)[point]
+    with open_archive(io.BytesIO(image[:cut]), format=ArchiveFormat.ISO) as reader:
+        assert reader.info.extra["iso.namespace"] == "udf"
+        files = [m for m in reader.members() if m.is_file]
+        assert [m.name for m in files] == ["d/f0", "d/f1", "d/f2"]
+        for member in files:
+            start = image.index(bytes([ord("A") + int(member.name[-1])]) * 5000)
+            if start + 5000 <= cut:
+                assert reader.read(member) == image[start : start + 5000]
+            else:
+                with pytest.raises(TruncatedError):
+                    reader.read(member)
 
 
 def test_every_cut_of_an_image_is_truncated_or_opens() -> None:
@@ -2144,17 +2157,17 @@ def test_a_cut_image_whose_root_points_past_its_volume_space_is_corruption() -> 
         open_archive(io.BytesIO(bytes(image[:cut])), format=ArchiveFormat.ISO)
 
 
-def test_a_full_length_image_declaring_a_larger_volume_space_is_truncated() -> None:
-    """The volume space size is the one field that decides the label, so damage that
-    raises it reads as a cut: the file holds less than the image declares, and
-    pycdlib's read of the UDF anchor in the declared last block finds nothing."""
-    from archivey.exceptions import TruncatedError
-
+def test_a_full_length_udf_image_declaring_a_larger_volume_space_opens() -> None:
+    """Damage that raises the volume space size of a UDF bridge image reads nothing
+    past the file: archivey's UDF parser takes the anchor at block 256, so the image
+    opens and every file reads. pycdlib's read of the anchor in the declared last
+    block made it a ``TruncatedError`` before archivey parsed UDF itself."""
     image = bytearray(_three_file_image(udf=True))
     (space_size,) = struct.unpack_from("<I", image, _VOLUME_SPACE_SIZE)
     _set_extent(image, _VOLUME_SPACE_SIZE, space_size + 10)
-    with pytest.raises(TruncatedError, match="ends before its own structures"):
-        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+    with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert [reader.read(m)[:1] for m in files] == [b"A", b"B", b"C"]
 
 
 def _damage_primary_descriptor(image: bytearray, block: int) -> None:

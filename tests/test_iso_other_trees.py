@@ -1,9 +1,9 @@
 """An ISO image whose Joliet or UDF tree holds a file the listed tree does not.
 
-Linux and xorriso read Rock Ridge; Windows and 7-Zip read Joliet, and UDF first where
-the image has it. A file put in one tree only is seen by some readers and hidden from
-the others, so ``MEMBER_READERS_DISAGREE`` reports a file that only an unlisted tree
-holds, matched by the data each file points at.
+Linux and xorriso read Rock Ridge; Windows and 7-Zip read UDF first where the image has
+it, and Joliet otherwise. A file put in one tree only is seen by some readers and hidden
+from the others, so ``MEMBER_READERS_DISAGREE`` reports a file that only an unlisted
+tree holds, matched by the data each file points at.
 """
 
 from __future__ import annotations
@@ -117,14 +117,19 @@ def test_empty_files_are_not_compared() -> None:
     assert _reported(image) == (["both"], [])
 
 
-def test_joliet_listed_compares_udf_only() -> None:
-    """Without Rock Ridge, Joliet is the listed tree."""
+def test_udf_listed_compares_joliet() -> None:
+    """Without Rock Ridge, UDF is the listed tree, so a file only UDF holds is a
+    member, and a file only Joliet holds is reported."""
     image = _image(
-        {"both": (b"both", ALL), "hidden": (b"hidden", {"udf"})},
+        {
+            "both": (b"both", ALL),
+            "udf": (b"udf only", {"udf"}),
+            "hidden": (b"hidden", {"joliet"}),
+        },
         rock_ridge=False,
         udf=True,
     )
-    assert _reported(image) == (["both"], [("hidden", "file_only_in_udf")])
+    assert _reported(image) == (["both", "udf"], [("hidden", "file_only_in_joliet")])
 
 
 @pytest.mark.parametrize("hidden", [16, 20])
