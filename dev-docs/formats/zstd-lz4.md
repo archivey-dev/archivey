@@ -16,7 +16,7 @@ behaviour and links the row.
 | Read | zstd and LZ4 frames as one-member archives and inside `.tar.zst` / `.tar.lz4`, and the legacy LZ4 stream (`lz4 -l`) the same way; zstd as a ZIP method; LZ4 as a 7z coder |
 | Write | **Not shipped** |
 | Backends | zstd: the standard library's `compression.zstd` on Python 3.14 and later, `backports.zstd` from `[recommended]` before it. LZ4: `lz4.frame` from `[recommended]`, and `lz4.block` from the same package for the legacy stream |
-| Seeking | zstd, on declared seek demand or restart points: from the frame before the target that a read has passed; on declared seek demand only, the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4: a backward seek decodes again from the start |
+| Seeking | zstd, on declared seek demand or restart points: from the frame before the target that a read has passed; on declared seek demand only, the seekable format's seek table gives every frame and the size without decoding (§2.3). LZ4, on declared seek demand or restart points: from the frame before the target, or in a legacy stream from the block before it, that a read has passed; inside a frame, from that frame's start (§2.3) |
 | Size | `None`, even when the frame header declares it |
 | Digests | None listed. A frame's content checksum, when present, is checked on read; the legacy LZ4 stream has none |
 | Metadata | None beyond the shared fields |
@@ -142,9 +142,14 @@ starts, emits `SEEK_INDEX_DEGRADED` (scan `zstd_seek_table`) and reads decode fr
 start. The table must end the file: zeros after it hide it, and the file then seeks like
 any other zstd file. A single-frame file, the default `zstd` output, has nothing to resume
 from, so a backward seek decodes again from the start and the rewind report says so
-([`single-file.md`](single-file.md) §2.3). LZ4 records no resume points, so every LZ4
-backward seek does that too. A ZIP zstd member is read as a `.zst` file is, with the
-same seek points and table.
+([`single-file.md`](single-file.md) §2.3). LZ4, on declared seek demand or restart
+points, records the start of every frame after the first and every block of a legacy
+stream that a read passes. A legacy block is compressed on its own and nothing checks
+more than one block, so a decode can start at any of them. A frame's blocks are not
+points, even when the frame marks them independent (the `lz4` command's default): a
+decode that starts inside a frame could not check its xxHash32 checksums, which only
+`lz4.frame` checks. So a backward seek in a one-frame file decodes again from the start.
+A ZIP zstd member is read as a `.zst` file is, with the same seek points and table.
 
 ### 2.4 Extract
 
@@ -253,7 +258,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | An LZ4 file starting with a skippable frame is not detected by content | **archivey** | The skippable-frame walk is zstd's only |
 | A damaged `--no-check` file reads with no error | **format** | No checksum (§1) |
 | A file `zstd -t` refuses reads, with `ARCHIVE_TRAILING_DATA` | **archivey** | Bytes after the last frame are reported, not refused ([`single-file.md`](single-file.md) §6); `DiagnosticPolicy.STRICT` raises |
-| A backward seek in a single-frame zstd file or any LZ4 file re-decodes from the start | **format** | Nothing in the stream to resume from (§2.3) |
+| A backward seek in a single-frame zstd or LZ4 file re-decodes from the start | **format** / **archivey** | zstd: nothing in the stream to resume from. LZ4: a frame's blocks are not used as points, so its checksums stay checked (§2.3) |
 | A cold seek into a seekable-zstd file trusts its seek table | **format** / **archivey** | Accepted as for xz and lzip: threat-model O17 |
 
 ## 6. Decisions
@@ -294,7 +299,7 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Backward seeks re-decode and are reported |
 | Frame starts and the seekable-zstd table give resume points and the size; a bad table degrades; the table is trusted |
 | zstd as a ZIP method |
-| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP method 93 |
+| The zstd window is capped by `max_decoder_memory`, on `.zst` and ZIP methods 93 and 20 |
 | A frame after zero bytes is trailing data, and strict refuses it; zeros at the end and frames with nothing between them stay silent |
 | The legacy LZ4 stream: detection, blocks, concatenation, padding, the size bound, corruption and truncation |
 | `pyzstd` is not a runtime dependency |

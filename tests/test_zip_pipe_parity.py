@@ -76,6 +76,11 @@ def _password_cases(passwords: tuple[str, ...]) -> Iterator[tuple[str, _Password
 
 def _fixture_params() -> Iterator[pytest.ParameterSet]:
     for path in sorted(_FIXTURES.rglob("*.zip")):
+        if path.parent.name == "zip_spanned_infozip":
+            # The last part of a spanned set, which is no archive read alone: a pipe
+            # lists the members whole on it before the end record says parts are
+            # missing (tests/test_zip_spanned.py).
+            continue
         rel = path.relative_to(_FIXTURES).as_posix()
         for label, password in _password_cases(_FIXTURE_PASSWORDS.get(rel, ())):
             ident = f"{rel}-{label}" if label else rel

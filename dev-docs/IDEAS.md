@@ -27,13 +27,11 @@ Each idea carries a status:
 
 ## Formats
 
-- **List a ZIP whose central directory is lost, and read spanned ZIP sets.** *Needs
-  design.* The native ZIP reader (the `native-zip-reader` OpenSpec change) already
-  lists a damaged central directory up to the damage and the local headers past it. It
-  reads a ZIP from a pipe or socket by walking the local headers forward, and walks them
-  when the end record is not in the file's tail (which lists a ZIP cut before its
-  directory). Its parser's per-entry disk number is what reading spanned
-  `.z01`…`.zip` sets would follow (by resolving each (disk, offset) pair). See
+- **List a ZIP whose central directory is lost.** *Needs design.* The native ZIP
+  reader (the `native-zip-reader` OpenSpec change) already lists a damaged central
+  directory up to the damage and the local headers past it. It reads a ZIP from a pipe
+  or socket by walking the local headers forward, and walks them when the end record is
+  not in the file's tail (which lists a ZIP cut before its directory). See
   [`formats/zip.md`](formats/zip.md) §5.
 - **Verify raw CD sectors' EDC/ECC.** *Open idea.* Raw `.bin` images and `.cue` discs
   are read (`backends/cd_sectors.py`, `backends/cue_sheet.py`) checking each sector's
@@ -88,11 +86,11 @@ Each idea carries a status:
   entry, `*.dist-info/WHEEL`) would let a backup indexer skip packaging files. It must
   say "not recognized" rather than "this is data", and rules need an order (an APK is
   also a JAR). See [`formats/zip.md`](formats/zip.md) §3.
-- **Volume-shaped names: detect first, then explain.** *Open idea.* Today a `.zNN` name is
-  refused before detection runs. Running detection first, and only turning a failure into
-  "rejoin first" when the name looks like a volume, would keep odd but valid archives
-  openable. It should replace the early refusal, not sit on top of it
-  ([`formats/zip.md`](formats/zip.md) §3).
+- **Volume-shaped names: detect first, then explain.** *Open idea.* Today a `.zNN` name
+  whose set is not found beside it is refused before detection runs. Running detection
+  first, and only turning a failure into "parts missing" when the name looks like a
+  volume, would keep odd but valid archives openable. It should replace the early
+  refusal, not sit on top of it ([`formats/zip.md`](formats/zip.md) §3).
 - **Raise on a tie instead of choosing by registry order.** *Needs design.* When two
   formats are equally well supported by the evidence, detection should raise a dedicated
   error. Later, opening could try each tied candidate; that needs limits on cumulative
@@ -169,6 +167,20 @@ Each idea carries a status:
   with no table (`pzstd`) could have its frames found by walking frame and block headers,
   without decoding. It helps only multi-frame files, so measure how common they are first
   ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §7).
+- **LZ4 restart points inside a frame.** *Open idea.* LZ4 seeks from the start of
+  each frame a forward read has reached, so a backward seek in a one-frame file, such as
+  a large `.tar.lz4`, decodes again from byte zero. The blocks inside a frame could be
+  restart points too. The `lz4` command writes independent 4 MiB blocks by default, and
+  `python-lz4`'s linked 64 KiB blocks can resume from the 64 KiB of output before them.
+  A decode that starts inside a frame has to decode blocks itself with `lz4.block`,
+  which does not check the frame's xxHash32 checksums. Archivey has no xxHash32. So it
+  needs either the optional `xxhash` package, with the running checksum kept in each
+  point, or a decode from the start of the frame whenever a resumed decode reaches the
+  frame's end ([`formats/zstd-lz4.md`](formats/zstd-lz4.md) §2.3). Not pursued for now
+  because LZ4 decodes fast, so a rewind is cheap. Measured on 2026-11-18 in a cloud
+  container, reading a 27 MB `lz4.frame` file of base64 text (hard to compress) through
+  `open_archive`: about 500 MB/s, so a 1 GB rewind costs about 2 s. Compressible data
+  decodes faster.
 - **Lazy `ArchiveMember` derivation.** *Needs design.* The one known lever for faster ZIP
   open-and-list (`benchmarks/RESULTS.md`), and for the per-member memory that
   `max_members` has to account for (about 1 KB per 7z member).

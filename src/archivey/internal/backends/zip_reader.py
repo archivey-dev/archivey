@@ -41,13 +41,15 @@ Multi-volume sets:
 
 - 7-Zip ``.zip.NNN`` split sets are byte slices of one ordinary ZIP. ``open_archive``
   joins the parts before this backend sees them (``source.volume_count > 1``).
-- A lone ``.zip.NNN`` segment whose sibling parts are missing is an incomplete set,
-  not a spanned one: ``open_archive`` raises ``TruncatedError`` naming the missing
-  parts. The ``UnsupportedFeatureError`` in ``ZipReader.__init__`` is only the
-  backstop for a segment that did not pass through that check.
-- Spanned sets are rejected with ``UnsupportedFeatureError``; rejoin them with the
-  tool that made them (see ``format-zip``): Info-ZIP ``.zNN`` / final ``.zip`` (EOCD
-  disk fields) and ZIP64 locator ``disks > 1``.
+- Info-ZIP ``zip -s`` spanned sets (``name.z01`` … ``name.zip``) are joined the same
+  way, part by part, and the parser moves each (disk, offset) pair into the join
+  (``read_end_record``'s ``disk_starts``, from the joined source's part starts).
+- A lone ``.zip.NNN`` segment whose sibling parts are missing is an incomplete set:
+  ``open_archive`` raises ``TruncatedError`` naming the missing parts, and so does a
+  lone ``.zNN``. The ``TruncatedError`` in ``ZipReader.__init__`` is only the backstop
+  for a segment that did not pass through that check. A ``.zip`` whose end records
+  name more disks than the parts given is ``TruncatedError`` too, raised when the end
+  record is read (``SpannedPartsError``).
 """
 
 from __future__ import annotations
@@ -86,6 +88,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    HeaderAmbiguityContext,
     LocalHeaderContext,
     MemberHeaderRecordContext,
     OffsetWrapContext,
@@ -119,7 +122,7 @@ from archivey.internal.backends.zip_aes import (
 )
 from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIGNATURE,
-    ZIP_MULTI_VOLUME_MSG,
+    ZIP_LONE_PART_MSG,
     is_zip_split_segment_name,
     validate_zip_local_header,
 )
@@ -144,11 +147,14 @@ from archivey.internal.backends.zip_parser import (
     EndRecord,
     EntryCountMismatch,
     LocalHeader,
+    SpannedPartsError,
     WalkFinding,
     local_header_at,
     locate_end_record,
     read_end_record,
     read_local_header,
+    spanned_parts_missing,
+    unused_zip64_values,
     written_by_archive_utility,
 )
 from archivey.internal.backends.zipcrypto import (
@@ -163,6 +169,7 @@ from archivey.internal.config import StreamConfig, stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.file_copy_pass import DEFAULT_FILE_COPY_PASS, FileCopyPass
+from archivey.internal.format_provenance import confirm_format, format_confirmed
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.logs import backends as logger, integrity as integrity_logger
 from archivey.internal.naming import (
@@ -321,6 +328,8 @@ _ZIP_COMPRESSION_ALGOS: dict[int, CompressionAlgorithm] = {
     10: CompressionAlgorithm.DCL_IMPLODE,
     12: CompressionAlgorithm.BZIP2,
     14: CompressionAlgorithm.LZMA,
+    # 20: Zstandard's id in APPNOTE 6.3.7, deprecated for 93 in 6.3.8; same data.
+    20: CompressionAlgorithm.ZSTD,
     93: CompressionAlgorithm.ZSTD,
     95: CompressionAlgorithm.XZ,
     98: CompressionAlgorithm.PPMD,
@@ -349,6 +358,7 @@ _ZIP_METHOD_CODECS: dict[int, Codec] = {
     10: Codec.DCL_IMPLODE,
     12: Codec.BZIP2,
     14: Codec.LZMA,  # after peeling the ZIP LZMA header (see _open_codec_member)
+    20: Codec.ZSTD,  # APPNOTE 6.3.7's id, deprecated for 93
     93: Codec.ZSTD,
     95: Codec.XZ,
     98: Codec.PPMD,  # after peeling the ZIP PPMd8 header
@@ -1647,12 +1657,12 @@ class ZipReader(BaseArchiveReader):
         """Refuse a split-set segment read alone."""
         # A split-set segment read alone. A joined set arrives here still carrying
         # part one's name, so the name alone does not decide it: what is refused is a
-        # segment that was *not* rejoined. Numbered ``.zip.NNN`` incompleteness is
-        # ``TruncatedError`` in ``open_archive``; this backstop is Info-ZIP's spanned
-        # ``.zNN`` (and any ``.zip.NNN`` that skipped that refuse).
+        # segment that was *not* rejoined. ``open_archive`` refuses such a part by name
+        # first (``_refuse_unjoined_volume_names``); this is the backstop for a part
+        # that skipped that check.
         if self._volume_count == 1 and is_zip_split_segment_name(self._archive_name):
-            raise UnsupportedFeatureError(
-                ZIP_MULTI_VOLUME_MSG,
+            raise TruncatedError(
+                ZIP_LONE_PART_MSG,
                 archive_name=self._archive_name,
                 source_format=ArchiveFormat.ZIP,
             )
@@ -1708,9 +1718,18 @@ class ZipReader(BaseArchiveReader):
             if found is None:
                 raise CorruptionError(NO_END_RECORD_MSG)
             try:
-                self._end: EndRecord = read_end_record(self._read_at, file_size, found)
+                self._end: EndRecord = read_end_record(
+                    self._read_at,
+                    file_size,
+                    found,
+                    disk_starts=self._disk_starts(source, start_offset, end_offset),
+                )
                 # A directory larger than the tail: its span, in one request.
                 self._hint(self._end.cd_start, self._end.eocd_offset)
+            except SpannedPartsError as exc:
+                # Parts missing, not damage: the local headers of the parts given
+                # would list only some members, so nothing is listed.
+                raise spanned_parts_missing(exc) from None
             except CorruptionError as exc:
                 # End records that cannot be used (a damaged ZIP64 record after a
                 # saturated classic one, a directory that would start before the
@@ -1723,6 +1742,8 @@ class ZipReader(BaseArchiveReader):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
                 # where it failed.
                 opened = type(exc)(f"Could not open ZIP archive: {raw_message_of(exc)}")
+                if format_confirmed(exc):
+                    confirm_format(opened)
                 self._stamp_error_context(opened)
                 raise opened from exc
             self._stamp_error_context(exc)
@@ -1730,6 +1751,19 @@ class ZipReader(BaseArchiveReader):
         self._refuse_declared_count_over_limit()
         self._report_zip64_damage()
         self._report_trailing_data()
+
+    @staticmethod
+    def _disk_starts(
+        source: ArchiveSource, start_offset: int, end_offset: int | None
+    ) -> list[int]:
+        """Where each part of a joined volume set starts, for a spanned set
+        (``read_end_record``); empty for a single source. A region cut from a joined
+        set (a stub or a certificate table around it) is not offered as one: a
+        spanned set's offsets count from the start of each whole part."""
+        joined = source.joined
+        if joined is None or start_offset or end_offset is not None:
+            return []
+        return [start for start, _size in joined.volume_ranges]
 
     def _list_after_bad_end_records(
         self, error: CorruptionError, walked: _WalkedMembers | None
@@ -2974,6 +3008,8 @@ class ZipReader(BaseArchiveReader):
             self._emit_size_wrapped(member, entry, index)
         if directory_by_attribute:
             self._report_directory_by_attribute(member, index, name_source)
+        if entry.undeferred_offset >= 0:
+            self._check_undeferred_zip64(member, index, entry, fields)
         if member.type is MemberType.DIRECTORY and _zip_directory_stores_data(entry):
             # APPNOTE 4.3.8 gives a directory no data; unzip, 7-Zip and bsdtar create
             # the directory and drop the bytes silently. Say so; a read delivers them.
@@ -3127,6 +3163,65 @@ class ZipReader(BaseArchiveReader):
                 member_name=member.name,
                 member_id=index,
                 shape="directory_attribute_without_slash",
+            ),
+            member=member,
+            attach_to_member=True,
+            logger=integrity_logger,
+        )
+
+    def _check_undeferred_zip64(
+        self,
+        member: ArchiveMember,
+        index: int,
+        entry: CentralEntry,
+        fields: Sequence[ExtraField],
+    ) -> None:
+        """Report a ZIP64 extra field whose values differ from the entry's, when no
+        field of the entry defers to it (``CentralEntry.undeferred_offset``). The
+        entry's values are used, as APPNOTE, stdlib and unzip read them; a reader that
+        takes the field anyway lists another size or reads other bytes. In
+        ``ARCHIVE_INTEGRITY_CODES``: ``STRICT`` refuses it. The first ZIP64 field is
+        the one such a reader takes."""
+        for field in fields:
+            if field.tag == _ZIP_EXTRA_ZIP64:
+                # Stored values throughout: the walk may have corrected the offset
+                # and, for macOS Archive Utility, the compressed size. That writer's
+                # blob is its UX field alone (written_by_archive_utility), so the
+                # size correction cannot meet a ZIP64 field today; taking it off
+                # keeps the comparison on stored values regardless.
+                unused = unused_zip64_values(
+                    field.data,
+                    file_size=entry.file_size,
+                    compressed_size=(
+                        entry.compressed_size - entry.compressed_size_correction
+                    ),
+                    header_offset=entry.undeferred_offset,
+                )
+                break
+        else:
+            return
+        if not unused:
+            return
+        values = "; ".join(
+            f"{name} {value} where the entry stores {stored}"
+            for name, stored, value in unused
+        )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_AMBIGUOUS,
+            message=(
+                f"ZIP central directory entry {quoted(member.name)} has a ZIP64 "
+                f"extra field that gives {values}. No field of the entry defers to "
+                "the ZIP64 field, so the entry's values are used, as unzip and "
+                "zipfile read them; a reader that takes the ZIP64 field anyway "
+                "lists another size or reads other bytes."
+            ),
+            context=HeaderAmbiguityContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=index,
+                ambiguity="zip64_unused",
+                field=unused[0][0],
+                more_fields=len(unused) - 1,
             ),
             member=member,
             attach_to_member=True,

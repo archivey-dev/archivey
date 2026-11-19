@@ -45,9 +45,10 @@ pure Python and ended at the member's declared size since neither has an end mar
 the PKZIP 0.9x method Reduce (methods 2 to 5, compression factors 1 to 4), decoded and
 ended the same way, PKWARE DCL Implode (method 10), decoded in core in pure Python and
 ended by its own end code, and extended codecs when their backends are
-installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93), PPMD
-(method 98, ZIP PPMd8 framing via `[recommended]`/`pyppmd`). A missing optional backend
-SHALL raise `PackageNotInstalledError`. An unknown/unsupported method id SHALL
+installed: Deflate64 (method 9, via `[recommended]`/`inflate64`), ZSTD (method 93, and
+20 from APPNOTE 6.3.7), PPMD (method 98, ZIP PPMd8 framing via
+`[recommended]`/`pyppmd`). A missing optional backend SHALL raise
+`PackageNotInstalledError`. An unknown/unsupported method id SHALL
 raise `UnsupportedFeatureError`. `format_availability(ZIP)` SHALL report FULL
 when every optional ZIP member codec is installed, else PARTIAL with the missing
 components listed. Encrypted members (ZipCrypto / WinZip AE) SHALL decode the same
@@ -133,7 +134,7 @@ encoder sometimes flushes it past the decoder's last read.
 | DEFLATE member with a second stream that holds the last rapidgzip index point, declared size and CRC covering both, `use_rapidgzip=ON` | Decodes both streams; with the accelerator off, `CorruptionError` |
 | Zstd member with a second frame or a skippable frame after its first, declared size and CRC covering all of it | Decodes every frame, as a `.zst` file does; a declared size or CRC that stops at the first frame raises `CorruptionError` |
 | DEFLATE64 (method 9) member, `inflate64` backend present | Decodes; absent backend → `PackageNotInstalledError` |
-| ZSTD (method 93) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
+| ZSTD (method 93 or 20) / PPMD (method 98) member, backend present | Decodes; absent backend → `PackageNotInstalledError` |
 | XZ (method 95) member, as 7-Zip writes it with `-mm=XZ` | Decodes in core; lists `CompressionAlgorithm.XZ` |
 | XZ member with a second xz stream, or stream padding (groups of four zero bytes) between or after its streams, declared size and CRC covering all of it | Decodes every stream, as an `.xz` file does (7-Zip reads it too) |
 | XZ member with junk, or zero bytes that do not fill a group of four, after its last stream | `CorruptionError` (7-Zip: "Data Error", or "There are some data after the end of the payload data") |
@@ -427,7 +428,7 @@ halts with `DiagnosticRaisedError`.
 | ZipCrypto symlink target fails its integrity check under an unconfirmed password | Listing continues with `link_target=None`; `SYMLINK_TARGET_UNAVAILABLE` with reason `"password_or_damage"` |
 | Encrypted symlink, `read_link_targets=False` | Listing reads no target data; `link_target=None`; no diagnostic |
 
-### Requirement: Join 7-Zip .zip.NNN sets; reject spanned ZIP cleanly
+### Requirement: Join split and spanned ZIP sets
 
 7-Zip's `-v` byte-splits one finished single-disk ZIP into
 `name.zip.001 … name.zip.00N`, exactly as it splits `name.7z.NNN`. An SFX split
@@ -443,28 +444,40 @@ reporting
 (not `ArchiveMember.extra`, which stays empty).
 A gap in the numbering SHALL raise `TruncatedError`. A lone `.zip.NNN` (or
 SFX `.exe.NNN`) part whose siblings are not on disk SHALL raise the same
-`TruncatedError`, naming the missing parts — not a ZIP spanned-set refusal.
-A named part that is not on disk itself SHALL raise `FileNotFoundError`, like
-any other missing path.
+`TruncatedError`, naming the missing parts. A named part that is not on disk itself
+SHALL raise `FileNotFoundError`, like any other missing path.
 
-Every other split/spanned signal SHALL raise `UnsupportedFeatureError` with a
-rejoin-first message rather than mis-read data or raise `CorruptionError`:
-Info-ZIP `.zNN` segment names, non-zero EOCD disk fields (the ZIP64 end record's
-when there is one; a classic `0xFFFF` is the ZIP64 sentinel, not a disk number), and
-ZIP64 locator `disks > 1`. Info-ZIP
-`zip -s` writes a genuinely spanned
-set addressed by `(disk, offset-within-disk)`; a linear join lists correctly and then
-reads only whichever members happen to sit on the last disk. Reading such a set is not
-planned.
+Info-ZIP's `zip -s` (and WinZip) writes a spanned set, `name.z01 … name.zNN`
+(`name.z100` and on past 99 parts) and last `name.zip`, whose end record names the
+last disk and whose entries are addressed by `(disk, offset-within-disk)`. When
+`name.zip`'s end record names more than one disk (the ZIP64 locator's disk count when
+there is one) and every part it names is beside the one named, `open_archive` SHALL
+join the parts in order, from any part, and read every `(disk, offset)` pair, the
+directory's and the ZIP64 record's included, as that part's start in the join plus
+the offset, reporting `is_multivolume` and `zip.volume_count` as for a split set. A
+part it names that is missing SHALL raise `TruncatedError` naming it. A `name.zip`
+whose end record names one disk SHALL be read alone, whatever `.zNN` sits beside it.
+
+Every other split/spanned signal SHALL raise `TruncatedError` rather than mis-read
+data: a `.zNN` or `.zip.NNN` name read alone (no set found beside it, or volume
+discovery off), an end record or ZIP64 locator naming more disks than the parts given
+(a `.zip` read alone, or an explicit list of the wrong length; a classic `0xFFFF` is
+the ZIP64 sentinel, not a disk number). An end record placing the directory on a disk
+after its own, or an entry on a disk the set does not have, SHALL raise
+`CorruptionError`.
 
 #### Scenario: multi-volume ZIP join and refusal
 
-`open_archive` on a complete 7-Zip `.zip.NNN` or SFX `.exe.NNN` set — named at any
-part — lists and
-reads its members, including data spanning a part boundary. An incomplete such set
-raises `TruncatedError`; every other split/spanned signal raises
-`UnsupportedFeatureError`. Neither surfaces `CorruptionError` or
-`FormatDetectionError`.
+| Source | Expected |
+| --- | --- |
+| A complete 7-Zip `.zip.NNN` or SFX `.exe.NNN` set, named at any part | Lists and reads every member, data across a part boundary included |
+| A complete `zip -s` set, named at the `.zip` or any `.zNN`, or listed in order | Lists and reads every member; `zip.volume_count` is the part count |
+| A `zip -s` set with a ZIP64 end record and locator | Same |
+| A `zip -s` set with a `.zNN` missing | `TruncatedError` naming it |
+| The `.zip` of a `zip -s` set alone | `TruncatedError` saying how many parts the set has |
+| A `.zNN` with no `.zip` beside it | `TruncatedError` |
+| A `.zip` naming one disk beside a stray `.z01` | Read alone |
+| An incomplete `.zip.NNN` set | `TruncatedError` |
 
 ### Requirement: Check the ZIP end record against the central directory
 
@@ -809,6 +822,29 @@ SHALL stay refused as a split set.
 | A locator naming an offset in bytes a pipe's listing limits dropped, classic fields unsaturated | Members listed from a file with `ARCHIVE_EOF_MARKER_MISSING`; `ResourceLimitError` from a pipe |
 | Any of the first three with the count, size and offset fields saturated | Three members as their local headers say, then `CorruptionError`; a pipe read gives the same error, except for the offset among the members' data, said in its own words |
 | A bad directory offset (`cd_size` past the classic record) | Three members as their local headers say, then `CorruptionError: Bad offset for central directory` |
+
+### Requirement: Report ZIP64 extra fields that no header field uses
+
+APPNOTE 4.5.3 has a ZIP64 extra field (`0x0001`) hold only the values whose header
+field is all ones. When a central directory entry has such a field and none of its
+uncompressed size, compressed size, local header offset and disk number fields is all
+ones, the entry's own values SHALL be used, as unzip and `zipfile` read them. When the
+first ZIP64 field's values, read in APPNOTE's order as far as the field's length holds
+whole values, differ from the entry's, the listing SHALL report
+`MEMBER_HEADER_AMBIGUOUS` with `ambiguity="zip64_unused"`, `field` the first value that
+differs and `more_fields` the count of the others: a reader that takes the field
+whatever the entry holds lists another size or reads other bytes. A field whose values
+agree with the entry SHALL report nothing. The report SHALL come from a file read and a
+pipe read alike, and `STRICT` SHALL refuse the member, as for every
+`MEMBER_HEADER_AMBIGUOUS`.
+
+#### Scenario: unused ZIP64 values
+
+| Archive, one stored member of 5 bytes | Expected, from a file and from a pipe |
+| --- | --- |
+| A ZIP64 field of 16 bytes giving 10¹² for both sizes, entry fields 5 and 5 | Lists size 5 and reads the 5 bytes; `MEMBER_HEADER_AMBIGUOUS` with `field="uncompressed size"`, `more_fields=1` |
+| A ZIP64 field giving 5 and 5 | Lists and reads; no diagnostic |
+| The first case under `DiagnosticPolicy.STRICT` | `DiagnosticRaisedError` |
 
 ### Requirement: Read ZIPs written past 4 GiB without ZIP64
 

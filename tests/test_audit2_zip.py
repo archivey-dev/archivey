@@ -35,7 +35,7 @@ from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
     DiagnosticRaisedError,
-    UnsupportedFeatureError,
+    TruncatedError,
 )
 from archivey.internal.streams.codecs.rapidgzip_child import RapidgzipChildStream
 from archivey.internal.streams.decompressor_stream import DataAfterEndError, SeekPoint
@@ -948,10 +948,10 @@ def test_eocd_disk_fields_spelling_the_signature_are_still_refused() -> None:
     base = bytearray(_build_zip([_Entry(b"a", b"hi")]))
     eocd = base.rfind(b"PK\x05\x06")
     # this_disk = 0x4B50, cd_start_disk = 0x0605: not the ZIP64 sentinel, so the
-    # archive declares a spanned set, which the reader refuses...
+    # archive declares a spanned set whose other parts are missing...
     control = bytearray(base)
     control[eocd + 4 : eocd + 8] = struct.pack("<HH", 0x4B50, 0x0606)
-    with pytest.raises(UnsupportedFeatureError):
+    with pytest.raises(TruncatedError, match="spanned"):
         _open_and_list(bytes(control))
     # ...unless those four bytes are b"PK\x05\x06" and the entry counts after them
     # are zero: stdlib parses the record at the end of the file (its no-comment fast
@@ -960,7 +960,7 @@ def test_eocd_disk_fields_spelling_the_signature_are_still_refused() -> None:
     crafted[eocd + 4 : eocd + 12] = b"PK\x05\x06" + bytes(4)
     with zipfile.ZipFile(io.BytesIO(bytes(crafted))) as zf:
         assert zf.namelist() == ["a"]  # stdlib parsed the record at the end
-    with pytest.raises(UnsupportedFeatureError):
+    with pytest.raises(TruncatedError, match="spanned"):
         _open_and_list(bytes(crafted))
 
 

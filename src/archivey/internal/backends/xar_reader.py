@@ -1,5 +1,5 @@
-"""An XAR reader (``.xar``, macOS ``.pkg`` and ``.xip``), written against
-``archivey.formats``.
+"""An XAR reader (``.xar``; also the XAR layer of a macOS ``.pkg`` or ``.xip`` under
+``format=ArchiveFormat.XAR``), written against ``archivey.formats``.
 
 The layout, from Apple's ``xar`` sources (``include/xar.h.in``, ``lib/archive.c``) and
 libarchive's ``archive_read_support_format_xar.c``: a big-endian header (``xar!``, its
@@ -15,9 +15,9 @@ The reader reads the whole TOC at open, bounded by ``max_metadata_bytes`` before
 decoded and by ``max_members`` while it is parsed, and checks its checksum. The XML is
 parsed with expat, refusing a document type declaration, so no entity is ever
 expanded. A member's data is decoded through archivey's codecs, refusing any byte
-after the end of its stream, and checked against its extracted checksum. A ``.pkg``'s
-payloads are listed as the files they are (``Payload``, a gzip-compressed CPIO), not
-opened. Handbook page: ``dev-docs/formats/xar.md``.
+after the end of its stream, and checked against its extracted checksum. This reader
+lists a package's ``Payload`` (a gzip or pbzx CPIO) as one file; ``pkg_reader`` expands
+it. Handbook page: ``dev-docs/formats/xar.md``.
 """
 
 from __future__ import annotations
@@ -79,13 +79,16 @@ _CKSUM_MD5 = 2
 _CKSUM_OTHER = 3
 _CKSUM_NAMES = {_CKSUM_SHA1: "sha1", _CKSUM_MD5: "md5"}
 
-_DIGESTS = {
-    "md5": HashAlgorithm.MD5,
-    "sha1": HashAlgorithm.SHA1,
-    "sha256": HashAlgorithm.SHA256,
-    "sha512": HashAlgorithm.SHA512,
+# The checksum styles archivey checks, by lowercase name: the member hash each one is,
+# and its digest size in bytes. Both file and TOC checksums use this table.
+_DIGESTS: dict[str, tuple[HashAlgorithm, int]] = {
+    "md5": (HashAlgorithm.MD5, 16),
+    "sha1": (HashAlgorithm.SHA1, 20),
+    "sha224": (HashAlgorithm.SHA224, 28),
+    "sha256": (HashAlgorithm.SHA256, 32),
+    "sha384": (HashAlgorithm.SHA384, 48),
+    "sha512": (HashAlgorithm.SHA512, 64),
 }
-_DIGEST_SIZES = {"md5": 16, "sha1": 20, "sha256": 32, "sha512": 64}
 
 # The encodings Apple's xar and libarchive write. ``application/x-gzip`` is a zlib
 # stream, not gzip; ``application/x-lzma`` is LZMA Alone.
@@ -436,7 +439,7 @@ class _TocParser:
                 value = bytes.fromhex(frame.digest)
             except ValueError:
                 value = b""
-            if len(value) != _DIGEST_SIZES[style]:
+            if len(value) != _DIGESTS[style][1]:
                 raise CorruptionError(
                     f"XAR file {quoted(path)} has a malformed {style} checksum"
                 )
@@ -458,9 +461,20 @@ def _timestamp(text: str) -> datetime | None:
     return None
 
 
+class _Inner(NamedTuple):
+    """A file a package payload holds (``pkg_reader``): the payload's own member and
+    locator, and the format of the archive inside it."""
+
+    payload: ArchiveMember
+    location: _Location
+    format: ArchiveFormat
+
+
 class _Location(NamedTuple):
     data: _Data | None
     """``None`` for a member with no data, which opens empty."""
+    inner: _Inner | None = None
+    """Set for a file a package payload holds (``pkg_reader``)."""
 
 
 class XarReader(IndexedReader[_Location]):
@@ -543,7 +557,7 @@ class XarReader(IndexedReader[_Location]):
                 f"the XAR header names {self._algorithm} and the table of contents "
                 f"{quoted(style)}"
             )
-        if size != _DIGEST_SIZES[self._algorithm]:
+        if size != _DIGESTS[self._algorithm][1]:
             raise CorruptionError(f"the XAR {style} checksum is {size} bytes")
         expected = self._read(self._heap + offset, size, "the TOC checksum")
         actual = hashlib.new(self._algorithm, stored, usedforsecurity=False).digest()
@@ -616,7 +630,7 @@ class XarReader(IndexedReader[_Location]):
                 member.compressed_size = entry.data.length
                 if entry.data.digest is not None:
                     style, value = entry.data.digest
-                    member.hashes = {_DIGESTS[style]: value}
+                    member.hashes = {_DIGESTS[style][0]: value}
                 if entry.data.unchecked_style is not None:
                     self._report_unchecked(member, entry.data.unchecked_style)
         elif kind is MemberType.SYMLINK:
@@ -739,10 +753,11 @@ def _empty() -> io.BytesIO:
 
 
 class XarHandler(IndexedFormatHandler):
-    """XAR archives: ``.xar``, and macOS ``.pkg`` and ``.xip``."""
+    """XAR archives (``.xar``), listed as the archive holds them. A macOS ``.pkg`` or
+    ``.xip`` is a XAR too, read with its payloads expanded by ``pkg_reader``."""
 
     format = ArchiveFormat.XAR
-    extensions = (".xar", ".pkg", ".xip")
+    extensions = (".xar",)
     magic = (Magic(0, MAGIC + b"\0"),)
     uses_encoding = True
     non_seekable_reason = "its files' data sit anywhere in the heap after the index"

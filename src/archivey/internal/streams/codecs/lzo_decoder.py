@@ -1,17 +1,19 @@
 """LZO1X, and the ``.lzo`` file format ``lzop`` writes around it.
 
 LZO1X has no stream framing of its own: a block is decoded whole, to a size the
-container stores (a SquashFS block, an lzop block). ``python-lzo`` binds liblzo2 and is
-used when it is installed. It is GPL and has no Linux wheels, so archivey does not
-depend on it and carries the decoder in Python too (:func:`lzo1x_decompress_python`). It
+container stores (a SquashFS block, an lzop block). ``compress-utils`` (its LZO1X
+decoder is derived from lzokay) decodes a block when it is installed; archivey also
+carries the decoder in Python (:func:`lzo1x_decompress_python`). It
 follows ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
 without the LZO-RLE extension, which neither lzop nor SquashFS writes.
 
 Every read is checked: a run of literals or a match that would pass the end of the
 input, write past the limit or copy from before the start of the output raises
-:class:`LzoError`, and so does input left after the end marker. The end marker is the
-one place it follows liblzo2 rather than the kernel: any match of distance 0 ends the
-block, whatever its length, so the two decoders agree on every block.
+:class:`LzoError`, and so do input left after the end marker and an end marker of a
+length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts any
+length there; the kernel and compress-utils refuse it, and the two decoders archivey
+uses agree on every block measured
+(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``).
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
 with the method, flags, mode, mtime and stored name, closed by a checksum, then blocks.
@@ -22,9 +24,11 @@ else LZO1X. A further file may follow, starting with the magic again.
 
 from __future__ import annotations
 
+import re
 import struct
 import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.exceptions import (
@@ -51,34 +55,48 @@ class LzoError(ValueError):
     """The data is not a valid LZO1X stream, or decodes to more than the limit."""
 
 
-def _python_lzo(
+# What compress-utils says when its process-wide output cap, not the data, stops a
+# decode (``CU_ERR_SIZE_LIMIT`` in 0.12.1).
+_SIZE_LIMIT = "decompressed size exceeds configured limit"
+
+
+def _compress_utils(
     excluded: frozenset[OptionalLibrary], natives: Natives = IN_PROCESS
 ) -> Callable[[bytes, int], bytes] | None:
-    """``python-lzo``'s decoder, in this process or a child as ``natives`` says, or
-    ``None`` when it is absent or ``excluded``."""
-    if OptionalLibrary.LZO in excluded or not natives.package_available(deps.lzo):
+    """compress-utils' LZO1X decoder, in this process or a child as ``natives`` says,
+    or ``None`` when it is absent or ``excluded``."""
+    package = deps.compress_utils
+    if OptionalLibrary.COMPRESS_UTILS in excluded or not natives.package_available(
+        package
+    ):
         return None
-    if natives.isolated and deps.lzo.child_import_failed:
+    if natives.isolated and package.child_import_failed:
         return None
     errors = natives.lzo_errors()
 
     def decompress(data: bytes, limit: int) -> bytes:
-        if natives.isolated and deps.lzo.child_import_failed:
+        if natives.isolated and package.child_import_failed:
             # A child could not import it for an earlier block.
             return lzo1x_decompress_python(data, limit)
         try:
             return natives.lzo_decompress(data, limit)
         except errors as exc:
+            if _SIZE_LIMIT in str(exc):
+                # compress-utils' process-wide output cap
+                # (``set_max_decompressed_size``) is the host's setting, not a
+                # verdict on the data: decode the block here, under ``limit``.
+                return lzo1x_decompress_python(data, limit)
             raise LzoError(str(exc)) from None
         except ResourceUnavailableError as exc:
             # Isolated, the package is only looked up here, not imported, so one
             # that is found but does not import fails in the child. Fall back as
-            # ``deps.lzo.load()`` does in this process: the Python decoder needs no
-            # child (DR-11). Any other reason no child starts still raises. Only
-            # isolated decoders take note: this process may import it all the same.
+            # ``deps.compress_utils.load()`` does in this process: the Python decoder
+            # needs no child (DR-11). Any other reason no child starts still raises.
+            # Only isolated decoders take note: this process may import it all the
+            # same.
             if not isinstance(exc.__cause__, DecoderChildImportError):
                 raise
-            deps.lzo.failed_in_child(exc.__cause__)
+            package.failed_in_child(exc.__cause__)
             return lzo1x_decompress_python(data, limit)
 
     return decompress
@@ -89,15 +107,26 @@ def lzo1x_decompressor(
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
-    """The LZO1X block decoder to use: ``python-lzo`` when present and allowed, else
+    """The LZO1X block decoder to use: compress-utils when present and allowed, else
     :func:`lzo1x_decompress_python`, which is Python and so runs in this process
-    whatever ``natives`` says. ``usage`` records ``python-lzo`` when it is chosen."""
-    package = _python_lzo(excluded, natives)
+    whatever ``natives`` says. ``usage`` records ``compress_utils`` when it is chosen."""
+    package = _compress_utils(excluded, natives)
     if package is None:
         return lzo1x_decompress_python
     if usage is not None:
-        usage.note_backend("library", OptionalLibrary.LZO.value, "lzo")
+        usage.note_backend("library", OptionalLibrary.COMPRESS_UTILS.value, "lzo")
     return package
+
+
+# Each zero extends a literal or match length by 255 bytes. Handling the first four
+# inline avoids a regex call on short extensions. The C-level search skips longer
+# runs without a Python step per byte. Nonzero extensions need no scan.
+#
+# Both sites deliberately unroll the four checks: a bounded loop measured slower
+# on short extensions, and a helper adds a call. Keep the two copies in step.
+# Runs of about five to eight zeros pay for both the inline prefix and the regex
+# call, so they can be slightly slower than either scan alone.
+_FIND_NONZERO = re.compile(rb"[^\x00]").search
 
 
 def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
@@ -128,8 +157,17 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
                 # A literal run of 4 or more bytes.
                 if t == 0:
                     zeros = ip
-                    while ip < end and data[ip] == 0:
+                    if ip < end and data[ip] == 0:
                         ip += 1
+                        if ip < end and data[ip] == 0:
+                            ip += 1
+                            if ip < end and data[ip] == 0:
+                                ip += 1
+                                if ip < end and data[ip] == 0:
+                                    ip += 1
+                                    if ip < end and data[ip] == 0:
+                                        found = _FIND_NONZERO(data, ip)
+                                        ip = found.start() if found is not None else end
                     if ip >= end:
                         raise LzoError("the input ends inside an instruction")
                     t = (ip - zeros) * 255 + 15 + data[ip]
@@ -171,8 +209,17 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
                 base = 7
             if length == 0:
                 zeros = ip
-                while ip < end and data[ip] == 0:
+                if ip < end and data[ip] == 0:
                     ip += 1
+                    if ip < end and data[ip] == 0:
+                        ip += 1
+                        if ip < end and data[ip] == 0:
+                            ip += 1
+                            if ip < end and data[ip] == 0:
+                                ip += 1
+                                if ip < end and data[ip] == 0:
+                                    found = _FIND_NONZERO(data, ip)
+                                    ip = found.start() if found is not None else end
                 if ip >= end:
                     raise LzoError("the input ends inside an instruction")
                 length = (ip - zeros) * 255 + base + data[ip]
@@ -188,10 +235,14 @@ def lzo1x_decompress_python(data: bytes, limit: int) -> bytes:
             else:
                 distance = ((t & 8) << 11) + (field >> 2)
                 if distance == 0:
-                    # The end marker. Writers put 17, 0, 0, a length of 3; liblzo2
-                    # (``lzo1x_decompress_safe``), which lzop and squashfs-tools decode
-                    # with, takes any length and ignores the low 2 bits, and so does
-                    # this. The kernel's decoder refuses a length other than 3.
+                    # The end marker: every writer puts 17, 0, 0, a length of 3. The
+                    # kernel's decoder, which reads SquashFS images, and compress-utils
+                    # refuse any other length, and so does this; liblzo2 takes any.
+                    # All of them ignore the low 2 bits.
+                    if length != 3:
+                        raise LzoError(
+                            f"the end marker has a length of {length}, not 3"
+                        )
                     if ip != end:
                         raise LzoError(f"{end - ip} bytes follow the end marker")
                     return bytes(out)
@@ -245,28 +296,18 @@ _U16 = struct.Struct(">H")
 _U32 = struct.Struct(">I")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
 class LzopHeader:
-    """The fields of an lzop file header that archivey uses."""
+    """The fields of an lzop file header that archivey uses. Compared by value: a seek
+    point at a block carries its file's header, and two decodes parse equal ones."""
 
-    __slots__ = ("flags", "length", "method", "mode", "mtime", "name")
-
-    def __init__(
-        self,
-        *,
-        flags: int,
-        method: int,
-        mode: int,
-        mtime: int,
-        name: bytes,
-        length: int,
-    ) -> None:
-        self.flags = flags
-        self.method = method
-        self.mode = mode
-        self.mtime = mtime
-        self.name = name
-        # The header's length from the magic through its checksum and extra field.
-        self.length = length
+    flags: int
+    method: int
+    mode: int
+    mtime: int
+    name: bytes
+    # The header's length from the magic through its checksum and extra field.
+    length: int
 
 
 def parse_lzop_header(
@@ -411,6 +452,27 @@ class LzopDecompressor:
         self._header: LzopHeader | None = None
         self._ended = False
         self.unused_data = b""
+        # Input bytes parsed and output bytes decoded since this decompressor started,
+        # and the blocks begun since ``take_block_starts`` last asked
+        # (``BlockResumable``).
+        self._consumed = 0
+        self._decoded = 0
+        self._block_starts: list[tuple[int, int, object]] = []
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]:
+        """The blocks decoded and checked since the last call: their input and output
+        offsets from this decompressor's start, and the file's header, which is what
+        :meth:`resume` needs. lzop compresses every block on its own, and its
+        checksums cover one block, so a decode can start at any block."""
+        starts, self._block_starts = self._block_starts, []
+        return starts
+
+    def resume(self, state: object) -> None:
+        """Start inside a file whose header is ``state``: the input begins at a block
+        header."""
+        assert isinstance(state, LzopHeader)
+        assert self._header is None and not self._in
+        self._header = state
 
     @property
     def eof(self) -> bool:
@@ -459,6 +521,7 @@ class LzopDecompressor:
                 return False
             self._header = header
             del buf[: header.length]
+            self._consumed += header.length
             return True
         flags = self._header.flags
         if len(buf) < 4:
@@ -518,6 +581,9 @@ class LzopDecompressor:
         check(d_crc, zlib.crc32(block), "data")
         del buf[: pos + src_len]
         self._out += block
+        self._block_starts.append((self._consumed, self._decoded, self._header))
+        self._consumed += pos + src_len
+        self._decoded += dst_len
         return True
 
 

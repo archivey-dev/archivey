@@ -36,9 +36,8 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
   3.14. Listing: from its index; from a pipe, header by header. Members: direct. Readable from a pipe.
 - **TAR:** core. Listing: header by header. Members: direct. Readable from a pipe.
 - **Compressed TAR** (`.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.lz`, `.tar.lzma`, `.tar.zz`,
-  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`, `.tar.bz3`): needs what its compressor needs
-  (below).
-  Listing: needs decompression. Members: solid. Readable from a pipe.
+  `.tar.Z`, `.tar.zst`, `.tar.lz4`, `.tar.br`, `.tar.lzo`, `.tar.bz3`, `.tar.sz`): needs what its
+  compressor needs (below). Listing: needs decompression. Members: solid. Readable from a pipe.
 - **7z:** core for LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters (BCJ, BCJ2,
   ARM64, RISC-V and the others); `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard
   before Python 3.14. Listing: from its index. Members: solid, unless written without solid
@@ -52,8 +51,10 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **SquashFS** (`.squashfs`, `.sqfs`, `.snap`): core for gzip, xz, LZMA and LZO images;
   Zstandard images need what a `.zst` file needs; LZ4 images need `[recommended]`. Listing:
   from its index. Members: direct. Needs a source that can seek.
-- **XAR** (`.xar`, macOS `.pkg` and `.xip`): core for stored, gzip, bzip2, LZMA and xz
-  data. Listing: from its index. Members: direct. Needs a source that can seek.
+- **XAR** (`.xar`): core for stored, gzip, bzip2, LZMA and xz data. Listing: from its index.
+  Members: direct. Needs a source that can seek.
+- **macOS installer packages** (`.pkg`, `.mpkg`, `.xip`): core. Listing: needs decompression of
+  each payload. Members: solid within a payload. Needs a source that can seek.
 - **CAB** (`.cab`, Microsoft cabinets): core, for stored, MSZIP and LZX folders. Listing:
   from its index. Members: solid when a folder is compressed, otherwise direct. Needs a source
   that can seek.
@@ -78,10 +79,10 @@ reaching a member means decompressing others first ([Solid archives](reading.md#
 - **makeself** (`.run` installers): core; each payload needs what its compressor needs, as for
   the same compressed TAR. Listing: needs decompression. Members: solid. Readable from a pipe.
 - **Directory:** core. Listing: walks the tree. Members: direct.
-- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` in core;
-  Zstandard in core on Python 3.14 and later, otherwise `[recommended]`; LZ4, Firefox's mozlz4
-  files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and base64 text in core.
-  One member. Members: direct. Readable from a pipe. Seeking inside the member
+- **Single compressed files:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo`, Snappy `.sz`
+  and Apple's pbzx in core; Zstandard in core on Python 3.14 and later, otherwise `[recommended]`;
+  LZ4, Firefox's mozlz4 files and Brotli need `[recommended]`; `.bz3` needs `[bzip3]`. uuencode and
+  base64 text in core. One member. Members: direct. Readable from a pipe. Seeking inside the member
   needs `seekable_members=True` ([Seeking inside a member](reading.md#seeking-inside-a-member)).
 - **UDIF disk images** (`.dmg`): recognised and refused ([Disk images](#disk-images)).
 
@@ -471,8 +472,9 @@ sending side when the ZIP is done.
 - A set split by 7-Zip's `-v` (`name.zip.001` to `name.zip.00N`) opens from any part, when every
   part is in the same directory. The parts are byte slices of one ordinary ZIP, and archivey joins
   them. A missing part raises `TruncatedError`.
-- A spanned set written by `zip -s` (`.z01` to `.zip`) addresses its entries by disk number, and is
-  refused with `UnsupportedFeatureError`. Join it with the tool that made it.
+- A spanned set written by `zip -s` (`name.z01`, `name.z02`, and so on, then `name.zip`) opens the
+  same way, from the `.zip` or any other part, when every part is in the same directory. A missing
+  part raises `TruncatedError`.
 
 ### Compression methods
 
@@ -1144,13 +1146,15 @@ other members because of a member's name any more. Setting it to `True` warns.
 
 - **Needs:** `[recommended]` (`pycdlib` 1.22 or later).
 - **Listing:** from the image's directory records. The namespace is chosen automatically, Rock
-  Ridge, then Joliet, then plain ISO 9660, and reported in `ArchiveInfo.extra["iso.namespace"]`.
+  Ridge, then UDF, then Joliet, then plain ISO 9660, and reported in
+  `ArchiveInfo.extra["iso.namespace"]`. An image with only a UDF file system, as on most Blu-ray
+  discs, is recognised and read too.
 - **Reading members:** direct. With `concurrent_operations=True`, reads share one file handle and
   take turns on it, as in TAR.
 - **From a pipe:** no; an ISO needs a source that can seek.
 - `ArchiveInfo.format_version` is `None`: ISO 9660 records no interchange level.
 - `ArchiveInfo.comment` is the volume identifier (`-V`), decoded as a plain ISO 9660 name is:
-  UTF-8 first, then `encoding=`, then escaped.
+  UTF-8 first, then `encoding=`, then escaped. When UDF is listed, it is the UDF volume's name.
 
 ### Names
 
@@ -1160,23 +1164,26 @@ other members because of a member's name any more. Setting it to `True` warns.
   line up, with a `member_name_encoding_inferred` diagnostic, and is escaped otherwise
   ([Names in other encodings](opening.md#names-in-other-encodings)).
 - Joliet names are UTF-16 and ignore `encoding=`. They can hold an
-  [unpaired surrogate](#names-with-an-unpaired-surrogate).
-- Plain ISO 9660 file names lose their `;N` version suffix (and the `.` of an empty extension), and
-  `extra["iso.version"]` keeps the number. When a directory holds several versions of one name, the
-  highest takes the bare name, and the others list under their stored identifier (`FOO.;1`) with
-  `is_current=False`, the same shape as RAR file versions. Plain directory names have no version
-  and keep any `;N`.
+  [unpaired surrogate](#names-with-an-unpaired-surrogate). UDF names are Latin-1 or UTF-16, as
+  each name says, and ignore `encoding=` too.
+- Plain ISO 9660 and Joliet file names lose their `;N` version suffix (and the `.` of an empty
+  extension), and `extra["iso.version"]` keeps the number. Many writers put `;1` on Joliet names
+  too, and Windows and Linux drop it there as well. When a directory holds several versions of one
+  name, the highest takes the bare name, and the others list under their stored identifier
+  (`FOO.;1`) with `is_current=False`, the same shape as RAR file versions. Directory names have no
+  version and keep any `;N`, and so does a file name that is only dots before the `;N`
+  (`...;1`), so that no member is named `.` or `..`.
 - Two files stored with the same identifier both list, the later one current, as in ZIP and TAR.
   That includes a file and its associated file (such as the resource fork on a Mac hybrid image),
   which are listed as two members with one name and nothing to tell the fork apart. Entries in a directory
   are listed in the order of their records on the disc.
 - An image carries up to three name trees over one set of files: Rock Ridge (on the plain ISO
-  9660 records), which Linux reads and archivey lists; Joliet, which 7-Zip and Windows read; and
-  UDF, which Windows reads first. Without Rock Ridge archivey lists Joliet, and a reader without
-  Joliet reads the plain tree. A file that only an unlisted tree holds is not a member, so it is
-  reported with `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
-  `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It is advisory:
-  `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses such an image.
+  9660 records), which Linux reads and archivey lists first; UDF, which Windows and 7-Zip read
+  first; and Joliet, which they read when there is no UDF. Without Rock Ridge archivey lists UDF,
+  then Joliet, and a reader without Joliet reads the plain tree. A file that only an unlisted tree
+  holds is not a member, so it is reported with `MEMBER_READERS_DISAGREE` (`file_only_in_joliet`,
+  `file_only_in_iso9660`, `file_only_in_udf`), naming its path in that tree, up to 16 per tree. It
+  is advisory: `DiagnosticPolicy.PEDANTIC` or `raise_on=` refuses such an image.
 
 ### Contents
 
@@ -1191,7 +1198,12 @@ other members because of a member's name any more. Setting it to `True` warns.
   `CorruptionError`.
 - The El Torito boot catalog of a bootable image (`boot.catalog`, `BOOT.CAT`) is listed as an ordinary
   file, with the catalog's bytes as its data, as a mounted image shows it.
-- A Rock Ridge device node, FIFO or socket over an empty extent follows
+- A UDF member gets its permission bits, owner and group from the UDF file entry, and a UDF
+  symbolic link its target. A UDF file system on a rewritable or incrementally written disc (a
+  sparable or virtual partition), or one that uses extended allocation descriptors, is not read:
+  the image lists another tree when it has one, and `open_archive` raises
+  `UnsupportedFeatureError` when it has none.
+- A Rock Ridge or UDF device node, FIFO or socket over an empty extent follows
   [the shared rule](#device-files-fifos-and-sockets); over a non-empty extent it is a `FILE`.
 - The `rr_moved` directory that holds relocated deep subtrees is not listed; those subtrees appear
   at their logical place.
@@ -1207,16 +1219,14 @@ other members because of a member's name any more. Setting it to `True` warns.
 ### Damage and endings
 
 - An image whose directory tree loops back on itself, in any of its trees (ISO 9660, Joliet or UDF),
-  is refused at open with `CorruptionError`, even when the tree archivey lists from is intact.
-  pycdlib finds the loop. No tool writes such an image; a damaged or crafted one can.
+  is refused at open with `CorruptionError`, even when the tree archivey lists from is intact. No
+  tool writes such an image; a damaged or crafted one can.
 - A truncated image opens as long as its directories survive, and lists the sizes its records
   declare. A file the cut reaches reads the bytes that survive and then raises `TruncatedError`;
   files before the cut read normally. A file whose declared length cannot be recovered lists with
   `size` set to `None`. A cut that reaches the volume descriptors, path tables or directories makes
-  `open_archive` raise `TruncatedError`.
-- An image with UDF does not open once it is truncated at all, even when the files before the cut
-  survive: `open_archive` raises `TruncatedError`, because the UDF anchor that pycdlib reads is in
-  the image's last block.
+  `open_archive` raise `TruncatedError`, and so does one that reaches the UDF anchor at block 256
+  or a UDF file entry or directory.
 - **Bytes after the image's end** are `ARCHIVE_TRAILING_DATA` with `format="iso"`. The end counts
   the partitions the image's MBR lists, and those of its GPT when the GPT's checksums match, so a
   hybrid installer image, whose EFI partition and GPT backup header sit after the ISO 9660 volume
@@ -1246,15 +1256,19 @@ other members because of a member's name any more. Setting it to `True` warns.
   for `disc.bin`), and a missing one is `TruncatedError`. A sheet with a `FILE` that holds no
   `TRACK`, or with track numbers that do not go up, is `CorruptionError`. Without a `.cue`, a
   `.bin` is read from its first track, which finds the filesystem of a mixed-mode disc but not of
-  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). A `.cue` has no magic: it
-  is recognised by its name, and only from a path, since its tracks are files beside it.
+  an Enhanced CD (its `.bin` starts with audio, so it is not recognised). The `.cue` is used only
+  when you open the `.bin` by its path, so the same multisession `.bin` passed as a file object
+  lists its first session, not its last. When archivey finds another session's filesystem after the
+  first one, it reports `ARCHIVE_UNREAD_SESSION`, which `DiagnosticPolicy.STRICT` refuses. A `.cue`
+  has no magic: it is recognised by its name, and only from a path, since its tracks are files
+  beside it.
 
 ## SquashFS
 
 - **Needs:** nothing for gzip, xz, LZMA and LZO images. A Zstandard image needs what a `.zst`
   file needs ([below](#single-file-compressors)), and an LZ4 image needs `[recommended]`
   (`lz4`). LZO is decoded as a `.lzo` file is ([below](#single-file-compressors)): with
-  liblzo2 when `python-lzo` is installed, and otherwise in Python.
+  `compress-utils` when it is installed, and otherwise in Python.
 - **Listing:** from the image's inode and directory tables.
 - **Reading members:** direct. Small files share a fragment block, which is decoded once for
   all of them.
@@ -1276,8 +1290,10 @@ other members because of a member's name any more. Setting it to `True` warns.
 
 ## XAR
 
-The format of macOS installer packages (`.pkg`) and `.xip` files, written by Apple's `xar`,
-`pkgbuild` and `bsdtar --format xar`.
+The archive format written by Apple's `xar` and `bsdtar --format xar`. macOS installer
+packages and `.xip` files are XAR archives too; archivey opens them as
+[installer packages](#macos-installer-packages), and as XAR only when asked with
+`format=ArchiveFormat.XAR`.
 
 - **Needs:** nothing. Each file's data is stored, or compressed with zlib, bzip2, LZMA or xz,
   all read with Python's own modules.
@@ -1290,14 +1306,13 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   source that can seek.
 - `ArchiveInfo.format_version` is `"1"`, the only version there is. Members carry the mode,
   owners, and modification, access and change times the index stores, all in UTC.
-- An installer package is listed as the files its XAR layer holds: `Distribution`, and per
-  component `PackageInfo`, `Bom`, `Scripts` and `Payload`. `Payload` is a gzip-compressed
-  CPIO archive (or a `pbzx` stream in newer packages); archivey lists and reads it as one
-  file and does not expand it.
+- An installer package opened with `format=ArchiveFormat.XAR` is listed as the files its XAR
+  layer holds: `Distribution`, and per component `PackageInfo`, `Bom`, `Scripts` and
+  `Payload`, each `Payload` read as the one compressed file it is.
 - The index's own checksum is checked at open, and a damaged index raises
   `CorruptionError`. Each file's data carries a checksum of its decoded bytes (SHA-1 by
-  default, or MD5, SHA-256 or SHA-512), which is `member.hashes`, so a member read to its end
-  is at `Verification.CHECKSUM`. A checksum of another style, or one that names no style,
+  default, or MD5, SHA-224, SHA-256, SHA-384 or SHA-512), which is `member.hashes`, so a member read
+  to its end is at `Verification.CHECKSUM`. A checksum of another style, or one that names no style,
   is not a hash: the file reads unchecked and reports `DIGEST_UNVERIFIABLE` when it is
   listed, which `DiagnosticPolicy.STRICT` raises.
 - A name stored base64-encoded, as writers do for bytes that are not UTF-8, is decoded with
@@ -1308,6 +1323,34 @@ The format of macOS installer packages (`.pkg`) and `.xip` files, written by App
   the link before that member; archivey then lists it after.
 - A file whose data uses an encoding archivey does not know is listed, with
   `CompressionAlgorithm.UNKNOWN`, and raises `UnsupportedFeatureError` when read.
+
+## macOS installer packages
+
+macOS installer packages (`.pkg`, `.mpkg`), written by Apple's `pkgbuild` and
+`productbuild`, and Xcode's `.xip` archives. Each is a [XAR](#xar) archive whose payloads
+are CPIO archives; archivey lists the files inside them, the way `pkgutil --expand-full`
+unpacks a package. The format is `ArchiveFormat.PKG`.
+
+- **Needs:** nothing. Payloads are gzip or pbzx (Apple's xz in chunks), read with Python's
+  own modules.
+- **Listing:** each `Payload` and `Scripts`, in a component package or in a component's
+  folder of a product archive (`app.pkg/`), and the `Content` of a `.xip`, is listed as the
+  files its CPIO holds, under a folder of its own name:
+  `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and the
+  other files are listed as they are. Listing decodes every payload.
+- **Reading members:** solid within a payload: reading a file decodes its payload up to it,
+  and reading the files in order decodes each payload once.
+- **From a pipe:** no, as for XAR.
+- **Detection:** a XAR named `.pkg`, `.mpkg` or `.xip` is a package, and a `.xar` is not.
+  Without either name, a XAR whose index lists `Distribution` or `PackageInfo`, or both
+  `Content` and `Metadata`, is a package. `format=ArchiveFormat.XAR` opens a package as the
+  XAR files it holds, and `FormatPolicy` allows or refuses packages as `ContainerFormat.PKG`.
+- A payload's XAR checksum is checked as the listing reads it, and a payload that fails it
+  raises `CorruptionError`. A payload that is not a CPIO, or whose first CPIO header cannot
+  be read, is listed as the one file it is.
+- A file in a payload, or a hard link's target, whose name would extract outside the
+  payload's folder (`../Bom`) raises `CorruptionError`. A symlink in a payload is not
+  checked at listing; extraction applies its usual link checks.
 
 ## CAB
 
@@ -1634,12 +1677,13 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
 
 ## Single-file compressors
 
-- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z` and `.lzo` are in core (`.Z` with
+- **Needs:** gzip, bzip2, xz, lzip, LZMA Alone, zlib, `.Z`, `.lzo` and `.sz` are in core (`.Z` with
   archivey's own LZW decoder). Zstandard is in core on Python 3.14 and later, and needs
-  `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop` writes,
-  decodes LZO1X with liblzo2 when the `python-lzo` package is installed, and otherwise in Python,
-  more than 25 times slower on text. `python-lzo` is not in an extra: it is GPL, and has no Linux
-  wheels, so installing it needs the liblzo2 headers.
+  `[recommended]` before. LZ4, mozlz4 and Brotli need `[recommended]`. `.lzo`, the format `lzop`
+  writes, decodes LZO1X with the `compress-utils` package, which `[recommended]` installs on CPython
+  except on Intel macOS, and otherwise in Python, more than 20 times slower on text. Both refuse a
+  block that ends with an end marker other than the one every LZO1X writer produces, which `lzop`
+  itself accepts.
 - **bzip3** (`.bz3`, the format the `bzip3` tool writes) needs `[bzip3]`, which is in neither
   `[recommended]` nor `[all]` and does not install on macOS, PyPy or Python 3.15
   ([Install](install.md#bzip3)). It decodes in a child process unless `process_isolation` is
@@ -1653,6 +1697,23 @@ first (for example with `7z x`, `dmg2img`, or `hdiutil attach` on macOS).
   has no checksum, and it decodes only when the whole file has arrived, so the first byte from a
   pipe waits for the end of the input. The decoded size must match the header, or the read raises
   `CorruptionError`.
+- **Snappy** (`.sz`) is Snappy's framing format, which `snzip`, python-snappy and the Snappy
+  libraries write: chunks of at most 64 KiB, each with a CRC-32C of its decoded data, checked before
+  the data is returned. With no other package installed, archivey decodes it and checks the CRC in
+  Python, at about 10 MB/s. When `cramjam` or `compress-utils` is installed it decodes the raw
+  blocks, and `google-crc32c` or `crc32c` computes the CRC; either kind alone reaches about 20 to 25
+  MB/s, and both kinds together several hundred MB/s. `[recommended]` installs `compress-utils`
+  (except on Intel macOS) and `google-crc32c` on CPython; `cramjam` and `crc32c` are in no extra.
+  Which packages are installed changes only the speed: a block a package refuses is decoded again in
+  Python, which decides. With `process_isolation=NATIVE_DECODERS` the packages run in a child
+  process. Nothing marks the end of the file, so a file cut between two chunks reads short with no
+  error; a cut inside a chunk raises `TruncatedError`. Hadoop's `.snappy` files and raw Snappy
+  blocks have no signature, and archivey does not read them.
+- **pbzx** is Apple's framing of xz, the compression of a macOS installer package's payload:
+  a chunk size, then chunks that are each stored or one whole xz stream. archivey finds it by
+  its `pbzx` signature. Each xz chunk decodes under `DecoderLimits.max_decoder_memory`. A
+  chunk shorter than the chunk size ends the stream, and anything after it is trailing data.
+  A file cut inside a chunk raises `TruncatedError`.
 - **uuencode and base64** compress nothing, but they wrap a file as text the way a compressor
   wraps it, so archivey peels them the same way: `files.tar.uu` lists the tar.
   - **uuencode** (`.uu`, `.uue`): a `begin 644 name` line, encoded lines, then `end`; the

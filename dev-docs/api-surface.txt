@@ -5,6 +5,7 @@ constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_TRAILING_DATA
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNLISTED_DATA
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNREAD_SESSION
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.DIGEST_UNVERIFIABLE
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
@@ -63,9 +64,12 @@ attribute archivey.ArchiveFormat.LZMA_ALONE = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.LZOP = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.MAKESELF = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.MOZLZ4 = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.PBZX = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.PKG = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.RPM = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SEVEN_Z = ArchiveFormat(...)
+attribute archivey.ArchiveFormat.SNAPPY = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.SQUASHFS = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR = ArchiveFormat(...)
 attribute archivey.ArchiveFormat.TAR_BZ2 = ArchiveFormat(...)
@@ -240,6 +244,7 @@ value archivey.CompressionAlgorithm.QUANTUM = 'quantum'
 value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.LZW = 'lzw'
 value archivey.CompressionAlgorithm.BZIP3 = 'bzip3'
+value archivey.CompressionAlgorithm.SNAPPY = 'snappy'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
 init archivey.CompressionMethod(algo: CompressionAlgorithm, level: int | None = None, properties: bytes | None = None) -> None
@@ -260,6 +265,7 @@ value archivey.ContainerFormat.RPM = 'rpm'
 value archivey.ContainerFormat.MAKESELF = 'makeself'
 value archivey.ContainerFormat.SQUASHFS = 'squashfs'
 value archivey.ContainerFormat.XAR = 'xar'
+value archivey.ContainerFormat.PKG = 'pkg'
 value archivey.ContainerFormat.CAB = 'cab'
 value archivey.ContainerFormat.LHA = 'lha'
 value archivey.ContainerFormat.ARJ = 'arj'
@@ -342,6 +348,7 @@ value archivey.DiagnosticCode.SCAN_ENTRY_VANISHED = 'scan_entry_vanished'
 value archivey.DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING = 'archive_eof_marker_missing'
 value archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA = 'archive_trailing_data'
 value archivey.DiagnosticCode.ARCHIVE_UNLISTED_DATA = 'archive_unlisted_data'
+value archivey.DiagnosticCode.ARCHIVE_UNREAD_SESSION = 'archive_unread_session'
 value archivey.DiagnosticCode.MEMBER_TIMESTAMP_INVALID = 'member_timestamp_invalid'
 value archivey.DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED = 'member_header_record_skipped'
 value archivey.DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE = 'symlink_target_unavailable'
@@ -367,7 +374,7 @@ value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED = 'member_name_du
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -493,7 +500,9 @@ value archivey.HashAlgorithm.CRC32 = 'crc32'
 value archivey.HashAlgorithm.BLAKE2SP = 'blake2sp'
 value archivey.HashAlgorithm.MD5 = 'md5'
 value archivey.HashAlgorithm.SHA1 = 'sha1'
+value archivey.HashAlgorithm.SHA224 = 'sha224'
 value archivey.HashAlgorithm.SHA256 = 'sha256'
+value archivey.HashAlgorithm.SHA384 = 'sha384'
 value archivey.HashAlgorithm.SHA512 = 'sha512'
 class archivey.LinkTargetNotFoundError(ReadError)
 init archivey.LinkTargetNotFoundError(message: str, *, reason: LinkTargetNotFoundReason, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
@@ -572,8 +581,11 @@ value archivey.OptionalLibrary.COMPRESSION_ZSTD = 'compression.zstd'
 value archivey.OptionalLibrary.RAPIDGZIP = 'rapidgzip'
 value archivey.OptionalLibrary.PYCDLIB = 'pycdlib'
 value archivey.OptionalLibrary.CRYPTOGRAPHY = 'cryptography'
-value archivey.OptionalLibrary.LZO = 'lzo'
+value archivey.OptionalLibrary.COMPRESS_UTILS = 'compress_utils'
 value archivey.OptionalLibrary.BZIP3 = 'bz3'
+value archivey.OptionalLibrary.CRAMJAM = 'cramjam'
+value archivey.OptionalLibrary.GOOGLE_CRC32C = 'google_crc32c'
+value archivey.OptionalLibrary.CRC32C = 'crc32c'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'
@@ -636,6 +648,8 @@ value archivey.StreamFormat.UNIX_COMPRESS = 'Z'
 value archivey.StreamFormat.LZOP = 'lzo'
 value archivey.StreamFormat.BZIP3 = 'bz3'
 value archivey.StreamFormat.MOZLZ4 = 'mozlz4'
+value archivey.StreamFormat.SNAPPY = 'sz'
+value archivey.StreamFormat.PBZX = 'pbzx'
 value archivey.StreamFormat.UU = 'uu'
 value archivey.StreamFormat.BASE64 = 'b64'
 class archivey.StreamNotSeekableError(OpenError)
@@ -667,12 +681,13 @@ function archivey.sanitize_names(member: ArchiveMember) -> ArchiveMember
 module archivey.detection_cost
 constant archivey.detection_cost.BALANCED_BUDGET = DetectionBudget(...)
 class archivey.detection_cost.DetectionBudget()
-init archivey.detection_cost.DetectionBudget(max_prefix_bytes: int, max_far_bytes: int, max_scan_bytes: int, max_decode_input: int, max_decode_output: int, completion_window_bytes: int) -> None
+init archivey.detection_cost.DetectionBudget(max_prefix_bytes: int, max_far_bytes: int, max_scan_bytes: int, max_decode_input: int, max_decode_output: int, completion_window_bytes: int, max_probe_forward_bytes: int = 0) -> None
 field archivey.detection_cost.DetectionBudget.completion_window_bytes: int
 field archivey.detection_cost.DetectionBudget.max_decode_input: int
 field archivey.detection_cost.DetectionBudget.max_decode_output: int
 field archivey.detection_cost.DetectionBudget.max_far_bytes: int
 field archivey.detection_cost.DetectionBudget.max_prefix_bytes: int
+field archivey.detection_cost.DetectionBudget.max_probe_forward_bytes: int = 0
 field archivey.detection_cost.DetectionBudget.max_scan_bytes: int
 classmethod archivey.detection_cost.DetectionBudget.for_preset(cls, preset: DetectionBudgetPreset) -> DetectionBudget
 class archivey.detection_cost.DetectionBudgetPreset(Enum)
@@ -757,6 +772,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_trailing_data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-trailing-data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unlisted_data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unlisted-data'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unread_session'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unread-session'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_timestamp_invalid'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-timestamp-invalid'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_record_skipped'
@@ -855,8 +872,8 @@ field archivey.diagnostics.FormatConflictContext.kind: Literal['format_conflict'
 field archivey.diagnostics.FormatConflictContext.source_name: str | None = None
 method archivey.diagnostics.FormatConflictContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.HeaderAmbiguityContext(_JsonSafeContext)
-init archivey.diagnostics.HeaderAmbiguityContext(kind: Literal['header_ambiguity'] = 'header_ambiguity', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value', 'copies_differ'] = 'repeated', field: str = '', more_fields: int = 0) -> None
-field archivey.diagnostics.HeaderAmbiguityContext.ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value', 'copies_differ'] = 'repeated'
+init archivey.diagnostics.HeaderAmbiguityContext(kind: Literal['header_ambiguity'] = 'header_ambiguity', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value', 'copies_differ', 'zip64_unused'] = 'repeated', field: str = '', more_fields: int = 0) -> None
+field archivey.diagnostics.HeaderAmbiguityContext.ambiguity: Literal['both_families', 'repeated', 'global_member_field', 'nul_in_value', 'global_replaced', 'mixed_chain', 'global_in_chain', 'empty_value', 'leading_zero', 'field_tail', 'size_on_no_data', 'signed_checksum', 'magic_version', 'newline_in_value', 'copies_differ', 'zip64_unused'] = 'repeated'
 field archivey.diagnostics.HeaderAmbiguityContext.archive_name: str | None = None
 field archivey.diagnostics.HeaderAmbiguityContext.field: str = ''
 field archivey.diagnostics.HeaderAmbiguityContext.kind: Literal['header_ambiguity'] = 'header_ambiguity'
@@ -1092,6 +1109,13 @@ field archivey.diagnostics.UnlistedDataContext.member_id: int | None = None
 field archivey.diagnostics.UnlistedDataContext.member_name: str = ''
 field archivey.diagnostics.UnlistedDataContext.offset: int = 0
 method archivey.diagnostics.UnlistedDataContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.UnreadSessionContext(_JsonSafeContext)
+init archivey.diagnostics.UnreadSessionContext(kind: Literal['unread_session'] = 'unread_session', archive_name: str | None = None, format: str = '', sector: int = 0) -> None
+field archivey.diagnostics.UnreadSessionContext.archive_name: str | None = None
+field archivey.diagnostics.UnreadSessionContext.format: str = ''
+field archivey.diagnostics.UnreadSessionContext.kind: Literal['unread_session'] = 'unread_session'
+field archivey.diagnostics.UnreadSessionContext.sector: int = 0
+method archivey.diagnostics.UnreadSessionContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.UnusedArgumentContext(_JsonSafeContext)
 init archivey.diagnostics.UnusedArgumentContext(kind: Literal['unused_argument'] = 'unused_argument', archive_name: str | None = None, argument: Literal['encoding', 'password'] = 'encoding', format: str = '', reason: str = '') -> None
 field archivey.diagnostics.UnusedArgumentContext.archive_name: str | None = None

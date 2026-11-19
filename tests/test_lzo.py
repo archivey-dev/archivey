@@ -1,5 +1,6 @@
 """archivey's LZO1X decoder in Python, on streams written by liblzo and on damaged
-ones, among them the metadata blocks of the SquashFS test images."""
+ones, among them the metadata blocks of the SquashFS test images, and compress-utils'
+decoder against it on the same damaged blocks."""
 
 from __future__ import annotations
 
@@ -53,23 +54,38 @@ def test_damage_raises(stream: bytes, match: str) -> None:
         decompress_python(stream, 1 << 16)
 
 
-@pytest.mark.parametrize(
-    "marker",
-    [b"\x12\x00\x00", b"\x17\x00\x00", b"\x12\x03\x00", b"\x10\x00\x05\x00\x00"],
-)
-def test_an_end_marker_of_any_length_ends_the_block(marker: bytes) -> None:
-    """Writers end a block with 17, 0, 0. liblzo2, which lzop and squashfs-tools
-    decode with, ends it at any match of distance 0, whatever its length and low
-    bits; the Python decoder refused all but 17, 0, 0, so the verdict depended on
-    whether python-lzo was installed."""
+@pytest.mark.parametrize("marker", [_END, b"\x11\x03\x00"])
+def test_the_end_marker_ignores_its_low_bits(marker: bytes) -> None:
+    """Writers end a block with 17, 0, 0. The low 2 bits of the distance field are a
+    literal count that no decoder reads at the end marker: the kernel's, liblzo2's
+    and compress-utils' all end the block there."""
     stream = b"\x17hello\n" + marker
     assert decompress_python(stream, 6) == b"hello\n"
     with pytest.raises(LzoError, match="1 bytes follow"):
         decompress_python(stream + b"x", 6)
-    if importlib.util.find_spec("lzo") is not None:
-        import lzo
 
-        assert lzo.decompress(stream, False, 6) == b"hello\n"
+
+@pytest.mark.parametrize(
+    ("marker", "length"),
+    [
+        (b"\x12\x00\x00", 4),
+        (b"\x17\x00\x00", 9),
+        (b"\x12\x03\x00", 4),
+        (b"\x10\x00\x05\x00\x00", 269),
+    ],
+)
+def test_an_end_marker_of_another_length_is_refused(marker: bytes, length: int) -> None:
+    """No writer produces these. The kernel's decoder, which reads SquashFS images,
+    and compress-utils refuse them; liblzo2, and so ``lzop``, ends the block at any
+    length. archivey refuses them whichever decoder runs."""
+    stream = b"\x17hello\n" + marker
+    with pytest.raises(LzoError, match=f"end marker has a length of {length}, not 3"):
+        decompress_python(stream, 6)
+    if importlib.util.find_spec("compress_utils") is not None:
+        import compress_utils
+
+        with pytest.raises(compress_utils.CompressError):
+            compress_utils.decompress(stream, "lzo", expected_size=6)
 
 
 def test_the_limit_is_kept() -> None:
@@ -129,6 +145,39 @@ def test_damaged_blocks_raise_only_lzo_error() -> None:
         assert len(decoded) <= limit
 
 
+def test_compress_utils_agrees_on_damaged_blocks() -> None:
+    """Seeded damage to the SquashFS metadata blocks: compress-utils decodes the same
+    bytes, or refuses, exactly where the Python decoder does."""
+    compress_utils = pytest.importorskip("compress_utils")
+    blocks = _metadata_blocks("lzo.sqfs") + _metadata_blocks("lzo1x-1.sqfs")
+    rng = random.Random(11)
+    accepted = 0
+    for _ in range(3000):
+        stream = bytearray(rng.choice(blocks))
+        at = rng.randrange(len(stream) + 1)
+        kind = rng.randrange(4)
+        if kind == 0 and at < len(stream):
+            stream[at] ^= 1 << rng.randrange(8)
+        elif kind == 1:
+            del stream[at:]
+        elif kind == 2:
+            stream[at:at] = bytes([rng.randrange(256)])
+        limit = rng.choice([64, 512, 8192])
+        try:
+            expected: bytes | None = decompress_python(bytes(stream), limit)
+        except LzoError:
+            expected = None
+        try:
+            got: bytes | None = compress_utils.decompress(
+                bytes(stream), "lzo", expected_size=limit
+            )
+        except compress_utils.CompressError:
+            got = None
+        assert got == expected, bytes(stream).hex()
+        accepted += expected is not None
+    assert accepted > 100
+
+
 def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     # Two literals, then a match whose length field is 2000 zero bytes long: it asks
     # for ~510 000 bytes. The limit refuses it before the copy, so the decoder never
@@ -145,3 +194,29 @@ def test_an_over_long_match_is_refused_before_it_is_copied() -> None:
     finally:
         tracemalloc.stop()
     assert peak < 64 * 1024
+
+
+@pytest.mark.parametrize("zero_count", [0, 1, 2, 3, 4, 5, 1024])
+@pytest.mark.parametrize("match", [False, True])
+def test_length_extensions_keep_the_limit_and_refuse_a_cut(
+    match: bool, zero_count: int
+) -> None:
+    zeros = bytes(zero_count)
+    if match:
+        # One literal, then an M3 match at distance one, with an extended length.
+        prefix = b"\x12x\x20"
+        size = 1 + len(zeros) * 255 + 31 + 1 + 2
+        suffix = b"\x00\x00"
+        expected = b"x" * size
+    else:
+        # A literal run: every zero extends its length by 255 bytes.
+        prefix = b"\x00"
+        size = len(zeros) * 255 + 15 + 1 + 3
+        suffix = b"x" * size
+        expected = suffix
+    stream = prefix + zeros + b"\x01" + suffix + _END
+    assert decompress_python(stream, size) == expected
+    with pytest.raises(LzoError, match="more than"):
+        decompress_python(stream, size - 1)
+    with pytest.raises(LzoError, match="ends inside an instruction"):
+        decompress_python(prefix + zeros, size)

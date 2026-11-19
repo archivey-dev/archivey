@@ -72,8 +72,9 @@ on:
 # failure in any queued job takes the pull request out of the queue, except in the 3.16
 # prerelease leg, which is allowed to fail. Only on the daily run and a dispatch (so
 # before each release): the `test-daily` legs (Linux [all] on 3.12, 3.13 and 3.14,
-# macOS and Windows 3.11), and the minimum versions whatever changed. The Atheris fuzz
-# runs nightly in atheris-fuzz.yml, not here. The split exists because the
+# macOS and Windows 3.11), the minimum versions whatever changed, and the link parity
+# soak (`link-parity-soak`). The Atheris fuzz runs nightly in atheris-fuzz.yml, not
+# here. The split exists because the
 # organization's runners are shared (20 jobs at once, 5 of them macOS): full runs on
 # every push kept the queue's runs waiting for a runner until they timed out
 # (2026-10-29). Dispatch this workflow on a branch to run everything before queueing.
@@ -279,14 +280,15 @@ jobs:
       # it first on PATH, and a separate step below EXPECTS Ubuntu's /usr/bin/unar to
       # fail the check. The apt package stays installed for that step and for the
       # shared libraries the source build links against.
-      # xorriso builds the hybrid ISOs tests/test_iso_trailing_data.py checks.
+      # xorriso builds the hybrid ISOs tests/test_iso_trailing_data.py checks;
+      # genisoimage and udftools (mkudffs) the UDF images tests/test_iso_udf.py reads.
       # tabix ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks
       # the block walk against.
-      - name: Install unrar, unar, xorriso and bgzip (Linux)
+      - name: Install unrar, unar, xorriso, bgzip, genisoimage and udftools (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         uses: ./.github/actions/apt-install
         with:
-          packages: unrar unar xorriso tabix
+          packages: unrar unar xorriso genisoimage udftools tabix
       # The built binary links against the image's libgnustep-base and libicu, whose
       # sonames change between Ubuntu releases, so the key names the image as well as
       # the pinned sources (the script's hash).
@@ -553,7 +555,11 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # macOS gets 35: on 2026-11-18 two queue runs of the 3.15 [all] job hit 20 minutes.
+    # One was cut off at 72% of the main test step after 17m40s (about 26 minutes
+    # projected for the whole job); the other passed that step in 17m00s and was cut
+    # off in the PPMd step. Passing runs that day took about 5 to 19 minutes. Linux keeps 20.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 35 || 20 }}
     # Prerelease legs (matrix.prerelease) report but cannot fail the run: a CPython
     # release candidate, or a dependency with no wheel for it yet, is not a regression.
     # A row without the key compares null to true, which GitHub evaluates as false, so
@@ -614,8 +620,8 @@ jobs:
     name: ${{ matrix.os }} / py${{ matrix.python-version }} / ${{ matrix.install }}
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: ${{ matrix.os }}
-    # Windows timeout: see `test`.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 20 }}
+    # Windows timeout: see `test`; macOS: see `test-queue`.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || matrix.os == 'macos-latest' && 35 || 20 }}
     env: *test-env
     strategy:
       fail-fast: false
@@ -627,6 +633,42 @@ jobs:
           - { os: macos-latest, python-version: "3.11", install: all }
           - { os: windows-latest, python-version: "3.11", install: all }
     steps: *test-steps
+
+  # The link parity property test (tests/test_link_parity_property.py) with many more
+  # examples than the 300 every leg runs, and a new random choice of them each time: the
+  # legs always draw the same fixed 300, and a held-versus-made mismatch can be rarer
+  # than 1 in 1,000 archives. Daily and dispatched runs only. A failure prints the
+  # archive and the @reproduce_failure line to pin as an @example. Linux is
+  # case-sensitive and macOS's default volume is not: the `A`/`a` names in the test
+  # collide only there.
+  link-parity-soak:
+    name: link parity soak / ${{ matrix.os }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, examples: "20000" }
+          # macOS runners are about twice as slow, and fewer.
+          - { os: macos-latest, examples: "8000" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Sync
+        run: uv sync --python 3.15 --group dev
+      # A few minutes on Linux: about 12 ms an example measured locally.
+      - name: Run the soak
+        env:
+          ARCHIVEY_LINK_PARITY_EXAMPLES: ${{ matrix.examples }}
+        run: >
+          uv run --python 3.15 --no-sync
+          pytest tests/test_link_parity_property.py -q --no-cov -p no:randomly
 
   # Each distribution's packaged unar against archivey's unar RAR5 check, and the unar
   # tests against it. Kept apart from the test matrix and cheap: a container per
@@ -895,9 +937,9 @@ jobs:
   # 1. Benchmark gate = **structural only** (seek baselines + solid decode-once).
   #    Wall-time ratios are noisy on shared runners; they run separately, non-blocking,
   #    as a change-guarded scheduled job — see `.github/workflows/benchmark-wall.yml`.
-  # 2. archivey's LZO decoder against liblzo2 through python-lzo, which archivey uses in
-  #    a child process when it is installed but never depends on (GPL, no Linux
-  #    wheels). python-lzo goes in after the benchmark, so the benchmark measures the
+  # 2. archivey's LZO decoders against liblzo2 through python-lzo, a test oracle only
+  #    (GPL, no Linux wheels; archivey decodes LZO1X with compress-utils or in Python).
+  #    python-lzo goes in after the benchmark, so the benchmark measures the
   #    environment every other job has.
   benchmark:
     name: Benchmark gate (structural) + LZO against liblzo2
@@ -945,8 +987,8 @@ jobs:
           uv run --no-sync python -c "import lzo"
       - name: LZO against liblzo2
         if: ${{ !cancelled() }}
-        # This is the job with python-lzo, so the comparison with liblzo2 and the
-        # decode in a child process run nowhere else.
+        # This is the job with python-lzo, so the comparison with liblzo2 runs nowhere
+        # else.
         run: >-
           uv run --no-sync pytest tests/test_squashfs.py tests/test_lzo.py
           tests/test_lzop.py -q --no-cov -rs

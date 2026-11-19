@@ -2,10 +2,12 @@
 
 ## Purpose
 
-XAR archives (macOS installer packages `.pkg`, `.xip` files, what Apple's `xar`,
-`pkgbuild` and `bsdtar --format xar` write) are read through the unified `ArchiveReader`
-API. The reader is a built-in written against `archivey.formats` and registered with
-`register_builtin_format`. The format handbook is `dev-docs/formats/xar.md`.
+XAR archives (what Apple's `xar` and `bsdtar --format xar` write, and the XAR layer of a
+macOS installer package `.pkg` or `.xip` file opened with `format=ArchiveFormat.XAR`)
+are read through the unified `ArchiveReader` API. A `.pkg` or `.xip` otherwise opens as
+`ArchiveFormat.PKG`, which lists its payloads' files. The reader is a built-in written
+against `archivey.formats` and registered with `register_builtin_format`. The format
+handbook is `dev-docs/formats/xar.md`.
 
 ## Related specs
 
@@ -13,9 +15,10 @@ API. The reader is a built-in written against `archivey.formats` and registered 
 | --- | --- |
 | `archive-reading` | Reader API and member metadata |
 | `access-mode-and-cost` | Indexed listing, direct access, seekable source required |
-| `format-detection` | `xar!\0` magic at offset 0 |
+| `format-detection` | `xar!\0` magic at offset 0; `PKG` behind it by name or table of contents |
+| `format-cpio` | The CPIO a package payload holds |
 | `format-plugins` | The handler and reader API the backend is written against; `FormatPolicy(replace=)` accepts `ContainerFormat.XAR` |
-| `archive-data-model` | `HashAlgorithm.MD5`, `SHA1`, `SHA256` and `SHA512` |
+| `archive-data-model` | `HashAlgorithm.MD5`, `SHA1`, `SHA224`, `SHA256`, `SHA384` and `SHA512` |
 
 ## Requirements
 
@@ -29,9 +32,9 @@ as any stored name: UTF-8 first, then `encoding=`. Members SHALL carry the store
 uid, gid, user and group names, and `mtime`, `atime` and `ctime` as UTC times. A file's
 data SHALL be read from the heap, stored or decoded as zlib (`application/x-gzip`), bzip2,
 LZMA Alone (`application/x-lzma`) or xz through archivey's decoder limits, and its
-`<extracted-checksum>` (MD5, SHA-1, SHA-256 or SHA-512) SHALL be the member's hash, so a
-member read to its end is at `Verification.CHECKSUM`. A `hardlink` with
-`link="original"` SHALL be a `FILE`; another `hardlink` SHALL be a `HARDLINK` whose
+`<extracted-checksum>` (MD5, SHA-1, SHA-224, SHA-256, SHA-384 or SHA-512) SHALL be the
+member's hash, so a member read to its end is at `Verification.CHECKSUM`. A `hardlink`
+with `link="original"` SHALL be a `FILE`; another `hardlink` SHALL be a `HARDLINK` whose
 `link_target` is the member whose id it names, listed after that member even when the
 archive writes it first. `fifo`, device and socket entries SHALL be `OTHER`; a type
 archivey does not know SHALL be a `FILE` when it has data and `OTHER` otherwise, with
@@ -45,8 +48,8 @@ refused with `StreamNotSeekableError`.
 | bsdtar 3.7.2 archives with each `xar:compression` (none, gzip, bzip2, lzma, xz) | Same members and data; each file `CHECKSUM` |
 | A hard link written before the entry holding its data | Listed after it; reads that entry's data |
 | A base64 name of Latin-1 bytes with `encoding="latin-1"` | The decoded name; `raw_name` the bytes |
-| A file checked with MD5, SHA-1, SHA-256 or SHA-512 | `member.hashes` holds that digest |
-| A file checksum of another style (`sha224`), or with no style | No hash; `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`) |
+| A file checked with MD5, SHA-1, SHA-224, SHA-256, SHA-384 or SHA-512 | `member.hashes` holds that digest |
+| A file checksum of another style (`whirlpool`), or with no style | No hash; `DIGEST_UNVERIFIABLE` (`reason="unknown_algorithm_or_backend"`) |
 | A time with no `Z`, or not a date | `None`; `MEMBER_TIMESTAMP_INVALID` |
 | A data encoding archivey does not know | Listed with `CompressionAlgorithm.UNKNOWN`; `UnsupportedFeatureError` on read |
 
@@ -80,3 +83,30 @@ read, and a file that fails its checksum SHALL fail `verify_all()`.
 | A flipped bit in the TOC checksum | `CorruptionError` at open |
 | A flipped bit in a stored file | `verify_all()` returns it with `CorruptionError` |
 | Five files with `max_members=4` | `ResourceLimitError` at open |
+
+### Requirement: List an installer package's payloads as their files
+
+A macOS installer package (`.pkg`) or Xcode archive (`.xip`) SHALL be read as
+`ArchiveFormat.PKG`: the XAR members, with each `Payload` and `Scripts` (at the top, or
+in a top-level component folder) and a top-level `Content` replaced by the files of the
+CPIO it holds, compressed with gzip or pbzx or not at all, listed under a folder of the
+member's name (`app.pkg/Payload/...`), as `pkgutil --expand-full` unpacks it. A payload
+that holds no CPIO SHALL be listed as it is. The listing SHALL check each expanded
+payload's XAR checksum and raise `CorruptionError` when it fails. A payload file, or a
+hard link's target, that extracts outside its folder SHALL raise `CorruptionError`.
+`format=ArchiveFormat.XAR` SHALL list the XAR members as they are. Detection SHALL
+answer `PKG` for XAR magic when the name ends in `.pkg`, `.mpkg` or `.xip`, or, for any
+name but `.xar`, when the start of the table of contents names a `Distribution` or
+`PackageInfo`, or a `Content` and a `Metadata`. The cost receipt SHALL say the listing
+requires scanning and access is solid.
+
+#### Scenario: Installer packages
+
+| Case | Expected |
+| --- | --- |
+| A product archive with a pbzx Payload and a gzip Scripts | `Distribution`, `app.pkg/Bom`, `app.pkg/PackageInfo`, `app.pkg/Payload/...`, `app.pkg/Scripts/postinstall` |
+| The same with `format=ArchiveFormat.XAR` | `app.pkg/Payload` and `app.pkg/Scripts` as files |
+| A `.xip` | `Content/...` and `Metadata` |
+| A payload byte changed in a stored chunk | `CorruptionError` naming the checksum, at listing |
+| A payload file named `../Bom` | `CorruptionError` |
+| A nameless XAR whose TOC holds `a.txt` and `Payload` only | `ArchiveFormat.XAR` |

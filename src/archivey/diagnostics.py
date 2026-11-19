@@ -138,6 +138,14 @@ class DiagnosticCode(StrEnum):
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it."""
+    ARCHIVE_UNREAD_SESSION = "archive_unread_session"
+    """A CD image holds a session its listing does not read, which another reading
+    of the same file does. A raw image (a ``.bin``) read without its ``.cue`` sheet
+    whose sector addresses place no readable later session there, but which holds
+    another ISO 9660 volume after the one listed: the first track is listed, and a
+    sheet beside it may choose the other volume. Or a ``.cue`` sheet chose a session,
+    but the sector addresses of a later data track start another one: the listing
+    follows the sheet, and the image read without it lists that session."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
@@ -166,7 +174,9 @@ class DiagnosticCode(StrEnum):
     set twice, a global header naming or sizing members, or a NUL inside a PAX name.
     archivey reads it as GNU tar does; another tool may list another name or size.
     Also an RPM symlink whose payload stores another target than the package
-    header: archivey keeps the header's, as ``rpm`` installs it."""
+    header: archivey keeps the header's, as ``rpm`` installs it. And a ZIP entry whose
+    ZIP64 extra field gives other sizes or offset than the entry, which defers none of
+    them to it: archivey uses the entry's, as unzip does."""
     ENCRYPTED_MEMBER_UNVERIFIED = "encrypted_member_unverified"
     """An encrypted member's stream was closed or seeked before its checksum
     confirmed the password, and nothing stronger had confirmed it, so the bytes read
@@ -290,6 +300,8 @@ DiagnosticCodeStr = Literal[
     "archive-trailing-data",
     "archive_unlisted_data",
     "archive-unlisted-data",
+    "archive_unread_session",
+    "archive-unread-session",
     "member_timestamp_invalid",
     "member-timestamp-invalid",
     "member_header_record_skipped",
@@ -620,6 +632,25 @@ class UnlistedDataContext(_JsonSafeContext):
 
 
 @dataclass(frozen=True)
+class UnreadSessionContext(_JsonSafeContext):
+    """Another filesystem volume after the one a disc image's listing reads.
+
+    Two cases. A raw CD image read without its ``.cue`` sheet whose sector addresses
+    show no later session it can read is read from its first track, and another
+    volume follows it: ``sector`` is the image's sector that holds that volume's
+    primary volume descriptor. Or a ``.cue`` sheet chose a session, and the sector
+    addresses of a data track after it start a later one that holds a volume:
+    ``sector`` is the address, by those sector headers, of that volume's primary
+    volume descriptor.
+    """
+
+    kind: Literal["unread_session"] = "unread_session"
+    archive_name: str | None = None
+    format: str = ""
+    sector: int = 0
+
+
+@dataclass(frozen=True)
 class MemberTimestampContext(_JsonSafeContext):
     """A stored timestamp field was present but unusable / out of range.
 
@@ -757,8 +788,8 @@ class LinkDataContext(_JsonSafeContext):
 @dataclass(frozen=True)
 class HeaderAmbiguityContext(_JsonSafeContext):
     """A member's headers take a shape no known writer produces, which readers
-    resolve differently. archivey reads a TAR as GNU tar 1.35 does, and an RPM as
-    ``rpm`` does.
+    resolve differently. archivey reads a TAR as GNU tar 1.35 does, an RPM as
+    ``rpm`` does, and a ZIP as APPNOTE and unzip do.
 
     ``ambiguity`` names the shape:
 
@@ -808,6 +839,13 @@ class HeaderAmbiguityContext(_JsonSafeContext):
       installs and the header digests cover; ``rpm2cpio | cpio`` makes the payload's.
       It is found when a read of another file passes the entry, after the link is
       listed. ``field`` is ``"FILELINKTOS"``.
+    - ``"zip64_unused"`` (ZIP): a central directory entry has a ZIP64 extra field
+      although none of its size and offset fields is all ones, and the field's values
+      differ from the entry's. APPNOTE has the field hold only deferred values, so the
+      entry's are used, as unzip and ``zipfile`` read them; a reader that takes the
+      field anyway lists another size or reads other bytes. ``field`` is the first
+      value that differs: ``"uncompressed size"``, ``"compressed size"`` or
+      ``"local header offset"``.
 
     ``field`` is the PAX keyword (the header field's name for ``"field_tail"``,
     ``"size"`` for ``"size_on_no_data"``, ``"chksum"`` for ``"signed_checksum"`` and
@@ -841,6 +879,7 @@ class HeaderAmbiguityContext(_JsonSafeContext):
         "magic_version",
         "newline_in_value",
         "copies_differ",
+        "zip64_unused",
     ] = "repeated"
     field: str = ""
     more_fields: int = 0
@@ -1242,6 +1281,7 @@ DiagnosticContext = (
     | ScanRaceContext
     | ArchiveEofContext
     | UnlistedDataContext
+    | UnreadSessionContext
     | MemberTimestampContext
     | MemberHeaderRecordContext
     | SymlinkTargetContext
@@ -1286,6 +1326,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING: "archive_eof",
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
         DiagnosticCode.ARCHIVE_UNLISTED_DATA: "unlisted_data",
+        DiagnosticCode.ARCHIVE_UNREAD_SESSION: "unread_session",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
@@ -1327,6 +1368,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING,
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         DiagnosticCode.ARCHIVE_UNLISTED_DATA,
+        DiagnosticCode.ARCHIVE_UNREAD_SESSION,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
@@ -1421,6 +1463,10 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-one codes are delibe
   Their sibling ``MEMBER_NAME_DUPLICATE_UNEXPECTED`` is **in** the set: it reports a
   repeated name only in a format with no way to repeat one (CAB), where no writer
   makes the shape (maintainer, 2026-11-11).
+
+``ARCHIVE_UNREAD_SESSION`` is **in** the set, as ``ARCHIVE_UNLISTED_DATA`` is: the
+listing leaves out a filesystem the file holds, which another reading of the same file
+lists.
 """
 
 
@@ -2002,6 +2048,7 @@ __all__ = [
     "UnexpectedNameDuplicateContext",
     "UnknownMemberTypeContext",
     "UnlistedDataContext",
+    "UnreadSessionContext",
     "UnusedArgumentContext",
     "VerifyReport",
     "format_path_name",

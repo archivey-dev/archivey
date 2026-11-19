@@ -503,12 +503,12 @@ installed*).
 them as a usage error. Such an entry SHALL refuse a file whose whole-file compression
 decodes with that method (gzip and zlib with DEFLATE, bzip2 with BZIP2, xz with XZ,
 LZMA Alone and lzip with LZMA, zstd with ZSTD, LZ4 and mozLz4 with LZ4, Brotli with
-BROTLI, lzop with LZO), as the stream format's own entry does. Every xz stream holds
-LZMA2 data, so an LZMA2 entry SHALL refuse everything an XZ entry refuses: an xz file,
-an xz stream format, and a member whose `compression` chain lists XZ. An XZ entry
-SHALL NOT refuse LZMA2 data outside an xz stream, such as a 7z LZMA2 member. A
-`ReaderContext.decompress` or `ForwardStream.decompress` call for the method or for
-such a stream format, a `ReaderContext.open_nested` call for a format with such a
+BROTLI, lzop with LZO, Snappy with SNAPPY), as the stream format's own entry does. Every
+xz stream holds LZMA2 data, so an LZMA2 entry SHALL refuse everything an XZ entry
+refuses: an xz file, an xz stream format, and a member whose `compression` chain lists
+XZ. An XZ entry SHALL NOT refuse LZMA2 data outside an xz stream, such as a 7z LZMA2
+member. A `ReaderContext.decompress` or `ForwardStream.decompress` call for the method
+or for such a stream format, a `ReaderContext.open_nested` call for a format with such a
 stream format, and a built-in reader's own decode of its blocks with the method (the
 SquashFS LZ4 decoder) SHALL raise `UnsupportedFeatureError` before the codec runs, so a
 format that compresses data inside itself without listing the method on its members
@@ -606,8 +606,8 @@ experimental.
   follow as `"library"` entries.
 - An optional package SHALL be listed as `("library", <import name>, <what>)` once it
   decodes: a codec's package (the zstd module in use, `pyppmd`, `lz4`, `brotli`, …),
-  the rapidgzip accelerator when a child decodes, `python-lzo` when chosen, SquashFS's
-  `lz4.block`, and `cryptography` once a reader decrypts AES with it.
+  the rapidgzip accelerator when a child decodes, `compress_utils` when chosen,
+  SquashFS's `lz4.block`, and `cryptography` once a reader decrypts AES with it.
 - A plugin codec SHALL be listed as `("codec", "module.QualName", <stream>)`, followed
   by one `("library", <module>, <stream>)` entry per module its `requires` names, as a
   format plugin's are.

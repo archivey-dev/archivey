@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE`; `FORWARD_ONLY` from a pipe |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | A pipe under `streaming=False` · from a pipe, a bit-3 LZMA member without the end marker (§2.2.2) · Info-ZIP spanned sets (7-Zip `.zip.NNN` byte splits are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
+| Refuses | A pipe under `streaming=False` · from a pipe, a bit-3 LZMA member without the end marker (§2.2.2) · a split or spanned set with parts missing (both kinds are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).
@@ -277,19 +277,37 @@ said it needed more than 6.3; 7-Zip 23.01 reads such a stored member and Info-ZI
 `unzip` 6.0 skips it. archivey lists and reads it: what a member needs is named by its
 method and flags, checked when it opens (DR-4).
 
-**Split sets are settled before anything else, and the two conventions get opposite
-answers.** 7-Zip's `.zip.NNN` parts (and SFX `.exe.NNN` slices of the same `-v` split)
-are byte slices of one finished archive, so a
-complete set is concatenated by `internal/volumes.py` and read as the ordinary
-single-disk ZIP it is — the same code path and the same regex that already joined
-`.7z.NNN`, because it is the same `-v` flag doing the same slicing. Path parts
-are sized with `stat()` and the joiner keeps a small cache of Path handles
-(size and miss cost: [stream-ownership](../topics/stream-ownership.md)). The stub
-`name.exe` beside those parts is not a sibling; if it has no archive magic,
-`open_archive` follows it to `name.exe.001` or `name.zip.001` (including under
-`format=ZIP`). Info-ZIP's
+**Split sets are settled before anything else, and the two conventions are joined two
+ways.** 7-Zip's `.zip.NNN` parts (and SFX `.exe.NNN` slices of the same `-v` split) are
+byte slices of one finished archive, so a complete set is concatenated by
+`internal/volumes.py` and read as the ordinary single-disk ZIP it is — the same code
+path and the same regex that already joined `.7z.NNN`, because it is the same `-v` flag
+doing the same slicing. Path parts are sized with `stat()` and the joiner keeps a small
+cache of Path handles (size and miss cost:
+[stream-ownership](../topics/stream-ownership.md)). The stub `name.exe` beside those
+parts is not a sibling; if it has no archive magic, `open_archive` follows it to
+`name.exe.001` or `name.zip.001` (including under `format=ZIP`). Info-ZIP's
 `.z01 … .zip` is a genuinely spanned set whose entries are addressed by
-`(disk, offset-within-disk)`, so it keeps refusing. §3 has the producer detail.
+`(disk, offset-within-disk)`. Its parts are joined in order too, and the parser moves
+every pair into the join: the start of the part a disk number names, plus the offset
+(`read_end_record`'s `disk_starts`, from the joined source's part starts). The
+directory's offset and the ZIP64 locator's record offset move the same way, and from
+there the reader treats the join as a single-disk archive: data cut across parts reads
+through the join, as for `-v` slices. §3 has the producer detail.
+
+Discovery finds a spanned set from any of its parts (`_spanned_zip_set` in
+`internal/volumes.py`). A `name.zip` is a candidate when `name.z01` is beside it, and a
+`name.zNN` when `name.zip` is; that costs an ordinary `.zip` open one `is_file`, and
+only a hit reads the `.zip`'s end record. The record's disk count (the ZIP64 locator's
+when there is one) is the number of parts, so a missing part is a `TruncatedError` that
+names it, before anything else is read. A `.zip` whose record names one disk is an
+ordinary archive, read alone, whatever stray `.z01` an earlier `zip -s` run left beside
+it. The parts are probed by the names `zip` gives them (`.z01` to `.z99`, then
+`.z100`), with the letter case of the first one found: Info-ZIP writes `.z01` for a
+`NAME.ZIP` too. The `.zNN` names have the old RAR scheme's shape; a RAR set long enough
+to reach `.z01` has a `name.rar` and no `name.zip` that names a spanned set, so the two
+do not meet. 7-Zip reads these sets the same way, from the `.zip` or any part; Info-ZIP
+`unzip` 6.0 refuses them.
 
 Two files with the same part number in different padding (`x.zip.002` and a stray
 `x.zip.0002`), or in different case on a case-sensitive filesystem (`X.ZIP.002`), are one
@@ -302,16 +320,22 @@ explicit sequence naming both is still refused as a repeated part.
 
 A lone numbered part (`.zip.NNN` / `.exe.NNN` / `.7z.NNN` with no siblings) is
 `TruncatedError` naming the missing parts — the same incomplete-set error as a
-gap, not the ZIP "not supported" message. A part that is not on disk itself is
-`FileNotFoundError`, like any other missing path. Info-ZIP `.zNN` stays
-`UnsupportedFeatureError` with the rejoin-first text. Both run in `open_archive`
-before detection, because middle parts have no magic at offset 0 and detection
-alone would raise `FormatDetectionError`. When the parser reads the end record:
-non-zero EOCD disk fields (the ZIP64 end record's when there is one, else the
-classic record's, with `0xFFFF` treated as the ZIP64 sentinel),
-which is what catches Info-ZIP's final `.zip` part — it would list cleanly, because it
-holds the central directory — and a ZIP64 locator claiming more than one disk. Both
-raise `UnsupportedFeatureError` from the parser itself.
+gap. A part that is not on disk itself is `FileNotFoundError`, like any other missing
+path. A `.zNN` whose set is not found beside it (no `.zip`, or a `.zip` that names fewer
+parts), or any part opened with volume discovery off, is `TruncatedError` too, by name.
+Both run in `open_archive` before detection, because middle parts have no magic at
+offset 0 and detection alone would raise `FormatDetectionError`. The parser makes the
+last check, when it reads the end record: a record that names another disk (the ZIP64
+end record's disk fields when there is one, else the classic record's, with `0xFFFF`
+treated as the ZIP64 sentinel), or a ZIP64 locator counting more than one disk, needs
+one part per disk. A `.zip` read alone that is the last part of a spanned set — it would
+list cleanly, because it holds the central directory — is `TruncatedError` saying how
+many parts the set has, and so is an explicit list with a different number of parts. The
+parser raises `SpannedPartsError` for it, which the reader turns into a plain
+`TruncatedError`, so that the local-header walk that lists members after a damaged end
+record does not list a part's members as the archive. A directory placed on a disk after
+the record's own, or an entry on a disk the set does not have, is damage
+(`CorruptionError`).
 
 Two things narrow the filename refusals. A joined set keeps part one's name, so they key
 off *whether the set was joined*, not off the name alone; otherwise they would fire on
@@ -790,13 +814,13 @@ comparison with the CDH that reports a mismatch), slices the source, and dispatc
 the ZIP method id to the shared codec layer.
 
 The reason is coverage and uniformity, in that order. `ZipExtFile` handles STORED, DEFLATE,
-BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93) and PPMd (98), which the
-registry already advertised for ZIP, and XZ (95), Shrink (1), Reduce (2 to 5), Implode
-(6) and DCL Implode (10), which are core. It also puts ZIP member reads on the same
-`VerifyingStream` and the same exception translation as every other backend, so a corrupt
-body raises `CorruptionError` and a cut-short one raises `TruncatedError` through shared
-code — and it is what lets a ZIP member use the accelerators when the caller turns them on,
-since `use_rapidgzip` covers raw deflate.
+BZIP2 and LZMA; the codec layer adds Deflate64 (9), Zstd (93, and 20 from APPNOTE 6.3.7)
+and PPMd (98), which the registry already advertised for ZIP, and XZ (95), Shrink (1),
+Reduce (2 to 5), Implode (6) and DCL Implode (10), which are core. It also puts ZIP
+member reads on the same `VerifyingStream` and the same exception translation as every
+other backend, so a corrupt body raises `CorruptionError` and a cut-short one raises
+`TruncatedError` through shared code — and it is what lets a ZIP member use the
+accelerators when the caller turns them on, since `use_rapidgzip` covers raw deflate.
 
 **Codec settings 7-Zip names but this reader cannot decode are unsupported, not
 corrupt.** An LZMA member's properties byte with `lc + lp` over 4 (7-Zip accepts up to
@@ -822,18 +846,18 @@ declared size and CRC cover. 7-Zip 23.01 `7z t` fails every such member ("Data E
 or "There are some data after the end of the payload data"), and the bytes may be a side
 channel (`design-rules.md` DR-3). Under ZipCrypto the read raises the `EncryptionError`
 of an unconfirmed password instead, caused by that `CorruptionError`, as the verify
-table below records. A Zstd member (method 93) reads every frame, skippable ones too, as
-a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more frames,
-and the member's sizes and CRC check the whole output (maintainer, 2026-10-21). Bytes
-after the last frame that start no frame are refused like any other input after the end. An
-XZ member (method 95) reads the same way, for the same reason: the xz format (spec §2.2)
-defines its data as one or more streams with stream padding (groups of four zero bytes)
-between and after them, and 7-Zip 23.01 and 26.05 read such a member in full. Zero bytes that
-do not fill a group of four, or any other byte after the last stream, are input after the
-end; 7-Zip fails those members too. An LZMA member with bit 1 clear, and a PPMd member,
-end at their declared size, and their input must end there too: right after it for LZMA
-(or one zero byte later, which 7-Zip's encoder sometimes writes), after the end mark
-PPMd8 must carry. So a declared size short
+table below records. A Zstd member (method 93 or 20) reads every frame, skippable ones
+too, as a `.zst` file and a 7z Zstd coder do: RFC 8878 defines Zstd data as one or more
+frames, and the member's sizes and CRC check the whole output (maintainer, 2026-10-21).
+Bytes after the last frame that start no frame are refused like any other input after
+the end. An XZ member (method 95) reads the same way, for the same reason: the xz format
+(spec §2.2) defines its data as one or more streams with stream padding (groups of four
+zero bytes) between and after them, and 7-Zip 23.01 and 26.05 read such a member in
+full. Zero bytes that do not fill a group of four, or any other byte after the last
+stream, are input after the end; 7-Zip fails those members too. An LZMA member with bit
+1 clear, and a PPMd member, end at their declared size, and their input must end there
+too: right after it for LZMA (or one zero byte later, which 7-Zip's encoder sometimes
+writes), after the end mark PPMd8 must carry. So a declared size short
 of the stream's data is `CorruptionError`, not `TruncatedError`: the input is too long,
 not short. Shrink (method 1) and Implode (method 6) have no end marker at all, so the
 declared size is their end too: the bits left in the last byte are padding, and a whole
@@ -1048,7 +1072,7 @@ and WinZip write `name.z01 … name.zip` (and `name.z100+` once the set exceeds 
 
 | Family | Made by | Structure | Answer |
 | --- | --- | --- | --- |
-| `name.z01 … name.zip` | `zip -s` | true spanned set; entries addressed by (disk, offset), a `PK\x07\x08` spanning marker at the head of disk 1 | refuse |
+| `name.z01 … name.zip` | `zip -s` | true spanned set; entries addressed by (disk, offset), a `PK\x07\x08` spanning marker at the head of disk 1 | join, and move each (disk, offset) into the join |
 | `name.zip.001 …` | `7z -v` | raw byte slices of one finished single-disk ZIP | join |
 
 7-Zip's `-v` is a splitter, not an archive feature: it slices the finished output at a
@@ -1056,7 +1080,8 @@ fixed size with no awareness of what falls where, which is why the parts concate
 to the original and why the rejoined EOCD reads disk `(0, 0)`. That is the same thing it
 does to `.7z`, so ZIP and 7z get the same answer for the same input.
 
-Info-ZIP's do not, and a joined spanned set fails in a shape worth knowing: it **lists
+Info-ZIP's do not, and a spanned set joined without moving its offsets fails in a shape
+worth knowing (stdlib `zipfile` reading the parts joined by hand): it **lists
 correctly and then reads nothing.** The central directory survives intact on the final
 disk, so enumeration works — but every entry's offset is relative to *its own* disk,
 while the EOCD's `offset_cd` is relative to the last one. Reading a three-disk
@@ -1083,12 +1108,12 @@ Which members survive depends on where `zip -s` happened to cut, so a joined set
 reliably unreadable — it is *partly* readable, which is worse. In sets without a small
 tail member there is nothing to survive: 3, 5 and 12-disk sets all listed every member and
 read none. The failures are at least loud — a wrong offset misses the `PK\x03\x04` magic
-rather than returning plausible bytes. Refusing on the non-zero EOCD disk fields (§5)
-refuses a set that cannot be read whole, not one that happened to work.
+rather than returning plausible bytes. That is why the parser moves every offset by its
+own part's start (§2.2), not by one constant for the whole set.
 
-A possible later refinement for the refuse path — detect first, upgrade a failed detection
-to rejoin-first when the name looks volume-shaped — is in [`IDEAS.md`](../IDEAS.md) until
-someone takes it up; do not invent a ZIP-only half-step here.
+A possible later refinement for a lone part — detect first, upgrade a failed detection
+to "parts missing" when the name looks volume-shaped — is in [`IDEAS.md`](../IDEAS.md)
+until someone takes it up; do not invent a ZIP-only half-step here.
 
 **Producers disagree about encryption defaults.** 7-Zip's `-tzip` default is ZipCrypto and
 `-mem=AES256` selects WinZip AES; stdlib `zipfile` writes neither. That is why the
@@ -1268,7 +1293,7 @@ ours.
 | A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
 | From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
 | A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_ENCODING_INFERRED`, and `DiagnosticPolicy.STRICT` refuses it | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `declared_encoding` is `"utf-8"` and its `inferred_encoding` the codec used (§2.2) |
-| A `.z01`…`.zip` split set is refused with "rejoin first", while a `.zip.001`…`.00N` set beside it opens | **archivey** | Not an inconsistency: the first is a true spanned set addressed by (disk, offset), which the format defines perfectly well and a native reader could follow, and which a linear join reconstructs only for whichever members happen to sit on the last disk (§3); the second is `7z -v` byte slices that rejoin into an ordinary ZIP (§3). The native ZIP reader exposes each entry's disk number but keeps spanned sets refused; reading them stays an idea ([`IDEAS.md`](../IDEAS.md)). Filename rules catch `.zNN`; EOCD disk fields catch Info-ZIP's final `.zip` part (`0xFFFF` is the ZIP64 sentinel, not a disk number). [`docs/formats.md`](../../docs/formats.md#zip) tells users |
+| The last part of a `zip -s` set opened alone, a `.zip` with its `.z01` … gone, lists nothing and raises `TruncatedError`, though it holds the whole central directory | **archivey** | Its members' data is on the parts that are gone, except for whichever members happen to sit on the last part; listing the directory would promise members that cannot be read. The end record's disk number says the set has more parts (`0xFFFF` is the ZIP64 sentinel, not a disk number), and the error says how many (§2.2). From a pipe the forward pass lists the members whole on that part before the end record arrives, as it does for any damage it meets late (§2.2.2) |
 | A single `.zip.001` handed over without its siblings is refused rather than read as a ZIP | **archivey** | Joining needs parts `1..N` beside it. The part opens with `PK\x03\x04`, so it looks like a ZIP to a detector, but the central directory is in the *last* part, so no end record is found and not even a listing is available. "Rejoin first" names the actual problem. A numbering gap is `TruncatedError` instead |
 | An archive cut before its end record lists its members without mode, host or comment, then raises | **format** | Those fields live only in the directory. With no end record in the tail, the reader walks the local headers, lists what they hold as a pipe read does before its directory, then raises the walk's error (`TruncatedError` for a cut). A damaged *directory* lists the entries before the damage and the local headers' past it, then raises (§2.2) |
 | A legacy name that is not valid UTF-8 renders garbled and no setting fixes it | **format** | Unless the writer added a Unicode Path field (§2.2), which Info-ZIP `zip` does and many writers do not, every candidate codepage decodes every byte, so there is no oracle, and a filename is far too short for a statistical detector. The garble is honest and `raw_name` round-trips; a wrong guess is neither. Opt-in detection is post-1.0 ([`IDEAS.md`](../IDEAS.md)) |
@@ -1288,6 +1313,7 @@ ours.
 
 | Choice | Why | Rejected |
 | --- | --- | --- |
+| Read method 20 as Zstandard, as 93 | APPNOTE 6.3.7 gave Zstandard id 20 and 6.3.8 deprecated it for 93; the member data is the same Zstandard stream, so an archive written with the old id reads instead of being refused. Both ids share the codec, its window limits and the password-confirmation rung | Refusing 20 as an unknown method |
 | archivey's own parser for the end record, central directory and local headers ([ADR 0020](../decisions/0020-native-zip-reader.md), superseding [0006](../decisions/0006-stdlib-zipfile.md)) | Zero-dependency still. Stdlib parsed the whole directory at open before `ListingLimits` saw a member, lost the archive over one damaged entry, varied by Python version and was reached through private names and exception text; the parser lists lazily, lists up to damage, and behaves the same everywhere | Stdlib `zipfile` (ADR 0006); `python-libarchive-c`, faster and broader at the cost of a native dependency |
 | Under rapidgzip, check a DEFLATE member's end from the last point of rapidgzip's complete index (2026-10-24) | The check finds a cut stream and bytes after the last stream for the cost of the tail, where the index has a point before the end; where it has none (seen on the windows-latest CI runner) the check decodes from the start and costs what it did before. The complete index makes the result the same on every run on one machine, where the points a stream keeps as it reads depend on timing | A zlib decode from the start, which doubled a full read under rapidgzip (about 500 ms against 320 ms without it, 40 MiB member); a parallel zlib check of the stretches between resume points, prototyped at about 300 ms, which still costs as much as the read rapidgzip replaces |
 | Report bytes after the end record as `ARCHIVE_TRAILING_DATA` | DR-3: the TAR, 7z, RAR and ISO rule. 7-Zip warns on any tail; zero padding stays silent here as there | Ignoring the tail, as Info-ZIP `unzip` and stdlib do |
@@ -1300,7 +1326,7 @@ ours.
 | From a pipe, keep the files a directory-wide refusal finds after they were written (davi, 2026-10-14; the file read is to stop refusing these instead) | The pass learns of a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
 | Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable for random access, because a pipe is read only by the forward pass, whose streams never seek. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
 | Sniff unflagged names for UTF-8 validity; do not guess legacy codepages | Validation is near-conclusive; guessing has no oracle and a plausible wrong name is worse than a visible garble | An off-the-shelf charset detector, which can override a *valid* UTF-8 string with a legacy guess |
-| Join `7z -v` byte slices; reject Info-ZIP spanned sets | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. A linear join of the second lists correctly and then reads only the members that happen to sit on the last disk (§3) | Refusing both (the shape of the rule was the filename, not the structure); concatenating spanned segments and hoping |
+| Join `7z -v` byte slices; join Info-ZIP spanned sets and move each (disk, offset) pair into the join (the maintainer, 2026-11-18: "we should support it") | The first are slices of one finished archive and rejoin exactly — archivey already rejoins the identical split for `.7z.NNN`, so refusing here answered the same input two ways. The second needs each offset moved by its own part's start: a linear join with one constant lists correctly and then reads only the members that happen to sit on the last disk (§3). Joining keeps one byte space, so data cut across parts needs nothing new, and 7-Zip reads these sets the same way | Refusing both (the shape of the rule was the filename, not the structure); refusing spanned sets with "rejoin first" (the behaviour until 2026-11-18, which sent users to a tool for a set the format defines fully); concatenating spanned segments and hoping |
 | Extras named by capability, not by format | The codecs are shared, so `[7z]` told a ZIP reader to install support for a different format — the name lied, not the message | Per-format extras |
 | Refuse PKWARE Strong Encryption at member open, not implement it | Without these checks, a member marked only by extra `0x0017` (no bit 6) was decrypted as ZipCrypto: a wrong-password or corruption error, or with the right password bytes handed back as plaintext. Checking bit 6 too gives a bit-6 member a message archivey owns (it used to reach stdlib's own `NotImplementedError`) and refuses a symlink's target before its data is read. Implementing it is out: patent-encumbered and rare outside PKZIP. No real archive of this kind is in the corpora, so the tests use re-flagged ZipCrypto members | Leaving the misleading error; implementing SES |
 | Create-only writing, if and when writing lands | ZIP append is legal in the format and turns an interrupted write into a corrupt archive | In-place append (`history/ARCHITECTURE.md` §5.4) |
@@ -1324,6 +1350,7 @@ ours.
 | `ARCHIVE_OFFSET_WRAPPED` is advisory, outside `ARCHIVE_INTEGRITY_CODES` (davi, 2026-10-15, project thread) | macOS Archive Utility writes a ZIP past 4 GiB this way by default and reads it back, so `STRICT` would refuse an ordinary Mac archive; a correction is kept only when a local header with the member's name is there, and the CRC-32 is still checked, the `MEMBER_SPECIAL_FILE_HAS_DATA` pattern (DR-25). Reopen if a writer other than macOS is found producing wrapped offsets that a correction misreads | The integrity set, under DR-3 (the stored offsets misdescribe where good data sits) |
 | Read a member whose central and local headers disagree on the name, or whose central CRC is 0 while the local CRC is right; keep refusing one whose two headers both understate the size (davi, 2026-10-10) | The first two are found in real archives (another code page or `\` against `/` in the local name; every Adobe AIR package), `unzip` reads both, and archivey takes every field from the central directory, so the local name decides nothing; the data is still checked against the local CRC. The third is refused because the declared size is the bound that stops decoding (DR-9a). The name case reports `MEMBER_LOCAL_NAME_DIFFERS`, which strict refuses because another tool shows another name; the CRC case reports `MEMBER_LOCAL_CRC_USED`, which strict reads because the data is still checked (davi, 2026-10-15). Both carry `LocalHeaderContext`. Reopen if a real writer produces the third shape at scale. Shipped with stage 5 of the native ZIP reader | Refusing all three, which loses archives `unzip` reads; reading the third, which drops the size bound |
 | Decode a member whose local header names another compression method than its directory entry by the local method, and report `MEMBER_LOCAL_METHOD_DIFFERS` (in `ARCHIVE_INTEGRITY_CODES`, so `STRICT` refuses it), from a file and a pipe (davi, 2026-10-21) | The local header sits next to the data, and a pipe has only it, so a file and a pipe read the same bytes; the CRC-32 still checks them. A tool that trusts the other header decodes other bytes or fails, so `STRICT` refuses it, as for the name. Measured on a one-member ZIP whose local method was set to stored over a deflated body: `unzip` 6.00 takes the local method and fails (exit 2), 7-Zip reports "Headers Error" and "CRC Failed", and stdlib `zipfile` reads it by the central method. No real archive in the backup-drive scan has the shape. WinZip AES (method 99) on one side only is refused: the AES record is read from the central extra field, so the headers disagree on the encryption; so is method 99 in both headers when the two AES records differ in any field (version, strength, real method) or one is missing or unparseable. A file read reports once the local header passes its checks, before it decodes, so a member whose data then fails on a CRC or size the directory contradicts reports from a file and a pipe; one the overlap guard refuses reports only from a pipe (§"Where the pass and a file read differ"). The listing keeps the directory's method in `compression` and `extra["zip.compress_type"]`, as every listed field comes from the directory (a CRC-32 of 0 aside, §5), and the diagnostic carries both methods | Refusing it with `CorruptionError`, as `unzip` and 7-Zip fail it (the first draft); decoding by the central method, which a pipe cannot do, so the two reads would deliver different bytes; reading it silently, as before |
+| A ZIP64 extra field whose values no entry field defers to is not read; where they differ from the entry's, `MEMBER_HEADER_AMBIGUOUS` (`zip64_unused`) reports it (davi, 2026-11-18, project thread on safezip's checks) | APPNOTE 4.5.3, stdlib and unzip use the entry's values, so archivey does; a reader that takes the field whatever the entry holds lists another size or reads other bytes, so `STRICT` refuses it, as for the other header shapes no known writer produces. Writers that always add the field with matching values report nothing. Checked on 2026-11-18 against 894 ZIP, JAR and wheel files found on a development machine (231 157 entries): 6 entries carry such a field, all with matching values, and none reports; the backup-drive scan was not rerun. Reopen the `STRICT` placement if a writer turns up that leaves placeholder values (zeros, say) in the field Only the central directory entry is checked: a local header's sizes are checked against the data anyway | Refusing the archive, as safezip does; reading silently, as before |
 | Two stored names that decode to the same name stay ordinary duplicates (davi, 2026-10-10) | Once each name decodes on its own, `c3 a9` (valid UTF-8) and `82` (cp437) can both become `é.txt`. The later member supersedes the earlier like any duplicate (`is_current=False`, `SUPERSEDED` on extraction) and the two `raw_name`s differ, so nothing is lost and no new public name is needed. Reopen if a real archive shows a collision a user needs both copies of | A dedicated diagnostic or a renaming rule |
 | AppleDouble sidecars (`._name`, `__MACOSX/`) stay ordinary members with no marking key (davi, 2026-10-16, project thread) | Marked by name alone, a key adds nothing over the name filter in `docs/formats.md` and also marks a real file named `._x` | `extra["macos.resource_of"]` set from the name (#839, closed). Reopen with a mark that checks the AppleDouble magic in the data (`IDEAS.md`) |
 | Leave LZMA1 `lc + lp` over 4 unsupported until after 0.4.0 | Decided 2026-10-08 on the grounds that 7-Zip writes it only when asked (`lc=8`). Real archives do use it: Git for Windows' PortableGit self-extractor is a 7z with `lc=8` (corpus comparison, 2026-11-08). Revisited 2026-11-11: still unsupported for 0.4.0; after it, an own LZMA/LZMA2 decoder is tracked internally. It would also give 7z and xz seek points, exact limits and end-marker handling, and the same behaviour on every liblzma version. Its speed cost means it can only be a fallback or a native kernel. Decoding these needs an LZMA1 decoder other than liblzma | `pylzma` 0.6.1, which binds 7-Zip's own LZMA SDK and does decode these (an `lc=8` ZIP member read back byte-identical, one-shot and through `decompressobj`), but ships only an sdist (a C compiler for every install) under the LGPL, the reasons it was rejected for BCJ2 too; handing such members to the `7z` CLI (archivey has no 7z CLI backend). `backports.lzma` and libarchive both use liblzma. An own decoder was first rejected as very slow in pure Python; it is now the plan after 0.4.0, as a fallback |
@@ -1356,7 +1383,8 @@ move.
 | From a pipe: encrypted members, one password, several, a provider |
 | From a pipe: extraction settled at the end of the pass, selection made again, failures at the end |
 | Every fixture read from a pipe and from a file gives the same members, data and files, except the recorded differences |
-| Spanned set and unjoinable segment refused |
+| Spanned set read from any part, wherever the cuts fall, classic and ZIP64, past `.z99`, real `zip -s` set against 7-Zip (`tests/test_zip_spanned.py`) |
+| Spanned set with a part missing names it; its last part alone, an explicit list of the wrong length and an unjoinable segment are `TruncatedError` |
 | A numbered part that is not on disk is `FileNotFoundError`, not an incomplete set |
 | Split checks do not fire on single-volume archives |
 | `7z -v` set joined, read across a part boundary, opened from any part |

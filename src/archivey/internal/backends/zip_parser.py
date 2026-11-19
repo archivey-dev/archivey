@@ -19,6 +19,12 @@ decodes no name or comment and emits no diagnostic. Damage raises ``CorruptionEr
 or ``TruncatedError`` (an archive cut short), a valid feature archivey refuses raises
 ``UnsupportedFeatureError``. The caller stamps archive and member context.
 
+A spanned set (Info-ZIP ``zip -s``: ``name.z01`` … ``name.zip``) is read as its parts
+joined in order, with ``disk_starts`` giving where each part starts in the join. Every
+offset the end records and the directory store counts from the start of its own part,
+and the parser adds that part's start, so what it returns are offsets in the join, as
+for a single-disk archive (:func:`read_end_record`).
+
 The ZIP64 record checks and the stub offset (``base``) follow stdlib ``zipfile``
 (3.13). The end-record search is stdlib's older window, one byte wider than 3.13's
 (see ``EOCD_SEARCH_WINDOW``), so a prefixed or commented archive resolves to the record
@@ -31,7 +37,7 @@ from __future__ import annotations
 
 import heapq
 import struct
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 from archivey.exceptions import (
@@ -44,8 +50,8 @@ from archivey.internal.backends.zip_aes import iter_extra_fields
 from archivey.internal.backends.zip_detect import (
     LOCAL_HEADER_SIGNATURE,
     LOCAL_HEADER_SIZE,
-    ZIP_MULTI_VOLUME_MSG,
 )
+from archivey.internal.format_provenance import confirm_format
 from archivey.terminal import quoted
 
 #: ``read_at(offset, n)``: up to ``n`` bytes from absolute ``offset``; fewer only at
@@ -87,8 +93,9 @@ _CENTRAL_HEADER = struct.Struct(_CENTRAL_HEAD + "5H2L")
 _CENTRAL_LENGTHS_AT = struct.calcsize(_CENTRAL_HEAD)
 _CENTRAL_LENGTHS = struct.Struct("<3H")
 #: Positions in a tuple ``_CENTRAL_HEADER`` unpacks (see ``_CentralFields``): the
-#: name's length, and the stored local header offset.
+#: name's length, the disk the member starts on, and the stored local header offset.
 _CENTRAL_NAME_LEN = 12
+_CENTRAL_DISK = 15
 _CENTRAL_HEADER_OFFSET = 18
 _LOCAL_HEADER = struct.Struct("<4s2B4HL2L2H")
 
@@ -125,7 +132,8 @@ class EndRecord:
     #: Total entries the record declares (16 bits in a classic record).
     entries_declared: int
     cd_size: int
-    #: The directory offset as stored, before ``base``.
+    #: The directory offset as stored, before ``base``; in a spanned set, plus the
+    #: start of the part the directory starts on (``disk_starts``).
     cd_offset: int
     #: Added to every stored offset: the bytes in front of an archive whose writer did
     #: not adjust its offsets for them (a self-extractor stub). stdlib calls it
@@ -143,6 +151,11 @@ class EndRecord:
     #: Why the ZIP64 records after a locator were not used, when the classic record,
     #: none of whose fields is saturated, stood in for them; the reader reports it.
     zip64_damage: str | None = None
+    #: Where each part of a spanned set starts in the joined source, when the end
+    #: record names more than one disk; empty for a single-disk archive. ``cd_offset``
+    #: already counts from the joined source's start then, and the walk adds an
+    #: entry's part start to its offset.
+    disk_starts: tuple[int, ...] = ()
 
     @property
     def cd_start(self) -> int:
@@ -153,6 +166,44 @@ class EndRecord:
 NO_END_RECORD_MSG = (
     "truncated or corrupt ZIP (no end of central directory record found)"
 )
+
+
+class SpannedPartsError(TruncatedError):
+    """The end records name a spanned set of another number of parts than the source
+    holds: the last part read alone, or a list of parts with one missing or extra.
+
+    ``TruncatedError``, as for a numbered set with a part missing: the archive is
+    whole only with every part. A subclass so the reader can tell it apart from damage
+    the local headers could still list members past; it raises a plain
+    ``TruncatedError`` with the same message.
+    """
+
+    def __init__(self, disks: int, given: int) -> None:
+        if given <= 1:
+            message = (
+                f"This is the last part of a spanned ZIP set of {disks} parts (as "
+                "zip -s writes: name.z01, name.z02, ..., then name.zip, which holds "
+                "the directory), and the other parts are missing. Keep every part "
+                "in the same folder and open the .zip, or pass every part as a "
+                "list, in order"
+            )
+        else:
+            message = (
+                f"The ZIP end record names a spanned set of {disks} parts, and "
+                f"{given} parts were given. Pass every part, in order: name.z01, "
+                "name.z02, ..., then name.zip"
+            )
+        super().__init__(message)
+
+
+def spanned_parts_missing(exc: SpannedPartsError) -> TruncatedError:
+    """The plain ``TruncatedError`` a :class:`SpannedPartsError` is raised as, with the
+    format confirmed (``confirm_format``): an end record naming the parts of a spanned
+    set is a ZIP's, though the last part, which starts inside member data, was chosen
+    by its extension alone."""
+    error = TruncatedError(raw_message_of(exc))
+    confirm_format(error)
+    return error
 
 
 def find_end_record(
@@ -175,8 +226,9 @@ def find_end_record(
     is found by stepping over the directory from there
     (:func:`step_over_directory`).
 
-    Raises ``UnsupportedFeatureError`` for a record that names another disk (a spanned
-    set) and for an encrypted central directory (PKWARE Strong Encryption), and
+    Raises ``TruncatedError`` for a record that names another disk (the last part of
+    a spanned set, read alone) and ``UnsupportedFeatureError`` for an encrypted
+    central directory (PKWARE Strong Encryption), and
     ``CorruptionError`` when no record is found or the records contradict each other.
     A damaged ZIP64 record or locator is a ``CorruptionError`` only when the classic
     record cannot stand in for it (a saturated field, or no place for the directory's
@@ -187,7 +239,12 @@ def find_end_record(
     found, _stopped = locate_end_record(read_at, file_size, members_end=members_end)
     if found is None:
         raise CorruptionError(NO_END_RECORD_MSG)
-    return read_end_record(read_at, file_size, found)
+    try:
+        return read_end_record(read_at, file_size, found)
+    except SpannedPartsError as exc:
+        # Callers here read one source, never a joined set, and the subclass is the
+        # reader's alone (``read_end_record``): it must not reach the caller.
+        raise spanned_parts_missing(exc) from None
 
 
 def locate_end_record(
@@ -209,9 +266,21 @@ def locate_end_record(
 
 
 def read_end_record(
-    read_at: ReadAt, file_size: int, found: tuple[int, bytes, bytes]
+    read_at: ReadAt,
+    file_size: int,
+    found: tuple[int, bytes, bytes],
+    *,
+    disk_starts: Sequence[int] = (),
 ) -> EndRecord:
-    """The end record :func:`locate_end_record` found, with the ZIP64 records."""
+    """The end record :func:`locate_end_record` found, with the ZIP64 records.
+
+    ``disk_starts`` is where each part of a joined volume set starts, in order; empty
+    for a single source. A record that names more than one disk is read as a spanned
+    set when there is one part per disk, and its offsets are moved into the join
+    (``EndRecord.disk_starts``). With any other number of parts it raises
+    :class:`SpannedPartsError`. A joined set whose record names disk 0 is 7-Zip's
+    ``-v`` byte split of an ordinary archive, and its part starts are not used.
+    """
     eocd_offset, record, comment = found
     (
         _sig,
@@ -226,7 +295,9 @@ def read_end_record(
     zip64_damage = None
     records_start = eocd_offset
     try:
-        zip64 = _read_zip64_records(read_at, eocd_offset)
+        zip64 = _read_zip64_records(read_at, eocd_offset, disk_starts)
+    except SpannedPartsError:
+        raise
     except CorruptionError as exc:
         # A damaged ZIP64 record or locator after a classic record that needs none of
         # its fields: the classic record holds everything, as for a writer that adds
@@ -244,8 +315,19 @@ def read_end_record(
         records_start, this_disk, cd_start_disk, entries_total, cd_size, cd_offset = (
             zip64
         )
+    spanned: tuple[int, ...] = ()
     if disk_field_is_split(this_disk) or disk_field_is_split(cd_start_disk):
-        raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
+        # A classic field holding the ZIP64 sentinel with no ZIP64 record to defer to
+        # names disk 0, as before any set was read.
+        last_disk = this_disk if disk_field_is_split(this_disk) else 0
+        cd_disk = cd_start_disk if disk_field_is_split(cd_start_disk) else 0
+        if cd_disk > last_disk:
+            raise CorruptionError(
+                f"The ZIP end record places the central directory on disk "
+                f"{cd_disk + 1}, after the disk the record is on ({last_disk + 1})"
+            )
+        spanned = _spanned_disk_starts(last_disk, disk_starts)
+        cd_offset += spanned[cd_disk]
     base = records_start - cd_size - cd_offset
     end = EndRecord(
         eocd_offset=eocd_offset,
@@ -258,6 +340,7 @@ def read_end_record(
         comment_declared=comment_declared,
         trailing=max(file_size - (eocd_offset + EOCD_SIZE + comment_declared), 0),
         zip64_damage=zip64_damage,
+        disk_starts=spanned,
     )
     if end.cd_start < 0:
         raise CorruptionError("Bad offset for central directory")
@@ -267,6 +350,42 @@ def read_end_record(
     if read_at(end.cd_start, 4) == ARCHIVE_EXTRA_DATA_SIGNATURE:
         raise UnsupportedFeatureError(STRONG_ENCRYPTED_DIRECTORY_MSG)
     return end
+
+
+def _spanned_disk_starts(last_disk: int, disk_starts: Sequence[int]) -> tuple[int, ...]:
+    """The part starts of a spanned set whose end record is on ``last_disk`` (from 0),
+    or :class:`SpannedPartsError` when ``disk_starts`` does not hold one per disk."""
+    if len(disk_starts) != last_disk + 1:
+        raise SpannedPartsError(last_disk + 1, len(disk_starts))
+    return tuple(disk_starts)
+
+
+def spanned_disk_count(read_at: ReadAt, file_size: int) -> int:
+    """How many parts the end records of the last part of a spanned set name.
+
+    1 for an archive whose records name no other disk, and for one whose records
+    cannot be found or read: volume discovery calls this on the ``.zip`` beside a
+    ``.z01`` to decide whether to look for the other parts, and the reader reports any
+    damage itself. The ZIP64 locator's disk count when there is a locator, else the
+    classic record's own disk number plus one.
+    """
+    try:
+        found = locate_classic_record(read_at, file_size)
+        if found is None:
+            return 1
+        eocd_offset, record, _comment = found
+        this_disk = _EOCD.unpack(record)[1]
+        if eocd_offset >= ZIP64_LOCATOR_SIZE:
+            locator = read_at(eocd_offset - ZIP64_LOCATOR_SIZE, ZIP64_LOCATOR_SIZE)
+            if len(locator) == ZIP64_LOCATOR_SIZE:
+                sig, _disk_with_record, _offset, disks = _ZIP64_LOCATOR.unpack(locator)
+                if sig == ZIP64_LOCATOR_SIGNATURE:
+                    return max(disks, 1)
+    except (CorruptionError, OSError):
+        return 1
+    if this_disk == _ZIP64_DISK_SENTINEL:
+        return 1
+    return this_disk + 1
 
 
 def locate_classic_record(
@@ -417,12 +536,17 @@ def step_over_directory(
     return None, pos
 
 
-def read_zip64_locator(read_at: ReadAt, eocd_offset: int) -> tuple[int, int] | None:
+def read_zip64_locator(
+    read_at: ReadAt, eocd_offset: int, disk_starts: Sequence[int] = ()
+) -> tuple[int, int] | None:
     """``(locator_offset, record_offset)`` of the ZIP64 locator right before the
     classic record at ``eocd_offset``, or ``None`` when there is none.
 
-    A locator naming another disk is refused as a split set, and one naming a record
-    past the place right before it as corruption, before any record is read.
+    A locator that counts more than one disk names a spanned set: with one part per
+    disk in ``disk_starts`` (:func:`read_end_record`), ``record_offset`` is moved into
+    the join; otherwise it raises :class:`SpannedPartsError`. A locator naming a disk
+    past its own count, or a record past the place right before it, is corruption,
+    raised before any record is read.
     """
     locator_offset = eocd_offset - ZIP64_LOCATOR_SIZE
     if locator_offset < 0:
@@ -433,21 +557,49 @@ def read_zip64_locator(read_at: ReadAt, eocd_offset: int) -> tuple[int, int] | N
     sig, disk_with_record, record_offset, disks = _ZIP64_LOCATOR.unpack(locator)
     if sig != ZIP64_LOCATOR_SIGNATURE:
         return None
-    if disk_with_record != 0 or disks > 1:
-        raise UnsupportedFeatureError(ZIP_MULTI_VOLUME_MSG)
+    if disks > 1:
+        spanned = _spanned_disk_starts(disks - 1, disk_starts)
+        if disk_with_record >= disks:
+            raise CorruptionError(
+                f"The ZIP64 end locator places the ZIP64 end record on disk "
+                f"{disk_with_record + 1}, after the last disk ({disks})"
+            )
+        record_offset += spanned[disk_with_record]
+    elif disk_with_record != 0:
+        raise CorruptionError(
+            f"The ZIP64 end locator places the ZIP64 end record on disk "
+            f"{disk_with_record + 1} of a single-disk archive"
+        )
     adjacent = locator_offset - ZIP64_EOCD_SIZE
     if adjacent < 0 or record_offset > adjacent:
         raise CorruptionError("Corrupt ZIP64 end of central directory locator")
     return locator_offset, record_offset
 
 
-def zip64_record_matches(record: bytes, record_offset: int, extensible: int) -> bool:
+def zip64_record_matches(
+    record: bytes,
+    record_offset: int,
+    extensible: int,
+    disk_starts: Sequence[int] = (),
+) -> bool:
     """Whether ``record`` is a whole ZIP64 end record whose directory ends at the
-    locator's ``record_offset`` and whose size counts ``extensible`` bytes after it."""
+    locator's ``record_offset`` and whose size counts ``extensible`` bytes after it.
+
+    In a spanned set (``disk_starts`` not empty) ``record_offset`` is in the join, and
+    the record's directory offset is moved there from its own part to compare."""
     if len(record) != ZIP64_EOCD_SIZE or not record.startswith(ZIP64_EOCD_SIGNATURE):
         return False
     fields = _ZIP64_EOCD.unpack(record)
-    record_size, cd_size, cd_offset = fields[1], fields[8], fields[9]
+    record_size, cd_disk, cd_size, cd_offset = (
+        fields[1],
+        fields[5],
+        fields[8],
+        fields[9],
+    )
+    if disk_starts:
+        if cd_disk >= len(disk_starts):
+            return False
+        cd_offset += disk_starts[cd_disk]
     return (
         cd_offset + cd_size == record_offset
         and record_size + 12 == ZIP64_EOCD_SIZE + extensible
@@ -455,7 +607,7 @@ def zip64_record_matches(record: bytes, record_offset: int, extensible: int) -> 
 
 
 def _read_zip64_records(
-    read_at: ReadAt, eocd_offset: int
+    read_at: ReadAt, eocd_offset: int, disk_starts: Sequence[int] = ()
 ) -> tuple[int, int, int, int, int, int] | None:
     """``(record_start, this_disk, cd_disk, entries, cd_size, cd_offset)``, or ``None``.
 
@@ -466,12 +618,16 @@ def _read_zip64_records(
     record sits right before the locator, prepended data moved everything and that
     record is read instead (with no extensible data). The directory-span check is
     against the locator's offset in both cases, as stdlib's is: with unadjusted offsets
-    behind a stub, the stored offsets all omit the stub.
+    behind a stub, the stored offsets all omit the stub. In a spanned set the
+    locator's offset is in the join (:func:`read_zip64_locator`), and the directory
+    offset returned is still the one stored, from the start of its own part.
     """
-    located = read_zip64_locator(read_at, eocd_offset)
+    located = read_zip64_locator(read_at, eocd_offset, disk_starts)
     if located is None:
         return None
     locator_offset, record_offset = located
+    locator_disks = _locator_disks(read_at, locator_offset)
+    record_disks = disk_starts if locator_disks > 1 else ()
     adjacent = locator_offset - ZIP64_EOCD_SIZE
     extensible = adjacent - record_offset
     record = read_at(record_offset, ZIP64_EOCD_SIZE)
@@ -480,7 +636,7 @@ def _read_zip64_records(
         record = read_at(adjacent, ZIP64_EOCD_SIZE)
     if len(record) != ZIP64_EOCD_SIZE or not record.startswith(ZIP64_EOCD_SIGNATURE):
         raise CorruptionError("ZIP64 end of central directory record not found")
-    if not zip64_record_matches(record, record_offset, extensible):
+    if not zip64_record_matches(record, record_offset, extensible, record_disks):
         raise CorruptionError("Corrupt ZIP64 end of central directory record")
     (
         _sig,
@@ -494,7 +650,22 @@ def _read_zip64_records(
         cd_size,
         cd_offset,
     ) = _ZIP64_EOCD.unpack(record)
+    if (locator_disks > 1 or this_disk) and this_disk + 1 != locator_disks:
+        # The two records disagree on how many parts the set has; neither says which
+        # part is missing or extra.
+        raise CorruptionError(
+            f"The ZIP64 end record is on disk {this_disk + 1}, and the ZIP64 end "
+            f"locator counts {locator_disks} disk{'' if locator_disks == 1 else 's'}"
+        )
     return adjacent - extensible, this_disk, cd_disk, entries_total, cd_size, cd_offset
+
+
+def _locator_disks(read_at: ReadAt, locator_offset: int) -> int:
+    """The disk count of the ZIP64 locator at ``locator_offset``, which
+    :func:`read_zip64_locator` has read whole."""
+    field = read_at(locator_offset + 16, 4)
+    assert len(field) == 4, "a whole ZIP64 locator was read before this"
+    return int.from_bytes(field, "little")
 
 
 def _directory_end_before_zip64(
@@ -595,6 +766,12 @@ class CentralEntry:
     #: the member's data runs a multiple of 2³² past it (macOS Archive Utility,
     #: :func:`written_by_archive_utility`); 0 otherwise.
     compressed_size_correction: int = 0
+    #: The local header offset as stored, when no field of the entry defers to a ZIP64
+    #: extra field and the extra blob holds the bytes such a field starts with; ``-1``
+    #: otherwise, for nearly every entry. The reader then looks for a ZIP64 field in
+    #: its split of the blob and compares it with the entry
+    #: (:func:`unused_zip64_values`).
+    undeferred_offset: int = -1
 
     @property
     def create_system(self) -> int:
@@ -780,8 +957,11 @@ class CentralDirectoryWalk:
         # offset, an entry no central header follows, and the first header that a
         # signature inside an entry's fields chains to (the last two in any archive).
         self._local_name_at = local_name_at
-        # Offsets wrap only without ZIP64, which stores them in full.
-        self._corrects_offsets = local_name_at is not None and not end.zip64
+        # Offsets wrap only without ZIP64, which stores them in full. A spanned set's
+        # offsets count from the start of each part, which no part can hold 4 GiB past.
+        self._corrects_offsets = (
+            local_name_at is not None and not end.zip64 and not end.disk_starts
+        )
         # Sizes can wrap only in a directory past 4 GiB.
         self._local_data_start_at = (
             local_data_start_at
@@ -943,6 +1123,8 @@ class CentralDirectoryWalk:
                 )
 
             entry = _central_entry(fields, name, extra, comment, index=index, base=base)
+            if end.disk_starts:
+                entry.header_offset += _disk_start(end, entry.disk_start, index)
             # An offset deferred to a ZIP64 extra field is not corrected. The first
             # entry always gets the one try at ``base``: an offset that needs ZIP64
             # puts the directory past 4 GiB, which saturates the end record's own
@@ -1122,6 +1304,11 @@ class CentralDirectoryWalk:
         if stored_offset == _U32_MAX:
             return False
         offset = stored_offset + base
+        if self._end.disk_starts:
+            disk = fields[_CENTRAL_DISK]
+            if disk >= len(self._end.disk_starts):
+                return False
+            offset += self._end.disk_starts[disk]
         start = self._end.cd_start
         name_at_pos = pos + CENTRAL_HEADER_SIZE
         at = name_at_pos - data_start
@@ -1288,6 +1475,17 @@ def _central_entry_size(buffer: bytes, offset: int) -> int:
     )
 
 
+def _disk_start(end: EndRecord, disk: int, index: int) -> int:
+    """Where the part entry ``index`` starts on (``disk``, from 0) starts in a spanned
+    set's join; ``CorruptionError`` for a disk the set does not have."""
+    if disk >= len(end.disk_starts):
+        raise CorruptionError(
+            f"ZIP central directory entry #{index} starts on disk {disk + 1}, after "
+            f"the last disk ({len(end.disk_starts)})"
+        )
+    return end.disk_starts[disk]
+
+
 def _count_matches(end: EndRecord, count: int) -> bool:
     """Whether ``count`` entries are what the end record declares.
 
@@ -1370,15 +1568,27 @@ def _central_entry(
         external_attr,
         header_offset,
     ) = fields
-    compressed_size, file_size, header_offset, disk_start = _apply_zip64_extra(
-        extra,
-        compressed_size=compressed_size,
-        file_size=file_size,
-        header_offset=header_offset,
-        disk_start=disk_start,
-        index=index,
-    )
-    return CentralEntry(
+    undeferred_offset = -1
+    if (
+        file_size == _U32_MAX
+        or compressed_size == _U32_MAX
+        or header_offset == _U32_MAX
+        or disk_start == 0xFFFF
+    ):
+        compressed_size, file_size, header_offset, disk_start = _apply_zip64_extra(
+            extra,
+            compressed_size=compressed_size,
+            file_size=file_size,
+            header_offset=header_offset,
+            disk_start=disk_start,
+            index=index,
+        )
+    elif extra and _ZIP64_EXTRA_HEADER in extra:
+        # No field defers to a ZIP64 field, so none is read; the reader checks
+        # whether one is there anyway. Most blobs that pass the byte test hold a
+        # Windows writer's NTFS field, whose attribute tag is 1.
+        undeferred_offset = header_offset
+    entry = CentralEntry(
         index,
         (made_system << 8) | made_version,
         (needed_system << 8) | needed_version,
@@ -1396,6 +1606,43 @@ def _central_entry(
         name,
         extra,
         comment,
+    )
+    if undeferred_offset >= 0:
+        entry.undeferred_offset = undeferred_offset
+    return entry
+
+
+#: The bytes a ZIP64 extra field starts with, a cheap test before the walk over the
+#: blob.
+_ZIP64_EXTRA_HEADER = _ZIP64_EXTRA_TAG.to_bytes(2, "little")
+
+
+def unused_zip64_values(
+    data: bytes, *, file_size: int, compressed_size: int, header_offset: int
+) -> tuple[tuple[str, int, int], ...]:
+    """The values of a ZIP64 extra field's ``data`` that differ from the header's,
+    when no header field defers to it.
+
+    APPNOTE 4.5.3 has the field hold only the values whose header field is all ones,
+    and archivey, stdlib and unzip read it so: here none is, and the field is not
+    read. A reader that takes it whatever the header holds reads its values in their
+    order (uncompressed size, compressed size, local header offset), as many as the
+    field holds whole, and lists another size or reads other bytes. This returns each
+    such value that differs from the header's: ``(field, header value, ZIP64
+    value)``. Empty when they agree, as they do from the writers that always add the
+    field.
+    """
+    header = (
+        ("uncompressed size", file_size),
+        ("compressed size", compressed_size),
+        ("local header offset", header_offset),
+    )
+    return tuple(
+        (name, stored, value)
+        for position, (name, stored) in enumerate(header)
+        if (position + 1) * 8 <= len(data)
+        and (value := int.from_bytes(data[position * 8 : (position + 1) * 8], "little"))
+        != stored
     )
 
 
@@ -1420,15 +1667,9 @@ def _apply_zip64_extra(
     known") rather than refusing an archive stdlib opens; it is read once, from the
     first field with four bytes left after the other values (its first four bytes when
     it is the only deferred value, per APPNOTE). A field elsewhere in the blob that is
-    cut short is left alone: it says nothing about these four.
+    cut short is left alone: it says nothing about these four. The caller calls it
+    only when at least one of the four is deferred.
     """
-    if not (
-        file_size == _U32_MAX
-        or compressed_size == _U32_MAX
-        or header_offset == _U32_MAX
-        or disk_start == 0xFFFF
-    ):
-        return compressed_size, file_size, header_offset, disk_start
     disk_deferred = disk_start == 0xFFFF
     for field in iter_extra_fields(extra):
         if field.tag != _ZIP64_EXTRA_TAG:

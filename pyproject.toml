@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey"
-version = "0.4.1"
+version = "0.5.0.dev0"
 description = "Python library for reading, streaming, and safely extracting archives"
 readme = "README.md"
 license = { text = "MIT" }
@@ -86,6 +86,19 @@ recommended = [
     "cryptography>=45.0.0",
     "pycdlib>=1.22.0",
     "tqdm>=4.67.0",
+    # LZO1X decoding (.lzo files, SquashFS images); archivey decodes it in Python without
+    # it, 20 to 30 times slower. MIT. 0.12.1 publishes wheels for CPython 3.11 to 3.15
+    # (3.14t and 3.15t too) on Linux x86-64/aarch64 (glibc), macOS arm64 and Windows
+    # x86-64; the marker keeps it off PyPy and Intel macOS, where it would build from
+    # source. Also Snappy's raw-block decoder (.sz).
+    # dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md.
+    "compress-utils>=0.12.1; platform_python_implementation == 'CPython' and (sys_platform != 'darwin' or platform_machine == 'arm64')",
+    # CRC-32C of Snappy (.sz) chunks; archivey computes it in Python without it, about
+    # 20 MB/s against several GB/s. Apache-2.0. 1.9.0 publishes wheels for CPython 3.10
+    # to 3.15 on Linux x86-64/aarch64 (glibc), macOS and Windows x86-64; elsewhere its
+    # sdist builds the C extension or falls back to its own Python CRC, which archivey
+    # does not use. No free-threaded wheel, so not in [free-threaded].
+    "google-crc32c>=1.9.0; platform_python_implementation == 'CPython'",
 ]
 # rapidgzip backs BOTH gzip (RapidgzipFile) and bzip2 (its bundled IndexedBzip2File). The
 # separate indexed_bzip2 package is deliberately NOT a dependency: loading both libraries into
@@ -126,6 +139,8 @@ free-threaded = [
     "tqdm>=4.67.0",
     "backports.zstd>=1.0.0; python_version < '3.14'",
     "cryptography>=45.0.0; python_version >= '3.14'",
+    # No 3.13t wheel; 0.12.1 keeps the GIL disabled on 3.14t (measured 2026-11-17).
+    "compress-utils>=0.12.1; python_version >= '3.14' and (sys_platform != 'darwin' or platform_machine == 'arm64')",
 ]
 # The conventional "everything" name. Unlike before, it is now a strict superset of
 # [recommended] rather than an alias for it. After the compression-library evaluation

@@ -46,12 +46,15 @@ MUST NOT implicitly buffer or copy the image to make it seekable.
 ### Requirement: Auto-select the richest available namespace
 
 The ISO backend SHALL select the richest available namespace in priority order:
-Rock Ridge, then Joliet, then plain ISO 9660. It SHALL report the selection in
-`ArchiveInfo.extra["iso.namespace"]`.
+Rock Ridge, then UDF, then Joliet, then plain ISO 9660. It SHALL report the selection in
+`ArchiveInfo.extra["iso.namespace"]`. A UDF tree that uses a sparable or virtual
+partition, or extended allocation descriptors, is not a candidate when the image has an
+ISO 9660 tree; a UDF-only image with one SHALL raise `UnsupportedFeatureError`.
 
 | Namespace | Reported value | Filename fidelity | POSIX metadata |
 | --- | --- | --- | --- |
 | Rock Ridge | `"rock_ridge"` | Original case and full length | mode, uid, gid, symlinks |
+| UDF | `"udf"` | Original case, up to 255 bytes of Unicode | mode (permission bits), uid, gid, symlinks |
 | Joliet | `"joliet"` | Case-preserved, up to 64 UCS-2 chars | none |
 | Plain ISO 9660 | `"iso9660"` | Upper-case 8.3 / level-1 names | none |
 
@@ -62,7 +65,11 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Case | Expected |
 | --- | --- |
 | Image contains Rock Ridge | Use Rock Ridge names/metadata; `iso.namespace="rock_ridge"` |
-| Image contains Joliet but no Rock Ridge | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
+| Image contains UDF but no Rock Ridge | Use UDF names and metadata; `iso.namespace="udf"` |
+| UDF-only image (no ISO 9660 primary volume descriptor; `BEA01` at offset 32 769) | Detected as ISO; UDF names and metadata; `iso.namespace="udf"` |
+| UDF tree in a metadata partition (UDF 2.50 and later), with Extended File Entries, data inside the File Entry, continued allocation extents or unrecorded extents | Lists and reads; an unrecorded extent reads as zeros |
+| UDF tree with a sparable or virtual partition or extended allocation descriptors, beside an ISO 9660 tree / alone | The next namespace is used / `UnsupportedFeatureError` at open |
+| Image contains Joliet but no Rock Ridge and no UDF | Use Joliet names; POSIX fields `None`; `iso.namespace="joliet"` |
 | Image contains neither extension | Use plain ISO 9660 names; POSIX fields `None`; `iso.namespace="iso9660"` |
 | Rock Ridge symlink | Symlink metadata is available through the selected namespace |
 | Rock Ridge TF record with an attribute-change time | `ctime` holds it; `created` comes only from a TF creation time, else `None` |
@@ -120,10 +127,31 @@ the plain ISO it holds: each sector stripped to its 2048 bytes of user data (aft
 when it is read: a sector without the sync or with another mode byte SHALL raise
 `CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read that
 reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and ECC bytes
-are not checked, and documentation SHALL say so. Without a `.cue` sheet beside it (next
-requirement) only the first track is read. The trailing-data check SHALL scan only the data sectors that
+are not checked, and documentation SHALL say so.
+
+Without a `.cue` sheet beside it (next requirement), the backend SHALL read the session
+the sheet would choose from the addresses in the sector headers (BCD minutes, seconds
+and frames). Data sectors whose address minus their position in the file is the same
+form a run, placed at those addresses; runs whose offsets differ by at least a lead-in
+(4 500 sectors) are in different sessions. The backend SHALL list the first run of the
+last session, reading its volume descriptors from the first sector at or after that
+run's sector 16 that holds a primary volume descriptor, within its first 4096 sectors,
+and only when the root directory's `.` record is at the sector it names and the
+descriptor set (through its terminator and the sector after) is in data sectors; every
+other address is absolute. The walk SHALL NOT read every sector: when the last data
+sector near the end of the file has the same offset as sector 0, the image is one
+session and no other sector header is read; a run is followed by probes at doubling
+distances and bisection; only sectors that are not data are read in turn, in batches.
+Addresses that go backwards, more than 256 runs, no later session, or a later session
+without a volume that passes the check SHALL leave the image read from its first track.
+
+Read from its first track, the trailing-data check SHALL scan only the data sectors that
 continue the track after the volume space, so a mixed-mode disc's audio is not reported.
-Read hints SHALL name the raw sectors that hold a member's extents.
+When those sectors hold another ISO 9660 volume (a sector that starts with a primary
+volume descriptor), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming that sector
+instead of `ARCHIVE_TRAILING_DATA`, and the listing SHALL stay the first track's. Read
+hints SHALL name the raw sectors that hold a member's extents, also for a later session
+placed by its addresses (a span across two runs has no hint).
 
 Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
 with `UnsupportedFeatureError` naming the layout, before the availability check, so the
@@ -137,6 +165,10 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | Lists and reads as the plain `.iso` does, with no diagnostic |
 | Data track followed by audio sectors | Reads; no `ARCHIVE_TRAILING_DATA` |
 | Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
+| Two or three data sessions back to back, sector addresses jumping by the gap, no `.cue` used, from a path or a stream | The newest session, as with the `.cue`; files of earlier sessions read from their sectors; no diagnostic |
+| Non-data sectors, and a pregap of data sectors, between the sessions | The same; the volume found past the pregap |
+| One session, or a data track then audio to the end | Two header reads (sector 0 and the last 32 sectors), then the first track |
+| A second ISO 9660 volume past the volume space whose addresses do not place it (they restart, or its root is not where they put it) | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
 | A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
 | A Mode 2 Form 2 sector inside a file | Reading that file raises `UnsupportedFeatureError` |
 | Image cut inside a file | Reading that file raises `TruncatedError` |
@@ -172,6 +204,14 @@ before any file is opened. `FILE` lines that name the same file, by device and i
 SHALL share one handle. Member data hints SHALL be empty, since the opened file is the
 sheet.
 
+When the sector addresses of a data track after the chosen one jump past the track
+before it by a session gap the sheet's addresses do not have (a sheet with no
+`REM SESSION` lines), and a volume in that track passes the check the sheet-less reading
+uses (previous requirement), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming
+the address of that volume's primary volume descriptor: the image read without the sheet
+lists that session. The listing SHALL follow the sheet. A later session with no volume
+that passes is not reported, since both readings list the same files.
+
 #### Scenario: cue matrix
 
 | Case | Expected |
@@ -181,6 +221,8 @@ sheet.
 | Two data sessions, standard gap | The newest session; files from session 1 read from track 1 |
 | Two data sessions, another gap | The same, through the root-directory search |
 | Audio session, then data session (Enhanced CD) | The data session |
+| Two data sessions whose sector addresses jump by the gap, sheet with no `REM SESSION` | Track 1 is listed; `ARCHIVE_UNREAD_SESSION` |
+| The same, with no volume in the later session | Track 1 is listed; no diagnostic |
 | `FILE "../x.bin"`, `"/etc/passwd"`, `"sub/x.bin"` | `UnsupportedFeatureError` |
 | Missing track file | `TruncatedError` |
 | A `FILE` with no `TRACK` after it; a track number not above the one before | `CorruptionError`; no track file opened |
@@ -202,14 +244,18 @@ extent is empty. Over a non-empty extent such a mode SHALL give `FILE` with the
 extent's bytes as the content and `MEMBER_SPECIAL_FILE_HAS_DATA` reported; either
 way `extra["special_file_type"]` SHALL name the stored kind.
 
-In the plain ISO 9660 namespace the `;N` file version SHALL be removed from the
-presented name of a file together with the `.` of an empty extension (`FOO.;1`
-is `FOO`), and recorded as `extra["iso.version"]`. When a directory holds several
-versions of one name, the highest takes the bare name and the others SHALL be
-presented by their stored identifier (`FOO.;1`) with `is_current=False`, the RAR
-file-version history shape, also when the same stored identifier is repeated. In
-the plain namespace a directory's presented name keeps a `;N` at its end, as its
-children's paths do, and the directory has no `extra["iso.version"]`.
+In the plain ISO 9660 and Joliet namespaces the `;N` file version SHALL be removed from
+the presented name of a file together with the `.` of an empty extension (`FOO.;1` is
+`FOO`), and recorded as `extra["iso.version"]`. When a directory holds several versions
+of one name, the highest takes the bare name and the others SHALL be presented by their
+stored identifier (`FOO.;1`) with `is_current=False`, the RAR file-version history
+shape, also when the same stored identifier is repeated. In both namespaces a
+directory's presented name keeps a `;N` at its end, as its children's paths do, and the
+directory has no `extra["iso.version"]`. A file name whose part before `;N` is empty or
+only dots (`;1`, `.;1`, `...;1`) SHALL keep its stored spelling and have no
+`extra["iso.version"]`: removing the version would make up an empty, `.` or `..` name.
+In the Joliet namespace the versions of one name SHALL list together, the highest last,
+and other files SHALL keep their record order.
 
 Records that share an identifier in one directory SHALL be worked out from the
 directory as written, in on-disc order, and not from pycdlib's links or order. A
@@ -243,6 +289,8 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | PX mode `0o020666` (char device) over an empty extent | `type=OTHER`, `size=None`, `extra["special_file_type"]="char_device"`; extraction skips it |
 | PX mode `0o020666` (char device) over a 4-byte extent | `type=FILE`, `size=4`, `extra["special_file_type"]="char_device"`, `MEMBER_SPECIAL_FILE_HAS_DATA`; reads and extracts the 4 bytes |
 | Plain `FOO.;1` and `FOO.;2` | `FOO` (version 2, current) and `FOO.;1` (version 1, `is_current=False`); extraction writes version 2 |
+| Joliet `readme.txt;1`, `foo.;1`, `foo.a`, `foo;2`, `;1` and `plain`, in that record order | `;1`, `foo.;1` (version 1, `is_current=False`), `foo` (version 2, current), `foo.a`, `plain`, `readme.txt` (version 1); `;1`, `foo.a` and `plain` have no `iso.version` |
+| Joliet or plain file `.;1`, `..;1`, `...;1`, `SUB/....;1` | Listed as stored, with no `iso.version`; never `.` or `..` |
 | Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
 | Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |
 | Three records with one identifier, flagged, not flagged, not flagged | The first two are one member; the third is a second member with the same name |
@@ -352,9 +400,10 @@ size), or, when the volume descriptor set itself runs past the end of the file, 
 of the descriptor that is cut. An open that fails because a read of the image's
 structures reached the end of such a file SHALL raise `TruncatedError`. This covers the
 volume descriptors, the path tables, the ISO 9660 and Joliet directory records with
-their Rock Ridge System Use areas, and the UDF anchor pycdlib reads in the volume's last
-block. A path table that runs past the end of the file but stays inside the volume space
-SHALL raise `TruncatedError` too.
+their Rock Ridge System Use areas, and the UDF anchor, descriptors, File Entries and
+directories archivey reads at open, which for UDF counts as cut when the file ends
+before the partitions the UDF volume declares do. A path table that runs past the end of
+the file but stays inside the volume space SHALL raise `TruncatedError` too.
 
 An open SHALL raise `CorruptionError`, not `TruncatedError`, when the failing read
 stopped inside the file (the bytes are present and do not parse), when the file holds
@@ -377,12 +426,12 @@ A cut inside the padding stays `TruncatedError`.
 | --- | --- |
 | Image cut inside a volume descriptor, or at the start of the set terminator | `TruncatedError` at open |
 | Image cut inside a path table, a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
-| UDF image cut inside its volume recognition sequence, its last anchor, or file data | `TruncatedError` at open |
-| Image cut inside file data, no UDF | Opens; reading a file the cut reaches raises `TruncatedError` |
+| UDF image cut inside its volume recognition sequence, its anchor at block 256, or a File Entry or directory of its tree | `TruncatedError` at open |
+| Image cut inside file data, or (UDF) after the tree, in its last-block anchor | Opens; reading a file the cut reaches raises `TruncatedError` |
 | Full-length image: a descriptor field, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
 | Full-length image: a non-zero byte in a directory block's padding | Opens and lists every record; `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`; refused under `STRICT` |
 | Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
-| Full-length UDF image whose volume space size is damaged upwards | `TruncatedError`: the file holds less than the image declares |
+| Full-length UDF bridge image whose volume space size is damaged upwards | Opens and reads: nothing archivey reads lies past the file |
 
 ### Requirement: Report bytes after the end of an ISO image
 
@@ -422,10 +471,10 @@ checksum, so its entries are taken as written, as the volume space size is.
 
 ### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
 
-`pycdlib` parses every directory tree of an image inside `open_archive` (the PVD tree,
-a Joliet tree, and a UDF tree when present) and keeps all of them, so the ISO backend
-SHALL check `ListingLimits` while `pycdlib` parses. The bytes it weighs (directory
-records as stored, Rock Ridge continuation areas, path tables, UDF File Identifiers and
+`pycdlib` parses the PVD tree and a Joliet tree of an image inside `open_archive`, and
+archivey's UDF parser the UDF tree when present, and every tree is kept, so the ISO
+backend SHALL check `ListingLimits` while they parse. The bytes it weighs (directory
+records as stored, Rock Ridge continuation areas, path tables, UDF directories and
 File Entries) SHALL be one sum for the whole image, held to `max_metadata_bytes`; a
 tree under the cap SHALL NOT make an image over it open. `max_members` SHALL be counted
 per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
@@ -438,3 +487,28 @@ SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
 | PVD, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | The same image with `max_metadata_bytes` above the sum | Opens and lists |
 | A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |
+
+### Requirement: Bound the UDF chains structurally
+
+The UDF parser SHALL follow at most 16 Volume Descriptor Sequence extents and 256
+descriptors in them, 64 indirect entries and 64 allocation extent continuations for one
+File Entry and 64 partition maps, and SHALL read a symlink of at most 64 KiB; past any
+of these the image SHALL be refused with `CorruptionError` at open. It SHALL look at no
+more than 64 Volume Recognition descriptors: a UDF descriptor past them is not seen, and
+the image is not read as UDF. These are structural bounds, not policy limits: each stops
+a chain the format lets point anywhere, real writers record one descriptor extent, one
+or two partition maps and no indirect entries, and no system makes a symlink target over
+4096 bytes (Linux's `PATH_MAX`; its UDF driver reads at most one block). A directory has
+no such bound: `max_metadata_bytes` weighs it before it is read. An extent that a
+metadata partition splits over its runs SHALL cost one step per run it covers, not one
+per block, where runs that follow each other on disc count as one, and each run covered
+after the first SHALL be weighed against `max_metadata_bytes` as one long allocation
+descriptor (16 bytes).
+
+#### Scenario: UDF bounds
+
+| Case | Expected |
+| --- | --- |
+| A File Entry whose allocation extents continue more than 64 times, or more than 64 indirect entries in a row | `CorruptionError` at open |
+| A symlink over 64 KiB | `CorruptionError` at open |
+| Many 1 GiB allocation descriptors in a metadata partition of 200 runs | Open time grows with the runs covered, not the blocks; each run covered after the first counts against `max_metadata_bytes` |

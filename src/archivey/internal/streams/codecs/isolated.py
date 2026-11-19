@@ -8,9 +8,9 @@ proxy forwards each call with its arguments unchanged, so a codec's per-library 
 (zlib's ``max_length=0`` meaning "no limit", the others' ``-1``) stay where they are.
 
 The libraries that re-enable the GIL on a free-threaded build (brotli, inflate64,
-pyppmd, python-lzo) are never imported here when isolated: their exception types have
-stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`, :class:`LzoChildError`)
-that the codecs catch and translate alongside the real ones.
+pyppmd) are never imported here when isolated, nor is compress-utils: their exception
+types have stand-ins (:class:`BrotliChildError`, :class:`PpmdChildError`,
+:class:`LzoChildError`) that the codecs catch and translate alongside the real ones.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from __future__ import annotations
 import lzma
 import zlib
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from archivey.config import ProcessIsolation
 from archivey.internal.overrides import override
@@ -64,7 +64,13 @@ class PpmdChildError(ValueError):
 
 
 class LzoChildError(ValueError):
-    """Stand-in for ``lzo.error`` raised by liblzo2 in a child process."""
+    """Stand-in for ``compress_utils.CompressError`` raised by its LZO1X decoder in a
+    child process."""
+
+
+class SnappyChildError(ValueError):
+    """Stand-in for a Snappy package's refusal of a raw block in a child process
+    (cramjam's ``DecompressionError``, compress-utils' ``CompressError``)."""
 
 
 def _known(*classes: type[Exception] | None) -> dict[tuple[str, str], type[Exception]]:
@@ -78,9 +84,15 @@ _LZMA_ERRORS = _known(lzma.LZMAError)
 
 
 # Matched by type name alone ("*"): the modules that raise them differ by build.
-_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {("*", "error"): LzoChildError}
+_LZO_ERRORS: dict[tuple[str, str], type[Exception]] = {
+    ("*", "CompressError"): LzoChildError
+}
 _BROTLI_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "error"): BrotliChildError
+}
+_SNAPPY_ERRORS: dict[tuple[str, str], type[Exception]] = {
+    ("*", "DecompressionError"): SnappyChildError,
+    ("*", "CompressError"): SnappyChildError,
 }
 PPMD_ERRORS: dict[tuple[str, str], type[Exception]] = {
     ("*", "PpmdError"): PpmdChildError
@@ -186,6 +198,23 @@ class ChildDecompressor(_ChildProxy):
     @property
     def unused_data(self) -> bytes:
         return self._child.unused_data()
+
+
+class ChildSnappyNatives(_ChildProxy):
+    """Snappy's native raw-block decoder and CRC-32C in a child, held for one stream
+    (the worker's ``_Snappy``). The framing stays in this process; a data chunk costs
+    one round trip, which decodes it and computes its CRC together."""
+
+    def chosen(self) -> tuple[str, str]:
+        """The decoder and the CRC package the child found, ``""`` for none."""
+        self._child.call("chosen", None)
+        decoder, crc = cast("tuple[str, str]", self._child.result)
+        return decoder, crc
+
+    def chunk(self, body: bytes, size: int) -> bytes:
+        """The worker's ``_Snappy.chunk``: decoded data (``size`` >= 0), then the
+        CRC-32C as 4 little-endian bytes when the child has a CRC package."""
+        return self._child.call("chunk", body, (size,))
 
 
 class ChildZlibDecompressor(ChildDecompressor):
@@ -375,16 +404,17 @@ class Natives:
             child.close()
 
     def lzo_decompress(self, block: bytes, limit: int) -> bytes:
-        """``lzo.decompress(block, False, limit)``: one raw LZO1X block. Needs
-        python-lzo; not imported here when isolated, where it raises
-        :class:`LzoChildError` for ``lzo.error``."""
+        """``compress_utils.decompress(block, "lzo", expected_size=limit)``: one raw
+        LZO1X block, decoded to at most ``limit`` bytes. Needs compress-utils; not
+        imported here when isolated, where it raises :class:`LzoChildError` for
+        ``CompressError``."""
         if not self.isolated:
-            lzo = deps.lzo.load()
-            assert lzo is not None
-            return lzo.decompress(block, False, limit)
+            module = deps.compress_utils.load()
+            assert module is not None
+            return module.decompress(block, "lzo", expected_size=limit)
         child = self._child("lzo", known=_LZO_ERRORS)
         try:
-            return child.call("decompress", block, (False, limit))
+            return child.call("decompress", block, ("lzo", limit))
         finally:
             child.close()
 
@@ -392,9 +422,9 @@ class Natives:
         """The exception types :meth:`lzo_decompress` raises on bad data."""
         if self.isolated:
             return (LzoChildError,)
-        lzo = deps.lzo.load()
-        assert lzo is not None
-        return (lzo.error,)
+        module = deps.compress_utils.load()
+        assert module is not None
+        return (module.CompressError,)
 
     def brotli_decompressor(self) -> Any:
         """A ``brotli.Decompressor``; needs brotli installed. Not imported here when
@@ -446,6 +476,18 @@ class Natives:
         except DecoderChildStartError as exc:
             raise isolation_error(str(exc), setting, isolated_unless_none=True) from exc
         return ChildBzip3Decompressor(child)
+
+    def snappy_natives(
+        self, decoders: list[str], crcs: list[str]
+    ) -> ChildSnappyNatives:
+        """Snappy's native packages in a child, held for one stream; only when
+        isolated. ``decoders`` and ``crcs`` are the packages allowed, in order."""
+        assert self.isolated
+        return ChildSnappyNatives(
+            self._child(
+                "snappy", (), {"decoders": decoders, "crcs": crcs}, known=_SNAPPY_ERRORS
+            )
+        )
 
     def package_available(self, lazy: deps.LazyOptional) -> bool:
         """Whether a lazily imported package can decode. In-process this imports it

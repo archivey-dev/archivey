@@ -277,6 +277,7 @@ Exact matches only (no fuzzy/weak magic). Recognised:
 | 7-Zip | `37 7A BC AF 27 1C` |
 | RAR 4.x / 5.x | `52 61 72 21 1A 07 00` / `… 01 00` |
 | ISO 9660 | `CD001` at 32769 |
+| UDF-only disc image (read as ISO) | `BEA01` at 32769 |
 | SquashFS | `hsqs` at 0 (little-endian SquashFS 4); `sqsh` at 0 (big-endian SquashFS 3 and older, claimed so `format-squashfs` can refuse it by name) |
 | ISO 9660, raw CD sector image | `00 FF×10 00` sector sync at 0 (`format-iso` reads Mode 1 and Mode 2 Form 1 and refuses other layouts by name) |
 | UDIF | `6B 6F 6C 79 00 00 00 04 00 00 02 00` (`koly`, version 4, header size 512) at offset 0, or at the start of the last 512 bytes |
@@ -961,7 +962,8 @@ metadata) meta-block, because those bytes must physically be present. When the s
 length is known, the Brotli probe SHALL reject a prefix whose **first** declared
 meta-block violates that invariant. Detection supplies that length via the existing
 cheap size probe (`source_byte_size`); when the length is unknown the check is skipped,
-not guessed, and detection behaves as before.
+not guessed. The chain walk may still use reachable EOF evidence without a known
+length.
 
 A stronger **chain walk** — following byte-aligned self-describing meta-blocks and
 rejecting a later link that overruns, or a declared end with trailing bytes — is
@@ -992,6 +994,9 @@ probe". The two requirements stand together; this one is the invariant, that one
 prohibition on knobs.
 
 #### Scenario: framing gate matrix
+
+- **WHEN** the probe examines a case listed below
+- **THEN** its framing gate follows the expected result.
 
 | Case | Expected |
 | --- | --- |
@@ -1070,33 +1075,46 @@ decode allowance; when the allowance cannot cover it, the window's answer stands
 
 ### Requirement: A content probe SHALL follow a format's self-describing block chain
 
-**Scope: formats whose blocks are byte-aligned and self-describing, so a successor's offset
-is known without decompressing. Brotli is the only such format today.** For those, a probe
-SHALL follow the chain to test the same framing invariant beyond the first block, and SHALL
-reject a link that overruns the source or a declared end that leaves trailing bytes. A
-format outside that scope is unaffected — this is not an obligation on every probe.
+A content probe SHALL check reachable block framing even without a known source length.
+
+**Scope: formats whose blocks are byte-aligned and self-describing, so a successor's
+offset is known without decompressing. Brotli is the only such format today.** For
+those, a probe SHALL follow the chain to test the same framing invariant beyond the
+first block, and SHALL reject a link that overruns the source or a declared end that
+leaves trailing bytes. A format outside that scope is unaffected — this is not an
+obligation on every probe. The chain SHALL also be walked when source length is unknown.
+Short or empty full range reads prove EOF; a declined read (`None`) proves nothing.
+An available-byte observation SHALL carry separate EOF evidence: a short arrival
+on an open pipe SHALL NOT prove EOF. Optional end checks SHALL inspect buffered
+bytes without waiting for a following byte or for the writer to close. A missing
+successor, a truncated declared final block, or bytes after a declared end SHALL reject
+the match when the range reads establish that fact. Prefix exhaustion without a known
+length or an available range read SHALL NOT count as EOF.
 
 The walk is mandatory rather than optional because the alternative is a probe whose
-false-positive rate silently depends on whether an implementer felt like walking. What is
-*bounded* is the work, not the obligation: the budgets below are the escape hatch, and
-exhausting either is a defined outcome rather than a licence to skip the walk.
+false-positive rate silently depends on whether an implementer felt like walking. What
+is *bounded* is the work, not the obligation: the budgets below are the escape hatch,
+and exhausting either is a defined outcome rather than a licence to skip the walk.
 
-The walk exists because the first-block check goes **vacuous on large sources**: Brotli's
-MLEN field tops out at 2²⁴, so past ~16 MiB every declared length fits trivially. Measured
-on random blobs, the walk takes 16 MiB acceptance from 8.33% (where the first-block check
-buys nothing) to 2.00%, and a `/usr` tree from 61 survivors to 14.
+The walk exists because the first-block check goes **vacuous on large sources**:
+Brotli's MLEN field tops out at 2²⁴, so past ~16 MiB every declared length fits
+trivially. Measured on random blobs, the walk takes 16 MiB acceptance from 8.33% (where
+the first-block check buys nothing) to 2.00%, and a `/usr` tree from 61 survivors to 14.
 
-The walk SHALL be **bounded by a declared link count** (today: 8) and, on forward-only
-sources, by a **declared maximum absolute offset** for probe reads (today: 1 MiB). Reaching
-either means *cannot disprove*: the probe SHALL keep the verdict the earlier rules reached
-and MUST NOT reject on that basis. This is the same discipline as an unknown source length
-— absence of evidence is not evidence against, so budget exhaustion can never manufacture a
-false negative. The 1 MiB figure is the memory-governing ceiling for a non-seekable
-`read_at` (buffering `[0, offset)`); seekable sources and paths may seek past it.
+The walk SHALL be **bounded by a declared link count** (today: 8). Cheap random
+access SHALL retain header seeks at any offset, without buffering literal bodies.
+Sources requiring buffer growth SHALL retain the existing 1 MiB/read-ceiling limit.
+On forward-only sources, additional buffering SHALL also obey
+`max_probe_forward_bytes` (`detection-cost`); with a zero allowance, only bytes already
+buffered may be inspected. Exhausting a limit means *cannot disprove*: the probe
+SHALL keep the verdict the earlier rules reached and MUST NOT reject on that basis.
+Absence of evidence is not evidence against, so budget exhaustion cannot manufacture
+a false negative. The forward-only allowance SHALL NOT disable existing checks on
+seekable expensive-seek sources, including remote sources and member streams.
 
 The walk stops at the first compressed block, which carries no declared length to check.
-On a real Brotli file whose first meta-block is compressed — 79 of 150 in the corpus — it
-therefore terminates immediately, having read four bytes.
+On a real Brotli file whose first meta-block is compressed — 79 of 150 in the corpus —
+it therefore terminates immediately, having read four bytes.
 
 Following the chain requires bytes at offsets that may lie past the peeked prefix.
 However a probe reaches them, the header reads SHALL stay within the declared bounds and
@@ -1111,14 +1129,24 @@ at it. Measured: CPython 3.11/3.14 `.pyc` files over ~269 KiB, a Type 1 font, ab
 libmagic signature bodies, and 1.2–1.3 % of uniform random data over 64 KiB were claimed
 this way, and a real decoder rejects each within 256 bytes of the compressed header. The
 decode is a sequential read of `[0, end)`, mostly a copy of the declared bytes. It SHALL
-stay inside the reach of the walk's reads (`end` at most 1 MiB, the non-seekable
-`read_at` ceiling, applied to every source) and inside the detection budget: it is
+stay within its own input cap (`end` at most 1 MiB, applied to every source),
+independently of cheap header-seek offsets, and inside the detection budget: it is
 charged to `max_decode_input` and SHALL NOT read past the budget's prefix/far/scan
 ceiling (see `detection-cost`). When `end` is out of reach, the budget cannot cover it,
 or the read is declined, the walk's verdict stands (*cannot disprove*). A real stream
 decodes cleanly or runs out of input there, and both SHALL be accepted.
 
+On a forward-only source, an enabled chain decode SHALL feed arrived bytes to one
+incremental decoder until it fails, finishes, or reaches its input/output bound.
+A short arrival SHALL NOT end the trial while the decoder still needs input within
+the allowed range. A finished decoder SHALL NOT fetch optional following bytes.
+The trial's input ceiling SHALL be charged before fetching its sample, even when
+it finishes before reaching that ceiling.
+
 #### Scenario: chain walk matrix
+
+- **WHEN** a content probe encounters a case listed below
+- **THEN** its framing verdict and bounded reads match the expected result.
 
 | Case | Expected |
 | --- | --- |
@@ -1132,7 +1160,17 @@ decodes cleanly or runs out of input there, and both SHALL be accepted.
 | 16 MiB source whose first declared block fits trivially (MLEN ceiling) | Walk decides; first-block check alone would have accepted |
 | Chain longer than the link bound | Verdict unchanged from the earlier rules; **not** a rejection |
 | Non-seekable `read_at` past the 1 MiB offset ceiling | Declined → cannot disprove; earlier verdict stands |
+| Invalid successor past 1 MiB on a path or cheap seekable stream | Rejected under every preset; the header seek does not buffer the literal body |
+| Finite remote source or seekable decoded member, invalid successor within the existing buffer ceiling | Rejected under every preset, as from `BytesIO` |
+| Complete Brotli stream larger than the completion window on a held-open pipe, including `THOROUGH` | Detection returns without waiting for optional framing bytes or pipe closure |
+| Partial available header without EOF evidence | Cannot disprove; a short arrival is not truncation |
+| Valid compressed header followed by corruption 64 bytes later, pipe with 7-byte or 64 KiB source chunks, `THOROUGH` | Rejected as from memory, within the chain-decode bounds |
+| Complete compressed block before the trial's target input end, writer still open | Trial stops without fetching optional following bytes |
 | OLE/CFB file ≥ 7425 bytes | Its constant magic yields a fitting chain that stops at a compressed header at 7 426; the decode there rejects it. Detection does not run the probe on it in any case (*A known non-archive signature stops the content probes*) |
+
+| Unknown-size source, missing successor within reach, cheap seek or enabled forward reads | Rejected from EOF evidence |
+| Unknown-size pipe under `FAST` or `BALANCED`, next header not buffered | Earlier verdict stands; forward read recorded as not enabled by policy |
+| Valid reference-encoder literal block larger than 128 KiB | Not rejected by size; walk or decline under the same budgets |
 
 ### Requirement: A read failure on probe-only evidence names its provenance
 

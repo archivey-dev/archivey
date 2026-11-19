@@ -412,6 +412,11 @@ maintainer.
   lint job. A library test that reads a script, such as a fixture generator, stays in
   `tests/`. [`scripts/README.md`](scripts/README.md) says which script folders make the
   merge queue run every leg. A bare `uv run pytest` runs both test folders.
+- **A test goes in the file of the feature it pins.** Name a file after what it tests,
+  never after the sweep, review or bug that found the case: a reader looks for the
+  RAR pipe tests in `test_rar_forward.py`, not in a file named after an audit. Add to
+  the feature's existing file, and start a new one only for a feature no file covers.
+  A sweep that finds several cases adds each to its own feature's file.
 - **Test behaviour, not internal implementation.** Assert on what a public API returns
   and does, so refactors don't break tests gratuitously. *Narrow exception:* the
   low-level building blocks — stream primitives/helpers, format parsers, the codec

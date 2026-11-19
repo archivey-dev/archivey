@@ -15,7 +15,7 @@ registered as a built-in the way ISO, CPIO and ar are.
 | Source | A file or a stream that can seek. Not a pipe: the directory and inode tables come after the data |
 | Listing cost | From the index (the inode and directory tables) |
 | Access cost | `DIRECT`. Small files share a fragment block, which is decoded once and kept (four at a time) |
-| Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded as a `.lzo` file is: liblzo2 through `python-lzo` in a child process when it is installed, otherwise Python |
+| Core dependencies | None for gzip, xz, LZMA and LZO images. Zstandard images need what a `.zst` file needs; LZ4 images need `lz4` (`[recommended]`). LZO is decoded as a `.lzo` file is: `compress-utils` (`[recommended]` on CPython, not Intel macOS) when it is installed, otherwise Python |
 | Encryption | None |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format |
 | Checksums | None of its own. A damaged block is found when it does not decode to its length, when its codec's own check fails (zlib's Adler-32, the xz CRC), or when its stored size stops before its stream ends |
@@ -125,11 +125,11 @@ level or variant the same decoder reads.
 Every compressed block goes through `ReaderContext.decompress`, so archivey's decoder
 limits apply, or, for LZ4, through `lz4.block` capped at the block's size. LZO blocks
 are raw LZO1X (`CompressionAlgorithm.LZO`), decoded by the codec a `.lzo` file uses:
-liblzo2 through `python-lzo` when it is installed, in a child process under
-`NATIVE_DECODERS`, and otherwise archivey's port of the kernel's
-`lzo1x_decompress_safe`. The port takes the end marker as liblzo2 does, whatever its
-length field, so the two decoders agree (the kernel refuses a length other than 3). LZO1X
-stores no decoded length, so the block size is passed as the most it may decode to (§6).
+`compress-utils` when it is installed, in a child process under `NATIVE_DECODERS`, and
+otherwise archivey's port of the kernel's `lzo1x_decompress_safe`. Both refuse an end
+marker whose length is not 3, as the kernel does (liblzo2 accepts any length; no writer
+produces another). LZO1X stores no decoded length, so the block size is passed as the
+most it may decode to (§6).
 
 `FormatPolicy(exclude_libraries={OptionalLibrary.LZ4})` makes an LZ4 image read as if
 `lz4` were missing. Under PyPy the reader does not use `lz4`, as the rest of archivey
@@ -249,14 +249,16 @@ offsets the image declares:
   A test pins the internal names it imports.
 - **SquashFS 4 only.** Big-endian images from SquashFS 3 and older have another layout;
   they are claimed by magic (`sqsh`) so the refusal names them, from a stream too.
-- **LZO goes through archivey's LZO codec.** `python-lzo` is GPL, so it is never a
-  dependency, and an LZO image opens without it. When it is installed it decodes in a
-  child process under `NATIVE_DECODERS`, so `exclude_libraries` and process isolation
-  reach it as they reach every native decoder. An earlier version of this reader kept
-  its own Python-only decoder for that reason; the shared codec made it unnecessary.
-  The tests read the LZO images with each decoder, and the CI benchmark job (its
-  `LZO against liblzo2` step) and the session setup script install `python-lzo` so
-  that both run.
+- **LZO goes through archivey's LZO codec.** An LZO image opens without any package;
+  `compress-utils` (MIT, in `[recommended]`) is an accelerator. When it is installed it
+  decodes in a child process under `NATIVE_DECODERS`, so `exclude_libraries` and
+  process isolation reach it as they reach every native decoder. An earlier version of
+  this reader kept its own Python-only decoder; the shared codec made it unnecessary.
+  The tests read the LZO images with each decoder. `python-lzo` (GPL) was the
+  accelerator until compress-utils replaced it
+  (`investigations/lzo-compress-utils-vs-python-lzo.md`); it stays a test oracle, which
+  the CI benchmark job (its `LZO against liblzo2` step) and the session setup script
+  install.
 - **Extended attributes are not read.** archivey's members have no field for them.
 - **`is_sparse` comes from the block list.** Reading it costs a scan of each file's
   list during the listing; the list sits in the inode table next to the inode, which the

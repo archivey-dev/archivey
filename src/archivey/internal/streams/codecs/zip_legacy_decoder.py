@@ -470,6 +470,26 @@ def _read_symbol(decoder: _BitDecompressor, codes: dict) -> Generator[bool, None
     raise CorruptionError("Implode stream has a code its tree does not define")
 
 
+def _copy_match(history: bytearray, distance: int, count: int) -> None:
+    """Append a match, including the implicit zero history of Implode and Reduce.
+
+    After trimming, callers retain a full window, at least ``distance`` bytes.
+    A distance beyond ``history`` therefore refers before the first output byte.
+    """
+    if distance > len(history):
+        zeros = min(count, distance - len(history))
+        history += bytes(zeros)
+        count -= zeros
+        if not count:
+            return
+    start = len(history) - distance
+    if count <= distance:
+        history += history[start : start + count]
+    else:
+        pattern = history[start:]
+        history += (pattern * ((count + distance - 1) // distance))[:count]
+
+
 class ImplodeDecompressor(_BitDecompressor):
     """Implode: a 4 KiB or 8 KiB window, and two or three Shannon-Fano trees."""
 
@@ -498,7 +518,6 @@ class ImplodeDecompressor(_BitDecompressor):
         window = 1 << (low_bits + 6)
         # The output so far, trimmed to the window now and then.
         history = bytearray()
-        trimmed = 0
         while self._produced < size:
             if (yield from self._bits_value(1)):
                 if literals is None:
@@ -515,16 +534,12 @@ class ImplodeDecompressor(_BitDecompressor):
                 if length == 63:
                     length += yield from self._bits_value(8)
                 length = min(length + min_match, size - self._produced)
-                # ``trimmed`` bytes of output have left ``history``; a source before
-                # the start of the output reads zero, as Info-ZIP reads it.
-                end = trimmed + len(history)
-                for position in range(end, end + length):
-                    source = position - distance
-                    history.append(history[source - trimmed] if source >= 0 else 0)
+                # A source before the first output byte reads zero, as Info-ZIP reads
+                # it.
+                _copy_match(history, distance, length)
                 self._emit(history[len(history) - length :])
             yield from self._budget()
             if len(history) > 4 * window:
-                trimmed += len(history) - window
                 del history[: len(history) - window]
 
 
@@ -585,7 +600,6 @@ class ReduceDecompressor(_BitDecompressor):
         length_mask = (1 << length_bits) - 1
         window = (256 << self._factor) + 256
         history = bytearray()
-        trimmed = 0
         last = 0
         state = 0
         escaped = 0
@@ -628,14 +642,10 @@ class ReduceDecompressor(_BitDecompressor):
                 state = 0
                 distance = ((escaped >> length_bits) << 8) + byte + 1
                 count = min(length + 3, size - self._produced)
-                end = trimmed + len(history)
-                for position in range(end, end + count):
-                    source = position - distance
-                    history.append(history[source - trimmed] if source >= 0 else 0)
+                _copy_match(history, distance, count)
                 self._emit(history[len(history) - count :])
             yield from self._budget()
             if len(history) > 4 * window:
-                trimmed += len(history) - window
                 del history[: len(history) - window]
 
 
@@ -770,8 +780,7 @@ class DclImplodeDecompressor(_BitDecompressor):
                         f"DCL Implode copy reaches {distance} bytes back, before the "
                         f"start of the output ({end} bytes)"
                     )
-                for position in range(end, end + length):
-                    history.append(history[position - distance - trimmed])
+                _copy_match(history, distance, length)
                 self._emit(history[len(history) - length :])
             else:
                 if coded:

@@ -489,7 +489,8 @@ def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
 
 # What pycdlib raises for a directory tree that loops back on itself.
 _ISO_LOOP = r"ISO Directory Records form a loop"
-_UDF_LOOP = r"UDF File Entries form a loop"
+# What archivey's UDF parser raises for a UDF directory tree that loops.
+_UDF_LOOP = r"UDF volume: .*the directory tree forms a loop"
 
 
 @pytest.mark.timeout(5)
@@ -593,14 +594,14 @@ def _udf_directory_cycle_image() -> bytes:
 
 
 @pytest.mark.timeout(10)
-def test_pycdlib_udf_directory_cycle_does_not_hang() -> None:
-    """A UDF directory naming an ancestor must not hang pycdlib's walk in ``open_fp``.
+def test_a_udf_directory_cycle_is_refused_at_open() -> None:
+    """A UDF directory naming an ancestor is refused at open, and does not hang.
 
-    ``PyCdlib._walk_udf_directories`` enqueues each directory's File Entry with no
-    visit tracking before 1.22, so this image made it parse the root's entries again and
-    again, with memory growing about 65 MB a second, under default limits. From 1.22 it
-    detects the loop and raises "UDF File Entries form a loop", so the image is refused
-    at open, although its ISO 9660 tree is intact.
+    pycdlib's own UDF walk looped forever on this image before 1.22, with memory
+    growing about 65 MB a second. archivey now parses UDF itself (pycdlib's UDF walk
+    is off inside archivey's open), and its walk enters each directory once, so the
+    image is refused as a loop. UDF is the listed tree here: the image has no Rock
+    Ridge.
     """
     image = _udf_directory_cycle_image()
     with pytest.raises(CorruptionError, match=_UDF_LOOP):
@@ -626,32 +627,34 @@ def _udf_image_with_links(count: int) -> bytes:
     return out.getvalue()
 
 
-def test_listing_limits_count_udf_entries_as_pycdlib_parses_them() -> None:
-    """``max_members`` counts the UDF tree pycdlib parses at open, per tree.
+def test_listing_limits_count_udf_entries_at_open() -> None:
+    """``max_members`` counts the UDF tree at open, per tree.
 
-    The ISO 9660 tree holds one file and the UDF tree twenty names. pycdlib parses 21
-    File Identifiers in the UDF root, the parent entry and the twenty names, and only
-    the twenty count: the parent entry is not a member. So a cap of exactly 20 opens,
-    which is what pins that exclusion.
+    The ISO 9660 tree holds one file and the UDF tree twenty names. The UDF root
+    holds 21 File Identifiers, the parent entry and the twenty names, and only the
+    twenty count: the parent entry is not a member. So a cap of exactly 20 opens,
+    which is what pins that exclusion. UDF is the listed tree.
     """
     image = _udf_image_with_links(20)
     fits = ArchiveyConfig(listing_limits=ListingLimits(max_members=20))
     with open_archive(io.BytesIO(image), config=fits) as reader:
-        assert [m.name for m in reader.members()] == ["F.TXT"]
+        assert sorted(m.name for m in reader.members()) == sorted(
+            f"F{index}.TXT" for index in range(20)
+        )
 
-    # A cap of five fits the one-member tree archivey lists, but pycdlib still parses
-    # every UDF entry inside ``open_fp``, so the UDF tree is held to the same cap.
+    # A cap of five fits the one-member ISO 9660 tree, but the whole UDF tree is
+    # parsed at open, so it is refused there, before any member is listed.
     below = ArchiveyConfig(listing_limits=ListingLimits(max_members=5))
     with pytest.raises(ResourceLimitError, match="max_members=5.*UDF"):
         open_archive(io.BytesIO(image), config=below)
 
 
-def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
-    """``max_metadata_bytes`` weighs the UDF File Identifiers and File Entries too.
+def test_listing_limits_count_udf_bytes_at_open() -> None:
+    """``max_metadata_bytes`` weighs the UDF directories and File Entries too.
 
-    Each UDF name costs a File Identifier and a File Entry of at least 176 bytes, so
-    twenty names hold more than 4000 bytes while the ISO 9660 tree, with one file,
-    holds well under 2000.
+    Each UDF name costs a File Identifier in its directory's data and a File Entry of at
+    least 176 bytes, so twenty names hold more than 4000 bytes while the ISO 9660 tree,
+    with one file, holds well under 2000.
     """
     image = _udf_image_with_links(20)
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2000))
@@ -660,7 +663,7 @@ def test_listing_limits_count_udf_bytes_as_pycdlib_parses_them() -> None:
     ):
         open_archive(io.BytesIO(image), config=tight)
     with open_archive(io.BytesIO(_udf_image_with_links(1)), config=tight) as reader:
-        assert [m.name for m in reader.members()] == ["F.TXT"]
+        assert [m.name for m in reader.members()] == ["F0.TXT"]
 
 
 def _image_with_trees(count: int, *, joliet: bool = True, udf: bool = True) -> bytes:
@@ -686,14 +689,13 @@ def _image_with_trees(count: int, *, joliet: bool = True, udf: bool = True) -> b
 
 
 def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
-    """``max_metadata_bytes`` bounds the bytes of every tree pycdlib parses, together.
+    """``max_metadata_bytes`` bounds the bytes of every tree parsed at open, together.
 
-    pycdlib keeps every tree it parses, so a budget per tree let one image hold the
+    Every tree is kept once parsed, so a budget per tree let one image hold the
     budget once for each of its PVD, Joliet and UDF trees. With ten files, this image
     weighs about 540 bytes in its PVD tree, 580 in its Joliet tree and 2,540 in its
     UDF tree: each tree is under 3,000 bytes, and the three together are about 3,670.
-    ``max_members`` stays per tree
-    (``test_listing_limits_count_udf_entries_as_pycdlib_parses_them``).
+    ``max_members`` stays per tree (``test_listing_limits_count_udf_entries_at_open``).
 
     The first leg does not depend on UDF sizes: the same ten files weigh 542 bytes in a
     PVD-only image and 1,124 with a Joliet tree (542 + 582), so a cap of 800 opens the
@@ -720,29 +722,6 @@ def test_max_metadata_bytes_is_one_budget_for_the_whole_image() -> None:
     fits = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=4000))
     with open_archive(io.BytesIO(image), config=fits) as reader:
         assert len(reader.members()) == 10
-
-
-@pytest.mark.parametrize(
-    ("tag", "fixed"),
-    [pytest.param(261, 176, id="file-entry"), pytest.param(266, 216, id="extended")],
-)
-def test_a_udf_file_entry_is_weighed_by_the_lengths_it_declares(
-    tag: int, fixed: int
-) -> None:
-    """The weight of a File Entry is its fixed part plus ``L_EA`` plus ``L_AD``.
-
-    ECMA-167 puts the two lengths in the last 8 bytes of the fixed part: 176 bytes for
-    a File Entry (4/14.9) and 216 for an Extended File Entry (4/14.17). pycdlib writes
-    only File Entries, so the Extended one is a synthetic header here; it fails if
-    tag 266 is read at the File Entry's offsets. The weight is capped by the bytes read.
-    """
-    from archivey.internal.backends.iso_reader import _udf_file_entry_size
-
-    header = bytearray(fixed)
-    struct.pack_into("<H", header, 0, tag)
-    struct.pack_into("<LL", header, fixed - 8, 10, 48)
-    assert _udf_file_entry_size(bytes(header) + bytes(1000)) == fixed + 58
-    assert _udf_file_entry_size(bytes(header) + bytes(20)) == fixed + 20
 
 
 def test_filesystem_oserror_propagates_unwrapped(tmp_path: Path) -> None:
@@ -1034,10 +1013,11 @@ def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
 
     The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
     ``PyCdlib._parse_path_table``, ``PathTableRecord.parse``,
-    ``pycdlib.udf.parse_file_ident`` and ``pycdlib.udf.parse_file_entry`` act only
+    ``PyCdlib._parse_udf_descriptors`` and ``PyCdlib._walk_udf_directories`` act only
     while ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``;
     outside, both are unset, and a Rock Ridge and Joliet image (path tables included)
-    and a UDF image open and read through pycdlib as they would without archivey.
+    and a UDF image open and read through pycdlib as they would without archivey: the
+    UDF tree, which pycdlib skips inside archivey's open, is parsed.
     """
     import pycdlib
 
@@ -1249,6 +1229,108 @@ def test_a_directory_identifier_keeps_its_version_like_suffix() -> None:
         rows = [(m.name, dict(m.extra)) for m in ar.members()]
         assert rows == [("DI;1/", {}), ("DI;1/X.TXT", {"iso.version": 1})]
         assert ar.read("DI;1/X.TXT") == b"x"
+
+
+def test_joliet_names_lose_their_version_like_plain_names(tmp_path: Path) -> None:
+    """Windows-era writers put ``;1`` on Joliet names too. The Joliet namespace
+    follows the plain rule: the version and an empty extension's ``.`` go, the newest
+    version takes the bare name, and a bare ``;1`` stays a name."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(joliet=3)
+    iso.add_fp(io.BytesIO(b"text"), 4, "/README.TXT;1", joliet_path="/readme.txt;1")
+    iso.add_fp(io.BytesIO(b"OLD VERSION"), 11, "/FOO.;1", joliet_path="/foo.;1")
+    # Records sort ``foo.;1``, ``foo.a``, ``foo;2`` (``.`` before ``;``), so the two
+    # versions of ``foo`` are not next to each other on disc.
+    iso.add_fp(io.BytesIO(b"other"), 5, "/FOO.A;1", joliet_path="/foo.a")
+    iso.add_fp(io.BytesIO(b"NEW VERSION"), 11, "/FOO.;2", joliet_path="/foo;2")
+    iso.add_fp(io.BytesIO(b"bare"), 4, "/BARE.;1", joliet_path="/;1")
+    iso.add_fp(io.BytesIO(b"plain"), 5, "/PLAIN.;1", joliet_path="/plain")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+
+    with open_archive(io.BytesIO(out.getvalue())) as ar:
+        assert ar.info.extra["iso.namespace"] == "joliet"
+        rows = [
+            (m.name, m.raw_name, m.extra.get("iso.version"), m.is_current)
+            for m in ar.members()
+        ]
+        assert sorted(rows) == [
+            (";1", b";1", None, True),
+            ("foo", b"foo;2", 2, True),
+            ("foo.;1", b"foo.;1", 1, False),
+            ("foo.a", b"foo.a", None, True),
+            ("plain", b"plain", None, True),
+            ("readme.txt", b"readme.txt;1", 1, True),
+        ]
+        # The versions of one name list together, the newest last, and every other
+        # file keeps its record order.
+        assert [m.name for m in ar.members()] == [
+            ";1",
+            "foo.;1",
+            "foo",
+            "foo.a",
+            "plain",
+            "readme.txt",
+        ]
+        assert ar.read("foo") == b"NEW VERSION"
+        assert ar.read("foo.;1") == b"OLD VERSION"
+        ar.extract_all(tmp_path / "out", on_blocked="skip")
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == [
+        ";1",
+        "foo",
+        "foo.a",
+        "plain",
+        "readme.txt",
+    ]
+
+
+@pytest.mark.parametrize("joliet", [False, True])
+def test_a_version_never_leaves_a_dot_name(joliet: bool) -> None:
+    """A name of dots and a version keeps its stored spelling: removing the version
+    and the empty extension's ``.`` would make up a ``.`` or ``..`` member. Joliet
+    allows such names; a plain image needs crafting, since d-characters have no ``.``."""
+    import pycdlib
+
+    # Plain identifiers pycdlib accepts, and the dot names patched over them (same
+    # length, so every record stays the same size).
+    names = {
+        "/V;1": "/.;1",
+        "/W.;1": "/..;1",
+        "/QQ.;1": "/...;1",
+        "/SUB/PP.;1": "/SUB/...;1",
+        "/SUB/RRR.;1": "/SUB/....;1",
+    }
+    iso = pycdlib.PyCdlib()
+    iso.new(joliet=3 if joliet else None)
+    iso.add_directory("/SUB", joliet_path="/sub" if joliet else None)
+    for plain, dots in names.items():
+        joliet_path = dots.lower() if joliet else None
+        iso.add_fp(io.BytesIO(b"x"), 1, plain, joliet_path=joliet_path)
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = out.getvalue()
+    if not joliet:
+        for plain, dots in names.items():
+            old, new = plain.rsplit("/", 1)[1], dots.rsplit("/", 1)[1]
+            assert data.count(old.encode()) == 1
+            data = data.replace(old.encode(), new.encode())
+
+    with open_archive(io.BytesIO(data)) as ar:
+        assert ar.info.extra["iso.namespace"] == ("joliet" if joliet else "iso9660")
+        files = sorted(
+            (m.name, m.extra.get("iso.version"))
+            for m in ar.members()
+            if m.type is MemberType.FILE
+        )
+    sub = "sub" if joliet else "SUB"
+    assert files == sorted(
+        [(".;1", None), ("..;1", None), ("...;1", None)]
+        + [(f"{sub}/...;1", None), (f"{sub}/....;1", None)]
+    )
 
 
 def test_rock_ridge_relocation_directory_is_not_listed() -> None:
@@ -1933,9 +2015,19 @@ def _iso_cut_points(*, udf: bool) -> dict[str, int]:
     }
     if udf:
         assert image[18 * block + 1 : 18 * block + 6] == b"BEA01"
+        from archivey.internal.backends.udf import UdfVolume
+
+        volume = UdfVolume(
+            lambda offset, n: image[offset : offset + n],
+            len(image),
+            archive_name=None,
+            budget=None,
+        )
         points["udf-volume-recognition"] = 18 * block + 100
-        # pycdlib reads the anchor in the volume's last block once the ISO 9660
-        # trees are parsed.
+        points["udf-anchor"] = 256 * block + 10
+        points["udf-root-entry"] = volume.root.location + 10
+        # Past every structure archivey reads at open: the second anchor, in the
+        # volume's last block, and file data.
         points["udf-last-anchor"] = (pvd.space_size - 1) * block + 10
         points["udf-file-data"] = image.index(b"A" * 5000) + 100
     else:
@@ -1974,7 +2066,7 @@ _RICH_CUTS = (
     "subdirectory",
     "joliet-subdirectory-padding",
 )
-_UDF_CUTS = ("udf-volume-recognition", "udf-last-anchor", "udf-file-data")
+_UDF_CUTS = ("udf-volume-recognition", "udf-anchor", "udf-root-entry")
 
 
 @pytest.mark.parametrize(
@@ -1986,14 +2078,37 @@ def test_an_image_cut_inside_its_metadata_is_truncated(udf: bool, point: str) ->
     """An image that ends before a structure its own descriptors point to raises
     ``TruncatedError`` at open, as TAR, RAR and 7z do for a cut header. It raised a
     plain ``CorruptionError`` because pycdlib reports a short read as an invalid
-    image. A UDF image is refused at open even when the cut is in file data: pycdlib
-    reads the anchor in the volume's last block."""
+    image. archivey's UDF parser does the same for its anchor and File Entries."""
     from archivey.exceptions import TruncatedError
 
     image = _three_file_image(udf=udf)
     cut = _iso_cut_points(udf=udf)[point]
     with pytest.raises(TruncatedError, match="ends before"):
         open_archive(io.BytesIO(image[:cut]), format=ArchiveFormat.ISO)
+
+
+@pytest.mark.parametrize("point", ["udf-last-anchor", "udf-file-data"])
+def test_a_udf_image_cut_past_its_tree_opens(point: str) -> None:
+    """A UDF image cut after the structures archivey reads at open opens and lists
+    its UDF tree, as an ISO 9660 image cut in file data does: a file the cut
+    reaches raises ``TruncatedError`` when read, and a file wholly before it reads.
+    pycdlib refused both at open, because it read the anchor in the volume's last
+    block; archivey reads the one at block 256."""
+    from archivey.exceptions import TruncatedError
+
+    image = _three_file_image(udf=True)
+    cut = _iso_cut_points(udf=True)[point]
+    with open_archive(io.BytesIO(image[:cut]), format=ArchiveFormat.ISO) as reader:
+        assert reader.info.extra["iso.namespace"] == "udf"
+        files = [m for m in reader.members() if m.is_file]
+        assert [m.name for m in files] == ["d/f0", "d/f1", "d/f2"]
+        for member in files:
+            start = image.index(bytes([ord("A") + int(member.name[-1])]) * 5000)
+            if start + 5000 <= cut:
+                assert reader.read(member) == image[start : start + 5000]
+            else:
+                with pytest.raises(TruncatedError):
+                    reader.read(member)
 
 
 def test_every_cut_of_an_image_is_truncated_or_opens() -> None:
@@ -2042,17 +2157,17 @@ def test_a_cut_image_whose_root_points_past_its_volume_space_is_corruption() -> 
         open_archive(io.BytesIO(bytes(image[:cut])), format=ArchiveFormat.ISO)
 
 
-def test_a_full_length_image_declaring_a_larger_volume_space_is_truncated() -> None:
-    """The volume space size is the one field that decides the label, so damage that
-    raises it reads as a cut: the file holds less than the image declares, and
-    pycdlib's read of the UDF anchor in the declared last block finds nothing."""
-    from archivey.exceptions import TruncatedError
-
+def test_a_full_length_udf_image_declaring_a_larger_volume_space_opens() -> None:
+    """Damage that raises the volume space size of a UDF bridge image reads nothing
+    past the file: archivey's UDF parser takes the anchor at block 256, so the image
+    opens and every file reads. pycdlib's read of the anchor in the declared last
+    block made it a ``TruncatedError`` before archivey parsed UDF itself."""
     image = bytearray(_three_file_image(udf=True))
     (space_size,) = struct.unpack_from("<I", image, _VOLUME_SPACE_SIZE)
     _set_extent(image, _VOLUME_SPACE_SIZE, space_size + 10)
-    with pytest.raises(TruncatedError, match="ends before its own structures"):
-        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO)
+    with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert [reader.read(m)[:1] for m in files] == [b"A", b"B", b"C"]
 
 
 def _damage_primary_descriptor(image: bytearray, block: int) -> None:
@@ -3016,7 +3131,7 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "iso9660", "expected"),
+    ("name", "listed", "expected"),
     [
         ("FOO.;1", True, ("FOO", 1)),
         ("FOO.;1", False, ("FOO.", 1)),
@@ -3024,14 +3139,20 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
         ("FOO;1", False, ("FOO", 1)),
         ("A.;12", True, ("A", 12)),
         ("A.;12", False, ("A.", 12)),
-        # A bare ``;N`` is a plain ISO 9660 name; Joliet strips it to nothing.
+        # A bare ``;N`` is a member's name; compared with another tree, it strips to
+        # nothing.
         (";1", True, (";1", None)),
         (";1", False, ("", 1)),
-        # A lone dot is kept: it is the whole stem, not an empty extension.
-        (".;1", True, (".", 1)),
+        # A stem of dots alone is a member's name too: stripping would make ``.`` or
+        # ``..``, which no image stores.
+        (".;1", True, (".;1", None)),
         (".;1", False, (".", 1)),
-        ("..;3", True, (".", 3)),
+        ("..;3", True, ("..;3", None)),
         ("..;3", False, ("..", 3)),
+        ("...;1", True, ("...;1", None)),
+        ("....;1", True, ("....;1", None)),
+        # A dot that follows something else is still the empty extension's.
+        ("A..;1", True, ("A.", 1)),
         ("FOO.;", True, ("FOO.;", None)),
         ("FOO.;", False, ("FOO.;", None)),
         # A final newline is part of the name, so no version follows it.
@@ -3043,6 +3164,6 @@ def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:
     ],
 )
 def test_strip_version_rules(
-    name: str, iso9660: bool, expected: tuple[str, int | None]
+    name: str, listed: bool, expected: tuple[str, int | None]
 ) -> None:
-    assert _strip_version(name, iso9660=iso9660) == expected
+    assert _strip_version(name, listed=listed) == expected

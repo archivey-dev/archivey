@@ -36,6 +36,9 @@ LEGACY_BLOCK_SIZE = 8 * 2**20
 # LZ4_COMPRESSBOUND(8 MiB) in lz4.h: the largest compressed block a writer can emit.
 LEGACY_BLOCK_BOUND = LEGACY_BLOCK_SIZE + LEGACY_BLOCK_SIZE // 255 + 16
 
+# The state of a seek point at a legacy block (``Lz4LegacyDecompressor.resume``).
+LEGACY_BLOCK = "lz4-legacy-block"
+
 _SIZE_FIELD = 4
 # What ``_block_end`` returns for a size field that ends the stream.
 _STREAM_END = -1
@@ -58,6 +61,26 @@ class Lz4LegacyDecompressor:
         self._output = memoryview(b"")
         self.eof = False
         self.unused_data = b""
+        # Input bytes parsed and output bytes decoded since this decompressor started,
+        # and the blocks begun since ``take_block_starts`` last asked
+        # (``BlockResumable``).
+        self._consumed = 0
+        self._decoded = 0
+        self._block_starts: list[tuple[int, int, object]] = []
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]:
+        """The blocks decoded since the last call: their input and output offsets from
+        this decompressor's start, and :data:`LEGACY_BLOCK`, what :meth:`resume`
+        takes. Every block is compressed on its own and nothing carries over, so a
+        decode can start at any block."""
+        starts, self._block_starts = self._block_starts, []
+        return starts
+
+    def resume(self, state: object) -> None:
+        """Start inside a stream: the input begins at a block's size field."""
+        assert state is LEGACY_BLOCK
+        assert not self._magic_checked and not self._input
+        self._magic_checked = True
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
         if self.eof:
@@ -93,6 +116,7 @@ class Lz4LegacyDecompressor:
                 assert block is not None  # the codec checks lz4 before opening
                 raise block.LZ4BlockError("Not a legacy LZ4 stream (bad magic)")
             del self._input[: len(LEGACY_MAGIC)]
+            self._consumed += len(LEGACY_MAGIC)
             self._magic_checked = True
         if len(self._input) < _SIZE_FIELD:
             return None
@@ -120,6 +144,10 @@ class Lz4LegacyDecompressor:
                 block, uncompressed_size=LEGACY_BLOCK_SIZE
             )
         )
+        if self._output:
+            self._block_starts.append((self._consumed, self._decoded, LEGACY_BLOCK))
+        self._consumed += end
+        self._decoded += len(self._output)
         return True
 
     @property
@@ -200,3 +228,16 @@ class Lz4Decompressor:
     def end_input(self) -> None:
         if isinstance(self._inner, Lz4LegacyDecompressor):
             self._inner.end_input()
+
+    def take_block_starts(self) -> list[tuple[int, int, object]]:
+        """A legacy stream's blocks (``BlockResumable``); a frame reports none."""
+        if isinstance(self._inner, Lz4LegacyDecompressor):
+            return self._inner.take_block_starts()
+        return []
+
+    def resume(self, state: object) -> None:
+        """Start inside a legacy stream, at a block (``BlockResumable``)."""
+        assert self._inner is None and not self._head
+        inner = Lz4LegacyDecompressor(self._natives)
+        inner.resume(state)
+        self._inner = inner

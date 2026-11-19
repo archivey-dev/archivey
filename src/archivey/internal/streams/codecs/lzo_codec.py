@@ -20,6 +20,7 @@ from archivey.internal.streams.codecs.base import (
     MetadataContext,
     StreamCodec,
 )
+from archivey.internal.streams.codecs.framed_decoder import BLOCKS_ONLY, StreamIndex
 from archivey.internal.streams.codecs.lzo_decoder import (
     LZOP_BLOCK_SIZE,
     LZOP_MAGIC,
@@ -87,6 +88,15 @@ class LzopCodec(StreamCodec):
             lzo1x_decompressor(config.excluded_libraries, config.natives, config.usage),
             _block_check(config),
         )
+
+    @override
+    def stream_index(
+        self, params: CodecParams, config: StreamConfig
+    ) -> StreamIndex | None:
+        del params
+        # Declared seek demand or restart points only, as bzip2 and bzip3: every block
+        # a decode checks is a seek point (``LzopDecompressor.take_block_starts``).
+        return BLOCKS_ONLY if config.records_restart_points else None
 
     @override
     def extract_metadata(self, ctx: MetadataContext, member: ArchiveMember) -> None:

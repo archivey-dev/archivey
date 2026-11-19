@@ -309,6 +309,26 @@ class DiagnosticCollector:
             local.member_id_offset = before
             local.nesting_depth = depth
 
+    @contextmanager
+    def muted(self) -> Generator[None]:
+        """Drop this thread's emits while the block runs: work repeated to reach a
+        point it reached before, whose findings were all delivered then.
+
+        For a reader reopened to reach one of its members again
+        (``ReaderContext.open_nested`` from ``IndexedReader.open_member``): the emits
+        on the way there are the ones the listing delivered, since its reader reads
+        the same bytes the same way. An emit inside the block is not counted, retained,
+        logged, called back or recorded in a :meth:`replaying` log, but it still raises
+        where it would raise outside it. Blocks nest.
+        """
+        local = self._local
+        before = getattr(local, "muted", 0)
+        local.muted = before + 1
+        try:
+            yield
+        finally:
+            local.muted = before
+
     @property
     def nesting_depth(self) -> int:
         """How many :meth:`member_ids_from` blocks are open on this thread: how deep
@@ -515,6 +535,16 @@ class DiagnosticCollector:
         raising = code in self._policy.raise_on
         log = logger if logger is not None else self._logger
         thread_id = threading.get_ident()
+        if getattr(self._local, "muted", 0):
+            return self._muted_emit(
+                code,
+                message,
+                context,
+                raising,
+                escalate_as,
+                escalate_message,
+                escalate_kwargs,
+            )
 
         with self._lock:
             replay = self._replays.get(thread_id)
@@ -574,6 +604,35 @@ class DiagnosticCollector:
             with self._lock:
                 self._emitting_threads.discard(thread_id)
 
+        return diagnostic
+
+    def _muted_emit(
+        self,
+        code: DiagnosticCode,
+        message: str,
+        context: DiagnosticContext,
+        raising: bool,
+        escalate_as: type[BaseException] | None,
+        escalate_message: str | None,
+        escalate_kwargs: dict[str, object] | None,
+    ) -> Diagnostic:
+        """An emit inside a :meth:`muted` block: nothing counted, retained, logged,
+        called back or recorded for a replay. It raises as an emit outside the block
+        would: a raise is control flow, not a record."""
+        diagnostic = Diagnostic(
+            occurrence_id=uuid.uuid4().hex,
+            code=code,
+            message=message,
+            context=context,
+        )
+        raised: BaseException | None = None
+        if escalate_as is not None:
+            msg = escalate_message if escalate_message is not None else message
+            raised = escalate_as(msg, **(escalate_kwargs or {}))
+        elif raising:
+            raised = DiagnosticRaisedError(message, diagnostic=diagnostic)
+        if raised is not None and not self._hold(threading.get_ident(), raised):
+            raise raised
         return diagnostic
 
     def _shift_member_id(self, context: DiagnosticContext) -> DiagnosticContext:

@@ -34,7 +34,9 @@ added from outside would be: a ``*Handler`` declares the format and opens a
 - :mod:`.makeself_reader` — makeself ``.run`` installers (a shell header, then TARs)
 - :mod:`.cpio_reader` — CPIO (binary, odc, newc, crc, afio)
 - :mod:`.squashfs_reader` — SquashFS 4.0
-- :mod:`.xar_reader` — XAR (``.xar``, macOS ``.pkg`` and ``.xip``)
+- :mod:`.xar_reader` — XAR (``.xar``)
+- :mod:`.pkg_reader` — macOS ``.pkg`` and ``.xip``: a XAR whose CPIO payloads it reads
+  through ``ReaderContext.open_nested``
 - :mod:`.cab_reader` — Microsoft cabinets (stored, MSZIP, LZX)
 - :mod:`.lha_reader` — LHA (header levels 0-3; stored, ``-lh1-``, ``-lh4-`` to
   ``-lh7-``, ``-lhx-``, ``-lk7-``, ``-lzs-``, ``-lz5-``)
@@ -68,6 +70,7 @@ from archivey.internal.backends import (
     iso_reader as _iso_reader,  # noqa: F401
     lha_reader as _lha_reader,  # noqa: F401
     makeself_reader as _makeself_reader,  # noqa: F401
+    pkg_reader as _pkg_reader,  # noqa: F401
     rar_reader as _rar_reader,  # noqa: F401
     rpm_reader as _rpm_reader,  # noqa: F401
     sevenzip_reader as _sevenzip_reader,  # noqa: F401

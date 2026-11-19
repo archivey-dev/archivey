@@ -114,9 +114,14 @@ class ContainerFormat(StrEnum):
     """A SquashFS 4.0 filesystem image: a snap package or a live system's root, for
     example. Needs a source that can seek."""
     XAR = "xar"
-    """A XAR archive: a macOS installer package (``.pkg``) or ``.xip``, or a plain
-    ``.xar``. Its files are listed as the archive holds them; a package's ``Payload``
-    is a member, not expanded. Needs a source that can seek."""
+    """A XAR archive (``.xar``), listed as the archive holds it: a macOS installer
+    package's ``Payload`` is one member, not expanded. Needs a source that can seek."""
+    PKG = "pkg"
+    """A macOS installer package (``.pkg``) or Xcode ``.xip``: a XAR archive whose
+    ``Payload``, ``Scripts`` and ``Content`` members are listed as the files they hold,
+    under ``Payload/``, ``Scripts/`` and ``Content/``, as ``pkgutil --expand-full``
+    unpacks a package. ``format=ArchiveFormat.XAR`` reads the XAR layer instead.
+    Needs a source that can seek."""
     CAB = "cab"
     """A Microsoft cabinet (``.cab``): Windows updates, drivers and installer
     payloads. Stored, MSZIP and LZX folders are read; needs a source that can seek."""
@@ -162,6 +167,7 @@ ContainerFormatStr = Literal[
     "makeself",
     "squashfs",
     "xar",
+    "pkg",
     "cab",
     "lha",
     "arj",
@@ -233,8 +239,8 @@ class StreamFormat(StrEnum):
     """The Unix ``compress`` format."""
     LZOP = "lzo"
     """The ``.lzo`` file format ``lzop`` writes: LZO1X blocks behind a header.
-    archivey decodes LZO1X with ``python-lzo`` when it is installed, else in Python,
-    more than 25 times slower on text."""
+    archivey decodes LZO1X with ``compress-utils`` when it is installed, else in Python,
+    more than 20 times slower on text."""
     BZIP3 = "bz3"
     """The ``.bz3`` files the ``bzip3`` tool writes. Needs ``archivey[bzip3]``; the
     decoder runs in a child process unless ``process_isolation`` is ``NONE``."""
@@ -242,6 +248,16 @@ class StreamFormat(StrEnum):
     """Firefox's ``mozLz40`` files (``.jsonlz4``, ``.mozlz4``, ``.baklz4``, and
     ``addonStartup.json.lz4``): one raw LZ4 block behind a magic and the decoded size.
     Needs ``lz4``, as LZ4 does."""
+    SNAPPY = "sz"
+    """Snappy's framing format (``.sz``), as ``snzip`` and the Snappy libraries write
+    it: 64 KiB chunks, each with a CRC-32C. archivey decodes it in Python; ``cramjam``
+    or ``compress-utils`` makes it faster when installed, and ``google-crc32c`` or
+    ``crc32c`` speeds up the checksum. Hadoop's ``.snappy`` and raw Snappy have no
+    signature and are not read."""
+    PBZX = "pbzx"
+    """Apple's pbzx framing: xz chunks, or chunks stored as they are, behind a chunk
+    size. A macOS ``.pkg`` stores its ``Payload`` this way, and a ``.xip`` its
+    ``Content``, each around a CPIO archive."""
     UU = "uu"
     """uuencoded files (``.uu``, ``.uue``), including the ``begin-base64`` variant
     ``uuencode -m`` writes. Text before the ``begin`` line (a mail or news post's
@@ -270,6 +286,8 @@ StreamFormatStr = Literal[
     "lzo",
     "bz3",
     "mozlz4",
+    "sz",
+    "pbzx",
     "uu",
     "b64",
 ]
@@ -362,6 +380,8 @@ class ArchiveFormat:
     Z: ClassVar[ArchiveFormat]
     LZOP: ClassVar[ArchiveFormat]
     MOZLZ4: ClassVar[ArchiveFormat]
+    SNAPPY: ClassVar[ArchiveFormat]
+    PBZX: ClassVar[ArchiveFormat]
     BZIP3: ClassVar[ArchiveFormat]
     UU: ClassVar[ArchiveFormat]
     BASE64: ClassVar[ArchiveFormat]
@@ -375,6 +395,7 @@ class ArchiveFormat:
     MAKESELF: ClassVar[ArchiveFormat]
     SQUASHFS: ClassVar[ArchiveFormat]
     XAR: ClassVar[ArchiveFormat]
+    PKG: ClassVar[ArchiveFormat]
     CAB: ClassVar[ArchiveFormat]
     LHA: ClassVar[ArchiveFormat]
     ARJ: ClassVar[ArchiveFormat]
@@ -453,7 +474,9 @@ ArchiveFormat.BROTLI = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BR
 ArchiveFormat.Z = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UNIX_COMPRESS)
 ArchiveFormat.LZOP = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.LZOP)
 ArchiveFormat.MOZLZ4 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.MOZLZ4)
+ArchiveFormat.SNAPPY = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.SNAPPY)
 ArchiveFormat.BZIP3 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BZIP3)
+ArchiveFormat.PBZX = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.PBZX)
 ArchiveFormat.UU = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.UU)
 ArchiveFormat.BASE64 = ArchiveFormat(ContainerFormat.RAW_STREAM, StreamFormat.BASE64)
 ArchiveFormat.SEVEN_Z = ArchiveFormat(
@@ -472,6 +495,7 @@ ArchiveFormat.SQUASHFS = ArchiveFormat(
     ContainerFormat.SQUASHFS, StreamFormat.UNCOMPRESSED
 )
 ArchiveFormat.XAR = ArchiveFormat(ContainerFormat.XAR, StreamFormat.UNCOMPRESSED)
+ArchiveFormat.PKG = ArchiveFormat(ContainerFormat.PKG, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.CAB = ArchiveFormat(ContainerFormat.CAB, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.LHA = ArchiveFormat(ContainerFormat.LHA, StreamFormat.UNCOMPRESSED)
 ArchiveFormat.ARJ = ArchiveFormat(ContainerFormat.ARJ, StreamFormat.UNCOMPRESSED)
@@ -518,11 +542,21 @@ class OptionalLibrary(StrEnum):
     """ISO 9660 images."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
-    LZO = "lzo"
-    """``python-lzo``: LZO1X in ``.lzo`` files and SquashFS images. archivey decodes
-    LZO1X in Python without it, more slowly."""
+    COMPRESS_UTILS = "compress_utils"
+    """``compress-utils``: LZO1X in ``.lzo`` files and SquashFS images, and Snappy raw
+    blocks in ``.sz`` files (chosen over cramjam when both are installed). archivey
+    decodes both in Python without it, more slowly."""
     BZIP3 = "bz3"
     """The ``bzip3`` package (imported as ``bz3``): ``.bz3`` files."""
+    CRAMJAM = "cramjam"
+    """Snappy raw blocks in ``.sz`` files. archivey decodes them in Python without it,
+    more slowly."""
+    GOOGLE_CRC32C = "google_crc32c"
+    """``google-crc32c``: the CRC-32C of ``.sz`` files. archivey computes it in Python
+    without it, more slowly."""
+    CRC32C = "crc32c"
+    """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
+    installed."""
 
 
 OptionalLibraryStr = Literal[
@@ -535,8 +569,13 @@ OptionalLibraryStr = Literal[
     "rapidgzip",
     "pycdlib",
     "cryptography",
-    "lzo",
+    "compress_utils",
+    "compress-utils",
     "bz3",
+    "cramjam",
+    "google_crc32c",
+    "google-crc32c",
+    "crc32c",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -738,8 +777,12 @@ class HashAlgorithm(StrEnum):
     a XAR archive may check its files with it."""
     SHA1 = "sha1"
     """SHA-1, 20 bytes. What a XAR archive checks its files with by default."""
+    SHA224 = "sha224"
+    """SHA-224, 28 bytes. A XAR archive may check its files with it."""
     SHA256 = "sha256"
     """SHA-256, 32 bytes. A XAR archive may check its files with it."""
+    SHA384 = "sha384"
+    """SHA-384, 48 bytes. A XAR archive may check its files with it."""
     SHA512 = "sha512"
     """SHA-512, 64 bytes. A XAR archive may check its files with it."""
 
@@ -845,6 +888,8 @@ class CompressionAlgorithm(Enum):
     BZIP3 = "bzip3"
     """bzip3's block-sorting compression, the method of a ``.bz3`` file
     (``StreamFormat.BZIP3``). Not the same as ``BZIP2``."""
+    SNAPPY = "snappy"
+    """Snappy, the method of a ``.sz`` file (``StreamFormat.SNAPPY``)."""
     UNKNOWN = "unknown"
     """A method archivey does not recognise. Listing still works."""
 
@@ -1112,7 +1157,7 @@ class MemberExtra(dict[str, object]):
     * ``uu.original_filename`` (``str``) — the name a uuencode ``begin`` line
       stores, decoded as UTF-8 (other bytes kept as surrogates). The member keeps the
       name it gets from the file's own name; ``raw_name`` holds the stored bytes.
-    * ``iso.version`` (``int``) — plain ISO 9660 only: the ``;N`` file version
+    * ``iso.version`` (``int``) — plain ISO 9660 and Joliet: the ``;N`` file version
       stripped from the name. Versions of one name share it; the highest is
       listed last and is the current one.
     * ``lha.method`` (``str``) — the LHA method id as stored (``"-lh5-"``), or
@@ -1353,11 +1398,11 @@ class ArchiveMember:
 
     The naming rules that make ``name`` differ from ``raw_name`` decoded:
 
-    - ISO: in a plain ISO 9660 image, ``name`` drops the ``;N`` version suffix (and
-      the ``.`` before an empty extension) that ``raw_name`` keeps; the version is in
-      ``extra["iso.version"]``. A superseded version keeps its stored spelling. A Rock
-      Ridge name that is not UTF-8 and takes its Joliet name keeps the Rock Ridge
-      bytes here.
+    - ISO: in a plain ISO 9660 or Joliet listing, ``name`` drops the ``;N`` version
+      suffix (and the ``.`` before an empty extension) that ``raw_name`` keeps; the
+      version is in ``extra["iso.version"]``. A superseded version keeps its stored
+      spelling. A Rock Ridge name that is not UTF-8 and takes its Joliet name keeps the
+      Rock Ridge bytes here.
     - A gzip file's member is named after the archive source (``"data"`` when the
       source has no file name); ``raw_name`` holds the original file name from the
       gzip header (``FNAME``), and ``extra["gzip.original_filename"]`` holds those

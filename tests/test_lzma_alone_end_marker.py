@@ -332,3 +332,98 @@ def test_a_probe_counts_its_clamped_dictionary_twice() -> None:
         lzma_codec._new_alone_decompressor(100_000, tight).decompress(unknown)
         == PAYLOAD
     )
+
+
+class _Proxy:
+    """An in-process decoder that records its release, as a child proxy would.
+
+    On CPython a dropped child proxy gives its child back at once, so only an explicit
+    ``release_decoder`` shows here; PyPy frees a dropped proxy at a later collection.
+    """
+
+    holds_decoder_child = True
+
+    def __init__(self, real: Decompressor) -> None:
+        self._real = real
+        self.closed = False
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        return self._real.decompress(data, max_length)
+
+    def close(self) -> None:
+        self.closed = True
+
+    @property
+    def eof(self) -> bool:
+        return self._real.eof
+
+    @property
+    def unused_data(self) -> bytes:
+        return self._real.unused_data
+
+    @property
+    def needs_input(self) -> bool:
+        return self._real.needs_input
+
+
+class _Recording:
+    """Natives that wrap every Alone decoder in a :class:`_Proxy` and keep it."""
+
+    def __init__(self, *, old: bool) -> None:
+        self._inner: Any = _OldLiblzma() if old else IN_PROCESS
+        self.built: list[_Proxy] = []
+
+    def lzma_decompressor(self, **kwargs: Any) -> Decompressor:
+        proxy = _Proxy(self._inner.lzma_decompressor(**kwargs))
+        self.built.append(proxy)
+        return cast(Decompressor, proxy)
+
+
+def _held(obj: object, depth: int = 3) -> set[int]:
+    if isinstance(obj, _Proxy):
+        return {id(obj)}
+    found: set[int] = set()
+    if depth and type(obj).__module__.startswith("archivey."):
+        for value in vars(obj).values():
+            found |= _held(value, depth - 1)
+    return found
+
+
+@pytest.mark.usefixtures("old_liblzma")
+@pytest.mark.parametrize(
+    ("stream", "old"),
+    [
+        *_KNOWN_SIZE_CASES,
+        pytest.param(_marker_stream(len(PAYLOAD) - 1), False, id="short-size"),
+        pytest.param(_marker_stream(len(PAYLOAD) + 1), False, id="long-size"),
+    ],
+)
+@pytest.mark.parametrize("chunk", [1, 1000])
+def test_every_decoder_the_stream_drops_is_released(
+    stream: bytes, old: bool, chunk: int
+) -> None:
+    natives = _Recording(old=old)
+    dec = lzma_codec._new_alone_decompressor(
+        None, DecoderLimits(), cast(Natives, natives)
+    )
+    try:
+        _decode_into(dec, stream + b"JUNK", chunk=chunk)
+    except lzma.LZMAError:
+        pass
+    assert len(natives.built) == 2
+    held = _held(dec)
+    for proxy in natives.built:
+        assert proxy.closed is (id(proxy) not in held)
+
+
+def _decode_into(dec: Decompressor, data: bytes, *, chunk: int) -> None:
+    pos = 0
+    while not dec.eof:
+        if dec.needs_input:
+            if pos >= len(data):
+                break
+            piece = data[pos : pos + chunk]
+            pos += chunk
+        else:
+            piece = b""
+        dec.decompress(piece)

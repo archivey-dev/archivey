@@ -68,3 +68,12 @@ def test_the_output_is_one_multiline_value_and_two_plain_ones() -> None:
     body, _, tail = rest.partition(f"\n{delimiter}\n")
     assert delimiter not in body
     assert tail == "round=2\nfinal=false\n"
+
+
+def test_the_prompt_keeps_subagents_in_the_foreground() -> None:
+    # A headless review ends when a turn ends. A subagent started in the background
+    # (the default in newer Claude Code versions) let the reviewer end its turn to
+    # wait, and the round finished with no verdict.
+    text, _, _ = prompt.render(ENV)
+    assert "`run_in_background: false`" in text
+    assert "Never end a turn to wait for a subagent" in text

@@ -3,21 +3,22 @@
 Current maintainer truth for the ISO backend. An ISO image is not an archive of members;
 it is a filesystem laid out in 2048-byte sectors, with one data area and up to three
 directory trees pointing into it. Most of what is peculiar here follows from that, and
-from reading it through `pycdlib`, a library written to *author* images. Registers keep
+from reading it through `pycdlib`, a library written to *author* images. The UDF tree is
+the exception: archivey reads it with its own parser (§2.6). Registers keep
 the status — this page states the behaviour and links the row.
 
 ## At a glance
 
 | | |
 | --- | --- |
-| Read | Yes, through `pycdlib` |
+| Read | Yes: the ISO 9660, Rock Ridge and Joliet trees through `pycdlib`, the UDF tree through archivey's own parser, `internal/backends/udf.py` (§2.6). A UDF-only image (most Blu-ray discs) is read too |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
 | Source | Seekable only, in both access modes. `start_offset` is refused: nothing precedes an image |
 | Listing cost | `INDEXED`. The whole tree is parsed inside `open_archive()`, for every tree the image has; listing after that reads nothing, except a directory's own extent to confirm a multi-extent file or recover the declared length of a file whose data ends at the end of the image (§2.3) |
 | Access cost | `DIRECT` — every file is one extent (or one run of extents) at an absolute sector |
 | Stream capability | `SEEKABLE` |
-| Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]` |
-| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`) other than Mode 1 / Mode 2 Form 1, by name, also before `pycdlib` is consulted (the two data layouts are read through `cd_sectors.cooked_source`) · a multi-extent file whose extents overlap each other (`CorruptionError`) · reading a zisofs2 member · writing |
+| Core dependencies | None can read it: ISO needs `pycdlib`, which is in `[recommended]`. A UDF-only image needs it too, although nothing of `pycdlib` reads it: the format is gated as one |
+| Refuses | Non-seekable sources, before `pycdlib` is consulted (`StreamNotSeekableError`, not `PackageNotInstalledError`) · raw CD sector images (`.bin`) other than Mode 1 / Mode 2 Form 1, by name, also before `pycdlib` is consulted (the two data layouts are read through `cd_sectors.cooked_source`) · a multi-extent file, or a UDF file, whose extents overlap each other (`CorruptionError`) · a UDF tree in a sparable or virtual partition, when the image has no ISO 9660 tree to list instead (`UnsupportedFeatureError`) · reading a zisofs2 member · writing |
 | Accepts and ignores | `password=` (`PASSWORD_ARGUMENT_UNUSED`) |
 | `encoding=` | Applied to a Rock Ridge or plain name, or a Rock Ridge link target, whose bytes are not valid UTF-8; without it, such a Rock Ridge name takes its Joliet name when the two line up (§2.2) |
 
@@ -26,10 +27,9 @@ anywhere in the format, so a damaged image reads damaged bytes without an error.
 *truncated* one is caught only where the data runs out: sizes list as declared, and a file
 cut by the end of the image reads what is there, then raises `TruncatedError` (§4); a cut
 that reaches the descriptors, path tables or directories fails the open with
-`TruncatedError` (§2.3). UDF is never read: a DVD or Blu-ray image lists through its ISO
-9660 tree when it has one, and a UDF-only image is not detected at all (§3). And the
-namespace archivey picks decides which *files* exist, not only how they are named,
-because the trees are independent (§1).
+`TruncatedError` (§2.3). And the namespace archivey picks decides which *files* exist,
+not only how they are named, because the trees are independent (§1): a Windows install
+image keeps only a README in its ISO 9660 tree, and its real files in UDF.
 
 ## 1. Shape
 
@@ -39,10 +39,16 @@ Four properties generate most of this page.
 sector 0-15    system area (32 KiB): zeros, or boot code / a hybrid MBR
 sector 16      Primary Volume Descriptor  "\x01CD001"  ── root record ──┐  8.3 names
 sector 17+     Supplementary VD (Joliet)  "\x02CD001"  ── root record ──┤  UTF-16BE names
-               Boot record (El Torito), UDF descriptors, terminator      │
-path tables, directory extents                                           │
+               Boot record (El Torito), terminator                       │
+               BEA01, NSR02/NSR03, TEA01 (UDF recognition)               │
+sector 256     UDF anchor ─▶ UDF volume descriptors ─▶ file set ─▶ root  │  Unicode names
+path tables, directory extents, UDF file entries and directories        │
 file data  ◀──── each directory record: extent (sector no.) + 32-bit length
+           ◀──── each UDF file entry: allocation descriptors (block + length)
 ```
+
+A UDF-only image has no `CD001` descriptors: its recognition sequence starts at
+sector 16.
 
 **Every file is an extent at an absolute sector, and nothing checks it.** A directory
 record names a starting sector and a byte length; the data is those bytes, stored, with
@@ -59,7 +65,8 @@ extent either — that is how writers store hardlinks — so two members can sha
 **One data area, up to three independent directory trees.** The Primary Volume
 Descriptor carries a tree of plain ISO 9660 names; Rock Ridge, when present, lives inside
 that same tree's records. A Joliet Supplementary Volume Descriptor carries a second tree
-with UTF-16BE names. UDF, on DVD-era images, is a third. The trees share file data but not
+with UTF-16BE names. UDF, on DVD, Blu-ray and Windows install images, is a third, with
+its own volume structure (ECMA-167) and Unicode names. The trees share file data but not
 entries: `genisoimage -hide` drops a file from the first tree and `-hide-joliet` from the
 second. So choosing a namespace (§2.2) chooses a file set. Measured on one genisoimage
 image built with both flags: the Rock Ridge listing had `nojoliet.txt` and not `nopvd.txt`,
@@ -100,12 +107,40 @@ The second magic is the 12-byte CD sync pattern at offset 0: a raw sector image 
 A Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors, is read through
 `cd_sectors.cooked_source`, a `ReaderSource` that strips each sector to its 2048 bytes of
 user data (checking sync and mode per sector, not EDC/ECC) and maps read hints back to raw
-sectors; `IsoHandler.open` wraps the source, so pycdlib sees a plain image. Only the first
-track is read (no `.cue`), and the trailing-data scan stops at the first sector that is
-not a data sector, so a mixed-mode disc's audio is not reported. Other layouts are refused
-by name in `open_archive` with `UnsupportedFeatureError`, before the availability check,
-so a caller without `pycdlib` is not told to install it first
-(`refuse_raw_sector_image`); a replacement reader is refused every raw image.
+sectors; `IsoHandler.open` wraps the source, so pycdlib sees a plain image.
+
+Without a `.cue`, the sessions come from the sector headers (`cd_sessions.py`, davitf
+2026-11-17: a stream lists what the path with its sheet lists). Each data sector names
+its address (BCD minutes, seconds, frames, from 150 sectors before sector 0), and a
+`.bin` holds the tracks back to back without the gaps between sessions, so address minus
+file position is constant inside a track and jumps by the session gap (11 400 or 6 900)
+at a session boundary. `last_session_source` reads sector 0 and the last 32 sectors
+first: if the last data sector there has sector 0's offset, the image is one session and
+nothing else is read, which is also what a mixed-mode disc (audio to the end) costs.
+Otherwise it splits the file into runs of one offset, following each by probes at
+doubling distances and bisection, and reading only non-data sectors (audio, a Form 2
+postgap) in 64-sector batches; runs whose offsets differ by 4 500 sectors (a lead-in) or
+more are in different sessions. The first run of the last session is chosen, its volume
+descriptors are looked for from its sector 16 on (a pregap kept in the file puts them
+150 later), and a candidate is kept only when the root directory's `.` record names its
+own sector through that mapping and its descriptor set, through the terminator and one
+sector more, is in data sectors (`cue_sheet.find_volume`: two sector reads per
+candidate, so 4 096 crafted candidates cost about 8 200 sector reads). The result is a
+`DiscSource` over the `.bin` itself, so read hints map back to its sectors
+(`DiscSource.file_range`). Addresses that go backwards, more than 256 runs, or a last
+session without a volume that passes the check leave the image read from its first track
+(`cooked_source`), as before.
+
+Read from its first track, the trailing-data scan stops at the first sector that is not
+a data sector, so a mixed-mode disc's audio is not reported. When a sector of that scan
+starts with a primary volume descriptor (`01 CD001 01`), the image holds another volume
+the headers did not place (they restart at 0, say, as a `.bin` built by joining two
+`.iso`-derived dumps does): `ARCHIVE_UNREAD_SESSION` names its sector
+(`IsoReader._report_unread_session`), in place of `ARCHIVE_TRAILING_DATA`, and the
+listing stays the first track's. Other layouts are refused by name in `open_archive`
+with `UnsupportedFeatureError`, before the availability check, so a caller without
+`pycdlib` is not told to install it first (`refuse_raw_sector_image`); a replacement
+reader is refused every raw image.
 
 A `.cue` sheet (claimed by extension; it has no magic) or a `.bin` with a same-stem
 `.cue` beside it that lists it is read through `cue_sheet.disc_source`: a `DiscSource`
@@ -121,15 +156,25 @@ a sheet names at most 99 files and opens at most 99 handles (a 64 KiB sheet of b
 `FILE` lines held about 5 000 open at once), and `FILE` lines naming one file share its
 handle, which is found by device and inode, so through a link or another case of the
 name too. It also refuses track numbers that do not increase: the chosen track is found
-by number, so a repeated number picked the first session's track. The trailing-data scan
-covers only the rest of the chosen track, and member hints are empty (the opened file is
-the sheet). A non-seekable source is also refused ahead of that check, with
-`StreamNotSeekableError`, because `pycdlib` could not read it either. The
+by number, so a repeated number picked the first session's track. When the sector
+addresses of a data track after the chosen one jump past the track before it by a
+session gap the sheet's addresses lack (a sheet with no `REM SESSION` lines), and
+`cue_sheet.find_volume` finds a volume there (the same check the sheet-less reading
+runs, on the tracks placed by their addresses), `ARCHIVE_UNREAD_SESSION` names that
+volume's descriptor address (`cue_sheet._hidden_session`, two header reads per track):
+without the sheet the image lists that session, and the listing follows the sheet. A
+later session with no volume is not reported, since both readings agree. The
+trailing-data scan covers only the rest of the chosen track, and member hints are empty
+(the opened file is the sheet). A non-seekable source is also refused ahead of that
+check, with `StreamNotSeekableError`, because `pycdlib` could not read it either. The
 extension is `.iso`.
 
-Neither magic is validated past the match; there is no SFX scan and no validator, because
-an image cannot sit behind a prefix. A UDF-only image has `BEA01`/`NSR02` at 32 769 rather
-than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
+A UDF-only image has `BEA01` at 32 769, where an ISO 9660 image has `CD001`: a third far
+magic, matched the same way. The reader then checks for `NSR02` or `NSR03` after it, and
+reads the image without `pycdlib` when the descriptor set holds no primary volume
+descriptor. No magic is validated past the match; there is no SFX scan and no validator,
+because an image cannot sit behind a prefix. High Sierra has `CDROM` at 32 777 and is
+not detected.
 
 ### 2.2 Open and list
 
@@ -137,63 +182,63 @@ than `CD001`, and High Sierra has `CDROM` at 32 777, so neither is detected.
 `ArchiveSource` itself — a path included, never `PyCdlib.open(path)` — so every read
 `pycdlib` sizes from a header field lands on archivey's bounded read (threat-model O16).
 `open_fp` then reads every volume descriptor, checks that the little- and big-endian path
-tables agree, and walks every tree the image has: the PVD tree, the Joliet tree, and UDF
-descriptors when present. That is where the cost is, so `ListingLimits` are checked there,
-as `pycdlib` parses, rather than only when members are registered: a hook on
-`DirectoryRecord.parse` counts each record but `.` and `..` against `max_members`, per
-volume descriptor tree, and weighs the bytes of each record, plus each Rock Ridge
-continuation area every time `pycdlib` parses it, against `max_metadata_bytes`. The
-bytes are one sum for the whole image, every tree together, because `pycdlib` keeps
-every tree it parses; a budget per tree let one image retain it once per tree (ruled
-by davi, 2026-10-10). Members stay counted per tree: an image with a Joliet tree has
-every file twice, and one count would halve its member cap. Revisit this if `pycdlib`
-stops keeping trees it was not asked to parse, or parses directory records lazily:
-either would make a byte budget per tree defensible again. A hook on
+tables agree, and walks the PVD tree and the Joliet tree. Its UDF parse is turned off
+inside archivey's open (`_install_pycdlib_udf_skip`); `udf.UdfVolume` parses the UDF
+tree right after, whole, under the same budget (§2.6). That is where the cost is, so
+`ListingLimits` are checked there, as `pycdlib` parses, rather than only when members
+are registered: a hook on `DirectoryRecord.parse` counts each record but `.` and `..`
+against `max_members`, per volume descriptor tree, and weighs the bytes of each record,
+plus each Rock Ridge continuation area every time `pycdlib` parses it, against
+`max_metadata_bytes`. The bytes are one sum for the whole image, every tree together,
+because `pycdlib` keeps every tree it parses; a budget per tree let one image retain it
+once per tree (ruled by davi, 2026-10-10). Members stay counted per tree: an image with
+a Joliet tree has every file twice, and one count would halve its member cap. Revisit
+this if `pycdlib` stops keeping trees it was not asked to parse, or parses directory
+records lazily: either would make a byte budget per tree defensible again. A hook on
 `PyCdlib._parse_path_table` adds each path table's declared size to the same count
 before `pycdlib` reads the table, once for the little-endian table and once for the
 big-endian one, since `pycdlib` parses both, and a hook on `PathTableRecord.parse`
 counts each path-table entry against `max_members` as `pycdlib` parses it, refusing a
 table of more than `max_members + 1` entries (maintainer ruling, 2026-10-06). Real
 images never notice: every entry is a directory, and every directory but the root is a
-member the listing counts anyway. Crossing
-either raises `ResourceLimitError` from `open_archive`, before any member is listed or
-streamed. The counts are a superset of the listing's (a multi-extent file's extra records
-and `rr_moved` count), so an image right at a cap can be refused at open;
-`ListingLimits.UNLIMITED` turns the hook off. The UDF tree, which archivey does not list
-but `pycdlib` parses all the same, counts as one more tree: hooks on
-`pycdlib.udf.parse_file_ident` and `pycdlib.udf.parse_file_entry` count each File
-Identifier but the parent entry against the UDF tree's own `max_members` count, and add
-each File Identifier and each File Entry to the image's `max_metadata_bytes` sum. A File
-Entry is weighed before `pycdlib` parses it, as its fixed part plus the
-extended-attribute and allocation-descriptor lengths it declares, since `pycdlib` makes
-one object per allocation descriptor. After it,
-listing touches only records already in memory, which is what lets the member walk run
-without the handle lock. Two exceptions read a directory's extent once more, under the
-handle lock (§2.3): a directory holding a repeated identifier, to check the multi-extent
-flags as written, and a directory holding a file whose data ends at the end of the image,
-to recover its declared length.
+member the listing counts anyway. Crossing either raises `ResourceLimitError` from
+`open_archive`, before any member is listed or streamed. The counts are a superset of
+the listing's (a multi-extent file's extra records and `rr_moved` count), so an image
+right at a cap can be refused at open; `ListingLimits.UNLIMITED` turns the hook off. The
+UDF tree counts as one more tree, listed or not: each File Identifier but the parent
+entry and deleted ones counts against the UDF tree's own `max_members` count, and each
+directory's data (weighed before it is read) and each File Entry (its fixed part plus
+the extended-attribute and allocation-descriptor lengths it declares) add to the image's
+`max_metadata_bytes` sum. After it, listing touches only records already in memory,
+which is what lets the member walk run without the handle lock. Two exceptions read a
+directory's extent once more, under the handle lock (§2.3): a directory holding a
+repeated identifier, to check the multi-extent flags as written, and a directory holding
+a file whose data ends at the end of the image, to recover its declared length.
 
-**The namespace is picked once for the image: Rock Ridge, then Joliet, then plain.**
+**The namespace is picked once for the image: Rock Ridge, then UDF, then Joliet, then
+plain** (davi, 2026-11-18, decision card in the thread "Add UDF reading to ISO images").
 `ArchiveInfo.extra["iso.namespace"]` reports which. Rock Ridge counts as present when
 `pycdlib` saw Rock Ridge entries in the PVD tree and an `ER` record naming RRIP; entries
-without the `ER` are treated as a false positive. From then on every name comes from that namespace and that tree
-(§1). 7-Zip prefers Joliet over Rock Ridge, so the two tools can list different names —
-and, on an image built with `-hide` or `-hide-joliet`, different files. After the walk,
+without the `ER` are treated as a false positive. From then on every name comes from
+that namespace and that tree (§1). 7-Zip and Windows prefer UDF, then Joliet, over Rock
+Ridge, so the tools can list different names — and, on an image built with `-hide` or
+`-hide-joliet`, different files. Rock Ridge stays first because only Linux writers put
+it beside UDF (`genisoimage -R -udf`), and there it carries the same long names plus
+modes and symlinks, which genisoimage's UDF tree drops. After the walk,
 `_report_files_in_other_trees` compares the trees not listed (Joliet, unless it is the
-listed one; the plain ISO 9660 tree when Joliet is listed, since Rock Ridge rides the
-plain records; and UDF, which Windows reads first) with the listed one by the extent each
-non-empty file points at, not by name (Joliet cuts names at 64 characters, plain ISO
-9660 names are 8.3), and reports a file only another tree holds as
-`MEMBER_READERS_DISAGREE` (`file_only_in_joliet`, `file_only_in_iso9660`,
-`file_only_in_udf`), named by its path in that tree (a UDF name decoded by its own
-compression ID, UTF-16BE or Latin-1), with no member id, at most 16 per tree. A UDF
-extent is made absolute with the partition start; a file whose data sits inside its UDF
-File Entry (ICB flags 3) has no extent and always counts as unlisted. Empty files share
-one extent and are not compared. The reverse shape, a listed file another tree lacks, is
-not reported: everything archivey lists is in view. pycdlib parsed every tree in
-`open_fp`, so the comparison reads nothing; on a 20 100-file Rock Ridge + Joliet image
-(xorriso) it costs about 0.5% of open and list, and 1.1% with a UDF tree as well
-(2026-10-31).
+listed one; the plain ISO 9660 tree when Joliet is listed, or when UDF is listed and
+there is no Joliet, since Rock Ridge rides the plain records; and UDF unless it is
+listed) with the listed one by the image offset of the data each non-empty file points
+at, not by name (Joliet cuts names at 64 characters, plain ISO 9660 names are 8.3), and
+reports a file only another tree holds as `MEMBER_READERS_DISAGREE`
+(`file_only_in_joliet`, `file_only_in_iso9660`, `file_only_in_udf`), named by its path
+in that tree (a UDF name decoded by its own compression ID, UTF-16BE or Latin-1), with
+no member id, at most 16 per tree. A file whose data sits inside its UDF File Entry has
+no offset and always counts as unlisted. Empty files share one extent and are not
+compared. The reverse shape, a listed file another tree lacks, is not reported:
+everything archivey lists is in view. Every tree was parsed at open, so the comparison
+reads nothing; on a 20 100-file Rock Ridge + Joliet image (xorriso) it costs about 0.5%
+of open and list, and 1.1% with a UDF tree as well (2026-10-31).
 
 **The walk follows records, not names** (`_walk_records`). `PyCdlib.walk()` yields names,
 and turning a name back into a record fails when a Rock Ridge name holds `/` or two
@@ -275,13 +320,19 @@ What is ISO-specific in turning a record into a member:
   walk is a copy of `pycdlib` 1.22.0's and replaces any upstream change to it inside
   archivey's open; `test_iso` pins the original's source, so a `pycdlib` that changes
   it fails until the two are compared.
-- **Versions.** In the plain namespace the `;N` suffix of a file and the `.` of an empty
-  extension are removed (`FOO.;1` is `FOO`) and the number goes to `extra["iso.version"]`.
-  When a directory holds several versions, the highest takes the bare name; older ones are
+- **Versions.** In the plain and Joliet namespaces the `;N` suffix of a file and the `.`
+  of an empty extension are removed (`FOO.;1` is `FOO`) and the number goes to
+  `extra["iso.version"]`. Joliet inherits the syntax, and Windows-era writers put `;1`
+  on Joliet names; Windows and Linux's isofs drop it, and so does archivey. A Joliet
+  directory's record order is not the sort of its names, so only the versions of one
+  name are brought together there; plain files are sorted by (name, version). When a
+  directory holds several versions, the highest takes the bare name; older ones are
   listed under their stored identifier with `is_current=False`, the RAR file-history
   shape, so extraction writes only the newest. ECMA-119 gives a version only to a file
   identifier, so a directory identifier that ends in `;N` keeps it: the directory then
-  lists under the same path its children's paths start with.
+  lists under the same path its children's paths start with. A file stem that is empty
+  or only dots (`;1`, `..;1`, `...;1`) keeps its stored spelling with no version:
+  removing the version and the empty extension's `.` would make up `.` or `..`.
 - **Rock Ridge gaps.** A record with no Rock Ridge entries in a Rock Ridge image is kept
   under its ISO 9660 name, with `MEMBER_HEADER_RECORD_SKIPPED` attached to it. The
   `rr_moved` directory is not listed: it is recognised by its contents (every child is a
@@ -417,9 +468,8 @@ Three kinds of record need a layout, worked out while listing and used by `_data
   descriptor's volume space, or the descriptor set running past the file), with that
   read starting inside the declared end. Both true: `TruncatedError`; otherwise
   `CorruptionError`. The path-table bound (`_check_path_table`) raises before
-  `pycdlib` reads, so it applies the same test to the table's own end. A UDF image cut
-  anywhere after its ISO 9660 trees fails here too, at the anchor `pycdlib` reads in the
-  volume's last block, so a cut UDF image does not open even when its files survive.
+  `pycdlib` reads, so it applies the same test to the table's own end. The UDF parser
+  applies the rule to its own reads (§2.6).
 
 `MemberStreams.CONCURRENT` puts the adapter's per-reader lock around every call into the
 reader and every read and seek of a member stream. `pycdlib` moves the shared image
@@ -440,6 +490,74 @@ records that share an extent are written once each, as separate files.
 
 Not shipped, for any format. `pycdlib` can author images and the test suite uses it to
 build every ISO fixture, but nothing in archivey writes one.
+
+### 2.6 The UDF tree
+
+`internal/backends/udf.py` is a read-only parser of ECMA-167 and OSTA UDF 1.02 to 2.60,
+in pure Python. `pycdlib` cannot open an image without a primary volume descriptor,
+reads only the first partition, and cannot follow a metadata partition (UDF 2.50 and
+later, which Blu-ray discs use), so archivey does not use its UDF support at all.
+
+**What it reads.** The Volume Recognition Sequence (`BEA01`, then `NSR02` or `NSR03`,
+after any `CD001` descriptors). The anchor at block 256, trying 2048-, 512-, 1024- and
+4096-byte blocks, then at the image's last block and 256 before it for 2048. The main
+Volume Descriptor Sequence (the reserve one when the main one does not parse), following
+Volume Descriptor Pointers, keeping the descriptor with the highest sequence number:
+Primary (the volume name), Partition, and Logical Volume (block size, partition maps,
+where the File Set Descriptor is). Type 1 partition maps and the type 2 metadata
+partition, whose blocks are the data of the metadata file (an Extended File Entry in the
+physical partition). File Entries and Extended File Entries, through strategy-4096
+indirect entries; short and long allocation descriptors; continued allocation
+extents; data inside the File Entry; and extents allocated but not recorded, which read
+as zeros. Every descriptor's tag checksum, identifier, recorded location (but a File
+Identifier's) and CRC must hold, or the image is `CorruptionError`.
+
+**Refused.** Sparable and virtual partitions (rewritable and incrementally written
+discs; `mkudffs --media-type=bdr` writes a virtual one), and extended allocation
+descriptors (UDF 2.01 2.3.10 allows only short and long ones, and Linux refuses them),
+raise `UnsupportedFeatureError`. On a bridge image the reader then lists the ISO 9660
+trees instead; on a UDF-only image there is nothing else. A damaged UDF tree is
+`CorruptionError` even when Rock Ridge is the listed tree, as when `pycdlib` parsed it:
+a loop, a File Identifier and File Entry that disagree on whether it is a directory,
+extents holding less than the declared length, a directory with zeros where a File
+Identifier should start and more after them.
+
+**The member.** The name is the File Identifier decoded by its compression ID: 8 or 254
+is one byte per character (Latin-1), 16 or 255 UTF-16BE, a lone surrogate kept as in a
+Joliet name. `raw_name` is the stored bytes without the compression ID, joined by `/`.
+`encoding=` does not apply. The ICB file type gives the member type: a directory, a file
+(type 5, or 0), a symlink (12), or `OTHER` with `extra["special_file_type"]` for a
+device, FIFO or socket with no data. `mode` is the permission bits: UDF keeps execute 1,
+write 2 and read 4 for other, group and owner at bits 0, 5 and 10, the POSIX order.
+setuid, setgid and sticky live in an extended attribute that is not read. A uid or gid
+of `0xFFFFFFFF` ("not specified") is `None`. The times are the File Entry's
+modification, access and attribute times (`ctime`), plus the creation time of an
+Extended File Entry; an invalid one is `None` with `MEMBER_TIMESTAMP_INVALID`. A
+symlink's target is its path components, read at open (at most 64 KiB). Hidden File
+Identifiers are listed; deleted ones and the parent entry are not. Two File Identifiers
+naming one File Entry (a hard link) list as two files with the same data, as ISO 9660
+records sharing an extent do.
+
+**The walk** is depth first: a directory's entries in their stored order, then each
+subdirectory's. Each directory File Entry is entered once; one named again is a loop
+and refused. The whole tree is walked at open, so the limits refuse it there and listing
+reads nothing more.
+
+**Reads.** A member is its extents joined, as image views, with a zero stream for an
+unrecorded extent; inline data is a `BytesIO`. Recorded extents that overlap are
+`CorruptionError` when the member is read, as for a multi-extent ISO 9660 file. An
+extent past the end of the image reads what is there, and the adapter's size check makes
+it `TruncatedError`.
+
+**A cut image.** A read at open that comes back short is `TruncatedError` when it
+started inside the file before the partitions were known, or when the partitions the
+volume declares end past the file and the read stays inside them; any other short read
+followed a wrong pointer and is `CorruptionError`. Nothing at open reads the anchor in
+the last block, so a UDF image cut in file data opens, unlike when `pycdlib` parsed UDF.
+
+**Where the volume ends**, for the trailing-data check (§2.2): the furthest of the ISO
+9660 volume space, the UDF partitions, the volume descriptor sequences, the integrity
+sequence, and an anchor at the image's last block or 256 before it.
 
 ## 3. In the wild
 
@@ -465,14 +583,20 @@ directory:
 it was read from its extent, opening it raised `CorruptionError` and `extract_all()`
 stopped on it.
 
-**DVD-era images often carry UDF next to ISO 9660** (`genisoimage -udf`, and DVD-Video
-discs), and archivey reads only the ISO 9660 side. On an image whose ISO tree carries only
-8.3 names and whose long names live in UDF, the listing shows the 8.3 names. A Blu-ray
-style UDF-only image has no `CD001` and is not recognised at all.
+**DVD-era images often carry UDF next to ISO 9660** (`genisoimage -udf`, DVD-Video
+discs, Windows install images), and Blu-ray discs often carry only UDF. Measured on
+genisoimage 1.1.11: `-udf` and `-udf -J` images list their UDF names, long and in their
+case, and `-udf -R -J` lists Rock Ridge, whose symlink genisoimage's UDF tree drops.
+`mkudffs` (udftools 2.3) file systems open empty, at 2048- and 512-byte blocks; its BD-R
+layout uses a virtual partition and is refused. The suite's UDF-only images, metadata
+partitions included, come from `tests/udf_builder.py`, which 7-Zip 23.01 lists the same
+way for the shapes it reads (it refuses continued allocation extents, unrecorded
+extents, symlinks and indirect entries). No real Blu-ray or Windows image has been read.
 
-**A `.bin`/`.cue` pair is a raw sector dump**, not an ISO, and is refused by name (§2.1).
-Reading one means stripping every sector to its payload first; it is planned for after
-0.2.0.
+**A `.bin`/`.cue` pair is a raw sector dump**, not an ISO. Mode 1 and Mode 2 Form 1
+images are read with each sector stripped to its user data, and a `.cue` beside the
+`.bin`, or without one the sector addresses, choose the session (§2.1). Other layouts
+are refused by name.
 
 **Rock Ridge names follow the writer's locale.** `genisoimage -input-charset iso8859-1`
 stores `café.txt` as `caf\xe9.txt` in the Rock Ridge `NM` record and as proper UTF-16 in
@@ -489,20 +613,21 @@ ISO-specific only. General extraction and name hazards are §2.4.
   every tree) and looped forever on such an image, in the UDF walk allocating on every
   pass (about 65 MB a second under default limits, from a 600 KB image). From 1.22,
   the minimum archivey requires, `pycdlib` detects the loop and raises "ISO Directory
-  Records form a loop" or "UDF File Entries form a loop", which archivey reports as
-  `CorruptionError` at open. So a looping tree is refused at open, also when the loop is
-  only in a tree archivey does not list from, such as UDF or Joliet under Rock Ridge.
-  No tool writes a cyclic
-  tree, so only a crafted or damaged image is refused. archivey's own `_walk_records`
-  also enters each extent once. Importing the ISO backend (which `import archivey` does
-  eagerly, to register it) replaces `pycdlib.rockridge.RockRidge.parse` with the System
-  Use filter (§2.2), but that wrapper acts only inside `IsoReader`'s own `open_fp` call,
-  where a `ContextVar` is set, so other callers are untouched. The `ListingLimits` hooks on
-  `pycdlib.dr.DirectoryRecord.parse`,
-  `pycdlib.pycdlib.PyCdlib._parse_path_table`,
-  `pycdlib.path_table_record.PathTableRecord.parse`, `pycdlib.udf.parse_file_ident` and
-  `pycdlib.udf.parse_file_entry` (§2.2) are gated the same way. The
-  mutation-harness finding is in [`threat-model.md`](../threat-model.md).
+  Records form a loop", which archivey reports as `CorruptionError` at open. The UDF
+  tree is archivey's own walk now, which enters each directory once and refuses one
+  named again. So a looping tree is refused at open, also when the loop is only in a
+  tree archivey does not list from, such as UDF or Joliet under Rock Ridge. No tool
+  writes a cyclic tree, so only a crafted or damaged image is refused. archivey's own
+  `_walk_records` also enters each extent once. Importing the ISO backend (which
+  `import archivey` does eagerly, to register it) replaces
+  `pycdlib.rockridge.RockRidge.parse` with the System Use filter (§2.2), but that
+  wrapper acts only inside `IsoReader`'s own `open_fp` call, where a `ContextVar` is
+  set, so other callers are untouched. The `ListingLimits` hooks on
+  `pycdlib.dr.DirectoryRecord.parse`, `pycdlib.pycdlib.PyCdlib._parse_path_table`,
+  `pycdlib.path_table_record.PathTableRecord.parse`, and the skip of `pycdlib`'s UDF
+  parse (`PyCdlib._parse_udf_descriptors`, `PyCdlib._walk_udf_directories`, §2.2) are
+  gated the same way. The mutation-harness finding is in
+  [`threat-model.md`](../threat-model.md).
 - **Records multiply what `pycdlib` builds at open.** Every record costs `pycdlib` about
   0.8 KB of Python objects, 15 to 20 times its size on disc, and records whose Rock Ridge
   `CE` entries name one shared continuation area each parse it again (1000 records over
@@ -551,6 +676,17 @@ ISO-specific only. General extraction and name hazards are §2.4.
   signal, a volume space size larger than the source, is used only to label an open
   that fails: `TruncatedError` when the failing read ran into the end of a cut image,
   `CorruptionError` otherwise (§2.3).
+- **A UDF File Entry's allocation descriptors and lengths are attacker-chosen.** Each
+  read the UDF parser makes is one block, or a directory's or symlink's declared data,
+  weighed against `max_metadata_bytes` first; a symlink is also capped at 64 KiB, which
+  no system comes near. Chains (volume descriptor pointers, indirect entries, allocation
+  extents) stop at 16 or 64 links: structural bounds, not policy limits (spec "Bound the
+  UDF chains structurally"). An extent split over a metadata partition's runs costs one
+  step per run it covers, and each run covered after the first is weighed as a 16-byte
+  descriptor; runs that follow each other on disc are merged into one first.
+  Extents that overlap are refused on read; unrecorded extents are zeros the member's
+  size already counts, so they amplify as a sparse file does, under the same extraction
+  limits.
 - **Rock Ridge names and link targets are attacker-chosen bytes.** A name can hold `/`,
   `..` or control characters, and a target can be absolute. The record walk keeps a `/`
   in a name from costing the listing; everything else is the shared name normalisation and
@@ -569,14 +705,15 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | A symlink from genisoimage with a long target lists with `link_target=None` | **format** | genisoimage wraps the `SL` length; what follows the cut cannot be trusted (§3) |
 | A malformed Rock Ridge entry that is well-formed at the header but that `pycdlib` cannot parse still fails the whole image | **library** | The filter checks each entry's header only; `pycdlib` parses the body, and any parse error is fatal. libarchive's `ce_loop`, `ce_overflow` and `zf_overflow` images fail this way |
 | A Rock Ridge name written in Latin-1 lists with `\udcXX` escapes | **format** | Rock Ridge names have no charset field, and this image has no Joliet name that lines up with it (none, cut at 64 characters, or a directory with no file under it). Pass `encoding=` (§2.2) |
-| A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, 7-Zip Joliet first |
-| A DVD image lists 8.3 names while the disc shows long ones | **archivey** | Long names are in UDF, which is not read (§3) |
+| A file exists in the listing of one tool and not another | **format** | The trees are independent (§1). archivey picks Rock Ridge first, then UDF; 7-Zip and Windows UDF first, then Joliet |
+| An image whose UDF tree uses a sparable or virtual partition lists its Joliet or plain names, or is refused when it has no ISO 9660 tree | **archivey** | Neither partition type is read (§2.6) |
+| A UDF-only image asks for `pycdlib`, which does not read it | **archivey** | The ISO format is gated on `pycdlib` as one (§At a glance) |
 | A multi-extent file whose extents overlap each other raises `CorruptionError` on read | **archivey** | Its `size` lists; no writer makes overlapping extents, and reading them would let a small image produce a huge file (§2.3) |
 | Two members share their bytes, and extraction writes both | **format** | Hardlinks are records sharing an extent; there is no hardlink record to map to `HARDLINK` |
 | Two members have one name and different bytes, and one of them is a resource fork | **format** | An associated file (flag bit 2) shares its data file's identifier; both records list, in on-disc order, and the later one is current (§2.3). Nothing on the member marks which is the fork |
 | A Rock Ridge image's `modified` would be each file's access time when the image was made | **library** | pycdlib 1.x swaps the names of `TF` flag bits 1 and 2 against RRIP 1.12; archivey reads them through a probe (§2.2). Before the probe, Ubuntu 4.10's install CD listed 1083 files 50 s off what xorriso extracts. `test_rock_ridge_tf_times_are_read_in_rrip_order` pins it |
 | Opening a large image is slow and listing is instant | **library** | `open_fp` parses every tree up front (§2.2). The cost class `INDEXED` is still right: nothing is decoded |
-| An image whose UDF or Joliet tree loops is refused at open, although the tree archivey lists from is intact | **library** | `pycdlib` walks every tree in `open_fp` and refuses a loop in any of them (§4). No tool writes a looping tree |
+| An image whose UDF or Joliet tree loops is refused at open, although the tree archivey lists from is intact | **library** (Joliet), **archivey** (UDF) | `pycdlib` walks the PVD and Joliet trees in `open_fp` and refuses a loop in either; archivey's UDF walk refuses one too (§4). No tool writes a looping tree |
 | `password=` is accepted and has no effect | **archivey** | Dropped with `PASSWORD_ARGUMENT_UNUSED` — shared behaviour, not ISO's own |
 
 ## 6. Decisions
@@ -584,7 +721,8 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Choice | Why | Rejected |
 | --- | --- | --- |
 | Read through `pycdlib`, an optional dependency | ISO 9660 plus Rock Ridge, Joliet and El Torito is a lot of parser for a format that stores no compressed data; `pycdlib` is pure Python and installs everywhere | A native parser (reconsider if the §5 library rows accumulate); `libarchive` bindings, which are native code outside the defended surface |
-| Pick one namespace per image, Rock Ridge then Joliet then plain | Rock Ridge carries the most: long names, POSIX metadata, links. Reporting the choice lets a caller reason about fidelity | Merging the trees, which have different file sets; Joliet first, as 7-Zip does, which loses modes and links |
+| Pick one namespace per image, Rock Ridge then UDF then Joliet then plain | Rock Ridge carries the most: long names, POSIX metadata, links. UDF next: long Unicode names, permissions and owners, and on a Windows install image the only tree with the files. Ruled by davi, 2026-11-18 (decision card, thread "Add UDF reading to ISO images"). Reporting the choice lets a caller reason about fidelity | Merging the trees, which have different file sets; UDF or Joliet first, as Windows and 7-Zip do, which loses modes and links on a `genisoimage -R -udf` image |
+| Read UDF with archivey's own parser, and turn `pycdlib`'s UDF parse off inside archivey's open | `pycdlib` cannot open a UDF-only image, reads one partition, and has no metadata partition; one parser, weighed by the budget as it reads, replaces two (2026-11-18) | `pycdlib`'s UDF tree, which leaves Blu-ray discs out; a separate UDF format, which would split one disc image across two formats and two detections |
 | Walk records, not names | A name that does not round-trip through `pycdlib`'s path lookup cost the whole listing, and a duplicated directory name re-walked its subtree | `PyCdlib.walk()` plus `get_record()` per name |
 | Call `pycdlib`'s private `_yield_children` | It is the one place that skips extra multi-extent records and follows relocation; the tests run it on every supported `pycdlib` | Reimplementing both, which duplicates the fragile part |
 | Hide `rr_moved` by its contents | The name is a writer convention, and a real directory may carry it | Hiding by name |
@@ -604,8 +742,10 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 
 ## 7. Open questions
 
-- **Whether UDF should be read.** `pycdlib` parses UDF already, so listing from it is
-  reachable; the question is whether DVD and Blu-ray images are in scope for 0.2.x.
+- **Sparable and virtual UDF partitions.** Images of rewritable and incrementally
+  written discs; refused today. A sparable partition reads as a physical one once its
+  sparing table is applied, and a virtual one needs the Virtual Allocation Table read
+  from the last written block.
 - **What `raw_name` holds when a path borrows Joliet names.** ZIP follows the rule that
   `name` is `raw_name` decoded and normalized: a member named by its 0x7075 Unicode Path
   field gets those bytes as `raw_name` and keeps the header bytes in
@@ -619,14 +759,16 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 ## 8. Verify
 
 ```bash
-./scripts/test.sh tests/test_iso.py tests/test_iso_raw_sectors.py \
-    tests/test_corpus_sweep.py -k "iso or ISO"
+./scripts/test.sh tests/test_iso.py tests/test_iso_raw_sectors.py tests/test_iso_udf.py \
+    tests/test_iso_other_trees.py tests/test_corpus_sweep.py -k "iso or ISO or udf"
 ```
 
 | Claim |
 | --- |
 | Detection by far magic; a bootable image is not taken by a probe; a short source falls through |
 | Raw sector images refused by name, without `pycdlib` |
+| A `.bin` of two or three data sessions lists its last session by path (with or without its `.cue`) and from a file object; sectors between sessions and a pregap in the file are skipped; one session costs two reads (`tests/test_iso_sessions.py`) |
+| A `.bin` whose later volume the addresses do not place lists its first track and reports `ARCHIVE_UNREAD_SESSION`; so does a sheet with no `REM SESSION` over a disc whose addresses jump |
 | Bytes after the volume space reported, zeros silent, strict refuses, 1 MiB bound; MBR and GPT partitions after the volume space (hand-built, and `xorriso` hybrids; `xorriso` is installed by `setup-dev-env.sh` and on the Linux `all` CI legs) are part of the image; a GPT with a bad CRC or out-of-range fields, a protective MBR entry, or an MBR without its signature widens nothing; a valid GPT partition reaching past the file (entry sizes 128, 1024, 4096) still counts, the test that fails if such a partition is dropped |
 | Cost, seekable-only, write refused, password unused |
 | Unknown System Use entries skipped; zisofs lists and reads decoded, seeks, refuses zisofs2 under `ZF` or `Z2` and a too-short entry (listing `UNKNOWN`) and damaged, over-long or unterminated blocks, and a member cut by the image end raises `TruncatedError`; a malformed entry costs its own member only, a cut symlink withholds its target, strict refuses; the filter is inert outside archivey |
@@ -638,12 +780,16 @@ upstream library's behaviour, fixable only there or by replacing it · **archive
 | Boot catalog reads and extracts, and one declared past the image end reads short |
 | Multi-extent size and data; a gap read around, overlapping extents refused, a cut extent never filled by a later one; a repeated identifier without the on-disc flag starts a member of its own, also after a real multi-extent file and when two records share an extent; a repeated superseded version stays not current; a directory and a file with one identifier both list, and so do an associated file and a file in either order; the raw directory walk crosses sector padding |
 | No interchange-level guess |
-| A loop in `pycdlib`'s own walk refused at open, in all three trees and in UDF |
-| UDF tree counted against `max_members` and `max_metadata_bytes` at open |
+| A loop in `pycdlib`'s own walk refused at open, in all three ISO 9660 trees, and in archivey's UDF walk |
+| UDF tree counted against `max_members` and `max_metadata_bytes` at open, bridge and UDF-only |
+| Namespace order Rock Ridge, UDF, Joliet, plain; a UDF tree in a sparable partition passed over for Joliet |
+| UDF-only images detected by `BEA01` and read: File Entries and Extended File Entries, long allocation descriptors, a metadata partition, inline data, continued allocation extents, unrecorded extents, indirect entries, symlinks, a FIFO, permissions, owners, times; genisoimage bridge images and mkudffs file systems; a virtual partition refused |
+| A UDF file only the ISO 9660 tree holds is reported when UDF is listed |
+| Damaged UDF descriptors, extents shorter than the length, overlapping extents, cut UDF images |
 | Path table bounded by the image, `max_metadata_bytes` (both tables weighed) and `max_members` (entries, with an image whose directories fill the cap still opening); a `CE` area past its block refused before the read, for the record's own `CE` and a chained one, and one ending at the block end opens |
 | Directory length bound; path sources go through the source; handles released on failure |
 | Corrupt input is `CorruptionError`; handle `OSError` is not |
-| An image cut inside its descriptors, path tables, directories, System Use areas or UDF structures is `TruncatedError` at open |
+| An image cut inside its descriptors, path tables, directories, System Use areas or the UDF structures read at open is `TruncatedError` at open; a UDF image cut after them opens |
 | A cut image whose failing read started past its volume space is `CorruptionError`; a full-length image whose volume space size is damaged upwards reads as cut |
 | Listing reads nothing after open, on an image with no repeated identifier and no file ending at the image end |
 | Concurrent reads under the lock |
@@ -674,11 +820,17 @@ libarchive's ISO fixtures live in `libarchive/test/*iso*.uu` (uuencoded, most al
 - El Torito Bootable CD-ROM Format Specification 1.0: the boot catalog and its
   validation entry
 - zisofs: the `ZF` entry, documented in the zisofs-tools and libisofs sources
+- ECMA-167 3rd edition (the UDF volume and file structure) and OSTA UDF 2.60: the
+  anchor, partition maps, the metadata partition, File Entries and File Identifiers
 - [`pycdlib`](https://github.com/clalancette/pycdlib)
 - Specs: [`format-iso`](../../openspec/specs/format-iso/spec.md) ·
   [`format-detection`](../../openspec/specs/format-detection/spec.md)
 - Code: `internal/backends/iso_reader.py` (reader, raw-sector refusal) ·
+  `internal/backends/udf.py` (the UDF parser) ·
+  `internal/backends/cd_sectors.py` (raw sectors) · `internal/backends/cd_sessions.py`
+  (sessions from sector addresses) · `internal/backends/cue_sheet.py` (`.cue` sheets) ·
   `internal/detection.py` (far magic)
+- ECMA-130 §14: the sector header and its address in BCD minutes, seconds and frames
 - Registers: [`threat-model.md`](../threat-model.md) O16 and the cycle finding
 - Handbook: [`zip.md`](zip.md) · [`7z.md`](7z.md) · [`rar.md`](rar.md) (the file-history
   shape plain ISO versions borrow)

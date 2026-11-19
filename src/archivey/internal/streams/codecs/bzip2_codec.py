@@ -45,6 +45,7 @@ from archivey.internal.streams.codecs.bzip2_blocks import (
 )
 from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
+    BLOCKS_ONLY,
     StreamIndex,
     StreamStart,
     stream_magic,
@@ -904,6 +905,14 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
+        if config.probe_read_bound is not None:
+            # A detection probe reads a few hundred bytes that never reach the
+            # caller, so it takes them before the block's CRC is checked. Holding them
+            # would decode and hold the whole first block's output, up to 46.6 MB for
+            # a crafted block (dev-docs/formats/bzip2.md §2.3), and the open after
+            # detection decodes that block again. That open checks every block, so a
+            # damaged first block raises there.
+            return config.natives.bz2_decompressor()
         # One block at a time, each block's output held until its CRC passes
         # (``bzip2_blocks``).
         return Bzip2BlockDecompressor(
@@ -919,12 +928,9 @@ class Bzip2Codec(StreamCodec):
         if not config.records_restart_points:
             return None
         # Declared seek demand or restart points only, as bzip3: every block a decode
-        # checks is a seek point (``Bzip2BlockDecompressor.take_block_starts``). A
-        # further stream's first block is one, so the stream's own start is not kept,
-        # and nothing in the file indexes the blocks without decoding them.
-        return StreamIndex(
-            resumes_at=lambda data: False, build=lambda inner, last: ([], None)
-        )
+        # checks is a seek point (``Bzip2BlockDecompressor.take_block_starts``). Nothing
+        # in the file indexes the blocks without decoding them.
+        return BLOCKS_ONLY
 
     @override
     def stream_start(self, params: CodecParams) -> StreamStart:

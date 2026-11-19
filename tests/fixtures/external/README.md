@@ -10,6 +10,22 @@ Info-ZIP output whose member names are valid UTF-8 with general-purpose bit 11 *
 the case `tests/test_zip.py::test_unflagged_utf8_name_is_sniffed` exists for. Neither
 stdlib `zipfile` nor `7z` writes this combination.
 
+## `zip_spanned_infozip/`
+
+A spanned set from Info-ZIP `zip` 3.0,
+`zip -X -s 64k set.zip first.txt big.bin last.txt`: `set.z01` and `set.z02` of 64 KiB
+each, then `set.zip`, which holds the central directory and whose end record names
+disk 3. `first.txt` sits on the first part, `big.bin` (140 000 bytes from
+`random.Random(20261118).randbytes`, SHA-256 `87dd44c4…f6dd5360`) runs across all three,
+and `last.txt` sits on the `.zip`. Written on 2026-11-18.
+
+`tests/test_zip_spanned.py` reads it from every part and checks it against 7-Zip, which
+reads these sets too (Info-ZIP `unzip` 6.0 refuses them). Info-ZIP is not on the macOS
+or Windows CI images, so this set is the one real `zip -s` output every platform reads;
+the other spanned sets in that file are built from stdlib ZIPs. The two `.zNN` files
+have no `.zip` name, so only the `.zip` is in the `rglob("*.zip")` fixture sweeps, and
+those skip this directory: read alone, it is the last part of a set.
+
 ## `aes_ae1_pyzipper036.zip`
 
 A WinZip **AE-1** member (method 99, extra `0x9901` vendor version 1, AES-256, DEFLATE),
