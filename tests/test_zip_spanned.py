@@ -232,6 +232,45 @@ def test_infozip_last_part_from_a_pipe_says_the_others_are_missing() -> None:
     assert type(excinfo.value) is TruncatedError
 
 
+def test_infozip_set_out_of_order_says_so() -> None:
+    """Given out of order, the archive starts inside the join, and the message said
+    this was the last part alone, with the other parts missing."""
+    _refused_with_format_confirmed(
+        [_FIXTURE / "set.z02", _FIXTURE / "set.z01", _FIXTURE / "set.zip"],
+        r"spanned set of 3 parts, and 3 parts were given, but the archive does not "
+        r"start at the start of the first part: the parts are out of order",
+    )
+
+
+@pytest.mark.parametrize(
+    "order", [("set.zip", "set.z01", "set.z02"), ("set.z01", "set.zip", "set.z02")]
+)
+def test_infozip_set_with_the_zip_not_last_is_refused(order: tuple[str, ...]) -> None:
+    """With as many parts as disks but the .zip not last, the end record was read in
+    the middle of the join and each offset moved by the wrong part's start: the
+    members listed, with trailing data reported, and then failed to read."""
+    _refused_with_format_confirmed(
+        [_FIXTURE / name for name in order],
+        r"3 parts were given, but the end record is not in the last part: the parts "
+        r"are out of order",
+    )
+
+
+@pytest.mark.parametrize(
+    ("order", "given"),
+    [(("set.z02", "set.zip"), 2), (("set.z02", "set.z01", "set.z01", "set.zip"), 4)],
+)
+def test_a_list_cut_inside_with_another_count_names_the_count(
+    order: tuple[str, ...], given: int
+) -> None:
+    """With a part missing or extra, "out of order" would be a guess: the count is
+    what is wrong."""
+    _refused_with_format_confirmed(
+        [_FIXTURE / name for name in order],
+        rf"spanned set of 3 parts, and {given} parts were given\. Pass every part",
+    )
+
+
 def test_infozip_set_listed_with_a_part_missing(tmp_path: Path) -> None:
     _refused_with_format_confirmed(
         [_FIXTURE / "set.z01", _FIXTURE / "set.zip"],

@@ -120,3 +120,13 @@ the underlying library would stop quietly and hand back short data.
 
 If archivey reads, lists or extracts an archive wrongly, please
 [open a bug report](https://github.com/archivey-dev/archivey/issues/new/choose).
+
+## What archivey doesn't do
+
+- **Write archives.** Archivey reads archives and extracts them. It can't create an archive yet,
+  or add, remove or replace members in an existing one.
+- **Check signatures.** Signed RPM, Debian and macOS installer packages, and code-signed Windows
+  programs, are read without checking the signature. Use `rpm -K`, `debsig-verify`,
+  `pkgutil --check-signature` or `signtool verify` for that.
+- **Offer an async API.** The API is synchronous, and an async one is not planned before 1.0. In
+  async code, run archivey calls in a worker thread, for example with `asyncio.to_thread`.
