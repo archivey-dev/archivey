@@ -679,6 +679,10 @@ class RangeSource(io.RawIOBase):
         self.pending_hints: list[tuple[int, int]] = []
         # The message of the first ``SourceChangedError`` a fetch raised (design D7).
         self.change: str | None = None
+        # What :meth:`fetch` has asked the file system for: one per request, and the
+        # bytes the file system returned. Read by ``--track-io`` (``IoStats``).
+        self.fetch_count = 0
+        self.bytes_fetched = 0
 
     @classmethod
     def from_open_file(
@@ -790,6 +794,8 @@ class RangeSource(io.RawIOBase):
         """
         self._raise_if_changed()
         data = self.fs.cat_file(self.path, start=start, end=end)
+        self.fetch_count += 1
+        self.bytes_fetched += len(data)
         if len(data) > end - start:
             raise OSError(
                 f"{self.url}: the file system returned {len(data)} bytes for a "

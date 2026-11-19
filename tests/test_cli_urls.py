@@ -138,6 +138,29 @@ def test_every_verb_reads_a_memory_url(
     assert (tmp_path / "out" / "b.txt").read_bytes() == b"bye\n"
 
 
+def test_track_io_counts_the_requests_of_a_url(memfs: Any) -> None:
+    data = _zip_bytes(TWO)
+    memfs.pipe("/cli-urls/data.zip", data)
+    run = _run(["--track-io", "memory://cli-urls/data.zip"])
+    assert run.code == EXIT_OK, run.err
+    line = next(x for x in run.err.splitlines() if x.startswith("track-io:"))
+    fields = dict(f.split("=", 1) for f in line.split()[1:])
+    assert int(fields["remote_requests"]) >= 1
+    # The whole archive fits in the first request's window.
+    assert int(fields["remote_bytes_fetched"]) == len(data)
+    assert fields["remote_size"] == str(len(data))
+    assert fields["remote_fetched_share"] == "100.00%"
+
+
+def test_track_io_of_a_local_path_has_no_request_counts(tmp_path: Path) -> None:
+    path = tmp_path / "data.zip"
+    path.write_bytes(_zip_bytes(TWO))
+    run = _run(["--track-io", str(path)])
+    assert run.code == EXIT_OK, run.err
+    assert "source_seek_count=" in run.err
+    assert "remote_requests" not in run.err
+
+
 def test_cat_reads_a_memory_url(
     memfs: Any, capfdbinary: pytest.CaptureFixture[bytes]
 ) -> None:
