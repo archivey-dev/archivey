@@ -199,35 +199,33 @@ decompressing anything. A CRC-32 is four big-endian bytes, so one you computed c
   directories, and every other single compressed file. Many of them still check their data as it is
   read, with a checksum per block, or per file in a form `member.hashes` doesn't hold.
 
-When a format stores none, compute a digest while reading. A first-pass dedupe index can take the
-best one available:
+When a format stores none, compute one while reading. A dedupe index can key every member by its
+CRC-32, read from the archive when it's stored and computed otherwise, so the same file in a ZIP
+and in a TAR gets the same key:
 
 ```python
-import hashlib
+import zlib
 import archivey
 from archivey import HashAlgorithm
 
-def content_key(reader, member):
-    """Best available digest for a first-pass dedupe index."""
-    if HashAlgorithm.BLAKE2SP in member.hashes:
-        return ("stored", "blake2sp", member.hashes[HashAlgorithm.BLAKE2SP])
+def crc32_of(reader, member):
+    """The member's CRC-32: stored when the archive has one, computed otherwise."""
     if HashAlgorithm.CRC32 in member.hashes:
-        return ("stored", "crc32", member.hashes[HashAlgorithm.CRC32])
-    # No stored digest (e.g. tar, bzip2): compute while reading.
-    h = hashlib.sha256()
+        return member.hashes[HashAlgorithm.CRC32]
+    crc = 0
     with reader.open(member) as stream:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
-            h.update(chunk)
-    return ("computed", "sha256", h.digest())
+            crc = zlib.crc32(chunk, crc)
+    return crc.to_bytes(4, "big")
 
 with archivey.open_archive("backups.zip") as reader:
     for member in reader:
         if member.is_file and member.is_current:
-            print(member.name, content_key(reader, member))
+            print(member.name, crc32_of(reader, member).hex())
 ```
 
-A stored CRC-32 is weak, and a computed digest is stronger but costs a full decode. Keeping
-`stored` and `computed` apart in the key lets your index decide how far to trust each.
+Two different files can share a CRC-32, so treat a match as a candidate, and compare a SHA-256 of
+both members before counting them as the same file.
 
 ## Format-specific fields
 
@@ -241,15 +239,20 @@ for that format. The full list is on [`MemberExtra` and
 
 A ZIP or TAR made on a Mac often holds AppleDouble sidecars: a `._name` file with the extended
 attributes and resource fork of `name`, next to it (macOS `tar`) or under `__MACOSX/` (Finder,
-`ditto`). Archivey lists them as ordinary files, as `unzip` does. To leave them out, skip them by
-name with `members=`:
+`ditto`). A folder archived on a Mac can also hold `.DS_Store` files, Finder's view settings.
+Archivey lists them all as ordinary files, as `unzip` does. To leave them out, skip them by name
+with `members=`:
 
 ```python
 from archivey import open_archive
 
 def is_macos_sidecar(member):
     base = member.name.rsplit("/", 1)[-1]
-    return member.name.startswith("__MACOSX/") or base.startswith("._")
+    return (
+        member.name.startswith("__MACOSX/")
+        or base.startswith("._")
+        or base == ".DS_Store"
+    )
 
 with open_archive("photos.zip") as reader:
     reader.extract_all("out", members=lambda m: not is_macos_sidecar(m))

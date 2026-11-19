@@ -17,29 +17,42 @@ read.
 
 | Format | Install |
 |---|---|
-| ZIP (`.zip`, `.jar`, `.whl`, `.apk`) | Core. `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard before Python 3.14 |
-| TAR (`.tar`) | Core |
-| Compressed TAR (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
-| 7z (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before Python 3.14 |
-| RAR (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([RAR](#rar)) |
-| gzip (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`), Apple's pbzx | Core. `[recommended]` makes `.lzo` and `.sz` faster |
-| Zstandard (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
-| LZ4 (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
-| bzip3 (`.bz3`) | `[bzip3]` |
-| uuencode (`.uu`, `.uue`), base64 (`.b64`) | Core |
-| ISO 9660 (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
-| SquashFS (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
-| Debian packages (`.deb`, `.udeb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
-| RPM (`.rpm`) | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
-| XAR (`.xar`) | Core |
-| macOS installer packages (`.pkg`, `.mpkg`, `.xip`) | Core |
-| CAB (`.cab`) | Core |
-| makeself (`.run`) | Core. The payload needs what its compressor needs |
-| LHA (`.lzh`, `.lha`), ARJ (`.arj`) | Core |
-| CPIO (`.cpio`), ar (`.a`, `.lib`) | Core |
-| A directory on disk | Core |
+| [ZIP](#zip) (`.zip`, `.jar`, `.whl`, `.apk`) | Core. `[recommended]` adds Deflate64, PPMd, WinZip AES, and Zstandard* |
+| [TAR](#tar-and-compressed-tar) (`.tar`) | Core |
+| [Compressed TAR](#tar-and-compressed-tar) (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
+| [7z](#7z) (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard* |
+| [RAR](#rar) (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program |
+| [gzip](#single-file-compressors) (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`), Apple's pbzx | Core. `[recommended]` makes `.lzo` and `.sz` faster |
+| [Zstandard](#single-file-compressors) (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
+| [LZ4](#single-file-compressors) (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
+| [bzip3](#single-file-compressors) (`.bz3`) | `[bzip3]` |
+| [uuencode](#single-file-compressors) (`.uu`, `.uue`), base64 (`.b64`) | Core |
+| [ISO 9660](#iso-9660) (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
+| [SquashFS](#squashfs) (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard* and LZ4 images need `[recommended]` |
+| [Debian packages](#debian-packages) (`.deb`, `.udeb`) | Core. Zstandard* packages need `[recommended]` |
+| [RPM](#rpm) (`.rpm`) | Core. Zstandard* payloads (Fedora's default) need `[recommended]` |
+| [XAR](#xar) (`.xar`) | Core |
+| [macOS installer packages](#macos-installer-packages) (`.pkg`, `.mpkg`, `.xip`) | Core |
+| [CAB](#cab) (`.cab`) | Core |
+| [makeself](#makeself) (`.run`) | Core. The payload needs what its compressor needs |
+| [LHA](#lha) (`.lzh`, `.lha`), [ARJ](#arj) (`.arj`) | Core |
+| [CPIO](#cpio) (`.cpio`), [ar](#ar) (`.a`, `.lib`) | Core |
+| [A directory on disk](#directory) | Core |
 
-A UDIF disk image (`.dmg`) is recognised and refused ([Disk images](#disk-images)).
+\* Only before Python 3.14, which has Zstandard built in.
+
+A UDIF disk image (`.dmg`) is recognised and refused ([Disk images](#disk-images)). These are not
+read at all, and opening one raises `FormatDetectionError`:
+
+- Windows images and virtual disks: WIM and ESD (`.wim`, `.esd`), MSI (`.msi`), VHD and VHDX
+  (`.vhd`, `.vhdx`), VMDK (`.vmdk`) and QCOW2 (`.qcow2`). 7-Zip reads them.
+- Older archive formats: ACE (`.ace`), StuffIt (`.sit`), Zoo (`.zoo`) and ARC (`.arc`). The
+  Unarchiver's `unar` reads them.
+- ZPAQ (`.zpaq`), which the `zpaq` tool reads.
+
+Where this page names a diagnostic, such as `ARCHIVE_TRAILING_DATA`, archivey records it on the
+reader and carries on: it is a warning by default and an exception under `DiagnosticPolicy.STRICT`
+([Diagnostics](errors-and-diagnostics.md#diagnostics)).
 
 The
 [library analysis](https://github.com/archivey-dev/archivey/blob/main/dev-docs/library-analysis.md)
@@ -103,22 +116,23 @@ read many members. Reading one by name after listing resumes from the nearest re
 - A tar made by macOS `tar` can hold `._name` sidecar files
   ([macOS sidecar files](opening.md#macos-sidecar-files)).
 
-Damaged headers, and header shapes no writer produces (a device or directory header that declares
-data, PAX records set twice, a lone zero block), are refused or reported with a diagnostic. The
-[TAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md)
+Damaged headers, and header shapes no writer produces, are refused or reported with a diagnostic.
+The [TAR development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md)
 describes each case.
 
 ### 7z
 
-Archivey reads the index at the end of the file. Members are solid unless the archive was
-written without solid blocks (`7z -ms=off`). A `stream_members()` pass decodes each solid block
-once, and opening a member in the middle of a block may decode the block again from its start.
+Archivey reads the index at the end of the file. Members are solid, so reaching one decodes the ones
+before it in its block, unless the archive was written without solid blocks (`7z -ms=off`). A
+`stream_members()` pass decodes each solid block once, and opening a member in the middle of a block
+may decode the block again from its start.
 
 - **Supported:** LZMA, LZMA2, Deflate, BZip2, Delta and the executable filters, including BCJ2,
   ARM64 and RISC-V, in the core install (the filters are decoded in Python, so they're slower).
-  PPMd, Deflate64, Brotli, LZ4, AES encryption, and Zstandard before Python 3.14, with
+  PPMd, Deflate64, Brotli, LZ4, AES encryption, and Zstandard[\*](#overview), with
   `[recommended]`. Self-extracting `.exe` files, code-signed ones included.
-- **Not supported:** LZMA with `lc + lp` over 4, which 7-Zip writes only when asked (for example
+- **Not supported:** rare LZMA settings that 7-Zip writes only when asked (for example
   `-mlc=8`). Such an archive can be listed, and reading its members raises
   `UnsupportedFeatureError`.
 - **Encryption:** 7z stores no password check. A wrong password usually makes decompression fail,
@@ -137,7 +151,8 @@ Archivey reads the RAR structure itself, RAR 1.5 to RAR5, but no Python package 
 compression. Listing and reading uncompressed members need nothing extra. Compressed members are
 decoded by running RARLAB's `unrar` (or `rar`) 6.0 or later, found on `PATH` or, on Windows, in a
 WinRAR installation, or else The Unarchiver's `unar` 1.10 or later
-([Getting unrar](install.md#getting-unrar)). `ArchiveyConfig.rar_decompressor` picks the program:
+([Getting unrar](install.md#getting-unrar)). With neither, reading a compressed member raises
+`PackageNotInstalledError`. `ArchiveyConfig.rar_decompressor` picks the program:
 
 ```python
 ArchiveyConfig(rar_decompressor="auto")   # default: unrar when found, otherwise unar
@@ -153,7 +168,8 @@ ArchiveyConfig(rar_decompressor="none")   # run no program
   users on the same machine can see it. On a shared machine, install `unrar`, or set
   `rar_decompressor="unrar"`. `unar` also gets some archives wrong, and archivey refuses those
   reads before running it.
-- **Solid archives:** a `stream_members()` pass decodes the archive in one run. Opening members
+- **Solid archives,** where reaching a member decodes every member before it: a
+  `stream_members()` pass decodes the archive in one run. Opening members
   out of order decodes the solid stream again from its start each time.
 - **Volume sets:** if a volume is missing, the members in the remaining volumes are listed, and
   reading a member with data in the missing volume raises `TruncatedError`.
@@ -205,8 +221,6 @@ files](#seeking-in-compressed-files)).
 - **Memory:** a Zstandard window, a mozlz4 size and a bzip3 block size are declared by the file.
   `DecoderLimits.max_decoder_memory` (2 GiB by default) caps the memory they ask for, and a file
   over the cap raises `ResourceLimitError`.
-- **The `[seekable]` gzip accelerator** can miss a cut made on purpose to fool it. When you need
-  certainty, set `ArchiveyConfig(use_rapidgzip=AcceleratorMode.OFF)`.
 
 Some formats have more to know:
 
@@ -241,8 +255,7 @@ which in `ArchiveInfo.extra["iso.namespace"]`.
 - **Supported:** Rock Ridge, Joliet and plain ISO 9660 names. zisofs compression (`mkzftree`,
   `genisoimage -z`, `xorriso --zisofs`). Files of 4 GiB or more, stored in several pieces, read as
   one member. Raw CD images (`.bin` with or without its `.cue`) in Mode 1 or Mode 2 Form 1,
-  multisession discs included. Hybrid installer images, whose EFI partition sits after the ISO
-  data, open without a trailing-data warning.
+  multisession discs included. Hybrid installer images, with an EFI partition after the ISO data.
 - **Not supported:** UDF: a DVD image that also has an ISO 9660 tree is listed from that tree,
   and a UDF-only image (such as a Blu-ray) is not recognised. zisofs2 members are listed, and
   reading one raises `UnsupportedFeatureError`. Video and audio-only CD images raise
@@ -267,15 +280,14 @@ which in `ArchiveInfo.extra["iso.namespace"]`.
   `TruncatedError`. An image with UDF doesn't open once truncated, because the UDF anchor sits in
   its last block.
 
-Archivey also refuses folder trees that loop back on themselves, survives Rock Ridge entries
-`pycdlib` can't parse, and checks each CD sector's header as it reads. The details, and how
-`.cue` sheets and multisession discs are read, are in the
+Archivey also refuses folder trees that loop back on themselves. The details, and how `.cue`
+sheets and multisession discs are read, are in the
 [ISO development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md).
 
 ### SquashFS
 
-gzip, xz, LZMA and LZO images need nothing extra. Zstandard images need `[recommended]` before
-Python 3.14, and LZ4 images need `[recommended]`. Members are read directly. `ArchiveInfo.extra`
+gzip, xz, LZMA and LZO images need nothing extra. Zstandard[\*](#overview) and LZ4 images need
+`[recommended]`. Members are read directly. `ArchiveInfo.extra`
 names the compressor (`"squashfs.compressor"`) and the block size (`"squashfs.block_size"`).
 
 - **Supported:** SquashFS 4.0, written since 2009. Files, folders, symlinks, hard links, sparse
@@ -307,8 +319,8 @@ is recognised.
 A `.deb` is an ar archive holding two tars: the control files and the files the package
 installs. Archivey lists it as `dpkg-deb -R` unpacks it: the installed files under their own
 names, and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. xz,
-gzip, bzip2 and LZMA packages need nothing extra, and Zstandard ones need `[recommended]` before
-Python 3.14. Listing decompresses both tars, and members are read one after another, as in a
+gzip, bzip2 and LZMA packages need nothing extra, and Zstandard[\*](#overview) ones need
+`[recommended]`. Listing decompresses both tars, and members are read one after another, as in a
 compressed TAR.
 
 - **Package fields:** `ArchiveInfo.extra` has `deb.package`, `deb.version` and
@@ -326,8 +338,8 @@ the rules and their limits.
 ### RPM
 
 An RPM package is a header listing every file, followed by a compressed CPIO payload. gzip,
-bzip2, xz and LZMA payloads need nothing extra, and Zstandard ones (Fedora's default) need
-`[recommended]` before Python 3.14.
+bzip2, xz and LZMA payloads need nothing extra, and Zstandard[\*](#overview) ones (Fedora's default)
+need `[recommended]`.
 
 - **Supported:** binary and source packages, RPM 3, 4 and 6.
 - **Not supported:** delta RPMs, and payloads in a compression archivey can't decode, raise
@@ -356,6 +368,7 @@ XAR needs nothing extra. Members are read directly, each compressed on its own.
 
 - **Supported:** stored, gzip, bzip2, LZMA and xz data. MD5, SHA-1, SHA-224, SHA-256, SHA-384
   and SHA-512 checksums.
+- **Not supported:** signatures are not checked.
 - **Checksums:** the index's own checksum is checked at open. Each file stores a checksum of its
   data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
   its end.
@@ -385,10 +398,7 @@ the other files are listed as they are. Packages need nothing extra.
 - **The raw layout:** `format=ArchiveFormat.XAR` lists the XAR files instead, with each payload
   as one file.
 
-A file named `.pkg`, `.mpkg` or `.xip` is opened as a package, and one named `.xar` as XAR. Without
-either name, a XAR whose index lists a `Distribution` or `PackageInfo`, or both `Content` and
-`Metadata`, is a package. A payload that is not a CPIO is listed as the one file it is, and a
-payload file that would extract outside its folder (`../Bom`) raises `CorruptionError`. The
+A payload that is not a CPIO is listed as the one file it is. The
 [XAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
 cover packages too.
 
@@ -411,8 +421,7 @@ LZX is decoded by archivey itself, in Python, at a few megabytes a second.
 - **Checksums:** each data block stores a checksum, checked as it is read, so a member read to its
   end is checked when its blocks carry one (some writers store 0, meaning none).
 
-Archivey also refuses a cabinet whose file table doesn't match its folders, and lists edited or
-crafted cabinets in an order that decodes each folder once. The
+Archivey also refuses a cabinet whose file table doesn't match its folders. The
 [CAB development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cab.md)
 have the details.
 
@@ -540,11 +549,15 @@ cover the walk order and symlinks.
 
 ## Seeking in compressed files
 
+If you'll seek backwards often inside a compressed member, extracting it to a file first is
+usually faster, unless its format keeps a restart point near every target (the first group below).
+The same points decide how fast archivey opens one member of a `.tar.gz` or other compressed TAR by
+name.
+
 A member stream can seek when you pass `seekable_members=True`
 ([Seeking inside a member](reading.md#seeking-inside-a-member)). A seek forward decodes the bytes
 in between. A seek backward resumes from the last point before its target where decoding can
-restart. If there is no such point, it decodes again from the start of the stream. Reading a
-member of a `.tar.gz` or other compressed TAR by name uses the same points.
+restart, or from the start of the stream when there is none.
 
 **Always near the target:**
 
@@ -571,9 +584,6 @@ member of a `.tar.gz` or other compressed TAR by name uses the same points.
 
 **Always from the start:** LZMA Alone, Brotli and mozlz4. Archivey keeps no restart points in
 them.
-
-If you'll seek backwards often in a file from the last two groups, extracting the member to a file
-first is usually faster.
 
 ## Detection
 

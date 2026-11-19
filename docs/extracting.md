@@ -211,10 +211,8 @@ The rest depend on the policy:
   because Windows would write it into `a`. `"trusted"` writes it as is.
 - **`caf\xe9.txt`, a name that isn't valid UTF-8:** `"strict"` refuses it. `"standard"` writes it
   as `caf%E9.txt`. `"trusted"` writes it as is.
-- **`hi\ud800`, a 7z, RAR 4 or Joliet name with half of a UTF-16 pair, which NTFS allows:**
-  `"strict"` refuses it. `"standard"` writes it as `hi%ED%A0%80`. `"trusted"` writes what 7-Zip
-  writes: the exact name on Windows, and the three bytes `ed a0 80` elsewhere, which APFS refuses
-  with `ExtractionError`.
+- **`hi\ud800`, a Windows name with half of a UTF-16 pair:** `"strict"` refuses it. `"standard"`
+  writes it as `hi%ED%A0%80`. `"trusted"` writes it as 7-Zip does, which some filesystems refuse.
 - **`line\nbreak`, with a control character such as a newline:** `"strict"` refuses it.
   `"standard"` writes it as `line%0Abreak`. `"trusted"` writes it as is.
 - **`what?.txt`, with a character Windows doesn't allow:** `"strict"` and `"standard"` write it as

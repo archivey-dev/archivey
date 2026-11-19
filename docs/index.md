@@ -123,7 +123,10 @@ If archivey reads, lists or extracts an archive wrongly, please
 
 ## What archivey doesn't do
 
-- **Change an archive in place.** Archivey reads archives and extracts them. It does not add,
-  remove or replace members in an existing archive, and it doesn't write archives yet.
+- **Write archives.** Archivey reads archives and extracts them. It can't create an archive yet,
+  or add, remove or replace members in an existing one.
+- **Check signatures.** Signed RPM, Debian and macOS installer packages, and code-signed Windows
+  programs, are read without checking the signature. Use `rpm -K`, `debsig-verify`,
+  `pkgutil --check-signature` or `signtool verify` for that.
 - **Offer an async API.** The API is synchronous, and an async one is not planned before 1.0. In
   async code, run archivey calls in a worker thread, for example with `asyncio.to_thread`.
