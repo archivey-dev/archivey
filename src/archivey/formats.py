@@ -776,9 +776,10 @@ class ReaderContext:
         works for this archive: what it reports goes into this archive's diagnostics,
         under the caller's ``DiagnosticPolicy``, and its errors raise from the walk.
         It shares this archive's limits rather than getting its own: what it keeps
-        counts toward the same ``max_metadata_bytes``, its decoders get the
-        ``max_decoder_memory`` this archive's decoders left, and its ``max_ratio`` is
-        to the compressed size of the archive the caller opened.
+        counts toward the same ``max_metadata_bytes``, what it decodes during this
+        archive's listing counts toward the same ``max_decoded_bytes``, its decoders
+        get the ``max_decoder_memory`` this archive's decoders left, and its
+        ``max_ratio`` is to the compressed size of the archive the caller opened.
 
         Yield every span, in order, from :meth:`SequentialReader.walk` before taking
         the next one: the inner reader numbers its members as the outer listing will,
