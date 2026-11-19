@@ -67,8 +67,8 @@ Gates **before pushing**: `./scripts/check.sh --fix` and `./scripts/test.sh`
 Then push a branch and open a PR. If the issue already names a PR or branch,
 continue there instead of opening a second one. Write the body from
 `.github/pull_request_template.md`, starting with its **For dummies** section: what the
-thing is, the bug with a concrete example, what the fix does and who notices, in plain
-words (`AGENTS.md` §Working with the maintainer).
+thing is, the bug or the gap with a concrete example, what the change does and who
+notices, in plain words (`AGENTS.md` §Working with the maintainer).
 
 After the PR exists, do two things on the Linear issue. Do not change its status
 unless the user asked.
