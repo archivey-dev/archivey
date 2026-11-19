@@ -330,8 +330,10 @@ end record's disk fields when there is one, else the classic record's, with `0xF
 treated as the ZIP64 sentinel), or a ZIP64 locator counting more than one disk, needs
 one part per disk. A `.zip` read alone that is the last part of a spanned set — it would
 list cleanly, because it holds the central directory — is `TruncatedError` saying how
-many parts the set has, and so is an explicit list with a different number of parts. The
-parser raises `SpannedPartsError` for it, which the reader turns into a plain
+many parts the set has, and so is an explicit list with a different number of parts. An
+explicit list of every part out of order, where the archive starts inside the join or
+the end record is not in the last part, is `TruncatedError` saying the parts are out of
+order. The parser raises `SpannedPartsError` for it, which the reader turns into a plain
 `TruncatedError`, so that the local-header walk that lists members after a damaged end
 record does not list a part's members as the archive. A directory placed on a disk after
 the record's own, or an entry on a disk the set does not have, is damage

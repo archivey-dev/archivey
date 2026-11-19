@@ -170,7 +170,9 @@ NO_END_RECORD_MSG = (
 
 class SpannedPartsError(TruncatedError):
     """The end records name a spanned set of another number of parts than the source
-    holds: the last part read alone, or a list of parts with one missing or extra.
+    holds (the last part read alone, or a list of parts with one missing or extra), or
+    every part was given out of order: the archive starts inside the join (``cut``),
+    or the end record is not in the last part (``end_early``).
 
     ``TruncatedError``, as for a numbered set with a part missing: the archive is
     whole only with every part. A subclass so the reader can tell it apart from damage

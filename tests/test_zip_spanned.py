@@ -256,6 +256,21 @@ def test_infozip_set_with_the_zip_not_last_is_refused(order: tuple[str, ...]) ->
     )
 
 
+@pytest.mark.parametrize(
+    ("order", "given"),
+    [(("set.z02", "set.zip"), 2), (("set.z02", "set.z01", "set.z01", "set.zip"), 4)],
+)
+def test_a_list_cut_inside_with_another_count_names_the_count(
+    order: tuple[str, ...], given: int
+) -> None:
+    """With a part missing or extra, "out of order" would be a guess: the count is
+    what is wrong."""
+    _refused_with_format_confirmed(
+        [_FIXTURE / name for name in order],
+        rf"spanned set of 3 parts, and {given} parts were given\. Pass every part",
+    )
+
+
 def test_infozip_set_listed_with_a_part_missing(tmp_path: Path) -> None:
     _refused_with_format_confirmed(
         [_FIXTURE / "set.z01", _FIXTURE / "set.zip"],
