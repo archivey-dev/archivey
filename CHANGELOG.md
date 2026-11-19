@@ -12,6 +12,95 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-19
+
+A minor release: the UDF file system of DVD and Blu-ray images, spanned ZIP sets, the
+files inside macOS installer packages, Snappy files, URLs as the command's archive
+argument, compress-utils in place of python-lzo, and fixes from a sweep of the new code.
+
+### Added
+
+- archivey reads the UDF file system of ISO images, DVD and Blu-ray images included, and
+  images that hold only UDF, which are read without `pycdlib`.
+- ZIP sets spanned by `zip -s` or WinZip (`name.z01`, `name.z02`, …, `name.zip`) are
+  read, opened from any part when all parts are in one folder. Before, they were
+  refused.
+- macOS installer packages (`.pkg`, `.mpkg`) and Xcode archives (`.xip`) are a new
+  format, `ArchiveFormat.PKG`. They list the files inside their payloads, each under a
+  folder named after its payload, as `pkgutil --expand-full` unpacks them.
+- Snappy framed files (`.sz`, `.tar.sz`) are a built-in format: `StreamFormat.SNAPPY`,
+  `ArchiveFormat.SNAPPY` and `CompressionAlgorithm.SNAPPY`. They need no package; with
+  `[recommended]`, compress-utils and google-crc32c make them faster.
+- The `archivey` command takes a URL as its archive argument (`archivey list
+  https://…/data.zip`, `archivey x s3://bucket/a.tar.zst`) and reads it through
+  fsspec. The `archivey-cli` package now installs fsspec and aiohttp, so HTTP(S) URLs
+  work with nothing else installed.
+- A raw CD image (`.bin`) read without its `.cue`, from a stream or from a path with no
+  sheet beside it, lists the session an operating system would mount, as it already did
+  beside its sheet. When the sector addresses can't place a later session, the first is
+  read and the new diagnostic `ARCHIVE_UNREAD_SESSION` reports the one left out.
+- ZIP members compressed with method 20, Zstandard's first method number, are read as
+  Zstandard.
+- XAR file and table-of-contents checksums in SHA-224 and SHA-384 are checked, with the
+  new `HashAlgorithm.SHA224` and `HashAlgorithm.SHA384`.
+- A ZIP64 extra field whose values differ from the entry's own values, in an entry that
+  does not use it, is reported as `MEMBER_HEADER_AMBIGUOUS` with the new ambiguity
+  `"zip64_unused"`.
+- `DetectionBudget.max_probe_forward_bytes` sets how far detection may read ahead on a
+  source that cannot seek to check a Brotli stream's framing.
+
+### Changed
+
+- **Breaking:** compress-utils replaces python-lzo as the optional LZO1X decoder, and
+  `OptionalLibrary.LZO` is replaced by `OptionalLibrary.COMPRESS_UTILS`. compress-utils
+  and google-crc32c join `[recommended]`, and compress-utils joins `[free-threaded]` on
+  Python 3.14 and later. An LZO1X end marker of a length other than 3, which no writer
+  produces, is refused.
+- A `.pkg` or `.xip` file is detected as `ArchiveFormat.PKG` instead of `XAR`, and lists
+  its payloads' files instead of the payloads themselves. `format=ArchiveFormat.XAR`
+  gives the earlier view.
+- When an ISO image holds several file trees, the names come from Rock Ridge, then UDF,
+  then Joliet, then the plain ISO 9660 names, so an image with UDF and Joliet now lists
+  its UDF names.
+- Joliet file names are listed without their `;1` version suffix, as plain ISO 9660 names
+  already were.
+- A backward seek in an lzop, legacy LZ4, Snappy or multi-frame LZ4 file resumes at the
+  block or frame it lands in, instead of decoding again from the start of the file.
+
+### Security
+
+- A member whose path goes through a symlink that the same extraction created is
+  refused, under every policy, `TRUSTED` included, also when the path reaches that link
+  through a symlink that was already in the destination.
+- When a later copy of a name replaced an earlier directory copy, the directory removed
+  was the one the name led to at that time, which a symlink could point at the caller's
+  own directory or, under `TRUSTED`, a directory outside the destination. The copy is
+  now removed where it was written.
+- `ListingLimits.max_decoded_bytes` counts the bytes decoded by every level of a nested
+  archive together. Before, each archive opened inside another had its own allowance.
+
+### Fixed
+
+- A few other bugs, among them a hard link that, on a case-insensitive file system, got
+  the bytes of a file that replaced its source under another spelling, and data from a
+  source of unknown size taken for Brotli without a check of its framing.
+
+### Performance
+
+From a benchmark run on 2026-11-19 at commit `b5c7a01a`, archivey takes 1.1 to 3.4 times
+as long as the standard library or reference reader to read, and 1.5 to 10.9 times as
+long to list; the ratios above 4 are archives that list in under 2.5 ms. Against 0.4.1,
+timed beside it on the same runner:
+
+- Listing a 7z archive with many members takes about 10% less time, in all three rounds.
+  No change aimed at it, so the cause is not known.
+- Reading a `.Z` file of text takes about 7% less time, from the faster LZW decoder.
+- Reading a `.Z` file of highly repetitive data measured 22% slower by the fastest round,
+  but its rounds spread from 129 to 199 ms on both sides, and the middle rounds differ
+  by 3%, so it is noise. The other cases are within about 5%.
+
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
+
 ## [0.4.1] - 2026-11-17
 
 A patch release: RAR archives read from a pipe, bzip2 and xz blocks checked before
@@ -558,7 +647,9 @@ What goes in this file, from 0.2.0 on:
 `scripts/release.py start` writes the compare links below this comment.
 -->
 
-[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/archivey-dev/archivey/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/archivey-dev/archivey/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/archivey-dev/archivey/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/archivey-dev/archivey/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/archivey-dev/archivey/compare/v0.2.0...v0.2.1

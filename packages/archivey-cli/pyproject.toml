@@ -13,7 +13,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archivey-cli"
-version = "0.5.0.dev0"
+version = "0.5.0"
 description = "The archivey command-line tool, with archivey's recommended optional packages"
 readme = "README.md"
 license = { text = "MIT" }
@@ -36,7 +36,7 @@ classifiers = [
     "Topic :: System :: Archiving :: Compression",
 ]
 dependencies = [
-    "archivey[recommended]==0.5.0.dev0",
+    "archivey[recommended]==0.5.0",
     # URL arguments (`archivey list https://…`): the CLI reads them through fsspec, and
     # fsspec's http/https backend needs aiohttp. The library itself adds no dependency or
     # extra for them; other stores (s3fs, gcsfs, adlfs) stay the user's to install.

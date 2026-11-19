@@ -46,15 +46,43 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-## Release figures for 0.4.1, 0.4.0, 0.3.0 and 0.2.1
+## Release figures for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1
 
-The figures quoted in the CHANGELOG entries for 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each comes from
-a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs, Python
-3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
+The figures quoted in the CHANGELOG entries for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each
+comes from a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs,
+Python 3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
 three rounds per side. A cell is the fastest of the three rounds, for archivey and for
 its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator on are
 left out, because the default does not use one at this corpus size. The rows are the
 same cases as in [0.2.0 release figures](#020-release-figures-2026-10-21).
+
+### 0.5.0 against 0.4.1 (2026-11-19)
+
+Run 44584589577, the 0.5.0 release branch at `b5c7a01a` as the candidate and the `v0.4.1`
+tag (`054d04cd`) as the baseline:
+
+| Case | archivey 0.4.1 | ratio 0.4.1 | archivey 0.5.0 | ratio 0.5.0 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 41.2 ms | 1.07× | 41.9 ms | 1.08× |
+| `tar_read_all` | 11.0 ms | 3.36× | 10.8 ms | 3.44× |
+| `tarbz2_read_all_accel_off` | 147.2 ms | 1.24× | 144.7 ms | 1.22× |
+| `targz_read_all_accel_off` | 25.4 ms | 1.92× | 25.5 ms | 1.92× |
+| `zip_extract` | 49.3 ms | 2.32× | 48.9 ms | 2.32× |
+| `zip_read_all` | 26.5 ms | 2.31× | 26.1 ms | 2.29× |
+| `rar_many_open_list` | 34.4 ms | 2.39× | 33.6 ms | 2.34× |
+| `rar_nonsolid_open_list` | 9.7 ms | 2.61× | 9.5 ms | 2.58× |
+| `rar_open_list` | 1.5 ms | 10.46× | 1.5 ms | 9.50× |
+| `sevenzip_many_open_list` | 164.1 ms | 1.68× | 148.2 ms | 1.54× |
+| `sevenzip_nonsolid_open_list` | 23.7 ms | 1.55× | 23.1 ms | 1.55× |
+| `sevenzip_open_list` | 2.1 ms | 2.64× | 2.0 ms | 2.64× |
+| `tar_open_list` | 4.2 ms | 2.70× | 4.2 ms | 2.70× |
+| `zip_open_list` | 2.1 ms | 11.51× | 2.2 ms | 10.93× |
+
+`sevenzip_many_open_list` was 148 to 150 ms in all three candidate rounds and 164 to 170
+ms in all three baseline rounds; no 7z change explains it. Outside the table,
+`z_text_read_all` went from 4.14 to 3.85 s (#1649). `z_zeros_read_all` measured 129 to
+170 ms for the baseline and 157 to 199 ms for the candidate, a spread too wide to call a
+change. `tarbz2_read_all_accel_on` went from 118 to 114 ms (#1631).
 
 ### 0.4.1 against 0.4.0 and 0.3.0 (2026-11-18)
 
