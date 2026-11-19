@@ -851,9 +851,12 @@ jobs:
     needs: scope
     if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.scope.outputs.full != 'false' }}
     runs-on: ubuntu-latest
-    # The two full-suite passes take about 40 minutes together (2026-11-18), and a
-    # rerun on 2026-11-19 hit a 45-minute limit in the second pass.
-    timeout-minutes: 60
+    # The two full-suite passes have grown from 28 minutes together (2026-11-14) to
+    # 40 (2026-11-18). On 2026-11-19 a slow runner took 19 minutes for core-only and
+    # was still in the second pass at the old 45-minute limit; at the usual ratio
+    # (second pass about 1.5x core-only) it needed about 50. Raise this from that
+    # worst case, not from a typical run.
+    timeout-minutes: 75
     env:
       UV_PYTHON: ${{ matrix.python }}
     strategy:
@@ -881,8 +884,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: uv run --python ${{ matrix.python }} --no-sync python tests/check_zero_dep_core.py
       # Core-only on PyPy runs on the daily run and on a dispatched run (a release gate,
-      # scripts/release/release.py), not in the merge queue: it is about five of this job's fifteen
-      # minutes, and the CPython core-only legs already cover the fallback paths.
+      # scripts/release/release.py), not in the merge queue: it is a third to two fifths
+      # of this job's time, and the CPython core-only legs already cover the fallback
+      # paths.
       - name: Run full suite (core-only)
         if: ${{ !cancelled() && github.event_name != 'merge_group' }}
         env:
