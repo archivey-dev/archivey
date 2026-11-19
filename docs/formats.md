@@ -21,21 +21,21 @@ read.
 | Compressed TAR (`.tar.gz` or `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, …) | What its compressor needs (below) |
 | 7z (`.7z`) | Core. `[recommended]` adds PPMd, Deflate64, Brotli, LZ4, AES, and Zstandard before Python 3.14 |
 | RAR (`.rar`, volume sets such as `.part1.rar` or `.r00`) | Core lists it and reads uncompressed members. Compressed members need the `unrar` program ([RAR](#rar)) |
-| ISO 9660 (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
-| SquashFS (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
-| XAR (`.xar`) | Core |
-| macOS installer packages (`.pkg`, `.mpkg`, `.xip`) | Core |
-| CAB (`.cab`) | Core |
-| Debian packages (`.deb`, `.udeb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
-| RPM (`.rpm`) | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
-| makeself (`.run`) | Core. The payload needs what its compressor needs |
-| LHA (`.lzh`, `.lha`), ARJ (`.arj`) | Core |
-| CPIO (`.cpio`), ar (`.a`, `.lib`) | Core |
 | gzip (`.gz`), bzip2 (`.bz2`), xz (`.xz`), lzip (`.lz`), LZMA Alone (`.lzma`), zlib (`.zz`), Unix compress (`.Z`), lzop (`.lzo`), Snappy (`.sz`), Apple's pbzx | Core. `[recommended]` makes `.lzo` and `.sz` faster |
 | Zstandard (`.zst`) | Core on Python 3.14 and later, `[recommended]` before |
 | LZ4 (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
 | bzip3 (`.bz3`) | `[bzip3]` |
 | uuencode (`.uu`, `.uue`), base64 (`.b64`) | Core |
+| ISO 9660 (`.iso`, and CD images as `.bin` with `.cue`) | `[recommended]` |
+| SquashFS (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard images need `[recommended]` before Python 3.14, and LZ4 images need `[recommended]` |
+| Debian packages (`.deb`, `.udeb`) | Core. Zstandard packages need `[recommended]` before Python 3.14 |
+| RPM (`.rpm`) | Core. Zstandard payloads (Fedora's default) need `[recommended]` before Python 3.14 |
+| XAR (`.xar`) | Core |
+| macOS installer packages (`.pkg`, `.mpkg`, `.xip`) | Core |
+| CAB (`.cab`) | Core |
+| makeself (`.run`) | Core. The payload needs what its compressor needs |
+| LHA (`.lzh`, `.lha`), ARJ (`.arj`) | Core |
+| CPIO (`.cpio`), ar (`.a`, `.lib`) | Core |
 | A directory on disk | Core |
 
 A UDIF disk image (`.dmg`) is recognised and refused ([Disk images](#disk-images)).
@@ -82,8 +82,9 @@ them.
 If you'll seek backwards often in a file from the last two groups, extracting the member to a file
 first is usually faster.
 
+## Everyday archives
 
-## ZIP
+### ZIP
 
 Archivey reads the index at the end of the file, so listing is quick and every member can be read
 directly.
@@ -114,8 +115,7 @@ from the middle, or data after a member's compressed stream. The
 [ZIP development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md)
 describes each case and the error it raises.
 
-
-## TAR (and compressed TAR)
+### TAR (and compressed TAR)
 
 Members of a plain `.tar` file are read directly. A compressed TAR is solid: reaching a member
 means decompressing everything before it, so a single `stream_members()` pass is the fast way to
@@ -144,8 +144,7 @@ data, PAX records set twice, a lone zero block), are refused or reported with a 
 [TAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md)
 describes each case.
 
-
-## 7z
+### 7z
 
 Archivey reads the index at the end of the file. Members are solid unless the archive was
 written without solid blocks (`7z -ms=off`). A `stream_members()` pass decodes each solid block
@@ -168,8 +167,7 @@ Damaged archives, and the details of confirming a password among several candida
 in the [7z development
 docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md).
 
-
-## RAR
+### RAR
 
 Archivey reads the RAR structure itself, RAR 1.5 to RAR5, but no Python package decodes RAR
 compression. Listing and reading uncompressed members need nothing extra. Compressed members are
@@ -212,309 +210,6 @@ ArchiveyConfig(rar_decompressor="none")   # run no program
 
 Damaged archives, and the details of how archivey runs `unrar` and `unar`, are covered in the
 [RAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md).
-
-## ISO 9660
-
-Reading an ISO image needs `[recommended]` (`pycdlib`). An image can carry several name trees
-over the same files. Archivey lists Rock Ridge first, then Joliet, then plain ISO 9660, and says
-which in `ArchiveInfo.extra["iso.namespace"]`.
-
-- **Supported:** Rock Ridge, Joliet and plain ISO 9660 names. zisofs compression (`mkzftree`,
-  `genisoimage -z`, `xorriso --zisofs`). Files of 4 GiB or more, stored in several pieces, read as
-  one member. Raw CD images (`.bin` with or without its `.cue`) in Mode 1 or Mode 2 Form 1,
-  multisession discs included. Hybrid installer images, whose EFI partition sits after the ISO
-  data, open without a trailing-data warning.
-- **Not supported:** UDF: a DVD image that also has an ISO 9660 tree is listed from that tree,
-  and a UDF-only image (such as a Blu-ray) is not recognised. zisofs2 members are listed, and
-  reading one raises `UnsupportedFeatureError`. Video and audio-only CD images raise
-  `UnsupportedFeatureError`.
-
-- **Names:** Rock Ridge and plain names are read as UTF-8, then with `encoding=` when you pass
-  one. Without it, a name that isn't UTF-8 takes the matching Joliet name when the image has one,
-  and is escaped otherwise. Joliet names are UTF-16.
-- **File versions:** the `;1` at the end of a plain or Joliet file name is dropped, and the number
-  is kept in `extra["iso.version"]`. When a folder holds several versions of one name, the highest
-  takes the bare name, and older ones are listed as `FOO.;1` with `is_current=False`, as RAR file
-  versions are.
-- **Files in other trees:** a file that only an unlisted tree holds (such as Joliet or UDF, which
-  Windows and 7-Zip read) is not a member. Archivey reports it with `MEMBER_READERS_DISAGREE`.
-- **Boot catalog:** a bootable image's boot catalog is listed as an ordinary file, as a mounted
-  image shows it.
-- **CD images:** archivey reads the session an operating system would mount, from one track file
-  or one per track, with or without the `.cue`. When the sector addresses can't place a later
-  session, it reads the first and reports `ARCHIVE_UNREAD_SESSION`.
-- **Damage:** ISO 9660 stores no checksums, so damaged data comes back without an error. A
-  truncated image still opens when its folders survive, and only the files the cut reaches raise
-  `TruncatedError`. An image with UDF doesn't open once truncated, because the UDF anchor sits in
-  its last block.
-
-Archivey also refuses folder trees that loop back on themselves, survives Rock Ridge entries
-`pycdlib` can't parse, and checks each CD sector's header as it reads. The details, and how
-`.cue` sheets and multisession discs are read, are in the
-[ISO development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md).
-
-## SquashFS
-
-gzip, xz, LZMA and LZO images need nothing extra. Zstandard images need `[recommended]` before
-Python 3.14, and LZ4 images need `[recommended]`. Members are read directly. `ArchiveInfo.extra`
-names the compressor (`"squashfs.compressor"`) and the block size (`"squashfs.block_size"`).
-
-- **Supported:** SquashFS 4.0, written since 2009. Files, folders, symlinks, hard links, sparse
-  files (`is_sparse`), and devices, FIFOs and sockets (`OTHER`).
-- **Not supported:** SquashFS 3 and older, which raise `UnsupportedFeatureError`. Extended
-  attributes are not read.
-- **Damage:** SquashFS stores no checksums of its own. A damaged block is caught when it doesn't
-  decode to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
-
-The [SquashFS
-development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md)
-cover the layout and how damaged images are handled.
-
-## XAR
-
-The archive format written by Apple's `xar` and `bsdtar --format xar`. macOS installer packages
-and `.xip` files are XAR archives too: archivey opens them as
-[installer packages](#macos-installer-packages), and as XAR only with `format=ArchiveFormat.XAR`.
-XAR needs nothing extra. Members are read directly, each compressed on its own.
-
-- **Supported:** stored, gzip, bzip2, LZMA and xz data. MD5, SHA-1, SHA-224, SHA-256, SHA-384
-  and SHA-512 checksums.
-- **Checksums:** the index's own checksum is checked at open. Each file stores a checksum of its
-  data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
-  its end.
-- **Names** stored as base64, as writers do for bytes that aren't UTF-8, are decoded with
-  `encoding=` like names in any other format.
-
-The [XAR development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md) cover the index,
-its limits, hard links, and the shapes archivey refuses.
-
-## macOS installer packages
-
-A macOS installer package (`.pkg`, `.mpkg`, written by `pkgbuild` and `productbuild`) or an
-Xcode `.xip` is a [XAR](#xar) archive whose payloads are compressed CPIO archives. Archivey lists
-the files inside the payloads, as `pkgutil --expand-full` unpacks them, under a folder named after
-the payload: `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and
-the other files are listed as they are. Packages need nothing extra.
-
-- **Supported:** component packages, product archives with one folder per component, and `.xip`.
-  Payloads compressed with gzip or Apple's pbzx.
-- **Not supported:** signatures are not checked, so use `pkgutil --check-signature` for that.
-- **Listing** decodes every payload. Within one payload, reading a file decodes the payload up to
-  it, so `stream_members()` and `extract_all()` decode each payload once.
-- **Checksums:** each payload's XAR checksum is checked as the listing reads it, and a payload
-  that fails raises `CorruptionError`. Files from a payload have nothing in `member.hashes`;
-  `Distribution`, `Bom` and the other XAR files keep their XAR checksum there.
-- **The raw layout:** `format=ArchiveFormat.XAR` lists the XAR files instead, with each payload
-  as one file.
-
-A file named `.pkg`, `.mpkg` or `.xip` is opened as a package, and one named `.xar` as XAR. Without
-either name, a XAR whose index lists a `Distribution` or `PackageInfo`, or both `Content` and
-`Metadata`, is a package. A payload that is not a CPIO is listed as the one file it is, and a
-payload file that would extract outside its folder (`../Bom`) raises `CorruptionError`. The
-[XAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
-cover packages too.
-
-## CAB
-
-Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and what
-`makecab` and `gcab` write. Cabinets need nothing extra: MSZIP is read with Python's `zlib`, and
-LZX is decoded by archivey itself, in Python, at a few megabytes a second.
-
-- **Supported:** stored, MSZIP and LZX folders.
-- **Not supported:** Quantum-compressed members are listed, and reading one raises
-  `UnsupportedFeatureError`. A cabinet split across several files (`file.cab`, `file2.cab`) raises
-  `UnsupportedFeatureError` at open.
-- **Solid folders:** a cabinet groups its files into folders, each one compressed stream.
-  Reaching a file decodes its folder from the start. Reading the files in listed order, as
-  `stream_members()` does, decodes each folder once.
-- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. A Japanese cabinet from
-  `makecab` is usually `encoding="cp932"`. A cabinet stores paths, not folders, and `\` becomes
-  `/`.
-- **Checksums:** each data block stores a checksum, checked as it is read, so a member read to its
-  end is checked when its blocks carry one (some writers store 0, meaning none).
-
-Archivey also refuses a cabinet whose file table doesn't match its folders, and lists edited or
-crafted cabinets in an order that decodes each folder once. The
-[CAB development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cab.md)
-have the details.
-
-## LHA
-
-LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari ST
-and Japanese PCs, and from LHa for UNIX. They need nothing extra: archivey decodes the methods
-itself, in Python, at about 4 to 8 MB a second. Each member is compressed on its own and read
-directly.
-
-- **Supported:** header levels 0 to 3. Stored members and the `-lh1-`, `-lh4-` to `-lh7-`,
-  `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Self-extracting programs for DOS, Windows, the
-  Amiga, the Atari and the X68000 ([Self-extracting archives](#self-extracting-archives)). Mac
-  files from MacLHA, read as their data fork, or their resource fork when the data fork is empty,
-  as `lhasa` reads them.
-- **Not supported:** `-lh2-`, `-lh3-`, `-pm1-` and `-pm2-` members. They are listed, and reading
-  one raises `UnsupportedFeatureError`.
-- **Checksums:** each member stores a CRC-16 of its data, checked when you read it to its end.
-- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. An archive from a Japanese PC
-  is usually `encoding="cp932"`.
-
-The [LHA development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/lha.md) cover header
-levels, the per-system fields, and how the MacLHA wrapper is recognised.
-
-## ARJ
-
-ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Linux). They need
-nothing extra: archivey decodes methods 0 to 4 itself, in Python, at about 10 to 30 MB a second.
-Each member is compressed on its own and read directly.
-
-- **Supported:** methods 0 (stored) to 4. Self-extracting programs: ARJ's DOS `.EXE` modules and
-  ARJ for Unix's ELF programs ([Self-extracting archives](#self-extracting-archives)).
-- **Not supported:** garbled (password-protected) members are listed with `is_encrypted`, and
-  reading one raises `UnsupportedFeatureError`, as does reading a member split across the volumes
-  of a multi-volume set.
-- **Checksums:** each member stores a CRC-32 of its data, checked when you read it to its end.
-- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
-  `encoding="cp437"`, or `"cp866"` from Russian systems.
-
-The [ARJ development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md) cover the
-per-system fields and the ARJ-SECURITY envelope.
-
-## CPIO
-
-CPIO is the old Unix archive format still used inside RPM packages, Linux initramfs images and macOS
-installer payloads. CPIO archives need nothing extra. Members are read directly, or inside a
-compressor (`.cpio.gz`, …) one after another, as in a compressed TAR.
-
-- **Supported:** the binary (either byte order), odc, newc and crc variants, plain or inside any
-  compressor a TAR can be in. `ArchiveInfo.extra["cpio.variant"]` names the variant as GNU cpio's
-  `-H` option does. In crc, each file's checksum is checked as it is read.
-- **Detection:** a binary archive (GNU cpio's default) has only a 2-byte magic, so it is found
-  only by a name ending in `.cpio` (or `.cpio.gz`, …), or with `format="cpio"` or
-  `always_probe_content=True`.
-- **Hard links:** names that share a device and inode are one file. newc and crc store the data
-  with the last name, so archivey lists that name first and the others right after it as
-  `HARDLINK` members.
-- **Endings:** an archive cut before its trailer raises `TruncatedError`.
-
-The [CPIO development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md) cover afio's
-large headers, detection inside a compressor, and data after the trailer.
-
-## ar
-
-ar archives (static libraries, Windows `.lib` files) need nothing extra. Every member is a file,
-read directly: ar has no folders or links.
-
-- **Supported:** the GNU (System V, Windows `.lib`) and BSD (macOS) dialects.
-  `ArchiveInfo.extra["ar.dialect"]` says which.
-- **Not supported:** thin archives (`!<thin>`), which only name files kept outside them, raise
-  `UnsupportedFeatureError`.
-- **Symbol table:** the index a linker uses to find which member defines each symbol (`/`,
-  `/SYM64/`, `__.SYMDEF`) is not listed as a member. `ArchiveInfo.extra["ar.symbol_table"]` is
-  `True` when the archive has one; its contents are not read.
-- **macOS padding:** macOS `ar` pads members with newlines and counts the padding in the size, so
-  the padding is part of the member, as `llvm-ar` and `bsdtar` extract it.
-
-The [ar development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md)
-cover long names in each dialect and the streaming details.
-
-## Debian packages
-
-A `.deb` is an ar archive holding two tars: the control files and the files the package
-installs. Archivey lists it as `dpkg-deb -R` unpacks it: the installed files under their own
-names, and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. xz,
-gzip, bzip2 and LZMA packages need nothing extra, and Zstandard ones need `[recommended]` before
-Python 3.14. Listing decompresses both tars, and members are read one after another, as in a
-compressed TAR.
-
-- **Package fields:** `ArchiveInfo.extra` has `deb.package`, `deb.version` and
-  `deb.architecture` from the control file, once the listing or `stream_members()` has read it.
-- **Checksums:** each file that `DEBIAN/md5sums` lists gets its MD5 in `member.hashes`, checked
-  when you read it to its end.
-- **The raw layout:** `format=ArchiveFormat.AR` lists the three ar members instead
-  (`debian-binary`, `control.tar.xz`, `data.tar.xz`), to read a tar whole.
-
-Archivey follows `dpkg-deb` on which members it reads, and refuses a package whose data files
-or links would land in `DEBIAN/` or let one extraction write through another's symlink. The
-[Debian development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md) have
-the rules and their limits.
-
-## RPM
-
-An RPM package is a header listing every file, followed by a compressed CPIO payload. gzip,
-bzip2, xz and LZMA payloads need nothing extra, and Zstandard ones (Fedora's default) need
-`[recommended]` before Python 3.14.
-
-- **Supported:** binary and source packages, RPM 3, 4 and 6.
-- **Not supported:** delta RPMs, and payloads in a compression archivey can't decode, raise
-  `UnsupportedFeatureError`.
-- **Listing** comes from the header alone, so nothing is decompressed until you read a member.
-  Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for `/usr/bin/tool`.
-- **Reading:** one compression stream holds every file. Members are listed in the order the
-  payload stores them, so `stream_members()` and `extract_all()` read it once, front to back;
-  opening members out of order decodes the files before them again.
-- **Fields** come from the header, as `rpm` installs them. Owners are names (`uname`, `gname`),
-  and `uid` and `gid` are `None`. `%ghost` files are not stored, and are not members.
-  `ArchiveInfo.extra` holds `rpm.name`, `rpm.version`, `rpm.release`, `rpm.arch` and more.
-- **Checksums:** the header's own digests are checked at open, and each file's digest as it is
-  read. They catch damage, not tampering: signatures are not checked, so use `rpm -K` for that.
-
-Damage to the payload is found only when a member is read, since listing never reads it. The
-[RPM development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rpm.md)
-cover payload forms, hard links, symlink targets and how damage is reported.
-
-## makeself
-
-A makeself archive is a `.run` installer: a shell script that unpacks the TARs stored after it.
-NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are shipped this way.
-Archivey reads the TARs and never runs the script. It finds them by
-the script's first lines, whatever the file is called. The payload needs what its compressor needs
-(as for the same `.tar.gz`, `.tar.zst`, …). Listing decompresses it, and members are read one after
-another.
-
-- **Supported:** makeself 2.2.0 and later. Several payloads (makeself 2.2.0 to 2.4.0 add a TAR
-  at each `--append`), listed in the order makeself extracts them. `--base64` payloads, and
-  `--ssl-encrypt` ones with `password=` and `cryptography`.
-- **Not supported:** `--gpg-encrypt` payloads raise `UnsupportedFeatureError`.
-- **Checksums:** the CRC, MD5 and SHA-256 that the script stores for each payload are checked
-  when the payload is read to its end. A mismatch raises `CorruptionError`.
-- **Archive fields:** `ArchiveInfo.extra` holds the label, the command run after extraction
-  (`makeself.script`), the target folder and the compression.
-
-Since archivey doesn't run the script, a script that does more than unpack can leave a different
-result than running the `.run` file would. The [makeself
-development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/makeself.md)
-cover the header forms, the encryption schemes and the limits.
-
-## Disk images
-
-A macOS disk image (`.dmg`, UDIF) is recognised and refused with `UnsupportedFeatureError`, so it
-isn't mistaken for the zlib, bzip2 or xz stream its first block happens to be. To get at the
-files, convert or mount the image first, for example with `7z x`, `dmg2img`, or `hdiutil attach`
-on macOS. An uncompressed image that holds an ISO 9660 filesystem is read as that ISO.
-
-The [DMG development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) say
-how the image is recognised.
-
-## Directory
-
-A folder on disk can be opened like an archive, with the same API, which helps tests and code that
-handles folders and archives alike. It needs nothing extra. Member streams have the same defaults
-as an archive's: forward-only, one at a time, until you pass `seekable_members=True` or
-`concurrent_operations=True`.
-
-- **Hard links:** when several names in the folder share one file, the first name the walk reaches
-  is a `FILE` and the others are `HARDLINK` members to it, as `tar` lists them.
-- **Names** come from the filesystem, so `encoding=` has no effect.
-- **`/proc` and `/sys`** files report sizes that aren't their content's, so they are listed with
-  `size` set to `None` and read to their end.
-
-The [directory
-development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md)
-cover the walk order and symlinks.
 
 ## Single-file compressors
 
@@ -566,11 +261,318 @@ Some formats have more to know:
   base64 one by a `.b64` or `.base64` name, or when its decoded start is a format archivey knows.
   Neither has a checksum.
 
-The [single-file
-development
-docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md) cover
-when the size arrives, how appended bytes are told apart from a damaged header, which pipe reads
-wait and why, and the checks archivey adds around the accelerators.
+The [single-file development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md) cover when
+the size arrives, how appended bytes are told apart from a damaged header, which pipe reads wait and
+why, and the checks archivey adds around the accelerators.
+
+## Disk and filesystem images
+
+### ISO 9660
+
+Reading an ISO image needs `[recommended]` (`pycdlib`). An image can carry several name trees
+over the same files. Archivey lists Rock Ridge first, then Joliet, then plain ISO 9660, and says
+which in `ArchiveInfo.extra["iso.namespace"]`.
+
+- **Supported:** Rock Ridge, Joliet and plain ISO 9660 names. zisofs compression (`mkzftree`,
+  `genisoimage -z`, `xorriso --zisofs`). Files of 4 GiB or more, stored in several pieces, read as
+  one member. Raw CD images (`.bin` with or without its `.cue`) in Mode 1 or Mode 2 Form 1,
+  multisession discs included. Hybrid installer images, whose EFI partition sits after the ISO
+  data, open without a trailing-data warning.
+- **Not supported:** UDF: a DVD image that also has an ISO 9660 tree is listed from that tree,
+  and a UDF-only image (such as a Blu-ray) is not recognised. zisofs2 members are listed, and
+  reading one raises `UnsupportedFeatureError`. Video and audio-only CD images raise
+  `UnsupportedFeatureError`.
+
+- **Names:** Rock Ridge and plain names are read as UTF-8, then with `encoding=` when you pass
+  one. Without it, a name that isn't UTF-8 takes the matching Joliet name when the image has one,
+  and is escaped otherwise. Joliet names are UTF-16.
+- **File versions:** the `;1` at the end of a plain or Joliet file name is dropped, and the number
+  is kept in `extra["iso.version"]`. When a folder holds several versions of one name, the highest
+  takes the bare name, and older ones are listed as `FOO.;1` with `is_current=False`, as RAR file
+  versions are.
+- **Files in other trees:** a file that only an unlisted tree holds (such as Joliet or UDF, which
+  Windows and 7-Zip read) is not a member. Archivey reports it with `MEMBER_READERS_DISAGREE`.
+- **Boot catalog:** a bootable image's boot catalog is listed as an ordinary file, as a mounted
+  image shows it.
+- **CD images:** archivey reads the session an operating system would mount, from one track file
+  or one per track, with or without the `.cue`. When the sector addresses can't place a later
+  session, it reads the first and reports `ARCHIVE_UNREAD_SESSION`.
+- **Damage:** ISO 9660 stores no checksums, so damaged data comes back without an error. A
+  truncated image still opens when its folders survive, and only the files the cut reaches raise
+  `TruncatedError`. An image with UDF doesn't open once truncated, because the UDF anchor sits in
+  its last block.
+
+Archivey also refuses folder trees that loop back on themselves, survives Rock Ridge entries
+`pycdlib` can't parse, and checks each CD sector's header as it reads. The details, and how
+`.cue` sheets and multisession discs are read, are in the
+[ISO development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md).
+
+### SquashFS
+
+gzip, xz, LZMA and LZO images need nothing extra. Zstandard images need `[recommended]` before
+Python 3.14, and LZ4 images need `[recommended]`. Members are read directly. `ArchiveInfo.extra`
+names the compressor (`"squashfs.compressor"`) and the block size (`"squashfs.block_size"`).
+
+- **Supported:** SquashFS 4.0, written since 2009. Files, folders, symlinks, hard links, sparse
+  files (`is_sparse`), and devices, FIFOs and sockets (`OTHER`).
+- **Not supported:** SquashFS 3 and older, which raise `UnsupportedFeatureError`. Extended
+  attributes are not read.
+- **Damage:** SquashFS stores no checksums of its own. A damaged block is caught when it doesn't
+  decode to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
+
+The [SquashFS
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md)
+cover the layout and how damaged images are handled.
+
+### Disk images
+
+A macOS disk image (`.dmg`, UDIF) is recognised and refused with `UnsupportedFeatureError`, so it
+isn't mistaken for the zlib, bzip2 or xz stream its first block happens to be. To get at the
+files, convert or mount the image first, for example with `7z x`, `dmg2img`, or `hdiutil attach`
+on macOS. An uncompressed image that holds an ISO 9660 filesystem is read as that ISO.
+
+The [DMG development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) say how the image
+is recognised.
+
+## Packages and installers
+
+### Debian packages
+
+A `.deb` is an ar archive holding two tars: the control files and the files the package
+installs. Archivey lists it as `dpkg-deb -R` unpacks it: the installed files under their own
+names, and the control files (`control`, `md5sums`, the maintainer scripts) under `DEBIAN/`. xz,
+gzip, bzip2 and LZMA packages need nothing extra, and Zstandard ones need `[recommended]` before
+Python 3.14. Listing decompresses both tars, and members are read one after another, as in a
+compressed TAR.
+
+- **Package fields:** `ArchiveInfo.extra` has `deb.package`, `deb.version` and
+  `deb.architecture` from the control file, once the listing or `stream_members()` has read it.
+- **Checksums:** each file that `DEBIAN/md5sums` lists gets its MD5 in `member.hashes`, checked
+  when you read it to its end.
+- **The raw layout:** `format=ArchiveFormat.AR` lists the three ar members instead
+  (`debian-binary`, `control.tar.xz`, `data.tar.xz`), to read a tar whole.
+
+Archivey follows `dpkg-deb` on which members it reads, and refuses a package whose data files or
+links would land in `DEBIAN/` or let one extraction write through another's symlink. The [Debian
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md) have
+the rules and their limits.
+
+### RPM
+
+An RPM package is a header listing every file, followed by a compressed CPIO payload. gzip,
+bzip2, xz and LZMA payloads need nothing extra, and Zstandard ones (Fedora's default) need
+`[recommended]` before Python 3.14.
+
+- **Supported:** binary and source packages, RPM 3, 4 and 6.
+- **Not supported:** delta RPMs, and payloads in a compression archivey can't decode, raise
+  `UnsupportedFeatureError`.
+- **Listing** comes from the header alone, so nothing is decompressed until you read a member.
+  Members are named as `rpm2cpio | cpio -i` extracts them: `usr/bin/tool` for `/usr/bin/tool`.
+- **Reading:** one compression stream holds every file. Members are listed in the order the
+  payload stores them, so `stream_members()` and `extract_all()` read it once, front to back;
+  opening members out of order decodes the files before them again.
+- **Fields** come from the header, as `rpm` installs them. Owners are names (`uname`, `gname`),
+  and `uid` and `gid` are `None`. `%ghost` files are not stored, and are not members.
+  `ArchiveInfo.extra` holds `rpm.name`, `rpm.version`, `rpm.release`, `rpm.arch` and more.
+- **Checksums:** the header's own digests are checked at open, and each file's digest as it is
+  read. They catch damage, not tampering: signatures are not checked, so use `rpm -K` for that.
+
+Damage to the payload is found only when a member is read, since listing never reads it. The
+[RPM development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rpm.md)
+cover payload forms, hard links, symlink targets and how damage is reported.
+
+### XAR
+
+The archive format written by Apple's `xar` and `bsdtar --format xar`. macOS installer packages
+and `.xip` files are XAR archives too: archivey opens them as
+[installer packages](#macos-installer-packages), and as XAR only with `format=ArchiveFormat.XAR`.
+XAR needs nothing extra. Members are read directly, each compressed on its own.
+
+- **Supported:** stored, gzip, bzip2, LZMA and xz data. MD5, SHA-1, SHA-224, SHA-256, SHA-384
+  and SHA-512 checksums.
+- **Checksums:** the index's own checksum is checked at open. Each file stores a checksum of its
+  data (SHA-1 by default), which is in `member.hashes` and checked when you read the member to
+  its end.
+- **Names** stored as base64, as writers do for bytes that aren't UTF-8, are decoded with
+  `encoding=` like names in any other format.
+
+The [XAR development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md) cover the index,
+its limits, hard links, and the shapes archivey refuses.
+
+### macOS installer packages
+
+A macOS installer package (`.pkg`, `.mpkg`, written by `pkgbuild` and `productbuild`) or an
+Xcode `.xip` is a [XAR](#xar) archive whose payloads are compressed CPIO archives. Archivey lists
+the files inside the payloads, as `pkgutil --expand-full` unpacks them, under a folder named after
+the payload: `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and
+the other files are listed as they are. Packages need nothing extra.
+
+- **Supported:** component packages, product archives with one folder per component, and `.xip`.
+  Payloads compressed with gzip or Apple's pbzx.
+- **Not supported:** signatures are not checked, so use `pkgutil --check-signature` for that.
+- **Listing** decodes every payload. Within one payload, reading a file decodes the payload up to
+  it, so `stream_members()` and `extract_all()` decode each payload once.
+- **Checksums:** each payload's XAR checksum is checked as the listing reads it, and a payload
+  that fails raises `CorruptionError`. Files from a payload have nothing in `member.hashes`;
+  `Distribution`, `Bom` and the other XAR files keep their XAR checksum there.
+- **The raw layout:** `format=ArchiveFormat.XAR` lists the XAR files instead, with each payload
+  as one file.
+
+A file named `.pkg`, `.mpkg` or `.xip` is opened as a package, and one named `.xar` as XAR. Without
+either name, a XAR whose index lists a `Distribution` or `PackageInfo`, or both `Content` and
+`Metadata`, is a package. A payload that is not a CPIO is listed as the one file it is, and a
+payload file that would extract outside its folder (`../Bom`) raises `CorruptionError`. The
+[XAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
+cover packages too.
+
+### CAB
+
+Microsoft cabinets: Windows updates and drivers, the payloads inside many installers, and what
+`makecab` and `gcab` write. Cabinets need nothing extra: MSZIP is read with Python's `zlib`, and
+LZX is decoded by archivey itself, in Python, at a few megabytes a second.
+
+- **Supported:** stored, MSZIP and LZX folders.
+- **Not supported:** Quantum-compressed members are listed, and reading one raises
+  `UnsupportedFeatureError`. A cabinet split across several files (`file.cab`, `file2.cab`) raises
+  `UnsupportedFeatureError` at open.
+- **Solid folders:** a cabinet groups its files into folders, each one compressed stream.
+  Reaching a file decodes its folder from the start. Reading the files in listed order, as
+  `stream_members()` does, decodes each folder once.
+- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. A Japanese cabinet from
+  `makecab` is usually `encoding="cp932"`. A cabinet stores paths, not folders, and `\` becomes
+  `/`.
+- **Checksums:** each data block stores a checksum, checked as it is read, so a member read to its
+  end is checked when its blocks carry one (some writers store 0, meaning none).
+
+Archivey also refuses a cabinet whose file table doesn't match its folders, and lists edited or
+crafted cabinets in an order that decodes each folder once. The
+[CAB development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cab.md)
+have the details.
+
+### makeself
+
+A makeself archive is a `.run` installer: a shell script that unpacks the TARs stored after it.
+NVIDIA's Linux drivers, VirtualBox extension packs and many vendor SDKs are shipped this way.
+Archivey reads the TARs and never runs the script. It finds them by
+the script's first lines, whatever the file is called. The payload needs what its compressor needs
+(as for the same `.tar.gz`, `.tar.zst`, …). Listing decompresses it, and members are read one after
+another.
+
+- **Supported:** makeself 2.2.0 and later. Several payloads (makeself 2.2.0 to 2.4.0 add a TAR
+  at each `--append`), listed in the order makeself extracts them. `--base64` payloads, and
+  `--ssl-encrypt` ones with `password=` and `cryptography`.
+- **Not supported:** `--gpg-encrypt` payloads raise `UnsupportedFeatureError`.
+- **Checksums:** the CRC, MD5 and SHA-256 that the script stores for each payload are checked
+  when the payload is read to its end. A mismatch raises `CorruptionError`.
+- **Archive fields:** `ArchiveInfo.extra` holds the label, the command run after extraction
+  (`makeself.script`), the target folder and the compression.
+
+Since archivey doesn't run the script, a script that does more than unpack can leave a different
+result than running the `.run` file would. The [makeself
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/makeself.md)
+cover the header forms, the encryption schemes and the limits.
+
+## Older and Unix formats
+
+### LHA
+
+LHA and LZH archives, from LHarc, LHA and their kin on DOS, the Amiga, OS/2, OS-9, the Atari ST
+and Japanese PCs, and from LHa for UNIX. They need nothing extra: archivey decodes the methods
+itself, in Python, at about 4 to 8 MB a second. Each member is compressed on its own and read
+directly.
+
+- **Supported:** header levels 0 to 3. Stored members and the `-lh1-`, `-lh4-` to `-lh7-`,
+  `-lhx-`, `-lk7-`, `-lzs-` and `-lz5-` methods. Self-extracting programs for DOS, Windows, the
+  Amiga, the Atari and the X68000 ([Self-extracting archives](#self-extracting-archives)). Mac
+  files from MacLHA, read as their data fork, or their resource fork when the data fork is empty,
+  as `lhasa` reads them.
+- **Not supported:** `-lh2-`, `-lh3-`, `-pm1-` and `-pm2-` members. They are listed, and reading
+  one raises `UnsupportedFeatureError`.
+- **Checksums:** each member stores a CRC-16 of its data, checked when you read it to its end.
+- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. An archive from a Japanese PC
+  is usually `encoding="cp932"`.
+
+The [LHA development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/lha.md) cover header
+levels, the per-system fields, and how the MacLHA wrapper is recognised.
+
+### ARJ
+
+ARJ archives, from ARJ for DOS, ARJ32 and ARJ for Unix (the `arj` command on Linux). They need
+nothing extra: archivey decodes methods 0 to 4 itself, in Python, at about 10 to 30 MB a second.
+Each member is compressed on its own and read directly.
+
+- **Supported:** methods 0 (stored) to 4. Self-extracting programs: ARJ's DOS `.EXE` modules and
+  ARJ for Unix's ELF programs ([Self-extracting archives](#self-extracting-archives)).
+- **Not supported:** garbled (password-protected) members are listed with `is_encrypted`, and
+  reading one raises `UnsupportedFeatureError`, as does reading a member split across the volumes
+  of a multi-volume set.
+- **Checksums:** each member stores a CRC-32 of its data, checked when you read it to its end.
+- **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
+  `encoding="cp437"`, or `"cp866"` from Russian systems.
+
+The [ARJ development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md) cover the
+per-system fields and the ARJ-SECURITY envelope.
+
+### CPIO
+
+CPIO is the old Unix archive format still used inside RPM packages, Linux initramfs images and macOS
+installer payloads. CPIO archives need nothing extra. Members are read directly, or inside a
+compressor (`.cpio.gz`, …) one after another, as in a compressed TAR.
+
+- **Supported:** the binary (either byte order), odc, newc and crc variants, plain or inside any
+  compressor a TAR can be in. `ArchiveInfo.extra["cpio.variant"]` names the variant as GNU cpio's
+  `-H` option does. In crc, each file's checksum is checked as it is read.
+- **Detection:** a binary archive (GNU cpio's default) has only a 2-byte magic, so it is found
+  only by a name ending in `.cpio` (or `.cpio.gz`, …), or with `format="cpio"` or
+  `always_probe_content=True`.
+- **Hard links:** names that share a device and inode are one file. newc and crc store the data
+  with the last name, so archivey lists that name first and the others right after it as
+  `HARDLINK` members.
+- **Endings:** an archive cut before its trailer raises `TruncatedError`.
+
+The [CPIO development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md) cover afio's
+large headers, detection inside a compressor, and data after the trailer.
+
+### ar
+
+ar archives (static libraries, Windows `.lib` files) need nothing extra. Every member is a file,
+read directly: ar has no folders or links.
+
+- **Supported:** the GNU (System V, Windows `.lib`) and BSD (macOS) dialects.
+  `ArchiveInfo.extra["ar.dialect"]` says which.
+- **Not supported:** thin archives (`!<thin>`), which only name files kept outside them, raise
+  `UnsupportedFeatureError`.
+- **Symbol table:** the index a linker uses to find which member defines each symbol (`/`,
+  `/SYM64/`, `__.SYMDEF`) is not listed as a member. `ArchiveInfo.extra["ar.symbol_table"]` is
+  `True` when the archive has one; its contents are not read.
+- **macOS padding:** macOS `ar` pads members with newlines and counts the padding in the size, so
+  the padding is part of the member, as `llvm-ar` and `bsdtar` extract it.
+
+The [ar development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md)
+cover long names in each dialect and the streaming details.
+
+## Directory
+
+A folder on disk can be opened like an archive, with the same API, which helps tests and code that
+handles folders and archives alike. It needs nothing extra. Member streams have the same defaults
+as an archive's: forward-only, one at a time, until you pass `seekable_members=True` or
+`concurrent_operations=True`.
+
+- **Hard links:** when several names in the folder share one file, the first name the walk reaches
+  is a `FILE` and the others are `HARDLINK` members to it, as `tar` lists them.
+- **Names** come from the filesystem, so `encoding=` has no effect.
+- **`/proc` and `/sys`** files report sizes that aren't their content's, so they are listed with
+  `size` set to `None` and read to their end.
+
+The [directory
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md)
+cover the walk order and symlinks.
 
 ## Detection
 
