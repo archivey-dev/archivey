@@ -149,15 +149,18 @@ choice).
   top-level `Content`, is replaced by its CPIO's files under a folder of its own name
   (`app.pkg/Payload/Applications/...`), the layout `pkgutil --expand-full` writes; the
   CPIO's `.` is that folder. The format is told from the payload's first bytes (gzip,
-  `pbzx`, `0707`); anything else, or a payload whose first CPIO header cannot be read
-  (`CorruptionError` before the first member), is listed as the file it is. A failure
-  after the first member raises, since files are already listed. The CPIO is read
-  through `ReaderContext.open_nested`, so listing decodes every payload. The payload's
-  XAR checksum is computed as the listing reads it, the rest of the payload drained
-  after the CPIO ends, and a mismatch raises `CorruptionError`. A payload file, or a
-  hard link's target, that extracts outside its folder (`../Bom`, `a/../../Scripts/x`)
-  is refused: it would replace another member of the package. Symlinks inside a payload
-  are not followed for that check; extraction's own link checks apply.
+  `pbzx`, `0707`); anything else, a payload stored with a XAR encoding archivey does not
+  read or the configuration turns off (a codec, or an xz filter such as BCJ, that
+  `FormatPolicy` excludes; reading it raises `UnsupportedFeatureError`), or a payload
+  whose first CPIO header cannot be read (`CorruptionError` before the first member), is
+  listed as the file it is. A failure after the first member raises, since files are
+  already listed. The CPIO is read through `ReaderContext.open_nested`, so listing
+  decodes every payload. The payload's XAR checksum is computed as the listing reads it,
+  the rest of the payload drained after the CPIO ends, and a mismatch raises
+  `CorruptionError`. A payload file, or a hard link's target, that extracts outside its
+  folder (`../Bom`, `a/../../Scripts/x`) is refused: it would replace another member of
+  the package. Symlinks inside a payload are not followed for that check; extraction's
+  own link checks apply.
 - **Opening a file.** `open_member` opens the payload again and calls `open_nested`,
   which yields the one span asked for (`format-plugins`, "An indexed reader reads an
   archive stored inside its archive"). The adapter mutes the inner reader's reports on
@@ -166,8 +169,16 @@ choice).
   not once per file.
 - **Detection.** XAR magic is refined to `PKG` (`ReadBackend.MAGIC_REFINEMENTS`) when
   the name ends in `.pkg`, `.mpkg` or `.xip`, or, for a name that is not `.xar`, when
-  the table of contents' first 256 KiB, decoded from the bytes detection already holds,
-  names a `Distribution` or `PackageInfo`, or both `Content` and `Metadata`.
+  the start of the table of contents names a `Distribution` or `PackageInfo`, or both
+  `Content` and `Metadata`. On a source that can seek, detection reads up to the first
+  64 KiB of the stored (compressed) table of contents for this, past the 4 KiB near
+  window when the table is longer, and decodes at most 256 KiB of it. A forward-only
+  source (a pipe) gives the check only what detection already holds, so a signed package
+  there is answered `XAR`: waiting on the pipe could hold detection, and a package
+  cannot be opened from a pipe in any case (`StreamNotSeekableError`). The extra read
+  happens on XAR magic only: a signed package or `.xip` puts its certificate chain
+  (`<signature>`, `<x-signature>`) before the first `<file>`, and base64 certificates
+  hardly compress, so the names often lie past the near window.
 - **pbzx** (`StreamFormat.PBZX`, `streams/codecs/pbzx_codec.py`). `pbzx`, a 64-bit chunk
   size (Apple writes 16 MiB), then per chunk a 64-bit decoded size, a 64-bit stored
   length and the bytes: stored when the two sizes are equal, else one xz stream. A chunk

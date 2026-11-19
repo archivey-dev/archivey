@@ -411,7 +411,8 @@ the other files are listed as they are. Packages need nothing extra.
 - **The raw layout:** `format=ArchiveFormat.XAR` lists the XAR files instead, with each payload
   as one file.
 
-A payload that is not a CPIO is listed as the one file it is. The
+A payload that is not a CPIO, or that is stored with a XAR encoding archivey does not read or
+`FormatPolicy` turns off, is listed as the one file it is. The
 [XAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
 cover packages too.
 

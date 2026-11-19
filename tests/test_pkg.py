@@ -9,22 +9,33 @@ archive holds a ``Distribution`` and one folder per component package.
 
 from __future__ import annotations
 
+import base64
 import gzip
 import io
+import lzma
+import random
 from pathlib import Path
 
 import pytest
 
 from archivey import (
     ArchiveFormat,
+    ArchiveyConfig,
+    CompressionAlgorithm,
+    FormatPolicy,
     MemberType,
     detect_format,
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import CorruptionError, StreamNotSeekableError
+from archivey.exceptions import (
+    CorruptionError,
+    StreamNotSeekableError,
+    UnsupportedFeatureError,
+)
 from archivey.internal import format_adapter
 from archivey.internal.backends.pkg_reader import is_package
+from tests import xar_util
 from tests.pbzx_util import make_pbzx, odc_cpio
 from tests.streams_util import NonSeekableBytesIO
 from tests.xar_util import XarFile, write_xar
@@ -166,10 +177,54 @@ def test_detection(tmp_path: Path, name: str | None, expected: ArchiveFormat) ->
     assert detect_format(path).format == expected
 
 
+def _signature() -> str:
+    """A ``<signature>`` with a certificate chain, as a signed package's table of
+    contents starts: three certificates of random bytes, which hardly compress."""
+    rng = random.Random(1666)
+    certs = "".join(
+        f"<X509Certificate>{base64.b64encode(rng.randbytes(n)).decode()}"
+        "</X509Certificate>"
+        for n in (1500, 1100, 1200)
+    )
+    return (
+        '<signature style="RSA"><offset>20</offset><size>256</size>'
+        '<KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">'
+        f"<X509Data>{certs}</X509Data></KeyInfo></signature>"
+    )
+
+
+@pytest.mark.parametrize(
+    ("files", "listed"),
+    [
+        (_component(scripts=None), "Payload/Applications/App.txt"),
+        (
+            [
+                XarFile("Content", make_pbzx(_PAYLOAD), encoding="none"),
+                XarFile("Metadata", b"<plist/>"),
+            ],
+            "Content/Applications/App.txt",
+        ),
+    ],
+    ids=["component", "xip"],
+)
+def test_a_signed_package_without_a_name_is_a_package(
+    files: list[XarFile], listed: str
+) -> None:
+    """The certificates fill the bytes before the first ``<file>`` past the 4 KiB
+    near window; detection reads on into the table of contents."""
+    blob = write_xar(files, toc_head=_signature())
+    assert detect_format(io.BytesIO(blob)).format == ArchiveFormat.PKG
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert listed in [m.name for m in archive.members()]
+    # A forward-only source gives the check only the near window: detection does not
+    # wait on a pipe for the rest, and a package cannot be opened from one anyway.
+    assert detect_format(NonSeekableBytesIO(blob)).format == ArchiveFormat.XAR
+
+
 def test_a_plain_xar_is_not_a_package() -> None:
     blob = write_xar([XarFile("a.txt", b"a"), XarFile("Payload", b"not a cpio")])
     assert detect_format(io.BytesIO(blob)).format == ArchiveFormat.XAR
-    assert not is_package(blob, None)
+    assert not is_package(lambda end: blob[:end], None)
 
 
 def test_a_payload_that_holds_no_cpio_is_listed_as_it_is() -> None:
@@ -177,6 +232,65 @@ def test_a_payload_that_holds_no_cpio_is_listed_as_it_is() -> None:
     files[2] = XarFile("Payload", b"something else", encoding="none")
     with open_archive(io.BytesIO(write_xar(files))) as archive:
         assert archive.read("Payload") == b"something else"
+
+
+def test_a_payload_in_an_encoding_archivey_does_not_read_is_listed_as_it_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other members list and read; reading the payload is refused."""
+    monkeypatch.setitem(
+        xar_util.ENCODINGS, "lzfse", ("application/x-lzfse", lambda data: data)
+    )
+    files = _component(scripts=None)
+    files[2] = XarFile("Payload", make_pbzx(_PAYLOAD), encoding="lzfse")
+    with open_archive(io.BytesIO(write_xar(files))) as archive:
+        assert archive.format == ArchiveFormat.PKG
+        assert [m.name for m in archive.members()] == ["Bom", "PackageInfo", "Payload"]
+        assert archive.read("Bom") == b"BOMStore"
+        with pytest.raises(UnsupportedFeatureError):
+            archive.read("Payload")
+
+
+@pytest.mark.parametrize(
+    ("encoding", "excluded"),
+    [
+        # Refused when the member is opened.
+        ("gzip", CompressionAlgorithm.DEFLATE),
+        # Refused only once the decoder reads the block header.
+        ("xz-bcj", CompressionAlgorithm.BCJ),
+    ],
+    ids=["codec", "xz-filter"],
+)
+def test_a_payload_the_configuration_turns_off_is_listed_as_it_is(
+    monkeypatch: pytest.MonkeyPatch, encoding: str, excluded: CompressionAlgorithm
+) -> None:
+    """A payload whose XAR encoding ``FormatPolicy`` excludes is the file it is, as an
+    encoding archivey does not read is; reading it is refused by the policy."""
+    monkeypatch.setitem(
+        xar_util.ENCODINGS,
+        "xz-bcj",
+        (
+            "application/x-xz",
+            # An explicit check: PyPy's lzma passes the default check (-1) through to
+            # liblzma for a filter chain, which refuses it ("Internal error"). CRC64
+            # is the default, so CPython writes the same bytes either way.
+            lambda data: lzma.compress(
+                data,
+                check=lzma.CHECK_CRC64,
+                filters=[{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}],
+            ),
+        ),
+    )
+    files = _component(scripts=None)
+    files[2] = XarFile("Payload", make_pbzx(_PAYLOAD), encoding=encoding)
+    blob = write_xar(files)
+    with open_archive(io.BytesIO(blob)) as archive:
+        assert "Payload/Applications/App.txt" in [m.name for m in archive.members()]
+    config = ArchiveyConfig(formats=FormatPolicy(exclude=[excluded]))
+    with open_archive(io.BytesIO(blob), config=config) as archive:
+        assert [m.name for m in archive.members()] == ["Bom", "PackageInfo", "Payload"]
+        with pytest.raises(UnsupportedFeatureError):
+            archive.read("Payload")
 
 
 @pytest.mark.parametrize(
