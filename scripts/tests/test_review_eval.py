@@ -183,3 +183,4 @@ def test_the_replay_prompt_keeps_subagents_in_the_foreground() -> None:
     # The replay runs headless like the loop, so it carries the loop prompt's rule.
     assert "`run_in_background: false`" in review_eval.REVIEW_PROMPT
     assert "Never end a turn to wait for a subagent" in review_eval.REVIEW_PROMPT
+    assert "on every subagent call" in review_eval.REVIEW_PROMPT

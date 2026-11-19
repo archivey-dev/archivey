@@ -89,10 +89,11 @@ versions):
   to edit files, run the gates or post anything: a subagent sees only the text you give
   it, not this review's rules. One narrow question per agent; send independent
   questions in one message so they run in parallel. Expect to send several per review.
-- In Claude Code, pass `run_in_background: false`. Newer versions start subagents in
-  the background by default, and a headless review (the review loop) ends when a turn
-  ends, so a turn that waits for a background subagent ends the review with no verdict.
-  Foreground calls sent in one message still run in parallel.
+- In Claude Code, pass `run_in_background: false` on every subagent call. Newer
+  versions start subagents in the background by default. A headless review (the review
+  loop) continues only while the model calls tools, so a turn that stops to wait for a
+  background subagent ends the review with no verdict. Foreground calls sent in one
+  message still run in parallel.
 - Ask what the code does, not whether your suspicion holds: "which callers of `X` can
   pass `size=None`, and what do they do with the result?", not "confirm that `X` breaks
   on `None`".
