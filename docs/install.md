@@ -14,7 +14,8 @@ pip install "archivey[bzip3]"        # .bz3 files; not part of [recommended] or 
 If you only want the `archivey` command, `uvx archivey-cli` runs it with everything
 `[recommended]` adds, without installing anything for good, and `pipx install archivey-cli`
 installs it. `archivey-cli` is a separate package that holds no code: it depends on
-`archivey[recommended]` at the same version. `uvx archivey` works too, but it runs the base
+`archivey[recommended]` at the same version, plus `fsspec` and `aiohttp` so the command reads
+HTTP and HTTPS URLs. `uvx archivey` works too, but it runs the base
 package only, because an extra must be named to be installed.
 
 If you use a free-threaded Python build, [Free-threaded Python](#free-threaded-python) has the extra

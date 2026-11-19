@@ -7,7 +7,8 @@ the command works the same, just without the bars.
 To run the command without setting up a project, use `uvx archivey-cli` (for example,
 `uvx archivey-cli extract photos.zip`), or `pipx install archivey-cli` to keep it. The
 `archivey-cli` package brings `[recommended]` with it, so the command reads every format that
-installs everywhere. [Install](install.md) has the details.
+installs everywhere, and `fsspec` and `aiohttp` for [HTTP and HTTPS URLs](#reading-from-a-url).
+[Install](install.md) has the details.
 
 ```bash
 archivey photos.zip                 # list the members (same as archivey list)
@@ -195,11 +196,12 @@ archivey x s3://bucket/backups/2026-11.tar.zst
 archivey cat https://example.com/logs.tar.gz app.log
 ```
 
-Install `fsspec` for URLs, `aiohttp` as well for `http` and `https`, and your store's package,
-such as `s3fs` or `gcsfs`, for others. Credentials, regions and other settings come from where that
-package normally finds them, such as the environment or its configuration file; the command line
-has no option for them. Without fsspec, a URL fails with exit `1` and a message saying what to
-install.
+The `archivey-cli` package installs `fsspec` and `aiohttp`, so `http` and `https` URLs work as it
+comes. With the `archivey` package alone, install `fsspec`, and `aiohttp` for `http` and `https`.
+Other stores need their own package, such as `s3fs` or `gcsfs`. Credentials, regions and other
+settings come from where that package normally finds them, such as the environment or its
+configuration file; the command line has no option for them. Without fsspec, a URL fails with exit
+`1` and a message saying what to install.
 
 A URL is one file, exactly as you typed it. `?`, `*` and `[` in it are not patterns, archivey
 looks for no other volumes of a split archive beside it, and the member patterns after it keep

@@ -31,7 +31,13 @@ def test_companion_version_matches_root() -> None:
 
 
 def test_companion_pins_recommended_at_the_same_version() -> None:
-    assert COMPANION["dependencies"] == [f"archivey[recommended]=={ROOT['version']}"]
+    # fsspec and aiohttp make HTTP(S) URL arguments work out of the box; the library
+    # declares neither (docs/remote.md), so only the CLI package brings them.
+    assert COMPANION["dependencies"] == [
+        f"archivey[recommended]=={ROOT['version']}",
+        "fsspec>=2024.0.0",
+        "aiohttp>=3.9.0",
+    ]
     assert "recommended" in ROOT["optional-dependencies"]
 
 
