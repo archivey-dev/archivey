@@ -1,0 +1,31 @@
+# name-encoding-auto — an opt-in guess for Japanese, Chinese and Korean member names
+
+**Status:** Design draft for review. Implementation can start once the design is
+accepted. It depends on nothing and blocks nothing. Not breaking. Effort: medium.
+
+**Why it matters:** Archives made by older tools store names in a local code page and
+don't say which one. A caller who doesn't know the code page gets garbled names for
+every Japanese, Chinese or Korean archive.
+
+**What it does:** Passing encoding equals auto asks archivey to guess the code page of
+names that are not valid UTF-8. The guess picks among Shift JIS, EUC-JP, GBK, Big5 and
+the Korean code page. It uses small built-in character-frequency tables, about twelve
+kilobytes, and needs no new dependency. When no code page wins clearly, it abstains, and
+the name decodes exactly as it does today.
+
+**Decided:** Latin code pages are never guessed, because every guesser tested was often
+wrong where the default was right. Each name is guessed from the legacy names met so
+far, in archive order, and the guess freezes after the first 256. Each stored name
+decodes once per reader. So streaming and random access give the same names, and so does
+any member limit, with no lookahead on TAR streams. Every guessed name reports the
+existing inferred-encoding diagnostic, and the strict policy refuses it. Plugins get the
+guess through their decode-name helper, and their encoding property reads None.
+Cyrillic, Greek and Hebrew need the chardet library and wait for a later change.
+
+**Your call later:** Whether the frequency tables come from Wikipedia titles, as
+measured, or from public standard character lists. And whether names that happen to be
+valid UTF-8, in an archive confidently guessed as EUC-JP or GBK, should take the guess.
+The recommendation is no.
+
+**Bottom line:** A small, well-measured feature, with the hard consistency question
+settled in the design. It is ready once the review agrees.
