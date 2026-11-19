@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import sys
 import threading
 from collections.abc import Generator
@@ -647,17 +648,19 @@ class WindowPool:
 RANGE_IGNORED_RETRIES = 2
 
 
+# ``bytes a-b/n`` or ``bytes a-b/*``, ASCII digits only: ``str.isdigit`` also takes
+# digits ``int`` refuses (a superscript two).
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(?:\d+|\*)", re.ASCII | re.IGNORECASE)
+
+
 def _check_content_range(url: str, header: str | None, start: int, end: int) -> None:
     """Refuse a ``206`` answer to a request for ``[start, end)`` whose
     ``Content-Range`` is missing or does not start at ``start`` and end inside the
     range. The answer's length is checked by the caller as for any file system."""
     first = last = None
-    if header is not None:
-        unit, _, rest = header.strip().partition(" ")
-        span = rest.partition("/")[0]
-        lo, sep, hi = span.partition("-")
-        if unit.lower() == "bytes" and sep and lo.isdigit() and hi.isdigit():
-            first, last = int(lo), int(hi)
+    match = None if header is None else _CONTENT_RANGE.fullmatch(header.strip())
+    if match is not None:
+        first, last = int(match[1]), int(match[2])
     if first is None or last is None or first != start or not first <= last < end:
         raise OSError(
             f"{display_url(url)}: the server answered a request for bytes "
@@ -706,17 +709,22 @@ def _bounded_http_cat(fs: Any) -> Any:
                 # A partial answer names the bytes it holds; ones that start
                 # elsewhere than asked are refused, never served at the wrong offset.
                 _check_content_range(url, r.headers.get("Content-Range"), start, end)
-                return await r.read(), True
+                # One byte past the range is enough for ``fetch`` to refuse a body
+                # longer than its header says; the rest is never read.
+                return await read_at_most(r, end - start + 1), True
             # The range was ignored: the body is the whole object from byte 0.
             if start > 0:
                 return b"", False
-            out = bytearray()
-            while len(out) < end:
-                chunk = await r.content.read(min(1 << 20, end - len(out)))
-                if not chunk:
-                    break
-                out += chunk
-            return bytes(out), True
+            return await read_at_most(r, end), True
+
+    async def read_at_most(r: Any, limit: int) -> bytes:
+        out = bytearray()
+        while len(out) < limit:
+            chunk = await r.content.read(min(1 << 20, limit - len(out)))
+            if not chunk:
+                break
+            out += chunk
+        return bytes(out)
 
     def run(url: str, start: int, end: int) -> tuple[bytes, bool]:
         return cast("tuple[bytes, bool]", sync(fs.loop, cat, url, start, end))

@@ -426,8 +426,10 @@ class _Handler(BaseHTTPRequestHandler):
     poison: ClassVar[dict[str, tuple[int, int]]] = {}
     agents: ClassVar[list[str]] = []
     ignore_ranges: ClassVar[list[int]] = [0]
-    # A ``Content-Range`` header to send instead of the right one, on every 206.
+    # A ``Content-Range`` header to send instead of the right one, on every 206
+    # (``""``: none at all), and a body to send instead of the range's bytes.
     content_range: ClassVar[list[str | None]] = [None]
+    body_206: ClassVar[list[bytes | None]] = [None]
     ranges: ClassVar[list[str]] = []
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -475,14 +477,18 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self.send_response(206 if ranged else 200)
         if ranged:
-            self.send_header(
-                "Content-Range",
-                self.content_range[0] or f"bytes {start}-{end}/{len(data)}",
-            )
-        self.send_header("Content-Length", str(end - start + 1))
+            header = self.content_range[0]
+            if header != "":
+                self.send_header(
+                    "Content-Range", header or f"bytes {start}-{end}/{len(data)}"
+                )
+        body = data[start : end + 1]
+        if ranged and self.body_206[0] is not None:
+            body = self.body_206[0]
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         try:
-            self.wfile.write(data[start : end + 1])
+            self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass  # the client stopped reading a body it did not need
 
@@ -494,6 +500,7 @@ def http_base() -> Iterator[str]:
     _Handler.files, _Handler.poison, _Handler.agents = {}, {}, []
     _Handler.ignore_ranges[0] = 0
     _Handler.content_range[0] = None
+    _Handler.body_206[0] = None
     _Handler.ranges.clear()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -819,7 +826,18 @@ def test_http_a_whole_body_answer_from_byte_0_is_read_only_as_far_as_needed(
     assert peak < 4 << 20
 
 
-@pytest.mark.parametrize("header", ["bytes 0-99/1000", "bytes */1000", "garbage"])
+@pytest.mark.parametrize(
+    "header",
+    [
+        "bytes 0-99/1000",
+        "bytes */1000",
+        "garbage",
+        "",  # no Content-Range at all
+        # A superscript two, which ``str.isdigit`` takes and ``int`` refuses; sent as
+        # its UTF-8 bytes (``http.server`` writes header values as latin-1).
+        "bytes \u00b2-9/100".encode().decode("latin-1"),
+    ],
+)
 def test_http_a_partial_answer_for_other_bytes_is_refused(
     http_base: str, header: str
 ) -> None:
@@ -837,3 +855,29 @@ def test_http_a_partial_answer_for_other_bytes_is_refused(
             src.read(10)
     finally:
         src.close()
+
+
+def test_http_a_partial_answer_longer_than_its_range_is_not_read_whole(
+    http_base: str,
+) -> None:
+    import tracemalloc
+
+    import fsspec
+
+    from archivey.internal.remote import RangeSource, WindowPool
+
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    # A correct Content-Range over a 32 MiB body.
+    _Handler.body_206[0] = b"\0" * (32 << 20)
+    of = fsspec.open(f"{http_base}/big.bin")
+    src = RangeSource.from_open_file(of, pool=WindowPool(), max_read_through=1 << 20)
+    tracemalloc.start()
+    try:
+        src.seek(100_000)
+        with pytest.raises(OSError, match="does not honour range requests"):
+            src.read(10)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+        src.close()
+    assert peak < 4 << 20
