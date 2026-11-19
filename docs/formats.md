@@ -1,30 +1,11 @@
 # Formats and extras
 
-What each format can do, what it needs installed, and what most often surprises callers. The
-first sections cover what holds across formats; then each format has a section of its own, in
-the same order: what it needs, how it lists and reads, and its quirks.
-
-The maintainer handbook has more depth on
-[7z](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md),
-[ISO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md),
-[SquashFS](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md),
-[CPIO](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md),
-[ar](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md),
-[Debian packages](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md),
-[RAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md),
-[TAR](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md) and
-[ZIP](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md), and on the single-file
-compressors: what they share in
-[single-file.md](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md), then
-[gzip](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/gzip.md),
-[bzip2](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip2.md),
-[bzip3](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/bzip3.md), [xz, lzip and LZMA
-Alone](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xz.md), [zstd and
-LZ4](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zstd-lz4.md),
-[Brotli](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/brotli.md) and
-[`.Z`](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/unix-compress.md), and on [disk
-images](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) and
-[directories](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md).
+Which formats archivey reads, what each needs installed, and what to expect when listing and
+reading it. The table below lists every format and its extra. Each format then has a section
+that starts with what is supported and what isn't. It ends with a link to the format's
+development docs, which explain how archivey parses it, which damaged or unusual archives it
+refuses and why, and where it differs from the format's own tools. The last sections cover
+what holds across formats: detection, reading from a pipe, and self-extracting archives.
 
 ## Overview
 
@@ -130,7 +111,7 @@ directly.
 Damaged and unusual archives are read as far as they can be, and each problem is reported with a
 diagnostic: a missing or damaged index, local headers that disagree with the index, bytes missing
 from the middle, or data after a member's compressed stream. The
-[ZIP handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md)
+[ZIP development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/zip.md)
 describes each case and the error it raises.
 
 
@@ -160,7 +141,7 @@ read many members. Reading one by name after listing resumes from the nearest re
 
 Damaged headers, and header shapes no writer produces (a device or directory header that declares
 data, PAX records set twice, a lone zero block), are refused or reported with a diagnostic. The
-[TAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md)
+[TAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/tar.md)
 describes each case.
 
 
@@ -184,7 +165,8 @@ once, and opening a member in the middle of a block may decode the block again f
 - **Names** are stored as UTF-16, so `encoding=` has no effect.
 
 Damaged archives, and the details of confirming a password among several candidates, are covered
-in the [7z handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md).
+in the [7z development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/7z.md).
 
 
 ## RAR
@@ -229,7 +211,7 @@ ArchiveyConfig(rar_decompressor="none")   # run no program
   for a long time while `unrar` decodes the members ahead of the one you asked for.
 
 Damaged archives, and the details of how archivey runs `unrar` and `unar`, are covered in the
-[RAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md).
+[RAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rar.md).
 
 ## ISO 9660
 
@@ -269,7 +251,7 @@ which in `ArchiveInfo.extra["iso.namespace"]`.
 Archivey also refuses folder trees that loop back on themselves, survives Rock Ridge entries
 `pycdlib` can't parse, and checks each CD sector's header as it reads. The details, and how
 `.cue` sheets and multisession discs are read, are in the
-[ISO handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md).
+[ISO development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/iso.md).
 
 ## SquashFS
 
@@ -285,8 +267,8 @@ names the compressor (`"squashfs.compressor"`) and the block size (`"squashfs.bl
   decode to its length, or when its compressor's own check fails (zlib's Adler-32, the xz CRC).
 
 The [SquashFS
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md) covers
-the layout and how damaged images are handled.
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/squashfs.md)
+cover the layout and how damaged images are handled.
 
 ## XAR
 
@@ -303,8 +285,9 @@ XAR needs nothing extra. Members are read directly, each compressed on its own.
 - **Names** stored as base64, as writers do for bytes that aren't UTF-8, are decoded with
   `encoding=` like names in any other format.
 
-The [XAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
-covers the index, its limits, hard links, and the shapes archivey refuses.
+The [XAR development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md) cover the index,
+its limits, hard links, and the shapes archivey refuses.
 
 ## macOS installer packages
 
@@ -329,8 +312,8 @@ A file named `.pkg`, `.mpkg` or `.xip` is opened as a package, and one named `.x
 either name, a XAR whose index lists a `Distribution` or `PackageInfo`, or both `Content` and
 `Metadata`, is a package. A payload that is not a CPIO is listed as the one file it is, and a
 payload file that would extract outside its folder (`../Bom`) raises `CorruptionError`. The
-[XAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md) covers
-packages too.
+[XAR development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md)
+cover packages too.
 
 ## CAB
 
@@ -353,8 +336,8 @@ LZX is decoded by archivey itself, in Python, at a few megabytes a second.
 
 Archivey also refuses a cabinet whose file table doesn't match its folders, and lists edited or
 crafted cabinets in an order that decodes each folder once. The
-[CAB handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cab.md) has the
-details.
+[CAB development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cab.md)
+have the details.
 
 ## LHA
 
@@ -374,8 +357,9 @@ directly.
 - **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. An archive from a Japanese PC
   is usually `encoding="cp932"`.
 
-The [LHA handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/lha.md)
-covers header levels, the per-system fields, and how the MacLHA wrapper is recognised.
+The [LHA development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/lha.md) cover header
+levels, the per-system fields, and how the MacLHA wrapper is recognised.
 
 ## ARJ
 
@@ -392,8 +376,9 @@ Each member is compressed on its own and read directly.
 - **Names** are UTF-8 when valid, otherwise decoded with `encoding=`. DOS archives are usually
   `encoding="cp437"`, or `"cp866"` from Russian systems.
 
-The [ARJ handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md)
-covers the per-system fields and the ARJ-SECURITY envelope.
+The [ARJ development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/arj.md) cover the
+per-system fields and the ARJ-SECURITY envelope.
 
 ## CPIO
 
@@ -412,8 +397,9 @@ compressor (`.cpio.gz`, …) one after another, as in a compressed TAR.
   `HARDLINK` members.
 - **Endings:** an archive cut before its trailer raises `TruncatedError`.
 
-The [CPIO handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md)
-covers afio's large headers, detection inside a compressor, and data after the trailer.
+The [CPIO development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/cpio.md) cover afio's
+large headers, detection inside a compressor, and data after the trailer.
 
 ## ar
 
@@ -430,8 +416,8 @@ read directly: ar has no folders or links.
 - **macOS padding:** macOS `ar` pads members with newlines and counts the padding in the size, so
   the padding is part of the member, as `llvm-ar` and `bsdtar` extract it.
 
-The [ar handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md)
-covers long names in each dialect and the streaming details.
+The [ar development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/ar.md)
+cover long names in each dialect and the streaming details.
 
 ## Debian packages
 
@@ -451,7 +437,8 @@ compressed TAR.
 
 Archivey follows `dpkg-deb` on which members it reads, and refuses a package whose data files
 or links would land in `DEBIAN/` or let one extraction write through another's symlink. The
-[Debian handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md) has
+[Debian development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/deb.md) have
 the rules and their limits.
 
 ## RPM
@@ -475,8 +462,8 @@ bzip2, xz and LZMA payloads need nothing extra, and Zstandard ones (Fedora's def
   read. They catch damage, not tampering: signatures are not checked, so use `rpm -K` for that.
 
 Damage to the payload is found only when a member is read, since listing never reads it. The
-[RPM handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rpm.md) covers
-payload forms, hard links, symlink targets and how damage is reported.
+[RPM development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/rpm.md)
+cover payload forms, hard links, symlink targets and how damage is reported.
 
 ## makeself
 
@@ -498,8 +485,8 @@ another.
 
 Since archivey doesn't run the script, a script that does more than unpack can leave a different
 result than running the `.run` file would. The [makeself
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/makeself.md) covers
-the header forms, the encryption schemes and the limits.
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/makeself.md)
+cover the header forms, the encryption schemes and the limits.
 
 ## Disk images
 
@@ -508,7 +495,8 @@ isn't mistaken for the zlib, bzip2 or xz stream its first block happens to be. T
 files, convert or mount the image first, for example with `7z x`, `dmg2img`, or `hdiutil attach`
 on macOS. An uncompressed image that holds an ISO 9660 filesystem is read as that ISO.
 
-The [DMG handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) says
+The [DMG development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/dmg.md) say
 how the image is recognised.
 
 ## Directory
@@ -525,8 +513,8 @@ as an archive's: forward-only, one at a time, until you pass `seekable_members=T
   `size` set to `None` and read to their end.
 
 The [directory
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md) covers
-the walk order and symlinks.
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/directory.md)
+cover the walk order and symlinks.
 
 ## Single-file compressors
 
@@ -579,7 +567,8 @@ Some formats have more to know:
   Neither has a checksum.
 
 The [single-file
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md) covers
+development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/single-file.md) cover
 when the size arrives, how appended bytes are told apart from a damaged header, which pipe reads
 wait and why, and the checks archivey adds around the accelerators.
 
@@ -603,9 +592,9 @@ doesn't matter. `detect_format()` returns the answer without opening the archive
   other.
 
 The [detection
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/detection.md) gives the
-full order of the checks, each format's probe, and how signed and resource-packed installers are
-handled.
+development docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/detection.md)
+give the full order of the checks, each format's probe, and how signed and resource-packed
+installers are handled.
 
 ## Reading from a pipe
 
@@ -652,8 +641,9 @@ Windows program's signature isn't reported as data after the archive. makeself `
 are their own format ([makeself](#makeself)).
 
 The [prefixed-archives
-handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/prefixed-archives.md)
-covers how far the search goes and how installers that pack the archive as a resource are read.
+development
+docs](https://github.com/archivey-dev/archivey/blob/main/dev-docs/topics/prefixed-archives.md) cover
+how far the search goes and how installers that pack the archive as a resource are read.
 
 ## What archivey does not do
 
