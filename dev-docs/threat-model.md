@@ -404,7 +404,10 @@ data its pass keeps for link targets beside it.
   `max_metadata_bytes` both the decoded table's size (from the header, before
   decoding) and every full path it builds there, since nested directories make the
   paths grow with the square of the depth before any member exists (`xar_reader.py`).
-  Before parsing, it refuses a table of contents that holds a NUL byte (so not UTF-8,
+  ISO weighs the UDF tree's directory data and File Entries in its image-wide
+  `max_metadata_bytes` sum, and every full UDF path as it builds it in a separate sum
+  held to the same cap, for the same reason (`udf.py`, `iso_reader.py`).
+  Before parsing, XAR refuses a table of contents that holds a NUL byte (so not UTF-8,
   such as UTF-16, which expat would read in a way the scan cannot see) and a tag of
   more than 65 536 pieces (characters outside quotes, or whole quoted values), since
   expat builds a tag's attributes before any handler can weigh them.

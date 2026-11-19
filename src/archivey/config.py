@@ -342,8 +342,9 @@ class ListingLimits:
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
-    before decoding them), and ISO the directory records, path tables and UDF
-    descriptors ``pycdlib`` parses, and XAR applies ``max_members`` and weighs its
+    before decoding them), and ISO the directory records and path tables ``pycdlib``
+    parses and the UDF descriptors and File Entries it parses itself, and XAR
+    applies ``max_members`` and weighs its
     table of contents' size and every path it builds there against
     ``max_metadata_bytes``, so ``open_archive`` raises. A ZIP read from a
     stream that cannot seek has no directory to read at open: its pass charges
@@ -358,15 +359,16 @@ class ListingLimits:
     against ``max_members`` too, one per UDF name, whether or not ``members()`` lists
     UDF: an image whose UDF tree has more names than its ISO 9660 tree can be refused
     for the UDF tree. ISO counts members per tree but weighs bytes as one sum for the
-    whole image, every tree together. ISO also weighs every full path of the UDF tree as
-    it builds it at open, in a separate sum against ``max_metadata_bytes``, whether or
-    not UDF is the listed tree; when it is, that sum is what the listing weighs for the
-    same members' names and raw names. RPM refuses a header that lists more files than
-    ``max_members`` at open, before it builds the file list. makeself weighs its shell
-    header against ``max_metadata_bytes`` as it reads it, at open, and refuses a header
-    that lists more payloads than ``max_members``. TAR refuses, in every mode, an
-    extended header (PAX or GNU long name) that declares more than is left of
-    ``max_metadata_bytes``, before reading it. While it parses a PAX
+    whole image, every tree together. ISO also weighs every full path of the UDF tree
+    as it builds it at open, in a separate sum against ``max_metadata_bytes``, whether
+    or not UDF is the listed tree; when it is, that sum is what the listing weighs for
+    the same members' names and raw names.
+    RPM refuses a header that lists more files than ``max_members`` at open, before it
+    builds the file list.
+    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
+    open, and refuses a header that lists more payloads than ``max_members``.
+    TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
+    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
     header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
     keyword does not count again.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
