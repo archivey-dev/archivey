@@ -12,6 +12,8 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-19
+
 A minor release: the UDF file system of DVD and Blu-ray images, spanned ZIP sets, the
 files inside macOS installer packages, Snappy files, URLs as the command's archive
 argument, compress-utils in place of python-lzo, and fixes from a sweep of the new code.
@@ -85,7 +87,19 @@ argument, compress-utils in place of python-lzo, and fixes from a sweep of the n
 
 ### Performance
 
-PENDING: benchmark-compare run against v0.4.1.
+From a benchmark run on 2026-11-19 at commit `b5c7a01a`, archivey takes 1.1 to 3.4 times
+as long as the standard library or reference reader to read, and 1.5 to 10.9 times as
+long to list; the ratios above 4 are archives that list in under 2.5 ms. Against 0.4.1,
+timed beside it on the same runner:
+
+- Listing a 7z archive with many members takes about 10% less time, in all three rounds.
+  No change aimed at it, so the cause is not known.
+- Reading a `.Z` file of text takes about 7% less time, from the faster LZW decoder.
+- Reading a `.Z` file of highly repetitive data measured 22% slower by the fastest round,
+  but its rounds spread from 129 to 199 ms on both sides, and the middle rounds differ
+  by 3%, so it is noise. The other cases are within about 5%.
+
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
 
 ## [0.4.1] - 2026-11-17
 
@@ -633,7 +647,9 @@ What goes in this file, from 0.2.0 on:
 `scripts/release.py start` writes the compare links below this comment.
 -->
 
-[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/archivey-dev/archivey/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/archivey-dev/archivey/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/archivey-dev/archivey/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/archivey-dev/archivey/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/archivey-dev/archivey/compare/v0.2.0...v0.2.1
