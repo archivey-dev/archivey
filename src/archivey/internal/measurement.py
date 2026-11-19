@@ -103,7 +103,23 @@ class IoStats:
     instead, and for the directory backend, which has no stream."""
 
     source_seek_count: int
-    """Number of ``seek()`` calls on the instrumented archive source."""
+    """Number of ``seek()`` calls on the instrumented archive source.
+
+    For an ``fsspec`` source a seek costs nothing by itself: what costs is a request,
+    which :attr:`remote_requests` counts."""
+
+    remote_requests: int | None = None
+    """For an ``fsspec`` source, the range requests made so far, detection's included;
+    ``None`` for any other source."""
+
+    remote_bytes_fetched: int | None = None
+    """For an ``fsspec`` source, the bytes those requests returned; ``None`` for any
+    other source."""
+
+    remote_size: int | None = None
+    """For an ``fsspec`` source, the size of the object (the sum of the parts for a
+    volume list), to weigh :attr:`remote_bytes_fetched` against; ``None`` for any other
+    source."""
 
 
 def io_stats(reader: ForwardArchiveReader) -> IoStats | None:
