@@ -91,13 +91,15 @@ A macOS installer package (`.pkg`) or Xcode archive (`.xip`) SHALL be read as
 in a top-level component folder) and a top-level `Content` replaced by the files of the
 CPIO it holds, compressed with gzip or pbzx or not at all, listed under a folder of the
 member's name (`app.pkg/Payload/...`), as `pkgutil --expand-full` unpacks it. A payload
-that holds no CPIO SHALL be listed as it is. The listing SHALL check each expanded
-payload's XAR checksum and raise `CorruptionError` when it fails. A payload file, or a
-hard link's target, that extracts outside its folder SHALL raise `CorruptionError`.
-`format=ArchiveFormat.XAR` SHALL list the XAR members as they are. Detection SHALL
-answer `PKG` for XAR magic when the name ends in `.pkg`, `.mpkg` or `.xip`, or, for any
-name but `.xar`, when the start of the table of contents names a `Distribution` or
-`PackageInfo`, or a `Content` and a `Metadata`. The cost receipt SHALL say the listing
+that holds no CPIO, or is stored with a XAR encoding archivey does not read, SHALL be
+listed as it is. The listing SHALL check each expanded payload's XAR checksum and raise
+`CorruptionError` when it fails. A payload file, or a hard link's target, that extracts
+outside its folder SHALL raise `CorruptionError`. `format=ArchiveFormat.XAR` SHALL list
+the XAR members as they are. Detection SHALL answer `PKG` for XAR magic when the name
+ends in `.pkg`, `.mpkg` or `.xip`, or, for any name but `.xar`, when the start of the
+table of contents names a `Distribution` or `PackageInfo`, or a `Content` and a
+`Metadata`; for that, detection SHALL read up to the first 64 KiB of the stored table of
+contents, past the near window when it is longer. The cost receipt SHALL say the listing
 requires scanning and access is solid.
 
 #### Scenario: Installer packages
@@ -110,3 +112,5 @@ requires scanning and access is solid.
 | A payload byte changed in a stored chunk | `CorruptionError` naming the checksum, at listing |
 | A payload file named `../Bom` | `CorruptionError` |
 | A nameless XAR whose TOC holds `a.txt` and `Payload` only | `ArchiveFormat.XAR` |
+| A nameless signed package or `.xip` whose certificates fill the first 4 KiB | `ArchiveFormat.PKG` |
+| A `Payload` stored with a XAR encoding archivey does not read | listed as `Payload`; reading it raises `UnsupportedFeatureError` |

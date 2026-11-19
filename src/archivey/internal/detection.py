@@ -2188,11 +2188,17 @@ def _near_magic_hit(detection: _DetectionPass, magic_fmt: ArchiveFormat) -> Form
         trailer_fmt = _match_trailer(workspace, trailers)
         if trailer_fmt is not None:
             magic_fmt = trailer_fmt
-    # A narrower format that shares the magic (a macOS installer package's XAR).
-    for refined, check in detection.registry.magic_refinements().get(magic_fmt, ()):
-        if check(detection.data, detection.name):
-            magic_fmt = refined
-            break
+    # A narrower format that shares the magic (a macOS installer package's XAR). The
+    # check may read past the near window, up to the budget's read ceiling.
+    refinements = detection.registry.magic_refinements().get(magic_fmt, ())
+    if refinements:
+        peek = workspace.candidate_view(
+            0, limit=workspace.read_ceiling, arrived=workspace.forward_only
+        )
+        for refined, check in refinements:
+            if check(peek, detection.name):
+                magic_fmt = refined
+                break
     # On a forward-only source the inner-container probe reads what has arrived
     # too: a short ``.gz`` on a held-open pipe decodes its first TAR header
     # without waiting for the writer to close the pipe. A random-access

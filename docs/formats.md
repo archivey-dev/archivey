@@ -1340,8 +1340,9 @@ unpacks a package. The format is `ArchiveFormat.PKG`.
   `Content` and `Metadata`, is a package. `format=ArchiveFormat.XAR` opens a package as the
   XAR files it holds, and `FormatPolicy` allows or refuses packages as `ContainerFormat.PKG`.
 - A payload's XAR checksum is checked as the listing reads it, and a payload that fails it
-  raises `CorruptionError`. A payload that is not a CPIO, or whose first CPIO header cannot
-  be read, is listed as the one file it is.
+  raises `CorruptionError`. A payload that is not a CPIO, that is stored with a XAR encoding
+  archivey does not read, or whose first CPIO header cannot be read, is listed as the one
+  file it is.
 - A file in a payload, or a hard link's target, whose name would extract outside the
   payload's folder (`../Bom`) raises `CorruptionError`. A symlink in a payload is not
   checked at listing; extraction applies its usual link checks.
