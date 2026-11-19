@@ -836,9 +836,9 @@ jobs:
   # PyPy. It is still not a supported interpreter (docs/install.md §PyPy), but the whole
   # suite has to pass there, once with the zero-dependency core and once with every
   # optional package that installs (the two matrix legs below), so a PyPy regression
-  # fails the run instead of sitting in a log. The check and test steps carry `if: ${{ !cancelled() }}` so a failure in
-  # one does not hide the later ones; any failed step still fails the job, and a
-  # superseded run stops at once.
+  # fails the run instead of sitting in a log. The check and test steps carry
+  # `if: ${{ !cancelled() }}` so a failure in one does not hide the later ones; any
+  # failed step still fails the job, and a superseded run stops at once.
   # Dependencies come one at a time rather than through `--extra all`, because several
   # native packages have no PyPy wheel and one failed build would hide what does install;
   # the "Install what installs" step writes the outcome per package to the job summary.

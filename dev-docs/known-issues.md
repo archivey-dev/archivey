@@ -242,7 +242,7 @@ released.
 
 ## PyPy: rapidgzip, python-lz4, pyppmd and inflate64 misbehave (open)
 
-**Symptom.** Under PyPy 3.11 (the allowed-to-fail `pypy3.11` CI job). The versions below
+**Symptom.** Under PyPy 3.11 (the `pypy3.11 / extras` CI job). The versions below
 are what that job resolved on 2026-10-20, not floors: rapidgzip 0.16.0, lz4 4.4.5, pyppmd
 1.3.1, inflate64 1.0.4. The job's install step prints the versions each run resolves, so
 check a newer run before assuming a later release still fails.
@@ -286,7 +286,7 @@ handles large buffers under PyPy (its cpyext build), or a pure-Python Deflate64 
 
 **Upstream.** Not filed with rapidgzip, python-lz4, pyppmd or inflate64.
 
-**Evidence.** The `pypy3.11` job logs in CI; PyPy is not a supported interpreter
+**Evidence.** The `pypy3.11 / extras` job logs in CI; PyPy is not a supported interpreter
 ([`docs/install.md`](../docs/install.md) §PyPy).
 
 ## Intermittent Linux full-suite heap corruption (`[all]` / Hypothesis late crash; open, the 2026-11 soak did not reproduce it)
