@@ -308,30 +308,29 @@ covers the index, its limits, hard links, and the shapes archivey refuses.
 
 ## macOS installer packages
 
-macOS installer packages (`.pkg`, `.mpkg`), written by Apple's `pkgbuild` and
-`productbuild`, and Xcode's `.xip` archives. Each is a [XAR](#xar) archive whose payloads
-are CPIO archives; archivey lists the files inside them, the way `pkgutil --expand-full`
-unpacks a package. The format is `ArchiveFormat.PKG`.
+A macOS installer package (`.pkg`, `.mpkg`, written by `pkgbuild` and `productbuild`) or an
+Xcode `.xip` is a [XAR](#xar) archive whose payloads are compressed CPIO archives. Archivey lists
+the files inside the payloads, as `pkgutil --expand-full` unpacks them, under a folder named after
+the payload: `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and
+the other files are listed as they are. Packages need nothing extra.
 
-- **Needs:** nothing. Payloads are gzip or pbzx (Apple's xz in chunks), read with Python's
-  own modules.
-- **Listing:** each `Payload` and `Scripts`, in a component package or in a component's
-  folder of a product archive (`app.pkg/`), and the `Content` of a `.xip`, is listed as the
-  files its CPIO holds, under a folder of its own name:
-  `app.pkg/Payload/Applications/App.app/...`. `Distribution`, `PackageInfo`, `Bom` and the
-  other files are listed as they are. Listing decodes every payload.
-- **Reading members:** solid within a payload: reading a file decodes its payload up to it,
-  and reading the files in order decodes each payload once.
-- **Detection:** a XAR named `.pkg`, `.mpkg` or `.xip` is a package, and a `.xar` is not.
-  Without either name, a XAR whose index lists `Distribution` or `PackageInfo`, or both
-  `Content` and `Metadata`, is a package. `format=ArchiveFormat.XAR` opens a package as the
-  XAR files it holds, and `FormatPolicy` allows or refuses packages as `ContainerFormat.PKG`.
-- A payload's XAR checksum is checked as the listing reads it, and a payload that fails it
-  raises `CorruptionError`. A payload that is not a CPIO, or whose first CPIO header cannot
-  be read, is listed as the one file it is.
-- A file in a payload, or a hard link's target, whose name would extract outside the
-  payload's folder (`../Bom`) raises `CorruptionError`. A symlink in a payload is not
-  checked at listing; extraction applies its usual link checks.
+- **Supported:** component packages, product archives with one folder per component, and `.xip`.
+  Payloads compressed with gzip or Apple's pbzx.
+- **Not supported:** signatures are not checked, so use `pkgutil --check-signature` for that.
+- **Listing** decodes every payload. Within one payload, reading a file decodes the payload up to
+  it, so `stream_members()` and `extract_all()` decode each payload once.
+- **Checksums:** each payload's XAR checksum is checked as the listing reads it, and a payload
+  that fails raises `CorruptionError`. Files from a payload have nothing in `member.hashes`;
+  `Distribution`, `Bom` and the other XAR files keep their XAR checksum there.
+- **The raw layout:** `format=ArchiveFormat.XAR` lists the XAR files instead, with each payload
+  as one file.
+
+A file named `.pkg`, `.mpkg` or `.xip` is opened as a package, and one named `.xar` as XAR. Without
+either name, a XAR whose index lists a `Distribution` or `PackageInfo`, or both `Content` and
+`Metadata`, is a package. A payload that is not a CPIO is listed as the one file it is, and a
+payload file that would extract outside its folder (`../Bom`) raises `CorruptionError`. The
+[XAR handbook](https://github.com/archivey-dev/archivey/blob/main/dev-docs/formats/xar.md) covers
+packages too.
 
 ## CAB
 
