@@ -610,23 +610,29 @@ text kept. An image right at a cap can therefore be refused at open. Below the c
 budget allows: about 0.8 KB per plain record measured, so roughly 210 MB per tree at the
 default `max_members`. The UDF tree, which archivey's own parser (`udf.py`) walks whole
 at open, listed or not, is counted as one more tree: each File Identifier but the parent
-entry and deleted ones is a member, and each directory's data and each File Entry, with
-the extended attributes and allocation descriptors it declares, is weighed against
-`max_metadata_bytes`, a directory before it is read. Every tree is kept once parsed, so
-`max_metadata_bytes` is one sum for the whole image, every tree together (ruled by davi,
-2026-10-10; reasons and the reopen condition in `dev-docs/formats/iso.md` §2.2). A
-budget per tree let an image carrying all three trees peak near 2.6 GiB at the limits of
-the time (`max_members` 1,048,576): a PVD tree and a Joliet tree at about 1 GiB each,
-plus a UDF tree, where a name weighs at least about 220 bytes (measured at about 2.1 KB
-retained when `pycdlib` parsed it; archivey's parser keeps a few hundred bytes a name),
-stopped by 64 MiB near 300,000 names. `max_members` stays
-per tree, because a Joliet tree repeats every file and one count would halve the cap for
-such an image. At the default `max_members` of 262,144 the member cap per tree binds
-before the byte sum: two trees hold at most 524,288 records, about 0.42 GB at 0.8 KB
-each (an estimate from the per-record figure, not measured at this scale), while 64 MiB
-of minimal 34-byte records would allow about 2 million. The byte sum binds first only
-when `max_members` is raised past about a million per tree. Any UDF bytes come out of
-the same 64 MiB, and they cost less per stored byte than a minimal ISO 9660 record.
+entry and deleted ones is a member, and each directory's data, each File Entry (with the
+extended attributes and allocation descriptors it declares, or the bytes its tag's CRC
+covers when that is more) and each Indirect Entry (its tag and the bytes its CRC covers)
+is weighed against `max_metadata_bytes`, a directory before it is read. Each entry is
+parsed and weighed once, however many File Identifiers lead to it, so a hard link costs
+only its File Identifier, and nothing a name does while listing walks the entry again.
+Every tree is kept once parsed, so `max_metadata_bytes` is one sum for the whole image,
+every tree together (ruled by davi, 2026-10-10; reasons and the reopen condition in
+`dev-docs/formats/iso.md` §2.2). A budget per tree let an image carrying all three trees
+peak near 2.6 GiB at the limits of the time (`max_members` 1,048,576): a PVD tree and a
+Joliet tree at about 1 GiB each, plus a UDF tree, where a name with its own File Entry
+weighs at least about 220 bytes (measured at about 2.1 KB retained when `pycdlib` parsed
+it; archivey's parser keeps a few hundred bytes a name), stopped by 64 MiB near 300,000
+names. A name that shares an entry (a hard link) weighs only its File Identifier, about
+48 bytes, so 64 MiB would allow about 1.4 million of them; at the default `max_members`
+the member cap binds first. `max_members` stays per tree, because a Joliet tree repeats
+every file and one count would halve the cap for such an image. At the default
+`max_members` of 262,144 the member cap per tree binds before the byte sum: two trees
+hold at most 524,288 records, about 0.42 GB at 0.8 KB each (an estimate from the
+per-record figure, not measured at this scale), while 64 MiB of minimal 34-byte records
+would allow about 2 million. The byte sum binds first only when `max_members` is raised
+past about a million per tree. Any UDF bytes come out of the same 64 MiB, and they cost
+less per stored byte than a minimal ISO 9660 record.
 
 **Tests.** `tests/test_listing_limits.py` (including
 `test_tar_listing_stops_reading_headers_at_max_members`,
