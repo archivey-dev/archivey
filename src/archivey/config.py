@@ -1076,8 +1076,10 @@ class ArchiveyConfig:
     reads count. It runs on the thread that read, and an exception it raises propagates
     out of that read: raising is how a caller stops a slow read. Every later read of the
     file raises it again, and ``extract_all(on_error="continue")`` stops on it rather
-    than counting it as one member's failure. A read on a thread
-    archivey started is counted and reported with the next read on the caller's thread.
+    than counting it as one member's failure. A read on a thread archivey started (the
+    RAR volume feeder) does not call it: the latest such report is kept and delivered on
+    the caller's next read of the archive or of the member being read. Reports in
+    between are merged, so ``requests`` may skip numbers.
     Only the outer archive's file reports, not an archive opened from one of its
     members. Bytes that an external program (``unrar``) or the RAR reader's own volume
     reads take from a path directly are not reported.

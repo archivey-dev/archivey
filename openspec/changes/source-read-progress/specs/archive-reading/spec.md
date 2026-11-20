@@ -15,15 +15,18 @@ For any other source it SHALL be called at least once per MiB of bytes taken fro
 source, and the request fields SHALL be `None`. `bytes_read` counts every byte taken
 from the source, rereads included, so it may pass `size`.
 
-It SHALL run on the thread that read (as every caller function does); a read on a
-thread archivey started SHALL be counted and reported with the next read on a caller's
-thread. Bytes that an external program (`unrar`) or the RAR backend reads from volume
-paths directly are outside this requirement. An exception it
-raises SHALL propagate out of the read that called it, unchanged; every later read of
-the file SHALL raise it again, and an extraction or verification that goes on past a
-member's error SHALL stop on it instead. A reader opened from a
-member of another reader SHALL NOT report its reads. With `on_source_read` unset, no
-reporting work SHALL be done beyond checking that it is unset.
+It SHALL run on the thread that read (as every caller function does). A read on a thread
+archivey started (the RAR volume feeder) SHALL NOT call it: the latest such report SHALL
+be kept and delivered on the caller's next read of the archive or of the member being
+read. Reports in between are merged, so `requests` may skip numbers and a request may
+lack its pair of calls; the once-before, once-after rule above applies to requests sent
+from a caller's thread. Bytes that an external program (`unrar`) or the RAR backend
+reads from volume paths directly are outside this requirement. An exception it raises
+SHALL propagate out of the read that called it, unchanged; every later read of the file
+SHALL raise it again, and an extraction or verification that goes on past a member's
+error SHALL stop on it instead. A reader opened from a member of another reader SHALL
+NOT report its reads. With `on_source_read` unset, no reporting work SHALL be done
+beyond checking that it is unset.
 
 #### Scenario: a local file read start to end
 

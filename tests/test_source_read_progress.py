@@ -20,6 +20,9 @@ from archivey import (
     open_stream,
 )
 from archivey.internal.read_progress import LOCAL_REPORT_STEP
+from tests.conftest import requires_unrar_cli
+
+_RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 
 class _Recorder:
@@ -384,42 +387,32 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
         reader.extract_all(tmp_path / "out", on_error="continue")
 
 
-def test_a_rolling_rar_reports_what_the_feeder_thread_read(tmp_path: Path) -> None:
-    # A RAR from a pipe is fed to unrar as rolling volumes by archivey's own thread.
-    # Its reports reach the caller on the caller's reads of unrar's output.
-    import shutil
-    import subprocess
+@requires_unrar_cli()
+def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
+    # The forward pass: a RAR from a pipe, under a spool limit smaller than the
+    # archive, goes to unrar as rolling volumes that archivey's own thread writes
+    # from the pipe. Its reports reach the caller on reads of unrar's output.
+    from archivey.internal.backends.rar_unrar import unrar_reads_rolling_volumes
 
-    if shutil.which("rar") is None or shutil.which("unrar") is None:
-        pytest.skip("needs rar and unrar")
-    src = tmp_path / "src"
-    src.mkdir()
-    # Hex digits compress to about half: some 4.5 MB of archive.
-    (src / "big.bin").write_bytes(os.urandom(4 * LOCAL_REPORT_STEP).hex().encode())
-    archive = tmp_path / "a.rar"
-    subprocess.run(
-        ["rar", "a", "-idq", "-ma5", str(archive), "big.bin"],
-        cwd=src,
-        check=True,
-        timeout=60,
-    )
-    data = archive.read_bytes()
+    if not unrar_reads_rolling_volumes():
+        pytest.skip("this unrar is older than the one rolling volumes were measured on")
+    data = (_RAR_FIXTURES / "encryption_large__rar4.rar").read_bytes()
     seen = _Recorder()
-    # A small spool limit: the member goes to unrar as rolling volumes.
     config = ArchiveyConfig(
         rar_decompressor="unrar",
         spool_limits=SpoolLimits(max_bytes=40_000),
         on_source_read=seen,
     )
     with (
-        open_archive(_Pipe(data), config=config, streaming=True) as reader,
+        open_archive(
+            _Pipe(data), config=config, streaming=True, password="password"
+        ) as reader,
         reader.stream_members() as members,
     ):
         for _, stream in members:
             if stream is not None:
-                while stream.read(1 << 16):
+                while stream.read(1 << 12):
                     pass
+    assert seen.calls
     assert seen.threads == {threading.get_ident()}
-    # Without the reports the feeder's reads came due for, there were none at all.
-    assert len(seen.calls) >= 2
     assert seen.calls[-1].bytes_read == len(data)
