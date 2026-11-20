@@ -1079,13 +1079,15 @@ class ArchiveyConfig:
     than counting it as one member's failure. A read on a thread archivey started (the
     RAR volume feeder) does not call it: the latest such report is kept and delivered on
     the caller's next read of the archive or of the member being read. Reports in
-    between are merged, so ``requests`` may skip numbers.
-    A reader opened with ``parent=`` (an archive inside a member) does not report; its
-    reads are reads of the parent's file, which reports them. A member stream passed to
-    ``open_archive`` without ``parent=`` is a file of its own and reports. A split set
-    found beside a stub, and the track files of a ``.cue`` sheet, report as the file
-    they stand in for. Bytes that an external program (``unrar``) or the RAR reader's
-    own volume reads take from a path directly are not reported.
+    between are merged, so ``requests`` may skip numbers. Every reader reports to the
+    callback in its own config. A reader opened with ``parent=`` (an archive inside a
+    member, which uses the parent's config unless given one) reports with
+    :attr:`SourceProgress.nest_level <archivey.SourceProgress.nest_level>` one more than
+    its parent's: the parent's file reports the same bytes at level 0. A member stream
+    passed without ``parent=`` is a file of its own, at level 0. A split set found
+    beside a stub, and the track files of a ``.cue`` sheet, report as the file they
+    stand in for. Bytes that an external program (``unrar``) or the RAR reader's own
+    volume reads take from a path directly are not reported.
     """
 
     source_read_step: int = 1 << 20

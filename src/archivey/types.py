@@ -2311,6 +2311,12 @@ class SourceProgress:
     every read of the file. ``None`` for a URL source, whose ``request_*`` fields give
     each request's range."""
 
+    nest_level: int = 0
+    """Which archive's reads these are: 0 for the file the caller opened, 1 for an
+    archive opened from one of its members with ``open_archive(parent=…)``, and so on.
+    A nested reader that shares its parent's callback reports there too, so a caller
+    that wants only the file on disk keeps the reports at level 0."""
+
 
 OnSourceRead = Callable[[SourceProgress], None]
 """The ``ArchiveyConfig.on_source_read`` callback."""

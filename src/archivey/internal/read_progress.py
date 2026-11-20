@@ -53,9 +53,11 @@ class SourceReadReporter:
         name: str | None,
         size: int | None,
         step: int = 1 << 20,
+        nest_level: int = 0,
     ) -> None:
         self.callback = callback
         self.step = step
+        self.nest_level = nest_level
         self._offset = 0
         self._name = name
         self._size = size
@@ -91,7 +93,12 @@ class SourceReadReporter:
             ):
                 return
             snapshot = SourceProgress(
-                self._name, self._size, total, position, read_start=position - n
+                self._name,
+                self._size,
+                total,
+                position,
+                read_start=position - n,
+                nest_level=self.nest_level,
             )
             self._reported_at = total
             if _on_archivey_thread():
@@ -112,7 +119,7 @@ class SourceReadReporter:
         Raises what the callback raised, if it has: the stop holds for that file too.
         """
         self.raise_if_stopped()
-        return SourceReadReporter(self.callback, name, size, self.step)
+        return SourceReadReporter(self.callback, name, size, self.step, self.nest_level)
 
     def request_started(self, start: int, end: int) -> None:
         """A range request for ``[start, end)`` of the whole source is about to be
@@ -189,6 +196,7 @@ class SourceReadReporter:
             request_end=end,
             request_received=received,
             request_done=done,
+            nest_level=self.nest_level,
         )
 
 

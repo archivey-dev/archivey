@@ -71,7 +71,7 @@ def test_local_archive_reports_its_reads(tmp_path: Path) -> None:
     assert seen.calls[-1].bytes_read >= 3 * LOCAL_REPORT_STEP
 
 
-def test_a_nested_reader_does_not_report(tmp_path: Path) -> None:
+def test_a_nested_reader_reports_at_its_nest_level(tmp_path: Path) -> None:
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, "w") as zf:
         zf.writestr("x.bin", os.urandom(2 * LOCAL_REPORT_STEP))
@@ -89,8 +89,39 @@ def test_a_nested_reader_does_not_report(tmp_path: Path) -> None:
             for _, stream in members:
                 if stream is not None:
                     stream.read()
-    # Only the outer file's reads report: the nested reader's own source is a member.
-    assert all(c.name == str(path) for c in seen.calls[before:])
+    # The child shares the parent's config, so its reads come to the same callback,
+    # one level down; the outer file's reads stay at level 0.
+    after = seen.calls[before:]
+    assert {c.nest_level for c in after} == {0, 1}
+    assert all(c.name == str(path) for c in after if c.nest_level == 0)
+    assert all(c.name != str(path) for c in after if c.nest_level == 1)
+    assert all(c.nest_level == 0 for c in seen.calls[:before])
+
+
+def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> None:
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("x.bin", os.urandom(2 * LOCAL_REPORT_STEP))
+    path = tmp_path / "outer.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("inner.zip", inner.getvalue())
+    outer_seen, inner_seen = _Recorder(), _Recorder()
+    config = ArchiveyConfig(on_source_read=outer_seen)
+    inner_config = ArchiveyConfig(on_source_read=inner_seen)
+    with (
+        open_archive(path, config=config) as outer,
+        outer.open("inner.zip") as member,
+        open_archive(
+            member, parent=outer, config=inner_config, streaming=True
+        ) as nested,
+        nested.stream_members() as members,
+    ):
+        for _, stream in members:
+            if stream is not None:
+                stream.read()
+    assert inner_seen.calls
+    assert all(c.nest_level == 1 for c in inner_seen.calls)
+    assert all(c.nest_level == 0 for c in outer_seen.calls)
 
 
 class _StopValue(ValueError):

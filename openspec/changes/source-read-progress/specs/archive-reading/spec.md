@@ -28,14 +28,15 @@ reads from volume paths directly are outside this requirement. An exception it r
 SHALL propagate out of the read that called it, unchanged; every later read of the file
 SHALL raise it again, bytes served from a cache or a replay included, and an extraction
 or verification that goes on past a member's error SHALL stop on it instead. A reader
-opened with `parent=` SHALL NOT report its reads; a member stream opened without
-`parent=` is a source of its own and SHALL report. A split set found beside a stub, and
-the track files of a `.cue` sheet, SHALL report as the file they stand in for.
-`position` and `read_start` SHALL count from the start of the file, also when a stream
-is opened where the caller left it. In a volume list that mixes local parts and URLs,
-the local parts SHALL report their reads and the URLs their requests, each byte once.
-With `on_source_read` unset, no reporting work SHALL be done beyond checking that it is
-unset.
+opened with `parent=` SHALL report to the callback in its own config (its parent's
+unless given one) with `nest_level` one more than its parent's; a member stream opened
+without `parent=` is a source of its own and SHALL report at `nest_level` 0. A split set
+found beside a stub, and the track files of a `.cue` sheet, SHALL report as the file
+they stand in for. `position` and `read_start` SHALL count from the start of the file,
+also when a stream is opened where the caller left it. In a volume list that mixes local
+parts and URLs, the local parts SHALL report their reads and the URLs their requests,
+each byte once. With `on_source_read` unset, no reporting work SHALL be done beyond
+checking that it is unset.
 
 #### Scenario: a local file read start to end
 
@@ -51,6 +52,13 @@ unset.
   is read
 - **THEN** each call's `read_start` to `position` is one read, the lengths add up to
   `bytes_read`, and together they cover the directory and every member's data
+
+#### Scenario: a nested reader
+
+- **WHEN** `on_source_read` is set and an archive is opened from a member with
+  `open_archive(member, parent=outer)` and no `config=`
+- **THEN** the outer file's reads report at `nest_level` 0 and the nested reader's
+  reads report to the same callback at `nest_level` 1
 
 #### Scenario: a URL source
 

@@ -627,9 +627,10 @@ init archivey.ResourceUnavailableError(message: str, *, source_format: ArchiveFo
 class archivey.SourceChangedError(ReadError)
 init archivey.SourceChangedError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.SourceProgress()
-init archivey.SourceProgress(name: str | None, size: int | None, bytes_read: int, position: int, requests: int | None = None, request_start: int | None = None, request_end: int | None = None, request_received: int | None = None, request_done: bool | None = None, read_start: int | None = None) -> None
+init archivey.SourceProgress(name: str | None, size: int | None, bytes_read: int, position: int, requests: int | None = None, request_start: int | None = None, request_end: int | None = None, request_received: int | None = None, request_done: bool | None = None, read_start: int | None = None, nest_level: int = 0) -> None
 field archivey.SourceProgress.bytes_read: int
 field archivey.SourceProgress.name: str | None
+field archivey.SourceProgress.nest_level: int = 0
 field archivey.SourceProgress.position: int
 field archivey.SourceProgress.read_start: int | None = None
 field archivey.SourceProgress.request_done: bool | None = None

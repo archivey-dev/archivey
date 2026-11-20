@@ -603,7 +603,9 @@ class ArchiveSource(ReadOnlyIOStream):
         """Record the range sources this source reads (one, or a volume list's)."""
         self._remote = ranges
 
-    def report_reads(self, callback: OnSourceRead, step: int = 1 << 20) -> None:
+    def report_reads(
+        self, callback: OnSourceRead, step: int = 1 << 20, nest_level: int = 0
+    ) -> None:
         """Call ``callback`` (``ArchiveyConfig.on_source_read``) as this source is read.
 
         A range source reports each request; any other source reports the bytes taken
@@ -614,7 +616,7 @@ class ArchiveSource(ReadOnlyIOStream):
         if not name and decompressed is not None:
             # fsspec's decompressing file has no name; the object's URL is the file.
             name = decompressed.url
-        reporter = SourceReadReporter(callback, name, self._length, step)
+        reporter = SourceReadReporter(callback, name, self._length, step, nest_level)
         self._reporter = reporter
         if self._remote:
             # In a volume set a range source reads at its own offsets; its reports
@@ -646,7 +648,7 @@ class ArchiveSource(ReadOnlyIOStream):
         reporter = other._reporter
         if reporter is not None:
             reporter.raise_if_stopped()
-            self.report_reads(reporter.callback, reporter.step)
+            self.report_reads(reporter.callback, reporter.step, reporter.nest_level)
 
     def progress_reporter(
         self, name: str | None, size: int | None

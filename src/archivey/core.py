@@ -643,10 +643,13 @@ def open_archive(
         discover_volumes=effective_config.discover_volumes,
         max_read_through=effective_config.max_read_through,
     )
-    # Only the outer archive's file reports: a nested reader reads a member.
-    if effective_config.on_source_read is not None and parent is None:
+    # Every reader reports to its own config's callback; a ``parent=`` reader's
+    # reports say how deep it is, since the parent's file reports the same bytes.
+    if effective_config.on_source_read is not None:
         resolved.source.report_reads(
-            effective_config.on_source_read, effective_config.source_read_step
+            effective_config.on_source_read,
+            effective_config.source_read_step,
+            0 if parent is None else cast("BaseArchiveReader", parent)._nest_level + 1,
         )
     slot = _SourceSlot(resolved.source)
     try:
