@@ -154,6 +154,8 @@ _CONTAINER_SPEEDUP_CODECS: dict[
 ] = {
     ContainerFormat.SEVEN_Z: (Codec.DEFLATE, Codec.BZIP2),
     ContainerFormat.ZIP: (Codec.DEFLATE, Codec.BZIP2),
+    # LZO blocks only. SquashFS gzip blocks are at most 1 MiB and passed with no
+    # decoded size, far below rapidgzip's AUTO gate, so zlib is not listed.
     ContainerFormat.SQUASHFS: (Codec.LZO,),
     # Members encoded application/x-gzip (zlib) or application/x-bzip2.
     ContainerFormat.XAR: (Codec.ZLIB, Codec.BZIP2),
