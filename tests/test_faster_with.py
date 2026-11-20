@@ -56,11 +56,16 @@ def test_absent_rapidgzip_slows_the_deflate_family_and_bzip2(
 def test_payload_and_member_containers_report_rapidgzip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """XAR members and RPM, DEB and makeself payloads reach the gzip and bzip2
+    """XAR and PKG members and PKG, RPM, DEB and makeself payloads reach the gzip and bzip2
     codecs, so they gain from rapidgzip too; makeself's lzop payload from
     compress-utils."""
     _absent(monkeypatch, OptionalLibrary.RAPIDGZIP, OptionalLibrary.COMPRESS_UTILS)
-    for fmt in (ArchiveFormat.XAR, ArchiveFormat.RPM, ArchiveFormat.DEB):
+    for fmt in (
+        ArchiveFormat.XAR,
+        ArchiveFormat.PKG,
+        ArchiveFormat.RPM,
+        ArchiveFormat.DEB,
+    ):
         assert _names(fmt) == ["rapidgzip"], fmt
     assert _names(ArchiveFormat.MAKESELF) == ["rapidgzip", "compress_utils"]
 

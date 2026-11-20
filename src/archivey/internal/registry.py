@@ -157,6 +157,8 @@ _CONTAINER_SPEEDUP_CODECS: dict[
     ContainerFormat.SQUASHFS: (Codec.LZO,),
     # Members encoded application/x-gzip (zlib) or application/x-bzip2.
     ContainerFormat.XAR: (Codec.ZLIB, Codec.BZIP2),
+    # XAR's members, plus the gzip CPIO Payload and Scripts.
+    ContainerFormat.PKG: (Codec.ZLIB, Codec.BZIP2, Codec.GZIP),
     # The compressed payload or data tar.
     ContainerFormat.RPM: (Codec.GZIP, Codec.BZIP2),
     ContainerFormat.DEB: (Codec.GZIP, Codec.BZIP2),
