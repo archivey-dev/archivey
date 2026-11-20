@@ -293,6 +293,9 @@ class IsoVolume:
         self._sp_skip = 0
         self._saw_rrip = False
         self._has_rr_entries = False
+        # Set when the walk entered ``CL`` directories because no RRIP ``ER`` had been
+        # met (``_walk``): the tree is then not Rock Ridge, whatever comes after.
+        self._rr_ruled_out = False
 
         (primary, primary_at), joliet = self._read_descriptors()
         self.block_size = int.from_bytes(primary[128:130], "little")
@@ -308,7 +311,9 @@ class IsoVolume:
             directory_hints(self, self.primary, *hint)
         self._walk(self.primary)
         # Rock Ridge needs both entries on some record and an ``ER`` that names RRIP.
-        self.rock_ridge = self._has_rr_entries and self._saw_rrip
+        self.rock_ridge = (
+            self._has_rr_entries and self._saw_rrip and not self._rr_ruled_out
+        )
 
         self.joliet: IsoTree | None = None
         if joliet is not None:
@@ -494,7 +499,9 @@ class IsoVolume:
         is entered where it is stored (under ``rr_moved``). Whether the image is Rock
         Ridge is known only once the ``ER`` entry is met, so placeholders wait until
         the rest of the tree is walked: without Rock Ridge, a ``CL`` is a stray byte
-        pattern and the directory is entered like any other.
+        pattern and the directory is entered like any other. That ruling stands: an
+        ``ER`` met later, inside a directory so entered, does not make the tree Rock
+        Ridge, so the flag and the walk agree.
         """
         root = tree.root
         seen = {root.extent}
@@ -514,6 +521,7 @@ class IsoVolume:
                     self._enter(child, seen, queue)
             if not placeholders or (self._has_rr_entries and self._saw_rrip):
                 return
+            self._rr_ruled_out = True
             for child in placeholders:
                 self._enter(child, seen, queue)
             placeholders.clear()
