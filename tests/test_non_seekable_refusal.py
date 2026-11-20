@@ -60,7 +60,7 @@ def _skip_unless_registered(fmt: ArchiveFormat) -> None:
     # Only the forward-reading formats need this. Their streaming=False refusal comes
     # after the availability check, so `.lz4` or `.zst` without its package fails as
     # PackageNotInstalledError first. The seek-only formats are refused before that
-    # check, so their tests run in a core-only install too (ISO without pycdlib).
+    # check, so their tests run in a core-only install too.
     availability = format_availability(fmt)
     if availability.support is FormatSupport.NONE:
         pytest.skip(f"{fmt.display_name} has no usable backend here")
@@ -112,7 +112,7 @@ def test_seek_only_refusal_reports_an_unused_password_first() -> None:
 
     ISO carries no encryption, so ``password=`` is ``PASSWORD_ARGUMENT_UNUSED``, which
     the pedantic preset raises. The capability refusal runs before the availability
-    check, and the diagnostic still comes first, with or without ``pycdlib``.
+    check, and the diagnostic comes first.
     """
     with pytest.raises(DiagnosticRaisedError) as excinfo:
         open_archive(

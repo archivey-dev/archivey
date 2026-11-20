@@ -109,8 +109,9 @@ Before any backend code runs, `_open_resolved` checks, in this order:
 5. **Read-once capability.** If the source cannot seek and the format needs seeking *in
    either mode* (7z, ISO, SquashFS, CAB, XAR), it is refused with a message naming
    the only fix: buffer it. The backend's `NON_SEEKABLE_REASON` supplies the "because".
-   This comes before the missing-package check on purpose: a piped ISO without `pycdlib`
-   should be told about the pipe, not sent to install a package first.
+   This comes before the missing-package check on purpose: a piped archive whose format
+   also lacks a package should be told about the pipe, not sent to install a package
+   first.
 6. **The backend lookup** (`registry.reader_for_format`), which raises
    `PackageNotInstalledError` with an install hint when an optional package is missing.
 7. **Unused arguments.** A password given for a format that has no encryption, or

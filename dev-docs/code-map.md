@@ -97,10 +97,10 @@ Three things about this path are worth knowing before you debug it:
   a pass the caller then abandons. `ArchiveMember` is mutable and filled in place (ADR
   0007), and there is now only one object per member to fill.
 - **"Backend" means archivey's class, not the third-party code.** `ReadBackend` /
-  `ZipReadBackend` are ours; the library a backend wraps (stdlib `zipfile`, `pycdlib`, the
-  `unrar` binary) is **the library**. Handbook pages tag a limitation **format** (inherent),
-  **library** (upstream's — fixable only there or by replacing it) or **archivey** (ours),
-  and that middle word is why it is not "backend".
+  `ZipReadBackend` are ours; the library a backend uses (`pyppmd`, stdlib `lzma`, the
+  `unrar` binary) is **the library**. Handbook pages tag a limitation **format**
+  (inherent), **library** (upstream's — fixable only there or by replacing it) or
+  **archivey** (ours), and that middle word is why it is not "backend".
 - **Exceptions are translated per backend**, through that backend's translator, into
   `ArchiveyError` subclasses. Unknown exceptions return `None` from the translator and
   propagate; there is no catch-all. The shapes a blind `except` may take, and why, are
@@ -122,7 +122,7 @@ Three things about this path are worth knowing before you debug it:
 | 7z internals | `sevenzip_parser.py` (headers) · `sevenzip_pipeline.py` (coder graph) · `sevenzip_reader.py` · `sevenzip_methods.py` · `sevenzip_aes.py` (KDF, AES properties, key cache) · `sevenzip_detect.py` (scan-hit validator); handbook [`formats/7z.md`](formats/7z.md) |
 | RAR internals | `rar_parser.py` (native RAR3/RAR5 metadata) · `rar_reader.py` · `rar_unrar.py` (the external binary, data only) · `rar_unar.py` + `internal/external/unar.py` (the opt-in `unar` data path) · `rar_copy_sources.py` (a solid pass keeps file-copy sources) · `rar_detect.py` (scan-hit validator); handbook [`formats/rar.md`](formats/rar.md) |
 | TAR internals | `tar_parser.py` (header parser and `TarWalker`, over the source or archivey's own decompressor; sparse maps and their checks) · `tar_reader.py` (members, member streams, the end-of-archive checks) · `streams/streamtools/sparse.py` (`SparseStream`, a sparse member's logical bytes) · `detection.py` `_probe_inner_tar` (a tar inside a compressor); handbook [`formats/tar.md`](formats/tar.md) |
-| ISO internals | `iso_reader.py` (`pycdlib` boundary, record walk, raw-sector refusal); `cd_sectors.py` (raw `.bin` sectors stripped to user data), `cue_sheet.py` (`.cue` discs: tracks, sessions, absolute addresses); handbook [`formats/iso.md`](formats/iso.md) |
+| ISO internals | `iso_reader.py` (namespace, record walk, raw-sector refusal); `iso9660.py` (ISO 9660, Joliet and Rock Ridge parser); `udf.py` (UDF parser); `cd_sectors.py` (raw `.bin` sectors stripped to user data), `cue_sheet.py` (`.cue` discs: tracks, sessions, absolute addresses); handbook [`formats/iso.md`](formats/iso.md) |
 | Directory pseudo-archive | `directory_reader.py` (the `scandir` walk, scan-race diagnostics, hardlink grouping, open-by-path); handbook [`formats/directory.md`](formats/directory.md) |
 | A codec, or adding one | `streams/codecs/`: one `<name>_codec.py` per codec (`registry.py` lists them), its engine beside it (`<name>_decoder.py`, framing and resume helpers, the PPMd and rapidgzip child processes and workers), and the rapidgzip modules for the accelerator; which decoders run in a child and why: handbook [`topics/process-isolation.md`](topics/process-isolation.md); handbook [`formats/single-file.md`](formats/single-file.md) and the codec's own page |
 | Seeking inside a compressed stream | `streams/decompressor_stream.py`; spec `seekable-decompressor-streams` |

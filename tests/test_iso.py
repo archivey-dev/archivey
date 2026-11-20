@@ -1,6 +1,6 @@
-"""ISO 9660 backend tests — Stage 4 (namespace auto-select + fidelity, cost, write/
-password rejection, non-seekable rejection, corrupt handling) and the registry
-degradation slice (ISO without pycdlib). Skipped when pycdlib is absent."""
+"""ISO 9660 backend tests: namespace auto-select and fidelity, cost, write and
+password rejection, non-seekable rejection, corrupt handling. Tests that write their
+image with pycdlib are skipped when it is absent."""
 
 from __future__ import annotations
 
@@ -38,9 +38,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.iso_reader import (
-    IsoHandler,
     _strip_version,
-    _tf_modify_access_fields,
 )
 from archivey.internal.format_adapter import IndexedReaderAdapter
 from archivey.internal.source import ArchiveSource
@@ -438,57 +436,31 @@ def test_an_image_cut_inside_its_first_descriptor_is_truncated() -> None:
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
 
 
-def test_a_parser_error_is_named_without_its_repr() -> None:
-    """A parser failure inside pycdlib (here ``struct.error`` from a path table moved
-    to block 0) is shown as ``TypeName: text``, not as the repr of a Python error, and
-    the message does not claim the image is damaged: the same arm catches errors from
-    this backend's own code. The original stays the cause."""
+def test_a_path_table_that_does_not_parse_does_not_refuse_the_image() -> None:
+    """Listing walks the directory records and reads no path table (as Linux's isofs
+    and 7-Zip do), so a path table moved to block 0 costs nothing."""
     image = bytearray(_build_iso(rock_ridge=True, joliet=False))
     # Byte 140 of the primary descriptor is the low byte of the type L path table's
     # location.
     image[16 * 2048 + 140] = 0
-    with (
-        raises_corruption_not_truncation() as excinfo,
-        open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO),
-    ):
-        pass
-    assert isinstance(excinfo.value.__cause__, struct.error)
-    message = str(excinfo.value)
-    cause = excinfo.value.__cause__
-    assert message.startswith(
-        "Error reading ISO image: a structure in the image could not be parsed "
-        f"(struct.error: {cause})"
-    )
-    assert "damaged" not in message
-    assert "error(" not in message
+    # And a size larger than the whole image.
+    struct.pack_into("<I", image, 16 * 2048 + 132, len(image) * 4)
+    struct.pack_into(">I", image, 16 * 2048 + 136, len(image) * 4)
+    with open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO) as ar:
+        assert ar.read("file.txt") == b"hello world"
 
 
-def test_an_error_from_this_backends_own_code_is_not_called_damage() -> None:
-    exc = AttributeError("'NoneType' object has no attribute 'ce_entries'")
-    translated = IsoHandler().translate_exception(exc)
-    assert isinstance(translated, CorruptionError)
-    assert str(translated) == (
-        "Error reading ISO image: a structure in the image could not be parsed "
-        "(AttributeError: 'NoneType' object has no attribute 'ce_entries')"
-    )
-
-
-def test_a_cut_image_keeps_pycdlib_text_without_its_repr() -> None:
+def test_a_cut_image_names_what_is_cut() -> None:
     from archivey.exceptions import TruncatedError
 
     truncated = _build_iso(rock_ridge=True, joliet=False)[:32780]
     with pytest.raises(TruncatedError) as excinfo:
         open_archive(io.BytesIO(truncated), format=ArchiveFormat.ISO)
-    message = str(excinfo.value)
-    cause = excinfo.value.__cause__
-    assert cause is not None
-    assert str(cause)
-    assert f"({cause})" in message
-    assert f"{type(cause).__name__}(" not in message
+    assert "(volume descriptor is cut short)" in str(excinfo.value)
 
 
-# What pycdlib raises for a directory tree that loops back on itself.
-_ISO_LOOP = r"ISO Directory Records form a loop"
+# What archivey's ISO 9660 parser raises for a directory tree that loops.
+_ISO_LOOP = r"the directory tree forms a loop"
 # What archivey's UDF parser raises for a UDF directory tree that loops.
 _UDF_LOOP = r"UDF volume: .*the directory tree forms a loop"
 
@@ -511,23 +483,19 @@ _UDF_LOOP = r"UDF volume: .*the directory tree forms a loop"
         )
     ],
 )
-def test_pycdlib_directory_cycle_does_not_hang(
+def test_a_directory_cycle_does_not_hang(
     rock_ridge: bool,
     joliet: bool,
     expected_len: int,
     bitflip_offset: int,
     byte_before_flip: int,
 ) -> None:
-    """Regression: corrupt ``/subdir`` must not hang pycdlib during ``open_fp``.
+    """Regression: corrupt ``/subdir`` must not hang the open.
 
-    ``pycdlib._walk_directories`` (used for the PVD / Rock Ridge tree *and* each
-    supplementary namespace such as Joliet) enqueued child directory extents with no visit
-    tracking before 1.22. One flipped bit in a directory record can add a child that
-    points back at an ancestor extent; such a pycdlib then looped forever. ``open_fp``
-    walks every present namespace, so a Joliet-only cycle still bites RR+Joliet images
-    even when archivey reads Rock Ridge. pycdlib before 1.22 hung here until
-    pytest-timeout killed the test. From 1.22 it detects the loop and raises "ISO
-    Directory Records form a loop", so the image is refused at open.
+    One flipped bit in a directory record can add a child that points back at an
+    ancestor extent. Every tree is parsed at open, so a Joliet-only cycle refuses a
+    Rock Ridge and Joliet image even though archivey lists Rock Ridge. (pycdlib before
+    1.22 looped forever here.)
     """
     image = _pycdlib_directory_cycle_image(
         rock_ridge=rock_ridge,
@@ -819,12 +787,8 @@ def test_directory_data_length_does_not_drive_the_allocation(length: str) -> Non
 def test_a_path_source_is_read_through_the_archive_source(
     rock_ridge_iso: Path,
 ) -> None:
-    """Bounding a path source is only possible while pycdlib reads archivey's object.
-
-    A path handed to ``PyCdlib.open`` would open its own file and leave nothing of
-    archivey's underneath it, so there would be nowhere to put the bound. This pins
-    the object rather than the allocation: the allocation itself is what the bound
-    prevents, and provoking it to prove that costs gigabytes.
+    """The reader reads the image through archivey's shared source, which bounds
+    every read by the image.
     ``test_directory_data_length_does_not_drive_the_allocation`` covers the bound on a
     source that can record what was asked of it.
     """
@@ -832,8 +796,8 @@ def test_a_path_source_is_read_through_the_archive_source(
         assert isinstance(reader, IndexedReaderAdapter)
         assert isinstance(reader._source, ArchiveSource)
         assert reader._source.path == rock_ridge_iso
-        # pycdlib reads a view of the shared source, which reads the archive source.
-        assert isinstance(reader._reader._iso._cdfp, SharedView)
+        # The reader's view is of the shared source, which reads the archive source.
+        assert isinstance(reader._reader._iso_fp, SharedView)
         assert reader._shared._handle is reader._source
         assert [m.name for m in reader.members()]
 
@@ -906,29 +870,18 @@ def test_a_refused_path_source_does_not_hold_its_handle(
         assert [fp for fp in opened if not fp.closed] == []
 
 
-def test_a_failure_after_open_fp_is_translated_and_releases(
+def test_a_failure_after_the_parse_releases(
     rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The release guard covers the whole constructor, not just ``open_fp``.
+    """The release guard covers the whole constructor, not just the parse: a raise
+    from the trailing-data check, after the trees are parsed, still closes the
+    reader's view. Injected, as no image reaches it."""
+    from archivey.internal.backends.iso_reader import IsoReader
 
-    The namespace auto-select runs two more pycdlib calls on the image after
-    ``open_fp`` returns. They sat outside the ``try`` at first, which left two claims
-    untrue of that window: a raise there leaked ``_owned_fp``, and it escaped as a bare
-    ``PyCdlibException`` rather than as ``CorruptionError``. Neither is reachable
-    through a crafted image — ``has_rock_ridge`` raises only on an uninitialized object
-    — so the failure is injected rather than provoked. An unreachable window is still
-    the shape the comment, the threat model and the PR body all describe, and the next
-    call added to that block need not be as safe.
+    def boom(self: object) -> None:
+        raise CorruptionError("injected")
 
-    Fails against a guard that ends at ``open_fp``: the raise arrives as
-    ``PyCdlibInvalidISO`` and the recorded handle is still open.
-    """
-    from pycdlib.pycdlibexception import PyCdlibInvalidISO
-
-    def boom(self) -> bool:  # type: ignore[no-untyped-def]
-        raise PyCdlibInvalidISO("injected")
-
-    monkeypatch.setattr("pycdlib.PyCdlib.has_rock_ridge", boom)
+    monkeypatch.setattr(IsoReader, "_report_trailing_data", boom)
 
     with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
         with raises_corruption_not_truncation() as excinfo:
@@ -938,48 +891,14 @@ def test_a_failure_after_open_fp_is_translated_and_releases(
         assert [fp for fp in opened if not fp.closed] == []
 
 
-def test_a_failing_iso_close_still_releases_the_handle(
+def test_listing_limits_count_records_as_the_trees_are_parsed(
     rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Closing is two steps, and the second must not depend on the first succeeding.
-
-    ``_release_archive_handles`` closes the ``PyCdlib`` and then the handle this reader
-    opened. Without the ``finally`` a raise out of the first skips the second, which
-    leaks a descriptor on the ordinary close and, on the ``__init__`` path, replaces
-    the error the image produced with the close error *and* leaves the fp open — the
-    outcome the guard was added to prevent.
-
-    Injected, like ``test_a_failure_after_open_fp_is_translated_and_releases``:
-    ``PyCdlib.close()`` raises only on an object it never opened, which the
-    ``_iso_opened`` flag already excludes. The same reasoning applies — a helper that
-    promises one release path must not give up half of it on its own first failure.
-
-    Fails against the sequential form: the close error still propagates, but the
-    recorded handle is left open.
-    """
-
-    def boom(self) -> None:  # type: ignore[no-untyped-def]
-        raise RuntimeError("injected close failure")
-
-    monkeypatch.setattr("pycdlib.PyCdlib.close", boom)
-
-    with _recording_opens(rock_ridge_iso, monkeypatch) as opened:
-        reader = open_archive(rock_ridge_iso, format=ArchiveFormat.ISO)
-        with pytest.raises(RuntimeError, match="injected close failure"):
-            reader.close()
-        assert opened, "the reader did not open the path itself"
-        assert [fp for fp in opened if not fp.closed] == []
-
-
-def test_listing_limits_count_records_as_pycdlib_parses_them(
-    rock_ridge_iso: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``max_members`` is checked inside ``open_fp``, per tree, as the listing counts.
+    """``max_members`` is checked as each tree is parsed, per tree.
 
     The image lists five members (two files, a directory, a nested file, a symlink)
     and its Joliet tree holds four of them again. A budget of five opens it unchanged;
-    four is refused as ``ResourceLimitError`` from inside pycdlib's walk, not
-    re-wrapped as ``CorruptionError`` by the pycdlib error boundary, and the handle the
+    four is refused as ``ResourceLimitError`` from inside the parse, and the handle the
     reader opened is released like on any other failed open.
     """
     with open_archive(rock_ridge_iso) as reader:
@@ -1002,48 +921,10 @@ def test_listing_limits_count_records_as_pycdlib_parses_them(
 def test_listing_limits_count_directory_record_bytes_at_open(
     rock_ridge_iso: Path,
 ) -> None:
-    """``max_metadata_bytes`` weighs the directory records pycdlib parses at open."""
+    """``max_metadata_bytes`` weighs the directory records parsed at open."""
     tight = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=200))
     with pytest.raises(ResourceLimitError, match="max_metadata_bytes=200"):
         open_archive(rock_ridge_iso, config=tight)
-
-
-def test_the_pycdlib_hooks_are_inert_outside_archivey_opens() -> None:
-    """Every hook archivey installs in pycdlib leaves a direct pycdlib open alone.
-
-    The hooks on ``DirectoryRecord.parse``, ``RockRidge.parse``,
-    ``PyCdlib._parse_path_table``, ``PathTableRecord.parse``,
-    ``PyCdlib._parse_udf_descriptors`` and ``PyCdlib._walk_udf_directories`` act only
-    while ``IsoReader`` has set its two ``ContextVar``s around its own ``open_fp``;
-    outside, both are unset, and a Rock Ridge and Joliet image (path tables included)
-    and a UDF image open and read through pycdlib as they would without archivey: the
-    UDF tree, which pycdlib skips inside archivey's open, is parsed.
-    """
-    import pycdlib
-
-    from archivey.internal.backends import iso_reader
-
-    assert iso_reader._PARSE_BUDGET.get() is None
-    assert not iso_reader._inside_our_open()
-    iso = pycdlib.PyCdlib()
-    iso.open_fp(io.BytesIO(_build_iso(rock_ridge=True, joliet=True)))
-    try:
-        assert iso.get_record(rr_path="/subdir/n.txt").get_data_length() == 7
-    finally:
-        iso.close()
-    iso = pycdlib.PyCdlib()
-    iso.open_fp(io.BytesIO(_udf_image_with_links(3)))
-    try:
-        # pycdlib yields ``None`` for the root's parent entry.
-        children = iso.list_children(udf_path="/")
-        names = [entry.file_identifier() for entry in children if entry is not None]
-        assert sorted(names) == [
-            b"F0.TXT",
-            b"F1.TXT",
-            b"F2.TXT",
-        ]
-    finally:
-        iso.close()
 
 
 def test_a_clean_image_is_unaffected(rock_ridge_iso: Path) -> None:
@@ -1354,6 +1235,54 @@ def test_rock_ridge_relocation_directory_is_not_listed() -> None:
         assert ar.read(deep) == b"deep"
 
 
+def test_two_relocated_directories_of_one_name_keep_their_own_files() -> None:
+    """``a/.../x`` and ``b/.../x`` are both parked in ``rr_moved`` under one Rock Ridge
+    name; each ``CL`` is followed to its own directory, as Linux and 7-Zip follow
+    it. pycdlib's rule took the first ``x`` by name and listed it in both places."""
+
+    def populate(iso: Any) -> None:
+        for top in ("A", "B"):
+            path = ""
+            for name in [top] + [f"L{i}" for i in range(1, 8)] + ["X"]:
+                path += f"/{name}"
+                iso.add_directory(path, rr_name=name.lower())
+            iso.add_fp(io.BytesIO(top.encode()), 1, path + "/F.;1", rr_name="f.txt")
+
+    data = _build_rr_iso(populate)
+    with open_archive(io.BytesIO(data)) as ar:
+        deep = "/l1/l2/l3/l4/l5/l6/l7/x/f.txt"
+        assert ar.read("a" + deep) == b"A"
+        assert ar.read("b" + deep) == b"B"
+
+
+def test_a_relocated_directory_lists_under_its_placeholders_name() -> None:
+    """The ``CL`` placeholder names the member, as Linux's ``readdir`` names it; the
+    parked directory gives only its contents. A parked record whose ``NM`` differs
+    does not rename the directory."""
+
+    def populate(iso: Any) -> None:
+        path = ""
+        for name in [f"L{i}" for i in range(1, 9)]:
+            path += f"/{name}"
+            iso.add_directory(path, rr_name=name.lower())
+        iso.add_fp(io.BytesIO(b"deep"), 4, path + "/F.;1", rr_name="f.txt")
+
+    data = bytearray(_build_rr_iso(populate))
+    # The parked directory's record is the one in ``rr_moved``'s directory extent.
+    vd = 16 * 2048
+    root = struct.unpack_from("<I", data, vd + 156 + 2)[0] * 2048
+    at = root
+    while data[at + 33 : at + 33 + data[at + 32]] != b"RR_MOVED":
+        at += data[at]
+    moved = struct.unpack_from("<I", data, at + 2)[0] * 2048
+    (parked,) = {data.index(b"NM\x07\x01\x00l8", moved, moved + 2048)}
+    data[parked + 5 : parked + 7] = b"lQ"
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        deep = "l1/l2/l3/l4/l5/l6/l7/l8/f.txt"
+        assert deep in [m.name for m in ar.members()]
+        assert ar.read(deep) == b"deep"
+
+
 def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
     """An RR image whose one record has no System Use entries keeps that member,
     names it from the ISO 9660 identifier, and says what was lost."""
@@ -1379,8 +1308,8 @@ def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
 def test_the_record_walk_descends_each_directory_extent_once() -> None:
     """A child record pointing back at an ancestor extent is listed but not entered.
 
-    pycdlib's parse-time guard keeps such a cycle out of a parsed tree, so the cycle
-    is spliced into the parsed records here to reach the walk's own guard.
+    The parser refuses such a cycle, so the cycle is spliced into the parsed entries
+    here to reach the walk's own guard.
     """
     import pycdlib
 
@@ -1395,18 +1324,15 @@ def test_the_record_walk_descends_each_directory_extent_once() -> None:
 
     with open_archive(io.BytesIO(out.getvalue())) as ar:
         reader: Any = ar
-        a = reader._reader._iso.get_record(iso_path="/A")
-        b = reader._reader._iso.get_record(iso_path="/A/B")
+        (a,) = reader._reader._volume.primary.root.children
+        (b,) = a.children
         b.children.append(a)  # B now lists its own parent A as a child
         names = [m.name for m in ar.members()]
     assert sorted(names) == ["A/", "A/B/", "A/B/A/", "A/B/F"]
 
 
 def test_listing_reads_nothing_from_the_image() -> None:
-    """On an image with no repeated identifier and no file ending at the end of the
-    image, materialization only touches catalog records pycdlib parsed at open: the
-    audit the handle-lock requirement relies on. Either of those makes listing re-read
-    one directory extent, under the handle guard (``IsoReader._raw_directory``)."""
+    """Every tree is parsed at open, so listing reads nothing from the image."""
 
     class Counting(io.BytesIO):
         calls = 0
@@ -1426,29 +1352,24 @@ def test_listing_reads_nothing_from_the_image() -> None:
 
 
 def test_rock_ridge_long_form_tf_time_is_read() -> None:
-    """A TF record with LONG_FORM set carries 17-byte dates (``VolumeDescriptorDate``:
-    four-digit year, ``dayofmonth``, hundredths). They used to come back as ``None``
-    because only the 7-byte field names were read."""
+    """A TF record with LONG_FORM set carries 17-byte dates (four-digit year,
+    hundredths). They used to come back as ``None`` because only the 7-byte field
+    names were read."""
     from datetime import datetime, timedelta, timezone
 
-    from pycdlib.dates import DirectoryRecordDate, VolumeDescriptorDate
+    from archivey.internal.backends.iso9660 import RawDate, date_value
 
-    from archivey.internal.backends.iso_reader import _dr_date_to_datetime
-
-    long_form = VolumeDescriptorDate()
-    # 2024-03-05 06:07:08.09, gmtoffset +8 (15-minute units: UTC+2).
-    long_form.parse(b"2024030506070809" + struct.pack("=b", 8))
-    assert _dr_date_to_datetime(long_form) == datetime(
+    # 2024-03-05 06:07:08.09, offset +8 (15-minute units: UTC+2).
+    long_form = RawDate(b"2024030506070809" + struct.pack("=b", 8), True)
+    assert date_value(long_form) == datetime(
         2024, 3, 5, 6, 7, 8, 90_000, tzinfo=timezone(timedelta(hours=2))
     )
 
-    unspecified = VolumeDescriptorDate()
-    unspecified.parse(b"0" * 16 + b"\x00")
-    assert _dr_date_to_datetime(unspecified) is None
+    unspecified = RawDate(b"0" * 16 + b"\x00", True)
+    assert date_value(unspecified) is None
 
-    short_form = DirectoryRecordDate()
-    short_form.parse(struct.pack("=BBBBBBb", 124, 3, 5, 6, 7, 8, 8))
-    assert _dr_date_to_datetime(short_form) == datetime(
+    short_form = RawDate(struct.pack("=BBBBBBb", 124, 3, 5, 6, 7, 8, 8), False)
+    assert date_value(short_form) == datetime(
         2024, 3, 5, 6, 7, 8, tzinfo=timezone(timedelta(hours=2))
     )
 
@@ -1468,10 +1389,9 @@ def test_rock_ridge_tf_modification_time_wins_over_record_date() -> None:
     tf_date = DirectoryRecordDate()
     tf_date.parse(struct.pack("=BBBBBBb", 101, 1, 2, 3, 4, 5, 0))
     record = iso.get_record(rr_path="/a.txt")
-    # pycdlib names TF flag bit 1, which RRIP gives the modification time,
-    # ``access_time`` (``_tf_modify_access_fields``).
-    modify_field, _access_field = _tf_modify_access_fields()
-    setattr(record.rock_ridge.dr_entries.tf_record, modify_field, tf_date)
+    # pycdlib 1.x names TF flag bit 1, which RRIP gives the modification time,
+    # ``access_time``.
+    record.rock_ridge.dr_entries.tf_record.access_time = tf_date
     image = io.BytesIO()
     iso.write_fp(image)
     iso.close()
@@ -1505,16 +1425,6 @@ def test_rock_ridge_tf_times_are_read_in_rrip_order(tmp_path: Path) -> None:
         member = archive.get("f.txt")
     assert member.modified == mtime
     assert member.accessed == atime
-
-
-def test_the_tf_field_probe_names_bit_1_the_modification_time() -> None:
-    import pycdlib.rockridge
-
-    record = pycdlib.rockridge.RRTFRecord()
-    record.parse(b"TF\x0c\x01\x02" + bytes((101, 1, 2, 3, 4, 5, 0)))
-    modify_field, access_field = _tf_modify_access_fields()
-    assert getattr(record, modify_field) is not None
-    assert getattr(record, access_field, None) is None
 
 
 # --- data the directory record's own inode does not cover -----------------------------
@@ -1838,13 +1748,10 @@ def test_an_associated_file_and_a_file_with_its_identifier_both_list(
 
 
 def test_a_directory_and_a_file_with_one_identifier_both_list() -> None:
-    """pycdlib links a file record to the record just before it when the two share an
-    identifier, even when that record is a directory. A directory is never part of
-    a file, so both list, as 7-Zip lists them. The reverse order, and two directories
-    with one identifier, are refused by pycdlib at open."""
+    """A directory is never part of a file, so a directory and a file with one
+    identifier both list, in either order, as 7-Zip lists them. (pycdlib refused the
+    file-first order at open.)"""
     import pycdlib
-
-    from archivey.exceptions import CorruptionError
 
     def build(first: str) -> bytes:
         iso = pycdlib.PyCdlib()
@@ -1859,17 +1766,16 @@ def test_a_directory_and_a_file_with_one_identifier_both_list() -> None:
         # The directory record and both path tables spell the identifier.
         return out.getvalue().replace(b"DUQ", b"DUP")
 
-    with open_archive(io.BytesIO(build("dir"))) as ar:
-        rows = [(m.name, m.type, m.is_current) for m in ar.members()]
-        assert rows == [
-            ("DUP/", MemberType.DIRECTORY, True),
-            ("DUP", MemberType.FILE, True),
-            ("DUP/IN", MemberType.FILE, True),
-        ]
-        assert ar.read("DUP") == b"x"
-        assert ar.read("DUP/IN") == b"inner"
-    with pytest.raises(CorruptionError, match="duplicate name"):
-        open_archive(io.BytesIO(build("file"))).close()
+    for first in ("dir", "file"):
+        with open_archive(io.BytesIO(build(first))) as ar:
+            rows = [(m.name, m.type, m.is_current) for m in ar.members()]
+            assert rows == [
+                ("DUP/", MemberType.DIRECTORY, True),
+                ("DUP", MemberType.FILE, True),
+                ("DUP/IN", MemberType.FILE, True),
+            ], first
+            assert ar.read("DUP") == b"x"
+            assert ar.read("DUP/IN") == b"inner"
 
 
 def test_a_boot_catalog_declared_past_the_image_end_reads_short() -> None:
@@ -2144,16 +2050,15 @@ _VOLUME_SPACE_SIZE = 16 * 2048 + 80
 
 
 def test_a_cut_image_whose_root_points_past_its_volume_space_is_corruption() -> None:
-    """The image is cut, and pycdlib's failing read ran into the end of the file, but
-    that read started past the volume space the image declares: the root record is a
-    wrong pointer, not a structure the cut removed. The cut keeps the path tables, so
-    the failure is pycdlib's directory read, not the path-table bound."""
+    """The image is cut, and the failing read ran into the end of the file, but that
+    read started past the volume space the image declares: the root record is a
+    wrong pointer, not a structure the cut removed."""
     image = bytearray(_three_file_image(udf=False))
     (space_size,) = struct.unpack_from("<I", image, _VOLUME_SPACE_SIZE)
     _set_extent(image, _ROOT_EXTENT, space_size + 1)
     cut = 70_000
     assert cut < len(image)
-    with raises_corruption_not_truncation(match="Invalid directory record"):
+    with raises_corruption_not_truncation(match="directory at offset"):
         open_archive(io.BytesIO(bytes(image[:cut])), format=ArchiveFormat.ISO)
 
 
@@ -2179,12 +2084,6 @@ def _damage_directory_padding(image: bytearray, block: int) -> None:
     image[root * block + block - 1] = 0xFF  # past the last record: must be zero
 
 
-def _damage_path_table_size(image: bytearray, block: int) -> None:
-    # Larger than the whole volume space: a wrong size, not a cut image.
-    struct.pack_into("<I", image, 16 * block + 132, len(image) * 4)
-    struct.pack_into(">I", image, 16 * block + 136, len(image) * 4)
-
-
 def _damage_root_extent(image: bytearray, block: int) -> None:
     # The root directory placed far past the volume space's end.
     struct.pack_into("<I", image, 16 * block + 156 + 2, 0x00FFFFFF)
@@ -2195,10 +2094,9 @@ def _damage_root_extent(image: bytearray, block: int) -> None:
     "damage",
     [
         _damage_primary_descriptor,
-        _damage_path_table_size,
         _damage_root_extent,
     ],
-    ids=["primary-descriptor", "path-table-size", "root-extent"],
+    ids=["primary-descriptor", "root-extent"],
 )
 def test_a_damaged_image_of_full_length_is_corruption_not_truncation(
     damage: Callable[[bytearray, int], None],
@@ -2246,68 +2144,6 @@ def test_damaged_directory_padding_lists_every_file_and_is_reported() -> None:
     strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     with pytest.raises(DiagnosticRaisedError):
         open_archive(io.BytesIO(bytes(image)), format=ArchiveFormat.ISO, config=strict)
-
-
-#: SHA-256 of pycdlib's own ``_iter_directory_records`` source that the copy in
-#: ``iso_reader`` was checked against (pycdlib 1.22.0).
-_PYCDLIB_WALK_SOURCE_SHA256 = frozenset(
-    {"cc289078d746c0d2678d95c7012ac2add5e1680d5c837807aa644ea210326151"}
-)
-
-
-def test_the_copied_directory_walk_matches_the_installed_pycdlib() -> None:
-    """The tolerant walk is a copy of pycdlib's ``_iter_directory_records``, used in
-    its place during archivey's open. A pycdlib whose walk differs fails here, so its
-    changes are compared with the copy before they are lost under archivey."""
-    import hashlib
-    import inspect
-
-    from archivey.internal.backends import iso_reader
-
-    original = iso_reader._PYCDLIB_ITER_DIRECTORY_RECORDS
-    assert callable(original)
-    digest = hashlib.sha256(inspect.getsource(original).encode()).hexdigest()
-    assert digest in _PYCDLIB_WALK_SOURCE_SHA256, (
-        "pycdlib changed _iter_directory_records: compare it with the copy in "
-        "iso_reader._install_pycdlib_padding_tolerance, then add this digest: " + digest
-    )
-
-
-def test_pycdlib_outside_archivey_still_refuses_damaged_padding() -> None:
-    """The tolerance applies to archivey's own opens only."""
-    import pycdlib
-    from pycdlib.pycdlibexception import PyCdlibInvalidISO
-
-    image = bytearray(_three_file_image(udf=False))
-    _damage_directory_padding(image, 2048)
-    iso = pycdlib.PyCdlib()
-    with pytest.raises(PyCdlibInvalidISO, match="Invalid padding"):
-        iso.open_fp(io.BytesIO(bytes(image)))
-
-
-def test_the_raw_directory_walk_crosses_sector_padding() -> None:
-    """A zero length byte pads to the end of the sector, and records continue in
-    the next one: a flag or a length there is still found."""
-    from archivey.internal.backends.iso_reader import _parse_raw_directory
-
-    def record(extent: int, length: int, ident: bytes, flags: int = 0) -> bytes:
-        body = bytearray(33 + len(ident) + (1 - len(ident) % 2))
-        body[0] = len(body)
-        struct.pack_into("<I", body, 2, extent)
-        struct.pack_into("<I", body, 10, length)
-        body[25] = flags
-        body[32] = len(ident)
-        body[33 : 33 + len(ident)] = ident
-        return bytes(body)
-
-    first = record(100, 2048, b"BIG;1", flags=0x80) + record(101, 10, b"BIG;1")
-    second = record(200, 2048, b"HUGE;1", flags=0x80) + record(201, 9000, b"HUGE;1")
-    data = first.ljust(2048, b"\0") + second.ljust(2048, b"\0")
-
-    raw = _parse_raw_directory(data, 2048, image_length=201 * 2048 + 5000)
-    flags = {ident: [r.multi_extent for r in rs] for ident, rs in raw.repeated.items()}
-    assert flags == {b"BIG;1": [True, False], b"HUGE;1": [True, False]}
-    assert raw.lengths_to_end == {(201, b"HUGE;1"): 9000}
 
 
 def test_format_version_is_not_pycdlibs_guess(rock_ridge_iso: Path) -> None:
@@ -2473,9 +2309,10 @@ def test_the_zisofs_stream_refuses_a_negative_absolute_seek_and_a_bad_whence() -
     """The member contract above goes through ``ArchiveStream.seek``, which refuses
     both before the zisofs stream sees them. The stream refuses them itself too, with
     the caller's ``ValueError`` and without moving."""
-    from archivey.internal.backends.iso_reader import _ZisofsEntry, _ZisofsStream
+    from archivey.internal.backends.iso9660 import Zisofs
+    from archivey.internal.backends.iso_reader import _ZisofsStream
 
-    entry = _ZisofsEntry(b"ZF", 1, b"pz", 16, 15, len(_ZISOFS_PLAIN))
+    entry = Zisofs(b"ZF", 1, b"pz", 16, 15, len(_ZISOFS_PLAIN))
     stored = _zisofs(_ZISOFS_PLAIN)
     stream = _ZisofsStream(io.BytesIO(stored), entry, len(stored))
     stream.seek(10)
@@ -2793,29 +2630,6 @@ def test_an_area_cut_before_its_nm_entry_lists_under_the_iso_name() -> None:
         ]
 
 
-def test_a_record_without_a_continuation_area_has_no_nm_name() -> None:
-    """pycdlib leaves ``ce_entries`` as ``None`` until a continuation area is parsed; a
-    record with neither an ``NM`` nor such an area has no ``NM`` name. The end-to-end
-    case is the cut-area test above.
-    """
-    import pycdlib
-
-    from archivey.internal.backends.iso_reader import _nm_name, _rr_entry_groups
-
-    iso = pycdlib.PyCdlib()
-    iso.open_fp(io.BytesIO(_build_rr_iso(_two_rr_files)))
-    try:
-        record = iso.get_record(rr_path="/aaa")
-        rr = record.rock_ridge
-        assert rr is not None
-        assert rr.ce_entries is None
-        assert _rr_entry_groups(rr) == (rr.dr_entries,)
-        rr.dr_entries.nm_records = []
-        assert _nm_name(record) is None
-    finally:
-        iso.close()
-
-
 def test_a_symlink_whose_entries_are_cut_withholds_its_target() -> None:
     """The target may have run on past the malformed entry (genisoimage's long
     targets do), so it is not reported cut short."""
@@ -3020,15 +2834,15 @@ def test_following_link_targets_reads_each_directory_once(
     per target component made listing one wide directory quadratic."""
     from archivey.internal.backends import iso_reader
 
-    real = iso_reader._yield_children
+    real = iso_reader._sorted_children
     calls = 0
 
-    def counting(record: Any, rock_ridge: bool) -> Any:
+    def counting(directory: Any) -> Any:
         nonlocal calls
         calls += 1
-        return real(record, rock_ridge)
+        return real(directory)
 
-    monkeypatch.setattr(iso_reader, "_yield_children", counting)
+    monkeypatch.setattr(iso_reader, "_sorted_children", counting)
     walks = []
     for count in (4, 40):
         calls = 0
@@ -3100,24 +2914,6 @@ def test_an_encoding_that_cannot_decode_the_name_falls_back_to_escapes(
     with open_archive(io.BytesIO(_latin1_name_image()), encoding=encoding) as ar:
         names = {m.name for m in ar.members()}
     assert "caf\udce9\udce9.txt" in names
-
-
-def test_the_filter_knows_every_entry_pycdlib_parses() -> None:
-    """``_PYCDLIB_SUSP_TAGS`` mirrors pycdlib's dispatch by hand. pycdlib names one
-    ``RR<TAG>Record`` class per tag it parses, so a release that adds one fails here
-    rather than having archivey drop the new entry before pycdlib sees it."""
-    import re
-
-    from pycdlib import rockridge
-
-    from archivey.internal.backends.iso_reader import _PYCDLIB_SUSP_TAGS
-
-    tags = {
-        name[2:4].encode()
-        for name in dir(rockridge)
-        if re.fullmatch(r"RR[A-Z]{2}Record", name)
-    }
-    assert tags == _PYCDLIB_SUSP_TAGS
 
 
 def test_a_utf8_rock_ridge_name_ignores_encoding() -> None:

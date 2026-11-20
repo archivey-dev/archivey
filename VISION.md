@@ -27,7 +27,7 @@ feels like stdlib**.
    decompression-bombed unless the caller explicitly opts out. Safety is a *contract*
    (specced, tested, threat-modeled — see `dev-docs/threat-model.md`), not a feature flag.
 2. **Memory-safe parsing of hostile input.** Every container and header parser is
-   pure Python: archivey's own for ZIP, TAR, 7z and RAR, and `pycdlib` for ISO.
+   pure Python, and archivey's own: ZIP, TAR, 7z, RAR and ISO among them.
    That is not purity for its own sake: a pure-Python parser can be *wrong* but it
    cannot be *corrupted*, while C archive parsers (libarchive et al.) have a long CVE
    history of memory-safety bugs triggered by crafted archives. "Parse untrusted
@@ -170,8 +170,8 @@ No "bug-free" promises. Instead, machinery that catches bugs before release:
   quirks would leak into the core contracts (py7zr/rarfile as read backends) are kept
   out even at the cost of a longer road, because their quirks would become part of the
   unified contract. Wrapping is acceptable only where the wrapped library is
-  well-behaved under our contract (`pycdlib` behind archivey's bounded-read source) or
-  delegated at a process boundary (`unrar` or `unar` for RAR member data).
+  well-behaved under our contract (stdlib `zlib` and `lzma` behind archivey's bounded
+  reads) or delegated at a process boundary (`unrar` or `unar` for RAR member data).
 
 ## Maintenance reality
 

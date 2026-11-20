@@ -87,6 +87,70 @@ source's lock per read, so concurrent member streams need no lock of the backend
 | Open from non-seekable source | Seekability error at open; no implicit buffering |
 | Two ISO file members opened and read interleaved, or from several threads | Each stream yields exact bytes in order |
 
+### Requirement: Read raw CD sector images of a data track
+
+The ISO backend SHALL recognise a raw CD sector image — a dump whose sectors begin with
+the 12-byte sync pattern `00 FF×10 00`, as the `.bin` of a `.bin`/`.cue` pair does.
+Detection SHALL claim such a file as `ISO` from the sync pattern at offset 0.
+
+When the first sector is Mode 1 or Mode 2 Form 1 and a second sync shows the sector size
+(2352, or 2448 for a dump carrying subchannel data), the backend SHALL read the image as
+the plain ISO it holds: each sector stripped to its 2048 bytes of user data (after the
+16-byte header, and for Mode 2 also the 8-byte subheader). Each sector SHALL be checked
+when it is read: a sector without the sync or with another mode byte SHALL raise
+`CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read
+that reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and
+ECC bytes are not checked, and documentation SHALL say so.
+
+Without a `.cue` sheet beside it (next requirement), the backend SHALL read the session
+the sheet would choose from the addresses in the sector headers (BCD minutes, seconds
+and frames). Data sectors whose address minus their position in the file is the same
+form a run, placed at those addresses; runs whose offsets differ by at least a lead-in
+(4 500 sectors) are in different sessions. The backend SHALL list the first run of the
+last session, reading its volume descriptors from the first sector at or after that
+run's sector 16 that holds a primary volume descriptor, within its first 4096 sectors,
+and only when the root directory's `.` record is at the sector it names and the
+descriptor set (through its terminator and the sector after) is in data sectors; every
+other address is absolute. The walk SHALL NOT read every sector: when the last data
+sector near the end of the file has the same offset as sector 0, the image is one
+session and no other sector header is read; a run is followed by probes at doubling
+distances and bisection; only sectors that are not data are read in turn, in batches.
+Addresses that go backwards, more than 256 runs, no later session, or a later session
+without a volume that passes the check SHALL leave the image read from its first track.
+
+Read from its first track, the trailing-data check SHALL scan only the data sectors that
+continue the track after the volume space, so a mixed-mode disc's audio is not reported.
+When those sectors hold another ISO 9660 volume (a sector that starts with a primary
+volume descriptor), the backend SHALL report `ARCHIVE_UNREAD_SESSION` naming that sector
+instead of `ARCHIVE_TRAILING_DATA`, and the listing SHALL stay the first track's. Read
+hints SHALL name the raw sectors that hold a member's extents, also for a later session
+placed by its addresses (a span across two runs has no hint).
+
+Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
+with `UnsupportedFeatureError` naming the layout, before the directory tree is parsed. A
+replacement reader (`FormatPolicy.replace`) SHALL be refused every raw image.
+
+#### Scenario: raw-sector matrix
+
+| Case | Expected |
+| --- | --- |
+| Raw Mode 1 or Mode 2 Form 1 image, 2352- or 2448-byte sectors | Lists and reads as the plain `.iso` does, with no diagnostic |
+| Data track followed by audio sectors | Reads; no `ARCHIVE_TRAILING_DATA` |
+| Non-zero data sectors past the volume space | `ARCHIVE_TRAILING_DATA` |
+| Two or three data sessions back to back, sector addresses jumping by the gap, no `.cue` used, from a path or a stream | The newest session, as with the `.cue`; files of earlier sessions read from their sectors; no diagnostic |
+| Non-data sectors, and a pregap of data sectors, between the sessions | The same; the volume found past the pregap |
+| A later session in the other data mode (Mode 1, then Mode 2 Form 1, or the reverse), no `.cue` used | The newest session, each read in its own mode, as with the `.cue` |
+| One session, or a data track then audio to the end | Two header reads (sector 0 and the last 32 sectors), then the first track |
+| A second ISO 9660 volume past the volume space whose addresses do not place it (they restart, or its root is not where they put it) | Lists the first volume; `ARCHIVE_UNREAD_SESSION`, no `ARCHIVE_TRAILING_DATA` |
+| A file's sector with a broken sync | Reading that file raises `CorruptionError`; other files read |
+| A Mode 2 Form 2 sector inside a file | Reading that file raises `UnsupportedFeatureError` |
+| Image cut inside a file | Reading that file raises `TruncatedError` |
+| Raw Mode 2 Form 2 image | `UnsupportedFeatureError` saying it holds no ISO 9660 filesystem |
+| Unknown mode byte, or a single sector | `UnsupportedFeatureError` naming the layout |
+| `detect_format` on a raw image | `ISO`, `CERTAIN`, `detected_by="magic"` |
+| Replacement ISO reader | `UnsupportedFeatureError` naming the replacement |
+| Plain `.iso` | Unaffected: it starts with the zero-filled system area, never the sync |
+
 ### Requirement: List every ISO directory record as its own member
 
 The ISO backend SHALL walk directory records, not names: each entry is one member, and

@@ -58,8 +58,8 @@ those keeps working ([DR-15](../design-rules.md#dr-15-usage-errors-are-for-what-
 
 ### Translation, not catch-alls
 
-Code inside archivey calls libraries (zlib, lzma, pyppmd, pycdlib, the `cryptography`
-package) whose exceptions mean different things: `zlib.error`, `lzma.LZMAError`,
+Code inside archivey calls libraries (zlib, lzma, pyppmd, the `cryptography` package)
+whose exceptions mean different things: `zlib.error`, `lzma.LZMAError`,
 `EOFError`, `ValueError` with a message. Each backend and each codec has a
 **translator**: a function that gets the raw exception and returns the right
 `ArchiveyError`, or `None` to let it propagate unchanged. The public stream

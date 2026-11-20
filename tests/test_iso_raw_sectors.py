@@ -4,7 +4,6 @@ Mode 1 and Mode 2 Form 1 images are read: every sector is stripped to its 2048 b
 user data, which is a byte-identical ``.iso``. Layouts that hold no filesystem (Mode 2
 Form 2) or that are not understood are refused by name; such a file used to fail
 detection with "no magic-byte match", which sends a user looking for a corrupt file.
-The refusals need no pycdlib: they come before the reader.
 """
 
 from __future__ import annotations
@@ -127,15 +126,7 @@ def test_the_probe_restores_the_stream_position() -> None:
     assert stream.tell() == 0
 
 
-def test_the_refusal_does_not_need_pycdlib(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Without this ordering a caller lacking pycdlib is told to install it, and only
-    # then learns the file cannot be read at all. The core-only CI leg has no pycdlib;
-    # this pins the same answer in every leg.
-    monkeypatch.setattr(
-        "archivey.internal.registry._optional", lambda name: None, raising=True
-    )
+def test_a_mode_2_form_2_image_is_refused_by_name(tmp_path: Path) -> None:
     path = tmp_path / "disc.bin"
     path.write_bytes(_image(mode=2, form2=True))
     with pytest.raises(UnsupportedFeatureError, match="raw CD sector image"):

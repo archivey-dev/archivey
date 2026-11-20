@@ -247,24 +247,6 @@ def test_a_plugin_codec_lists_itself_and_its_packages(tmp_path: Path) -> None:
     ]
 
 
-@requires("pycdlib")
-def test_a_handler_built_on_a_package_lists_it() -> None:
-    import pycdlib
-
-    iso = pycdlib.PyCdlib()
-    iso.new()
-    iso.add_fp(io.BytesIO(b"iso"), 3, "/F.;1")
-    out = io.BytesIO()
-    iso.write_fp(out)
-    iso.close()
-    out.seek(0)
-    with open_archive(out) as reader:
-        assert reader.backends_used == (
-            BackendUse("reader", "archivey", "ISO"),
-            BackendUse("library", "pycdlib", "ISO"),
-        )
-
-
 def test_a_unar_spawn_records_the_binary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

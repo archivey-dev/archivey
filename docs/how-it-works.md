@@ -25,8 +25,8 @@ format, when you set `always_probe_content=True`, or when you call `open_stream(
 ## Reading the archive's structure
 
 Once the format is known, a parser reads the archive's structure: the list of members, their names,
-sizes and times, and where each one's data starts. Archivey has its own parsers for ZIP, TAR, 7z and
-RAR, and uses pycdlib for ISO images. All of them are written in Python, so parsing a malicious
+sizes and times, and where each one's data starts. Archivey has its own parsers for ZIP, TAR, 7z,
+RAR, ISO and the other formats. All of them are written in Python, so parsing a malicious
 archive can result in wrong data but can't corrupt memory.
 
 Its own parsers mean every format follows the same rules for metadata, and any archive, solid ones

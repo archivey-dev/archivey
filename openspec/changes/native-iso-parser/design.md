@@ -38,6 +38,12 @@ directories may together declare no more than the image holds: they do not overl
 an honest image always passes, and a crafted one cannot have each directory claim the
 rest of the image and read it once per directory.
 
+Changed in the reader, following Linux's isofs: a Rock Ridge `CL` is followed to the
+directory at its extent for its contents and attributes, and the member keeps the
+placeholder's own `NM` name. pycdlib's `list_children` took the first entry of that
+directory's parent with the placeholder's name, so two deep directories of one name
+(`a/.../x`, `b/.../x`) both listed the first one's files, and the second's were lost.
+
 Dropped, following Linux's isofs and 7-Zip:
 
 - Path tables are not read to list. Readers that walk directories ignore them; pycdlib

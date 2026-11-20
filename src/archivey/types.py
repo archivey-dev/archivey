@@ -539,7 +539,9 @@ class OptionalLibrary(StrEnum):
     RAPIDGZIP = "rapidgzip"
     """The gzip, zlib, Deflate and bzip2 accelerator."""
     PYCDLIB = "pycdlib"
-    """ISO 9660 images."""
+    """Deprecated, and removed in 0.7.0: ISO 9660 images need no optional package
+    since 0.6.0. Naming it in ``exclude_libraries=`` or ``only_libraries=`` has no
+    effect and emits a ``DeprecationWarning``."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
     COMPRESS_UTILS = "compress_utils"
@@ -621,7 +623,7 @@ class MissingComponent:
     """
 
     name: str
-    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``. For
+    """The package or program, such as ``"pyppmd"``, ``"brotli"`` or ``"unrar"``. For
     one of archivey's own packages it is the :class:`OptionalLibrary` member, which is
     a ``str``."""
 
