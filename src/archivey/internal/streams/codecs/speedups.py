@@ -15,6 +15,7 @@ from __future__ import annotations
 import platform
 import sys
 
+from archivey.config import AcceleratorMode, ArchiveyConfig, ProcessIsolation
 from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.rapidgzip_select import _rapidgzip_requirement
@@ -59,6 +60,16 @@ def crc32c_speedup() -> MissingComponent:
     """google-crc32c: a native CRC-32C for Snappy chunks."""
     return MissingComponent(
         OptionalLibrary.GOOGLE_CRC32C, _crc32c_hint(), ("snappy crc",)
+    )
+
+
+def accelerator_used(mode: AcceleratorMode, config: ArchiveyConfig) -> bool:
+    """Whether ``config`` would ever decode through rapidgzip with ``mode`` (its
+    ``use_rapidgzip`` or ``use_indexed_bzip2``), were it installed: not under ``OFF``,
+    and not under ``ProcessIsolation.NONE``, since rapidgzip runs only in a child."""
+    return (
+        mode is not AcceleratorMode.OFF
+        and config.process_isolation is not ProcessIsolation.NONE
     )
 
 

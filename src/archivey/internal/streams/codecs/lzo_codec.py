@@ -12,7 +12,6 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.config import StreamConfig, check_decoder_memory
-from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps, speedups
 from archivey.internal.streams.codecs.base import (
@@ -43,6 +42,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
     from archivey.formats import Decompressor
 
 # lzop's F_CS_MASK and F_CS_LATIN1.
@@ -91,8 +91,9 @@ class LzopCodec(StreamCodec):
 
     @override
     def missing_speedups(
-        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
+        del config
         # Without compress-utils, LZO1X decodes in Python, 20 to 30 times slower.
         return speedups.missing_speedup(
             speedups.compress_utils_speedup("lzo"), (deps.compress_utils,), excluded
@@ -161,8 +162,9 @@ class Lzo1xCodec(StreamCodec):
 
     @override
     def missing_speedups(
-        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
+        del config
         # Without compress-utils, LZO1X decodes in Python, 20 to 30 times slower.
         return speedups.missing_speedup(
             speedups.compress_utils_speedup("lzo"), (deps.compress_utils,), excluded

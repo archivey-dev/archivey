@@ -143,15 +143,24 @@ _CONTAINER_OPTIONAL_CODECS: dict[
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
 }
 
-# Member codecs each container decodes faster with an optional package
-# (``StreamCodec.missing_speedups``), for ``FormatAvailability.faster_with``. The
-# format's own stream codec (``tar.gz``'s gzip) is added separately.
+# For ``FormatAvailability.faster_with``: the codecs with a speed-up package
+# (``StreamCodec.missing_speedups``: DEFLATE, zlib, gzip, bzip2, LZO, lzop) that each
+# container's reader decodes its members or payload with, through the codec layer.
+# A container belongs here when its reader can hand data in one of those codecs to
+# ``open_codec_stream`` or the codec itself. The format's own stream codec
+# (``tar.gz``'s gzip) is added separately. Snappy is reached by no container.
 _CONTAINER_SPEEDUP_CODECS: dict[
     ContainerFormat | PluginContainer, tuple[Codec, ...]
 ] = {
     ContainerFormat.SEVEN_Z: (Codec.DEFLATE, Codec.BZIP2),
     ContainerFormat.ZIP: (Codec.DEFLATE, Codec.BZIP2),
     ContainerFormat.SQUASHFS: (Codec.LZO,),
+    # Members encoded application/x-gzip (zlib) or application/x-bzip2.
+    ContainerFormat.XAR: (Codec.ZLIB, Codec.BZIP2),
+    # The compressed payload or data tar.
+    ContainerFormat.RPM: (Codec.GZIP, Codec.BZIP2),
+    ContainerFormat.DEB: (Codec.GZIP, Codec.BZIP2),
+    ContainerFormat.MAKESELF: (Codec.GZIP, Codec.BZIP2, Codec.LZOP),
 }
 
 
@@ -677,7 +686,7 @@ class BackendRegistry:
         if check_programs:
             missing.extend(backend_cls.missing_programs(config))
 
-        faster_with = self._missing_speedups(fmt, member_codecs, excluded)
+        faster_with = self._missing_speedups(fmt, member_codecs, excluded, config)
         if not missing:
             return FormatAvailability(
                 fmt, FormatSupport.FULL, (), required_source, faster_with
@@ -691,10 +700,12 @@ class BackendRegistry:
         fmt: ArchiveFormat,
         member_codecs: bool,
         excluded: frozenset[OptionalLibrary],
+        config: ArchiveyConfig,
     ) -> tuple[MissingComponent, ...]:
         """``FormatAvailability.faster_with`` for a readable ``fmt``: the absent
         speed-up packages of its stream codec and, with ``member_codecs``, of the
-        member codecs its built-in reader uses. Each package once, first seen first."""
+        member codecs its built-in reader uses, that ``config`` would use if they were
+        installed. Each package once, first seen first."""
         codecs: list[CodecId] = []
         if fmt.stream != StreamFormat.UNCOMPRESSED:
             codecs.append(codec_for_stream_format(fmt.stream))
@@ -702,7 +713,7 @@ class BackendRegistry:
             codecs.extend(_CONTAINER_SPEEDUP_CODECS.get(fmt.container, ()))
         found: dict[str, MissingComponent] = {}
         for codec in codecs:
-            for component in codec_missing_speedups(codec, excluded):
+            for component in codec_missing_speedups(codec, excluded, config):
                 found.setdefault(str(component.name), component)
         return tuple(found.values())
 

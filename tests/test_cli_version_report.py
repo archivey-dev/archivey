@@ -162,6 +162,8 @@ class _Dist:
     [
         ("uv", "/home/u/.cache/uv/archive-v0/l3A6DnngECMlzMwB", "uvx"),
         ("uv", "/home/u/.local/share/uv/tools/archivey-cli", "uv-tool"),
+        # Windows: %APPDATA%\\uv\\data\\tools, as a POSIX path of the same shape.
+        ("uv", "/c/Users/u/AppData/Roaming/uv/data/tools/archivey-cli", "uv-tool"),
         ("pip", "/home/u/.local/share/pipx/venvs/archivey-cli", "pipx"),
         ("uv", "/home/u/project/.venv", "pip"),
         ("pip", "/usr", "pip"),

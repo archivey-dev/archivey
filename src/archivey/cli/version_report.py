@@ -47,7 +47,8 @@ def detect_installer() -> Installer:
 
     ``"uvx"``, ``"uv-tool"`` and ``"pipx"`` need the ``archivey-cli`` distribution and
     an environment of its own: a uv cache entry (``…/archive-v0/<id>``), a uv tool
-    directory (``…/uv/tools/archivey-cli`` or under ``UV_TOOL_DIR``) or a pipx venv
+    directory (``…/uv/tools/archivey-cli``, ``…/uv/data/tools/archivey-cli`` on
+    Windows, or under ``UV_TOOL_DIR``) or a pipx venv
     (``…/venvs/archivey-cli``). Anything else is ``"pip"``, whose hint is the library's
     own ``pip install …``.
     """
@@ -62,7 +63,9 @@ def detect_installer() -> Installer:
     if by_uv and prefix.name == _CLI_DISTRIBUTION:
         tool_dir = os.environ.get("UV_TOOL_DIR")
         if (tool_dir and prefix.parent == Path(tool_dir)) or (
-            prefix.parent.name == "tools" and prefix.parent.parent.name == "uv"
+            # uv's tool directory: ``…/uv/tools`` on Linux and macOS,
+            # ``…/uv/data/tools`` (under %APPDATA%) on Windows.
+            prefix.parent.name == "tools" and "uv" in prefix.parent.parts[-3:]
         ):
             return "uv-tool"
     if prefix.name == _CLI_DISTRIBUTION and prefix.parent.name == "venvs":

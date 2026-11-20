@@ -720,7 +720,9 @@ class FormatAvailability:
     Never changes ``support``. Empty when the format cannot be read, and when every
     package that would speed it up is installed. A package that ``config.formats``
     turns off, or that archivey does not use on this interpreter, is listed with its
-    ``reason``, as in ``missing``.
+    ``reason``, as in ``missing``. A package the ``config`` would not use even when
+    installed is left out: rapidgzip under ``use_rapidgzip`` / ``use_indexed_bzip2``
+    ``OFF``, or under ``ProcessIsolation.NONE``.
     """
 
 

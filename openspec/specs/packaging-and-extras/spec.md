@@ -349,12 +349,15 @@ remove the command entry points.
 The repository SHALL ship a second distribution, `archivey-cli`, from
 `packages/archivey-cli/`. It SHALL contain no Python modules. It SHALL depend on
 `archivey[recommended]` pinned with `==` to its own version, which SHALL equal the root
-`archivey` version, plus `fsspec` and `aiohttp` for URL arguments. It SHALL also depend on
-the packages of the root's `[bzip3]` and `[seekable]` extras, at the same floors, each
-behind an environment marker that keeps it to the platforms where it installs from a
-wheel, so installing the CLI never compiles them. It SHALL install two console scripts, `archivey`
-and `archivey-cli`, both pointing at the same entry point as the root `archivey` script.
-The publish workflow SHALL build and upload it from the same tag as `archivey`.
+`archivey` version, plus `fsspec` and `aiohttp` for URL arguments. It SHALL also depend
+on the packages of the root's `[bzip3]` and `[seekable]` extras, at the same floors,
+each behind an environment marker that keeps it to the platforms where it installs from
+a wheel, so installing the CLI does not compile them. The one exception is rapidgzip on
+free-threaded CPython 3.14 for Windows, which has no wheel and which no environment
+marker can tell apart from the regular build. It SHALL install two console scripts,
+`archivey` and `archivey-cli`, both pointing at the same entry point as the root
+`archivey` script. The publish workflow SHALL build and upload it from the same tag as
+`archivey`.
 
 Reason: Python packaging has no default extras, so `uvx archivey` runs the core install.
 `uvx` runs the command named after the package, hence the `archivey-cli` script.

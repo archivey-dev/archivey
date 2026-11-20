@@ -9,7 +9,7 @@ import itertools
 import os
 import re
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
@@ -25,7 +25,6 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.dataclass_copy import copy_with
-from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
@@ -93,6 +92,9 @@ from archivey.types import (
     OptionalLibrary,
     StreamFormat,
 )
+
+if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
 
 
 def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
@@ -888,9 +890,12 @@ class Bzip2Codec(StreamCodec):
 
     @override
     def missing_speedups(
-        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
-        # rapidgzip decodes large data in parallel, in a child process.
+        # rapidgzip decodes large data in parallel, in a child process, so a config
+        # that never starts one has nothing to gain from it.
+        if not speedups.accelerator_used(config.use_indexed_bzip2, config):
+            return ()
         return speedups.missing_speedup(
             speedups.rapidgzip_speedup(), (deps.rapidgzip,), excluded
         )

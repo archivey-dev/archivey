@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.config import StreamConfig
-from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs import deps, speedups
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
@@ -32,6 +31,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
     from archivey.formats import Decompressor
 
 
@@ -49,8 +49,9 @@ class SnappyCodec(StreamCodec):
 
     @override
     def missing_speedups(
-        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
+        del config
         # Two jobs, each faster with either of two packages: the raw-block decoder
         # and the CRC-32C. Without them both run in Python.
         libraries = deps.snappy_libraries

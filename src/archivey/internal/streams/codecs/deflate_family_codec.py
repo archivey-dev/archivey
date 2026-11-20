@@ -5,14 +5,13 @@ rapidgzip in a child process.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import BinaryIO, ClassVar
+from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.exceptions import (
     ArchiveyError,
     PackageNotInstalledError,
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
@@ -47,6 +46,9 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
 )
 from archivey.types import MissingComponent, OptionalLibrary
 
+if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
+
 
 class _DeflateFamilyCodec(StreamCodec):
     """The rapidgzip accelerator plumbing that gzip, zlib and raw DEFLATE share.
@@ -67,9 +69,12 @@ class _DeflateFamilyCodec(StreamCodec):
 
     @override
     def missing_speedups(
-        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
-        # rapidgzip decodes large data in parallel, in a child process.
+        # rapidgzip decodes large data in parallel, in a child process, so a config
+        # that never starts one has nothing to gain from it.
+        if not speedups.accelerator_used(config.use_rapidgzip, config):
+            return ()
         return speedups.missing_speedup(
             speedups.rapidgzip_speedup(), (deps.rapidgzip,), excluded
         )

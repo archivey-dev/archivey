@@ -53,6 +53,42 @@ def test_absent_rapidgzip_slows_the_deflate_family_and_bzip2(
     assert _names(ArchiveFormat.TAR) == []
 
 
+def test_payload_and_member_containers_report_rapidgzip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XAR members and RPM, DEB and makeself payloads reach the gzip and bzip2
+    codecs, so they gain from rapidgzip too; makeself's lzop payload from
+    compress-utils."""
+    _absent(monkeypatch, OptionalLibrary.RAPIDGZIP, OptionalLibrary.COMPRESS_UTILS)
+    for fmt in (ArchiveFormat.XAR, ArchiveFormat.RPM, ArchiveFormat.DEB):
+        assert _names(fmt) == ["rapidgzip"], fmt
+    assert _names(ArchiveFormat.MAKESELF) == ["rapidgzip", "compress_utils"]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        ArchiveyConfig(use_rapidgzip="off", use_indexed_bzip2="off"),
+        ArchiveyConfig(process_isolation="none"),
+    ],
+    ids=["accelerators-off", "isolation-none"],
+)
+def test_config_that_never_uses_rapidgzip_does_not_list_it(
+    monkeypatch: pytest.MonkeyPatch, config: ArchiveyConfig
+) -> None:
+    _absent(monkeypatch, OptionalLibrary.RAPIDGZIP)
+    for fmt in (ArchiveFormat.GZ, ArchiveFormat.BZ2, ArchiveFormat.ZIP):
+        assert _names(fmt, config) == [], fmt
+    assert _names(ArchiveFormat.GZ) == ["rapidgzip"]
+
+
+def test_one_accelerator_off_leaves_the_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    _absent(monkeypatch, OptionalLibrary.RAPIDGZIP)
+    config = ArchiveyConfig(use_rapidgzip="off")
+    assert _names(ArchiveFormat.GZ, config) == []
+    assert _names(ArchiveFormat.BZ2, config) == ["rapidgzip"]
+
+
 def test_lzo_and_snappy_report_their_python_fallbacks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

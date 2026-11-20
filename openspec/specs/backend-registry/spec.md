@@ -342,7 +342,10 @@ conservative answer.
 make reading the format faster: archivey reads the same data without them. They never
 change `support` and never appear in `missing`. A package is listed once, with the
 policy's or the interpreter's `reason` when `config.formats` turns it off or archivey
-does not use it there. A format whose `support` is NONE lists none.
+does not use it there. A package that `config` would not use even when installed (an
+accelerator set to `OFF`, or rapidgzip under `process_isolation=NONE`) is left out. The
+member and payload codecs of ZIP, 7z, SquashFS, XAR, RPM, DEB and makeself count. A
+format whose `support` is NONE lists none.
 
 | Case | `faster_with` |
 | --- | --- |
@@ -350,6 +353,8 @@ does not use it there. A format whose `support` is NONE lists none.
 | `.sz` without compress-utils or cramjam, and without google-crc32c or crc32c | compress-utils and google-crc32c |
 | gzip, zlib, bzip2, a TAR in one of them, ZIP or 7z without rapidgzip | rapidgzip (no parallel decoding) |
 | `exclude_libraries={"rapidgzip"}` with rapidgzip installed, for gzip | rapidgzip, with the policy's reason |
+| gzip with `use_rapidgzip=OFF`, or any with `process_isolation=NONE`, rapidgzip absent | empty |
+| XAR, RPM, DEB or makeself without rapidgzip | rapidgzip (members or payload in gzip, zlib or bzip2) |
 | xz, TAR, or every package installed | empty |
 
 #### Scenario: The supported list does not filter by the format policy

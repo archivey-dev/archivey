@@ -65,6 +65,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
     from archivey.formats import Decompressor
     from archivey.internal.sfx import HitValidator
 
@@ -711,16 +712,18 @@ class StreamCodec:
         return as_excluded(replace(requirement, name=library))
 
     def missing_speedups(
-        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
         """The optional packages this codec decodes faster with that are absent, or
         that ``excluded`` turns off (``codecs/speedups.py``).
 
-        ``()`` when no package would speed it up, or every one it can use is here.
-        Without them the codec still decodes, in Python or with the standard library,
-        so ``format_availability`` reports them in ``faster_with``, not ``missing``.
+        ``()`` when no package would speed it up, when every one it can use is here,
+        and when ``config`` would not use one even if it were installed (an
+        accelerator set to ``OFF``). Without them the codec still decodes, in Python
+        or with the standard library, so ``format_availability`` reports them in
+        ``faster_with``, not ``missing``.
         """
-        del excluded
+        del excluded, config
         return ()
 
     def _missing(
