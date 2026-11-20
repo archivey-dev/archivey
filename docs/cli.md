@@ -250,7 +250,8 @@ such as `-d` or `--exclude`, go after it. Besides `--password` and `-v`, the sha
 - `--track-io` reports how many bytes archivey decompressed and read, and how often it seeked.
   For a URL it also reports how many range requests archivey made and how many bytes they
   fetched, in total and as a share of the archive's size. Each file also costs one size lookup
-  when it's opened, which isn't counted.
+  when it's opened, which isn't counted. A server that redirects every request, as many download
+  hosts do, also costs one redirect per request, and those aren't counted either.
 - `--probe-content` recognises a raw LZMA, zlib or Brotli stream whatever the file is named. These
   have no signature at their start, so archivey normally knows them only by their extension
   (`.lzma`, `.zz`, `.br` and the like). With this option it tries decoding the start of the file

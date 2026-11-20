@@ -505,6 +505,8 @@ class _Handler(BaseHTTPRequestHandler):
     # Serve the file gzip-encoded (ranges count in the encoded bytes) to a request
     # whose Accept-Encoding allows gzip, as a server that negotiates encoding does.
     gzip_if_allowed: ClassVar[list[bool]] = [False]
+    # Answer every range request with this status and Content-Range, and no body.
+    status_override: ClassVar[list[tuple[int, str] | None]] = [None]
     ranges: ClassVar[list[str]] = []
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -542,6 +544,13 @@ class _Handler(BaseHTTPRequestHandler):
         ranged = self.headers.get("Range")
         if ranged:
             self.ranges.append(ranged)
+        if ranged and self.status_override[0] is not None:
+            status, header = self.status_override[0]
+            self.send_response(status)
+            self.send_header("Content-Range", header)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if ranged and self.ignore_ranges[0] != 0:
             self.ignore_ranges[0] -= 1
             ranged = None
@@ -551,6 +560,7 @@ class _Handler(BaseHTTPRequestHandler):
             end = min(int(last), len(data) - 1) if last else len(data) - 1
             if start >= len(data):
                 self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{len(data)}")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
@@ -592,6 +602,7 @@ def http_base() -> Iterator[str]:
     pytest.importorskip("fsspec")
     _Handler.files, _Handler.poison, _Handler.agents = {}, {}, []
     _Handler.ignore_ranges[0] = 0
+    _Handler.status_override[0] = None
     _Handler.content_range[0] = None
     _Handler.body_206[0] = None
     _Handler.max_206[0] = _Handler.declare_206[0] = _Handler.total_206[0] = None
@@ -1104,7 +1115,104 @@ def test_http_a_server_that_answers_too_little_too_often_is_refused(
     src = _range_source(f"{http_base}/big.bin")
     try:
         src.seek(100_000)
-        with pytest.raises(OSError, match="with parts of the range"):
+        with pytest.raises(OSError, match="with fewer than 4096 bytes each"):
+            src.read(10)
+    finally:
+        src.close()
+
+
+def test_http_a_server_that_caps_its_answers_serves_a_large_read(
+    http_base: str,
+) -> None:
+    # A server may cap every answer (16 KiB here). Each answer makes real progress,
+    # so a read many times the cap is continued to its end, as a local read is.
+    data = bytes(range(256)) * (12 * 1024)
+    _Handler.files["/big.bin"] = data
+    _Handler.max_206[0] = 16 * 1024
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(1000)
+        assert src.read(len(data)) == data[1000:]
+    finally:
+        src.close()
+
+
+def test_http_a_416_after_the_object_shrank_is_a_changed_object(
+    http_base: str,
+) -> None:
+    from archivey import SourceChangedError
+
+    data = bytes(range(256)) * 1024
+    _Handler.files["/big.bin"] = data
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        _Handler.files["/big.bin"] = data[:1000]
+        src.seek(100_000)
+        with pytest.raises(SourceChangedError, match="has no byte 100000 of 1000"):
+            src.read(10)
+    finally:
+        src.close()
+
+
+def test_http_a_416_naming_the_same_size_is_refused_not_a_change(
+    http_base: str,
+) -> None:
+    from archivey import SourceChangedError
+
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.status_override[0] = (416, "bytes */262144")
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        with pytest.raises(OSError, match="refused bytes 100000") as caught:
+            src.read(10)
+        assert not isinstance(caught.value, SourceChangedError)
+    finally:
+        src.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "content_range", "error"),
+    [
+        pytest.param(
+            416, "bytes */" + "9" * 5000, "changed while it was read", id="416"
+        ),
+        pytest.param(
+            206, "bytes 100000-100009/" + "9" * 5000, "does not match it", id="206"
+        ),
+    ],
+)
+def test_http_a_size_of_thousands_of_digits_is_not_a_bare_value_error(
+    http_base: str, status: int, content_range: str, error: str
+) -> None:
+    # ``int`` refuses over 4300 digits with a bare ValueError; such a header is
+    # refused as malformed first.
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.status_override[0] = (status, content_range)
+    from archivey import ArchiveyError
+
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        with pytest.raises((OSError, ArchiveyError), match=error):
+            src.read(10)
+    finally:
+        src.close()
+
+
+def test_http_a_whole_answer_of_another_size_is_a_changed_object(
+    http_base: str,
+) -> None:
+    # A server that ignores ranges answers a read from byte 0 with the whole object;
+    # a Content-Length other than the size read at open is another object.
+    from archivey import SourceChangedError
+
+    _Handler.files["/small.bin"] = b"a" * 85
+    src = _range_source(f"{http_base}/small.bin")
+    try:
+        _Handler.files["/small.bin"] = b"b" * 129
+        _Handler.ignore_ranges[0] = -1
+        with pytest.raises(SourceChangedError, match="129"):
             src.read(10)
     finally:
         src.close()

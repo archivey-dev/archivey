@@ -24,8 +24,15 @@ from typing import Any, Literal, cast
 from archivey.internal.remote import display_url
 
 # ``bytes a-b/n`` or ``bytes a-b/*``, ASCII digits only: ``str.isdigit`` also takes
-# digits ``int`` refuses (a superscript two).
-_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.ASCII | re.IGNORECASE)
+# digits ``int`` refuses (a superscript two). At most 20 digits, more than any object
+# needs: ``int`` refuses a string of over 4300 digits with a bare ``ValueError``, and a
+# header can be longer, so a longer number fails the match instead.
+_CONTENT_RANGE = re.compile(
+    r"bytes (\d{1,20})-(\d{1,20})/(\d{1,20}|\*)", re.ASCII | re.IGNORECASE
+)
+
+# ``bytes */n``, a ``416``'s Content-Range: the object is ``n`` bytes long.
+_UNSATISFIED_RANGE = re.compile(r"bytes \*/(\d{1,20})", re.ASCII | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -33,12 +40,15 @@ class HttpAnswer:
     """What one range request over HTTP gave (:func:`bounded_http_cat`)."""
 
     data: bytes
-    kind: Literal["range", "whole", "ignored"]
+    kind: Literal["range", "whole", "ignored", "unsatisfiable"]
     """``"range"``: a ``206`` holding ``data`` from the requested start;
     ``"whole"``: the object from byte 0, cut at the requested end; ``"ignored"``: the
-    range was ignored for a request past byte 0, and nothing was read."""
+    range was ignored for a request past byte 0, and nothing was read;
+    ``"unsatisfiable"``: a ``416``, the range starts past the object's end, and nothing
+    was read."""
     total: int | None = None
-    """The object's size a ``206`` named, when it named one."""
+    """The object's size the answer named, when it named one: a ``206`` or ``416`` in
+    ``Content-Range``, a ``200`` in ``Content-Length``."""
 
 
 RangeRequest = Callable[[str, int, int], HttpAnswer]
@@ -101,6 +111,15 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
         session = await fs.set_session()
         kw["auto_decompress"] = False
         async with session.get(fs.encode_url(url), **kw) as r:
+            if r.status == 416:
+                # The range starts past the object's end. Every request lies inside
+                # the size read at open, so the object is shorter now.
+                match = _UNSATISFIED_RANGE.fullmatch(
+                    r.headers.get("Content-Range", "").strip()
+                )
+                return HttpAnswer(
+                    b"", "unsatisfiable", None if match is None else int(match[1])
+                )
             fs._raise_not_found_for_status(r, url)
             encoding = r.headers.get("Content-Encoding", "identity").strip().lower()
             if encoding not in ("", "identity"):
@@ -124,7 +143,7 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
             # The range was ignored: the body is the whole object from byte 0.
             if start > 0:
                 return HttpAnswer(b"", "ignored")
-            return HttpAnswer(await read_at_most(r, end), "whole")
+            return HttpAnswer(await read_at_most(r, end), "whole", r.content_length)
 
     async def read_at_most(r: Any, limit: int) -> bytes:
         out = bytearray()
