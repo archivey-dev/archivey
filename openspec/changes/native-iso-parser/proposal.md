@@ -39,7 +39,7 @@ sessions, dedupe by data location) one model to build on.
 - Public API: `OptionalLibrary.PYCDLIB` is deprecated, as no built-in format needs it.
   Following DR-12a it stays for 0.6.0: naming it in `exclude_libraries=` or
   `only_libraries=` has no effect and emits a `DeprecationWarning`. 0.7.0 removes it
-  (maintainer, 2026-11-20). The 0.6.0 changelog records it as a **Deprecated:** line.
+  (maintainer, 2026-11-20). The 0.6.0 changelog records it under `### Deprecated`.
 - Packaging: one fewer runtime dependency in `[recommended]` and `[free-threaded]`.
 - Specs: `format-iso` (this change), and the `packaging-and-extras`,
   `backend-registry`, `error-handling` and `access-mode-and-cost` rows that use "ISO
