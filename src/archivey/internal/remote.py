@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import sys
 import threading
 from collections.abc import Generator
@@ -592,7 +593,9 @@ class WindowPool:
             view[: len(data)] = data
             return len(data)
         length = min(length, room)
-        data = source.fetch(start, start + length)
+        # A server may answer with less than the window (a short range); the
+        # window then ends where its answer did, and holds the read at least.
+        start, data = source.fetch_window(start, start + length, at, at + want)
         if run is None:
             run = _Run(source, start, self._tick)
             self._runs.append(run)
@@ -641,6 +644,131 @@ class WindowPool:
             self._held -= excess
 
 
+# A range request a server answered with the whole object is sent again this many
+# times before the read is refused. A CDN can ignore ``Range`` now and then (one cache
+# node answers 200, the next 206); a server that never honours it fails as before.
+RANGE_IGNORED_RETRIES = 2
+
+
+# ``bytes a-b/n`` or ``bytes a-b/*``, ASCII digits only: ``str.isdigit`` also takes
+# digits ``int`` refuses (a superscript two).
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.ASCII | re.IGNORECASE)
+
+# A server may answer a range request with fewer bytes than asked, from the right
+# start (RFC 9110, section 15.3.7); the rest is asked for again, this many times at
+# most for one fetch, before the read is refused.
+SHORT_RANGE_REQUESTS = 8
+
+
+@dataclass(frozen=True)
+class _HttpAnswer:
+    """What one range request over HTTP gave (:func:`_bounded_http_cat`)."""
+
+    data: bytes
+    kind: str
+    """``"range"``: a ``206`` holding ``data`` from the requested start;
+    ``"whole"``: the object from byte 0, cut at the requested end; ``"ignored"``: the
+    range was ignored for a request past byte 0, and nothing was read."""
+    total: int | None = None
+    """The object's size a ``206`` named, when it named one."""
+
+
+def _content_range(
+    url: str, header: str | None, start: int, end: int
+) -> tuple[int, int | None]:
+    """The span ``(length, total)`` a ``206`` answer to a request for ``[start, end)``
+    declares. Refused with ``OSError`` when ``Content-Range`` is missing, malformed,
+    or does not start at ``start`` and end inside the range, so its bytes are never
+    served at the wrong offset."""
+    match = None if header is None else _CONTENT_RANGE.fullmatch(header.strip())
+    if match is not None:
+        first, last = int(match[1]), int(match[2])
+        if first == start and first <= last < end:
+            return last - first + 1, None if match[3] == "*" else int(match[3])
+    raise OSError(
+        f"{display_url(url)}: the server answered a request for bytes "
+        f"{start}-{end} with Content-Range {header!r}, which does not match it: "
+        f"its bytes cannot be placed in the file"
+    )
+
+
+def _bounded_http_cat(fs: Any) -> Any:
+    """For fsspec's HTTP file system, one range request whose answer is read only as
+    far as needed; ``None`` for every other file system.
+
+    fsspec's own ``cat_file`` reads the whole response body into memory before it
+    returns, so a server that answers a 64 KiB range request with a 1.5 GB ``200``
+    costs 1.5 GB. This one never reads past what the request asked for, plus one
+    byte that shows a body longer than declared. It is built from the HTTP file
+    system's session and its request options, as its ``cat_file`` is, and ``None``
+    when the installed fsspec lacks one of them: ``cat_file`` is used then.
+
+    How the answer says what it holds (RFC 9110, sections 15.3.1 and 15.3.7):
+    ``206`` with ``Content-Range: bytes a-b/n`` holds bytes ``a`` to ``b`` of an
+    object of ``n`` bytes; it must start at the requested start and its body must
+    be exactly that long (:func:`_content_range`). Any other success status holds
+    the whole object from byte 0. The request asks for the bytes as stored
+    (``Accept-Encoding: identity``), as fsspec does when it reads the size, so the
+    offsets are the stored object's; an answer in another encoding is refused.
+    """
+    http = sys.modules.get("fsspec.implementations.http")
+    if http is None or not isinstance(fs, getattr(http, "HTTPFileSystem", ())):
+        return None
+    if not all(
+        hasattr(fs, name) for name in ("kwargs", "loop", "set_session", "encode_url")
+    ) or not callable(getattr(fs, "_raise_not_found_for_status", None)):
+        return None
+    from fsspec.asyn import sync
+
+    async def cat(url: str, start: int, end: int) -> _HttpAnswer:
+        kw = dict(fs.kwargs)
+        headers = dict(kw.pop("headers", None) or {})
+        headers["Range"] = f"bytes={start}-{end - 1}"
+        headers["Accept-Encoding"] = "identity"
+        kw["headers"] = headers
+        session = await fs.set_session()
+        kw["auto_decompress"] = False
+        async with session.get(fs.encode_url(url), **kw) as r:
+            fs._raise_not_found_for_status(r, url)
+            encoding = r.headers.get("Content-Encoding", "identity").strip().lower()
+            if encoding not in ("", "identity"):
+                raise OSError(
+                    f"{display_url(url)}: the server answered a request for bytes "
+                    f"{start}-{end} in Content-Encoding {encoding!r}, though the "
+                    f"request asked for the bytes as stored"
+                )
+            if r.status == 206:
+                length, total = _content_range(
+                    url, r.headers.get("Content-Range"), start, end
+                )
+                data = await read_at_most(r, length + 1)
+                if len(data) != length:
+                    raise OSError(
+                        f"{display_url(url)}: the server declared {length} bytes "
+                        f"from {start} in Content-Range and sent "
+                        f"{'more' if len(data) > length else len(data)}"
+                    )
+                return _HttpAnswer(data, "range", total)
+            # The range was ignored: the body is the whole object from byte 0.
+            if start > 0:
+                return _HttpAnswer(b"", "ignored")
+            return _HttpAnswer(await read_at_most(r, end), "whole")
+
+    async def read_at_most(r: Any, limit: int) -> bytes:
+        out = bytearray()
+        while len(out) < limit:
+            chunk = await r.content.read(min(1 << 20, limit - len(out)))
+            if not chunk:
+                break
+            out += chunk
+        return bytes(out)
+
+    def run(url: str, start: int, end: int) -> _HttpAnswer:
+        return cast(_HttpAnswer, sync(fs.loop, cat, url, start, end))
+
+    return run
+
+
 MAX_PENDING_HINTS = 8
 """Hints a range source keeps at once: one per member stream read side by side, for
 up to this many streams. A hint lost past it costs only the fetch it would have saved."""
@@ -679,8 +807,10 @@ class RangeSource(io.RawIOBase):
         self.pending_hints: list[tuple[int, int]] = []
         # The message of the first ``SourceChangedError`` a fetch raised (design D7).
         self.change: str | None = None
-        # What :meth:`fetch` has asked the file system for: one per request, and the
-        # bytes the file system returned. Read by ``--track-io`` (``IoStats``).
+        self._bounded_cat = _bounded_http_cat(fs)
+        # What :meth:`fetch` has asked the file system for: one per request (a
+        # request sent again counts again), and the bytes the file system returned.
+        # Read by ``--track-io`` (``IoStats``).
         self.fetch_count = 0
         self.bytes_fetched = 0
 
@@ -779,10 +909,11 @@ class RangeSource(io.RawIOBase):
         break the pool's bound.
 
         The bound starts when ``cat_file`` returns: a file system that reads a whole
-        response body into memory (fsspec's HTTP one does) has already allocated it by
-        then. archivey reads through ``cat_file`` and opens no file object (design D1),
-        so a server that ignores ``Range`` costs that one allocation before the read
-        is refused. That cost is accepted.
+        response body into memory has already allocated it by then. fsspec's HTTP one
+        does, so over HTTP the request goes through :meth:`_cat` instead, which stops
+        reading such a body after the requested bytes, keeps them when the request
+        starts at byte 0, and otherwise asks again before it refuses the read. For any
+        other file system that one allocation is the accepted cost.
 
         A response shorter than the range has seen an object shorter than the size read
         at open: it was cut or replaced since (design D7, tier 3), so this raises
@@ -792,24 +923,116 @@ class RangeSource(io.RawIOBase):
         version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
         The change is kept (:attr:`change`): this source raises it again from then on.
         """
+        return self.fetch_window(start, end, start, end)[1]
+
+    def fetch_window(
+        self, start: int, end: int, read_at: int, read_end: int
+    ) -> tuple[int, bytes]:
+        """:meth:`fetch` for a window ``[start, end)`` planned around a read of
+        ``[read_at, read_end)`` inside it; returns where the bytes start, and them.
+
+        A server may answer with fewer bytes than asked (a short range, RFC 9110
+        section 15.3.7). Then the window ends where the answers reached, once they
+        hold the read's bytes; and a short answer that stops before ``read_at`` drops
+        the bytes before the read and asks again from ``read_at``, so the planner's
+        read-ahead never spends the request budget the read needs. Everything else is
+        as :meth:`fetch`.
+        """
         self._raise_if_changed()
-        data = self.fs.cat_file(self.path, start=start, end=end)
-        self.fetch_count += 1
-        self.bytes_fetched += len(data)
+        start, data, short_range = self._cat(start, end, read_at, read_end)
         if len(data) > end - start:
             raise OSError(
                 f"{self.url}: the file system returned {len(data)} bytes for a "
                 f"request of bytes {start}-{end}: it does not honour range requests, "
                 f"which reading an archive remotely needs"
             )
-        if len(data) < end - start:
+        if len(data) < end - start and not short_range:
             self.change = (
                 f"{self.url}: the object changed while it was read: fetching bytes "
                 f"{start}-{end} of the {self.size} bytes seen at open returned "
                 f"{len(data)} bytes"
             )
             self._raise_if_changed()
-        return bytes(data)
+        return start, bytes(data)
+
+    def _cat(
+        self, start: int, end: int, read_at: int, need: int
+    ) -> tuple[int, bytes, bool]:
+        """The file system's bytes for ``[start, end)``, or what it returned instead.
+
+        Over HTTP (:func:`_bounded_http_cat`) no answer is read past the range. A
+        request from byte 0 that got the whole object keeps the bytes it asked for.
+        A request past byte 0 that got it is sent again up to
+        ``RANGE_IGNORED_RETRIES`` times, then refused with the same ``OSError`` as a
+        long response from any other file system. A ``206`` with fewer bytes than
+        asked continues from where it stopped, up to ``SHORT_RANGE_REQUESTS``
+        requests, but only as far as ``need``: the bytes the caller's read needs now.
+        Past them the shorter answer is kept as it is, and the last value is then
+        ``True``: the server chose to send less, the object did not shrink. A short
+        answer that stops before ``read_at`` drops what came before it and goes on
+        from ``read_at``, so the first value, where the bytes start, moves there. The
+        planner's read-ahead, before the read or after it, does not spend the request
+        budget. A ``206`` that names a
+        size other than the one read at open has seen another object
+        (:class:`~archivey.SourceChangedError`).
+        """
+        bounded = self._bounded_cat
+        if bounded is None:
+            data = cast(bytes, self.fs.cat_file(self.path, start=start, end=end))
+            self.fetch_count += 1
+            self.bytes_fetched += len(data)
+            return start, data, False
+        pieces: list[bytes] = []
+        pos, ignored, short = start, 0, 0
+        while pos < end:
+            answer = bounded(self.path, pos, end)
+            self.fetch_count += 1
+            self.bytes_fetched += len(answer.data)
+            if answer.kind == "ignored":
+                ignored += 1
+                if ignored > RANGE_IGNORED_RETRIES:
+                    raise OSError(
+                        f"{self.url}: the server answered {ignored} requests for "
+                        f"bytes {pos}-{end} with the whole object: it does not "
+                        f"honour range requests, which reading an archive remotely "
+                        f"needs"
+                    )
+                streams_logger.info(
+                    "%s: the server answered a request for bytes %d-%d with the "
+                    "whole object; asking again",
+                    self.url,
+                    pos,
+                    end,
+                )
+                continue
+            if answer.total is not None and answer.total != self.size:
+                self.change = (
+                    f"{self.url}: the object changed while it was read: the server "
+                    f"gave its size as {answer.total} bytes, {self.size} at open"
+                )
+                self._raise_if_changed()
+            pieces.append(answer.data)
+            pos += len(answer.data)
+            if answer.kind == "whole":
+                break  # the object ends there, or ``fetch`` has all it asked for
+            if pos < end and pos >= need:
+                return start, b"".join(pieces), True
+            if pos < read_at:
+                # Short before the read's first byte: the bytes so far were
+                # read-ahead. Drop them and ask from the read itself; the read keeps
+                # its whole budget.
+                pieces.clear()
+                start = pos = read_at
+                continue
+            if pos < end:
+                short += 1
+                if short >= SHORT_RANGE_REQUESTS:
+                    raise OSError(
+                        f"{self.url}: the server answered {short} requests for "
+                        f"bytes {start}-{end} with parts of the range and reached "
+                        f"only {pos}"
+                    )
+        return start, b"".join(pieces), False
 
     def _raise_if_changed(self) -> None:
         # A new exception each time: one instance raised from several places would

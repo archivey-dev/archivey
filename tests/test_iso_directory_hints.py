@@ -40,13 +40,15 @@ def _image(directories: int) -> bytes:
 
 def _list_remote(data: bytes, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], int]:
     fetches: list[tuple[int, int]] = []
-    fetch = remote.RangeSource.fetch
+    cat = remote.RangeSource._cat
 
-    def counted(self: remote.RangeSource, start: int, end: int) -> bytes:
+    def counted(
+        self: remote.RangeSource, start: int, end: int, *args: Any
+    ) -> tuple[int, bytes, bool]:
         fetches.append((start, end))
-        return fetch(self, start, end)
+        return cat(self, start, end, *args)
 
-    monkeypatch.setattr(remote.RangeSource, "fetch", counted)
+    monkeypatch.setattr(remote.RangeSource, "_cat", counted)
     fs = MemoryFileSystem()
     fs.pipe("/iso-hints/a.iso", data)
     try:
