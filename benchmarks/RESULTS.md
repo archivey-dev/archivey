@@ -5,20 +5,20 @@ decode-once). Wall-time / VISION ≤1.3× runs off the PR path as a **change-gua
 nightly** (`benchmark-wall.yml`): a daily schedule whose expensive realistic run
 fires when the default branch changed recently **or** the last measurement is
 older than ~30 days (runner / toolchain drift). Quiet days **re-publish** the
-previous JSON (preserving `measured_at`, stamping `republished_at`) so dormant
-successes still carry an artifact for the next drift compare. When the expensive
-run fires it:
+previous JSON (preserving `measured_at` and `source_sha`) so the next run still
+knows which commit was measured last. When the expensive run fires it:
 
 - records results (JSON + markdown report artifacts, job summary table) with
   `measured_at` / source provenance;
-- hard-fails on the ~13× sanity ceiling **or** on **wall-ratio drift** vs the
-  JSON of the last run that measured, pass or fail (relative regression gate —
-  debt-ledger Q1 / perf Q2 option (a)). A case drifts when its ratio rises to
-  more than 1.25× the baseline ratio **and** by at least +0.15 in absolute terms
-  **and** the rise costs ≥1 ms of wall time at this run's stdlib speed, so
-  sub-millisecond listing cases do not fail on timer noise. Because a failed run's
-  JSON becomes the next baseline, a real regression fails the first night that
-  measures it and not every night after;
+- hard-fails on the ~13× sanity ceiling **or** when a case is slower than on the
+  commit the last measuring run timed, pass or fail. Both commits run in the same
+  job on the same runner, alternating, three harness runs each, and
+  `benchmarks/compare_refs.py --fail-on-slower` compares each side's fastest run:
+  a case fails when it is more than 1.25× slower in wall time **and**, where it
+  has a stdlib peer, against that peer, **and** by at least 1 ms. A case whose
+  fixture changed between the commits is reported, not gated. Because a failed
+  run's commit becomes the next baseline, a real regression fails the first night
+  that measures it and not every night after;
 - prints absolute VISION / Q1 listing bands as informational only.
 
 **Maintainer decision (davitf, 2026-10-10, #655):** compare against the last
@@ -33,8 +33,14 @@ acts on that night's failure. Reopen if a regression is accepted that way withou
 anyone seeing it, or if a sub-millisecond case shows a real regression the 1 ms
 floor hides.
 
-`workflow_dispatch` can pass `skip_drift=true` to accept the current ratios as a
-new baseline after an intentional slowdown.
+**Maintainer decision (davitf, 2026-11-20):** run the last measured commit again
+on the same runner instead of comparing with its stored times. Until then the
+nightly compared ratios with the previous run's JSON, and the 1.25× drift gate
+failed on runner noise: the same commit read `tar_open_list` 2.33× on one runner
+and 2.86× on the next (#1686).
+
+`workflow_dispatch` can pass `skip_drift=true` to measure `main` alone and make it
+the new baseline after an intentional slowdown.
 
 Re-run with:
 

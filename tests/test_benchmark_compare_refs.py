@@ -172,3 +172,11 @@ def test_without_the_flag_a_slower_case_does_not_fail(tmp_path: Path) -> None:
     base = [_write(tmp_path / "b.json", [_row("a", 0.010)])]
     cand = [_write(tmp_path / "c.json", [_row("a", 0.100)])]
     _report(tmp_path, base, cand)
+
+
+def test_fail_on_slower_gates_a_case_with_no_peer_on_wall_time(tmp_path: Path) -> None:
+    base = [_write(tmp_path / "b.json", [_row("nopeer", 0.010)])]
+    cand = [_write(tmp_path / "c.json", [_row("nopeer", 0.020)])]
+    code, report = _gate(tmp_path, base, cand)
+    assert code == 1
+    assert "- nopeer: 10.0 ms -> 20.0 ms (2.00x; band 1.25, +10.0 ms)" in report

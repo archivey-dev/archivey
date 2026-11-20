@@ -21,11 +21,15 @@ Modes:
 - ``full``: also report wall-time ratios vs stdlib peers, and the per-member cost and
   throughput fitted by ``benchmarks/cost_model.py``. Absolute ratios are noisy
   on shared runners, so full mode is **not** a PR gate. The change-guarded nightly
-  (``benchmark-wall.yml``) hard-fails on (1) the ~13× sanity ceiling and (2)
-  **wall-ratio drift** vs the JSON artifact of the last run that measured, pass or
-  fail (perf-review Q2 / debt-ledger Q1 option (a)). Quiet days re-publish that
-  artifact (preserving ``measured_at``); a full re-measure is forced at least
-  every ~30 days. VISION absolute bands stay informational prints.
+  (``benchmark-wall.yml``) hard-fails on (1) the ~13× sanity ceiling and (2) a case
+  slower than on the commit the last measuring run timed, both commits run
+  alternately on the same runner and compared by ``benchmarks/compare_refs.py
+  --fail-on-slower``. Quiet days re-publish the last artifact (preserving
+  ``measured_at`` and ``source_sha``); a full re-measure is forced at least every
+  ~30 days. VISION absolute bands stay informational prints.
+  ``--wall-drift-baseline`` compares this run's ratios with an earlier JSON from the
+  same host (the release checklist's comparison); ratios from two different runners
+  do not compare well, which is why the nightly no longer uses it.
 
 Comparing two revisions (read this before believing a wall-time delta):
 
@@ -117,8 +121,8 @@ SOLID_RANDOM_BYTES_FACTOR = 1.5
 # (in-ZIP accel ON 44 → OFF 28). Fixtures are deterministic; ±8 covers host jitter.
 SEEK_BASELINE_SLACK = 8
 # Wall-time sanity ceiling for --mode full. Absolute VISION ≤1.3× / ~2× bands stay
-# informational (shared-runner noise); nightly enforces *drift* vs the last measured
-# run's JSON instead (debt-ledger Q1 / perf Q2 option (a)).
+# informational (shared-runner noise); the nightly instead gates on the last measured
+# commit, run again on the same runner (benchmark-wall.yml).
 WALL_RATIO_BUDGET = 13.0
 # Open-and-list cases time each call on its own, alternating archivey and the peer
 # call by call, for at least LISTING_TIME_BUDGET_S and LISTING_MIN_PAIRS pairs, and
@@ -135,7 +139,8 @@ LISTING_MIN_PAIRS = 15
 LISTING_QUANTILE = 0.1
 WALL_RATIO_VISION = 1.3
 WALL_RATIO_VISION_SAFETY = 2.0
-# Relative wall_ratio regression vs previous nightly. Dual gate: new > old×factor
+# --wall-drift-baseline: relative wall_ratio regression vs an earlier JSON from the
+# same host (release checklist). Dual gate: new > old×factor
 # AND new − old ≥ min abs delta (avoids failing 1.02→1.08 noise on near-parity paths).
 WALL_RATIO_DRIFT_FACTOR = 1.25
 WALL_RATIO_DRIFT_MIN_ABS = 0.15
@@ -144,7 +149,8 @@ WALL_RATIO_DRIFT_MIN_ABS = 0.15
 # its ratio by 2× on scheduler noise alone: rar_open_list went 2.60 → 5.71 (1.0 ms vs
 # a 0.2 ms peer) between the 2026-09-06 run and nightly run 34122511826 on 2026-09-07,
 # with no change to RAR listing cost that large. That one night froze the nightly
-# baseline for a month. Gross slowdowns of tiny cases still fail on the 13× ceiling.
+# baseline for a month (back when the nightly used this gate). Gross slowdowns of
+# tiny cases still fail on the 13× ceiling.
 WALL_RATIO_DRIFT_MIN_EXTRA_S = 0.001
 # Q1 listing bands (informational in full-mode reports; not PR-gated):
 # ZIP (stdlib) and TAR (native walker) → 2–3×/member vs zipfile/tarfile; native
@@ -1800,11 +1806,9 @@ def format_text_report(payload: dict[str, Any]) -> str:
             ),
             f"- Sanity ceiling {WALL_RATIO_BUDGET:.0f}× fails the job.",
             (
-                f"- Nightly also fails on wall-ratio *drift* vs the last measured run's "
-                f"JSON, pass or fail (>{WALL_RATIO_DRIFT_FACTOR:.2f}×, "
-                f"+{WALL_RATIO_DRIFT_MIN_ABS:.2f} abs and "
-                f"≥{WALL_RATIO_DRIFT_MIN_EXTRA_S * 1e3:.0f} ms extra wall time) — not on "
-                "absolute VISION bands."
+                "- Nightly also fails when a case is slower than on the commit the "
+                "last measuring run timed, pass or fail, both run on the same runner "
+                "(table below this report) — not on absolute VISION bands."
             ),
             (
                 "- Quiet nights re-publish the previous artifact (preserving "
@@ -1991,7 +1995,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.mode == "full":
         # Sanity ceiling always; absolute VISION bands stay informational prints.
-        # Nightly drift vs previous JSON is the hard wall-ratio gate (Q2 option a).
+        # --wall-drift-baseline: ratio drift vs an earlier same-host JSON.
         for f in _wall_checks(results, enforce_vision=False):
             failures.append(f)
         if args.scale == "realistic":

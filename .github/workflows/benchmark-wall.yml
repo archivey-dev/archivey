@@ -54,7 +54,7 @@ jobs:
   benchmark-wall:
     name: Full realistic wall-time (nightly if changed)
     runs-on: ubuntu-latest
-    # Up to seven harness runs of ~1-2 minutes each, plus two syncs.
+    # Up to six harness runs of ~1-2 minutes each, plus two syncs.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -225,6 +225,10 @@ jobs:
           status=0
           harness . "$PWD/benchmark-wall-realistic.json" || status=$?
           if [ -n "$BASE_SHA" ]; then
+            if [ ! -f benchmark-wall-realistic.json ]; then
+              echo "::error::candidate round 1 wrote no JSON (see the log above)"
+              exit 1
+            fi
             mkdir -p rounds
             cp benchmark-wall-realistic.json rounds/candidate-1.json
             for round in 1 2 3; do
