@@ -604,8 +604,7 @@ class _ZisofsStream(io.RawIOBase):
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         # A relative seek to before the start clamps to 0, as io.BytesIO and the other
         # member streams do. ArchiveStream.seek rejects a negative SEEK_SET and a bad
-        # whence before they reach here: the ISO translator reads ValueError as
-        # corruption.
+        # whence before they reach here.
         self._position = resolve_seek(
             offset, whence, pos=self._position, end=lambda: self._size
         )
