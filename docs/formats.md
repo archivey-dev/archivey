@@ -27,7 +27,7 @@ read.
 | [LZ4](#single-file-compressors) (`.lz4`), Firefox's mozlz4 (`.jsonlz4`, `.mozlz4`), Brotli (`.br`) | `[recommended]` |
 | [bzip3](#single-file-compressors) (`.bz3`) | `[bzip3]` |
 | [uuencode](#single-file-compressors) (`.uu`, `.uue`), base64 (`.b64`) | Core |
-| [ISO 9660 and UDF](#iso-9660) (`.iso`, and CD images as `.bin`, with or without `.cue`) | `[recommended]` |
+| [ISO 9660 and UDF](#iso-9660) (`.iso`, and CD images as `.bin`, with or without `.cue`) | Core |
 | [SquashFS](#squashfs) (`.squashfs`, `.sqfs`, `.snap`) | Core. Zstandard* and LZ4 images need `[recommended]` |
 | [Debian packages](#debian-packages) (`.deb`, `.udeb`) | Core. Zstandard* packages need `[recommended]` |
 | [RPM](#rpm) (`.rpm`) | Core. Zstandard* payloads (Fedora's default) need `[recommended]` |

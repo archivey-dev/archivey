@@ -130,7 +130,7 @@ setup.
 
 On a free-threaded build (3.13t and later), importing a compiled package that doesn't declare
 free-threading support turns the GIL back on for the rest of the process. If you use `pip install
-"archivey[free-threaded]"`, you get only the optional packages that keep it off: ISO, LZ4 and
+"archivey[free-threaded]"`, you get only the optional packages that keep it off: LZ4 and
 Zstandard support, and CLI progress bars, plus AES decryption and faster LZO decoding from 3.14t. On
 3.13t, `[recommended]` doesn't install at all, because `cryptography` can't be installed there yet,
 and neither does `archivey-cli`, which depends on it. Use `[free-threaded]` there instead.

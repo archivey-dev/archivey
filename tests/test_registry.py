@@ -2,8 +2,7 @@
 
 Covers always-register-via-sentinel, tri-state FULL/PARTIAL/NONE availability,
 ``list_supported_formats()`` vs ``list_known_formats()``, install-hint selection errors,
-and two simultaneous readers. The NONE-end-to-end ISO-without-pycdlib path is exercised in
-Stage 4 with the real ISO backend.
+and two simultaneous readers.
 """
 
 from __future__ import annotations

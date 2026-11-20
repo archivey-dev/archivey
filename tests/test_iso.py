@@ -1,6 +1,6 @@
-"""ISO 9660 backend tests — Stage 4 (namespace auto-select + fidelity, cost, write/
-password rejection, non-seekable rejection, corrupt handling) and the registry
-degradation slice (ISO without pycdlib). Skipped when pycdlib is absent."""
+"""ISO 9660 backend tests: namespace auto-select and fidelity, cost, write and
+password rejection, non-seekable rejection, corrupt handling. Tests that write their
+image with pycdlib are skipped when it is absent."""
 
 from __future__ import annotations
 
