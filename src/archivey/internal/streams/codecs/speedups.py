@@ -63,6 +63,42 @@ def crc32c_speedup() -> MissingComponent:
     )
 
 
+def cramjam_speedup() -> MissingComponent:
+    """cramjam: native Snappy block decoding, used when compress-utils is not."""
+    return MissingComponent(OptionalLibrary.CRAMJAM, "pip install cramjam", ("snappy",))
+
+
+def crc32c_fallback_speedup() -> MissingComponent:
+    """crc32c: a native CRC-32C for Snappy chunks, used when google-crc32c is not."""
+    return MissingComponent(
+        OptionalLibrary.CRC32C, "pip install crc32c", ("snappy crc",)
+    )
+
+
+def missing_snappy_native(
+    excluded: frozenset[OptionalLibrary],
+) -> tuple[MissingComponent, ...]:
+    """Snappy's two jobs, each faster with either of two packages: the raw-block
+    decoder and the CRC-32C. Without them both run in Python."""
+    libraries = deps.snappy_libraries
+    return missing_speedup(
+        (
+            (
+                compress_utils_speedup("snappy"),
+                libraries[OptionalLibrary.COMPRESS_UTILS],
+            ),
+            (cramjam_speedup(), libraries[OptionalLibrary.CRAMJAM]),
+        ),
+        excluded,
+    ) + missing_speedup(
+        (
+            (crc32c_speedup(), libraries[OptionalLibrary.GOOGLE_CRC32C]),
+            (crc32c_fallback_speedup(), libraries[OptionalLibrary.CRC32C]),
+        ),
+        excluded,
+    )
+
+
 def accelerator_used(mode: AcceleratorMode, config: ArchiveyConfig) -> bool:
     """Whether ``config`` would ever decode through rapidgzip with ``mode`` (its
     ``use_rapidgzip`` or ``use_indexed_bzip2``), were it installed: not under ``OFF``,
@@ -83,7 +119,7 @@ def missing_rapidgzip(
     so a config that never starts one has nothing to gain from it."""
     if not accelerator_used(mode, config):
         return ()
-    return missing_speedup(rapidgzip_speedup(), (deps.rapidgzip,), excluded)
+    return missing_speedup(((rapidgzip_speedup(), deps.rapidgzip),), excluded)
 
 
 def missing_lzo_native(
@@ -92,22 +128,25 @@ def missing_lzo_native(
     """compress-utils, for ``.lzo`` files and raw LZO1X blocks. Without it, LZO1X
     decodes in Python, 20 to 30 times slower."""
     return missing_speedup(
-        compress_utils_speedup("lzo"), (deps.compress_utils,), excluded
+        ((compress_utils_speedup("lzo"), deps.compress_utils),), excluded
     )
 
 
 def missing_speedup(
-    component: MissingComponent,
-    packages: tuple[deps.LazyOptional, ...],
+    options: tuple[tuple[MissingComponent, deps.LazyOptional], ...],
     excluded: frozenset[OptionalLibrary],
 ) -> tuple[MissingComponent, ...]:
-    """``(component,)`` when none of ``packages`` is installed and left on by
-    ``excluded``, else ``()``. Any one package is enough: Snappy decodes blocks with
+    """One job's speed-up: ``()`` when any package in ``options`` is installed and
+    left on by ``excluded``. Any one is enough: Snappy decodes blocks with
     compress-utils or cramjam. Looks each package up without importing it.
 
-    The reported component carries the policy as its reason when ``excluded`` turns
-    it off, as a ``missing`` entry does.
+    Otherwise the first package ``excluded`` leaves on is reported, with its install
+    hint: installing it would help. When ``excluded`` turns every one off, the first
+    is reported with the policy as its reason, as a ``missing`` entry is.
     """
-    if any(p.available() and p.name not in excluded for p in packages):
+    if any(p.available() and p.name not in excluded for _, p in options):
         return ()
-    return (as_reported(component, excluded),)
+    for component, package in options:
+        if package.name not in excluded:
+            return (component,)
+    return (as_reported(options[0][0], excluded),)

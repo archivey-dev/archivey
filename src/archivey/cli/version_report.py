@@ -152,7 +152,13 @@ def _section(
             labels.append(label)
         if labels:
             lines += _wrapped(f"  {level.value + ':':<10}", labels, 12)
-    slower = [format_format_label(f) for f in formats if avail[f].faster_with]
+    # Only a package the user could install: one with a ``reason`` (turned off, or
+    # unused on this interpreter) is explained in the grouped section instead.
+    slower = [
+        format_format_label(f)
+        for f in formats
+        if any(not m.reason for m in avail[f].faster_with)
+    ]
     if slower:
         lines += _wrapped("  slower without optional packages: ", slower, 4)
     return lines
@@ -236,7 +242,7 @@ def _pairs_sentence(
         f"{'gz' if 'gz' in stream_labels else stream_labels[0]}"
     )
     return textwrap.wrap(
-        f"{names} also open inside any of these, such as {example}.",
+        f"{names} also open inside any of these that can be read, such as {example}.",
         width=_WIDTH,
         initial_indent="  ",
         subsequent_indent="  ",

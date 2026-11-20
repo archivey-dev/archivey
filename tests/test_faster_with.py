@@ -149,3 +149,36 @@ def test_unreadable_formats_have_no_speedups(monkeypatch: pytest.MonkeyPatch) ->
         availability = format_availability(fmt)
         if availability.support is FormatSupport.NONE:
             assert availability.faster_with == (), fmt
+
+
+def test_snappy_reports_the_package_the_policy_leaves_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With compress-utils excluded and cramjam absent, installing cramjam is what
+    helps, so cramjam is reported, with its install hint and no reason."""
+    _absent(
+        monkeypatch,
+        OptionalLibrary.CRAMJAM,
+        OptionalLibrary.CRC32C,
+    )
+    for name in (OptionalLibrary.COMPRESS_UTILS, OptionalLibrary.GOOGLE_CRC32C):
+        monkeypatch.setitem(
+            deps.snappy_libraries, name, LazyOptional(name, present=True)
+        )
+    config = ArchiveyConfig(
+        formats=FormatPolicy(exclude_libraries={"compress_utils", "google_crc32c"})
+    )
+    found = format_availability(ArchiveFormat.SNAPPY, config=config).faster_with
+    assert [(str(m.name), m.reason) for m in found] == [("cramjam", ""), ("crc32c", "")]
+    assert found[0].install_hint == "pip install cramjam"
+
+
+def test_snappy_reports_the_policy_when_it_turns_every_package_off() -> None:
+    config = ArchiveyConfig(
+        formats=FormatPolicy(
+            exclude_libraries={"compress_utils", "cramjam", "google_crc32c", "crc32c"}
+        )
+    )
+    found = format_availability(ArchiveFormat.SNAPPY, config=config).faster_with
+    assert [str(m.name) for m in found] == ["compress_utils", "google_crc32c"]
+    assert all(m.reason == EXCLUDED_REASON for m in found)

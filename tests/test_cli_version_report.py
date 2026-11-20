@@ -43,8 +43,9 @@ def test_report_splits_archives_from_compression(
     assert "zip" in archives and "tar" in archives
     assert "dmg (recognised, not readable)" in archives
     assert "gz" in compression and "xz" in compression
-    assert "tar also open inside any of these, such as tar.gz." in out.replace(
-        "\n  ", " "
+    assert (
+        "tar also open inside any of these that can be read, such as tar.gz."
+        in out.replace("\n  ", " ")
     )
     # No container x stream pair is listed on its own.
     assert "tar.gz" not in archives
@@ -108,6 +109,46 @@ def test_missing_and_slower_are_grouped_by_command(
         "    packages: pyppmd, pycdlib, compress_utils",
     ]
     assert "slower without optional packages: lzo" in out
+
+
+def test_slower_line_leaves_out_packages_with_a_reason(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A package the policy turns off, or archivey does not use here, is explained in
+    the grouped section; the summary line names only what installing would fix."""
+    real = version_report.format_availability
+    reason = "archivey does not use rapidgzip under PyPy"
+
+    def fake(fmt: ArchiveFormat) -> FormatAvailability:
+        if fmt == ArchiveFormat.GZ:
+            return FormatAvailability(
+                fmt,
+                FormatSupport.FULL,
+                faster_with=(MissingComponent("rapidgzip", "x", reason=reason),),
+            )
+        return FormatAvailability(fmt, real(fmt).support)
+
+    monkeypatch.setattr(version_report, "format_availability", fake)
+    out = _report(capsys)
+    assert "slower without optional packages" not in out
+    assert f"  {reason}\n    faster for gz\n" in out
+
+
+def test_pair_sentence_limits_itself_to_readable_compressions(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = version_report.format_availability
+
+    def fake(fmt: ArchiveFormat) -> FormatAvailability:
+        if fmt.stream.value == "zst":
+            return FormatAvailability(fmt, FormatSupport.NONE)
+        return FormatAvailability(fmt, real(fmt).support)
+
+    monkeypatch.setattr(version_report, "format_availability", fake)
+    flat = " ".join(_report(capsys).split())
+    assert "none: zst" in flat
+    assert "also open inside any of these that can be read, such as tar.gz." in flat
+    assert "combinations that differ" not in flat
 
 
 def test_a_pair_that_differs_from_its_parts_is_printed(

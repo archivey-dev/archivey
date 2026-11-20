@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
-from archivey.internal.streams.codecs import deps, speedups
+from archivey.internal.streams.codecs import speedups
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.internal.streams.codecs.framed_decoder import BLOCKS_ONLY, StreamIndex
 from archivey.internal.streams.codecs.snappy_framed import (
@@ -52,24 +52,7 @@ class SnappyCodec(StreamCodec):
         self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
         del config
-        # Two jobs, each faster with either of two packages: the raw-block decoder
-        # and the CRC-32C. Without them both run in Python.
-        libraries = deps.snappy_libraries
-        return speedups.missing_speedup(
-            speedups.compress_utils_speedup("snappy"),
-            (
-                libraries[OptionalLibrary.COMPRESS_UTILS],
-                libraries[OptionalLibrary.CRAMJAM],
-            ),
-            excluded,
-        ) + speedups.missing_speedup(
-            speedups.crc32c_speedup(),
-            (
-                libraries[OptionalLibrary.GOOGLE_CRC32C],
-                libraries[OptionalLibrary.CRC32C],
-            ),
-            excluded,
-        )
+        return speedups.missing_snappy_native(excluded)
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
