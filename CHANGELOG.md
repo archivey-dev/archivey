@@ -12,6 +12,25 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+A patch release with fixes for reading archives from a URL.
+
+### Added
+
+- For a URL, `archivey --track-io` reports how many range requests archivey made and how
+  many bytes they fetched, in total and as a share of the archive's size.
+
+### Fixed
+
+- Reading an archive from a URL: a server that answers a range request with the whole
+  file no longer costs the whole file in memory, and an occasional such answer is asked
+  again; a server that sends each range in several parts is read to the end; a file
+  replaced or cut short on the server while it is read raises `SourceChangedError`; and
+  a few malformed answers raise an `OSError` instead of another library's error.
+
+### Performance
+
+PENDING
+
 ## [0.5.0] - 2026-11-19
 
 A minor release: the UDF file system of DVD and Blu-ray images, spanned ZIP sets, the
