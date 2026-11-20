@@ -1019,9 +1019,11 @@ class RangeSource(io.RawIOBase):
                 return start, b"".join(pieces), True
             if pos < read_at:
                 # Short before the read's first byte: the bytes so far were
-                # read-ahead. Drop them and ask from the read itself.
+                # read-ahead. Drop them and ask from the read itself; the read keeps
+                # its whole budget.
                 pieces.clear()
                 start = pos = read_at
+                continue
             if pos < end:
                 short += 1
                 if short >= SHORT_RANGE_REQUESTS:

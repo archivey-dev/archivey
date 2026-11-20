@@ -1059,6 +1059,27 @@ def test_http_short_ranges_before_the_read_are_skipped(
         src.close()
 
 
+def test_http_skipped_read_ahead_does_not_spend_the_reads_budget(
+    http_base: str,
+) -> None:
+    # The last 32 KiB in 4 KiB answers takes eight answers from the read's offset,
+    # the whole budget, after one answer of read-ahead before it that is dropped.
+    from archivey.internal.remote import SHORT_RANGE_REQUESTS
+
+    data = bytes(range(256)) * 1024
+    _Handler.files["/big.bin"] = data
+    _Handler.max_206[0] = 4096
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        at = len(data) - 32 * 1024
+        src.seek(at)
+        before = src.fetch_count
+        assert src.read(32 * 1024) == data[at:]
+        assert src.fetch_count - before == 1 + SHORT_RANGE_REQUESTS
+    finally:
+        src.close()
+
+
 def test_http_a_sequential_read_through_short_ranges(http_base: str) -> None:
     # The planner's windows double to several MiB; a server that caps its answers
     # at 256 KiB still serves the whole object, one answer per window.
