@@ -589,6 +589,14 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 lambda b=bad: _with_config(archive, out(), on_diagnostic=b),
             )
         )
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "on_source_read",
+                bad,
+                lambda b=bad: _with_config(archive, out(), on_source_read=b),
+            )
+        )
     # Guard switches: "false" is truthy, so a string would turn a refusal off.
     for field_name in (
         "rar_allow_glob_member_concatenation",
