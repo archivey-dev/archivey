@@ -1032,6 +1032,33 @@ def test_http_short_ranges_do_not_spend_the_budget_on_read_ahead(
         src.close()
 
 
+@pytest.mark.parametrize(
+    "offsets",
+    [
+        pytest.param([256 * 1024 - 10], id="tail"),
+        pytest.param([1000, 200_000], id="seek-past-a-gap"),
+    ],
+)
+def test_http_short_ranges_before_the_read_are_skipped(
+    http_base: str, offsets: list[int]
+) -> None:
+    # A tail read plans its window to start up to 64 KiB before the read, and a
+    # forward seek can extend a window across a gap. 4 KiB answers would spend the
+    # budget on those bytes; the first short answer before the read goes to the read.
+    data = bytes(range(256)) * 1024
+    _Handler.files["/big.bin"] = data
+    _Handler.max_206[0] = 4096
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        for at in offsets:
+            src.seek(at)
+            before = src.fetch_count
+            assert src.read(10) == data[at : at + 10]
+            assert src.fetch_count - before <= 2
+    finally:
+        src.close()
+
+
 def test_http_a_sequential_read_through_short_ranges(http_base: str) -> None:
     # The planner's windows double to several MiB; a server that caps its answers
     # at 256 KiB still serves the whole object, one answer per window.

@@ -595,7 +595,7 @@ class WindowPool:
         length = min(length, room)
         # A server may answer with less than the window (a short range); the
         # window then ends where its answer did, and holds the read at least.
-        data = source.fetch(start, start + length, need=at + want)
+        start, data = source.fetch_window(start, start + length, at, at + want)
         if run is None:
             run = _Run(source, start, self._tick)
             self._runs.append(run)
@@ -899,7 +899,7 @@ class RangeSource(io.RawIOBase):
         """
         return target
 
-    def fetch(self, start: int, end: int, *, need: int | None = None) -> bytes:
+    def fetch(self, start: int, end: int) -> bytes:
         """One range request, ``[start, end)``, which lies inside the size read at open.
 
         A response longer than the range is refused with ``OSError``: the file system
@@ -923,8 +923,23 @@ class RangeSource(io.RawIOBase):
         version (not implemented yet); ``SOURCE_CHANGE_UNDETECTABLE`` says so at open.
         The change is kept (:attr:`change`): this source raises it again from then on.
         """
+        return self.fetch_window(start, end, start, end)[1]
+
+    def fetch_window(
+        self, start: int, end: int, read_at: int, read_end: int
+    ) -> tuple[int, bytes]:
+        """:meth:`fetch` for a window ``[start, end)`` planned around a read of
+        ``[read_at, read_end)`` inside it; returns where the bytes start, and them.
+
+        A server may answer with fewer bytes than asked (a short range, RFC 9110
+        section 15.3.7). Then the window ends where the answers reached, once they
+        hold the read's bytes; and a short answer that stops before ``read_at`` drops
+        the bytes before the read and asks again from ``read_at``, so the planner's
+        read-ahead never spends the request budget the read needs. Everything else is
+        as :meth:`fetch`.
+        """
         self._raise_if_changed()
-        data, short_range = self._cat(start, end, end if need is None else need)
+        start, data, short_range = self._cat(start, end, read_at, read_end)
         if len(data) > end - start:
             raise OSError(
                 f"{self.url}: the file system returned {len(data)} bytes for a "
@@ -938,9 +953,11 @@ class RangeSource(io.RawIOBase):
                 f"{len(data)} bytes"
             )
             self._raise_if_changed()
-        return bytes(data)
+        return start, bytes(data)
 
-    def _cat(self, start: int, end: int, need: int) -> tuple[bytes, bool]:
+    def _cat(
+        self, start: int, end: int, read_at: int, need: int
+    ) -> tuple[int, bytes, bool]:
         """The file system's bytes for ``[start, end)``, or what it returned instead.
 
         Over HTTP (:func:`_bounded_http_cat`) no answer is read past the range. A
@@ -950,9 +967,12 @@ class RangeSource(io.RawIOBase):
         long response from any other file system. A ``206`` with fewer bytes than
         asked continues from where it stopped, up to ``SHORT_RANGE_REQUESTS``
         requests, but only as far as ``need``: the bytes the caller's read needs now.
-        Past them the shorter answer is kept as it is, and the second value is then
-        ``True``: the server chose to send less, the object did not shrink. The
-        planner's read-ahead does not spend the request budget. A ``206`` that names a
+        Past them the shorter answer is kept as it is, and the last value is then
+        ``True``: the server chose to send less, the object did not shrink. A short
+        answer that stops before ``read_at`` drops what came before it and goes on
+        from ``read_at``, so the first value, where the bytes start, moves there. The
+        planner's read-ahead, before the read or after it, does not spend the request
+        budget. A ``206`` that names a
         size other than the one read at open has seen another object
         (:class:`~archivey.SourceChangedError`).
         """
@@ -961,7 +981,7 @@ class RangeSource(io.RawIOBase):
             data = cast(bytes, self.fs.cat_file(self.path, start=start, end=end))
             self.fetch_count += 1
             self.bytes_fetched += len(data)
-            return data, False
+            return start, data, False
         pieces: list[bytes] = []
         pos, ignored, short = start, 0, 0
         while pos < end:
@@ -996,7 +1016,12 @@ class RangeSource(io.RawIOBase):
             if answer.kind == "whole":
                 break  # the object ends there, or ``fetch`` has all it asked for
             if pos < end and pos >= need:
-                return b"".join(pieces), True
+                return start, b"".join(pieces), True
+            if pos < read_at:
+                # Short before the read's first byte: the bytes so far were
+                # read-ahead. Drop them and ask from the read itself.
+                pieces.clear()
+                start = pos = read_at
             if pos < end:
                 short += 1
                 if short >= SHORT_RANGE_REQUESTS:
@@ -1005,7 +1030,7 @@ class RangeSource(io.RawIOBase):
                         f"bytes {start}-{end} with parts of the range and reached "
                         f"only {pos}"
                     )
-        return b"".join(pieces), False
+        return start, b"".join(pieces), False
 
     def _raise_if_changed(self) -> None:
         # A new exception each time: one instance raised from several places would
