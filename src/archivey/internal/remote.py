@@ -654,9 +654,17 @@ RANGE_IGNORED_RETRIES = 2
 # digits ``int`` refuses (a superscript two).
 _CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.ASCII | re.IGNORECASE)
 
+# ``bytes */n``, a ``416``'s Content-Range: the object is ``n`` bytes long.
+_UNSATISFIED_RANGE = re.compile(r"bytes \*/(\d+)", re.ASCII | re.IGNORECASE)
+
 # A server may answer a range request with fewer bytes than asked, from the right
-# start (RFC 9110, section 15.3.7); the rest is asked for again, this many times at
-# most for one fetch, before the read is refused.
+# start (RFC 9110, section 15.3.7); the rest is asked for again. A server that caps
+# each answer (at 64 KiB, say) makes steady progress, so its answers are not counted
+# however many a large read takes: the requests stay bounded by the read's size
+# divided by the floor. Answers shorter than the floor are counted, and the read is
+# refused at the limit, so a server that sends a few bytes at a time cannot turn one
+# read into a request per byte.
+SHORT_RANGE_FLOOR = 4096
 SHORT_RANGE_REQUESTS = 8
 
 
@@ -668,9 +676,12 @@ class _HttpAnswer:
     kind: str
     """``"range"``: a ``206`` holding ``data`` from the requested start;
     ``"whole"``: the object from byte 0, cut at the requested end; ``"ignored"``: the
-    range was ignored for a request past byte 0, and nothing was read."""
+    range was ignored for a request past byte 0, and nothing was read;
+    ``"unsatisfiable"``: a ``416``, the range starts past the object's end, and nothing
+    was read."""
     total: int | None = None
-    """The object's size a ``206`` named, when it named one."""
+    """The object's size the answer named, when it named one: a ``206`` or ``416`` in
+    ``Content-Range``, a ``200`` in ``Content-Length``."""
 
 
 def _content_range(
@@ -729,6 +740,15 @@ def _bounded_http_cat(fs: Any) -> Any:
         session = await fs.set_session()
         kw["auto_decompress"] = False
         async with session.get(fs.encode_url(url), **kw) as r:
+            if r.status == 416:
+                # The range starts past the object's end. Every request lies inside
+                # the size read at open, so the object is shorter now.
+                match = _UNSATISFIED_RANGE.fullmatch(
+                    r.headers.get("Content-Range", "").strip()
+                )
+                return _HttpAnswer(
+                    b"", "unsatisfiable", None if match is None else int(match[1])
+                )
             fs._raise_not_found_for_status(r, url)
             encoding = r.headers.get("Content-Encoding", "identity").strip().lower()
             if encoding not in ("", "identity"):
@@ -752,7 +772,7 @@ def _bounded_http_cat(fs: Any) -> Any:
             # The range was ignored: the body is the whole object from byte 0.
             if start > 0:
                 return _HttpAnswer(b"", "ignored")
-            return _HttpAnswer(await read_at_most(r, end), "whole")
+            return _HttpAnswer(await read_at_most(r, end), "whole", r.content_length)
 
     async def read_at_most(r: Any, limit: int) -> bytes:
         out = bytearray()
@@ -965,16 +985,17 @@ class RangeSource(io.RawIOBase):
         A request past byte 0 that got it is sent again up to
         ``RANGE_IGNORED_RETRIES`` times, then refused with the same ``OSError`` as a
         long response from any other file system. A ``206`` with fewer bytes than
-        asked continues from where it stopped, up to ``SHORT_RANGE_REQUESTS``
-        requests, but only as far as ``need``: the bytes the caller's read needs now.
-        Past them the shorter answer is kept as it is, and the last value is then
-        ``True``: the server chose to send less, the object did not shrink. A short
-        answer that stops before ``read_at`` drops what came before it and goes on
-        from ``read_at``, so the first value, where the bytes start, moves there. The
-        planner's read-ahead, before the read or after it, does not spend the request
-        budget. A ``206`` that names a
-        size other than the one read at open has seen another object
-        (:class:`~archivey.SourceChangedError`).
+        asked continues from where it stopped, with up to ``SHORT_RANGE_REQUESTS``
+        answers shorter than ``SHORT_RANGE_FLOOR``, but only as far as ``need``: the
+        bytes the caller's read needs now. Past them the shorter answer is kept as it
+        is, and the last value is then ``True``: the server chose to send less, the
+        object did not shrink. A short answer that stops before ``read_at`` drops what
+        came before it and goes on from ``read_at``, so the first value, where the bytes
+        start, moves there. The planner's read-ahead, before the read or after it, does
+        not spend the request budget. A ``206`` that names a size other than the one
+        read at open has seen another object (:class:`~archivey.SourceChangedError`),
+        and so has a ``200`` whose ``Content-Length`` differs from it, or a ``416``:
+        every request lies inside the size read at open.
         """
         bounded = self._bounded_cat
         if bounded is None:
@@ -1005,6 +1026,13 @@ class RangeSource(io.RawIOBase):
                     end,
                 )
                 continue
+            if answer.kind == "unsatisfiable":
+                size = "" if answer.total is None else f" of {answer.total}"
+                self.change = (
+                    f"{self.url}: the object changed while it was read: the server "
+                    f"has no byte {pos}{size}, and its size was {self.size} at open"
+                )
+                self._raise_if_changed()
             if answer.total is not None and answer.total != self.size:
                 self.change = (
                     f"{self.url}: the object changed while it was read: the server "
@@ -1024,13 +1052,13 @@ class RangeSource(io.RawIOBase):
                 pieces.clear()
                 start = pos = read_at
                 continue
-            if pos < end:
+            if pos < end and len(answer.data) < SHORT_RANGE_FLOOR:
                 short += 1
                 if short >= SHORT_RANGE_REQUESTS:
                     raise OSError(
                         f"{self.url}: the server answered {short} requests for "
-                        f"bytes {start}-{end} with parts of the range and reached "
-                        f"only {pos}"
+                        f"bytes {start}-{end} with fewer than {SHORT_RANGE_FLOOR} "
+                        f"bytes each and reached only {pos}"
                     )
         return start, b"".join(pieces), False
 
