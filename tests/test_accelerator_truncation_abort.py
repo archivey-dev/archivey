@@ -40,11 +40,10 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
-from archivey.internal.streams import codecs as codecs_module
+from archivey.internal.streams import callers_source, codecs as codecs_module
 from archivey.internal.streams.child_process import is_no_verdict, outside_death
 from archivey.internal.streams.codecs import (
     Codec,
-    callers_source,
     open_codec_stream,
     rapidgzip_child,
     resolve_codec,
