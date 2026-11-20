@@ -10,7 +10,8 @@ name: Benchmark compare
 # Each ref runs its own harness against its own library (separate checkouts and
 # environments), so the baseline can be an old release. Cases only one side has are
 # listed apart. Manual only, never on PRs; the job reports and never fails on a
-# timing. The nightly drift tracker is benchmark-wall.yml.
+# timing. The nightly regression gate, benchmark-wall.yml, runs this same
+# comparison against the commit it measured last.
 on:
   workflow_dispatch:
     inputs:

@@ -117,3 +117,58 @@ def test_one_sided_and_skipped_cases(tmp_path: Path) -> None:
         "`lib`, `new`" in report
     )
     assert "Skipped in every baseline run: `lib` (skipped: no lib)" in report
+
+
+def _gate(tmp_path: Path, base: list[Path], cand: list[Path]) -> tuple[int, str]:
+    md = tmp_path / "gate.md"
+    args = ["--baseline", *map(str, base), "--candidate", *map(str, cand)]
+    code = main(
+        [
+            *args,
+            "--band",
+            "1.25",
+            "--min-ms",
+            "1",
+            "--fail-on-slower",
+            "--md-out",
+            str(md),
+        ]
+    )
+    return code, md.read_text()
+
+
+def test_fail_on_slower_needs_both_ratios_past_the_band(tmp_path: Path) -> None:
+    base = [
+        _write(tmp_path / "b.json", [_row("slow", 0.010, 0.010), _row("ok", 0.010)])
+    ]
+    cand = [
+        _write(tmp_path / "c.json", [_row("slow", 0.020, 0.010), _row("ok", 0.011)])
+    ]
+    code, report = _gate(tmp_path, base, cand)
+    assert code == 1
+    assert "- slow: 10.0 ms -> 20.0 ms (2.00x, 2.00x vs peer" in report
+    assert "- ok:" not in report
+
+    # The runner slowed down between the sides: the peer slowed too.
+    cand = [_write(tmp_path / "c.json", [_row("slow", 0.020, 0.020)])]
+    code, report = _gate(tmp_path, base, cand)
+    assert code == 0
+    assert "gate passed" in report
+
+
+def test_fail_on_slower_skips_changed_input_and_the_floor(tmp_path: Path) -> None:
+    base = [_write(tmp_path / "b.json", [_row("grew", 0.010), _row("tiny", 0.0005)])]
+    cand = [
+        _write(
+            tmp_path / "c.json",
+            [_row("grew", 0.040, unpacked=400), _row("tiny", 0.0012)],
+        )
+    ]
+    code, _ = _gate(tmp_path, base, cand)
+    assert code == 0
+
+
+def test_without_the_flag_a_slower_case_does_not_fail(tmp_path: Path) -> None:
+    base = [_write(tmp_path / "b.json", [_row("a", 0.010)])]
+    cand = [_write(tmp_path / "c.json", [_row("a", 0.100)])]
+    _report(tmp_path, base, cand)
