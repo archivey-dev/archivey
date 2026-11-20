@@ -115,6 +115,20 @@ def test_no_directory_hints_when_reads_fetch_only_what_they_need(
         assert names == [m.name for m in reader.members()]
 
 
+def test_a_local_image_gathers_no_hints(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Only a remote source acts on a hint, so a local listing does not read the path
+    # table for them.
+    calls: list[object] = []
+
+    def counted(*args: Any) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(iso9660, "directory_hints", counted)
+    with open_archive(io.BytesIO(_image(3))) as reader:
+        assert reader.members()
+    assert calls == []
+
+
 def test_directory_clusters_span_no_gap_longer_than_max_read_through() -> None:
     hints: list[tuple[int, int]] = []
     # Directories at blocks 20, 21, 40 and 41: 38 KiB from 21 to 40. A path table

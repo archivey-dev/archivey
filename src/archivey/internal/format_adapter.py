@@ -1121,7 +1121,10 @@ class IndexedReaderAdapter(_PluginAdapter):
             self._marked_view, shared.size, source.path, shared.read_at
         )
         plugin_source._origin = self._origin
-        plugin_source._will_read = self._will_read
+        # Only a remote source acts on a hint; elsewhere a reader would gather hints
+        # (the ISO reader reads a path table for them) that change nothing.
+        if source.is_lone_remote:
+            plugin_source._will_read = self._will_read
         plugin = self._plugin
         assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():

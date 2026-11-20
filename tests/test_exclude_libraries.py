@@ -419,13 +419,15 @@ def test_an_excluded_package_refuses_its_whole_format(tmp_path: Path) -> None:
 
 @_both_forms
 def test_iso_needs_no_package_to_exclude(tmp_path: Path) -> None:
-    """ISO is parsed by archivey itself, so excluding every package leaves it read."""
-    from tests.test_audit2_iso_dir_detect import _iso_image
+    """ISO is parsed by archivey itself, so excluding every package leaves it read.
+    The image is written without pycdlib, so the core-only leg runs this too."""
+    from tests.iso_minimal import minimal_iso
 
     path = tmp_path / "a.iso"
-    path.write_bytes(_iso_image())
+    path.write_bytes(minimal_iso())
     with open_archive(path, config=_excluding(*L)) as reader:
-        assert reader.members()
+        assert [m.name for m in reader.members()] == ["HELLO.TXT"]
+        assert reader.read("HELLO.TXT") == b"hello\n"
 
 
 def test_supported_formats_do_not_filter_by_allows() -> None:

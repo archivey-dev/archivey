@@ -1219,11 +1219,10 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         first, leaving out placeholders and symlinks, as Linux follows a ``CL``. A
         ``CL`` that names no directory leaves the placeholder.
 
-        pycdlib, which the reader this one replaced listed with, went on to the
-        target's parent and took its first entry with the placeholder's Rock Ridge
-        name. Two deep directories of one name (``a/.../x`` and ``b/.../x``) are
-        both relocated into ``rr_moved``, so that rule listed the first ``x`` in
-        both places and lost the second one's files.
+        The target is not re-matched by name among its parent's entries: two deep
+        directories of one name (``a/.../x`` and ``b/.../x``) are both relocated
+        into ``rr_moved``, so a name match would list the first ``x`` in both places
+        and lose the second one's files.
         """
         if self._entry_at_extent is None:
             assert self._volume is not None
