@@ -212,6 +212,7 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | Joliet or plain file `.;1`, `..;1`, `...;1`, `SUB/....;1` | Listed as stored, with no `iso.version`; never `.` or `..` |
 | Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
 | Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |
+| A file record with the multi-extent flag, then a `..` record, then a file record with the same identifier | Two members: the flag joins only the next record |
 | Three records with one identifier, flagged, not flagged, not flagged | The first two are one member; the third is a second member with the same name |
 | An associated-file record and a two-extent file with one identifier, the associated record first or last | Two members with that name in on-disc order, each with its own data; the later one is current |
 | A directory record and a file record `DUP`, in either order, or two directories `DUP` | Both list, as 7-Zip lists them |
