@@ -20,7 +20,7 @@ from archivey import (
     open_stream,
 )
 from archivey.internal.read_progress import LOCAL_REPORT_STEP
-from tests.conftest import requires_unrar_cli
+from tests.conftest import requires, requires_unrar_cli
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
@@ -472,3 +472,29 @@ def test_a_url_source_leaves_read_start_unset() -> None:
         assert all(c.read_start is None for c in seen.calls)
     finally:
         fs.rm("/rs", recursive=True)
+
+
+@requires("rapidgzip")
+def test_an_accelerated_gzip_trailer_check_does_not_swallow_a_stop(
+    tmp_path: Path,
+) -> None:
+    # rapidgzip's trailer and member probes read the source's tail and treat an
+    # OSError as "cannot look". A stop from the callback there must still reach
+    # the caller, whichever read it comes on.
+    path = _gz_file(tmp_path, LOCAL_REPORT_STEP)
+
+    def read(callback: Any) -> None:
+        config = ArchiveyConfig(
+            use_rapidgzip="on", on_source_read=callback, source_read_step=0
+        )
+        with open_stream(path, seekable=True, config=config) as stream:
+            stream.read()
+
+    recorder = _Recorder()
+    read(recorder)
+    calls = len(recorder.calls)
+    assert calls > 0
+    for n in range(1, calls + 1):
+        with pytest.raises(_StopOS) as caught:
+            read(_stop_on(n, _StopOS))
+        assert type(caught.value) is _StopOS
