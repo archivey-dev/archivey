@@ -1235,6 +1235,26 @@ def test_rock_ridge_relocation_directory_is_not_listed() -> None:
         assert ar.read(deep) == b"deep"
 
 
+def test_two_relocated_directories_of_one_name_keep_their_own_files() -> None:
+    """``a/.../x`` and ``b/.../x`` are both parked in ``rr_moved`` under one Rock Ridge
+    name; each ``CL`` is followed to its own directory, as Linux and 7-Zip follow
+    it. pycdlib's rule took the first ``x`` by name and listed it in both places."""
+
+    def populate(iso: Any) -> None:
+        for top in ("A", "B"):
+            path = ""
+            for name in [top] + [f"L{i}" for i in range(1, 8)] + ["X"]:
+                path += f"/{name}"
+                iso.add_directory(path, rr_name=name.lower())
+            iso.add_fp(io.BytesIO(top.encode()), 1, path + "/F.;1", rr_name="f.txt")
+
+    data = _build_rr_iso(populate)
+    with open_archive(io.BytesIO(data)) as ar:
+        deep = "/l1/l2/l3/l4/l5/l6/l7/x/f.txt"
+        assert ar.read("a" + deep) == b"A"
+        assert ar.read("b" + deep) == b"B"
+
+
 def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
     """An RR image whose one record has no System Use entries keeps that member,
     names it from the ISO 9660 identifier, and says what was lost."""

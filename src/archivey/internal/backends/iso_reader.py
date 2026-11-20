@@ -726,7 +726,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         # directory, built the first time a link target is followed through it, so
         # following many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, IsoEntry]] = {}
-        # The primary tree's first entry at each extent, for Rock Ridge ``CL``
+        # The primary tree's first directory at each extent, for Rock Ridge ``CL``
         # relocation; built on the first ``CL`` entry met (``_relocated``).
         self._entry_at_extent: dict[int, IsoEntry] | None = None
         # The reader's own view of the source, for the trailing-data scan; closed by
@@ -1210,9 +1210,15 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
     def _relocated(self, placeholder: IsoEntry, extent: int) -> IsoEntry:
         """The directory a Rock Ridge ``CL`` placeholder points at, or the placeholder.
 
-        The target is the primary tree's first entry at ``extent``, breadth first,
-        leaving out placeholders and symlinks; then, among the entries of that
-        target's parent, the first whose Rock Ridge name is the placeholder's.
+        The target is the primary tree's first directory at ``extent``, breadth
+        first, leaving out placeholders and symlinks, as Linux and 7-Zip follow a
+        ``CL``. A ``CL`` that names no directory leaves the placeholder.
+
+        pycdlib, which the reader this one replaced listed with, went on to the
+        target's parent and took its first entry with the placeholder's Rock Ridge
+        name. Two deep directories of one name (``a/.../x`` and ``b/.../x``) are
+        both relocated into ``rr_moved``, so that rule listed the first ``x`` in
+        both places and lost the second one's files.
         """
         if self._entry_at_extent is None:
             assert self._volume is not None
@@ -1223,18 +1229,12 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                     rr = child.rr
                     if rr is not None and (rr.child_link is not None or rr.is_symlink):
                         continue
-                    index.setdefault(child.extent, child)
-                    if child.is_dir and child.children is not None:
-                        queue.append(child)
+                    if child.is_dir:
+                        index.setdefault(child.extent, child)
+                        if child.children is not None:
+                            queue.append(child)
             self._entry_at_extent = index
-        target = self._entry_at_extent.get(extent)
-        if target is None or target.parent is None:
-            return placeholder
-        name = _rr_key(placeholder)
-        for sibling in target.parent.children or ():
-            if sibling.rr is not None and _rr_key(sibling) == name:
-                return sibling
-        return placeholder
+        return self._entry_at_extent.get(extent, placeholder)
 
     def _is_rr_moved(self, entry: IsoEntry) -> bool:
         """Whether a root-level directory is Rock Ridge's ``rr_moved`` relocation parent.
