@@ -240,20 +240,31 @@ class IsoTree:
     path_table_le: int  # the little-endian path table's first block
 
 
+_UINT16_LE = struct.Struct("<H")
+_UINT16_BE = struct.Struct(">H")
+_UINT32_LE = struct.Struct("<I")
+_UINT32_BE = struct.Struct(">I")
+
+
 def _both_endian_32(data: bytes, offset: int) -> tuple[int, int]:
     """A both-byte-order 32-bit field (ECMA-119 7.3.3): the little- and big-endian
     copies, in that order."""
     return (
-        int.from_bytes(data[offset : offset + 4], "little"),
-        int.from_bytes(data[offset + 4 : offset + 8], "big"),
+        _UINT32_LE.unpack_from(data, offset)[0],
+        _UINT32_BE.unpack_from(data, offset + 4)[0],
     )
 
 
 def _both_endian_16(data: bytes, offset: int) -> tuple[int, int]:
     return (
-        int.from_bytes(data[offset : offset + 2], "little"),
-        int.from_bytes(data[offset + 2 : offset + 4], "big"),
+        _UINT16_LE.unpack_from(data, offset)[0],
+        _UINT16_BE.unpack_from(data, offset + 2)[0],
     )
+
+
+# PX interleaves little- and big-endian copies of mode, link count, UID and GID.
+_PX_LE = struct.Struct("<I4xI4xI4xI")
+_PX_BE = struct.Struct(">I4xI4xI4xI")
 
 
 class IsoVolume:
@@ -748,7 +759,9 @@ class IsoVolume:
         # A name whose last ``NM`` entry says it continues was cut short (the area
         # ended at a malformed entry): it names nothing, as a cut link target does.
         if names and not names[-1][0] & 1:
-            rr.name = b"".join(part for _, part in names)
+            rr.name = (
+                names[0][1] if len(names) == 1 else b"".join(part for _, part in names)
+            )
         if components:
             rr.symlink = _symlink_target(components)
         return rr
@@ -858,11 +871,15 @@ class IsoVolume:
         elif tag == b"PX":
             if length not in (36, 44):
                 return f"is {length} bytes, not 36 or 44"
-            fields = [_both_endian_32(entry, at) for at in range(4, length, 8)]
-            if any(le != be for le, be in fields):
+            mode, links, uid, gid = _PX_LE.unpack_from(entry, 4)
+            if (mode, links, uid, gid) != _PX_BE.unpack_from(entry, 8):
                 return "has fields whose two byte orders disagree"
+            if length == 44:
+                serial, serial_be = _both_endian_32(entry, 36)
+                if serial != serial_be:
+                    return "has fields whose two byte orders disagree"
             if rr.mode is None:
-                rr.mode, rr.uid, rr.gid = fields[0][0], fields[2][0], fields[3][0]
+                rr.mode, rr.uid, rr.gid = mode, uid, gid
         elif tag == b"SL":
             if length < 5:
                 return "is too short"
