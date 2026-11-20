@@ -41,8 +41,9 @@ its check bytes), SHALL end that record's area, as SHALL a `CE` whose area runs 
 its logical block or past the end of a full-length image. The member SHALL list from the
 entries before it and carry `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated=True`
 and an empty `record`; a symlink cut this way SHALL list with `link_target=None` and
-`SYMLINK_TARGET_UNAVAILABLE`. An entry of a tag the parser does not read SHALL be
-skipped, as SUSP specifies. The other members of the image MUST NOT be affected.
+`SYMLINK_TARGET_UNAVAILABLE`, and a name cut this way (its last `NM` entry says it
+continues) SHALL list under its ISO 9660 identifier. An entry of a tag the parser does
+not read SHALL be skipped, as SUSP specifies. The other members of the image MUST NOT be affected.
 
 #### Scenario: malformed Rock Ridge entries
 
@@ -50,6 +51,7 @@ skipped, as SUSP specifies. The other members of the image MUST NOT be affected.
 | --- | --- |
 | A file whose `TF` entry has version 99 | Lists with its `PX` mode, reads, one `MEMBER_HEADER_RECORD_SKIPPED`; the other members carry nothing |
 | A symlink cut the same way (genisoimage 1.1.11 writes this for a target of about 400 bytes or more) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
+| A file whose area ends after an `NM` entry that says the name continues | Lists under its ISO 9660 identifier, `MEMBER_HEADER_RECORD_SKIPPED` |
 | A `CE` naming 8 MiB at the start of a block | That record's continuation is not read, nothing is allocated for it; the image opens |
 | The same images under `DiagnosticPolicy.STRICT` | Refused |
 
@@ -230,8 +232,10 @@ listing would fit.
 ### Requirement: Serialize shared pycdlib handle operations for concurrent reads
 
 **Reason**: Member data is read through views of the source, which take the source's
-lock per read; no pycdlib handle is shared. **Migration**: None; concurrent member
-streams keep working, now covered by "Declare ISO format properties".
+lock per read; no pycdlib handle is shared.
+
+**Migration**: None; concurrent member streams keep working, now covered by "Declare ISO
+format properties".
 
 ### Requirement: Contain a System Use entry pycdlib cannot parse to its own record
 

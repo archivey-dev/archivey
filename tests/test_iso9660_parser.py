@@ -26,6 +26,7 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
+from archivey.internal.backends import iso9660
 from archivey.internal.backends.iso9660 import (
     JOLIET_TREE,
     PRIMARY_TREE,
@@ -621,6 +622,25 @@ def test_a_large_directory_is_read_a_chunk_at_a_time() -> None:
         IsoVolume(read_at, len(image), archive_name=None, budget=_Capped(2**14))
     assert max(reads) <= 64 * 1024
     assert sum(reads) < length
+
+
+@pytest.mark.parametrize("chunk", [None, 37])
+def test_a_directory_longer_than_a_chunk_is_read_to_its_end(
+    chunk: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root of 2,000 directories, over 64 KiB of records, lists every one. With
+    37-byte chunks, records cross chunk boundaries and are carried over."""
+    if chunk is not None:
+        monkeypatch.setattr(iso9660, "_DIRECTORY_CHUNK", chunk)
+    data = _directories_image(2000, joliet=True)
+    _, length = _root_records(data)
+    assert length > 64 * 1024
+    volume = _volume(data)
+    expected = {f"D{index}".encode() for index in range(2000)}
+    assert {e.ident for e in volume.primary.root.children or ()} == expected
+    assert volume.joliet is not None
+    joliet = {e.ident for e in volume.joliet.root.children or ()}
+    assert joliet == {f"d{index}".encode("utf-16-be") for index in range(2000)}
 
 
 def test_directories_weigh_what_their_records_hold() -> None:
