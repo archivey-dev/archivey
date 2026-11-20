@@ -88,7 +88,7 @@ from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.internal.arg_checks import raise_if_text_stream
 from archivey.internal.overrides import override
-from archivey.internal.read_progress import SourceReadReporter
+from archivey.internal.read_progress import LocalPartsReporter, SourceReadReporter
 
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
@@ -330,7 +330,7 @@ class ArchiveSource(ReadOnlyIOStream):
     # The ``on_source_read`` reporter for the bytes this source takes from a local
     # file or stream; ``None`` when unset, and for a range source, which reports its
     # requests itself (:meth:`report_reads`).
-    _progress: SourceReadReporter | None = None
+    _progress: SourceReadReporter | LocalPartsReporter | None = None
     # The reporter for a local source or for the range sources under it.
     _reporter: SourceReadReporter | None = None
     _owned_beneath: BinaryIO | None = None
@@ -609,23 +609,61 @@ class ArchiveSource(ReadOnlyIOStream):
         A range source reports each request; any other source reports the bytes taken
         from it, about once per MiB (:mod:`archivey.internal.read_progress`).
         """
-        reporter = SourceReadReporter(callback, self._name, self._length, step)
+        name = self._name
+        decompressed = self._fsspec_decompressed
+        if not name and decompressed is not None:
+            # fsspec's decompressing file has no name; the object's URL is the file.
+            name = decompressed.url
+        reporter = SourceReadReporter(callback, name, self._length, step)
         self._reporter = reporter
         if self._remote:
             # In a volume set a range source reads at its own offsets; its reports
             # add where it starts in the set, so ``position`` means the same as for a
             # local set.
             bases: dict[int, int] = {}
+            local: list[tuple[int, int]] = []
+            remote = {id(ranged) for ranged in self._remote}
             joined = self._joined
             if joined is not None:
                 pairs = zip(joined.volume_items, joined.volume_ranges, strict=True)
-                for item, (start, _) in pairs:
+                for item, (start, end) in pairs:
                     bases[id(item)] = start
+                    if id(item) not in remote:
+                        local.append((start, end))
             for ranged in self._remote:
                 ranged.progress = reporter
                 ranged.progress_base = bases.get(id(ranged), 0)
+            if local:
+                # A list mixing local parts and URLs: this source reports the local
+                # parts' bytes, the range sources their requests.
+                self._progress = LocalPartsReporter(reporter, local)
         else:
             self._progress = reporter
+
+    def report_reads_like(self, other: ArchiveSource) -> None:
+        """Report this source's reads to the callback ``other`` reports to, if any:
+        for a source that takes over from ``other`` (a split set beside a stub)."""
+        reporter = other._reporter
+        if reporter is not None:
+            reporter.raise_if_stopped()
+            self.report_reads(reporter.callback, reporter.step)
+
+    def progress_reporter(
+        self, name: str | None, size: int | None
+    ) -> SourceReadReporter | None:
+        """A reporter for another file that holds this archive's bytes (a ``.cue``
+        sheet's track), or ``None`` when this source does not report."""
+        reporter = self._reporter
+        return None if reporter is None else reporter.successor(name, size)
+
+    def raise_if_read_stopped(self) -> None:
+        """Raise again what ``on_source_read`` raised, if it has; nothing when unset.
+
+        For a boundary that returns to the caller after code that may have caught the
+        stop without reading again.
+        """
+        if self._reporter is not None:
+            self._reporter.raise_if_stopped()
 
     def flush_progress(self) -> None:
         """Deliver an ``on_source_read`` report that came due while archivey's own
@@ -885,6 +923,9 @@ class ArchiveSource(ReadOnlyIOStream):
         """
         replay = self._replay
         assert replay is not None
+        if self._progress is not None:
+            # Replayed bytes are not reported, but a stop holds for them too.
+            self._progress.raise_if_stopped()
         if n >= len(replay):
             # The whole prefix: one copy, where a slice would copy it twice.
             head = bytes(replay)
@@ -1184,6 +1225,9 @@ class ArchiveSource(ReadOnlyIOStream):
         # returned bytes since.
         self._seek_target -= start
         self._pos = 0
+        if self._progress is not None:
+            # Reports keep counting from the file's start.
+            self._progress.shift(start)
 
     def start_at(self, offset: int) -> None:
         """Make byte ``offset`` of a seekable source its offset 0, and stop naming the

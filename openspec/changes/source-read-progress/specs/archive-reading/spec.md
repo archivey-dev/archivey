@@ -26,17 +26,24 @@ lack its pair of calls; the once-before, once-after rule above applies to reques
 from a caller's thread. Bytes that an external program (`unrar`) or the RAR backend
 reads from volume paths directly are outside this requirement. An exception it raises
 SHALL propagate out of the read that called it, unchanged; every later read of the file
-SHALL raise it again, and an extraction or verification that goes on past a member's
-error SHALL stop on it instead. A reader opened from a member of another reader SHALL
-NOT report its reads. With `on_source_read` unset, no reporting work SHALL be done
-beyond checking that it is unset.
+SHALL raise it again, bytes served from a cache or a replay included, and an extraction
+or verification that goes on past a member's error SHALL stop on it instead. A reader
+opened with `parent=` SHALL NOT report its reads; a member stream opened without
+`parent=` is a source of its own and SHALL report. A split set found beside a stub, and
+the track files of a `.cue` sheet, SHALL report as the file they stand in for.
+`position` and `read_start` SHALL count from the start of the file, also when a stream
+is opened where the caller left it. In a volume list that mixes local parts and URLs,
+the local parts SHALL report their reads and the URLs their requests, each byte once.
+With `on_source_read` unset, no reporting work SHALL be done beyond checking that it is
+unset.
 
 #### Scenario: a local file read start to end
 
 - **WHEN** `on_source_read` is set and a 10 MiB `.xz` file is read start to end through
   `open_stream()`
-- **THEN** the callback runs about ten times, `position` never decreases, and the last
-  call has `bytes_read` equal to the file size
+- **THEN** the callback runs about ten times, `bytes_read` never decreases, and the last
+  call has `position` at the end of the file (`bytes_read` may pass the size: the tail
+  is read first and again at the end)
 
 #### Scenario: every read of a local file
 

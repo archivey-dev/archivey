@@ -498,3 +498,183 @@ def test_an_accelerated_gzip_trailer_check_does_not_swallow_a_stop(
         with pytest.raises(_StopOS) as caught:
             read(_stop_on(n, _StopOS))
         assert type(caught.value) is _StopOS
+
+
+def _small_zip(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_a_stop_of_an_archivey_error_type_reaches_the_caller_as_itself(
+    tmp_path: Path,
+) -> None:
+    from archivey import CorruptionError
+
+    path = tmp_path / "a.zip"
+    path.write_bytes(_small_zip({"sample.txt": b"hello"}))
+    stop = CorruptionError("stop from callback")
+    calls = 0
+
+    def callback(progress: SourceProgress) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise stop
+
+    config = ArchiveyConfig(on_source_read=callback, source_read_step=0)
+    with (
+        pytest.raises(CorruptionError) as caught,
+        open_archive(path, config=config) as reader,
+    ):
+        for member in reader.members():
+            reader.read(member)
+    # Not rewritten into "Could not open ZIP archive: ...".
+    assert caught.value is stop
+
+
+def test_a_stop_holds_for_cached_url_reads() -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    fs.pipe(
+        "/cached/a.zip",
+        _small_zip(
+            {"a.txt": b"a" * 100, "b.txt": b"b" * 100, "big": os.urandom(2 << 20)}
+        ),
+    )
+    try:
+        stopping = False
+
+        def callback(progress: SourceProgress) -> None:
+            if stopping and progress.request_done is False:
+                raise _StopValue("stop from callback")
+
+        config = ArchiveyConfig(on_source_read=callback)
+        with open_archive(fsspec.open("memory://cached/a.zip"), config=config) as r:
+            assert r.read("a.txt") == b"a" * 100
+            stopping = True
+            with pytest.raises(_StopValue):
+                r.read("big")
+            stopping = False
+            # The small member's bytes are cached; the stop holds for them too.
+            with pytest.raises(_StopValue):
+                r.read("a.txt")
+    finally:
+        fs.rm("/cached", recursive=True)
+
+
+def test_a_split_set_beside_a_stub_reports(tmp_path: Path) -> None:
+    data = _small_zip({"x.bin": os.urandom(300_000)})
+    half = len(data) // 2
+    (tmp_path / "vol.exe").write_bytes(b"\0" * 64)
+    (tmp_path / "vol.zip.001").write_bytes(data[:half])
+    (tmp_path / "vol.zip.002").write_bytes(data[half:])
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+    with open_archive(tmp_path / "vol.exe", config=config) as reader:
+        assert reader.read("x.bin")
+    set_calls = [c for c in seen.calls if c.size == len(data)]
+    assert set_calls
+    assert max(c.position for c in set_calls) == len(data)
+
+
+@requires("pycdlib")
+def test_a_cue_sheet_reports_its_track_reads(tmp_path: Path) -> None:
+    from tests.test_iso_cue import _PAYLOAD, _plain_iso
+    from tests.test_iso_raw_sectors import to_raw
+
+    data = to_raw(_plain_iso())
+    (tmp_path / "disc.bin").write_bytes(data)
+    cue = tmp_path / "disc.cue"
+    cue.write_text(
+        'FILE "disc.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n'
+    )
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+    with open_archive(cue, config=config) as reader:
+        assert reader.read("big.dat") == _PAYLOAD
+    track = [c for c in seen.calls if c.name == "disc.bin"]
+    assert track
+    assert all(c.size == len(data) for c in track)
+    assert sum(c.position - (c.read_start or 0) for c in track) >= len(_PAYLOAD)
+
+
+def test_a_mid_stream_open_reports_file_offsets() -> None:
+    prefix = 5_000
+    archive = _small_zip({"sample.txt": b"hello"})
+    stream = io.BytesIO(b"\0" * prefix + archive)
+    stream.seek(prefix)
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+    with open_archive(stream, config=config) as reader:
+        assert reader.read("sample.txt") == b"hello"
+    assert seen.calls
+    for c in seen.calls:
+        assert c.read_start is not None
+        assert prefix <= c.read_start <= c.position <= prefix + len(archive)
+        assert c.size == prefix + len(archive)
+
+
+def test_a_mixed_volume_list_reports_local_and_remote_parts() -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    data = _small_zip({f"m{i}.bin": bytes([i]) * 100_000 for i in range(4)})
+    half = len(data) // 2
+    fs.pipe("/mixed/a.zip.002", data[half:])
+    try:
+        seen = _Recorder()
+        parts = [io.BytesIO(data[:half]), fsspec.open("memory://mixed/a.zip.002")]
+        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+        with open_archive(parts, config=config) as r:
+            for m in r.members():
+                r.read(m)
+        local = [c for c in seen.calls if c.request_start is None]
+        remote_ends = [c for c in seen.calls if c.request_done]
+        assert local and remote_ends
+        assert all(c.read_start is not None and c.position <= half for c in local)
+        assert min(c.read_start or 0 for c in local) == 0
+        assert all((c.request_start or 0) >= half for c in remote_ends)
+        local_bytes = sum(c.position - (c.read_start or 0) for c in local)
+        remote_bytes = sum(c.request_received or 0 for c in remote_ends)
+        assert seen.calls[-1].bytes_read == local_bytes + remote_bytes
+    finally:
+        fs.rm("/mixed", recursive=True)
+
+
+def test_a_caller_thread_named_like_archivey_s_still_reports(tmp_path: Path) -> None:
+    path = _gz_file(tmp_path, 3 * LOCAL_REPORT_STEP)
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen)
+    errors: list[BaseException] = []
+
+    def work() -> None:
+        try:
+            _read_stream(path, config)
+        except Exception as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    thread = threading.Thread(target=work, name="archivey-user-worker")
+    thread.start()
+    thread.join()
+    assert not errors
+    assert len(seen.calls) >= 3
+    assert seen.threads == {thread.ident}
+
+
+def test_a_compressed_url_reports_its_url_as_the_name() -> None:
+    import gzip
+
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    fs.pipe("/named/example.zip.gz", gzip.compress(_small_zip({"a.txt": b"a"})))
+    try:
+        seen = _Recorder()
+        opened = fsspec.open("memory://named/example.zip.gz", compression="gzip")
+        with open_archive(opened, config=ArchiveyConfig(on_source_read=seen)) as r:
+            assert r.read("a.txt") == b"a"
+        assert seen.calls
+        assert all(c.name and "example.zip.gz" in c.name for c in seen.calls)
+    finally:
+        fs.rm("/named", recursive=True)

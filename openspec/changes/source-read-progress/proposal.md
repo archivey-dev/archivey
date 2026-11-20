@@ -24,9 +24,10 @@ The maintainer asked for a callback any caller can hook, and a CLI display built
   each read's range, a log of every region read). A URL
   (fsspec) source reports at the start and end of each range request, from
   `RangeSource`. Detection's reads count.
-- Only the outer archive's file reports: a nested archive is read from a member, not
-  from a source of its own. Bytes an external program (`unrar`) or the RAR backend
-  reads from volume paths directly are not seen.
+- A reader opened with `parent=` does not report: its reads are the parent's, which
+  reports them. A member stream opened without `parent=` is a source of its own. Bytes
+  an external program (`unrar`) or the RAR backend reads from volume paths directly are
+  not seen.
 - The callback runs on the thread that read. A read on a thread archivey started (the
   RAR volume feeder) does not call it: the latest such report is kept and delivered on
   the caller's next read of the archive or of the member being read. Reports in between

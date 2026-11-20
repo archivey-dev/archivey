@@ -1006,6 +1006,10 @@ class RangeSource(io.RawIOBase):
         # Before the pool: a window fetched before the change still holds bytes of
         # the object as it was, and serving them would read on past the change.
         self._raise_if_changed()
+        progress = self.progress
+        if progress is not None:
+            # A stop from ``on_source_read`` holds for bytes the pool already has too.
+            progress.raise_if_stopped()
         with memoryview(b) as outer, outer.cast("B") as whole:
             limit = min(len(whole), max(self.size - self._pos, 0))
             if limit == 0:

@@ -3597,7 +3597,7 @@ class IsoHandler(IndexedFormatHandler):
             )
         cue = _cue_for(source.path, layout is not None)
         if cue is not None:
-            disc = disc_source(cue, context.archive_name)
+            disc = disc_source(cue, context.archive_name, source._progress_reporter)
             try:
                 return IsoReader(disc, context)
             except BaseException:

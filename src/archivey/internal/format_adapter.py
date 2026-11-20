@@ -1122,6 +1122,7 @@ class IndexedReaderAdapter(_PluginAdapter):
         )
         plugin_source._origin = self._origin
         plugin_source._will_read = self._will_read
+        plugin_source._progress_reporter = source.progress_reporter
         plugin = self._plugin
         assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():

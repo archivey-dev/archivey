@@ -4,8 +4,9 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
 
 - :class:`~archivey.internal.source.ArchiveSource` calls
   :meth:`~SourceReadReporter.read` with each count of bytes it takes from a local file
-  or stream. A call reaches the caller about once per ``ArchiveyConfig.source_read_step`` bytes
-  (:data:`LOCAL_REPORT_STEP` by default), or for every read when that is 0.
+  or stream. A call reaches the caller about once per
+  ``ArchiveyConfig.source_read_step`` bytes (:data:`LOCAL_REPORT_STEP` by default), or
+  for every read when that is 0.
 - :class:`~archivey.internal.remote.RangeSource` calls
   :meth:`~SourceReadReporter.request_started` and
   :meth:`~SourceReadReporter.request_ended` around each range request. Each reaches
@@ -14,10 +15,11 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
 
 Nothing here runs when the callback is unset: the hooks check for a reporter first.
 
-The callback runs on the thread that read. A read on a thread archivey started (named
-``archivey-…``, such as the RAR volume feeder) is counted but reported only with the
-next read on a caller's thread (or a :meth:`~SourceReadReporter.flush` there), so
-caller code never runs on archivey's threads. Only the latest such report is kept.
+The callback runs on the thread that read. A read on a thread archivey started (one
+that called :func:`mark_archivey_thread`, such as the RAR volume feeder) is counted
+but reported only with the next read on a caller's thread (or a
+:meth:`~SourceReadReporter.flush` there), so caller code never runs on archivey's
+threads. Only the latest such report is kept.
 
 What the callback raises is marked as the caller's own (``mark_source_callback``): the
 error translators and the per-member error handling of extraction and verification
@@ -52,8 +54,9 @@ class SourceReadReporter:
         size: int | None,
         step: int = 1 << 20,
     ) -> None:
-        self._callback = callback
-        self._step = step
+        self.callback = callback
+        self.step = step
+        self._offset = 0
         self._name = name
         self._size = size
         self._lock = threading.Lock()
@@ -73,14 +76,15 @@ class SourceReadReporter:
         (a pipe) has no other sign of its end, so the bytes since the last report are
         reported then, a source under a MiB included.
         """
-        self._raise_if_stopped()
+        self.raise_if_stopped()
+        position += self._offset
         with self._lock:
             self._bytes_read += n
             total = self._bytes_read
             if total == self._reported_at:
                 return
             if (
-                total - self._reported_at < self._step
+                total - self._reported_at < self.step
                 and not at_end
                 and (self._size is None or position < self._size)
                 and self._deferred is None
@@ -96,10 +100,24 @@ class SourceReadReporter:
             self._deferred = None
         self._call(snapshot)
 
+    def shift(self, by: int) -> None:
+        """The source's offset 0 moved ``by`` bytes into the file (a rebase): later
+        local positions still count from the file's start."""
+        self._offset += by
+
+    def successor(self, name: str | None, size: int | None) -> SourceReadReporter:
+        """A reporter for another file that holds the archive's bytes (a split set
+        beside a stub, a ``.cue`` sheet's track), calling the same callback.
+
+        Raises what the callback raised, if it has: the stop holds for that file too.
+        """
+        self.raise_if_stopped()
+        return SourceReadReporter(self.callback, name, size, self.step)
+
     def request_started(self, start: int, end: int) -> None:
         """A range request for ``[start, end)`` of the whole source is about to be
         sent (a volume's base offset already added)."""
-        self._raise_if_stopped()
+        self.raise_if_stopped()
         with self._lock:
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
@@ -120,7 +138,7 @@ class SourceReadReporter:
         RAR volume feeder), each time the caller reads that stream."""
         if _on_archivey_thread():
             return
-        self._raise_if_stopped()
+        self.raise_if_stopped()
         with self._lock:
             snapshot, self._deferred = self._deferred, None
         if snapshot is not None:
@@ -138,19 +156,20 @@ class SourceReadReporter:
 
     def _call(self, progress: SourceProgress) -> None:
         try:
-            self._callback(progress)
+            self.callback(progress)
         except BaseException as exc:
             # The caller's own exception: every error boundary passes it on as itself.
             mark_source_callback(exc)
             self._stopped = exc
             raise
 
-    def _raise_if_stopped(self) -> None:
+    def raise_if_stopped(self) -> None:
         """Raise again what the callback raised, on a caller's thread.
 
         A probe that reads the source may catch a broad type to mean "cannot tell"
-        and go on; the next read of the source then raises the caller's exception
-        again, so a stop is never lost. On archivey's own threads nothing is raised:
+        and go on; the next read of the source (bytes served from a cache or a replay
+        prefix included) then raises the caller's exception again, so a stop is never
+        lost. On archivey's own threads nothing is raised:
         the read there is counted, and the caller's next read raises.
         """
         stopped = self._stopped
@@ -173,6 +192,48 @@ class SourceReadReporter:
         )
 
 
+_OWN_THREAD = threading.local()
+
+
+def mark_archivey_thread() -> None:
+    """Mark the calling thread as one archivey started; its first call.
+
+    Reports from reads on it are deferred to a caller's thread. The mark is on the
+    thread itself, not its name: a caller's thread may carry any name.
+    """
+    _OWN_THREAD.marked = True
+
+
+class LocalPartsReporter:
+    """The local parts' share of reads of a volume list that also has range sources.
+
+    The range sources report their own requests; this passes on only the bytes of a
+    read that fall in a local part, so no byte counts twice.
+    """
+
+    def __init__(self, reporter: SourceReadReporter, local: list[tuple[int, int]]):
+        self._reporter = reporter
+        self._local = local
+        self._offset = 0
+
+    def read(self, position: int, n: int, *, at_end: bool = False) -> None:
+        position += self._offset
+        start = position - n
+        self._reporter.raise_if_stopped()
+        for lo, hi in self._local:
+            first, last = max(lo, start), min(hi, position)
+            if first < last:
+                self._reporter.read(
+                    last, last - first, at_end=at_end and last == position
+                )
+
+    def shift(self, by: int) -> None:
+        self._offset += by
+
+    def raise_if_stopped(self) -> None:
+        self._reporter.raise_if_stopped()
+
+
 def _on_archivey_thread() -> bool:
     """Whether this thread is one archivey started: caller code never runs there."""
-    return threading.current_thread().name.startswith("archivey-")
+    return getattr(_OWN_THREAD, "marked", False)

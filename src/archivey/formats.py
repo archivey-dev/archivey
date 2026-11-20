@@ -322,6 +322,10 @@ class ReaderSource:
     # source fetches the span in one request (``ArchiveSource.will_read``); a source
     # that is not remote ignores it. Set by archivey only, for its built-in readers.
     _will_read: Callable[[int, int], None] | None = None
+    # Gives a reporter for ``ArchiveyConfig.on_source_read`` for another file that holds
+    # the archive's bytes (a ``.cue`` sheet's track), named and sized; ``None`` or
+    # returning ``None`` when the source does not report. Set by archivey only.
+    _progress_reporter: Callable[[str | None, int | None], Any] | None = None
 
     def __init__(
         self,

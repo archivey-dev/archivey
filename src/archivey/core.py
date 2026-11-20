@@ -115,6 +115,7 @@ from archivey.internal.remote import (
 )
 from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs import (
     codec_for_stream_format,
     open_codec_stream,
@@ -344,6 +345,8 @@ def _follow_stub_volume(
         return None
     resolved = resolve_source(alt)
     try:
+        # The split set is the archive's file now: it reports as the stub did.
+        resolved.source.report_reads_like(slot.current)
         if format is not None:
             try:
                 info = detect_format(
@@ -351,11 +354,12 @@ def _follow_stub_volume(
                     config=probe_config(config),
                     follow_stub_volumes=False,
                 )
-            except FormatDetectionError:
+            except FormatDetectionError as exc:
+                if from_source_callback(exc):
+                    raise
                 # This probe only catches a confident container mismatch. A volume
                 # it cannot identify proves no conflict; the real detection after the
                 # switch reports it, to the caller's own collector.
-                pass
             else:
                 if info.format.container != format.container:
                     # DR-15's value half: format= is a usable type, and the call
@@ -913,7 +917,9 @@ def _decide_format(
                 collector=collector,
                 follow_stub_volumes=False,
             )
-        except FormatDetectionError:
+        except FormatDetectionError as exc:
+            if from_source_callback(exc):
+                raise  # a stop from ``on_source_read``, not a format miss
             followed = _follow_stub_volume(slot, format, config)
             if followed is None:
                 raise

@@ -1242,11 +1242,13 @@ class BaseArchiveReader(ArchiveReader):
         ``EncryptionError`` (ZIP's password errors carry their own message and must
         not be reattributed).
         """
+        if from_source_callback(exc):
+            # The caller's own, such as from ``on_source_read``: not stamped, even
+            # when it is an ``ArchiveyError``.
+            raise exc
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
-        if from_source_callback(exc):
-            raise exc  # the caller's own, such as from ``on_source_read``
         closed = as_closed_source_error(exc, member_name)
         if closed is not None:
             # Checked before the backend's translator, which may map every ValueError
@@ -2328,6 +2330,8 @@ class BaseArchiveReader(ArchiveReader):
                         try:
                             self._resolve_link_target(member)
                         except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                            if from_source_callback(exc):
+                                raise
                             self._report_unreadable_link_target(member, exc)
                             continue
                         if member.link_target is not None:
