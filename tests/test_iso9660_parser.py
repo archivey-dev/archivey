@@ -512,6 +512,16 @@ def test_the_root_skip_count_applies_before_the_rock_ridge_test() -> None:
     assert rr.name == b"abc"
 
 
+def test_a_name_cut_before_its_last_part_names_nothing() -> None:
+    """An ``NM`` that says it continues, in an area that then ends at a malformed
+    entry, is a name cut short: ``None``, so the reader falls back to the ISO 9660
+    identifier rather than list a prefix."""
+    volume = _volume(_pycdlib_image(rock_ridge=True, joliet=False))
+    rr = volume._system_use(b"NM\x08\x01\x01abcTF\x05\x63\x00", 1, root_dot=False)
+    assert rr is not None and rr.dropped is not None
+    assert rr.name is None
+
+
 class _Budget:
     def __init__(self) -> None:
         self.bytes = 0

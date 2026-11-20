@@ -163,9 +163,10 @@ class RockRidge:
     """The Rock Ridge entries of one record, its own area and continuations together.
 
     The first entry of each kind wins; a later one is ignored. ``name`` is ``None``
-    when the record has no ``NM`` entry, and the empty string when its ``NM`` entries
-    spell nothing. ``symlink`` is the ``SL`` target, or ``None`` when there is no
-    ``SL`` entry or when its components end on a continuation flag.
+    when the record has no ``NM`` entry or its last one says the name continues, and
+    the empty string when its ``NM`` entries spell nothing. ``symlink`` is the ``SL``
+    target, or ``None`` when there is no ``SL`` entry or when its components end on a
+    continuation flag.
     """
 
     name: bytes | None = None
@@ -654,7 +655,7 @@ class IsoVolume:
             return None
         self._has_rr_entries = True
         rr = RockRidge()
-        names: list[bytes] = []
+        names: list[tuple[int, bytes]] = []
         components: list[tuple[int, bytes]] = []
         continuations = 0
         while True:
@@ -673,8 +674,10 @@ class IsoVolume:
             if continued is None:
                 break
             area = continued
-        if names:
-            rr.name = b"".join(names)
+        # A name whose last ``NM`` entry says it continues was cut short (the area
+        # ended at a malformed entry): it names nothing, as a cut link target does.
+        if names and not names[-1][0] & 1:
+            rr.name = b"".join(part for _, part in names)
         if components:
             rr.symlink = _symlink_target(components)
         return rr
@@ -710,7 +713,7 @@ class IsoVolume:
         rr: RockRidge,
         area: bytes,
         skip: int,
-        names: list[bytes],
+        names: list[tuple[int, bytes]],
         components: list[tuple[int, bytes]],
         root_dot: bool,
     ) -> tuple[int, int, int] | None:
@@ -765,7 +768,7 @@ class IsoVolume:
         rr: RockRidge,
         tag: bytes,
         entry: bytes,
-        names: list[bytes],
+        names: list[tuple[int, bytes]],
         components: list[tuple[int, bytes]],
         root_dot: bool,
     ) -> str | None:
@@ -780,7 +783,7 @@ class IsoVolume:
                 return f"has flags {entry[4]:#x}"
             # CURRENT or PARENT with a name: the name is taken, as pycdlib took it
             # (VirtualBox Guest Additions images set CURRENT on real names).
-            names.append(entry[5:])
+            names.append((entry[4], entry[5:]))
         elif tag == b"PX":
             if length not in (36, 44):
                 return f"is {length} bytes, not 36 or 44"
