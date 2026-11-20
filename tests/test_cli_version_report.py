@@ -146,7 +146,9 @@ def test_pair_sentence_limits_itself_to_readable_compressions(
 
     monkeypatch.setattr(version_report, "format_availability", fake)
     flat = " ".join(_report(capsys).split())
-    assert "none: zst" in flat
+    # Other compressions may sit on the same line on a core-only install.
+    none_line = flat.split("compression and encodings")[1].split("none:")[1]
+    assert "zst" in none_line.split(" also open inside")[0]
     assert "also open inside any of these that can be read, such as tar.gz." in flat
     assert "combinations that differ" not in flat
 
