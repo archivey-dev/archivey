@@ -217,7 +217,7 @@ from archivey.internal.streams.archive_stream import (
     as_closed_source_error,
     compose_translators,
 )
-from archivey.internal.streams.callers_source import from_callers_source
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -1245,7 +1245,7 @@ class BaseArchiveReader(ArchiveReader):
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
-        if from_callers_source(exc):
+        if from_source_callback(exc):
             raise exc  # the caller's own, such as from ``on_source_read``
         closed = as_closed_source_error(exc, member_name)
         if closed is not None:
@@ -5015,7 +5015,7 @@ class BaseArchiveReader(ArchiveReader):
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
-                    if from_callers_source(e):
+                    if from_source_callback(e):
                         raise
                     failures.append((m, e))
                     if isinstance(e, SpanningCheckError):

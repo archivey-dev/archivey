@@ -40,7 +40,10 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
-from archivey.internal.streams.callers_source import from_callers_source
+from archivey.internal.streams.callers_source import (
+    from_callers_source,
+    from_source_callback,
+)
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
 from archivey.internal.streams.codecs.framed_decoder import (
     FrameCheck,
@@ -256,7 +259,7 @@ def _source_tail(
             f.seek(-size, io.SEEK_END)
             return length, f.read(size)
     except (OSError, io.UnsupportedOperation, ValueError, TypeError) as exc:
-        if from_callers_source(exc):
+        if from_source_callback(exc):
             raise
         return None, None
 

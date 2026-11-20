@@ -61,7 +61,7 @@ from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
-from archivey.internal.streams.callers_source import from_callers_source
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs import (
     Codec,
     MetadataContext,
@@ -477,7 +477,7 @@ class SingleFileReader(BaseArchiveReader):
         try:
             return self._on_seekable_source(fn)
         except OSError as exc:
-            if from_callers_source(exc):
+            if from_source_callback(exc):
                 raise
             return None
 
@@ -648,7 +648,7 @@ class SingleFileReader(BaseArchiveReader):
                 backend = resolve_codec(self._codec, config)
                 stream = backend.open(SlicingStream(f, start=0))
             except (ArchiveyError, OSError, ValueError) as exc:
-                if from_callers_source(exc):
+                if from_source_callback(exc):
                     raise
                 return None
             try:

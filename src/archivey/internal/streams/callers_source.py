@@ -27,3 +27,27 @@ def mark_callers_source(exc: BaseException) -> None:
         setattr(exc, _FROM_SOURCE, True)
     except AttributeError:  # an exception type that refuses new attributes
         pass
+
+
+_FROM_CALLBACK = "_archivey_raised_by_on_source_read"
+
+
+def from_source_callback(exc: BaseException) -> bool:
+    """Whether ``exc`` was raised by ``ArchiveyConfig.on_source_read``.
+
+    Such an exception is also marked as the caller's own (:func:`from_callers_source`),
+    so the codec translators leave it alone. This second mark is for the boundaries
+    above them: the public stream's translation, the reader's, detection's probes and
+    extraction's per-member handling raise it as itself. An exception the caller's
+    source raised (a closed file) keeps the translation those boundaries give it.
+    """
+    return getattr(exc, _FROM_CALLBACK, False) is True
+
+
+def mark_source_callback(exc: BaseException) -> None:
+    """Mark ``exc`` as raised by ``on_source_read`` (see :func:`from_source_callback`)."""
+    mark_callers_source(exc)
+    try:
+        setattr(exc, _FROM_CALLBACK, True)
+    except AttributeError:  # an exception type that refuses new attributes
+        pass

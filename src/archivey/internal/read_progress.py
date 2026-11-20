@@ -18,7 +18,7 @@ The callback runs on the thread that read. A read on a thread archivey started (
 next read on a caller's thread (or a :meth:`~SourceReadReporter.flush` there), so
 caller code never runs on archivey's threads. Only the latest such report is kept.
 
-What the callback raises is marked as the caller's own (``mark_callers_source``): the
+What the callback raises is marked as the caller's own (``mark_source_callback``): the
 error translators and the per-member error handling of extraction and verification
 re-raise a marked exception as itself. Once the callback has raised, every later read
 of the source raises the same exception again, so a probe that catches a broad type
@@ -30,7 +30,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
-from archivey.internal.streams.callers_source import mark_callers_source
+from archivey.internal.streams.callers_source import mark_source_callback
 from archivey.types import SourceProgress
 
 if TYPE_CHECKING:
@@ -132,7 +132,7 @@ class SourceReadReporter:
             self._callback(progress)
         except BaseException as exc:
             # The caller's own exception: every error boundary passes it on as itself.
-            mark_callers_source(exc)
+            mark_source_callback(exc)
             self._stopped = exc
             raise
 
