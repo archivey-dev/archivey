@@ -19,7 +19,12 @@ from archivey import (
 from archivey.cli import version_report
 from archivey.cli.exit_codes import EXIT_OK
 from archivey.cli.main import main
-from archivey.cli.version_report import detect_installer, install_command
+from archivey.cli.version_report import (
+    Install,
+    cli_package_hint,
+    detect_installer,
+    install_command,
+)
 
 
 def _report(capsys: pytest.CaptureFixture[str]) -> str:
@@ -97,7 +102,7 @@ def test_missing_and_slower_are_grouped_by_command(
         return FormatAvailability(fmt, real(fmt).support)
 
     monkeypatch.setattr(version_report, "format_availability", fake)
-    monkeypatch.setattr(version_report, "detect_installer", lambda: "pip")
+    monkeypatch.setattr(version_report, "detect_installer", lambda: Install("pip"))
     out = _report(capsys)
     assert out.count(hint) == 1
     section = out.split("to read more, or faster\n")[1]
@@ -179,16 +184,26 @@ def test_a_pair_that_differs_from_its_parts_is_printed(
     ],
 )
 def test_install_command_fits_the_installer(installer: str, expected: str) -> None:
-    assert install_command("pip install archivey[bzip3]", installer) == expected  # type: ignore[arg-type]
+    install = Install(installer)  # type: ignore[arg-type]
+    assert install_command("pip install archivey[bzip3]", install) == expected
+
+
+def test_install_command_targets_the_library_tool() -> None:
+    install = Install("uvx", "archivey")
+    assert install_command("pip install archivey[bzip3]", install) == (
+        'uvx --with "archivey[bzip3]" archivey'
+    )
 
 
 def test_install_command_keeps_other_advice() -> None:
-    assert install_command("pip install compress-utils", "uvx") == (
+    assert install_command("pip install compress-utils", Install("uvx")) == (
         "uvx --with compress-utils archivey-cli"
     )
     reason = "archivey does not use lz4 under PyPy"
-    assert install_command(reason, "uvx") == reason
-    assert install_command("Install RARLAB unrar", "pipx") == "Install RARLAB unrar"
+    assert install_command(reason, Install("uvx")) == reason
+    assert install_command("Install RARLAB unrar", Install("pipx")) == (
+        "Install RARLAB unrar"
+    )
 
 
 class _Dist:
@@ -218,7 +233,7 @@ def test_detect_installer(
     monkeypatch.delenv("UV_TOOL_DIR", raising=False)
     monkeypatch.setattr(metadata, "distribution", lambda name: _Dist(installer))
     monkeypatch.setattr(sys, "prefix", str(Path(prefix)))
-    assert detect_installer() == expected
+    assert detect_installer().installer == expected
 
 
 def test_detect_installer_honours_uv_tool_dir(
@@ -227,7 +242,7 @@ def test_detect_installer_honours_uv_tool_dir(
     monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path))
     monkeypatch.setattr(metadata, "distribution", lambda name: _Dist("uv"))
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "archivey-cli"))
-    assert detect_installer() == "uv-tool"
+    assert detect_installer() == Install("uv-tool", "archivey-cli")
 
 
 def test_detect_installer_without_the_cli_package(
@@ -237,4 +252,59 @@ def test_detect_installer_without_the_cli_package(
         raise metadata.PackageNotFoundError(name)
 
     monkeypatch.setattr(metadata, "distribution", missing)
-    assert detect_installer() == "pip"
+    assert detect_installer() == Install("pip")
+
+
+def _library_only(name: str) -> _Dist:
+    if name == "archivey-cli":
+        raise metadata.PackageNotFoundError(name)
+    return _Dist("uv")
+
+
+@pytest.mark.parametrize(
+    ("prefix", "installer", "command"),
+    [
+        ("/home/u/.cache/uv/archive-v0/l3A6DnngECMlzMwB", "uvx", "uvx archivey-cli"),
+        (
+            "/home/u/.local/share/uv/tools/archivey",
+            "uv-tool",
+            "uv tool install archivey-cli",
+        ),
+    ],
+)
+def test_library_tool_points_at_the_cli_package(
+    monkeypatch: pytest.MonkeyPatch, prefix: str, installer: str, command: str
+) -> None:
+    """``uvx archivey`` runs the same command without the recommended packages."""
+    monkeypatch.delenv("UV_TOOL_DIR", raising=False)
+    monkeypatch.setattr(metadata, "distribution", _library_only)
+    monkeypatch.setattr(sys, "prefix", str(Path(prefix)))
+    install = detect_installer()
+    assert install == Install(installer, "archivey")  # type: ignore[arg-type]
+    hint = cli_package_hint(install)
+    assert hint is not None and command in hint
+    assert cli_package_hint(Install(installer)) is None  # type: ignore[arg-type]
+    assert cli_package_hint(Install("pip", "archivey")) is None
+
+
+def test_report_prints_the_cli_package_hint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = version_report.format_availability
+
+    def fake(fmt: ArchiveFormat) -> FormatAvailability:
+        if fmt == ArchiveFormat.LZOP:
+            return FormatAvailability(
+                fmt,
+                FormatSupport.FULL,
+                faster_with=(MissingComponent("compress_utils", "pip install x"),),
+            )
+        return FormatAvailability(fmt, real(fmt).support)
+
+    monkeypatch.setattr(version_report, "format_availability", fake)
+    monkeypatch.setattr(
+        version_report, "detect_installer", lambda: Install("uvx", "archivey")
+    )
+    flat = " ".join(_report(capsys).split())
+    assert "uvx archivey-cli installs the same command" in flat
+    assert "uvx --with x archivey" in flat

@@ -6,7 +6,8 @@ not listed: its support is the weaker of its two parts, so one sentence names th
 containers that pair up, and only a pair whose support differs from its parts is
 printed on its own. Last, everything missing or slower is grouped by the command that
 installs it, each command once, in the form that fits how the CLI was installed
-(:func:`install_command`).
+(:func:`install_command`). A command run from an environment made for the library
+alone (``uvx archivey``) is pointed at ``archivey-cli``.
 """
 
 from __future__ import annotations
@@ -39,28 +40,36 @@ _RANK = {FormatSupport.NONE: 0, FormatSupport.PARTIAL: 1, FormatSupport.FULL: 2}
 Installer = Literal["uvx", "uv-tool", "pipx", "pip"]
 
 _CLI_DISTRIBUTION = "archivey-cli"
+_LIBRARY_DISTRIBUTION = "archivey"
 _PIP_INSTALL = "pip install "
 
 
-def detect_installer() -> Installer:
-    """How the running ``archivey`` command was installed, as far as can be told.
+@dataclass(frozen=True)
+class Install:
+    """How the running ``archivey`` command was installed: the tool that made its
+    environment, and the distribution that environment was made for (``archivey-cli``,
+    or ``archivey`` when the user ran ``uvx archivey`` and so on)."""
 
-    ``"uvx"``, ``"uv-tool"`` and ``"pipx"`` need the ``archivey-cli`` distribution and
-    an environment of its own: a uv cache entry (``…/archive-v0/<id>``), a uv tool
-    directory (``…/uv/tools/archivey-cli``, ``…/uv/data/tools/archivey-cli`` on
-    Windows, or under ``UV_TOOL_DIR``) or a pipx venv
-    (``…/venvs/archivey-cli``). Anything else is ``"pip"``, whose hint is the library's
-    own ``pip install …``.
+    installer: Installer
+    distribution: str = _CLI_DISTRIBUTION
+
+
+def _tool_installer(distribution: str) -> Installer | None:
+    """The tool that made an environment of its own for ``distribution``, or ``None``.
+
+    That is a uv cache entry (``…/archive-v0/<id>``), a uv tool directory
+    (``…/uv/tools/<distribution>``, ``…/uv/data/tools/<distribution>`` on Windows, or
+    under ``UV_TOOL_DIR``) or a pipx venv (``…/venvs/<distribution>``).
     """
     try:
-        installer = metadata.distribution(_CLI_DISTRIBUTION).read_text("INSTALLER")
+        installer = metadata.distribution(distribution).read_text("INSTALLER")
     except metadata.PackageNotFoundError:
-        return "pip"
+        return None
     prefix = Path(sys.prefix)
     by_uv = (installer or "").strip() == "uv"
     if by_uv and prefix.parent.name.startswith("archive-v"):
         return "uvx"
-    if by_uv and prefix.name == _CLI_DISTRIBUTION:
+    if by_uv and prefix.name == distribution:
         tool_dir = os.environ.get("UV_TOOL_DIR")
         if (tool_dir and prefix.parent == Path(tool_dir)) or (
             # uv's tool directory: ``…/uv/tools`` on Linux and macOS,
@@ -68,28 +77,61 @@ def detect_installer() -> Installer:
             prefix.parent.name == "tools" and "uv" in prefix.parent.parts[-3:]
         ):
             return "uv-tool"
-    if prefix.name == _CLI_DISTRIBUTION and prefix.parent.name == "venvs":
+    if prefix.name == distribution and prefix.parent.name == "venvs":
         return "pipx"
-    return "pip"
+    return None
 
 
-def install_command(advice: str, installer: Installer) -> str:
-    """``advice`` rewritten for ``installer`` when it is a ``pip install`` command.
+def detect_installer() -> Install:
+    """How the running ``archivey`` command was installed, as far as can be told.
+
+    An environment made for ``archivey-cli`` is checked first, then one made for the
+    ``archivey`` library alone, which has the same command without the recommended
+    packages. Anything else is ``"pip"``, whose hint is the library's own
+    ``pip install …``.
+    """
+    for distribution in (_CLI_DISTRIBUTION, _LIBRARY_DISTRIBUTION):
+        installer = _tool_installer(distribution)
+        if installer is not None:
+            return Install(installer, distribution)
+    return Install("pip")
+
+
+def install_command(advice: str, install: Install) -> str:
+    """``advice`` rewritten for ``install`` when it is a ``pip install`` command.
 
     ``pip install archivey[bzip3]`` adds a package to the environment pip runs in,
     which is not the one ``uvx`` or ``pipx`` made for the CLI. Other advice (an
     external program, a reason the package is not used) is returned unchanged.
     """
-    if installer == "pip" or not advice.startswith(_PIP_INSTALL):
+    if install.installer == "pip" or not advice.startswith(_PIP_INSTALL):
         return advice
     requirement = advice.removeprefix(_PIP_INSTALL).strip()
     if "[" in requirement:
         requirement = f'"{requirement}"'
-    if installer == "uvx":
-        return f"uvx --with {requirement} {_CLI_DISTRIBUTION}"
-    if installer == "uv-tool":
-        return f"uv tool install --with {requirement} {_CLI_DISTRIBUTION}"
-    return f"pipx inject {_CLI_DISTRIBUTION} {requirement}"
+    tool = install.distribution
+    if install.installer == "uvx":
+        return f"uvx --with {requirement} {tool}"
+    if install.installer == "uv-tool":
+        return f"uv tool install --with {requirement} {tool}"
+    return f"pipx inject {tool} {requirement}"
+
+
+def cli_package_hint(install: Install) -> str | None:
+    """A pointer to ``archivey-cli`` when the command runs from an environment made
+    for the ``archivey`` library alone, which lacks the recommended packages."""
+    if install.installer == "pip" or install.distribution != _LIBRARY_DISTRIBUTION:
+        return None
+    command = {
+        "uvx": "uvx archivey-cli",
+        "uv-tool": "uv tool install archivey-cli",
+        "pipx": "pipx install archivey-cli",
+    }[install.installer]
+    return (
+        f"This archivey command comes from the archivey package alone. "
+        f"{command} installs the same command with archivey's recommended "
+        f"optional packages."
+    )
 
 
 @dataclass
@@ -275,6 +317,11 @@ def print_version_report(*, version: str, verbose: bool, out: TextIO) -> None:
     if groups:
         installer = detect_installer()
         lines += ["", "to read more, or faster"]
+        hint = cli_package_hint(installer)
+        if hint:
+            lines += textwrap.wrap(
+                hint, width=_WIDTH, initial_indent="  ", subsequent_indent="  "
+            )
         for advice, group in groups.items():
             lines += textwrap.wrap(
                 install_command(advice, installer),

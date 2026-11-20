@@ -42,8 +42,9 @@ and that reading one member may mean decoding the ones before it.
 `archivey --version -v` prints the version, then the archive formats and the compression formats
 this install can read fully, partly or not at all, and those it reads more slowly without an
 optional package. It ends with the commands that would add the rest, written for how you installed
-the CLI: `uvx`, `uv tool`, `pipx` or `pip`. [Install](install.md#checking-what-an-install-can-read)
-explains what each one needs.
+the CLI: `uvx`, `uv tool`, `pipx` or `pip`. Run as `uvx archivey`, it also points you to
+`uvx archivey-cli`, which comes with the recommended optional packages.
+[Install](install.md#checking-what-an-install-can-read) explains what each one needs.
 
 ## Checking an archive
 
