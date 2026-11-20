@@ -6,10 +6,11 @@ object ``fsspec.open(url, **options)`` returns (``openspec`` change
 ``compression`` (:func:`open_decompressed`), opens no file object from it: every byte
 comes from one range request at a time on the ``OpenFile``'s file system, through
 :class:`RangeSource`, so fsspec's file caches are never in the path. Over fsspec's HTTP
-file system a request goes through :mod:`archivey.internal._http_range`, which reads
-the answer only as far as the range and checks it; over any other file system it is
-``fs.cat_file(path, start, end)``. The size comes from one ``fs.size(path)`` at open
-and is a fact.
+file system, when the installed fsspec has what the adapter needs, a request goes
+through :mod:`archivey.internal._http_range`, which reads the answer only as far as
+the range and checks it; otherwise, and over any other file system, it is
+``fs.cat_file(path, start, end)``, which may read a whole answer into memory first.
+The size comes from one ``fs.size(path)`` at open and is a fact.
 :func:`~archivey.internal.volumes.resolve_source` builds the :class:`RangeSource` (one per
 volume of a set, all drawing on one :class:`WindowPool`) and wraps it in an
 :class:`~archivey.internal.source.ArchiveSource`, so detection and the backends read it

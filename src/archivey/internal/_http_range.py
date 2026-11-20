@@ -1,8 +1,9 @@
 """One HTTP range request, read only as far as it needs, with its answer checked.
 
 :class:`~archivey.internal.remote.RangeSource` reads an object over fsspec's HTTP file
-system through :func:`bounded_http_cat` instead of ``fs.cat_file``. This module is the
-single-request boundary: it builds the request, reads the answer and checks that the
+system through :func:`bounded_http_cat` instead of ``fs.cat_file``, when the installed
+fsspec has the members the adapter uses (else ``cat_file``, unbounded). This module is
+the single-request boundary: it builds the request, reads the answer and checks that the
 answer holds the bytes asked for. Everything that spans requests stays in
 :mod:`archivey.internal.remote`: the request budget, continuing after a short answer,
 asking again after an ignored range, detecting a changed object, and the I/O counters.
