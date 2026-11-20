@@ -28,7 +28,7 @@ those use the AI plan's quota.
 | `ppmd-native-stress.yml` | weekly (Wednesday 05:29 UTC), on demand, and after a merge to `main` that changes the PPMd code, its child process, its tests or the dependency pins; never on a PR (dispatch it on the branch instead) | no | not a required check; see [Known issues](known-issues.md), pyppmd sections |
 | `fsspec-consumers.yml` | daily, on demand, and after a merge to `main` that changes the fsspec file system, the remote source, their tests or the dependency pins; never on a PR | no | the `archivey://` tests failed with pandas, pyarrow or dask installed (their latest releases), or one of those tests skipped; not a required check; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `atheris-fuzz.yml` | nightly when `main` moved in the last 3 days, and on a dispatch | no | a fuzz target found an input; see [A fuzz job found a crash](#a-fuzz-job-found-a-crash); it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
-| `benchmark-wall.yml` | daily, with a change guard | no | a wall-time ratio moved; see [The benchmark went red](#the-benchmark-went-red) |
+| `benchmark-wall.yml` | daily, with a change guard | no | a case got slower than on the last measured commit; see [The benchmark went red](#the-benchmark-went-red) |
 | `benchmark-compare.yml` | on demand only (baseline ref, candidate ref, rounds) | no | a side wrote no harness JSON; timings only report, for release notes ([release checklist](release-checklist.md)) |
 | `accelerator-crash-search.yml` | monthly (the 1st), on demand, and a 60-second run after a merge to `main` that changes the lockfile, the script or the workflow | no | a new rapidgzip crash signature; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
 | `accelerator-fuzz-soak.yml` | weekly (Tuesday), on demand, and a 60-second run after a merge to `main` that changes the workflow | no | accelerated and plain decode disagree; it also holds a release until it is green on the release PR ([release gate](release-checklist.md#6-version-bump-and-tag)) |
@@ -85,14 +85,17 @@ Atheris writes the crashing input as an artifact of the run.
 
 ## The benchmark went red
 
-`benchmark-wall.yml` fails when a wall-time ratio drifts against the last measured
-night, or a case exceeds the 13x sanity ceiling. Shared runners are noisy.
+`benchmark-wall.yml` fails when a case is slower than on the commit the last run
+measured, or a case exceeds the 13x sanity ceiling. Both commits run on the same
+runner in the same job, three times each, so a runner's speed does not move the
+comparison; the job summary has the table.
 
-1. Compare the failing case against the merges since the last green run. If nothing in
-   that code path changed, it is probably noise. The failing night becomes the new
-   baseline, but the job measures again only on a night after a push to `main` (or when
-   the last measurement is 30 days old). On a quiet week, run it by hand
-   (`workflow_dispatch`, with `skip_drift` to re-seed the baseline).
+1. Compare the failing case against the merges between the two commits named in the
+   summary. If nothing in that code path changed, rerun the job once: the two commits
+   alternate again on another runner. The failing night becomes the new baseline, but
+   the job measures again only on a night after a push to `main` (or when the last
+   measurement is 30 days old). On a quiet week, run it by hand (`workflow_dispatch`,
+   with `skip_drift` to measure `main` alone and make it the baseline).
 2. If a merge did change it, decide whether the cost is worth what the merge bought.
    Most of the time it is; write one line in the next CHANGELOG entry.
 

@@ -1,23 +1,32 @@
 name: Benchmark wall-time
 
-# Wall-time drift tracker for the VISION perf budget. Off the PR path (shared-runner
-# absolute ratios are too noisy to block merges) and NOT run per-PR. Instead: a daily
-# schedule with a change guard — the expensive run fires when the default branch moved
-# recently, or when the last *measurement* is older than ~30 days (runner / toolchain
-# drift). On quiet days the job re-publishes the previous JSON (with measured_at kept,
-# republished_at stamped) so dormant successes still carry an artifact for the next
-# drift compare. `workflow_dispatch` forces a run (optional skip-drift to re-seed).
+# Wall-time regression tracker for the VISION perf budget. Off the PR path
+# (shared-runner wall times are too noisy to block merges) and NOT run per-PR.
+# Instead: a daily schedule with a change guard — the expensive run fires when the
+# default branch moved recently, or when the last *measurement* is older than ~30 days
+# (runner / toolchain drift). On quiet days the job re-publishes the previous JSON
+# (with measured_at kept, republished_at stamped) so the next run still knows which
+# commit was measured last. `workflow_dispatch` forces a run (optional skip-drift
+# measures main alone).
 #
 # Hard fails (when the expensive run fires):
 #   1. ~13× wall-ratio sanity ceiling
-#   2. wall-ratio *drift* vs the JSON artifact of the last run that measured, pass
-#      or fail (debt-ledger Q1 / perf Q2 option (a) — relative regression, not
-#      absolute ≤1.3×). A drift must also cost ≥1 ms of wall time, so sub-millisecond
-#      cases do not fail on timer noise.
+#   2. a case slower than on the commit the last run measured, both measured in this
+#      job on this runner: the two commits alternate, three harness runs each, and
+#      benchmarks/compare_refs.py keeps each side's fastest run. A case fails when it
+#      is more than 1.25× slower both in wall time and against its stdlib peer, and
+#      the gap is at least 1 ms. A case whose fixture changed between the two commits
+#      is reported, not gated.
 #
-# Why "pass or fail": with a successful-only baseline, one failed night froze the
-# baseline from 2026-09-06 to 2026-10-09, and every later change added up against it
-# until someone re-seeded by hand. Now a real regression fails the first night that
+# Why the same runner: until 2026-11-20 the job compared this night's ratios with the
+# previous night's JSON. Runners differ in speed, and the same commit moved by ~20%
+# between two runs (#1686: tar_open_list 2.33x on one runner, 2.86x on the next), so
+# the 1.25× gate failed on noise.
+#
+# Why "pass or fail": the baseline commit is the one the last measuring run timed,
+# whatever that run's result. With a successful-only baseline, one failed night froze
+# the baseline from 2026-09-06 to 2026-10-09, and every later change added up against
+# it until someone re-seeded by hand. Now a real regression fails the first night that
 # measures it and then becomes the baseline; the 13× ceiling still fails every night.
 # Absolute VISION / Q1 listing bands remain informational prints.
 #
@@ -29,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_drift:
-        description: "Skip wall-ratio drift check (accept current ratios as new baseline)"
+        description: "Skip the comparison with the last measured commit (measure main alone)"
         type: boolean
         default: false
 
@@ -45,7 +54,8 @@ jobs:
   benchmark-wall:
     name: Full realistic wall-time (nightly if changed)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Up to six harness runs of ~1-2 minutes each, plus two syncs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +92,7 @@ jobs:
                 # Say whether the baseline was a red night: after a regression
                 # the next green summary otherwise looks like any other.
                 conclusion=$(gh run view "$id" --json conclusion --jq .conclusion || echo unknown)
-                echo "Drift baseline: run [$id]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id) (conclusion: $conclusion)." >> "$GITHUB_STEP_SUMMARY"
+                echo "Baseline: run [$id]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id) (conclusion: $conclusion)." >> "$GITHUB_STEP_SUMMARY"
                 echo "found=true" >> "$GITHUB_OUTPUT"
                 echo "baseline=previous-wall/benchmark-wall-realistic.json" >> "$GITHUB_OUTPUT"
                 echo "source_run_id=$id" >> "$GITHUB_OUTPUT"
@@ -135,17 +145,60 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The commit the last measuring run timed. A re-published artifact keeps the
+      # source_sha of its measurement.
+      - name: Pick the baseline commit
+        id: base
+        if: steps.guard.outputs.run == 'true'
+        env:
+          BASELINE: ${{ steps.prev.outputs.baseline }}
+          SKIP_DRIFT: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_drift || false }}
+        run: |
+          sha=""
+          if [ "$SKIP_DRIFT" = "true" ]; then
+            echo "skip_drift input set: measuring main alone."
+          elif [ -z "$BASELINE" ]; then
+            echo "No previous baseline: seed run, no comparison."
+          else
+            sha=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("source_sha") or "")' "$BASELINE")
+            if [ -z "$sha" ]; then
+              echo "::warning::The previous artifact names no source_sha: no comparison."
+            elif [ "$sha" = "$GITHUB_SHA" ]; then
+              echo "The last measurement was of this commit: no comparison."
+              sha=""
+            fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ -n "$sha" ]; then
+            echo "Comparing with ${sha:0:12}, the commit the last measuring run timed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The baseline's own code runs below (uv sync builds it, the harness is its
+      # own), so this checkout keeps no token.
+      - name: Check out the baseline commit
+        if: steps.base.outputs.sha != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: baseline
+          persist-credentials: false
+
       - name: Install uv
         if: steps.guard.outputs.run == 'true'
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          cache-dependency-glob: |
+            uv.lock
+            baseline/uv.lock
       - name: Set up Python
         if: steps.guard.outputs.run == 'true'
         run: uv python install 3.11
       - name: Sync (dev + all extras)
         if: steps.guard.outputs.run == 'true'
+        run: uv sync --group dev --extra all
+      - name: Sync the baseline (dev + all extras)
+        if: steps.base.outputs.sha != ''
+        working-directory: baseline
         run: uv sync --group dev --extra all
       # Same as ci.yml benchmark: RAR data cases need RARLAB unrar on the runner.
       - name: Install unrar (RAR data cases)
@@ -154,26 +207,67 @@ jobs:
         with:
           packages: unrar
 
+      # main's first run is the published artifact and carries the 13x ceiling: the
+      # harness exits 1 on it. With a baseline commit, both commits then alternate
+      # until each has three runs. Only a missing JSON stops the loop; a baseline
+      # harness exits 1 on its own gates, which are not this run's.
       - name: Full realistic wall-time run
         if: steps.guard.outputs.run == 'true'
         env:
-          BASELINE: ${{ steps.prev.outputs.baseline }}
-          # Boolean workflow_dispatch input; false on schedule.
-          SKIP_DRIFT: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_drift || false }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
-          extra=()
-          if [ "$SKIP_DRIFT" = "true" ]; then
-            echo "skip_drift input set — not passing a drift baseline (re-seed)."
-          elif [ -n "$BASELINE" ]; then
-            extra+=(--wall-drift-baseline "$BASELINE")
-          else
-            echo "No previous baseline — seed run (drift check omitted)."
+          harness() {
+            local dir=$1 out=$2
+            (cd "$dir" && uv run --no-sync python -m benchmarks.harness \
+              --mode full --scale realistic --warmup \
+              --json-out "$out" --text-out "${out%.json}.md")
+          }
+          status=0
+          harness . "$PWD/benchmark-wall-realistic.json" || status=$?
+          if [ -n "$BASE_SHA" ]; then
+            if [ ! -f benchmark-wall-realistic.json ]; then
+              echo "::error::candidate round 1 wrote no JSON (see the log above)"
+              exit 1
+            fi
+            mkdir -p rounds
+            cp benchmark-wall-realistic.json rounds/candidate-1.json
+            for round in 1 2 3; do
+              for side in baseline candidate; do
+                [ "$side-$round" = candidate-1 ] && continue
+                dir=.
+                [ "$side" = baseline ] && dir=baseline
+                out="$PWD/rounds/$side-$round.json"
+                echo "::group::round $round, $side"
+                harness "$dir" "$out" > "${out%.json}.log" 2>&1 || true
+                tail -n 5 "${out%.json}.log"
+                echo "::endgroup::"
+                if [ ! -f "$out" ]; then
+                  echo "::error::$side round $round wrote no JSON: $(tail -n 1 "${out%.json}.log")"
+                  exit 1
+                fi
+              done
+            done
           fi
-          uv run --no-sync python -m benchmarks.harness \
-            --mode full --scale realistic \
-            --json-out benchmark-wall-realistic.json \
-            --text-out benchmark-wall-realistic.md \
-            "${extra[@]}"
+          exit "$status"
+
+      - name: Compare with the baseline commit
+        if: always() && steps.base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          if [ ! -f rounds/baseline-3.json ]; then
+            echo "The rounds did not finish: no comparison." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          python3 benchmarks/compare_refs.py \
+            --baseline rounds/baseline-*.json \
+            --candidate rounds/candidate-*.json \
+            --baseline-label "${BASE_SHA:0:12}" \
+            --candidate-label "${GITHUB_SHA:0:12}" \
+            --band 1.25 --min-ms 1 --fail-on-slower \
+            --md-out rounds/compare.md || status=$?
+          cat rounds/compare.md >> "$GITHUB_STEP_SUMMARY"
+          exit "${status:-0}"
 
       - name: Re-publish previous baseline (skip path)
         if: steps.guard.outputs.run == 'false' && steps.prev.outputs.found == 'true'

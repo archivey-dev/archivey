@@ -369,7 +369,7 @@ def test_format_text_report_table() -> None:
     assert "within ≤1.3×" in report
     assert "solid invariant" in report
     assert "64 × 256.0 KiB" in report or "64 × 256 KiB" in report
-    assert "wall-ratio *drift*" in report
+    assert "slower than on the commit the last measuring run timed" in report
 
     # A skipped case reports "—" in the numeric columns rather than 0, which would
     # read as "the accelerator decompressed nothing and never seeked".

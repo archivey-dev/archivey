@@ -20,7 +20,13 @@ A case counts as slower or faster only when ``x`` passes the band *and* the gap 
 at least ``--min-ms``. Effects inside the band are not resolved by a few rounds; the
 15-20-run procedure in ``benchmarks/harness.py`` measures those. Cases with no
 comparable data on one side (added, removed, or skipped in every run there) are
-listed apart, a skipped case with its note. The script never fails on a timing.
+listed apart, a skipped case with its note.
+
+By default the script never fails on a timing. With ``--fail-on-slower`` (the
+nightly ``benchmark-wall.yml``) it exits 1 when a case is slower: ``x`` and, where
+both sides have a peer, ``x vs peer`` are past the band, and the gap is at least
+``--min-ms``. A case whose input differs between the refs measures different work,
+so it never fails.
 """
 
 from __future__ import annotations
@@ -72,6 +78,41 @@ def _workload(b: dict[str, Any], c: dict[str, Any]) -> str:
             f"decoded {b.get('bytes_decompressed')} -> {c.get('bytes_decompressed')}"
         )
     return "; ".join(notes)
+
+
+def regressions(
+    baseline: Side, candidate: Side, *, band: float, min_ms: float
+) -> list[str]:
+    """The cases ``--fail-on-slower`` fails on, one line each.
+
+    Both ratios must be past the band where both sides have a peer: a candidate that
+    is slower only in raw time while the runner itself slowed down between the two
+    sides is not a regression, and neither is one that is slower only against the
+    peer while its own time held.
+    """
+    failures = []
+    for case in sorted(set(baseline.rows) & set(candidate.rows)):
+        b = _fastest(baseline.rows[case])
+        c = _fastest(candidate.rows[case])
+        if b.get("unpacked_bytes") != c.get("unpacked_bytes"):
+            continue
+        x = c["wall_s"] / b["wall_s"]
+        gap_ms = (c["wall_s"] - b["wall_s"]) * 1e3
+        if x <= band or gap_ms < min_ms:
+            continue
+        detail = f"{x:.2f}x"
+        if b.get("stdlib_wall_s") and c.get("stdlib_wall_s"):
+            norm = (c["wall_s"] / c["stdlib_wall_s"]) / (
+                b["wall_s"] / b["stdlib_wall_s"]
+            )
+            if norm <= band:
+                continue
+            detail += f", {norm:.2f}x vs peer"
+        failures.append(
+            f"{case}: {b['wall_s'] * 1e3:.1f} ms -> {c['wall_s'] * 1e3:.1f} ms "
+            f"({detail}; band {band:.2f}, +{gap_ms:.1f} ms)"
+        )
+    return failures
 
 
 def compare(
@@ -151,18 +192,32 @@ def main(argv: list[str] | None = None) -> int:
     # the release checklist's own same-host comparison.
     parser.add_argument("--min-ms", type=float, default=0.0)
     parser.add_argument("--md-out", type=Path)
+    parser.add_argument(
+        "--fail-on-slower",
+        action="store_true",
+        help="Exit 1 when a case is slower in both x and x vs peer (the nightly gate)",
+    )
     args = parser.parse_args(argv)
+    baseline, candidate = _load(args.baseline), _load(args.candidate)
     report = compare(
-        _load(args.baseline),
-        _load(args.candidate),
+        baseline,
+        candidate,
         labels=(args.baseline_label, args.candidate_label),
         band=args.band,
         min_ms=args.min_ms,
     )
+    failures = []
+    if args.fail_on_slower:
+        failures = regressions(baseline, candidate, band=args.band, min_ms=args.min_ms)
+        if failures:
+            report += "\n**Slower than the baseline (gate):**\n\n"
+            report += "".join(f"- {f}\n" for f in failures)
+        else:
+            report += "\nNo case is slower than the baseline (gate passed).\n"
     if args.md_out is not None:
         args.md_out.write_text(report)
     sys.stdout.write(report)
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
