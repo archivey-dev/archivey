@@ -309,10 +309,11 @@ def test_zisofs_entries_are_read(tmp_path: Path) -> None:
 
 def test_bit_flips_never_crash_and_never_refuse_what_pycdlib_opens() -> None:
     """Flipped bits in the descriptors and directories: the parser raises only
-    archivey's own errors, and it opens every image pycdlib opens, with the same trees
-    whenever the System Use skip count is untouched (pycdlib ignores that count; this
-    parser follows it, as Linux does). The one refusal pycdlib lacks is an identifier
-    longer than its record, which Linux refuses too."""
+    archivey's own errors, and it opens every image pycdlib opens. The one refusal
+    pycdlib lacks is an identifier longer than its record, which Linux refuses too.
+    This campaign checks what opens, not the trees: the writer-image tests above
+    compare those, and a mutant's tree may differ on purpose (the System Use skip
+    count, which pycdlib ignores, and the other departures in the design)."""
     import pycdlib
 
     base = _pycdlib_image(rock_ridge=True, joliet=True, deep=10)
@@ -655,6 +656,66 @@ def test_directories_weigh_what_their_records_hold() -> None:
 
 
 # --- dates -----------------------------------------------------------------------
+
+
+def _subdirectory_with_child_link(*, rrip: bool) -> bytes:
+    """A Rock Ridge image whose directory ``SUB`` holds ``F.TXT;1`` and carries a
+    ``CL`` entry in place of its ``PX``; without ``rrip``, the ``ER`` names no RRIP."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09")
+    iso.add_directory("/SUB", rr_name="sub")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/SUB/F.TXT;1", rr_name="f.txt")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    data = bytearray(out.getvalue())
+    root, _ = _root_records(data)
+    record = _record_offset(data, root, b"SUB")
+    px = data.index(b"PX", record, record + data[record])
+    length = data[px + 2]
+    cl = b"CL\x0c\x01" + struct.pack("<I", 1000) + struct.pack(">I", 1000)
+    pad = b"PD" + bytes([length - 12, 1]) + bytes(length - 16)
+    data[px : px + length] = cl + pad
+    if not rrip:
+        at = data.index(b"RRIP_1991A")
+        data[at : at + 4] = b"XXXX"
+    return bytes(data)
+
+
+@pytest.mark.parametrize("rrip", [False, True])
+def test_a_child_link_moves_a_directory_only_under_rock_ridge(rrip: bool) -> None:
+    """``CL`` marks a placeholder only once the ``ER`` says Rock Ridge. Without it,
+    the bytes are no extension, and the directory's children are listed."""
+    volume = _volume(_subdirectory_with_child_link(rrip=rrip))
+    assert volume.rock_ridge is rrip
+    assert volume.primary.root.children is not None
+    sub = next(c for c in volume.primary.root.children if c.ident == b"SUB")
+    assert sub.rr is not None and sub.rr.child_link == 1000
+    if rrip:
+        assert sub.children is None
+    else:
+        assert sub.children is not None
+        assert [c.ident for c in sub.children] == [b"F.TXT;1"]
+
+
+def test_a_path_table_entry_cut_short_gives_no_hints() -> None:
+    """The path table hints only when every entry fits in it: a table whose last
+    entry is cut gives no hints, rather than the blocks of the entries before."""
+    data = _directories_image(8)
+    whole: list[tuple[int, int]] = []
+    volume = _volume(data)
+    iso9660.directory_hints(
+        volume, volume.primary, lambda at, n: whole.append((at, n)), 2**20
+    )
+    assert whole
+    cut: list[tuple[int, int]] = []
+    volume.primary.path_table_size -= 3
+    iso9660.directory_hints(
+        volume, volume.primary, lambda at, n: cut.append((at, n)), 2**20
+    )
+    assert cut == []
 
 
 def test_short_and_long_dates() -> None:
