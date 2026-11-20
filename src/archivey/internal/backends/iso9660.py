@@ -501,7 +501,8 @@ class IsoVolume:
         the rest of the tree is walked: without Rock Ridge, a ``CL`` is a stray byte
         pattern and the directory is entered like any other. That ruling stands: an
         ``ER`` met later, inside a directory so entered, does not make the tree Rock
-        Ridge, so the flag and the walk agree.
+        Ridge, every ``CL`` directory met after it is entered at once, and the flag
+        and the walk agree.
         """
         root = tree.root
         seen = {root.extent}
@@ -515,7 +516,11 @@ class IsoVolume:
                 for child in children:
                     if not child.is_dir:
                         continue
-                    if child.rr is not None and child.rr.child_link is not None:
+                    if (
+                        child.rr is not None
+                        and child.rr.child_link is not None
+                        and not self._rr_ruled_out
+                    ):
                         placeholders.append(child)
                         continue
                     self._enter(child, seen, queue)
@@ -995,12 +1000,13 @@ def directory_hints(
         name_length = table[at]
         if name_length == 0:
             break
-        if at + 8 + name_length > len(table):
+        end = at + 8 + name_length + name_length % 2  # with its padding byte
+        if end > len(table):
             return  # an entry cut short: the table does not parse
         block = int.from_bytes(table[at + 2 : at + 6], "little")
         if block > 0:
             blocks.append(block)
-        at += 8 + name_length + name_length % 2
+        at = end
     blocks.sort()
     clusters: list[tuple[int, int, int]] = []  # (first block, last block, directories)
     for block in blocks:
