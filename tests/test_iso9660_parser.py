@@ -658,9 +658,11 @@ def test_directories_weigh_what_their_records_hold() -> None:
 # --- dates -----------------------------------------------------------------------
 
 
-def _subdirectory_with_child_link(*, rrip: bool) -> bytes:
+def _subdirectory_with_child_link(*, rrip: bool, late_er: bool = False) -> bytes:
     """A Rock Ridge image whose directory ``SUB`` holds ``F.TXT;1`` and carries a
-    ``CL`` entry in place of its ``PX``; without ``rrip``, the ``ER`` names no RRIP."""
+    ``CL`` entry in place of its ``PX``; without ``rrip``, the root's ``ER`` names no
+    RRIP. With ``late_er``, an RRIP ``ER`` takes the place of the ``PX`` in ``SUB``'s
+    own ``.`` record, met only once ``SUB`` is entered."""
     import pycdlib
 
     iso = pycdlib.PyCdlib()
@@ -681,14 +683,29 @@ def _subdirectory_with_child_link(*, rrip: bool) -> bytes:
     if not rrip:
         at = data.index(b"RRIP_1991A")
         data[at : at + 4] = b"XXXX"
+    if late_er:
+        (extent,) = struct.unpack_from("<I", data, record + 2)
+        dot = extent * 2048
+        px = data.index(b"PX", dot, dot + data[dot])
+        length = data[px + 2]
+        er = b"ER" + bytes([18, 1, 10, 0, 0, 1]) + b"RRIP_1991A"
+        data[px : px + length] = (
+            er + b"PD" + bytes([length - 18, 1]) + bytes(length - 22)
+        )
     return bytes(data)
 
 
-@pytest.mark.parametrize("rrip", [False, True])
-def test_a_child_link_moves_a_directory_only_under_rock_ridge(rrip: bool) -> None:
+@pytest.mark.parametrize(
+    ("rrip", "late_er"), [(False, False), (True, False), (False, True)]
+)
+def test_a_child_link_moves_a_directory_only_under_rock_ridge(
+    rrip: bool, late_er: bool
+) -> None:
     """``CL`` marks a placeholder only once the ``ER`` says Rock Ridge. Without it,
-    the bytes are no extension, and the directory's children are listed."""
-    volume = _volume(_subdirectory_with_child_link(rrip=rrip))
+    the bytes are no extension, and the directory's children are listed. An ``ER``
+    met only inside that directory does not turn the tree into Rock Ridge after it
+    was walked as plain ISO 9660: the flag and the walk agree."""
+    volume = _volume(_subdirectory_with_child_link(rrip=rrip, late_er=late_er))
     assert volume.rock_ridge is rrip
     assert volume.primary.root.children is not None
     sub = next(c for c in volume.primary.root.children if c.ident == b"SUB")

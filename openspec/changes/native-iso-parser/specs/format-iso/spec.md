@@ -28,7 +28,7 @@ A `CL` entry SHALL keep the walk out of its directory only in a Rock Ridge tree.
 | Path tables damaged, disagreeing, or past the end of a full-length image | Opens and lists as an intact image does |
 | Two primary or two Joliet descriptors | The first is read |
 | Records with Rock Ridge-shaped System Use bytes but no RRIP `ER` entry | Not Rock Ridge |
-| A directory record carrying a `CL` entry in a tree with no RRIP `ER` entry | Its directory is read and its children listed |
+| A directory record carrying a `CL` entry in a tree with no RRIP `ER` entry | Its directory is read and its children listed; an RRIP `ER` met inside it does not make the tree Rock Ridge |
 | One tree's directories that together declare more bytes than the image holds | `CorruptionError` before the directory that crosses it is read |
 | Bit flips in the descriptors and directories | Opens, or raises an `ArchiveyError`; never another exception; opens every image pycdlib opens, except one whose directory record holds an identifier longer than the record |
 
