@@ -1121,6 +1121,7 @@ class IndexedReaderAdapter(_PluginAdapter):
             self._marked_view, shared.size, source.path, shared.read_at
         )
         plugin_source._origin = self._origin
+        plugin_source._will_read = self._will_read
         plugin = self._plugin
         assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():
