@@ -538,6 +538,10 @@ class OptionalLibrary(StrEnum):
     """Zstandard from Python 3.14, part of the standard library when the build has it."""
     RAPIDGZIP = "rapidgzip"
     """The gzip, zlib, Deflate and bzip2 accelerator."""
+    PYCDLIB = "pycdlib"
+    """Deprecated, and removed in 0.7.0: ISO 9660 images need no optional package
+    since 0.6.0. Naming it in ``exclude_libraries=`` or ``only_libraries=`` has no
+    effect and emits a ``DeprecationWarning``."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
     COMPRESS_UTILS = "compress_utils"
@@ -565,6 +569,7 @@ OptionalLibraryStr = Literal[
     "backports.zstd",
     "compression.zstd",
     "rapidgzip",
+    "pycdlib",
     "cryptography",
     "compress_utils",
     "compress-utils",

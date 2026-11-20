@@ -79,14 +79,17 @@ def _both_forms(test: Callable[..., None]) -> Callable[..., None]:
     return pytest.mark.usefixtures("_policy_form")(test)
 
 
+# The members that name a package archivey uses. ``PYCDLIB`` is deprecated (0.6.0)
+# and warns when named, so a policy built from every member leaves it out.
+_IN_USE = frozenset(L) - {L.PYCDLIB}
+
+
 def _excluding(
     *libraries: OptionalLibrary | OptionalLibraryStr, **config: Any
 ) -> ArchiveyConfig:
     """A config whose policy turns ``libraries`` off, with ``config``'s other fields."""
     if _FORM == "only":
-        policy = FormatPolicy(
-            only_libraries=frozenset(L) - {L(lib) for lib in libraries}
-        )
+        policy = FormatPolicy(only_libraries=_IN_USE - {L(lib) for lib in libraries})
     else:
         policy = FormatPolicy(exclude_libraries=libraries)
     return dataclasses.replace(ArchiveyConfig(formats=policy), **config)
@@ -425,9 +428,22 @@ def test_iso_needs_no_package_to_exclude(tmp_path: Path) -> None:
 
     path = tmp_path / "a.iso"
     path.write_bytes(minimal_iso())
-    with open_archive(path, config=_excluding(*L)) as reader:
+    with open_archive(path, config=_excluding(*_IN_USE)) as reader:
         assert [m.name for m in reader.members()] == ["HELLO.TXT"]
         assert reader.read("HELLO.TXT") == b"hello\n"
+
+
+@pytest.mark.parametrize("param", ["exclude_libraries", "only_libraries"])
+@pytest.mark.parametrize("spelling", [L.PYCDLIB, "pycdlib"])
+def test_naming_pycdlib_warns_at_the_callers_line_and_changes_nothing(
+    param: str, spelling: object
+) -> None:
+    """``OptionalLibrary.PYCDLIB`` stays one minor release after ISO stopped needing
+    it (DR-12a): naming it warns, attributed to the caller, and turns nothing off."""
+    with pytest.warns(DeprecationWarning, match="ISO images need no") as caught:
+        policy = FormatPolicy(**{param: {spelling, L.BROTLI}})
+    assert [w.filename for w in caught] == [__file__]
+    assert policy.allows_library(L.BROTLI) is (param == "only_libraries")
 
 
 def test_supported_formats_do_not_filter_by_allows() -> None:
