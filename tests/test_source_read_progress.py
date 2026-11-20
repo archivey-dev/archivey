@@ -12,7 +12,13 @@ from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, SourceProgress, open_archive, open_stream
+from archivey import (
+    ArchiveyConfig,
+    SourceProgress,
+    SpoolLimits,
+    open_archive,
+    open_stream,
+)
 from archivey.internal.read_progress import LOCAL_REPORT_STEP
 
 
@@ -376,3 +382,44 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
         open_archive(path, config=config) as reader,
     ):
         reader.extract_all(tmp_path / "out", on_error="continue")
+
+
+def test_a_rolling_rar_reports_what_the_feeder_thread_read(tmp_path: Path) -> None:
+    # A RAR from a pipe is fed to unrar as rolling volumes by archivey's own thread.
+    # Its reports reach the caller on the caller's reads of unrar's output.
+    import shutil
+    import subprocess
+
+    if shutil.which("rar") is None or shutil.which("unrar") is None:
+        pytest.skip("needs rar and unrar")
+    src = tmp_path / "src"
+    src.mkdir()
+    # Hex digits compress to about half: some 4.5 MB of archive.
+    (src / "big.bin").write_bytes(os.urandom(4 * LOCAL_REPORT_STEP).hex().encode())
+    archive = tmp_path / "a.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", str(archive), "big.bin"],
+        cwd=src,
+        check=True,
+        timeout=60,
+    )
+    data = archive.read_bytes()
+    seen = _Recorder()
+    # A small spool limit: the member goes to unrar as rolling volumes.
+    config = ArchiveyConfig(
+        rar_decompressor="unrar",
+        spool_limits=SpoolLimits(max_bytes=40_000),
+        on_source_read=seen,
+    )
+    with (
+        open_archive(_Pipe(data), config=config, streaming=True) as reader,
+        reader.stream_members() as members,
+    ):
+        for _, stream in members:
+            if stream is not None:
+                while stream.read(1 << 16):
+                    pass
+    assert seen.threads == {threading.get_ident()}
+    # Without the reports the feeder's reads came due for, there were none at all.
+    assert len(seen.calls) >= 2
+    assert seen.calls[-1].bytes_read == len(data)

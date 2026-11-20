@@ -331,6 +331,8 @@ class ArchiveSource(ReadOnlyIOStream):
     # file or stream; ``None`` when unset, and for a range source, which reports its
     # requests itself (:meth:`report_reads`).
     _progress: SourceReadReporter | None = None
+    # The reporter for a local source or for the range sources under it.
+    _reporter: SourceReadReporter | None = None
     _owned_beneath: BinaryIO | None = None
     _fsspec_decompressed: FsspecDecompressed | None = None
     # Where the reader's first byte sits in the file: the offset of a compressed stream
@@ -608,6 +610,7 @@ class ArchiveSource(ReadOnlyIOStream):
         from it, about once per MiB (:mod:`archivey.internal.read_progress`).
         """
         reporter = SourceReadReporter(callback, self._name, self._length)
+        self._reporter = reporter
         if self._remote:
             # In a volume set a range source reads at its own offsets; its reports
             # add where it starts in the set, so ``position`` means the same as for a
@@ -623,6 +626,12 @@ class ArchiveSource(ReadOnlyIOStream):
                 ranged.progress_base = bases.get(id(ranged), 0)
         else:
             self._progress = reporter
+
+    def flush_progress(self) -> None:
+        """Deliver an ``on_source_read`` report that came due while archivey's own
+        thread read this source; called on a caller's thread. Nothing when unset."""
+        if self._reporter is not None:
+            self._reporter.flush()
 
     def will_read(self, start: int, end: int) -> None:
         """Say that ``[start, end)`` of this source is read next.

@@ -15,7 +15,8 @@ Nothing here runs when the callback is unset: the hooks check for a reporter fir
 
 The callback runs on the thread that read. A read on a thread archivey started (named
 ``archivey-…``, such as the RAR volume feeder) is counted but reported only with the
-next read on a caller's thread, so caller code never runs on archivey's threads.
+next read on a caller's thread (or a :meth:`~SourceReadReporter.flush` there), so
+caller code never runs on archivey's threads. Only the latest such report is kept.
 
 What the callback raises is marked as the caller's own (``mark_callers_source``): the
 error translators and the per-member error handling of extraction and verification
@@ -54,6 +55,9 @@ class SourceReadReporter:
         self._requests = 0
         # What the callback raised, once it has: every later report raises it again.
         self._stopped: BaseException | None = None
+        # A report due while archivey's own thread read: the next report on a
+        # caller's thread, or :meth:`flush`, delivers it.
+        self._deferred: SourceProgress | None = None
 
     def read(self, position: int, n: int, *, at_end: bool = False) -> None:
         """``n`` bytes were taken from a local source; the read ended at ``position``.
@@ -72,12 +76,16 @@ class SourceReadReporter:
                 total - self._reported_at < LOCAL_REPORT_STEP
                 and not at_end
                 and (self._size is None or position < self._size)
+                and self._deferred is None
             ):
                 return
-            if _on_archivey_thread():
-                return
+            snapshot = SourceProgress(self._name, self._size, total, position)
             self._reported_at = total
-        self._call(SourceProgress(self._name, self._size, total, position))
+            if _on_archivey_thread():
+                self._deferred = snapshot
+                return
+            self._deferred = None
+        self._call(snapshot)
 
     def request_started(self, start: int, end: int) -> None:
         """A range request for ``[start, end)`` of the whole source is about to be
@@ -86,8 +94,7 @@ class SourceReadReporter:
         with self._lock:
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
-        if not _on_archivey_thread():
-            self._call(snapshot)
+        self._report_or_defer(snapshot)
 
     def request_ended(self, start: int, end: int, received: int) -> None:
         """The request for ``[start, end)`` returned ``received`` bytes."""
@@ -96,8 +103,29 @@ class SourceReadReporter:
             snapshot = self._remote_progress(
                 start, end, received, done=True, position=start + received
             )
-        if not _on_archivey_thread():
+        self._report_or_defer(snapshot)
+
+    def flush(self) -> None:
+        """Deliver a report that came due on archivey's own thread, on a caller's
+        thread. Called by a stream whose source only archivey's thread reads (the
+        RAR volume feeder), each time the caller reads that stream."""
+        if _on_archivey_thread():
+            return
+        self._raise_if_stopped()
+        with self._lock:
+            snapshot, self._deferred = self._deferred, None
+        if snapshot is not None:
             self._call(snapshot)
+
+    def _report_or_defer(self, snapshot: SourceProgress) -> None:
+        if _on_archivey_thread():
+            # Only the latest is kept: a caller sees the totals, not every request.
+            with self._lock:
+                self._deferred = snapshot
+            return
+        with self._lock:
+            self._deferred = None
+        self._call(snapshot)
 
     def _call(self, progress: SourceProgress) -> None:
         try:
