@@ -5,7 +5,7 @@
 The system SHALL expose exactly **four** user-facing extras, each answering a question a
 user asks about their own environment rather than naming an internal dependency group.
 7z and RAR reading are native for the common case, so extras cover less-common member
-codecs, encryption, ISO, seeking accelerators, and the CLI.
+codecs, encryption, seeking accelerators, and the CLI.
 
 | Extra | Pulls in | Enables |
 | --- | --- | --- |
@@ -103,7 +103,7 @@ system SHALL NOT list `uncompresspy` in any user-facing extra or the `dev` group
 | Case | Expected |
 | --- | --- |
 | `pip install archivey` | No third-party runtime packages; core formats work |
-| `pip install archivey[recommended]` | Every format/codec/crypto/ISO/CLI capability that installs everywhere; no rapidgzip |
+| `pip install archivey[recommended]` | Every format/codec/crypto/CLI capability that installs everywhere; no rapidgzip |
 | `pip install archivey[seekable]` after `[recommended]` | Adds gz/bz2 random access and speed |
 | `pip install archivey[recommended]` on free-threaded 3.13 | **Fails** — `cryptography` -> `cffi` does not support free-threaded 3.13; documented, not worked around |
 | `pip install archivey[free-threaded]` on free-threaded 3.13 | Resolves without `cryptography`; importing every included package leaves the GIL disabled |

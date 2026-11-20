@@ -3,7 +3,7 @@
 ### Requirement: Backends self-register at import time
 
 The system SHALL register all known core and optional backends when `archivey`
-imports. Optional library-backed backends (ISO, ZST, LZ4) and optional 7z writing
+imports. Optional library-backed backends (ZST, LZ4) and optional 7z writing
 SHALL be imported behind `try/except ImportError` guards and registered
 regardless of dependency availability. Missing dependencies make a format known
 but unavailable, not unknown, and import MUST NOT fail.
