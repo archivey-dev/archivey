@@ -60,13 +60,13 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _bound_rapidgzip_source,
     _open_rapidgzip,
     _rapidgzip_present,
-    _rapidgzip_requirement,
     _rapidgzip_unused_reason,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
     _StdlibSeekContract,
     _translate_rapidgzip_shared,
     _warn_child_fallback,
+    rapidgzip_requirement,
 )
 from archivey.internal.streams.codecs.script_payload import check_bzip2
 from archivey.internal.streams.codecs.stdlib_takeover import (
@@ -892,13 +892,7 @@ class Bzip2Codec(StreamCodec):
     def missing_speedups(
         self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
-        # rapidgzip decodes large data in parallel, in a child process, so a config
-        # that never starts one has nothing to gain from it.
-        if not speedups.accelerator_used(config.use_indexed_bzip2, config):
-            return ()
-        return speedups.missing_speedup(
-            speedups.rapidgzip_speedup(), (deps.rapidgzip,), excluded
-        )
+        return speedups.missing_rapidgzip(excluded, config.use_indexed_bzip2, config)
 
     @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
@@ -977,7 +971,7 @@ class Bzip2Codec(StreamCodec):
         if _bzip2_uses_accelerator(config):
             return True
         if config.use_indexed_bzip2 is AcceleratorMode.ON:
-            requirement = _rapidgzip_requirement(config.excluded_libraries)
+            requirement = rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
                 requirement.message("bzip2 random access"), missing=(requirement,)
             )

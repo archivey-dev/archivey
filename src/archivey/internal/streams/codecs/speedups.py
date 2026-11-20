@@ -18,7 +18,7 @@ import sys
 from archivey.config import AcceleratorMode, ArchiveyConfig, ProcessIsolation
 from archivey.internal.excluded_libraries import as_reported
 from archivey.internal.streams.codecs import deps
-from archivey.internal.streams.codecs.rapidgzip_select import _rapidgzip_requirement
+from archivey.internal.streams.codecs.rapidgzip_select import rapidgzip_requirement
 from archivey.types import MissingComponent, OptionalLibrary
 
 RECOMMENDED_HINT = "pip install archivey[recommended]"
@@ -46,7 +46,7 @@ def _crc32c_hint() -> str:
 def rapidgzip_speedup() -> MissingComponent:
     """rapidgzip: parallel decoding of large gzip, zlib, DEFLATE and bzip2 data. The
     component its ``AcceleratorMode.ON`` error names, so the two cannot drift."""
-    return _rapidgzip_requirement()
+    return rapidgzip_requirement()
 
 
 def compress_utils_speedup(used_for: str) -> MissingComponent:
@@ -70,6 +70,29 @@ def accelerator_used(mode: AcceleratorMode, config: ArchiveyConfig) -> bool:
     return (
         mode is not AcceleratorMode.OFF
         and config.process_isolation is not ProcessIsolation.NONE
+    )
+
+
+def missing_rapidgzip(
+    excluded: frozenset[OptionalLibrary],
+    mode: AcceleratorMode,
+    config: ArchiveyConfig,
+) -> tuple[MissingComponent, ...]:
+    """rapidgzip, for the deflate family (``mode`` = ``use_rapidgzip``) and bzip2
+    (``use_indexed_bzip2``). It decodes large data in parallel, in a child process,
+    so a config that never starts one has nothing to gain from it."""
+    if not accelerator_used(mode, config):
+        return ()
+    return missing_speedup(rapidgzip_speedup(), (deps.rapidgzip,), excluded)
+
+
+def missing_lzo_native(
+    excluded: frozenset[OptionalLibrary],
+) -> tuple[MissingComponent, ...]:
+    """compress-utils, for ``.lzo`` files and raw LZO1X blocks. Without it, LZO1X
+    decodes in Python, 20 to 30 times slower."""
+    return missing_speedup(
+        compress_utils_speedup("lzo"), (deps.compress_utils,), excluded
     )
 
 

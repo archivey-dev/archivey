@@ -13,7 +13,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import StreamConfig, check_decoder_memory
 from archivey.internal.overrides import override
-from archivey.internal.streams.codecs import deps, speedups
+from archivey.internal.streams.codecs import speedups
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -94,10 +94,7 @@ class LzopCodec(StreamCodec):
         self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
         del config
-        # Without compress-utils, LZO1X decodes in Python, 20 to 30 times slower.
-        return speedups.missing_speedup(
-            speedups.compress_utils_speedup("lzo"), (deps.compress_utils,), excluded
-        )
+        return speedups.missing_lzo_native(excluded)
 
     # The default stream_start reads a further file after the first's end block, as
     # ``lzop -d`` does.
@@ -165,10 +162,7 @@ class Lzo1xCodec(StreamCodec):
         self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
         del config
-        # Without compress-utils, LZO1X decodes in Python, 20 to 30 times slower.
-        return speedups.missing_speedup(
-            speedups.compress_utils_speedup("lzo"), (deps.compress_utils,), excluded
-        )
+        return speedups.missing_lzo_native(excluded)
 
     @override
     def open(

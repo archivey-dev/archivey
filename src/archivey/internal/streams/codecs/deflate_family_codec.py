@@ -18,7 +18,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
     compose_translators,
 )
-from archivey.internal.streams.codecs import deps, speedups
+from archivey.internal.streams.codecs import speedups
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
@@ -30,7 +30,6 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _open_rapidgzip,
     _rapidgzip_enabled,
     _rapidgzip_present,
-    _rapidgzip_requirement,
     _rapidgzip_rewind_warning,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
@@ -38,6 +37,7 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _translate_child_or_stdlib,
     _warn_if_auto_without_child,
     _wrap_accelerated_length,
+    rapidgzip_requirement,
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
@@ -71,13 +71,7 @@ class _DeflateFamilyCodec(StreamCodec):
     def missing_speedups(
         self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
     ) -> tuple[MissingComponent, ...]:
-        # rapidgzip decodes large data in parallel, in a child process, so a config
-        # that never starts one has nothing to gain from it.
-        if not speedups.accelerator_used(config.use_rapidgzip, config):
-            return ()
-        return speedups.missing_speedup(
-            speedups.rapidgzip_speedup(), (deps.rapidgzip,), excluded
-        )
+        return speedups.missing_rapidgzip(excluded, config.use_rapidgzip, config)
 
     @override
     def open(
@@ -118,7 +112,7 @@ class _DeflateFamilyCodec(StreamCodec):
         if not _rapidgzip_enabled(config, available=present):
             return False
         if not present:
-            requirement = _rapidgzip_requirement(config.excluded_libraries)
+            requirement = rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
                 requirement.message(f"{label} random access"), missing=(requirement,)
             )
