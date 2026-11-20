@@ -261,7 +261,8 @@ sorted by identifier bytes (`_sorted_children`, the order `pycdlib` gave and the
 listing keeps), except that plain ISO 9660 files sort by (name, version). In the Rock
 Ridge namespace a relocated directory is skipped where it is parked and listed where
 its `CL` placeholder stands (`_children`, `_relocated`). The `CL` is followed to the
-directory at its extent, as Linux and 7-Zip follow it. pycdlib instead took the first
+directory at its extent for its contents and attributes, and the member keeps the
+placeholder's own `NM` name, as Linux's `readdir` does. pycdlib instead took the first
 entry of that directory's parent with the placeholder's name, which listed one of two
 same-named relocated directories in both places. A placeholder that points at no
 directory lists as the file record it is.

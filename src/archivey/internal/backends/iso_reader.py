@@ -1141,7 +1141,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         visited = 0
         while queue and visited < _JOLIET_SEARCH_RECORDS:
             directory, depth = queue.pop(0)
-            for child in self._children(directory, True):
+            for child, _ in self._children(directory, True):
                 visited += 1
                 if visited > _JOLIET_SEARCH_RECORDS:
                     break
@@ -1188,31 +1188,36 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
             return name, name.encode("utf-8", errors="surrogatepass")
         return self._decode_bytes_name(entry.ident), entry.ident
 
-    def _children(self, directory: IsoEntry, use_rr: bool) -> Iterator[IsoEntry]:
+    def _children(
+        self, directory: IsoEntry, use_rr: bool
+    ) -> Iterator[tuple[IsoEntry, IsoEntry]]:
         """A directory's entries in identifier order, Rock Ridge relocation followed
-        when ``use_rr``.
+        when ``use_rr``, each with the record its name comes from.
 
         ISO 9660 caps depth at eight, so a Rock Ridge writer parks each deeper
         directory under a root-level ``rr_moved`` directory (its ``..`` carries a
         ``PL`` entry) and leaves a ``CL`` placeholder, a file record, where it belongs.
         With ``use_rr`` a parked directory is skipped where it is stored, and a
-        placeholder gives way to the directory it points at (:meth:`_relocated`). A
-        placeholder that points at nothing is listed as the file record it is.
+        placeholder gives way to the directory it points at (:meth:`_relocated`) for
+        its contents and attributes, and keeps its own name, as Linux's ``readdir``
+        names it from the placeholder's ``NM``. A placeholder that points at nothing
+        is listed as the file record it is.
         """
         for child in _sorted_children(directory):
+            named = child
             if use_rr and child.rr is not None:
                 if child.is_dir and child.parent_linked:
                     continue
                 if child.rr.child_link is not None:
                     child = self._relocated(child, child.rr.child_link)
-            yield child
+            yield child, named
 
     def _relocated(self, placeholder: IsoEntry, extent: int) -> IsoEntry:
         """The directory a Rock Ridge ``CL`` placeholder points at, or the placeholder.
 
         The target is the primary tree's first directory at ``extent``, breadth
-        first, leaving out placeholders and symlinks, as Linux and 7-Zip follow a
-        ``CL``. A ``CL`` that names no directory leaves the placeholder.
+        first, leaving out placeholders and symlinks, as Linux follows a ``CL``. A
+        ``CL`` that names no directory leaves the placeholder.
 
         pycdlib, which the reader this one replaced listed with, went on to the
         target's parent and took its first entry with the placeholder's Rock Ridge
@@ -1278,7 +1283,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
             dirpath, raw_dirpath, directory = stack.pop()
             dirs: list[tuple[str, bytes, IsoEntry]] = []
             files: list[tuple[str, bytes, IsoEntry]] = []
-            for child in self._children(directory, use_rr):
+            for child, named in self._children(directory, use_rr):
                 if (
                     use_rr
                     and dirpath == "/"
@@ -1286,7 +1291,7 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
                     and self._is_rr_moved(child)
                 ):
                     continue
-                name, raw_name = self._entry_name(child)
+                name, raw_name = self._entry_name(named)
                 path = self._join(dirpath, name)
                 raw_path = raw_name if dirpath == "/" else raw_dirpath + b"/" + raw_name
                 (dirs if child.is_dir else files).append((path, raw_path, child))
@@ -1921,10 +1926,10 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         children = self._rock_ridge_children.get(id(directory))
         if children is None:
             children = {}
-            for child in self._children(directory, True):
+            for child, named in self._children(directory, True):
                 # The name the member lists under; the first of several entries
                 # sharing it, as a scan finds.
-                children.setdefault(_rr_key(child), child)
+                children.setdefault(_rr_key(named), child)
             self._rock_ridge_children[id(directory)] = children
         return children.get(component)
 

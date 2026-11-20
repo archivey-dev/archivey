@@ -1255,6 +1255,34 @@ def test_two_relocated_directories_of_one_name_keep_their_own_files() -> None:
         assert ar.read("b" + deep) == b"B"
 
 
+def test_a_relocated_directory_lists_under_its_placeholders_name() -> None:
+    """The ``CL`` placeholder names the member, as Linux's ``readdir`` names it; the
+    parked directory gives only its contents. A parked record whose ``NM`` differs
+    does not rename the directory."""
+
+    def populate(iso: Any) -> None:
+        path = ""
+        for name in [f"L{i}" for i in range(1, 9)]:
+            path += f"/{name}"
+            iso.add_directory(path, rr_name=name.lower())
+        iso.add_fp(io.BytesIO(b"deep"), 4, path + "/F.;1", rr_name="f.txt")
+
+    data = bytearray(_build_rr_iso(populate))
+    # The parked directory's record is the one in ``rr_moved``'s directory extent.
+    vd = 16 * 2048
+    root = struct.unpack_from("<I", data, vd + 156 + 2)[0] * 2048
+    at = root
+    while data[at + 33 : at + 33 + data[at + 32]] != b"RR_MOVED":
+        at += data[at]
+    moved = struct.unpack_from("<I", data, at + 2)[0] * 2048
+    (parked,) = {data.index(b"NM\x07\x01\x00l8", moved, moved + 2048)}
+    data[parked + 5 : parked + 7] = b"lQ"
+    with open_archive(io.BytesIO(bytes(data))) as ar:
+        deep = "l1/l2/l3/l4/l5/l6/l7/l8/f.txt"
+        assert deep in [m.name for m in ar.members()]
+        assert ar.read(deep) == b"deep"
+
+
 def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
     """An RR image whose one record has no System Use entries keeps that member,
     names it from the ISO 9660 identifier, and says what was lost."""
