@@ -1001,15 +1001,49 @@ def test_http_a_body_longer_than_its_declared_span_is_refused(http_base: str) ->
 
 
 def test_http_a_valid_short_range_is_continued(http_base: str) -> None:
-    # The server answers each range with at most 16 KiB, as RFC 9110 allows: the
-    # read asks for the rest from where each answer stopped.
+    # The server answers each range with at most 4 KiB, as RFC 9110 allows: a read
+    # longer than that asks for the rest from where each answer stopped.
     data = bytes(range(256)) * 1024
     _Handler.files["/big.bin"] = data
-    _Handler.max_206[0] = 16384
+    _Handler.max_206[0] = 4096
     src = _range_source(f"{http_base}/big.bin")
     try:
         src.seek(100_000)
-        assert src.read(10_000) == data[100_000:110_000]
+        assert src.read(20_000) == data[100_000:120_000]
+    finally:
+        src.close()
+
+
+def test_http_short_ranges_do_not_spend_the_budget_on_read_ahead(
+    http_base: str,
+) -> None:
+    # A 10-byte read wants a 64 KiB window; 4 KiB answers cover the read in one
+    # request, and the window keeps what came rather than asking 16 times.
+    data = bytes(range(256)) * 1024
+    _Handler.files["/big.bin"] = data
+    _Handler.max_206[0] = 4096
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        before = src.fetch_count
+        assert src.read(10) == data[100_000:100_010]
+        assert src.fetch_count - before == 1
+    finally:
+        src.close()
+
+
+def test_http_a_sequential_read_through_short_ranges(http_base: str) -> None:
+    # The planner's windows double to several MiB; a server that caps its answers
+    # at 256 KiB still serves the whole object, one answer per window.
+    data = os.urandom(1 << 20) * 16  # 16 MiB
+    _Handler.files["/big.bin"] = data
+    _Handler.max_206[0] = 256 * 1024
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        out = bytearray()
+        while chunk := src.read(64 * 1024):
+            out += chunk
+        assert out == data
     finally:
         src.close()
 
@@ -1053,5 +1087,46 @@ def test_http_ranges_ask_for_the_bytes_as_stored(http_base: str) -> None:
     try:
         src.seek(150_000)
         assert src.read(10) == data[150_000:150_010]
+    finally:
+        src.close()
+
+
+def test_http_a_session_wrapper_with_only_public_methods(http_base: str) -> None:
+    # fsspec lets a caller pass its own client factory; a wrapper that exposes only
+    # the session's public request methods still reads.
+    import aiohttp
+    from fsspec.implementations.http import HTTPFileSystem
+
+    from archivey.internal.remote import RangeSource, WindowPool
+
+    class Wrapper:
+        def __init__(self, session: aiohttp.ClientSession) -> None:
+            self._session = session
+
+        def get(self, *args: Any, **kw: Any) -> Any:
+            return self._session.get(*args, **kw)
+
+        def head(self, *args: Any, **kw: Any) -> Any:
+            return self._session.head(*args, **kw)
+
+        async def close(self) -> None:
+            await self._session.close()
+
+    async def get_client(**kw: Any) -> Wrapper:
+        return Wrapper(aiohttp.ClientSession(**kw))
+
+    data = bytes(range(256)) * 1024
+    _Handler.files["/big.bin"] = data
+    fs = HTTPFileSystem(get_client=get_client, skip_instance_cache=True)
+    from fsspec.core import OpenFile
+
+    src = RangeSource.from_open_file(
+        OpenFile(fs, f"{http_base}/big.bin"),
+        pool=WindowPool(),
+        max_read_through=1 << 20,
+    )
+    try:
+        src.seek(100_000)
+        assert src.read(10) == data[100_000:100_010]
     finally:
         src.close()
