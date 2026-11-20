@@ -27,7 +27,8 @@ apply to every other System Use area. A `CE` chain SHALL be followed at most 32 
 | Path tables damaged, disagreeing, or past the end of a full-length image | Opens and lists as an intact image does |
 | Two primary or two Joliet descriptors | The first is read |
 | Records with Rock Ridge-shaped System Use bytes but no RRIP `ER` entry | Not Rock Ridge |
-| Bit flips in the descriptors and directories | Opens, or raises an `ArchiveyError`; never another exception; opens every image pycdlib opens |
+| One tree's directories that together declare more bytes than the image holds | `CorruptionError` before the directory that crosses it is read |
+| Bit flips in the descriptors and directories | Opens, or raises an `ArchiveyError`; never another exception; opens every image pycdlib opens, except one whose directory record holds an identifier longer than the record |
 
 ### Requirement: Contain a malformed System Use entry to its own record
 
@@ -193,14 +194,14 @@ damage to structure that holds no member data is a diagnostic, refused under `ST
 
 The ISO backend parses the primary tree and a Joliet tree of an image inside
 `open_archive`, and the UDF tree when present, and keeps every tree, so it SHALL check
-`ListingLimits` while they parse. The bytes it weighs (each ISO 9660 or Joliet
-directory's declared length, as far as the image holds it, before the directory is read,
-Rock Ridge continuation areas each time one is read, UDF directories, File Entries and
-Indirect Entries, each UDF entry parsed once however many names lead to it) SHALL be one
-sum for the whole image, held to `max_metadata_bytes`; a tree under the cap SHALL NOT
-make an image over it open. `max_members` SHALL be counted per tree, because a Joliet
-tree repeats every file of the primary tree. Crossing either cap SHALL raise
-`ResourceLimitError` naming the cap from `open_archive`.
+`ListingLimits` while they parse. The bytes it weighs (each ISO 9660 or Joliet directory
+record as stored, before more of its directory is read, Rock Ridge continuation areas
+each time one is read, UDF directories, File Entries and Indirect Entries, each UDF
+entry parsed once however many names lead to it) SHALL be one sum for the whole image,
+held to `max_metadata_bytes`; a tree under the cap SHALL NOT make an image over it open.
+`max_members` SHALL be counted per tree, because a Joliet tree repeats every file of the
+primary tree. Crossing either cap SHALL raise `ResourceLimitError` naming the cap from
+`open_archive`.
 
 The UDF parser builds every name's full path at open. It SHALL weigh each full path as
 it builds it, its text by the listing's rule for a member name (its length when ASCII,

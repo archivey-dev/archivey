@@ -26,8 +26,10 @@ continue in a block a ``CE`` entry names.
 
 What is parsed, and when: the whole primary tree and the Joliet tree, at construction,
 as ``udf.UdfVolume`` parses the UDF tree. The listing limits are weighed as the trees
-are parsed (:class:`IsoBudget`): each directory's declared length, as far as the image
-holds it, before it is read, and one member per record. An image over them is refused
+are parsed (:class:`IsoBudget`): each directory record as stored, before more of its
+directory is read, and one member per record. A directory is read a chunk at a time,
+and one tree's directories may together declare no more than the image holds, so the
+bytes read stay within one image per tree. An image over them is refused
 before any member is listed, and a listing reads nothing more. Path tables are not read
 to list: a reader that walks the directories needs none, as Linux's isofs and 7-Zip do
 not. Only a source that takes read hints reads one, to hint where the directories are
@@ -118,6 +120,8 @@ _RRIP_IDS = (b"RRIP_1991A", b"IEEE_P1282")
 # How many continuation areas one record's System Use area may chain through. Linux
 # stops at 32 (``RR_MAX_CE_ENTRIES``); real writers use at most one.
 MAX_CONTINUATIONS = 32
+# How much of a directory is read at once (:meth:`IsoVolume._read_directory`).
+_DIRECTORY_CHUNK = 64 * 1024
 # The Yellow Book XA system use record: 14 bytes, ``XA`` at byte 6.
 _XA_SIZE = 14
 
@@ -129,9 +133,8 @@ _TF_FIELDS = ("created", "modified", "accessed", "attribute", "backup", "expirat
 
 
 class IsoBudget(Protocol):
-    """Where the parser weighs what it reads and keeps: each directory's declared
-    length (before the read) and each continuation area's, and one member per
-    record."""
+    """Where the parser weighs what it reads and keeps: each directory record as
+    stored and each continuation area's length, and one member per record."""
 
     def add_iso_bytes(self, nbytes: int) -> None: ...
 
@@ -281,6 +284,8 @@ class IsoVolume:
         # The image offset of the first non-zero byte in each directory block's
         # padding, in the order met.
         self.padding: list[int] = []
+        # Each tree's directory lengths so far, by tree kind (``_read_directory``).
+        self._directory_bytes: dict[int, int] = {}
         # The end of the furthest file data the primary tree points at inside the
         # file: pycdlib took the volume to end there when its volume space size
         # said less (Office XP images do), and the trailing-data check still does.
@@ -520,27 +525,59 @@ class IsoVolume:
         block_size = self.block_size
         start = directory.extent * block_size
         length = directory.data_length
-        # Weighed before the read, as much of it as the image holds: the length is
-        # the image's own claim, and each directory may claim up to the rest of the
-        # image. A claim past the end is then refused by the read, as damage or a cut.
-        if self._budget is not None:
-            self._budget.add_iso_bytes(max(0, min(length, self._image_length - start)))
-        data = self._read(start, length, "directory")
+        image_length = self._image_length
+        # A directory past the end of the image is refused before any of it is read.
+        if start + length > image_length:
+            if self._cut(start, length):
+                raise self._truncated("directory")
+            raise self._corrupt(
+                f"directory at offset {start} declares {length} bytes and the image "
+                f"holds {max(0, image_length - start)} from there"
+            )
+        # The directories of one tree do not overlap (one sharing an extent is a
+        # loop), so together they fit in the image. Directories that claim more are
+        # refused before they are read: each could otherwise claim the rest of the
+        # image, and K of them would read K times the image.
+        declared = self._directory_bytes.get(tree.kind, 0) + length
+        if declared > image_length:
+            raise self._corrupt(
+                f"its directories declare {declared} bytes, more than the "
+                f"{image_length}-byte image holds"
+            )
+        self._directory_bytes[tree.kind] = declared
+        # Read a chunk at a time, so each record is weighed (``add_iso_bytes``)
+        # before more of a large directory is read.
+        buffer = b""
+        buffer_at = 0  # the directory offset of ``buffer[0]``
+
+        def view(at: int, n: int) -> bytes:
+            """Up to ``n`` bytes of the directory from ``at``; ``at`` only grows."""
+            nonlocal buffer, buffer_at
+            end = min(at + n, length)
+            held = buffer_at + len(buffer)
+            if end > held:
+                keep = buffer[at - buffer_at :] if at < held else b""
+                fetch_at = max(at, held)
+                size = max(end - fetch_at, min(_DIRECTORY_CHUNK, length - fetch_at))
+                buffer = keep + self._read(start + fetch_at, size, "directory")
+                buffer_at = at
+            return buffer[at - buffer_at : end - buffer_at]
+
         entries: list[IsoEntry] = []
         continuing: IsoEntry | None = None
         pending: list[tuple[int, int]] = []
         offset = 0
         while offset < length:
-            record_length = data[offset]
+            record_length = view(offset, 1)[0]
             if record_length == 0:
                 pad = min(block_size - offset % block_size, length - offset)
-                padding = data[offset : offset + pad]
+                padding = view(offset, pad)
                 stripped = padding.lstrip(b"\0")
                 if stripped:
                     self.padding.append(start + offset + pad - len(stripped))
                 offset += pad
                 continue
-            record = data[offset : offset + record_length]
+            record = view(offset, record_length)
             at = start + offset
             if len(record) < record_length:
                 raise self._corrupt(
@@ -557,6 +594,8 @@ class IsoVolume:
                     f"the directory record at offset {at} is {record_length} bytes "
                     f"and its identifier declares {record[32]}"
                 )
+            if self._budget is not None:
+                self._budget.add_iso_bytes(record_length)
             entry = self._record(tree, directory, record, start + offset)
             offset += record_length
             if entry.ident in (b"\x00", b"\x01"):

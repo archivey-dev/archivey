@@ -310,7 +310,8 @@ def test_bit_flips_never_crash_and_never_refuse_what_pycdlib_opens() -> None:
     """Flipped bits in the descriptors and directories: the parser raises only
     archivey's own errors, and it opens every image pycdlib opens, with the same trees
     whenever the System Use skip count is untouched (pycdlib ignores that count; this
-    parser follows it, as Linux does)."""
+    parser follows it, as Linux does). The one refusal pycdlib lacks is an identifier
+    longer than its record, which Linux refuses too."""
     import pycdlib
 
     base = _pycdlib_image(rock_ridge=True, joliet=True, deep=10)
@@ -330,7 +331,11 @@ def test_bit_flips_never_crash_and_never_refuse_what_pycdlib_opens() -> None:
                 pass
             continue
         iso.close()
-        _volume(data)  # raises nothing: pycdlib opened it
+        try:
+            _volume(data)
+        except CorruptionError as exc:
+            # pycdlib cuts such an identifier short; Linux and this parser refuse it.
+            assert "its identifier declares" in str(exc)
 
 
 # --- damage ----------------------------------------------------------------------
@@ -558,16 +563,53 @@ class _Capped:
         pass
 
 
-def test_a_directory_is_weighed_before_it_is_read() -> None:
-    """A directory's declared length is weighed before the read, so directories that
-    each claim the rest of the image are refused before they are read: K of them
-    read K times the image, while their records weigh next to nothing."""
-    data = bytearray(_pycdlib_image(rock_ridge=False, joliet=False))
-    root, _ = _root_records(data)
-    record = _record_offset(data, root, b"DIR")
-    struct.pack_into("<I", data, record + 10, 2**20)
-    struct.pack_into(">I", data, record + 14, 2**20)
+def _directories_image(count: int, *, joliet: bool = False) -> bytes:
+    """An image whose root holds ``count`` empty directories ``D0``, ``D1``..."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, **({"joliet": 3} if joliet else {}))
+    for index in range(count):
+        iso.add_directory(
+            f"/D{index}", **({"joliet_path": f"/d{index}"} if joliet else {})
+        )
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+def test_directories_that_claim_more_than_the_image_are_refused_unread() -> None:
+    """Directories that each claim the rest of the image are refused before they
+    are read: K of them would read K times the image, while their records weigh next
+    to nothing."""
+    data = bytearray(_directories_image(8))
     data += bytes(4 * 2**20 - len(data))
+    root, _ = _root_records(data)
+    for index in range(8):
+        record = _record_offset(data, root, f"D{index}".encode())
+        (extent,) = struct.unpack_from("<I", data, record + 2)
+        length = len(data) - extent * 2048
+        struct.pack_into("<I", data, record + 10, length)
+        struct.pack_into(">I", data, record + 14, length)
+    image = bytes(data)
+    reads: list[int] = []
+
+    def read_at(offset: int, n: int) -> bytes:
+        reads.append(n)
+        return image[offset : offset + n]
+
+    with pytest.raises(CorruptionError, match="more than the 4194304-byte image"):
+        IsoVolume(read_at, len(image), archive_name=None, budget=None)
+    assert sum(reads) < 2 * len(image)
+
+
+def test_a_large_directory_is_read_a_chunk_at_a_time() -> None:
+    """Each record is weighed before more of its directory is read, so a budget
+    refuses a large directory without reading it whole."""
+    data = bytearray(_directories_image(2000))
+    _, length = _root_records(data)
+    assert length > 64 * 1024
     image = bytes(data)
     reads: list[int] = []
 
@@ -576,8 +618,20 @@ def test_a_directory_is_weighed_before_it_is_read() -> None:
         return image[offset : offset + n]
 
     with pytest.raises(ResourceLimitError):
-        IsoVolume(read_at, len(image), archive_name=None, budget=_Capped(2**19))
-    assert max(reads) < 2**20
+        IsoVolume(read_at, len(image), archive_name=None, budget=_Capped(2**14))
+    assert max(reads) <= 64 * 1024
+    assert sum(reads) < length
+
+
+def test_directories_weigh_what_their_records_hold() -> None:
+    """Small directories weigh their records, not the whole blocks they take."""
+    count = 500
+    budget = _Capped(2**30)
+    data = _directories_image(count, joliet=True)
+    _volume(data, budget=budget)
+    # Each directory: its record in the root and its own ``.`` and ``..``, about
+    # 150 bytes, twice (the ISO 9660 and Joliet trees). A block is 2048.
+    assert budget.bytes < count * 400
 
 
 # --- dates -----------------------------------------------------------------------

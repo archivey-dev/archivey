@@ -31,6 +31,13 @@ descriptors' version, zero fields and both-endian copies; a logical block size o
 1024 or 2048; a terminator; a directory record's minimum length, its extent and volume
 sequence number agreeing in both byte orders; a directory loop.
 
+Added, following Linux's isofs: a directory record whose identifier is longer than the
+record refuses the image (`do_isofs_readdir` reports a corrupted directory entry).
+pycdlib cut the identifier short and listed the record under that name. One tree's
+directories may together declare no more than the image holds: they do not overlap, so
+an honest image always passes, and a crafted one cannot have each directory claim the
+rest of the image and read it once per directory.
+
 Dropped, following Linux's isofs and 7-Zip:
 
 - Path tables are not read to list. Readers that walk directories ignore them; pycdlib
