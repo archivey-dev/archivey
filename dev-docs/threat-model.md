@@ -39,7 +39,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
   extraction itself produced is not trusted: an earlier member is untrusted input to
   the handling of every later one. The destination root is followed if it is a symlink,
   as `tar -C` and `unzip -d` do.
-- **Optional libraries and external programs** (`pycdlib`, codec packages, the
+- **Optional libraries and external programs** (codec packages, the
   accelerators, `unrar` / `rar` / `unar`) are trusted not to be malicious, but not
   trusted to be robust on hostile input. Their failures should surface as typed errors;
   where that cannot hold, it is an [accepted non-guarantee](#4-accepted-non-guarantees).
@@ -48,7 +48,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, `pycdlib` for ISO; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, and the ISO 9660, Joliet, Rock Ridge and UDF trees; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
 | Parsers to decoders | Compressed streams, declared decoder parameters; on POSIX, a read-only descriptor of the archive file for a rapidgzip child that reads a member's byte range itself (the child's copy outlives the parent's handle, so the parent checks before each call that its own source is still open) | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
@@ -490,28 +490,20 @@ data its pass keeps for link targets beside it.
   sum against `max_metadata_bytes` before decoding any. RAR5 quick-open records that
   are not FILE never become members; their bound is `_RAR5_QO_PAYLOAD_MAX` (16 MiB,
   `internal/backends/rar_parser.py`) and their parse is linear.
-- ISO checks both caps while `pycdlib` parses, inside `open_fp` at `open_archive`.
-  `pycdlib` builds every directory tree of the image there, hundreds of bytes of Python
-  objects per record, so the post-open tracker came too late: 3000 records under
-  `max_members=10` peaked at about 18 times the image. archivey does not parse ISO
-  itself; `internal/backends/iso_reader.py` hooks `pycdlib`'s `DirectoryRecord.parse`
-  and the existing `RockRidge.parse` filter (both act only inside `IsoReader`'s own
-  `open_fp`, through a `ContextVar`) and counts, per volume descriptor tree, every
-  record but `.` and `..` against `max_members`, and, in one sum for the whole image,
-  the bytes of each directory record plus each Rock Ridge continuation area against
-  `max_metadata_bytes`. A continuation
-  area is weighed every time it is parsed: `pycdlib` accepts any number of records whose
-  `CE` names one area and parses it again for each, which made a 174 KB image peak at
-  about 10.7 MB before. A third hook, on `PyCdlib._parse_path_table`, weighs each path
-  table's declared size (little- and big-endian, both parsed) into that sum before
-  `pycdlib` reads it, and refuses a table that runs past the image as
-  `CorruptionError` whatever the limits: `pycdlib` parses a table into one object per
-  8-byte record, about 29 times its size, and a 16 MiB table peaked at 471 MiB before.
-  Bytes alone still let a table of the whole budget through (about 1.8 GB at the
-  default), so a hook on `PathTableRecord.parse` also counts each entry against
-  `max_members` and refuses a table of more than `max_members + 1` entries, capping one
-  table near 240 MB at the default (maintainer ruling, 2026-10-06). Real images never
-  notice: every entry is a directory, and every directory but the root is a member.
+- ISO checks both caps while its parsers build the trees, inside `open_archive`
+  (`internal/backends/iso9660.py`, `udf.py`). Every directory tree of the image is
+  parsed there, several times its stored size in Python objects per record, so the
+  post-open tracker came too late (with `pycdlib`, 3000 records under `max_members=10`
+  peaked at about 18 times the image). The parser counts, per volume descriptor tree,
+  every record but `.` and `..` against `max_members`, and, in one sum for the whole
+  image, each directory record as stored plus each Rock Ridge continuation area every
+  time it is read against `max_metadata_bytes`; records whose `CE` names one shared area
+  each read it again, and each read is weighed. A directory is read 64 KiB at a time,
+  each record weighed before the next chunk, and one tree's directories may together
+  declare no more than the image holds, refused as `CorruptionError` whatever the limits
+  ([Allocations sized by a header field](#allocations-sized-by-a-header-field)). Path
+  tables are not read to list; a source that takes read hints reads at most 4 MiB of one
+  per tree, which never raises.
 - TAR has no member table, so the caps bind the header walk: `tar_reader.py` registers
   each member, PAX keywords and values included, before the walker
   (`internal/backends/tar_parser.py` `TarWalker`) parses the next header, so the walk
@@ -613,14 +605,15 @@ before any member exists. ISO's counts are a superset of the listing's: the extr
 records of a multi-extent file and the Rock Ridge `rr_moved` scaffolding count as
 members, and the bytes are records as stored, System Use areas included, not only the
 text kept. An image right at a cap can therefore be refused at open. Below the caps
-`pycdlib` still builds the whole tree, so memory at open stays linear in the records the
-budget allows: about 0.8 KB per plain record measured, so roughly 210 MB per tree at the
-default `max_members`. The UDF tree, which archivey's own parser (`udf.py`) walks whole
-at open, listed or not, is counted as one more tree: each File Identifier but the parent
-entry and deleted ones is a member, and each directory's data, each File Entry (with the
-extended attributes and allocation descriptors it declares, or the bytes its tag's CRC
-covers when that is more) and each Indirect Entry (its tag and the bytes its CRC covers)
-is weighed against `max_metadata_bytes`, a directory before it is read. Each entry is
+the parser still builds the whole tree, so memory at open stays linear in the records
+the budget allows: about 0.8 KB per plain record measured with `pycdlib`, so roughly 210
+MB per tree at the default `max_members`; the native parser's records are smaller. The
+UDF tree, which archivey's own parser (`udf.py`) walks whole at open, listed or not, is
+counted as one more tree: each File Identifier but the parent entry and deleted ones is
+a member, and each directory's data, each File Entry (with the extended attributes and
+allocation descriptors it declares, or the bytes its tag's CRC covers when that is more)
+and each Indirect Entry (its tag and the bytes its CRC covers) is weighed against
+`max_metadata_bytes`, a directory before it is read. Each entry is
 parsed and weighed once, however many File Identifiers lead to it, so a hard link costs
 only its File Identifier, and nothing a name does while listing walks the entry again.
 Every tree is kept once parsed, so `max_metadata_bytes` is one sum for the whole image,
@@ -654,53 +647,55 @@ less per stored byte than a minimal ISO 9660 record.
 `::test_rar3_compressed_comments_over_metadata_budget_refused_before_decode`,
 `::test_rar5_qo_non_file_records_parse_in_linear_time`; `tests/test_link_target_cap.py`;
 `tests/test_tar_header_memory.py`;
-`tests/test_iso.py::test_listing_limits_count_records_as_pycdlib_parses_them`,
+`tests/test_iso.py::test_listing_limits_count_records_as_the_trees_are_parsed`,
 `::test_listing_limits_count_directory_record_bytes_at_open`;
 `tests/test_audit2_iso_dir_detect.py::test_iso_listing_limits_bound_the_memory_spent_at_open`,
 `::test_iso_shared_continuation_area_does_not_multiply_memory_at_open`,
 `::test_iso_max_metadata_bytes_counts_a_shared_continuation_each_time`;
-`tests/test_iso_metadata_bounds.py`.
+`tests/test_iso_metadata_bounds.py`;
+`tests/test_iso9660_parser.py::test_directories_that_claim_more_than_the_image_are_refused_unread`,
+`::test_a_large_directory_is_read_a_chunk_at_a_time`.
 
 #### Allocations sized by a header field
 
 **Property.** A size field in a header never sizes an allocation larger than the bytes
 the source really has.
 
-**Mechanism.** A TAR extended header (PAX record or GNU long name) and a pycdlib
-directory extent both declare their own size, straight from the archive. Measured
-without a bound, read with one `read(size)` as stdlib `tarfile` and pycdlib read them: a
-10 KB tar asked for 6 GiB and a 51 KB ISO for 4 GiB, both dying on a bare `MemoryError`. archivey's TAR walker
-(`internal/backends/tar_parser.py` `TarWalker`) charges an extended header's declared
-size to the member's `max_metadata_bytes` budget before it reads anything
-([Listing](#listing)), then reads it with `streams/streamtools/binaryio.py`
-`read_within_reach` in 64 KiB steps. A forward-only walk skips a member's data area in
-64 KiB steps too, and stops with `TruncatedError` at the first short read. Member data a
-caller reads through that walk is read in 1 MiB steps (`DATA_READ_STEP`): a member that
-declares 3 GiB over 100 KB of data peaks at 1 MiB. The format
-adapter's walk (`internal/format_adapter.py` `_layer_forward`), the `ForwardStream`
-every `SequentialReader` gets (ar, deb, RPM and CPIO, and a plugin's), reads header bytes
-through `read_within_reach` in 64 KiB steps too (`_HEADER_READ_STEP`): before that, a
-1 KB ar, deb or RPM file that declared a 60 MiB header peaked at 60 MiB from a `BytesIO`
-and 120 MiB from a pipe in streaming mode, and now peaks under 0.2 MiB. pycdlib reads
-through archivey's source (`internal/source.py` `ArchiveSource`), which applies
-`read_within_reach` as well. Where the remaining length is a fact (a path's `stat`, a
-`BytesIO` buffer, a regular file's `fstat`) the read is clamped to it; otherwise it is
-served in bounded steps, so the peak is the bytes that exist plus at most one step: the
-step is the granularity of the overshoot a hostile size field can cause. An fsspec `size`
-attribute is a hint, not a fact, and is stepped. A short read then fails: the TAR walker
-raises `TruncatedError`, and pycdlib's error is translated to `CorruptionError`. The ISO
-reader passes every source to `open_fp` as an `ArchiveSource`, a path included, so there
-is always something of archivey's under pycdlib; `open_archive` closes the source if the
-reader never finishes constructing. Two sizes are checked before the read rather than
-left to the source, because the source bounds them only by the image: a Rock Ridge `CE`
-entry's area must end inside its logical block, as pycdlib itself requires after its
-read and the Linux kernel requires, so a `CE` declaring 512 MiB in a sparse 600 MiB
-image is refused without the read (545 MiB peak before), and so is each further link of
-a `CE` chain, which pycdlib follows (a 256 MiB second link peaked at 256 MiB under
-default limits before); and a path table must end inside the image
-([Listing](#listing) weighs it against `max_metadata_bytes` too). This bounds one read;
-how many records and continuation areas `pycdlib` builds from those reads is the listing
-budget's ([Listing](#listing)).
+**Mechanism.** A TAR extended header (PAX record or GNU long name) and an ISO directory
+extent both declare their own size, straight from the archive. Measured without a bound,
+read with one `read(size)` as stdlib `tarfile` and `pycdlib` read them: a 10 KB tar
+asked for 6 GiB and a 51 KB ISO for 4 GiB, both dying on a bare `MemoryError`.
+archivey's TAR walker (`internal/backends/tar_parser.py` `TarWalker`) charges an
+extended header's declared size to the member's `max_metadata_bytes` budget before it
+reads anything ([Listing](#listing)), then reads it with
+`streams/streamtools/binaryio.py` `read_within_reach` in 64 KiB steps. A forward-only
+walk skips a member's data area in 64 KiB steps too, and stops with `TruncatedError` at
+the first short read. Member data a caller reads through that walk is read in 1 MiB
+steps (`DATA_READ_STEP`): a member that declares 3 GiB over 100 KB of data peaks at 1
+MiB. The format adapter's walk (`internal/format_adapter.py` `_layer_forward`), the
+`ForwardStream` every `SequentialReader` gets (ar, deb, RPM and CPIO, and a plugin's),
+reads header bytes through `read_within_reach` in 64 KiB steps too
+(`_HEADER_READ_STEP`): before that, a 1 KB ar, deb or RPM file that declared a 60 MiB
+header peaked at 60 MiB from a `BytesIO` and 120 MiB from a pipe in streaming mode, and
+now peaks under 0.2 MiB. The ISO parsers read through archivey's source
+(`internal/source.py` `ArchiveSource`), which applies `read_within_reach` as well. Where
+the remaining length is a fact (a path's `stat`, a `BytesIO` buffer, a regular file's
+`fstat`) the read is clamped to it; otherwise it is served in bounded steps, so the peak
+is the bytes that exist plus at most one step: the step is the granularity of the
+overshoot a hostile size field can cause. An fsspec `size` attribute is a hint, not a
+fact, and is stepped. A short read then fails: the TAR walker raises `TruncatedError`,
+and the ISO parser `TruncatedError` or `CorruptionError` by the cut rule
+(`dev-docs/formats/iso.md` §2.3). `open_archive` closes the source if the reader never
+finishes constructing. Three ISO sizes are checked before the read rather than left to
+the source, because the source bounds them only by the image: a directory must end
+inside the image, and one tree's directories together may declare no more than the image
+holds, so K directories that each claim the rest of the image cannot read K times the
+image (15 GiB read from a 10 MiB image, measured in the parser's review); a Rock Ridge
+`CE` entry's area must end inside its logical block, as the Linux kernel requires, so a
+`CE` declaring 512 MiB in a sparse 600 MiB image is not read (545 MiB peak with
+`pycdlib`), and so is each further link of a `CE` chain; the record lists from its other
+entries. Path tables are not read to list. This bounds the reads; how many records the
+parser builds from them is the listing budget's ([Listing](#listing)).
 
 A flat metadata cap would be wrong here: member data goes through the same wrapper, so a
 40 MiB member arrives as one 40 MiB request.
@@ -729,9 +724,10 @@ than the source holds stops at the first short read.
 `::test_a_path_source_refuses_the_same_image`,
 `::test_a_refused_path_source_does_not_hold_its_handle`;
 `tests/test_iso_metadata_bounds.py`:
-`::test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it`,
-`::test_a_chained_continuation_area_past_its_block_is_refused_before_the_read`,
-`::test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it`;
+`::test_a_continuation_area_past_its_block_is_not_read`,
+`::test_a_chained_continuation_area_past_its_block_is_not_read`,
+`::test_a_path_table_size_past_the_image_reads_nothing`;
+`tests/test_iso9660_parser.py::test_directories_that_claim_more_than_the_image_are_refused_unread`;
 `tests/test_seekable_streams.py::test_xz_index_scan_reads_a_huge_declared_index_in_chunks`,
 `::test_xz_open_archive_with_a_huge_declared_index_stays_small`.
 
@@ -1033,10 +1029,9 @@ file (`TruncatedError`) and read from a pipe, with the same CRC check
 raw library exception, and never a silent wrong answer. Genuine I/O errors propagate
 unchanged, and no handler swallows or reclassifies an unknown exception.
 
-**Mechanism.** Each backend translates its library's exceptions. For ISO,
-`IsoHandler.translate_exception` maps `_PYCDLIB_ERRORS`, for errors in `open()` and those
-the reader does not translate itself: pycdlib's exception base plus the bare `IndexError`, `struct.error`, `UnicodeDecodeError`, `AttributeError`,
-`KeyError` and `ValueError` fuzzing found it raising, but never `OSError`. Advisories
+**Mechanism.** Each backend translates its library's exceptions. ISO has none to
+translate: its parsers raise archivey's own errors, and a bit-flip campaign checks that
+nothing else escapes (`tests/test_iso9660_parser.py`). Advisories
 that are not errors are `Diagnostic` values with stable codes and a per-code policy
 (`IGNORE` / `COLLECT` / `RAISE`), attached to the surface they concern, with logging as
 the zero-configuration projection. Native
@@ -1095,18 +1090,17 @@ writes itself) is exercised against mutated and coverage-guided input.
    (`.github/workflows/atheris-fuzz.yml`, `openspec/specs/testing-contract/spec.md`).
    `atheris` is in the `fuzz` dependency group only.
 
-pycdlib before 1.22 looped forever when corrupt directory records formed a back-edge,
-in any namespace `open_fp` walks, UDF included, where it also allocated on every pass. A
-UDF File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
-default limits. From 1.22, the minimum archivey requires, pycdlib detects the loop and
-raises "ISO Directory Records form a loop", which archivey reports as `CorruptionError`.
-archivey's own UDF walk (pycdlib's is off inside archivey's open) enters each directory
-once and refuses one named again. So a looping tree is refused at open, in any tree.
+`pycdlib` before 1.22 looped forever when corrupt directory records formed a back-edge,
+in any namespace it walked, UDF included, where it also allocated on every pass (a UDF
+File Identifier naming an ancestor's ICB grew memory by about 65 MB a second under
+default limits). archivey's own parsers (`iso9660.py`, `udf.py`) enter each directory
+once and refuse one named again with `CorruptionError`, so a looping tree is refused at
+open, in any tree.
 
 Disclosure goes through GitHub private vulnerability reporting ([`SECURITY.md`](../SECURITY.md)).
 OSS-Fuzz [waits until archivey has more users](#oss-fuzz).
 
-**Tests.** `tests/test_iso.py::test_pycdlib_directory_cycle_does_not_hang` (plain, Rock
+**Tests.** `tests/test_iso.py::test_a_directory_cycle_does_not_hang` (plain, Rock
 Ridge and Joliet), `::test_a_udf_directory_cycle_is_refused_at_open` (UDF).
 `tests/test_cve_regressions_7z_rar.py` replays published 7z and RAR reader advisories
 on hand-built headers: a COPY folder short of its size, a cyclic coder graph, huge
@@ -1764,7 +1758,7 @@ writing lands (possibly after 1.0), and must be a day-one decision of the writin
 | O4 | NTFS alternate data streams | [Names are safe](#names-are-safe-on-the-target-filesystem) |
 | O5 | Fuzzing | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes), [OSS-Fuzz](#oss-fuzz) |
 | O5 (accelerator hang) | | [Accelerators on by default](#accelerators-on-by-default-and-unbounded-in-time) |
-| O5 (pycdlib cycle) | | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes) |
+| O5 (ISO directory cycle) | | [Parsers survive hostile bytes](#parsers-survive-hostile-bytes) |
 | O5 (`"."` root poisoning) | | [Extraction stays in the destination](#extraction-stays-in-the-destination) |
 | O6 | Nested-archive amplification | [Nested-archive amplification](#nested-archive-amplification), [Bounded recursion helper](#bounded-recursion-helper) |
 | O7 | Names the filesystem cannot represent | [Names are safe](#names-are-safe-on-the-target-filesystem) |

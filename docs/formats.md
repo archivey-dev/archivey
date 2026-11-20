@@ -253,8 +253,8 @@ why, and the checks archivey adds around the accelerators.
 
 ### ISO 9660
 
-Reading an ISO image needs `[recommended]` (`pycdlib`). An image can carry several name trees
-over the same files. Archivey lists Rock Ridge first, then UDF, then Joliet, then plain ISO 9660,
+Reading an ISO image needs no extra. An image can carry several name trees over the same files.
+Archivey lists Rock Ridge first, then UDF, then Joliet, then plain ISO 9660,
 and says which in `ArchiveInfo.extra["iso.namespace"]`.
 
 - **Supported:** Rock Ridge, UDF, Joliet and plain ISO 9660 names. Images with only UDF, as on
@@ -278,9 +278,6 @@ and says which in `ArchiveInfo.extra["iso.namespace"]`.
   versions are.
 - **Files in other trees:** a file that only an unlisted tree holds (such as Joliet or UDF, which
   Windows and 7-Zip read) is not a member. Archivey reports it with `MEMBER_READERS_DISAGREE`.
-- **pycdlib:** `import archivey` wraps a few of pycdlib's parsing methods, to bound what they
-  read. The wrappers act only while archivey opens an image, so other code that uses pycdlib sees
-  no change.
 - **Boot catalog:** a bootable image's boot catalog is listed as an ordinary file, as a mounted
   image shows it.
 - **CD images:** archivey reads the session an operating system would mount, from one track file

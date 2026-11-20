@@ -678,8 +678,8 @@ class ReadBackend(ABC):
     # can record ENCODING_ARGUMENT_UNUSED rather than let the argument be dropped with
     # no signal.
     USES_ENCODING: bool = False
-    # The optional package this backend needs, such as ``OptionalLibrary.PYCDLIB``; the
-    # registry derives availability centrally from whether it imports. ``None`` for core
+    # The optional package this backend needs, an ``OptionalLibrary``; the registry
+    # derives availability centrally from whether it imports. ``None`` for core
     # backends.
     OPTIONAL_DEPENDENCY: OptionalLibrary | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
@@ -973,7 +973,7 @@ class BaseArchiveReader(ArchiveReader):
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
         self._closed = False
         # A backend that shares one underlying handle across member streams (the TAR
-        # walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # walk's stream) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
@@ -1168,9 +1168,9 @@ class BaseArchiveReader(ArchiveReader):
 
         Immutable, already-materialized state (the member list / name index) MAY be read
         read-only. Backends whose member addressing is owned by an external library that
-        already coordinates the shared handle (ISO via ``pycdlib``) are not required to
-        route through an archivey ``SharedSource`` view, but archivey-owned reader state
-        still MUST NOT hold unsynchronized per-open scratch.
+        already coordinates the shared handle are not required to route through an
+        archivey ``SharedSource`` view, but archivey-owned reader state still MUST NOT
+        hold unsynchronized per-open scratch.
 
         Concurrent ``open`` is supported when the reader declared concurrency
         (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_operations=True)``):
@@ -1247,7 +1247,7 @@ class BaseArchiveReader(ArchiveReader):
         closed = as_closed_source_error(exc, member_name)
         if closed is not None:
             # Checked before the backend's translator, which may map every ValueError
-            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            # to corruption (ZIP's bad-offset rule).
             raise closed from exc
         translated = self._translate_exception(exc)
         if translated is None:
@@ -4133,7 +4133,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _note_reader_backend(self, format: ArchiveFormat) -> None:
         """Record the format reader in :attr:`backends_used`. A plugin adapter records
-        its plugin instead; a reader built on a package (ISO on pycdlib) adds it."""
+        its plugin instead; a reader built on a package adds it."""
         self._usage.note_backend("reader", "archivey", format.display_name)
 
     @property

@@ -70,7 +70,8 @@ Archivey itself needs no third-party package. Optional packages add formats and 
   Zstandard without backports.zstd.
 - **[cryptography](https://github.com/pyca/cryptography):** AES decryption for 7z, RAR and WinZip
   AES ZIP files.
-- **[pycdlib](https://github.com/clalancette/pycdlib):** ISO images.
+- **[pycdlib](https://github.com/clalancette/pycdlib):** read ISO images until archivey 0.6.0, and
+  still writes the ISO images archivey is tested against.
 - **[bzip3](https://github.com/synodriver/python-bz3):** `.bz3` files, with the
   [bzip3](https://github.com/kspalaiologos/bzip3) library it bundles.
 - **[cramjam](https://github.com/milesgranger/cramjam),

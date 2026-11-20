@@ -12,10 +12,10 @@ one file from [llms-full.txt](https://archivey-dev.github.io/archivey/llms-full.
 
 Install the `archivey` package from PyPI with your usual tool (e.g. `uv add "archivey[recommended]"`
 or `pip install "archivey[recommended]"`). Without `recommended`, archivey has no dependencies and
-reads ZIP, TAR, 7z with its common compression methods, and the single compressed files the standard
-library handles, such as gzip, bzip2 and xz. The extra adds ISO, lz4, Brotli, zstd on Python 3.13
-and older, the rarer compression methods in 7z and ZIP, and AES decryption, which most encrypted 7z
-and ZIP archives need.
+reads ZIP, TAR, 7z with its common compression methods, ISO images, and the single compressed files
+the standard library handles, such as gzip, bzip2 and xz. The extra adds lz4, Brotli, zstd on Python
+3.13 and older, the rarer compression methods in 7z and ZIP, and AES decryption, which most
+encrypted 7z and ZIP archives need.
 
 RAR archives can be listed, and files stored in them without compression read, with nothing else
 installed. To read compressed files, you also need RARLAB's `unrar` or `rar`, 6.0 or later, or

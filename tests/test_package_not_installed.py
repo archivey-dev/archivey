@@ -8,12 +8,18 @@ The one raise that leaves it empty is a program that was found but could not sta
 from __future__ import annotations
 
 import ast
+import io
 import pickle
 
 import pytest
 
-from archivey import ArchiveFormat, OptionalLibrary, PackageNotInstalledError
-from archivey.internal.registry import format_availability, get_registry
+from archivey import (
+    ArchiveFormat,
+    OptionalLibrary,
+    PackageNotInstalledError,
+    open_archive,
+)
+from archivey.internal.registry import format_availability
 from archivey.types import MissingComponent
 from tests.source_trees import ROOT, SOURCE_TREES, source_files
 
@@ -73,12 +79,15 @@ def test_missing_survives_pickling() -> None:
 def test_a_format_refused_for_a_missing_package_names_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "archivey.internal.registry._optional", lambda name: None, raising=True
-    )
+    """A ``.zst`` file with no zstd module: the open names the package, as data."""
+    from archivey.internal.streams import codecs as codecs_module
+
+    monkeypatch.setattr(codecs_module.deps, "zstd", None)
+    # A zstd frame's magic, enough for detection; nothing past it is read.
+    data = b"\x28\xb5\x2f\xfd" + bytes(16)
     with pytest.raises(PackageNotInstalledError) as exc_info:
-        get_registry().reader_for_format(ArchiveFormat.ISO)
-    availability = format_availability(ArchiveFormat.ISO)
+        open_archive(io.BytesIO(data), format=ArchiveFormat.ZST)
+    availability = format_availability(ArchiveFormat.ZST)
     assert exc_info.value.missing == availability.missing
     (component,) = exc_info.value.missing
-    assert component.name is OptionalLibrary.PYCDLIB
+    assert component.name == "backports.zstd"

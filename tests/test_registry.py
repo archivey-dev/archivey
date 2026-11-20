@@ -290,37 +290,20 @@ def test_partial_container_does_not_lower_for_unrelated_format(
 
 
 # ---------------------------------------------------------------------------
-# Stage 4: NONE end-to-end — the real ISO backend without pycdlib degrades
-# gracefully (simulated absence, so this runs in the core-only leg too).
+# ISO needs no optional package (the reader parses ISO 9660, Joliet, Rock Ridge and
+# UDF itself), so it stays FULL with every optional package absent.
 # ---------------------------------------------------------------------------
 
 
-def test_iso_none_without_pycdlib(monkeypatch: pytest.MonkeyPatch) -> None:
-    import io
-
+def test_iso_needs_no_optional_package(monkeypatch: pytest.MonkeyPatch) -> None:
     import archivey.internal.backends  # noqa: F401 - ensures the ISO backend is registered
     from archivey.internal import registry as registry_module
 
-    real_optional = registry_module._optional
-    monkeypatch.setattr(
-        registry_module,
-        "_optional",
-        lambda name: None if name == "pycdlib" else real_optional(name),
-    )
-
+    monkeypatch.setattr(registry_module, "_optional", lambda name: None)
     avail = format_availability(ArchiveFormat.ISO)
-    assert avail.support is FormatSupport.NONE
-    assert any(m.name == "pycdlib" for m in avail.missing)
-    assert any("archivey[recommended]" in m.install_hint for m in avail.missing)
-
-    # NONE is excluded from the supported list but still known.
-    assert ArchiveFormat.ISO not in list_supported_formats()
-    assert ArchiveFormat.ISO in list_known_formats()
-
-    # Selecting it raises an install-hint error rather than crashing.
-    with pytest.raises(PackageNotInstalledError) as excinfo:
-        open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
-    assert "pycdlib" in str(excinfo.value)
+    assert avail.support is FormatSupport.FULL
+    assert not avail.missing
+    assert ArchiveFormat.ISO in list_supported_formats()
 
 
 # ---------------------------------------------------------------------------
@@ -353,37 +336,6 @@ def test_compressed_tar_full_when_stream_codec_present(
 ) -> None:
     monkeypatch.setattr(codecs_module.deps, "zstd", object())
     assert format_availability(ArchiveFormat.TAR_ZST).support is FormatSupport.FULL
-
-
-@pytest.mark.skipif(
-    importlib.util.find_spec("pycdlib") is None,
-    reason=(
-        "with pycdlib genuinely absent the registry gate rejects ISO before dispatch "
-        "reaches the backend (that path is test_iso_none_without_pycdlib); this test "
-        "needs the gate to pass so the reader's own raise runs"
-    ),
-)
-def test_iso_reader_missing_pycdlib_hint_matches_availability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The reader's own raise must advise the same extra the registry reports.
-
-    Patching only ``iso_reader.pycdlib`` (not the registry's ``_optional``) lets dispatch
-    reach the backend, which is the path that used to name a deleted ``[iso]`` extra while
-    ``format_availability`` already said ``[recommended]``.
-    """
-    import io
-
-    from archivey.exceptions import PackageNotInstalledError
-    from archivey.internal.backends import iso_reader
-
-    monkeypatch.setattr(iso_reader, "pycdlib", None)
-    with pytest.raises(PackageNotInstalledError) as excinfo:
-        open_archive(io.BytesIO(b"not an iso"), format=ArchiveFormat.ISO)
-    message = str(excinfo.value)
-    assert "pycdlib" in message
-    assert "archivey[recommended]" in message
-    assert iso_reader.IsoReadBackend.INSTALL_HINT in message
 
 
 # ---------------------------------------------------------------------------
@@ -473,12 +425,11 @@ def test_required_source_predicts_whether_a_pipe_works(
 def test_required_source_survives_a_missing_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Whether ISO needs to seek does not depend on whether ``pycdlib`` is installed."""
+    """Whether ISO needs to seek does not depend on which packages are installed."""
     monkeypatch.setattr(
         "archivey.internal.registry._optional", lambda name: None, raising=True
     )
     availability = format_availability(ArchiveFormat.ISO)
-    assert availability.support is FormatSupport.NONE
     assert availability.required_source is StreamCapability.SEEKABLE
 
 
@@ -493,14 +444,10 @@ _SEEK_ONLY_FORMATS = [
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
-def test_a_piped_iso_without_pycdlib_is_refused_as_a_pipe(
+def test_a_piped_iso_with_no_optional_package_is_refused_as_a_pipe(
     streaming: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pipe cannot be read even with ``pycdlib``, so the pipe is what gets named.
-
-    Asking for ``pycdlib`` first sends the caller to install a package and only then
-    tells them the source could never have worked.
-    """
+    """A pipe cannot be read, so the pipe is what gets named."""
     monkeypatch.setattr(
         "archivey.internal.registry._optional", lambda name: None, raising=True
     )

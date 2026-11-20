@@ -22,12 +22,12 @@ page covers archivey's side of it.
 module ends with a registration call, and `import archivey` imports them all, so the
 registry is full before the first open.
 
-Registration is **unconditional**. ISO registers even when `pycdlib` is not installed.
-Availability is worked out separately, from whether the optional module imports, so the
-registry can answer three ways (`FormatSupport.FULL`, `PARTIAL`, `NONE`) and raise
-`PackageNotInstalledError` with an install hint, instead of acting as if the format did
-not exist. `PARTIAL` is for a format that lists without its helper: RAR without `unrar`
-lists members but can read only the stored ones.
+Registration is **unconditional**. A format registers even when the package it needs is
+not installed. Availability is worked out separately, from whether the optional module
+imports, so the registry can answer three ways (`FormatSupport.FULL`, `PARTIAL`, `NONE`)
+and raise `PackageNotInstalledError` with an install hint, instead of acting as if the
+format did not exist. `PARTIAL` is for a format that lists without its helper: RAR
+without `unrar` lists members but can read only the stored ones.
 
 The registry also makes the **pairs** on demand. A backend that sets `STREAM_PAIRS` (TAR,
 and every sequential format) is registered for its container inside *every* single-file

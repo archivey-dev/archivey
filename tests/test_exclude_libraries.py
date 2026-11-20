@@ -403,21 +403,29 @@ def test_detection_does_not_probe_with_an_excluded_package(
 
 
 @_both_forms
-@requires("pycdlib")
-def test_an_excluded_pycdlib_refuses_iso(tmp_path: Path) -> None:
+@requires("bz3")
+def test_an_excluded_package_refuses_its_whole_format(tmp_path: Path) -> None:
+    path = tmp_path / "a.bz3"
+    path.write_bytes(b"BZ3v1" + bytes(64))
+    config = _excluding(L.BZIP3)
+    with pytest.raises(PackageNotInstalledError) as exc_info:
+        open_archive(path, format=ArchiveFormat.BZIP3, config=config)
+    assert [m.name for m in exc_info.value.missing] == ["bz3"]
+    assert exc_info.value.missing[0].reason == EXCLUDED_REASON
+    availability = format_availability(ArchiveFormat.BZIP3, config=config)
+    assert availability.support is FormatSupport.NONE
+    assert ArchiveFormat.BZIP3 not in list_supported_formats(config=config)
+
+
+@_both_forms
+def test_iso_needs_no_package_to_exclude(tmp_path: Path) -> None:
+    """ISO is parsed by archivey itself, so excluding every package leaves it read."""
     from tests.test_audit2_iso_dir_detect import _iso_image
 
     path = tmp_path / "a.iso"
     path.write_bytes(_iso_image())
-    config = _excluding(L.PYCDLIB)
-    with pytest.raises(PackageNotInstalledError) as exc_info:
-        open_archive(path, config=config)
-    assert [m.name for m in exc_info.value.missing] == ["pycdlib"]
-    assert exc_info.value.missing[0].reason == EXCLUDED_REASON
-    availability = format_availability(ArchiveFormat.ISO, config=config)
-    assert availability.support is FormatSupport.NONE
-    assert ArchiveFormat.ISO not in list_supported_formats(config=config)
-    assert ArchiveFormat.ISO in list_supported_formats()
+    with open_archive(path, config=_excluding(*L)) as reader:
+        assert reader.members()
 
 
 def test_supported_formats_do_not_filter_by_allows() -> None:

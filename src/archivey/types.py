@@ -538,8 +538,6 @@ class OptionalLibrary(StrEnum):
     """Zstandard from Python 3.14, part of the standard library when the build has it."""
     RAPIDGZIP = "rapidgzip"
     """The gzip, zlib, Deflate and bzip2 accelerator."""
-    PYCDLIB = "pycdlib"
-    """ISO 9660 images."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
     COMPRESS_UTILS = "compress_utils"
@@ -567,7 +565,6 @@ OptionalLibraryStr = Literal[
     "backports.zstd",
     "compression.zstd",
     "rapidgzip",
-    "pycdlib",
     "cryptography",
     "compress_utils",
     "compress-utils",
@@ -621,7 +618,7 @@ class MissingComponent:
     """
 
     name: str
-    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``. For
+    """The package or program, such as ``"pyppmd"``, ``"brotli"`` or ``"unrar"``. For
     one of archivey's own packages it is the :class:`OptionalLibrary` member, which is
     a ``str``."""
 

@@ -2,10 +2,8 @@
 
 UDF is the file system of DVDs and Blu-ray discs, and of Windows install images. A
 "bridge" image carries it next to an ISO 9660 tree over the same file data; a UDF-only
-image (most Blu-ray discs) has no ISO 9660 descriptor at all. ``pycdlib`` cannot open a
-UDF-only image and reads only partitions without a metadata partition, so archivey
-parses UDF itself, in pure Python, and turns ``pycdlib``'s own UDF parse off
-(``iso_reader._install_pycdlib_udf_skip``).
+image (most Blu-ray discs) has no ISO 9660 descriptor at all. archivey parses UDF
+itself, in pure Python, as ``iso9660.py`` parses the ISO 9660 and Joliet trees.
 
 How the tree is found, from the start of the image::
 
@@ -410,8 +408,8 @@ class UdfVolume:
         self.root = self._read_entry(*self._root_icb)
         if not self.root.is_directory:
             raise self._corrupt("its root is not a directory")
-        # The whole tree is parsed here, at open, as pycdlib parses the ISO 9660
-        # trees inside ``open_fp``: the listing limits refuse an image before any
+        # The whole tree is parsed here, at open, as ``iso9660.IsoVolume`` parses the
+        # ISO 9660 trees: the listing limits refuse an image before any
         # member is listed, and listing reads nothing more.
         self.names = list(self._walk())
 

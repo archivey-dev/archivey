@@ -26,7 +26,8 @@ These are written against the public plugin API, ``archivey.formats``, as a form
 added from outside would be: a ``*Handler`` declares the format and opens a
 ``*Reader``, and ``internal/format_adapter.py`` makes a backend of the handler:
 
-- :mod:`.iso_reader` — ISO 9660 (``pycdlib``, ``[recommended]``)
+- :mod:`.iso_reader` — ISO 9660, Joliet, Rock Ridge (:mod:`.iso9660`) and UDF
+  (:mod:`.udf`)
 - :mod:`.ar_reader` — Unix ar
 - :mod:`.rpm_reader` — RPM packages (headers, then the CPIO payload)
 - :mod:`.deb_reader` — Debian packages, an ar layer whose tars it reads through

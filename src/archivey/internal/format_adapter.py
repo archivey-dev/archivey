@@ -3194,7 +3194,7 @@ class _PluginBackend(ReadBackend):
             reader = IndexedReaderAdapter(
                 *common, region=(start_offset, end_offset), **options
             )
-        # The packages the handler reads with: pycdlib for ISO, a plugin's ``requires``.
+        # The packages the handler reads with: a plugin's ``requires``.
         for library in (self.OPTIONAL_DEPENDENCY, *self.REQUIRED_MODULES):
             if library is not None:
                 reader._usage.note_backend("library", str(library), format.display_name)

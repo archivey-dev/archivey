@@ -307,9 +307,9 @@ NO_PPMD = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={L.PYPPMD, "infl
 ```
 
 archivey then reads as if those packages weren't there. A PPMd member raises
-`PackageNotInstalledError` when you open it, while the other members can still be read; an ISO image with
-`pycdlib` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back to
-the standard library. The error's `missing` names the package, and its `reason` says the policy
+`PackageNotInstalledError` when you open it, while the other members can still be read; a `.lz4`
+file with `lz4` excluded doesn't open; and an accelerator such as rapidgzip under `AUTO` falls back
+to the standard library. The error's `missing` names the package, and its `reason` says the policy
 turned it off. Each entry is an [`OptionalLibrary`][archivey.OptionalLibrary] member or its value,
 and any other name is refused, so a typo can't leave a package on. The setting only affects calls
 made with that config: other calls in the same program, on any thread, still use the package.

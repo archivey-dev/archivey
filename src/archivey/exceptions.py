@@ -405,9 +405,10 @@ class PackageNotInstalledError(ArchiveyError):
     ``FormatPolicy`` turns the package off (``exclude_libraries=`` or
     ``only_libraries=``).
 
-    Raised both when a whole format needs it (opening an ISO without ``pycdlib``) and
-    when one member does (a PPMd member without ``pyppmd``). The message names what to
-    install, or for an excluded package says the policy turned it off.
+    Raised both when a whole format needs it (a plugin format whose package is not
+    installed) and when one member does (a PPMd member without ``pyppmd``). The
+    message names what to install, or for an excluded package says the policy turned
+    it off.
 
     :attr:`missing` holds what is absent as data, so a caller can act on a refusal
     without parsing its message. A component whose ``name`` the caller's
