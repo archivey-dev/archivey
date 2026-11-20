@@ -84,34 +84,103 @@ def test_a_nested_reader_does_not_report(tmp_path: Path) -> None:
     assert all(c.name == str(path) for c in seen.calls[before:])
 
 
-def test_the_callback_s_exception_propagates(tmp_path: Path) -> None:
-    path = _xz_file(tmp_path, 2 * LOCAL_REPORT_STEP)
+class _StopValue(ValueError):
+    pass
 
-    class Stop(Exception):
-        pass
+
+class _StopOS(OSError):
+    pass
+
+
+def _zip_deflated(tmp_path: Path, size: int) -> Path:
+    path = tmp_path / "d.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("big.bin", os.urandom(size))
+    return path
+
+
+def _bz2_file(tmp_path: Path, size: int) -> Path:
+    import bz2
+
+    path = tmp_path / "data.bz2"
+    path.write_bytes(bz2.compress(os.urandom(size), 1))
+    return path
+
+
+def _read_zip(path: Path, config: ArchiveyConfig) -> None:
+    with open_archive(path, config=config) as reader:
+        reader.read("big.bin")
+
+
+def _read_stream(path: Path, config: ArchiveyConfig) -> None:
+    with open_stream(path, config=config) as stream:
+        stream.read()
+
+
+@pytest.mark.parametrize("stop_type", [_StopValue, _StopOS, KeyboardInterrupt])
+@pytest.mark.parametrize("shape", ["zip", "bz2", "xz"])
+def test_the_callback_s_exception_propagates_unchanged(
+    tmp_path: Path, stop_type: type[BaseException], shape: str
+) -> None:
+    calls = 0
 
     def stop(progress: SourceProgress) -> None:
-        raise Stop
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise stop_type("stop from callback")
 
-    with (
-        pytest.raises(Stop),
-        open_stream(path, config=ArchiveyConfig(on_source_read=stop)) as stream,
-    ):
-        stream.read()
+    config = ArchiveyConfig(on_source_read=stop)
+    size = 3 * LOCAL_REPORT_STEP
+    if shape == "zip":
+        path = _zip_deflated(tmp_path, size)
+        with pytest.raises(stop_type) as caught:
+            _read_zip(path, config)
+    else:
+        path = _bz2_file(tmp_path, size) if shape == "bz2" else _xz_file(tmp_path, size)
+        with pytest.raises(stop_type) as caught:
+            _read_stream(path, config)
+    assert type(caught.value) is stop_type
+
+
+@pytest.mark.parametrize("shape", ["zip", "bz2"])
+def test_accelerated_members_still_report_every_mib(tmp_path: Path, shape: str) -> None:
+    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region
+    # when nothing reports; while reporting it is read through the source.
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen)
+    size = 6 * LOCAL_REPORT_STEP
+    if shape == "zip":
+        path = _zip_deflated(tmp_path, size)
+        _read_zip(path, config)
+    else:
+        path = _bz2_file(tmp_path, size)
+        _read_stream(path, config)
+    assert seen.calls[-1].bytes_read >= path.stat().st_size - LOCAL_REPORT_STEP
+    assert len(seen.calls) >= 5
+
+
+def test_detection_reads_are_reported(tmp_path: Path) -> None:
+    path = _xz_file(tmp_path, 1000)
+    seen = _Recorder()
+    with open_archive(path, config=ArchiveyConfig(on_source_read=seen)):
+        pass
+    # Detection read the start of the file (and the xz index at its end) through
+    # the source: a file this small reports at its end.
+    assert seen.calls
+    assert seen.calls[-1].bytes_read >= 12
 
 
 def test_unset_installs_no_reporter(tmp_path: Path) -> None:
     path = _xz_file(tmp_path, 1000)
-    with open_stream(path) as stream:
-        stream.read()
-        source: Any = stream
-        # Nothing reports, and nothing was built to report.
-        found = [
-            obj
-            for obj in vars(source).values()
-            if getattr(obj, "_progress", None) is not None
-        ]
-        assert found == []
+    with open_archive(path) as reader:
+        source: Any = reader._source  # type: ignore[attr-defined]
+        assert source._progress is None
+        assert source.codec_path == path
+    with open_archive(path, config=ArchiveyConfig(on_source_read=print)) as reader:
+        source = reader._source  # type: ignore[attr-defined]
+        assert source._progress is not None
+        assert source.codec_path is None
 
 
 def test_a_non_callable_is_refused() -> None:
@@ -173,3 +242,34 @@ def test_compressed_tar_reports_to_the_end(tmp_path: Path) -> None:
                 assert stream.read() == data
     assert len(seen.calls) >= 3
     assert seen.calls[-1].position == path.stat().st_size
+
+
+def test_url_volume_list_reports_offsets_in_the_set() -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for i in range(10):
+            zf.writestr(f"m{i}.bin", bytes([i]) * 100_000)
+    data = buf.getvalue()
+    half = len(data) // 2
+    # Two raw parts of one stored ZIP: offsets in part 2 start at ``half``.
+    fs.pipe("/vol/a.zip.001", data[:half])
+    fs.pipe("/vol/a.zip.002", data[half:])
+    try:
+        seen = _Recorder()
+        parts = [
+            fsspec.open("memory://vol/a.zip.001"),
+            fsspec.open("memory://vol/a.zip.002"),
+        ]
+        with open_archive(parts, config=ArchiveyConfig(on_source_read=seen)) as r:
+            for m in r.members():
+                r.read(m)
+        assert seen.calls[0].size == len(data)
+        ends = [c.request_end for c in seen.calls if c.request_end is not None]
+        assert max(ends) == len(data)
+        assert any(
+            c.request_start is not None and c.request_start >= half for c in seen.calls
+        )
+    finally:
+        fs.rm("/vol", recursive=True)

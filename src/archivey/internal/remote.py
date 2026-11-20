@@ -714,8 +714,10 @@ class RangeSource(io.RawIOBase):
         # Read by ``--track-io`` (``IoStats``).
         self.fetch_count = 0
         self.bytes_fetched = 0
-        # Set by ``ArchiveSource.report_reads`` when ``on_source_read`` is set.
+        # Set by ``ArchiveSource.report_reads`` when ``on_source_read`` is set, with
+        # this source's offset in a volume set, which the reports add.
         self.progress: SourceReadReporter | None = None
+        self.progress_base = 0
 
     @classmethod
     def from_open_file(
@@ -884,26 +886,26 @@ class RangeSource(io.RawIOBase):
         every request lies inside the size read at open.
         """
         bounded = self._bounded_cat
-        progress = self.progress
+        progress, base = self.progress, self.progress_base
         if bounded is None:
             if progress is not None:
-                progress.request_started(start, end)
+                progress.request_started(base + start, base + end)
             data = cast(bytes, self.fs.cat_file(self.path, start=start, end=end))
             self.fetch_count += 1
             self.bytes_fetched += len(data)
             if progress is not None:
-                progress.request_ended(start, end, len(data))
+                progress.request_ended(base + start, base + end, len(data))
             return start, data, False
         pieces: list[bytes] = []
         pos, ignored, short = start, 0, 0
         while pos < end:
             if progress is not None:
-                progress.request_started(pos, end)
+                progress.request_started(base + pos, base + end)
             answer = bounded(self.path, pos, end)
             self.fetch_count += 1
             self.bytes_fetched += len(answer.data)
             if progress is not None:
-                progress.request_ended(pos, end, len(answer.data))
+                progress.request_ended(base + pos, base + end, len(answer.data))
             if answer.kind == "ignored":
                 ignored += 1
                 if ignored > RANGE_IGNORED_RETRIES:

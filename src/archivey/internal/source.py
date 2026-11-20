@@ -607,8 +607,19 @@ class ArchiveSource(ReadOnlyIOStream):
         """
         reporter = SourceReadReporter(callback, self._name, self._length)
         if self._remote:
+            # In a volume set a range source reads at its own offsets; its reports
+            # add where it starts in the set, so ``position`` means the same as for a
+            # local set.
+            bases: dict[int, int] = {}
+            joined = self._joined
+            if joined is not None:
+                items = getattr(joined, "volume_items", [])
+                ranges = getattr(joined, "volume_ranges", [])
+                for item, (start, _) in zip(items, ranges, strict=False):
+                    bases[id(item)] = start
             for ranged in self._remote:
                 ranged.progress = reporter
+                ranged.progress_base = bases.get(id(ranged), 0)
         else:
             self._progress = reporter
 
@@ -1120,6 +1131,10 @@ class ArchiveSource(ReadOnlyIOStream):
         answer.
         """
         if not self._seekable or self._gatherer is not None or self._joined is not None:
+            return None
+        if self._progress is not None:
+            # An accelerator given the file under the source reads it with ``pread``,
+            # past the ``on_source_read`` reporter (:meth:`report_reads`).
             return None
         return self._reader
 

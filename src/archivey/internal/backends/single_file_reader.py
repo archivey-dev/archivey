@@ -442,8 +442,10 @@ class SingleFileReader(BaseArchiveReader):
         """
         src = self._source
         assert src is not None
-        if src.path is not None:
-            with open(src.path, "rb") as f:
+        # ``codec_path``: while ``on_source_read`` reports reads, they go through the
+        # source (the seekable branch below).
+        if src.codec_path is not None:
+            with open(src.codec_path, "rb") as f:
                 return fn(self._track_source_seeks(f))
         if not src.seekable():
             return None

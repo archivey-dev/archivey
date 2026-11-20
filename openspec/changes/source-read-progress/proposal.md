@@ -23,10 +23,11 @@ The maintainer asked for a callback any caller can hook, and a CLI display built
   (fsspec) source reports at the start and end of each range request, from
   `RangeSource`. Detection's reads count.
 - Only the outer archive's file reports: a nested archive is read from a member, not
-  from a source of its own. Bytes an external program (`unrar`) reads from the path
-  itself are not seen.
-- The callback runs on the thread that read. An exception it raises propagates out of
-  the read.
+  from a source of its own. Bytes an external program (`unrar`) or the RAR backend
+  reads from volume paths directly are not seen.
+- The callback runs on the thread that read. A read on a thread archivey started is
+  counted and reported with the next read on a caller's thread. An exception it raises
+  propagates out of the read.
 - Later in this change: the CLI status line for URLs and the input-position bar for
   `test` and `extract` (tasks 3.x), and byte progress inside an HTTP answer (task 2.1).
 

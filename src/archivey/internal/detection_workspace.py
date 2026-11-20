@@ -150,14 +150,16 @@ class PrefixWorkspace:
             if not path_source.seekable():
                 self._owned_source = path_source
                 source = path_source
-        if isinstance(source, ArchiveSource) and source.path is not None:
+        if isinstance(source, ArchiveSource) and source.codec_path is not None:
             # Detection keeps its own handle on a file and closes it on exit, so the
             # source's handle opens only when a backend reads, and a backend that never
             # does leaves nothing open on the archive: ``unrar`` over a path, and ZIP,
             # the single-file codecs and compressed TAR, which hand their parser the
             # path. Reading through the source here would open its handle before the
-            # backend chose, and hold it for the reader's lifetime.
-            source = source.path
+            # backend chose, and hold it for the reader's lifetime. While
+            # ``on_source_read`` reports the source's reads, ``codec_path`` is ``None``
+            # and detection reads through the source.
+            source = source.codec_path
         # Total size of the underlying object from its own offset 0, when cheap. For an
         # ``ArchiveSource`` that is its ``size_hint``, a caller's fsspec ``size`` included;
         # its ``size`` is the narrower fact, which is for clamping a read and would leave

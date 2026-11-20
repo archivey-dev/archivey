@@ -1074,9 +1074,11 @@ class ArchiveyConfig:
     A local file or stream reports about once per MiB read. A URL source (an
     ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
     reads count. It runs on the thread that read, and an exception it raises propagates
-    out of that read: raising is how a caller stops a slow read. Only the outer
-    archive's file reports, not an archive opened from one of its members, and not
-    bytes an external program (``unrar``) reads from the path itself.
+    out of that read: raising is how a caller stops a slow read. A read on a thread
+    archivey started is counted and reported with the next read on the caller's thread.
+    Only the outer archive's file reports, not an archive opened from one of its
+    members. Bytes that an external program (``unrar``) or the RAR reader's own volume
+    reads take from a path directly are not reported.
     """
 
     if TYPE_CHECKING:

@@ -12,7 +12,12 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
   requests already counted them.
 
 Nothing here runs when the callback is unset: the hooks check for a reporter first.
-The callback runs on the thread that read, and what it raises propagates.
+
+The callback runs on the thread that read. A read on a thread archivey started (named
+``archivey-…``, such as the RAR volume feeder) is counted but reported only with the
+next read on a caller's thread, so caller code never runs on archivey's threads. What
+the callback raises is marked as the caller's own (``mark_callers_source``), so no
+error boundary translates it into an archive error: it reaches the caller unchanged.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
+from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.types import SourceProgress
 
 if TYPE_CHECKING:
@@ -55,15 +61,19 @@ class SourceReadReporter:
                 self._size is None or position < self._size
             ):
                 return
+            if _on_archivey_thread():
+                return
             self._reported_at = total
-        self._callback(SourceProgress(self._name, self._size, total, position))
+        self._call(SourceProgress(self._name, self._size, total, position))
 
     def request_started(self, start: int, end: int) -> None:
-        """A range request for ``[start, end)`` is about to be sent."""
+        """A range request for ``[start, end)`` of the whole source is about to be
+        sent (a volume's base offset already added)."""
         with self._lock:
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
-        self._callback(snapshot)
+        if not _on_archivey_thread():
+            self._call(snapshot)
 
     def request_ended(self, start: int, end: int, received: int) -> None:
         """The request for ``[start, end)`` returned ``received`` bytes."""
@@ -72,7 +82,16 @@ class SourceReadReporter:
             snapshot = self._remote_progress(
                 start, end, received, done=True, position=start + received
             )
-        self._callback(snapshot)
+        if not _on_archivey_thread():
+            self._call(snapshot)
+
+    def _call(self, progress: SourceProgress) -> None:
+        try:
+            self._callback(progress)
+        except BaseException as exc:
+            # The caller's own exception: every error boundary passes it on as itself.
+            mark_callers_source(exc)
+            raise
 
     def _remote_progress(
         self, start: int, end: int, received: int, *, done: bool, position: int
@@ -88,3 +107,8 @@ class SourceReadReporter:
             request_received=received,
             request_done=done,
         )
+
+
+def _on_archivey_thread() -> bool:
+    """Whether this thread is one archivey started: caller code never runs there."""
+    return threading.current_thread().name.startswith("archivey-")

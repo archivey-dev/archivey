@@ -15,7 +15,10 @@ For any other source it SHALL be called at least once per MiB of bytes taken fro
 source, and the request fields SHALL be `None`. `bytes_read` counts every byte taken
 from the source, rereads included, so it may pass `size`.
 
-It SHALL run on the thread that read (as every caller function does). An exception it
+It SHALL run on the thread that read (as every caller function does); a read on a
+thread archivey started SHALL be counted and reported with the next read on a caller's
+thread. Bytes that an external program (`unrar`) or the RAR backend reads from volume
+paths directly are outside this requirement. An exception it
 raises SHALL propagate out of the read that called it, unchanged. A reader opened from a
 member of another reader SHALL NOT report its reads. With `on_source_read` unset, no
 reporting work SHALL be done beyond checking that it is unset.
