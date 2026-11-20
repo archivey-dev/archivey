@@ -86,6 +86,7 @@ _UNCONVERTED: dict[str, int] = {
     "test_cli.py": 2,
     "test_codecs.py": 3,
     "test_extraction.py": 1,
+    "test_iso9660_parser.py": 1,
     "test_iso_trailing_data.py": 1,
     "test_public_api.py": 1,
     "test_sevenzip_surrogate_names.py": 1,

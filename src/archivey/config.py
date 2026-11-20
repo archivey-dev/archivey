@@ -342,8 +342,8 @@ class ListingLimits:
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
-    before decoding them), and ISO the directory records and path tables ``pycdlib``
-    parses and the UDF descriptors and File Entries archivey parses, and XAR
+    before decoding them), and ISO the directories and Rock Ridge continuation areas of
+    its ISO 9660 and Joliet trees and the UDF descriptors and File Entries, and XAR
     applies ``max_members`` and weighs its
     table of contents' size and every path it builds there against
     ``max_metadata_bytes``, so ``open_archive`` raises. A ZIP read from a

@@ -572,7 +572,7 @@ def open_archive(
             variant or feature archivey cannot read, or ``config.formats`` does not
             allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
-            installed, such as ``pycdlib`` for ISO.
+            installed, such as a plugin's own package.
         ResourceLimitError: The archive exceeds a limit that is checked at open, such as
             :class:`~archivey.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
             index is parsed, or :class:`~archivey.DecoderLimits` for data the open
@@ -1010,8 +1010,8 @@ def _refuse_unopenable_format(
         )
 
     # A raw CD sector image the built-in reader cannot read (Mode 2 Form 2, an unknown
-    # mode) is refused by name, ahead of the availability check, so the answer does
-    # not depend on pycdlib; a non-seekable source is left to the read-once refusal in
+    # mode) is refused by name, ahead of the backend, so the answer names the layout;
+    # a non-seekable source is left to the read-once refusal in
     # _backend_for_source, which is also ahead of it. A replacement reader is refused
     # every raw image: the bytes are not an ISO 9660 image, and only the built-in
     # reader strips the sectors.
@@ -1068,8 +1068,9 @@ def _backend_for_source(
     # the requested mode is not what went wrong, so both modes get the one message
     # naming the only fix. Proposing streaming=True here would send the caller into
     # a second refusal explaining the retry could never have worked. Ahead of the
-    # availability check for the same reason: a piped ISO without pycdlib would
-    # otherwise be told to install it, and only then that a pipe cannot be read.
+    # availability check for the same reason: a piped archive of a plugin format whose
+    # package is missing would otherwise be told to install it, and only then that a
+    # pipe cannot be read.
     #
     # The argument-hygiene diagnostics still run first, as they do ahead of the mode
     # half below: a refused open reports the same ``password=`` / ``encoding=``

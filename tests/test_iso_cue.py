@@ -180,7 +180,6 @@ def _count_track_files(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     return opened
 
 
-@requires("pycdlib")
 def test_a_sheet_of_file_lines_opens_no_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -365,7 +364,6 @@ def test_a_symlinked_track_file_is_followed(tmp_path: Path) -> None:
     assert _contents(cue)["a.txt"] == b"hello\n"
 
 
-@requires("pycdlib")
 def test_a_dangling_symlink_track_file_is_truncation(tmp_path: Path) -> None:
     (tmp_path / "x.bin").symlink_to(tmp_path / "nonexistent.bin")
     cue = tmp_path / "d.cue"
@@ -376,7 +374,6 @@ def test_a_dangling_symlink_track_file_is_truncation(tmp_path: Path) -> None:
         open_archive(cue)
 
 
-@requires("pycdlib")
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
 def test_a_fifo_track_file_is_refused_without_blocking(tmp_path: Path) -> None:
     os.mkfifo(tmp_path / "f.bin")
@@ -391,7 +388,6 @@ def test_a_fifo_track_file_is_refused_without_blocking(tmp_path: Path) -> None:
 # --- refusals -----------------------------------------------------------------------
 
 
-@requires("pycdlib")
 @pytest.mark.parametrize("name", ["../disc.bin", "sub/disc.bin", "/etc/passwd", ".."])
 def test_a_file_outside_the_sheets_directory_is_refused(
     name: str, tmp_path: Path
@@ -404,7 +400,6 @@ def test_a_file_outside_the_sheets_directory_is_refused(
         open_archive(cue)
 
 
-@requires("pycdlib")
 def test_a_missing_track_file_is_truncation(tmp_path: Path) -> None:
     cue = tmp_path / "disc.cue"
     cue.write_text(
@@ -414,7 +409,6 @@ def test_a_missing_track_file_is_truncation(tmp_path: Path) -> None:
         open_archive(cue)
 
 
-@requires("pycdlib")
 def test_an_audio_cd_has_no_filesystem(tmp_path: Path) -> None:
     (tmp_path / "cd.bin").write_bytes(_audio(10))
     cue = tmp_path / "cd.cue"
@@ -423,7 +417,6 @@ def test_an_audio_cd_has_no_filesystem(tmp_path: Path) -> None:
         open_archive(cue)
 
 
-@requires("pycdlib")
 def test_an_oversized_sheet_is_refused(tmp_path: Path) -> None:
     cue = tmp_path / "big.cue"
     cue.write_text("REM " + "x" * 70_000 + "\n")
@@ -488,7 +481,6 @@ def _two_sessions(tmp_path: Path, gap: int) -> Path:
     return cue
 
 
-@requires("pycdlib")
 @requires_binary("xorriso")
 @pytest.mark.parametrize(
     "gap",
@@ -509,7 +501,6 @@ def test_a_multisession_disc_reads_its_last_session(gap: int, tmp_path: Path) ->
     }
 
 
-@requires("pycdlib")
 @requires_binary("xorriso")
 def test_an_enhanced_cd_reads_the_data_session(tmp_path: Path) -> None:
     audio_sectors = 300

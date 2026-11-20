@@ -52,8 +52,6 @@ from tests.conftest import (
 )
 from tests.udf_builder import BLOCK, WHEN, Node, build_udf, directory, retag, tag
 
-pytestmark = requires("pycdlib")
-
 
 def _tree() -> Node:
     return directory(
@@ -731,6 +729,7 @@ def _bridge(*, rock_ridge: bool, joliet: bool) -> bytes:
     return out.getvalue()
 
 
+@requires("pycdlib")
 @pytest.mark.parametrize(
     ("rock_ridge", "joliet", "namespace", "name"),
     [
@@ -752,6 +751,7 @@ def test_the_namespace_order_is_rock_ridge_udf_joliet_plain(
         assert not r.diagnostics.retained
 
 
+@requires("pycdlib")
 def test_a_bridge_with_an_unsupported_udf_partition_lists_joliet() -> None:
     """A UDF tree archivey cannot read is passed over for the ISO 9660 trees."""
     image = bytearray(_bridge(rock_ridge=False, joliet=True))
@@ -772,6 +772,7 @@ def test_a_bridge_with_an_unsupported_udf_partition_lists_joliet() -> None:
         assert [m.name for m in reader.members()] == ["joliet name.txt"]
 
 
+@requires("pycdlib")
 def test_a_file_only_in_the_iso_tree_is_reported_when_udf_is_listed() -> None:
     """A Windows install image keeps a README in its ISO 9660 tree only, for readers
     without UDF; listing UDF reports it."""
