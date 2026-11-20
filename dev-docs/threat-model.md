@@ -55,7 +55,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 | archivey to a terminal or log | Messages carrying archive-derived text | Escaped at construction ([terminal](#attacker-bytes-reaching-a-terminal-are-inert)) |
 | Directory source to other processes | The tree between listing and reading | No-follow opens and identity checks ([directory sources](#directory-sources-changed-concurrently)) |
 | Caller to fsspec, through `archivey://` | A `str` archive location given to `ArchiveyFileSystem`, which fsspec opens with whatever protocol it names; a URL chained on `::` | Not defended: the location is trusted caller input, unlike a `str` given to `open_archive`, which is only ever a local path. A member name belongs in the path given to `open()`, never formatted into a URL, where a `::` in it would name a protocol of its own (`ArchiveyFileSystem` docstring). The tree holds only paths extraction under the file system's policy writes |
-| Remote store to archivey | Bytes of an `OpenFile` read by range, one request each, from an object that can be replaced between requests | Partly: a replacement shorter than the size taken at open raises `SourceChangedError` when a range comes back short; one the same length or longer is not detected, and only member checksums catch changed member bytes. `SOURCE_CHANGE_UNDETECTABLE` says so at open. Pinning an object version is the caller's remedy (`docs/remote.md`, fsspec-integration design D7) |
+| Remote store to archivey | Bytes of an `OpenFile` read by range, one request each, from an object that can be replaced between requests | Partly: a replacement shorter than the size taken at open raises `SourceChangedError` when a range comes back short, and over HTTP so does an answer that names another size (a `206` or `416` `Content-Range`, a whole answer's `Content-Length`); one the same length is not detected, nor a longer one on a store whose answers name no size, and only member checksums catch changed member bytes. `SOURCE_CHANGE_UNDETECTABLE` says so at open. Pinning an object version is the caller's remedy (`docs/remote.md`, fsspec-integration design D7) |
 | Caller to archivey | Recursion into nested archives the caller opens, time budgets | Bounded when the caller links each level with `open_archive(parent=)`: the nest is held to one `max_members` total, `max_ratio` of the outermost archive's size (each reader's one-pass high-water mark, summed) and an optional `max_nest_decoded_bytes`, and each level keeps its own limits ([nested-archive amplification](#nested-archive-amplification)); not defended for archives the caller opens unlinked, nor for time |
 
 ## 3. Defended properties
@@ -1690,13 +1690,16 @@ job, and judging the program is a malware scanner's. Public:
 An object can be replaced while archivey reads it through an fsspec range source, such
 as an upload under the same name during a long extraction. Later fetches then return
 bytes of another file. A fetch that comes back shorter than its range raises
-`SourceChangedError`, so a shorter replacement is caught. A replacement of the same
-length, or a longer one, returns full ranges, and nothing in the requests shows it:
-`cat_file` reports no total size, and a size request per fetch would double the request
-count. Member data with a checksum is checked when it is read to the end, so a change
-there most often raises `CorruptionError`; other bytes, such as an index, a TAR member
-or a partly read member, may come from the new file with no error. archivey records the
-advisory `SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked".
+`SourceChangedError`, so a shorter replacement is caught. Over HTTP, an answer that
+names the object's size (a `206` or `416` `Content-Range`, a whole answer's
+`Content-Length`) is checked against the size at open, so a longer replacement is caught
+too. A replacement of the same length returns full ranges, and nothing in the requests
+shows it, nor does a longer one on other stores: `cat_file` reports no total size, and a
+size request per fetch would double the request count. Member data with a checksum is
+checked when it is read to the end, so a change there most often raises
+`CorruptionError`; other bytes, such as an index, a TAR member or a partly read member,
+may come from the new file with no error. archivey records the advisory
+`SOURCE_CHANGE_UNDETECTABLE` at open, so silence never reads as "checked".
 Version pinning and `If-Match` would close this per file system; they are later work
 (`openspec/changes/fsspec-integration/design.md` §D7, tiers 1 and 2). Accepted by the
 maintainer (2026-10-25, design §Decisions by the maintainer, item 3). Public: [remote.md

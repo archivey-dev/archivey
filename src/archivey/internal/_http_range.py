@@ -24,11 +24,15 @@ from typing import Any, Literal, cast
 from archivey.internal.remote import display_url
 
 # ``bytes a-b/n`` or ``bytes a-b/*``, ASCII digits only: ``str.isdigit`` also takes
-# digits ``int`` refuses (a superscript two).
-_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)", re.ASCII | re.IGNORECASE)
+# digits ``int`` refuses (a superscript two). At most 20 digits, more than any object
+# needs: ``int`` refuses a string of over 4300 digits with a bare ``ValueError``, and a
+# header can be longer, so a longer number fails the match instead.
+_CONTENT_RANGE = re.compile(
+    r"bytes (\d{1,20})-(\d{1,20})/(\d{1,20}|\*)", re.ASCII | re.IGNORECASE
+)
 
 # ``bytes */n``, a ``416``'s Content-Range: the object is ``n`` bytes long.
-_UNSATISFIED_RANGE = re.compile(r"bytes \*/(\d+)", re.ASCII | re.IGNORECASE)
+_UNSATISFIED_RANGE = re.compile(r"bytes \*/(\d{1,20})", re.ASCII | re.IGNORECASE)
 
 
 @dataclass(frozen=True)

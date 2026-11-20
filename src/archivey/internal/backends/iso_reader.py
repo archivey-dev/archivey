@@ -814,7 +814,7 @@ def _hint_directory_extents(
     iso: PyCdlib,
     parsed: object,
     hint: Callable[[int, int], None],
-    max_gap: int = _DIRECTORY_CLUSTER_GAP,
+    max_gap: int,
 ) -> None:
     """Hint where the tree's directories lie, from the path table just parsed.
 

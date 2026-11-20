@@ -225,10 +225,12 @@ archivey still reads them as the archive it opened.
 
 If the new file is shorter, a request past its end comes back short, and archivey raises
 `SourceChangedError`, a `ReadError`. It isn't damage, so it isn't a `CorruptionError`: opening the
-archive again reads the new file. If the new file is the same length or longer, nothing in the
-requests shows the change. Members with a checksum are still checked as they're read, so changed
-bytes there most often raise `CorruptionError`, but bytes with no checksum, such as an index, may
-be read from the new file with no error.
+archive again reads the new file. Over HTTP, an answer that names the file's size and names a size
+other than the one seen at open raises `SourceChangedError` too, so a longer file is usually caught
+there. If the new file is the same length, nothing in the requests shows the change, and on other
+stores neither does a longer one. Members with a checksum are still checked as they're read, so
+changed bytes there most often raise `CorruptionError`, but bytes with no checksum, such as an
+index, may be read from the new file with no error.
 
 Archivey says so at open, with the diagnostic `SOURCE_CHANGE_UNDETECTABLE`. Its context names the
 store's protocol and why the reads aren't guarded. It is advisory: it describes how the archive
