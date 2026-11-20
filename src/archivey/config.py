@@ -1009,18 +1009,6 @@ class ArchiveyConfig:
     """A callback called with each diagnostic the policy collects or raises, as it is
     emitted, or ``None``."""
 
-    on_source_read: OnSourceRead | None = None
-    """A callback called with a :class:`~archivey.SourceProgress` as archivey reads the
-    archive's own file, or ``None``.
-
-    A local file or stream reports about once per MiB read. A URL source (an
-    ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
-    reads count. It runs on the thread that read, and an exception it raises propagates
-    out of that read: raising is how a caller stops a slow read. Only the outer
-    archive's file reports, not an archive opened from one of its members, and not
-    bytes an external program (``unrar``) reads from the path itself.
-    """
-
     formats: FormatPolicy = field(default_factory=FormatPolicy)
     """Which formats this call may open. See :class:`~archivey.FormatPolicy`.
 
@@ -1079,6 +1067,18 @@ class ArchiveyConfig:
     error either way: only the partial bytes before an error differ.
     """
 
+    on_source_read: OnSourceRead | None = None
+    """A callback called with a :class:`~archivey.SourceProgress` as archivey reads the
+    archive's own file, or ``None``.
+
+    A local file or stream reports about once per MiB read. A URL source (an
+    ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
+    reads count. It runs on the thread that read, and an exception it raises propagates
+    out of that read: raising is how a caller stops a slow read. Only the outer
+    archive's file reports, not an archive opened from one of its members, and not
+    bytes an external program (``unrar``) reads from the path itself.
+    """
+
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
         # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
@@ -1111,12 +1111,12 @@ class ArchiveyConfig:
             diagnostic_policy: DiagnosticPolicy = ...,
             max_retained_diagnostic_references: int = ...,
             on_diagnostic: OnDiagnostic | None = ...,
-            on_source_read: OnSourceRead | None = ...,
             formats: FormatPolicy = ...,
             max_read_through: int = ...,
             unrar_path: str | os.PathLike[str] | None = ...,
             unar_path: str | os.PathLike[str] | None = ...,
             recover_partial_data: bool = ...,
+            on_source_read: OnSourceRead | None = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
