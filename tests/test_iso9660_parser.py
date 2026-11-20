@@ -20,7 +20,12 @@ from typing import Any
 
 import pytest
 
-from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+)
 from archivey.internal.backends.iso9660 import (
     JOLIET_TREE,
     PRIMARY_TREE,
@@ -464,6 +469,49 @@ def test_multi_extent_records_join_into_one_entry() -> None:
     assert files[0].data_length == 10
 
 
+def test_an_image_cut_after_its_primary_descriptor_names_the_volume_space() -> None:
+    """A cut inside a later descriptor is measured against the volume space the
+    primary descriptor declares, not against the descriptor that is cut."""
+    data = _pycdlib_image(rock_ridge=False, joliet=True)
+    space = struct.unpack_from("<I", data, 16 * 2048 + 80)[0] * 2048
+    with pytest.raises(TruncatedError, match=f"it declares {space} bytes"):
+        _volume(data[: 17 * 2048 + 10])
+
+
+def test_an_identifier_longer_than_its_record_is_refused() -> None:
+    data = bytearray(_pycdlib_image(rock_ridge=False, joliet=False))
+    root, _ = _root_records(data)
+    record = _record_offset(data, root, b"FILE.TXT;1")
+    data[record + 32] = 200
+    with pytest.raises(CorruptionError, match="its identifier declares 200"):
+        _volume(bytes(data))
+
+
+def test_a_symlink_component_longer_than_its_entry_ends_the_area() -> None:
+    data = bytearray(_pycdlib_image(rock_ridge=True, joliet=False))
+    root, _ = _root_records(data)
+    record = _record_offset(data, root, b"SYM.TXT;1")
+    sl = data.index(b"SL", record + 33)
+    # The first component's length byte: past the end of the entry.
+    data[sl + 6] = 0xF0
+    volume = _volume(bytes(data))
+    entries = {e.ident: e for _, e in iter_tree(volume.primary.root)}
+    rr = entries[b"SYM.TXT;1"].rr
+    assert rr is not None and rr.dropped is not None
+    assert "has a component cut short" in rr.dropped
+    assert rr.symlink is None
+
+
+def test_the_root_skip_count_applies_before_the_rock_ridge_test() -> None:
+    """With a non-zero ``SP`` skip count, every other System Use area starts with
+    that many bytes before its first entry."""
+    volume = _volume(_pycdlib_image(rock_ridge=True, joliet=False))
+    volume._sp_skip = 4
+    rr = volume._system_use(b"\xff" * 4 + b"NM\x08\x01\x00abc", 1, root_dot=False)
+    assert rr is not None and rr.dropped is None
+    assert rr.name == b"abc"
+
+
 class _Budget:
     def __init__(self) -> None:
         self.bytes = 0
@@ -482,6 +530,44 @@ def test_every_record_is_weighed_per_tree() -> None:
     # file.txt, empty.txt, subdir, sym.txt and subdir/n.txt; sym has no Joliet record.
     assert budget.members == {PRIMARY_TREE: 5, JOLIET_TREE: 4}
     assert budget.bytes > 0
+
+
+class _Capped:
+    """A budget that refuses past ``limit`` bytes, as ``ListingLimits`` does."""
+
+    def __init__(self, limit: int) -> None:
+        self.bytes = 0
+        self.limit = limit
+
+    def add_iso_bytes(self, nbytes: int) -> None:
+        self.bytes += nbytes
+        if self.bytes > self.limit:
+            raise ResourceLimitError("over budget")
+
+    def add_iso_member(self, tree: int) -> None:
+        pass
+
+
+def test_a_directory_is_weighed_before_it_is_read() -> None:
+    """A directory's declared length is weighed before the read, so directories that
+    each claim the rest of the image are refused before they are read: K of them
+    read K times the image, while their records weigh next to nothing."""
+    data = bytearray(_pycdlib_image(rock_ridge=False, joliet=False))
+    root, _ = _root_records(data)
+    record = _record_offset(data, root, b"DIR")
+    struct.pack_into("<I", data, record + 10, 2**20)
+    struct.pack_into(">I", data, record + 14, 2**20)
+    data += bytes(4 * 2**20 - len(data))
+    image = bytes(data)
+    reads: list[int] = []
+
+    def read_at(offset: int, n: int) -> bytes:
+        reads.append(n)
+        return image[offset : offset + n]
+
+    with pytest.raises(ResourceLimitError):
+        IsoVolume(read_at, len(image), archive_name=None, budget=_Capped(2**19))
+    assert max(reads) < 2**20
 
 
 # --- dates -----------------------------------------------------------------------

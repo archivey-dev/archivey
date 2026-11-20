@@ -193,8 +193,9 @@ damage to structure that holds no member data is a diagnostic, refused under `ST
 
 The ISO backend parses the primary tree and a Joliet tree of an image inside
 `open_archive`, and the UDF tree when present, and keeps every tree, so it SHALL check
-`ListingLimits` while they parse. The bytes it weighs (directory records as stored, Rock
-Ridge continuation areas each time one is read, UDF directories, File Entries and
+`ListingLimits` while they parse. The bytes it weighs (each ISO 9660 or Joliet
+directory's declared length, before the directory is read, Rock Ridge continuation
+areas each time one is read, UDF directories, File Entries and
 Indirect Entries, each UDF entry parsed once however many names lead to it) SHALL be
 one sum for the whole image, held to `max_metadata_bytes`; a tree under the cap SHALL
 NOT make an image over it open. `max_members` SHALL be counted per tree, because a

@@ -26,7 +26,8 @@ continue in a block a ``CE`` entry names.
 
 What is parsed, and when: the whole primary tree and the Joliet tree, at
 construction, as ``udf.UdfVolume`` parses the UDF tree. The listing limits are
-weighed as records are parsed (:class:`IsoBudget`), so an image over them is refused
+weighed as the trees are parsed (:class:`IsoBudget`): each directory's declared
+length before it is read, and one member per record. An image over them is refused
 before any member is listed, and a listing reads nothing more. Path tables are not
 read to list: a reader that walks the directories needs none, as Linux's isofs and
 7-Zip do not. Only a source that takes read hints reads one, to hint where the
@@ -38,8 +39,9 @@ How damage is handled:
   end the image declares and the read started inside the file, and
   ``CorruptionError`` otherwise (:meth:`IsoVolume._read`).
 - A directory record whose fixed fields do not hold (too short, past its directory,
-  extent or volume sequence number that disagree between their little- and big-endian
-  copies) refuses the image: nothing after it in the directory can be found.
+  an identifier longer than the record, extent or volume sequence number that
+  disagree between their little- and big-endian copies) refuses the image: nothing
+  after it in the directory can be found.
 - A malformed System Use entry ends that record's area, and the reason is kept on
   the record (:attr:`RockRidge.dropped`). The record lists from the entries before
   it; no other record is affected.
@@ -127,7 +129,9 @@ _TF_FIELDS = ("created", "modified", "accessed", "attribute", "backup", "expirat
 
 
 class IsoBudget(Protocol):
-    """Where the parser weighs what it keeps: bytes, and one member per record."""
+    """Where the parser weighs what it reads and keeps: each directory's declared
+    length (before the read) and each continuation area's, and one member per
+    record."""
 
     def add_iso_bytes(self, nbytes: int) -> None: ...
 
@@ -366,7 +370,7 @@ class IsoVolume:
         terminated = False
         for index in range(MAX_DESCRIPTORS):
             start = FIRST_DESCRIPTOR + index * DESCRIPTOR_SECTOR
-            self._declared_end = start + DESCRIPTOR_SECTOR
+            self._declared_end = max(self._declared_end, start + DESCRIPTOR_SECTOR)
             sector = self._read(start, DESCRIPTOR_SECTOR, "volume descriptor")
             kind = sector[0]
             if sector[1:6] not in _DESCRIPTOR_IDENTS or kind not in (
@@ -381,6 +385,13 @@ class IsoVolume:
             if kind == _VD_PRIMARY and primary is None:
                 self._check_descriptor(sector, primary=True)
                 primary = (sector, start)
+                # From here a cut is measured against the volume space, as a cut
+                # descriptor after the primary one is still a cut image.
+                self._declared_end = max(
+                    self._declared_end,
+                    int.from_bytes(sector[80:84], "little")
+                    * int.from_bytes(sector[128:130], "little"),
+                )
             elif kind == _VD_SUPPLEMENTARY and joliet is None and _is_joliet(sector):
                 self._check_descriptor(sector, primary=False)
                 joliet = (sector, start)
@@ -508,6 +519,10 @@ class IsoVolume:
         block_size = self.block_size
         start = directory.extent * block_size
         length = directory.data_length
+        # Weighed as declared, before the read: the length is the image's own claim,
+        # and each directory may claim up to the rest of the image.
+        if self._budget is not None:
+            self._budget.add_iso_bytes(length)
         data = self._read(start, length, "directory")
         entries: list[IsoEntry] = []
         continuing: IsoEntry | None = None
@@ -524,17 +539,22 @@ class IsoVolume:
                 offset += pad
                 continue
             record = data[offset : offset + record_length]
-            if record_length < _RECORD_FIXED or len(record) < record_length:
+            at = start + offset
+            if len(record) < record_length:
                 raise self._corrupt(
-                    f"the directory record at offset {start + offset} declares "
-                    f"{record_length} bytes and its directory holds "
-                    f"{len(record)} from there"
-                    if len(record) < record_length
-                    else f"the directory record at offset {start + offset} is "
-                    f"{record_length} bytes, shorter than its fixed fields"
+                    f"the directory record at offset {at} declares {record_length} "
+                    f"bytes and its directory holds {len(record)} from there"
                 )
-            if self._budget is not None:
-                self._budget.add_iso_bytes(record_length)
+            if record_length < _RECORD_FIXED:
+                raise self._corrupt(
+                    f"the directory record at offset {at} is {record_length} bytes, "
+                    "shorter than its fixed fields"
+                )
+            if _RECORD_FIXED + record[32] > record_length:
+                raise self._corrupt(
+                    f"the directory record at offset {at} is {record_length} bytes "
+                    f"and its identifier declares {record[32]}"
+                )
             entry = self._record(tree, directory, record, start + offset)
             offset += record_length
             if entry.ident in (b"\x00", b"\x01"):
@@ -626,13 +646,15 @@ class IsoVolume:
                 if len(area) >= at + _XA_SIZE and area[at + 6 : at + 8] == b"XA":
                     area = area[at + _XA_SIZE :]
                     break
-        if area[:2] not in _RR_FIRST_TAGS:
+        # The root's ``SP`` skip count applies to every other area, before its
+        # first entry (SUSP 1.12 5.3).
+        skip = 0 if root_dot else self._sp_skip
+        if area[skip : skip + 2] not in _RR_FIRST_TAGS:
             return None
         self._has_rr_entries = True
         rr = RockRidge()
         names: list[bytes] = []
         components: list[tuple[int, bytes]] = []
-        skip = 0 if root_dot else self._sp_skip
         continuations = 0
         while True:
             next_area = self._parse_area(rr, area, skip, names, components, root_dot)
@@ -772,7 +794,7 @@ class IsoVolume:
             rr.is_symlink = True
             at = 5
             while at < length:
-                if at + 2 > length:
+                if at + 2 > length or at + 2 + entry[at + 1] > length:
                     return "has a component cut short"
                 flags, size = entry[at], entry[at + 1]
                 if flags not in (0, 1, 2, 4, 8) or (flags & 0x0E and size):
