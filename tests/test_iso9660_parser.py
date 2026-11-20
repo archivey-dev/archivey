@@ -658,28 +658,41 @@ def test_directories_weigh_what_their_records_hold() -> None:
 # --- dates -----------------------------------------------------------------------
 
 
-def _subdirectory_with_child_link(*, rrip: bool, late_er: bool = False) -> bytes:
+def _subdirectory_with_child_link(
+    *, rrip: bool, late_er: bool = False, nested: bool = False
+) -> bytes:
     """A Rock Ridge image whose directory ``SUB`` holds ``F.TXT;1`` and carries a
     ``CL`` entry in place of its ``PX``; without ``rrip``, the root's ``ER`` names no
     RRIP. With ``late_er``, an RRIP ``ER`` takes the place of the ``PX`` in ``SUB``'s
-    own ``.`` record, met only once ``SUB`` is entered."""
+    own ``.`` record, met only once ``SUB`` is entered. With ``nested``, ``SUB`` also
+    holds a directory ``NEST`` with ``G.TXT;1``, whose ``PX`` is a ``CL`` too."""
     import pycdlib
 
     iso = pycdlib.PyCdlib()
     iso.new(interchange_level=3, rock_ridge="1.09")
     iso.add_directory("/SUB", rr_name="sub")
     iso.add_fp(io.BytesIO(b"x"), 1, "/SUB/F.TXT;1", rr_name="f.txt")
+    if nested:
+        iso.add_directory("/SUB/NEST", rr_name="nest")
+        iso.add_fp(io.BytesIO(b"y"), 1, "/SUB/NEST/G.TXT;1", rr_name="g.txt")
     out = io.BytesIO()
     iso.write_fp(out)
     iso.close()
     data = bytearray(out.getvalue())
     root, _ = _root_records(data)
     record = _record_offset(data, root, b"SUB")
-    px = data.index(b"PX", record, record + data[record])
-    length = data[px + 2]
-    cl = b"CL\x0c\x01" + struct.pack("<I", 1000) + struct.pack(">I", 1000)
-    pad = b"PD" + bytes([length - 12, 1]) + bytes(length - 16)
-    data[px : px + length] = cl + pad
+
+    def plant_cl(record: int) -> None:
+        px = data.index(b"PX", record, record + data[record])
+        length = data[px + 2]
+        cl = b"CL\x0c\x01" + struct.pack("<I", 1000) + struct.pack(">I", 1000)
+        pad = b"PD" + bytes([length - 12, 1]) + bytes(length - 16)
+        data[px : px + length] = cl + pad
+
+    plant_cl(record)
+    if nested:
+        (sub_extent,) = struct.unpack_from("<I", data, record + 2)
+        plant_cl(_record_offset(data, sub_extent * 2048, b"NEST"))
     if not rrip:
         at = data.index(b"RRIP_1991A")
         data[at : at + 4] = b"XXXX"
@@ -696,16 +709,24 @@ def _subdirectory_with_child_link(*, rrip: bool, late_er: bool = False) -> bytes
 
 
 @pytest.mark.parametrize(
-    ("rrip", "late_er"), [(False, False), (True, False), (False, True)]
+    ("rrip", "late_er", "nested"),
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, True, True),
+    ],
 )
 def test_a_child_link_moves_a_directory_only_under_rock_ridge(
-    rrip: bool, late_er: bool
+    rrip: bool, late_er: bool, nested: bool
 ) -> None:
     """``CL`` marks a placeholder only once the ``ER`` says Rock Ridge. Without it,
     the bytes are no extension, and the directory's children are listed. An ``ER``
     met only inside that directory does not turn the tree into Rock Ridge after it
     was walked as plain ISO 9660: the flag and the walk agree."""
-    volume = _volume(_subdirectory_with_child_link(rrip=rrip, late_er=late_er))
+    volume = _volume(
+        _subdirectory_with_child_link(rrip=rrip, late_er=late_er, nested=nested)
+    )
     assert volume.rock_ridge is rrip
     assert volume.primary.root.children is not None
     sub = next(c for c in volume.primary.root.children if c.ident == b"SUB")
@@ -714,13 +735,33 @@ def test_a_child_link_moves_a_directory_only_under_rock_ridge(
         assert sub.children is None
     else:
         assert sub.children is not None
-        assert [c.ident for c in sub.children] == [b"F.TXT;1"]
+        if not nested:
+            assert [c.ident for c in sub.children] == [b"F.TXT;1"]
+        else:
+            # A ``CL`` directory met after the ruling is entered too.
+            nest = next(c for c in sub.children if c.ident == b"NEST")
+            assert nest.children is not None
+            assert [c.ident for c in nest.children] == [b"G.TXT;1"]
 
 
-def test_a_path_table_entry_cut_short_gives_no_hints() -> None:
-    """The path table hints only when every entry fits in it: a table whose last
-    entry is cut gives no hints, rather than the blocks of the entries before."""
-    data = _directories_image(8)
+@pytest.mark.parametrize("names", ["even", "odd"])
+def test_a_path_table_entry_cut_short_gives_no_hints(names: str) -> None:
+    """The path table hints only when every entry fits in it, its padding byte
+    included: a table whose last entry is cut gives no hints, rather than the blocks
+    of the entries before. With odd names, the cut takes only the last padding byte."""
+    if names == "even":
+        data, cut_by = _directories_image(8), 3
+    else:
+        import pycdlib
+
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=3)
+        for index in range(8):
+            iso.add_directory(f"/D0{index}")
+        out = io.BytesIO()
+        iso.write_fp(out)
+        iso.close()
+        data, cut_by = out.getvalue(), 1
     whole: list[tuple[int, int]] = []
     volume = _volume(data)
     iso9660.directory_hints(
@@ -728,7 +769,7 @@ def test_a_path_table_entry_cut_short_gives_no_hints() -> None:
     )
     assert whole
     cut: list[tuple[int, int]] = []
-    volume.primary.path_table_size -= 3
+    volume.primary.path_table_size -= cut_by
     iso9660.directory_hints(
         volume, volume.primary, lambda at, n: cut.append((at, n)), 2**20
     )
