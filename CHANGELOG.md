@@ -12,6 +12,8 @@ one line. How to write the entry: see
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-20
+
 A patch release with fixes for reading archives from a URL.
 
 ### Added
@@ -29,7 +31,15 @@ A patch release with fixes for reading archives from a URL.
 
 ### Performance
 
-PENDING
+From a benchmark run on 2026-11-20 at commit `7512aff1`, archivey takes 1.1 to 3.5 times
+as long as the standard library or reference reader to read, and 1.5 to 11.0 times as
+long to list; the ratios above 4 are archives that list in under 2.5 ms. Against 0.5.0,
+timed beside it on the same runner, no case changed by more than 5%, and this release
+changes no decoder or format reader. Listing an ISO image from a URL takes fewer
+requests: a 488 MB CD image from archive.org went from 18 requests and 5.2 MB fetched to
+6 requests and 2.9 MB.
+
+[`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) has the full table.
 
 ## [0.5.0] - 2026-11-19
 
@@ -667,7 +677,8 @@ What goes in this file, from 0.2.0 on:
 `scripts/release.py start` writes the compare links below this comment.
 -->
 
-[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/archivey-dev/archivey/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/archivey-dev/archivey/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/archivey-dev/archivey/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/archivey-dev/archivey/compare/v0.3.0...v0.4.0

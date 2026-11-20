@@ -52,15 +52,42 @@ uv run --extra all python -m benchmarks.harness --mode structural --scale ci
 uv run --extra all python -m benchmarks.harness --mode full --scale realistic
 ```
 
-## Release figures for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1
+## Release figures for 0.5.1, 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1
 
-The figures quoted in the CHANGELOG entries for 0.5.0, 0.4.1, 0.4.0, 0.3.0 and 0.2.1. Each
-comes from a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04` runner (4 vCPUs,
-Python 3.11): the harness's `--mode full --scale realistic --warmup` for each tree, alternating
-three rounds per side. A cell is the fastest of the three rounds, for archivey and for
-its peer separately; ratio is archivey ÷ peer. The rows forcing an accelerator on are
-left out, because the default does not use one at this corpus size. The rows are the
-same cases as in [0.2.0 release figures](#020-release-figures-2026-10-21).
+The figures quoted in the CHANGELOG entries for 0.5.1, 0.5.0, 0.4.1, 0.4.0, 0.3.0 and
+0.2.1. Each comes from a `benchmark-compare.yml` dispatch on a GitHub `ubuntu-24.04`
+runner (4 vCPUs, Python 3.11): the harness's `--mode full --scale realistic --warmup`
+for each tree, alternating three rounds per side. A cell is the fastest of the three
+rounds, for archivey and for its peer separately; ratio is archivey ÷ peer. The rows
+forcing an accelerator on are left out, because the default does not use one at this
+corpus size. The rows are the same cases as in [0.2.0 release
+figures](#020-release-figures-2026-10-21).
+
+### 0.5.1 against 0.5.0 (2026-11-20)
+
+Run 44758019540, the 0.5.1 release branch at `7512aff1` as the candidate and the
+`v0.5.0` tag (`145280ca`) as the baseline:
+
+| Case | archivey 0.5.0 | ratio 0.5.0 | archivey 0.5.1 | ratio 0.5.1 |
+| --- | ---: | ---: | ---: | ---: |
+| `gzip_read_all` | 41.0 ms | 1.07× | 41.5 ms | 1.08× |
+| `tar_read_all` | 11.0 ms | 3.57× | 11.0 ms | 3.46× |
+| `tarbz2_read_all_accel_off` | 141.3 ms | 1.19× | 148.2 ms | 1.24× |
+| `targz_read_all_accel_off` | 24.9 ms | 1.89× | 25.0 ms | 1.88× |
+| `zip_extract` | 48.5 ms | 2.29× | 48.6 ms | 2.33× |
+| `zip_read_all` | 25.8 ms | 2.25× | 26.2 ms | 2.29× |
+| `rar_many_open_list` | 33.3 ms | 2.36× | 32.5 ms | 2.32× |
+| `rar_nonsolid_open_list` | 9.5 ms | 2.60× | 9.4 ms | 2.59× |
+| `rar_open_list` | 1.4 ms | 9.65× | 1.5 ms | 9.75× |
+| `sevenzip_many_open_list` | 145.9 ms | 1.52× | 148.8 ms | 1.54× |
+| `sevenzip_nonsolid_open_list` | 22.7 ms | 1.53× | 22.7 ms | 1.52× |
+| `sevenzip_open_list` | 2.0 ms | 2.64× | 2.0 ms | 2.63× |
+| `tar_open_list` | 4.2 ms | 2.92× | 4.1 ms | 2.88× |
+| `zip_open_list` | 2.2 ms | 11.06× | 2.2 ms | 11.04× |
+
+The release changes only reading from a URL, which no case here covers, and the
+comparison flagged no case. Outside the table, `z_text_read_all` measured 3.78 s for
+0.5.0 and 3.98 s for 0.5.1, and `tarbz2_read_all_accel_on` 113 ms on both sides.
 
 ### 0.5.0 against 0.4.1 (2026-11-19)
 
