@@ -909,8 +909,8 @@ class ArchiveSource(ReadOnlyIOStream):
             step=self._UNKNOWN_LENGTH_READ_STEP,
         )
         self._pos += len(data)
-        if self._progress is not None and data:
-            self._progress.read(self._pos, len(data))
+        if self._progress is not None:
+            self._progress.read(self._pos, len(data), at_end=len(data) < n)
         return data
 
     def _read_all(self) -> bytes:
@@ -923,8 +923,8 @@ class ArchiveSource(ReadOnlyIOStream):
             # full-count, so a stall after a short chunk raises.
             rest = self._full_count_reader().read(-1)
             self._pos += len(rest)
-            if self._progress is not None and rest:
-                self._progress.read(self._pos, len(rest))
+            if self._progress is not None:
+                self._progress.read(self._pos, len(rest), at_end=True)
         return head + rest if head else rest
 
     @override
@@ -977,8 +977,8 @@ class ArchiveSource(ReadOnlyIOStream):
                 )
             total += got
         self._pos += total
-        if self._progress is not None and total:
-            self._progress.read(self._pos, total)
+        if self._progress is not None:
+            self._progress.read(self._pos, total, at_end=total < len(view))
         return total
 
     def peek(self, n: int, start: int = 0) -> bytes:
@@ -1003,10 +1003,11 @@ class ArchiveSource(ReadOnlyIOStream):
             # by the step — ``n`` is detection's own window, never a number read
             # out of the archive.
             chunk = self._full_count_reader().read(missing)
-            if chunk:
-                replay.extend(chunk)
-                if self._progress is not None:
-                    self._progress.read(self._pos + len(replay), len(chunk))
+            replay.extend(chunk)
+            if self._progress is not None:
+                self._progress.read(
+                    self._pos + len(replay), len(chunk), at_end=len(chunk) < missing
+                )
             if len(chunk) < missing:
                 self._peek_met_end = True
         return bytes(replay[start:n])
@@ -1035,8 +1036,8 @@ class ArchiveSource(ReadOnlyIOStream):
             return self._take_replayed(n)
         data = read_arrived(self._stream(), n)
         self._pos += len(data)
-        if self._progress is not None and data:
-            self._progress.read(self._pos, len(data))
+        if self._progress is not None:
+            self._progress.read(self._pos, len(data), at_end=not data)
         return data
 
     def arrived_view(self) -> io.RawIOBase:
@@ -1075,6 +1076,10 @@ class ArchiveSource(ReadOnlyIOStream):
             if not chunk:
                 self._peek_met_end = True
             replay.extend(chunk)
+            if self._progress is not None:
+                self._progress.read(
+                    self._pos + len(replay), len(chunk), at_end=not chunk
+                )
         return bytes(replay[start:n])
 
     def held_rest(self) -> bytes | None:

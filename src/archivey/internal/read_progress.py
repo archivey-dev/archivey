@@ -48,17 +48,23 @@ class SourceReadReporter:
         self._bytes_read = 0
         self._reported_at = 0
         self._requests = 0
-        # Set once a range source reports through this reporter: the source over it
-        # then counts no bytes itself.
-        self.remote = False
 
-    def read(self, position: int, n: int) -> None:
-        """``n`` bytes were taken from a local source; the read ended at ``position``."""
+    def read(self, position: int, n: int, *, at_end: bool = False) -> None:
+        """``n`` bytes were taken from a local source; the read ended at ``position``.
+
+        ``at_end``: the read met the end of the source. A source whose size is unknown
+        (a pipe) has no other sign of its end, so the bytes since the last report are
+        reported then, a source under a MiB included.
+        """
         with self._lock:
             self._bytes_read += n
             total = self._bytes_read
-            if total - self._reported_at < LOCAL_REPORT_STEP and (
-                self._size is None or position < self._size
+            if total == self._reported_at:
+                return
+            if (
+                total - self._reported_at < LOCAL_REPORT_STEP
+                and not at_end
+                and (self._size is None or position < self._size)
             ):
                 return
             if _on_archivey_thread():

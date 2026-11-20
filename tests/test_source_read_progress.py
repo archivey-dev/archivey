@@ -273,3 +273,37 @@ def test_url_volume_list_reports_offsets_in_the_set() -> None:
         )
     finally:
         fs.rm("/vol", recursive=True)
+
+
+class _Pipe(io.RawIOBase):
+    """A non-seekable stream of unknown size, as a pipe is."""
+
+    def __init__(self, data: bytes) -> None:
+        self._inner = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        return self._inner.readinto(b)
+
+
+@pytest.mark.parametrize("size", [100, 2 * LOCAL_REPORT_STEP + 1000])
+def test_a_pipe_reports_its_last_bytes(size: int) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("x.bin", os.urandom(size))
+    data = buf.getvalue()
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen)
+    with (
+        open_archive(_Pipe(data), config=config, streaming=True) as reader,
+        reader.stream_members() as members,
+    ):
+        for _, stream in members:
+            if stream is not None:
+                stream.read()
+    assert seen.calls
+    assert seen.calls[-1].size is None
+    # Every byte taken from the pipe reaches the callback by the end.
+    assert seen.calls[-1].bytes_read == len(data)
