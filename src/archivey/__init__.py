@@ -132,6 +132,7 @@ from archivey.types import (
     OverwritePolicy,
     PluginContainer,
     PluginStream,
+    SourceProgress,
     StreamFormat,
     Verification,
 )
@@ -215,6 +216,7 @@ __all__ = [
     "ResourceLimitError",
     "ResourceUnavailableError",
     "SourceChangedError",
+    "SourceProgress",
     "SpoolLimits",
     "StreamCapability",
     "StreamFormat",

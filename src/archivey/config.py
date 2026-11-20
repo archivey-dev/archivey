@@ -43,7 +43,7 @@ from archivey.internal.arg_checks import (
 from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
-from archivey.types import ArchiveMember, OptionalLibrary
+from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
 
 
 class AcceleratorMode(Enum):
@@ -1009,6 +1009,18 @@ class ArchiveyConfig:
     """A callback called with each diagnostic the policy collects or raises, as it is
     emitted, or ``None``."""
 
+    on_source_read: OnSourceRead | None = None
+    """A callback called with a :class:`~archivey.SourceProgress` as archivey reads the
+    archive's own file, or ``None``.
+
+    A local file or stream reports about once per MiB read. A URL source (an
+    ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
+    reads count. It runs on the thread that read, and an exception it raises propagates
+    out of that read: raising is how a caller stops a slow read. Only the outer
+    archive's file reports, not an archive opened from one of its members, and not
+    bytes an external program (``unrar``) reads from the path itself.
+    """
+
     formats: FormatPolicy = field(default_factory=FormatPolicy)
     """Which formats this call may open. See :class:`~archivey.FormatPolicy`.
 
@@ -1099,6 +1111,7 @@ class ArchiveyConfig:
             diagnostic_policy: DiagnosticPolicy = ...,
             max_retained_diagnostic_references: int = ...,
             on_diagnostic: OnDiagnostic | None = ...,
+            on_source_read: OnSourceRead | None = ...,
             formats: FormatPolicy = ...,
             max_read_through: int = ...,
             unrar_path: str | os.PathLike[str] | None = ...,
@@ -1209,6 +1222,7 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
 def _check_scalar_fields(config: ArchiveyConfig) -> None:
     """Check the callback, the ZIP fallback encoding and the two integer limits."""
     check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
+    check_callable(config.on_source_read, call="ArchiveyConfig(on_source_read=…)")
     check_encoding(
         config.zip_unflagged_fallback_encoding,
         call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",

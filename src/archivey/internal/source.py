@@ -88,6 +88,7 @@ from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from archivey.internal.arg_checks import raise_if_text_stream
 from archivey.internal.overrides import override
+from archivey.internal.read_progress import SourceReadReporter
 
 # ``archive_stream`` imports nothing back from the source boundary (this module, the
 # detection workspace, ``volumes``), so :func:`seek_is_expensive` can type-test it here
@@ -118,6 +119,7 @@ if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
 
     from archivey.internal.remote import FsspecDecompressed, RangeSource
+    from archivey.types import OnSourceRead
 
 
 class JoinedVolumes(Protocol):
@@ -323,6 +325,10 @@ class ArchiveSource(ReadOnlyIOStream):
     _full_count: _GatheringReader | None = None
     _close_callbacks: tuple[Callable[[], None], ...] = ()
     _remote: tuple[RangeSource, ...] = ()
+    # The ``on_source_read`` reporter for the bytes this source takes from a local
+    # file or stream; ``None`` when unset, and for a range source, which reports its
+    # requests itself (:meth:`report_reads`).
+    _progress: SourceReadReporter | None = None
     _owned_beneath: BinaryIO | None = None
     _fsspec_decompressed: FsspecDecompressed | None = None
     # Where the reader's first byte sits in the file: the offset of a compressed stream
@@ -593,6 +599,19 @@ class ArchiveSource(ReadOnlyIOStream):
         """Record the range sources this source reads (one, or a volume list's)."""
         self._remote = ranges
 
+    def report_reads(self, callback: OnSourceRead) -> None:
+        """Call ``callback`` (``ArchiveyConfig.on_source_read``) as this source is read.
+
+        A range source reports each request; any other source reports the bytes taken
+        from it, about once per MiB (:mod:`archivey.internal.read_progress`).
+        """
+        reporter = SourceReadReporter(callback, self._name, self._length)
+        if self._remote:
+            for ranged in self._remote:
+                ranged.progress = reporter
+        else:
+            self._progress = reporter
+
     def will_read(self, start: int, end: int) -> None:
         """Say that ``[start, end)`` of this source is read next.
 
@@ -631,6 +650,17 @@ class ArchiveSource(ReadOnlyIOStream):
         through this source, and never handed to a backend to reopen.
         """
         return self._path
+
+    @property
+    def codec_path(self) -> Path | None:
+        """:attr:`path` for a codec to open itself, or ``None`` to read through this
+        source.
+
+        ``None`` while ``on_source_read`` is reporting this source's reads
+        (:meth:`report_reads`): a codec that opened the path would read past the
+        reporter. Reading through the source gives the same bytes and result.
+        """
+        return None if self._progress is not None else self._path
 
     @property
     def is_directory(self) -> bool:
@@ -814,6 +844,8 @@ class ArchiveSource(ReadOnlyIOStream):
                     f"inner returned {len(data)} bytes for read({avail}): {reader!r}"
                 )
             self._pos += len(data)
+            if self._progress is not None and data:
+                self._progress.read(self._pos, len(data))
             return data
         if n == 0:
             return b""
@@ -866,6 +898,8 @@ class ArchiveSource(ReadOnlyIOStream):
             step=self._UNKNOWN_LENGTH_READ_STEP,
         )
         self._pos += len(data)
+        if self._progress is not None and data:
+            self._progress.read(self._pos, len(data))
         return data
 
     def _read_all(self) -> bytes:
@@ -878,6 +912,8 @@ class ArchiveSource(ReadOnlyIOStream):
             # full-count, so a stall after a short chunk raises.
             rest = self._full_count_reader().read(-1)
             self._pos += len(rest)
+            if self._progress is not None and rest:
+                self._progress.read(self._pos, len(rest))
         return head + rest if head else rest
 
     @override
@@ -930,6 +966,8 @@ class ArchiveSource(ReadOnlyIOStream):
                 )
             total += got
         self._pos += total
+        if self._progress is not None and total:
+            self._progress.read(self._pos, total)
         return total
 
     def peek(self, n: int, start: int = 0) -> bytes:
@@ -956,6 +994,8 @@ class ArchiveSource(ReadOnlyIOStream):
             chunk = self._full_count_reader().read(missing)
             if chunk:
                 replay.extend(chunk)
+                if self._progress is not None:
+                    self._progress.read(self._pos + len(replay), len(chunk))
             if len(chunk) < missing:
                 self._peek_met_end = True
         return bytes(replay[start:n])
@@ -984,6 +1024,8 @@ class ArchiveSource(ReadOnlyIOStream):
             return self._take_replayed(n)
         data = read_arrived(self._stream(), n)
         self._pos += len(data)
+        if self._progress is not None and data:
+            self._progress.read(self._pos, len(data))
         return data
 
     def arrived_view(self) -> io.RawIOBase:

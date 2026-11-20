@@ -639,6 +639,9 @@ def open_archive(
         discover_volumes=effective_config.discover_volumes,
         max_read_through=effective_config.max_read_through,
     )
+    # Only the outer archive's file reports: a nested reader reads a member.
+    if effective_config.on_source_read is not None and parent is None:
+        resolved.source.report_reads(effective_config.on_source_read)
     slot = _SourceSlot(resolved.source)
     try:
         with noting_fsspec_decoding(source):
@@ -1414,6 +1417,8 @@ def open_stream(
         codec_input = ArchiveSource.for_stream(source)
         # The mid-stream origin contract: the payload starts where the caller left it.
         codec_input.rebase_to_current_position()
+    if effective_config.on_source_read is not None:
+        codec_input.report_reads(effective_config.on_source_read)
     # The returned stream owns the source from here, as a reader does: closing it closes
     # the source (which never closes the caller's object), and so does any refusal
     # before there is a stream to close.
@@ -1485,8 +1490,8 @@ def _open_stream_from_source(
     # A path goes to the codec as a path: it opens its own handles and can use
     # path-only accelerator features, and the source then never opens one.
     codec_source: str | BinaryIO
-    if codec_input.path is not None:
-        codec_source = str(codec_input.path)
+    if codec_input.codec_path is not None:
+        codec_source = str(codec_input.codec_path)
     elif source_is_seekable:
         codec_source = codec_input
     else:

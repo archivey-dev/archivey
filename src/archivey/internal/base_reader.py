@@ -4344,8 +4344,8 @@ class BaseArchiveReader(ArchiveReader):
 
         codec = codec_for_stream_format(stream_format)
         codec_source: str | BinaryIO
-        if source.path is not None:
-            codec_source = str(source.path)
+        if source.codec_path is not None:
+            codec_source = str(source.codec_path)
         else:
             codec_source = self._codec_input(source, track_seeks=True)
         decoded = open_codec_stream(

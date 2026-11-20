@@ -79,6 +79,7 @@ if TYPE_CHECKING:
 
     from archivey.internal._http_range import RangeRequest
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.internal.read_progress import SourceReadReporter
     from archivey.internal.source import ArchiveSource
 
 
@@ -713,6 +714,8 @@ class RangeSource(io.RawIOBase):
         # Read by ``--track-io`` (``IoStats``).
         self.fetch_count = 0
         self.bytes_fetched = 0
+        # Set by ``ArchiveSource.report_reads`` when ``on_source_read`` is set.
+        self.progress: SourceReadReporter | None = None
 
     @classmethod
     def from_open_file(
@@ -881,17 +884,26 @@ class RangeSource(io.RawIOBase):
         every request lies inside the size read at open.
         """
         bounded = self._bounded_cat
+        progress = self.progress
         if bounded is None:
+            if progress is not None:
+                progress.request_started(start, end)
             data = cast(bytes, self.fs.cat_file(self.path, start=start, end=end))
             self.fetch_count += 1
             self.bytes_fetched += len(data)
+            if progress is not None:
+                progress.request_ended(start, end, len(data))
             return start, data, False
         pieces: list[bytes] = []
         pos, ignored, short = start, 0, 0
         while pos < end:
+            if progress is not None:
+                progress.request_started(pos, end)
             answer = bounded(self.path, pos, end)
             self.fetch_count += 1
             self.bytes_fetched += len(answer.data)
+            if progress is not None:
+                progress.request_ended(pos, end, len(answer.data))
             if answer.kind == "ignored":
                 ignored += 1
                 if ignored > RANGE_IGNORED_RETRIES:

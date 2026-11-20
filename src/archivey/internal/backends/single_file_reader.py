@@ -308,10 +308,11 @@ class SingleFileReader(BaseArchiveReader):
         # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
         self._pending_parts: MemberStreamParts | None = None
-        if self._seekable and (source.path is None or self._measure):
+        if self._seekable and (source.codec_path is None or self._measure):
             # A stream source always shares its one handle, handing out views. A path
             # source normally hands the path to the codec (independent FDs) and shares
-            # only under measurement, so the source's seeks are visible.
+            # only under measurement, so the source's seeks are visible, and while
+            # ``on_source_read`` reports its reads (``codec_path`` is then ``None``).
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if not self._seekable:
             # Non-seekable: validation probes a copy when detection's peek holds the
