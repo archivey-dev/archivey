@@ -629,6 +629,10 @@ class IsoVolume:
             if entry.ident in (b"\x00", b"\x01"):
                 if entry.ident == b"\x01" and entry.rr is not None:
                     directory.parent_linked = entry.rr.parent_link is not None
+                # A ``.`` or ``..`` record is the next record too: it ends a chain.
+                if continuing is not None:
+                    continuing.extents = tuple(pending)
+                    continuing = None
                 continue
             if self._budget is not None:
                 self._budget.add_iso_member(tree.kind)

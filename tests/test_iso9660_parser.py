@@ -476,6 +476,34 @@ def test_multi_extent_records_join_into_one_entry() -> None:
     assert files[0].data_length == 10
 
 
+def test_a_dot_record_ends_a_multi_extent_chain() -> None:
+    """The multi-extent flag joins a file to the *next* record only: a ``..`` record
+    between two records of one identifier leaves them two files."""
+    data = bytearray(_pycdlib_image(rock_ridge=False, joliet=False))
+    root, _ = _root_records(data)
+    dotdot = root + data[root]
+    dotdot_record = bytes(data[dotdot : dotdot + data[dotdot]])
+    record = _record_offset(data, root, b"FILE.TXT;1")
+    size = data[record]
+    original = bytes(data[record : record + size])
+    first = bytearray(original)
+    first[25] |= 0x80
+    second = bytearray(original)
+    struct.pack_into("<I", second, 2, 999)
+    struct.pack_into(">I", second, 6, 999)
+    rest = bytes(data[record + size : root + 2048])
+    data[record : root + 2048] = (bytes(first) + dotdot_record + bytes(second) + rest)[
+        : root + 2048 - record
+    ]
+    volume = _volume(bytes(data))
+    assert volume.primary.root.children is not None
+    files = [c for c in volume.primary.root.children if c.ident == b"FILE.TXT;1"]
+    assert [c.extents for c in files] == [
+        ((struct.unpack_from("<I", original, 2)[0], 5),),
+        ((999, 5),),
+    ]
+
+
 def test_an_image_cut_after_its_primary_descriptor_names_the_volume_space() -> None:
     """A cut inside a later descriptor is measured against the volume space the
     primary descriptor declares, not against the descriptor that is cut."""
