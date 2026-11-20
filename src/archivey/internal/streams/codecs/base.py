@@ -40,8 +40,8 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64
-from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
     FrameCheck,
     FramedDecompressorStream,

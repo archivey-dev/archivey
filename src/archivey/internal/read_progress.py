@@ -25,7 +25,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
-from archivey.internal.streams.codecs.callers_source import mark_callers_source
+from archivey.internal.streams.callers_source import mark_callers_source
 from archivey.types import SourceProgress
 
 if TYPE_CHECKING:

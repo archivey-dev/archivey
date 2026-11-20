@@ -217,7 +217,7 @@ from archivey.internal.streams.archive_stream import (
     as_closed_source_error,
     compose_translators,
 )
-from archivey.internal.streams.codecs.callers_source import from_callers_source
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,

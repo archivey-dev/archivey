@@ -1,7 +1,8 @@
 """The mark on an exception that the caller's own source raised while a decoder read it.
 
-Its own module because both the codec base (:meth:`StreamCodec.eof_truncation`) and the
-rapidgzip child, which sets the mark, need it, and the child imports the base.
+A shared layer because the codec base (:meth:`StreamCodec.eof_truncation`), the
+rapidgzip child, the public stream's error translation and the ``on_source_read``
+reporter (which marks what the caller's callback raises) all need it.
 """
 
 from __future__ import annotations

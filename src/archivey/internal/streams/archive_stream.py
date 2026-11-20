@@ -43,8 +43,8 @@ from archivey.exceptions import (
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.checked_spans import LevelRefresh
-from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
     retire_decoder_children,

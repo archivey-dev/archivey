@@ -157,11 +157,11 @@ from archivey.internal.sfx import (
     pe_layout,
 )
 from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     parse_metablock,
 )
-from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.streamtools import (
     OneReadEachStream,
     ReadOnlyIOStream,
