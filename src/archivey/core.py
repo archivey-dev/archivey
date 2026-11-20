@@ -644,7 +644,7 @@ def open_archive(
         max_read_through=effective_config.max_read_through,
     )
     # Every reader reports to its own config's callback; a ``parent=`` reader's
-    # reports say how deep it is, since the parent's file reports the same bytes.
+    # reports say how deep it is; each reader counts reads of its own source.
     if effective_config.on_source_read is not None:
         resolved.source.report_reads(
             effective_config.on_source_read,

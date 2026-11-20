@@ -24,11 +24,11 @@ The maintainer asked for a callback any caller can hook, and a CLI display built
   each read's range, a log of every region read). A URL
   (fsspec) source reports at the start and end of each range request, from
   `RangeSource`. Detection's reads count.
-- Every reader reports to the callback in its own config. A reader opened with
-  `parent=` reports with `SourceProgress.nest_level` one more than its parent's (the
-  parent's file reports the same bytes at level 0); a member stream opened without
-  `parent=` is a source of its own, at level 0. Bytes an external program (`unrar`) or
-  the RAR backend reads from volume paths directly are not seen.
+- Every reader reports to the callback in its own config. A reader opened with `parent=`
+  reports with `SourceProgress.nest_level` one more than its parent's; each reader
+  reports the bytes it reads from its own source, at its own level. A member stream
+  opened without `parent=` is a source of its own, at level 0. Bytes an external program
+  (`unrar`) or the RAR backend reads from volume paths directly are not seen.
 - The callback runs on the thread that read. A read on a thread archivey started (the
   RAR volume feeder) does not call it: the latest such report is kept and delivered on
   the caller's next read of the archive or of the member being read. Reports in between

@@ -1083,14 +1083,14 @@ class ArchiveyConfig:
     callback in its own config. A reader opened with ``parent=`` (an archive inside a
     member, which uses the parent's config unless given one) reports with
     :attr:`SourceProgress.nest_level <archivey.SourceProgress.nest_level>` one more than
-    its parent's: the parent's file reports the same bytes at level 0. A member stream
+    its parent's. Each reader reports the bytes it reads from its own source (for a
+    nested reader, the member it was opened on), at its own level. A member stream
     passed without ``parent=`` is a file of its own, at level 0. To tell apart nested
     archives open at the same time, give each its own callback, such as
-    ``dataclasses.replace(config, on_source_read=functools.partial(on_read, name))``.
-    A split set found
-    beside a stub, and the track files of a ``.cue`` sheet, report as the file they
-    stand in for. Bytes that an external program (``unrar``) or the RAR reader's own
-    volume reads take from a path directly are not reported.
+    ``dataclasses.replace(config, on_source_read=functools.partial(on_read, name))``. A
+    split set found beside a stub, and the track files of a ``.cue`` sheet, report as
+    the file they stand in for. Bytes that an external program (``unrar``) or the RAR
+    reader's own volume reads take from a path directly are not reported.
     """
 
     source_read_step: int = 1 << 20
