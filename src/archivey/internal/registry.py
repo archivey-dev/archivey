@@ -55,8 +55,10 @@ from archivey.internal.format_args import coerce_archive_format
 from archivey.internal.sfx import HitValidator
 from archivey.internal.streams.codecs import (
     Codec,
+    CodecId,
     StreamCodec,
     codec_for_stream_format,
+    codec_missing_speedups,
     codec_requirement,
     is_codec_available,
     single_file_codec,
@@ -139,6 +141,17 @@ _CONTAINER_OPTIONAL_CODECS: dict[
         Codec.LZ4,
     ),
     ContainerFormat.ZIP: (Codec.DEFLATE64, Codec.ZSTD, Codec.PPMD),
+}
+
+# Member codecs each container decodes faster with an optional package
+# (``StreamCodec.missing_speedups``), for ``FormatAvailability.faster_with``. The
+# format's own stream codec (``tar.gz``'s gzip) is added separately.
+_CONTAINER_SPEEDUP_CODECS: dict[
+    ContainerFormat | PluginContainer, tuple[Codec, ...]
+] = {
+    ContainerFormat.SEVEN_Z: (Codec.DEFLATE, Codec.BZIP2),
+    ContainerFormat.ZIP: (Codec.DEFLATE, Codec.BZIP2),
+    ContainerFormat.SQUASHFS: (Codec.LZO,),
 }
 
 
@@ -664,11 +677,34 @@ class BackendRegistry:
         if check_programs:
             missing.extend(backend_cls.missing_programs(config))
 
+        faster_with = self._missing_speedups(fmt, member_codecs, excluded)
         if not missing:
-            return FormatAvailability(fmt, FormatSupport.FULL, (), required_source)
+            return FormatAvailability(
+                fmt, FormatSupport.FULL, (), required_source, faster_with
+            )
         return FormatAvailability(
-            fmt, FormatSupport.PARTIAL, tuple(missing), required_source
+            fmt, FormatSupport.PARTIAL, tuple(missing), required_source, faster_with
         )
+
+    @staticmethod
+    def _missing_speedups(
+        fmt: ArchiveFormat,
+        member_codecs: bool,
+        excluded: frozenset[OptionalLibrary],
+    ) -> tuple[MissingComponent, ...]:
+        """``FormatAvailability.faster_with`` for a readable ``fmt``: the absent
+        speed-up packages of its stream codec and, with ``member_codecs``, of the
+        member codecs its built-in reader uses. Each package once, first seen first."""
+        codecs: list[CodecId] = []
+        if fmt.stream != StreamFormat.UNCOMPRESSED:
+            codecs.append(codec_for_stream_format(fmt.stream))
+        if member_codecs:
+            codecs.extend(_CONTAINER_SPEEDUP_CODECS.get(fmt.container, ()))
+        found: dict[str, MissingComponent] = {}
+        for codec in codecs:
+            for component in codec_missing_speedups(codec, excluded):
+                found.setdefault(str(component.name), component)
+        return tuple(found.values())
 
     # --- selection -----------------------------------------------------------------------
 

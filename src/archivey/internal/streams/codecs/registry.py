@@ -205,6 +205,15 @@ def codec_requirement(
     return sc.requirement_under(excluded) if sc is not None else None
 
 
+def codec_missing_speedups(
+    codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+) -> tuple[MissingComponent, ...]:
+    """The absent packages ``codec`` would decode faster with
+    (:meth:`StreamCodec.missing_speedups`); ``()`` for a codec with none."""
+    sc = _BY_CODEC.get(codec)
+    return sc.missing_speedups(excluded) if sc is not None else ()
+
+
 def is_codec_available(
     codec: CodecId, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
 ) -> bool:

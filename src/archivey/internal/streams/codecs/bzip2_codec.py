@@ -25,12 +25,13 @@ from archivey.internal.config import (
     StreamConfig,
 )
 from archivey.internal.dataclass_copy import copy_with
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
-from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs import deps, speedups
 from archivey.internal.streams.codecs.base import (
     BZIP2_HEADER,
     Codec,
@@ -85,7 +86,13 @@ from archivey.internal.streams.decompressor_stream import (
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.slice import file_region
-from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    MagicSignature,
+    MissingComponent,
+    OptionalLibrary,
+    StreamFormat,
+)
 
 
 def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
@@ -878,6 +885,15 @@ class Bzip2Codec(StreamCodec):
     stream_format = StreamFormat.BZIP2
     magic = (MagicSignature(0, b"BZh", ArchiveFormat.BZ2),)
     script_payload_check = staticmethod(check_bzip2)
+
+    @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+    ) -> tuple[MissingComponent, ...]:
+        # rapidgzip decodes large data in parallel, in a child process.
+        return speedups.missing_speedup(
+            speedups.rapidgzip_speedup(), (deps.rapidgzip,), excluded
+        )
 
     @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:

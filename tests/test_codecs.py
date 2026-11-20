@@ -3369,7 +3369,7 @@ def test_an_unused_package_reports_its_reason_on_every_channel(
 ) -> None:
     """A package archivey does not use here is reported with the reason, not the
     install advice: by the codec open, by ``format_availability()``, by the registry's
-    refusal. ``--version -v`` is pinned in tests/test_cli.py."""
+    refusal. ``--version -v`` is pinned in tests/test_cli_version_report.py."""
     reason = "archivey does not use lz4 under PyPy, where it crashes"
     codec = stream_codec(Codec.LZ4)
     requirement = dataclasses.replace(codec.requirement, reason=reason)

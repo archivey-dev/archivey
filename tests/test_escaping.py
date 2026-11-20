@@ -677,13 +677,11 @@ _CLI_PRINT_ALLOWED = {
         "escaped there, diagnostic messages stored escaped"
     ),
     "main.py: message": "_report_quietly's message; its call sites are checked here",
-    "main.py: archivey.__version__": "archivey's own version",
-    "main.py: format_format_label(fmt)": "format label from the format registry",
-    "main.py: avail.support.value": "enum value",
     "main.py: exc.code": "a SystemExit message raised by the CLI itself",
-    "main.py: '; '.join(groups)": (
-        "dependency names and install hints from archivey, grouped by "
-        "_format_missing_components"
+    "version_report.py: version": "archivey's own version, passed by main.py",
+    "version_report.py: line": (
+        "the --version -v report: format labels from the format registry, enum "
+        "values, and dependency names and install hints from archivey"
     ),
 }
 

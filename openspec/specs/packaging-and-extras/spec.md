@@ -347,9 +347,12 @@ remove the command entry points.
 ### Requirement: an archivey-cli companion distribution installs the CLI with [recommended]
 
 The repository SHALL ship a second distribution, `archivey-cli`, from
-`packages/archivey-cli/`. It SHALL contain no Python modules. Its only runtime
-dependency SHALL be `archivey[recommended]` pinned with `==` to its own version, which
-SHALL equal the root `archivey` version. It SHALL install two console scripts, `archivey`
+`packages/archivey-cli/`. It SHALL contain no Python modules. It SHALL depend on
+`archivey[recommended]` pinned with `==` to its own version, which SHALL equal the root
+`archivey` version, plus `fsspec` and `aiohttp` for URL arguments. It SHALL also depend on
+the packages of the root's `[bzip3]` and `[seekable]` extras, at the same floors, each
+behind an environment marker that keeps it to the platforms where it installs from a
+wheel, so installing the CLI never compiles them. It SHALL install two console scripts, `archivey`
 and `archivey-cli`, both pointing at the same entry point as the root `archivey` script.
 The publish workflow SHALL build and upload it from the same tag as `archivey`.
 
@@ -360,7 +363,7 @@ Reason: Python packaging has no default extras, so `uvx archivey` runs the core 
 
 | Case | Expected |
 | --- | --- |
-| `uvx archivey-cli --version -v` | Runs the archivey CLI; formats that need `[recommended]` report full support |
+| `uvx archivey-cli --version -v` | Runs the archivey CLI; formats that need `[recommended]` report full support, and on a platform with bzip3 and rapidgzip wheels, so do `.bz3` and the parallel decoders |
 | `pipx install archivey-cli` then `archivey --version` | Command runs |
 | Root version bumped without the companion's version or pin | `tests/test_cli_companion_package.py` fails |
 | Tag `vX.Y.Z` where either built wheel has another version | `publish.yml` build job fails before upload |

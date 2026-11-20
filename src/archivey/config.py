@@ -47,7 +47,10 @@ from archivey.types import ArchiveMember, OptionalLibrary
 
 
 class AcceleratorMode(Enum):
-    """Whether to use an optional accelerator that gives seekable streams over a codec."""
+    """Whether to use an optional accelerator that decodes a codec in parallel.
+
+    Seeking works without it, from archivey's own restart points; the accelerator's
+    index makes it faster."""
 
     AUTO = "auto"
     """Use it when seekable streams were asked for (``seekable_members=True`` on
@@ -845,7 +848,7 @@ class ArchiveyConfig:
     use_rapidgzip: AcceleratorMode = AcceleratorMode.AUTO
     """Whether to use the ``rapidgzip`` accelerator for gzip, zlib and raw deflate.
 
-    It gives seekable member streams over those codecs, and decodes in parallel. Under
+    It decodes those codecs in parallel, and seeks faster from its own index. Under
     ``AUTO`` it is used only when the compressed input is known to be at least
     ``RAPIDGZIP_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown) and the
     decompressed size can be verified, so a truncated stream cannot be swallowed
@@ -869,7 +872,7 @@ class ArchiveyConfig:
     """
 
     use_indexed_bzip2: AcceleratorMode = AcceleratorMode.AUTO
-    """Whether to use rapidgzip's bundled bzip2 backend for random access into bzip2.
+    """Whether to use rapidgzip's bundled bzip2 backend, which decodes bzip2 in parallel.
 
     Under ``AUTO`` it is used only when the compressed input is known to be at least
     ``INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE`` bytes (or its size is unknown). Like the

@@ -710,6 +710,19 @@ class StreamCodec:
         assert library is not None
         return as_excluded(replace(requirement, name=library))
 
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+    ) -> tuple[MissingComponent, ...]:
+        """The optional packages this codec decodes faster with that are absent, or
+        that ``excluded`` turns off (``codecs/speedups.py``).
+
+        ``()`` when no package would speed it up, or every one it can use is here.
+        Without them the codec still decodes, in Python or with the standard library,
+        so ``format_availability`` reports them in ``faster_with``, not ``missing``.
+        """
+        del excluded
+        return ()
+
     def _missing(
         self,
         purpose: str,

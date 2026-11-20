@@ -86,7 +86,7 @@ def _rapidgzip_requirement(
         MissingComponent(
             OptionalLibrary.RAPIDGZIP,
             "pip install archivey[seekable]",
-            ("random-access",),
+            ("parallel decoding",),
             reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
         ),
         excluded,

@@ -38,11 +38,7 @@ from archivey import (
     ArchiveyConfig,
     ExtractionPolicy,
     FormatDetectionError,
-    FormatSupport,
-    MissingComponent,
     OverwritePolicy,
-    format_availability,
-    list_known_formats,
 )
 from archivey.cli import sources
 from archivey.cli.cat_cmd import run_cat
@@ -59,13 +55,13 @@ from archivey.cli.extract_cmd import run_extract
 from archivey.cli.format import (
     escape_member_name,
     format_error_detail,
-    format_format_label,
 )
 from archivey.cli.info_cmd import run_info
 from archivey.cli.list_cmd import run_list
 from archivey.cli.logging_config import cli_logging
 from archivey.cli.sources import redact
 from archivey.cli.test_cmd import run_test
+from archivey.cli.version_report import print_version_report
 from archivey.exceptions import ArchiveyError
 from archivey.terminal import display_path, quoted
 
@@ -720,43 +716,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _format_missing_components(missing: Sequence[MissingComponent]) -> str:
-    """``"a, b (hint1); c (hint2)"``: names grouped by install hint (or the reason
-    archivey does not use one), first-seen order."""
-    names_by_hint: dict[str, list[str]] = {}
-    for component in missing:
-        names_by_hint.setdefault(component.advice, []).append(component.name)
-    groups = [f"{', '.join(names)} ({hint})" for hint, names in names_by_hint.items()]
-    return "; ".join(groups)
-
-
-def _print_version(*, verbose: bool, out: TextIO) -> None:
-    """``--version`` / ``--version -v`` (Q6 / P14)."""
-    print(f"archivey {archivey.__version__}", file=out)
-    if not verbose:
-        return
-    print(file=out)
-    print("formats:", file=out)
-    for fmt in list_known_formats():
-        avail = format_availability(fmt)
-        label = format_format_label(fmt)
-        if avail.missing:
-            missing = _format_missing_components(avail.missing)
-            print(f"  {label}: {avail.support.value} — missing {missing}", file=out)
-        elif avail.support is FormatSupport.NONE:
-            # A registered format with nothing missing is recognised and not
-            # readable. Every other ``none`` on this list names a component.
-            print(
-                f"  {label}: {avail.support.value} — recognised, not readable",
-                file=out,
-            )
-        else:
-            print(f"  {label}: {avail.support.value}", file=out)
-
-
 def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
     if args.version:
-        _print_version(verbose=bool(args.verbose), out=out)
+        print_version_report(
+            version=archivey.__version__, verbose=bool(args.verbose), out=out
+        )
         return EXIT_OK
 
     if args.salvage:

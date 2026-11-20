@@ -12,12 +12,14 @@ from archivey.exceptions import (
     PackageNotInstalledError,
 )
 from archivey.internal.config import AcceleratorMode, StreamConfig
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
     compose_translators,
 )
+from archivey.internal.streams.codecs import deps, speedups
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
@@ -43,6 +45,7 @@ from archivey.internal.streams.codecs.stdlib_takeover import (
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
+from archivey.types import MissingComponent, OptionalLibrary
 
 
 class _DeflateFamilyCodec(StreamCodec):
@@ -61,6 +64,15 @@ class _DeflateFamilyCodec(StreamCodec):
     # DEFLATE or zlib stream looking for a concatenated member, and an AES pad after it
     # would look like a second member.
     _bounds_source: ClassVar[bool] = True
+
+    @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS
+    ) -> tuple[MissingComponent, ...]:
+        # rapidgzip decodes large data in parallel, in a child process.
+        return speedups.missing_speedup(
+            speedups.rapidgzip_speedup(), (deps.rapidgzip,), excluded
+        )
 
     @override
     def open(

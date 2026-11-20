@@ -437,7 +437,9 @@ install hints when support is not full.
 | Case | Expected |
 | --- | --- |
 | `archivey --version` | One line: `archivey <version>`; exit `0` |
-| `archivey --version -v` / `archivey -v --version` | Version line plus `formats:` availability matrix |
+| `archivey --version -v` / `archivey -v --version` | Version line, then archive formats and compression formats by support level, a sentence naming the containers read inside any compression, and the install commands grouped by what they add, complete or speed up |
+| A `container.compression` pair whose support differs from the weaker of its parts | Printed on its own under "combinations that differ from their parts"; matching pairs are not listed |
+| Run through `uvx archivey-cli`, `uv tool install`, or `pipx` | A `pip install …` hint is printed as `uvx --with …`, `uv tool install --with …`, or `pipx inject archivey-cli …`; other advice unchanged |
 
 ### Requirement: salvage flag reserved without behavior
 
