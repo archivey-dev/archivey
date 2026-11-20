@@ -42,9 +42,9 @@ def _list_remote(data: bytes, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str
     fetches: list[tuple[int, int]] = []
     fetch = remote.RangeSource.fetch
 
-    def counted(self: remote.RangeSource, start: int, end: int) -> bytes:
+    def counted(self: remote.RangeSource, start: int, end: int, **kw: Any) -> bytes:
         fetches.append((start, end))
-        return fetch(self, start, end)
+        return fetch(self, start, end, **kw)
 
     monkeypatch.setattr(remote.RangeSource, "fetch", counted)
     fs = MemoryFileSystem()
