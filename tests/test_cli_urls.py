@@ -497,6 +497,14 @@ class _Handler(BaseHTTPRequestHandler):
     # (``""``: none at all), and a body to send instead of the range's bytes.
     content_range: ClassVar[list[str | None]] = [None]
     body_206: ClassVar[list[bytes | None]] = [None]
+    # On a 206: answer at most this many bytes (a valid short range); declare this
+    # many in Content-Range whatever the body holds; name this total size.
+    max_206: ClassVar[list[int | None]] = [None]
+    declare_206: ClassVar[list[int | None]] = [None]
+    total_206: ClassVar[list[int | None]] = [None]
+    # Serve the file gzip-encoded (ranges count in the encoded bytes) to a request
+    # whose Accept-Encoding allows gzip, as a server that negotiates encoding does.
+    gzip_if_allowed: ClassVar[list[bool]] = [False]
     ranges: ClassVar[list[str]] = []
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -525,6 +533,11 @@ class _Handler(BaseHTTPRequestHandler):
         data = self._body()
         if data is None:
             return
+        gzipped = self.gzip_if_allowed[0] and "gzip" in self.headers.get(
+            "Accept-Encoding", ""
+        )
+        if gzipped:
+            data = gzip.compress(data, mtime=0)
         start, end = 0, len(data) - 1
         ranged = self.headers.get("Range")
         if ranged:
@@ -536,6 +549,13 @@ class _Handler(BaseHTTPRequestHandler):
             first, _, last = ranged.removeprefix("bytes=").partition("-")
             start = int(first)
             end = min(int(last), len(data) - 1) if last else len(data) - 1
+            if start >= len(data):
+                self.send_response(416)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if self.max_206[0] is not None:
+                end = min(end, start + self.max_206[0] - 1)
         span = self.poison.get(self.path.partition("?")[0])
         if span is not None and start < span[1] and end >= span[0]:
             self.send_response(403)
@@ -545,10 +565,16 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(206 if ranged else 200)
         if ranged:
             header = self.content_range[0]
+            declared = end
+            if self.declare_206[0] is not None:
+                declared = start + self.declare_206[0] - 1
+            total = self.total_206[0] or len(data)
             if header != "":
                 self.send_header(
-                    "Content-Range", header or f"bytes {start}-{end}/{len(data)}"
+                    "Content-Range", header or f"bytes {start}-{declared}/{total}"
                 )
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
         body = data[start : end + 1]
         if ranged and self.body_206[0] is not None:
             body = self.body_206[0]
@@ -568,6 +594,8 @@ def http_base() -> Iterator[str]:
     _Handler.ignore_ranges[0] = 0
     _Handler.content_range[0] = None
     _Handler.body_206[0] = None
+    _Handler.max_206[0] = _Handler.declare_206[0] = _Handler.total_206[0] = None
+    _Handler.gzip_if_allowed[0] = False
     _Handler.ranges.clear()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -941,10 +969,89 @@ def test_http_a_partial_answer_longer_than_its_range_is_not_read_whole(
     tracemalloc.start()
     try:
         src.seek(100_000)
-        with pytest.raises(OSError, match="does not honour range requests"):
+        with pytest.raises(OSError, match="sent more"):
             src.read(10)
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
         src.close()
     assert peak < 4 << 20
+
+
+def _range_source(url: str) -> Any:
+    import fsspec
+
+    from archivey.internal.remote import RangeSource, WindowPool
+
+    return RangeSource.from_open_file(
+        fsspec.open(url), pool=WindowPool(), max_read_through=1 << 20
+    )
+
+
+def test_http_a_body_longer_than_its_declared_span_is_refused(http_base: str) -> None:
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.declare_206[0] = 10  # declares 10 bytes, sends the whole window
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        with pytest.raises(OSError, match="declared 10 bytes"):
+            src.read(10)
+    finally:
+        src.close()
+
+
+def test_http_a_valid_short_range_is_continued(http_base: str) -> None:
+    # The server answers each range with at most 16 KiB, as RFC 9110 allows: the
+    # read asks for the rest from where each answer stopped.
+    data = bytes(range(256)) * 1024
+    _Handler.files["/big.bin"] = data
+    _Handler.max_206[0] = 16384
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        assert src.read(10_000) == data[100_000:110_000]
+    finally:
+        src.close()
+
+
+def test_http_a_server_that_answers_too_little_too_often_is_refused(
+    http_base: str,
+) -> None:
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.max_206[0] = 1
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        with pytest.raises(OSError, match="with parts of the range"):
+            src.read(10)
+    finally:
+        src.close()
+
+
+def test_http_a_206_naming_another_size_is_a_changed_object(http_base: str) -> None:
+    from archivey import SourceChangedError
+
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.total_206[0] = 999_999
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        with pytest.raises(SourceChangedError, match="999999"):
+            src.read(10)
+    finally:
+        src.close()
+
+
+def test_http_ranges_ask_for_the_bytes_as_stored(http_base: str) -> None:
+    # A server that gzips for a client that allows it counts ranges in the gzipped
+    # bytes; the size fsspec read at open is the stored one. Asking for identity
+    # keeps the two in the same coordinates.
+    data = os.urandom(200_000)
+    _Handler.files["/big.bin"] = data
+    _Handler.gzip_if_allowed[0] = True
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(150_000)
+        assert src.read(10) == data[150_000:150_010]
+    finally:
+        src.close()
