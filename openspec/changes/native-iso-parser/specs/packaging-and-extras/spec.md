@@ -31,6 +31,10 @@ Removed names (`[7z]`, `[rar]`, `[crypto]`, `[iso]`, `[zstd]`, `[lz4]`, `[cli]`,
 `[recommended-lite]`) MUST NOT be reintroduced as aliases: format-named extras whose
 contents are capability-scoped are what made install hints name the wrong thing.
 
+`pycdlib` SHALL NOT be a runtime dependency of any extra, and `OptionalLibrary` SHALL
+NOT name it: ISO is read by archivey's own parser. `pycdlib` stays in the `dev` group,
+where tests use it to write images and as the reference parser.
+
 Installing an extra MAY pull dependencies unrelated to the capability the caller wanted
 — `[recommended]` is deliberately a single broad bundle. This supersedes the previous
 requirement that each extra avoid unrelated dependencies, and is an accepted trade for a

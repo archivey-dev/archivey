@@ -36,8 +36,9 @@ sessions, dedupe by data location) one model to build on.
 
 ## Impact
 
-- Public API: none. `OptionalLibrary.PYCDLIB` stays a known name, no longer needed by a
-  built-in format.
+- Public API: `OptionalLibrary.PYCDLIB` is removed, as no built-in format needs it
+  (maintainer ruling, 2026-11-20). The 0.6.0 changelog records it as a **Breaking:**
+  line.
 - Packaging: one fewer runtime dependency in `[recommended]` and `[free-threaded]`.
 - Specs: `format-iso` (this change), and the `packaging-and-extras`,
   `backend-registry`, `error-handling` and `access-mode-and-cost` rows that use "ISO
