@@ -689,7 +689,7 @@ def _install_pycdlib_path_table_bound() -> None:
         # pycdlib parses each tree's table twice, little-endian then big-endian, and
         # walks the tree from the first; the second is parsed only to compare with it.
         if hint is not None and _is_little_endian_table(self, extent):
-            _hint_directory_extents(self, result, hint)
+            _hint_directory_extents(self, result, *hint)
         return result
 
     setattr(pcd_module.PyCdlib, "_parse_path_table", parse_path_table)
@@ -786,16 +786,18 @@ def _gpt_end(fp: BinaryIO, gpt: bytes, *, image_length: int) -> int:
 
 
 # Set while this module's ``open_fp`` runs, like ``_SYSTEM_USE_NOTES``, to the source's
-# ``ReaderSource._will_read``, except for a raw sector image. A source that is not
-# remote ignores the hints.
-_DIRECTORY_HINT: ContextVar[Callable[[int, int], None] | None] = ContextVar(
+# ``ReaderSource._will_read`` and the longest gap a cluster may span (below), except
+# for a raw sector image. A source that is not remote ignores the hints.
+_DIRECTORY_HINT: ContextVar[tuple[Callable[[int, int], None], int] | None] = ContextVar(
     "archivey_iso_directory_hint", default=None
 )
 
 # Directory extents closer than this are hinted as one span. A clustering threshold:
 # small enough that a span is mostly directories, large enough that a mastering tool's
 # padding or a few small files between directories do not split it. A span is capped
-# at the planner's maximum fetch whatever its length.
+# at the planner's maximum fetch whatever its length. The gaps are a guess, unlike the
+# directories, so the threshold is also capped at ``ArchiveyConfig.max_read_through``:
+# a span reads through no gap that ordinary reads would not, and ``0`` hints nothing.
 _DIRECTORY_CLUSTER_GAP = 1024 * 1024
 
 
@@ -809,7 +811,10 @@ def _is_little_endian_table(iso: PyCdlib, extent: int) -> bool:
 
 
 def _hint_directory_extents(
-    iso: PyCdlib, parsed: object, hint: Callable[[int, int], None]
+    iso: PyCdlib,
+    parsed: object,
+    hint: Callable[[int, int], None],
+    max_gap: int = _DIRECTORY_CLUSTER_GAP,
 ) -> None:
     """Hint where the tree's directories lie, from the path table just parsed.
 
@@ -818,7 +823,7 @@ def _hint_directory_extents(
     area in growing pieces and fetch parts of it again, as each piece replaces the
     last. The path table names every directory's first block, so the walk's area is
     known before it starts: each cluster of directories (blocks closer than
-    ``_DIRECTORY_CLUSTER_GAP``) becomes one hint, and the source fetches it in one
+    ``max_gap`` apart) becomes one hint, and the source fetches it in one
     request, up to its maximum fetch. A cluster of one directory is not hinted: its
     read costs one request either way. A hint never changes the bytes a read returns.
     """
@@ -831,10 +836,7 @@ def _hint_directory_extents(
     blocks = sorted(e for e in extent_to_ptr if isinstance(e, int) and e > 0)
     clusters: list[tuple[int, int, int]] = []  # (first block, last block, directories)
     for block in blocks:
-        if (
-            clusters
-            and (block - clusters[-1][1]) * block_size <= _DIRECTORY_CLUSTER_GAP
-        ):
+        if clusters and (block - clusters[-1][1]) * block_size <= max_gap:
             first, _, count = clusters[-1]
             clusters[-1] = (first, block, count + 1)
         else:
@@ -1857,8 +1859,10 @@ class IsoReader(IndexedReader["DirectoryRecord | UdfEntry"]):
         padding_notes: list[int] = []
         padding_token = _PADDING_NOTES.set(padding_notes)
         # A raw sector image's offsets are not the file's, so it is not hinted.
+        gap = min(_DIRECTORY_CLUSTER_GAP, self._context.config.max_read_through)
+        will_read = None if isinstance(source, CookedSource) else source._will_read
         hint_token = _DIRECTORY_HINT.set(
-            None if isinstance(source, CookedSource) else source._will_read
+            None if will_read is None or gap == 0 else (will_read, gap)
         )
         try:
             self._iso.open_fp(self._iso_fp)
