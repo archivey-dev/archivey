@@ -489,29 +489,44 @@ class IsoVolume:
     def _walk(self, tree: IsoTree) -> None:
         """Parse every directory of ``tree``, breadth first, each extent once.
 
-        A directory that names an extent already entered is refused as a loop; a
+        A directory that names an extent already entered is refused as a loop. A
         Rock Ridge ``CL`` placeholder is not entered, as the directory it points at
-        is entered where it is stored (under ``rr_moved``).
+        is entered where it is stored (under ``rr_moved``). Whether the image is Rock
+        Ridge is known only once the ``ER`` entry is met, so placeholders wait until
+        the rest of the tree is walked: without Rock Ridge, a ``CL`` is a stray byte
+        pattern and the directory is entered like any other.
         """
         root = tree.root
         seen = {root.extent}
         queue = deque([root])
-        while queue:
-            directory = queue.popleft()
-            children = self._read_directory(tree, directory)
-            directory.children = children
-            for child in children:
-                if not child.is_dir:
-                    continue
-                if child.rr is not None and child.rr.child_link is not None:
-                    continue
-                if child.extent in seen:
-                    raise self._corrupt(
-                        f"its directory {child.ident!r} names a directory already "
-                        "listed: the directory tree forms a loop"
-                    )
-                seen.add(child.extent)
-                queue.append(child)
+        placeholders: list[IsoEntry] = []
+        while True:
+            while queue:
+                directory = queue.popleft()
+                children = self._read_directory(tree, directory)
+                directory.children = children
+                for child in children:
+                    if not child.is_dir:
+                        continue
+                    if child.rr is not None and child.rr.child_link is not None:
+                        placeholders.append(child)
+                        continue
+                    self._enter(child, seen, queue)
+            if not placeholders or (self._has_rr_entries and self._saw_rrip):
+                return
+            for child in placeholders:
+                self._enter(child, seen, queue)
+            placeholders.clear()
+
+    def _enter(self, child: IsoEntry, seen: set[int], queue: deque[IsoEntry]) -> None:
+        """Queue ``child`` to be read, or refuse a loop."""
+        if child.extent in seen:
+            raise self._corrupt(
+                f"its directory {child.ident!r} names a directory already "
+                "listed: the directory tree forms a loop"
+            )
+        seen.add(child.extent)
+        queue.append(child)
 
     def _read_directory(self, tree: IsoTree, directory: IsoEntry) -> list[IsoEntry]:
         """The entries of one directory, in on-disc order.
@@ -964,12 +979,16 @@ def directory_hints(
     if not 0 < size <= _MAX_HINT_TABLE or start + size > volume._image_length:
         return
     table = volume._read_at(start, size)
+    if len(table) != size:
+        return
     blocks: list[int] = []
     at = 0
-    while at + 8 <= len(table):
+    while at < len(table):
         name_length = table[at]
         if name_length == 0:
             break
+        if at + 8 + name_length > len(table):
+            return  # an entry cut short: the table does not parse
         block = int.from_bytes(table[at + 2 : at + 6], "little")
         if block > 0:
             blocks.append(block)

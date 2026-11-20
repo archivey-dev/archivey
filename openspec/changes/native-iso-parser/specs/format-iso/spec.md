@@ -17,6 +17,7 @@ read a record's data length little-endian only.
 A tree SHALL be read as Rock Ridge when its records carry SUSP entries and an `ER` entry
 names RRIP (`RRIP_1991A` or `IEEE_P1282`). The skip count of the root's `SP` entry SHALL
 apply to every other System Use area. A `CE` chain SHALL be followed at most 32 times.
+A `CL` entry SHALL keep the walk out of its directory only in a Rock Ridge tree.
 
 #### Scenario: native parse matrix
 
@@ -27,6 +28,7 @@ apply to every other System Use area. A `CE` chain SHALL be followed at most 32 
 | Path tables damaged, disagreeing, or past the end of a full-length image | Opens and lists as an intact image does |
 | Two primary or two Joliet descriptors | The first is read |
 | Records with Rock Ridge-shaped System Use bytes but no RRIP `ER` entry | Not Rock Ridge |
+| A directory record carrying a `CL` entry in a tree with no RRIP `ER` entry | Its directory is read and its children listed |
 | One tree's directories that together declare more bytes than the image holds | `CorruptionError` before the directory that crosses it is read |
 | Bit flips in the descriptors and directories | Opens, or raises an `ArchiveyError`; never another exception; opens every image pycdlib opens, except one whose directory record holds an identifier longer than the record |
 
@@ -37,13 +39,14 @@ version other than 1 on a SUSP or RRIP tag), or whose body does not parse (an `N
 more than one of CONTINUE, CURRENT and PARENT, a `PX` that is not 36 or 44 bytes or
 whose byte orders disagree, an `SL` component with bad flags or cut short, a `TF`
 holding fewer times than its flags declare, a short `CE`, `CL` or `PL`, an `SP` without
-its check bytes), SHALL end that record's area, as SHALL a `CE` whose area runs past
-its logical block or past the end of a full-length image. The member SHALL list from the
+its check bytes), SHALL end that record's area, as SHALL a `CE` whose area runs past its
+logical block or past the end of a full-length image. The member SHALL list from the
 entries before it and carry `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated=True`
 and an empty `record`; a symlink cut this way SHALL list with `link_target=None` and
 `SYMLINK_TARGET_UNAVAILABLE`, and a name cut this way (its last `NM` entry says it
 continues) SHALL list under its ISO 9660 identifier. An entry of a tag the parser does
-not read SHALL be skipped, as SUSP specifies. The other members of the image MUST NOT be affected.
+not read SHALL be skipped, as SUSP specifies. The other members of the image MUST NOT be
+affected.
 
 #### Scenario: malformed Rock Ridge entries
 
