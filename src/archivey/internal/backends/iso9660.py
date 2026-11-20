@@ -24,14 +24,14 @@ entries (``PX`` mode and owner, ``NM`` name, ``SL`` link target, ``TF`` times, `
 / ``PL`` / ``RE`` for relocated deep directories, ``ZF`` for zisofs data) and may
 continue in a block a ``CE`` entry names.
 
-What is parsed, and when: the whole primary tree and the Joliet tree, at
-construction, as ``udf.UdfVolume`` parses the UDF tree. The listing limits are
-weighed as the trees are parsed (:class:`IsoBudget`): each directory's declared
-length before it is read, and one member per record. An image over them is refused
-before any member is listed, and a listing reads nothing more. Path tables are not
-read to list: a reader that walks the directories needs none, as Linux's isofs and
-7-Zip do not. Only a source that takes read hints reads one, to hint where the
-directories are (:func:`directory_hints`).
+What is parsed, and when: the whole primary tree and the Joliet tree, at construction,
+as ``udf.UdfVolume`` parses the UDF tree. The listing limits are weighed as the trees
+are parsed (:class:`IsoBudget`): each directory's declared length, as far as the image
+holds it, before it is read, and one member per record. An image over them is refused
+before any member is listed, and a listing reads nothing more. Path tables are not read
+to list: a reader that walks the directories needs none, as Linux's isofs and 7-Zip do
+not. Only a source that takes read hints reads one, to hint where the directories are
+(:func:`directory_hints`).
 
 How damage is handled:
 
@@ -519,10 +519,11 @@ class IsoVolume:
         block_size = self.block_size
         start = directory.extent * block_size
         length = directory.data_length
-        # Weighed as declared, before the read: the length is the image's own claim,
-        # and each directory may claim up to the rest of the image.
+        # Weighed before the read, as much of it as the image holds: the length is
+        # the image's own claim, and each directory may claim up to the rest of the
+        # image. A claim past the end is then refused by the read, as damage or a cut.
         if self._budget is not None:
-            self._budget.add_iso_bytes(length)
+            self._budget.add_iso_bytes(max(0, min(length, self._image_length - start)))
         data = self._read(start, length, "directory")
         entries: list[IsoEntry] = []
         continuing: IsoEntry | None = None

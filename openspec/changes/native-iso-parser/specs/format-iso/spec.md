@@ -194,12 +194,12 @@ damage to structure that holds no member data is a diagnostic, refused under `ST
 The ISO backend parses the primary tree and a Joliet tree of an image inside
 `open_archive`, and the UDF tree when present, and keeps every tree, so it SHALL check
 `ListingLimits` while they parse. The bytes it weighs (each ISO 9660 or Joliet
-directory's declared length, before the directory is read, Rock Ridge continuation
-areas each time one is read, UDF directories, File Entries and
-Indirect Entries, each UDF entry parsed once however many names lead to it) SHALL be
-one sum for the whole image, held to `max_metadata_bytes`; a tree under the cap SHALL
-NOT make an image over it open. `max_members` SHALL be counted per tree, because a
-Joliet tree repeats every file of the primary tree. Crossing either cap SHALL raise
+directory's declared length, as far as the image holds it, before the directory is read,
+Rock Ridge continuation areas each time one is read, UDF directories, File Entries and
+Indirect Entries, each UDF entry parsed once however many names lead to it) SHALL be one
+sum for the whole image, held to `max_metadata_bytes`; a tree under the cap SHALL NOT
+make an image over it open. `max_members` SHALL be counted per tree, because a Joliet
+tree repeats every file of the primary tree. Crossing either cap SHALL raise
 `ResourceLimitError` naming the cap from `open_archive`.
 
 The UDF parser builds every name's full path at open. It SHALL weigh each full path as
@@ -229,9 +229,8 @@ listing would fit.
 ### Requirement: Serialize shared pycdlib handle operations for concurrent reads
 
 **Reason**: Member data is read through views of the source, which take the source's
-lock per read; no pycdlib handle is shared.
-**Migration**: None; concurrent member streams keep working, now covered by "Declare ISO
-format properties".
+lock per read; no pycdlib handle is shared. **Migration**: None; concurrent member
+streams keep working, now covered by "Declare ISO format properties".
 
 ### Requirement: Contain a System Use entry pycdlib cannot parse to its own record
 
