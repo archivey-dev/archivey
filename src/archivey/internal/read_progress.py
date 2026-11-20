@@ -15,9 +15,13 @@ Nothing here runs when the callback is unset: the hooks check for a reporter fir
 
 The callback runs on the thread that read. A read on a thread archivey started (named
 ``archivey-…``, such as the RAR volume feeder) is counted but reported only with the
-next read on a caller's thread, so caller code never runs on archivey's threads. What
-the callback raises is marked as the caller's own (``mark_callers_source``), so no
-error boundary translates it into an archive error: it reaches the caller unchanged.
+next read on a caller's thread, so caller code never runs on archivey's threads.
+
+What the callback raises is marked as the caller's own (``mark_callers_source``): the
+error translators and the per-member error handling of extraction and verification
+re-raise a marked exception as itself. Once the callback has raised, every later read
+of the source raises the same exception again, so a probe that catches a broad type
+and goes on cannot lose the stop: it surfaces at the next read.
 """
 
 from __future__ import annotations
@@ -48,6 +52,8 @@ class SourceReadReporter:
         self._bytes_read = 0
         self._reported_at = 0
         self._requests = 0
+        # What the callback raised, once it has: every later report raises it again.
+        self._stopped: BaseException | None = None
 
     def read(self, position: int, n: int, *, at_end: bool = False) -> None:
         """``n`` bytes were taken from a local source; the read ended at ``position``.
@@ -56,6 +62,7 @@ class SourceReadReporter:
         (a pipe) has no other sign of its end, so the bytes since the last report are
         reported then, a source under a MiB included.
         """
+        self._raise_if_stopped()
         with self._lock:
             self._bytes_read += n
             total = self._bytes_read
@@ -75,6 +82,7 @@ class SourceReadReporter:
     def request_started(self, start: int, end: int) -> None:
         """A range request for ``[start, end)`` of the whole source is about to be
         sent (a volume's base offset already added)."""
+        self._raise_if_stopped()
         with self._lock:
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
@@ -97,7 +105,20 @@ class SourceReadReporter:
         except BaseException as exc:
             # The caller's own exception: every error boundary passes it on as itself.
             mark_callers_source(exc)
+            self._stopped = exc
             raise
+
+    def _raise_if_stopped(self) -> None:
+        """Raise again what the callback raised, on a caller's thread.
+
+        A probe that reads the source may catch a broad type to mean "cannot tell"
+        and go on; the next read of the source then raises the caller's exception
+        again, so a stop is never lost. On archivey's own threads nothing is raised:
+        the read there is counted, and the caller's next read raises.
+        """
+        stopped = self._stopped
+        if stopped is not None and not _on_archivey_thread():
+            raise stopped
 
     def _remote_progress(
         self, start: int, end: int, received: int, *, done: bool, position: int

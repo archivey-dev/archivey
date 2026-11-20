@@ -19,7 +19,9 @@ It SHALL run on the thread that read (as every caller function does); a read on 
 thread archivey started SHALL be counted and reported with the next read on a caller's
 thread. Bytes that an external program (`unrar`) or the RAR backend reads from volume
 paths directly are outside this requirement. An exception it
-raises SHALL propagate out of the read that called it, unchanged. A reader opened from a
+raises SHALL propagate out of the read that called it, unchanged; every later read of
+the file SHALL raise it again, and an extraction or verification that goes on past a
+member's error SHALL stop on it instead. A reader opened from a
 member of another reader SHALL NOT report its reads. With `on_source_read` unset, no
 reporting work SHALL be done beyond checking that it is unset.
 
@@ -39,4 +41,5 @@ reporting work SHALL be done beyond checking that it is unset.
 #### Scenario: the callback raises
 
 - **WHEN** the callback raises `KeyboardInterrupt` or any other exception
-- **THEN** the call into archivey that read raises that exception
+- **THEN** the call into archivey that read raises that exception, also under
+  `extract_all(on_error="continue")`

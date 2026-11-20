@@ -61,6 +61,7 @@ from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.codecs import (
     Codec,
     MetadataContext,
@@ -475,7 +476,9 @@ class SingleFileReader(BaseArchiveReader):
             return None
         try:
             return self._on_seekable_source(fn)
-        except OSError:
+        except OSError as exc:
+            if from_callers_source(exc):
+                raise
             return None
 
     def _probe_compressed_size(self) -> int | None:
@@ -644,7 +647,9 @@ class SingleFileReader(BaseArchiveReader):
             try:
                 backend = resolve_codec(self._codec, config)
                 stream = backend.open(SlicingStream(f, start=0))
-            except (ArchiveyError, OSError, ValueError):
+            except (ArchiveyError, OSError, ValueError) as exc:
+                if from_callers_source(exc):
+                    raise
                 return None
             try:
                 if not isinstance(stream, DecompressorStream):

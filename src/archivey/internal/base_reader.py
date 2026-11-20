@@ -5015,6 +5015,8 @@ class BaseArchiveReader(ArchiveReader):
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
+                    if from_callers_source(e):
+                        raise
                     failures.append((m, e))
                     if isinstance(e, SpanningCheckError):
                         spanning.append(e)

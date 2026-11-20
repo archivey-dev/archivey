@@ -307,3 +307,72 @@ def test_a_pipe_reports_its_last_bytes(size: int) -> None:
     assert seen.calls[-1].size is None
     # Every byte taken from the pipe reaches the callback by the end.
     assert seen.calls[-1].bytes_read == len(data)
+
+
+def _gz_file(tmp_path: Path, size: int) -> Path:
+    import gzip
+
+    path = tmp_path / "data.gz"
+    path.write_bytes(gzip.compress(os.urandom(size), 1))
+    return path
+
+
+def _tar_gz(tmp_path: Path, members: int, size: int) -> Path:
+    import tarfile
+
+    path = tmp_path / "a.tar.gz"
+    with tarfile.open(path, "w:gz") as tf:
+        for i in range(members):
+            data = os.urandom(size)
+            info = tarfile.TarInfo(f"m{i}.bin")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def _stop_on(n: int, stop_type: type[BaseException]) -> Any:
+    calls = 0
+
+    def stop(progress: SourceProgress) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == n:
+            raise stop_type("stop from callback")
+
+    return stop
+
+
+@pytest.mark.parametrize("stop_type", [_StopValue, _StopOS])
+@pytest.mark.parametrize("shape", ["gz", "tar.gz"])
+def test_a_stop_on_the_first_call_is_not_lost(
+    tmp_path: Path, stop_type: type[BaseException], shape: str
+) -> None:
+    # The first report on a .gz comes from a probe that catches broad types.
+    config = ArchiveyConfig(on_source_read=_stop_on(1, stop_type))
+    with pytest.raises(stop_type) as caught:
+        if shape == "gz":
+            _read_stream(_gz_file(tmp_path, 3 * LOCAL_REPORT_STEP), config)
+        else:
+            path = _tar_gz(tmp_path, 2, 2 * LOCAL_REPORT_STEP)
+            with open_archive(path, config=config) as reader:
+                reader.extract_all(tmp_path / "out")
+    assert type(caught.value) is stop_type
+
+
+@pytest.mark.parametrize("shape", ["zip", "tar.gz"])
+def test_a_stop_ends_an_extraction_that_continues_on_errors(
+    tmp_path: Path, shape: str
+) -> None:
+    if shape == "zip":
+        path = tmp_path / "m.zip"
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for i in range(3):
+                zf.writestr(f"m{i}.bin", os.urandom(2 * LOCAL_REPORT_STEP))
+    else:
+        path = _tar_gz(tmp_path, 3, 2 * LOCAL_REPORT_STEP)
+    config = ArchiveyConfig(on_source_read=_stop_on(2, _StopOS))
+    with (
+        pytest.raises(_StopOS),
+        open_archive(path, config=config) as reader,
+    ):
+        reader.extract_all(tmp_path / "out", on_error="continue")

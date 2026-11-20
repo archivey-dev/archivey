@@ -255,7 +255,9 @@ def _source_tail(
                 return length, None
             f.seek(-size, io.SEEK_END)
             return length, f.read(size)
-    except (OSError, io.UnsupportedOperation, ValueError, TypeError):
+    except (OSError, io.UnsupportedOperation, ValueError, TypeError) as exc:
+        if from_callers_source(exc):
+            raise
         return None, None
 
 

@@ -138,6 +138,8 @@ class JoinedVolumes(Protocol):
     @property
     def volume_ranges(self) -> list[tuple[int, int]]: ...
     @property
+    def volume_items(self) -> list[Path | BinaryIO]: ...
+    @property
     def seek_is_expensive(self) -> bool: ...
     def read(self, n: int = -1, /) -> bytes: ...
     def seek(self, offset: int, whence: int = 0, /) -> int: ...
@@ -613,9 +615,8 @@ class ArchiveSource(ReadOnlyIOStream):
             bases: dict[int, int] = {}
             joined = self._joined
             if joined is not None:
-                items = getattr(joined, "volume_items", [])
-                ranges = getattr(joined, "volume_ranges", [])
-                for item, (start, _) in zip(items, ranges, strict=False):
+                pairs = zip(joined.volume_items, joined.volume_ranges, strict=True)
+                for item, (start, _) in pairs:
                     bases[id(item)] = start
             for ranged in self._remote:
                 ranged.progress = reporter
