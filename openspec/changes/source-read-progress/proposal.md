@@ -19,7 +19,9 @@ The maintainer asked for a callback any caller can hook, and a CLI display built
 - New public dataclass `SourceProgress`: the file's display name, its size, the bytes
   read from it so far, the current position, and for a URL source the request count and
   the current request's range, bytes received and whether it is done.
-- A local file or stream reports about once per MiB read, from `ArchiveSource`. A URL
+- A local file or stream reports about once per MiB read, from `ArchiveSource`
+  (`ArchiveyConfig.source_read_step`; `0` reports every read, and `read_start` gives
+  each read's range, a log of every region read). A URL
   (fsspec) source reports at the start and end of each range request, from
   `RangeSource`. Detection's reads count.
 - Only the outer archive's file reports: a nested archive is read from a member, not

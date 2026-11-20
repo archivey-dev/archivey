@@ -2265,7 +2265,8 @@ class SourceProgress:
     """Progress snapshot for ``ArchiveyConfig.on_source_read``: how far archivey has
     read the archive's own file.
 
-    A local file or stream reports about once per MiB read. A URL source
+    A local file or stream reports about once per MiB read
+    (``ArchiveyConfig.source_read_step``), or for every read. A URL source
     (an ``fsspec.core.OpenFile``) reports before and after each range request, and only
     then are the ``request_*`` fields and :attr:`requests` set.
     """
@@ -2302,6 +2303,13 @@ class SourceProgress:
 
     request_done: bool | None = None
     """For a URL source, whether the current request has returned."""
+
+    read_start: int | None = None
+    """For a local file or stream, where in the file the latest read started: that
+    read took the bytes from here to :attr:`position`. With
+    ``ArchiveyConfig(source_read_step=0)`` every read is reported, so these ranges are
+    every read of the file. ``None`` for a URL source, whose ``request_*`` fields give
+    each request's range."""
 
 
 OnSourceRead = Callable[[SourceProgress], None]

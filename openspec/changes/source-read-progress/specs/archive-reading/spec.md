@@ -11,9 +11,12 @@ list) it SHALL be called once before each request, with `request_received == 0` 
 request sent again (an ignored range, a short answer continued) counts as a request.
 `bytes_read` is then the bytes those requests returned.
 
-For any other source it SHALL be called at least once per MiB of bytes taken from the
-source, and the request fields SHALL be `None`. `bytes_read` counts every byte taken
-from the source, rereads included, so it may pass `size`.
+For any other source it SHALL be called at least once per `source_read_step` bytes
+taken from the source (1 MiB by default), and the request fields SHALL be `None`.
+`read_start` SHALL be where the latest read started, so `read_start` to `position` is
+that read's range. With `source_read_step=0` it SHALL be called for every read, so
+those ranges are every read of the file. `bytes_read` counts every byte taken from the
+source, rereads included, so it may pass `size`.
 
 It SHALL run on the thread that read (as every caller function does). A read on a thread
 archivey started (the RAR volume feeder) SHALL NOT call it: the latest such report SHALL
@@ -34,6 +37,13 @@ beyond checking that it is unset.
   `open_stream()`
 - **THEN** the callback runs about ten times, `position` never decreases, and the last
   call has `bytes_read` equal to the file size
+
+#### Scenario: every read of a local file
+
+- **WHEN** `on_source_read` is set with `source_read_step=0` and every member of a ZIP
+  is read
+- **THEN** each call's `read_start` to `position` is one read, the lengths add up to
+  `bytes_read`, and together they cover the directory and every member's data
 
 #### Scenario: a URL source
 

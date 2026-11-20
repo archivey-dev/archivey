@@ -641,7 +641,9 @@ def open_archive(
     )
     # Only the outer archive's file reports: a nested reader reads a member.
     if effective_config.on_source_read is not None and parent is None:
-        resolved.source.report_reads(effective_config.on_source_read)
+        resolved.source.report_reads(
+            effective_config.on_source_read, effective_config.source_read_step
+        )
     slot = _SourceSlot(resolved.source)
     try:
         with noting_fsspec_decoding(source):
@@ -1418,7 +1420,9 @@ def open_stream(
         # The mid-stream origin contract: the payload starts where the caller left it.
         codec_input.rebase_to_current_position()
     if effective_config.on_source_read is not None:
-        codec_input.report_reads(effective_config.on_source_read)
+        codec_input.report_reads(
+            effective_config.on_source_read, effective_config.source_read_step
+        )
     # The returned stream owns the source from here, as a reader does: closing it closes
     # the source (which never closes the caller's object), and so does any refusal
     # before there is a stream to close.

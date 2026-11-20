@@ -1085,6 +1085,14 @@ class ArchiveyConfig:
     reads take from a path directly are not reported.
     """
 
+    source_read_step: int = 1 << 20
+    """Bytes taken from a local file or stream between two ``on_source_read`` calls
+    (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
+    <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
+    a log of every region of the file read. A URL source reports every request
+    whatever this is.
+    """
+
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
         # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
@@ -1123,6 +1131,7 @@ class ArchiveyConfig:
             unar_path: str | os.PathLike[str] | None = ...,
             recover_partial_data: bool = ...,
             on_source_read: OnSourceRead | None = ...,
+            source_read_step: int = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -1229,6 +1238,12 @@ def _check_scalar_fields(config: ArchiveyConfig) -> None:
     """Check the callback, the ZIP fallback encoding and the two integer limits."""
     check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
     check_callable(config.on_source_read, call="ArchiveyConfig(on_source_read=…)")
+    check_limit(
+        config.source_read_step,
+        cls="ArchiveyConfig",
+        field_name="source_read_step",
+        allow_none=False,
+    )
     check_encoding(
         config.zip_unflagged_fallback_encoding,
         call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",

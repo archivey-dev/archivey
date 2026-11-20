@@ -416,3 +416,59 @@ def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     assert seen.calls
     assert seen.threads == {threading.get_ident()}
     assert seen.calls[-1].bytes_read == len(data)
+
+
+def test_step_zero_reports_every_read_as_a_range(tmp_path: Path) -> None:
+    path = tmp_path / "a.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        for i in range(5):
+            zf.writestr(f"m{i}.bin", os.urandom(50_000))
+    size = path.stat().st_size
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+    with open_archive(path, config=config) as reader:
+        for member in reader.members():
+            reader.read(member)
+    ranges = [(c.read_start, c.position) for c in seen.calls]
+    assert all(s is not None and 0 <= s < e <= size for s, e in ranges)
+    # One call per read, each with its own range: the ranges add up to the total.
+    assert sum(e - s for s, e in ranges) == seen.calls[-1].bytes_read  # type: ignore[operator]
+    # The directory at the end and every member's header and data were read.
+    read = set()
+    for start, end in ranges:
+        read.update(range(start, end))  # type: ignore[arg-type]
+    assert size - 1 in read
+    with zipfile.ZipFile(path) as zf:
+        for info in zf.infolist():
+            data_end = info.header_offset + 30 + len(info.filename) + info.compress_size
+            assert read.issuperset(range(info.header_offset, data_end))
+
+
+def test_the_default_step_reports_once_per_mib_with_the_latest_range(
+    tmp_path: Path,
+) -> None:
+    path = _xz_file(tmp_path, 3 * LOCAL_REPORT_STEP)
+    seen = _Recorder()
+    _read_stream(path, ArchiveyConfig(on_source_read=seen))
+    assert all(
+        c.read_start is not None and c.read_start < c.position for c in seen.calls
+    )
+    assert len(seen.calls) <= 6
+
+
+def test_a_url_source_leaves_read_start_unset() -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.bin", b"x" * 1000)
+    fs.pipe("/rs/a.zip", buf.getvalue())
+    try:
+        seen = _Recorder()
+        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+        with open_archive(fsspec.open("memory://rs/a.zip"), config=config) as r:
+            r.read("a.bin")
+        assert seen.calls
+        assert all(c.read_start is None for c in seen.calls)
+    finally:
+        fs.rm("/rs", recursive=True)

@@ -603,13 +603,13 @@ class ArchiveSource(ReadOnlyIOStream):
         """Record the range sources this source reads (one, or a volume list's)."""
         self._remote = ranges
 
-    def report_reads(self, callback: OnSourceRead) -> None:
+    def report_reads(self, callback: OnSourceRead, step: int = 1 << 20) -> None:
         """Call ``callback`` (``ArchiveyConfig.on_source_read``) as this source is read.
 
         A range source reports each request; any other source reports the bytes taken
         from it, about once per MiB (:mod:`archivey.internal.read_progress`).
         """
-        reporter = SourceReadReporter(callback, self._name, self._length)
+        reporter = SourceReadReporter(callback, self._name, self._length, step)
         self._reporter = reporter
         if self._remote:
             # In a volume set a range source reads at its own offsets; its reports

@@ -573,6 +573,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         rows.append(
             _case(
                 "ArchiveyConfig",
+                "source_read_step",
+                bad,
+                lambda b=bad: _with_config(archive, out(), source_read_step=b),
+            )
+        )
+    for bad in ("x", -1, True, 1.5, None):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
                 "max_retained_diagnostic_references",
                 bad,
                 lambda b=bad: _with_config(

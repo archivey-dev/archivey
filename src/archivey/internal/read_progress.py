@@ -4,7 +4,8 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
 
 - :class:`~archivey.internal.source.ArchiveSource` calls
   :meth:`~SourceReadReporter.read` with each count of bytes it takes from a local file
-  or stream. A call reaches the caller about once per :data:`LOCAL_REPORT_STEP` bytes.
+  or stream. A call reaches the caller about once per ``ArchiveyConfig.source_read_step`` bytes
+  (:data:`LOCAL_REPORT_STEP` by default), or for every read when that is 0.
 - :class:`~archivey.internal.remote.RangeSource` calls
   :meth:`~SourceReadReporter.request_started` and
   :meth:`~SourceReadReporter.request_ended` around each range request. Each reaches
@@ -37,16 +38,22 @@ if TYPE_CHECKING:
     from archivey.types import OnSourceRead
 
 LOCAL_REPORT_STEP = 1 << 20
-"""Bytes taken from a local source between two reports."""
+"""The default ``ArchiveyConfig.source_read_step``: bytes taken from a local source
+between two reports."""
 
 
 class SourceReadReporter:
     """Keeps the totals for one source and calls ``on_source_read`` with them."""
 
     def __init__(
-        self, callback: OnSourceRead, name: str | None, size: int | None
+        self,
+        callback: OnSourceRead,
+        name: str | None,
+        size: int | None,
+        step: int = 1 << 20,
     ) -> None:
         self._callback = callback
+        self._step = step
         self._name = name
         self._size = size
         self._lock = threading.Lock()
@@ -73,13 +80,15 @@ class SourceReadReporter:
             if total == self._reported_at:
                 return
             if (
-                total - self._reported_at < LOCAL_REPORT_STEP
+                total - self._reported_at < self._step
                 and not at_end
                 and (self._size is None or position < self._size)
                 and self._deferred is None
             ):
                 return
-            snapshot = SourceProgress(self._name, self._size, total, position)
+            snapshot = SourceProgress(
+                self._name, self._size, total, position, read_start=position - n
+            )
             self._reported_at = total
             if _on_archivey_thread():
                 self._deferred = snapshot
