@@ -178,8 +178,13 @@ class ReaderArchiveInfo(NamedTuple):
   `CONFIRMED` `unlock(member=that_member)`, or an archive-level `CONFIRMED` `unlock` made
   before the member was listed (DMG at open). An `INCONCLUSIVE` win leaves it at `NONE`
   until its checksum passes.
-- `ReaderArchiveInfo.is_encrypted` becomes `ArchiveInfo.is_encrypted` (today the adapter
-  always writes `False`).
+- `ReaderArchiveInfo.is_encrypted` is per archive and becomes `ArchiveInfo.is_encrypted`
+  (today the adapter always writes `False`). As for 7z and RAR5, it means the member
+  list itself is encrypted (a password is needed to list): `True` for a DMG encrypted
+  image and an openssl makeself payload, `False` for ARJ, whose garble covers member
+  data only. Per-member encryption is the existing public `ArchiveMember.is_encrypted`,
+  which the plugin sets on the member it lists (ARJ garbled members, and every member of
+  an encrypted DMG or makeself payload).
 
 ### D6. Replacement readers
 
