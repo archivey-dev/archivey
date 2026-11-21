@@ -86,14 +86,18 @@ class _FakeBranch:
     """Stands in for ``archivey_codecs.filters.Arm64Decoder`` and ``RiscvDecoder``:
     the Python filter, recorded. With ``panic`` set, decoding raises the fake panic."""
 
-    decode_with: ClassVar[object] = None
     built: ClassVar[list[int]] = []
     panic: ClassVar[bool] = False
     calls: ClassVar[int] = 0
 
     def __init__(self, start_offset: int = 0) -> None:
         type(self).built.append(start_offset)
-        self._python = PythonBranch(self.decode_with, start_offset)  # type: ignore[arg-type]
+        self._python = PythonBranch(self.decode_with, start_offset)
+
+    @staticmethod
+    def decode_with(data: bytes, pc: int) -> bytes:
+        """The Python filter this fake stands in for: set by each subclass."""
+        raise NotImplementedError
 
     def decode(self, data: bytes) -> bytes:
         type(self).calls += 1
