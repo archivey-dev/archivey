@@ -13,6 +13,7 @@ from archivey.cli.common import (
     outer_directory_error,
     refuse_outer_selection,
     reject_stdin_token,
+    with_source_progress,
 )
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_FAIL, EXIT_OK, EXIT_USAGE
@@ -22,6 +23,7 @@ from archivey.cli.format import (
     format_error_detail,
 )
 from archivey.cli.password import resolve_password
+from archivey.cli.progress import ProgressCallback, make_progress_callback
 from archivey.cli.sources import (
     http_error_type,
     is_remote,
@@ -63,12 +65,15 @@ def run_cat(
     track_io: bool,
     sink: BinaryIO,
     stdin: BinaryIO | None = None,
+    hide_progress: bool = False,
     config: ArchiveyConfig | None = None,
     err: TextIO | None = None,
 ) -> int:
     """Write member contents, or with ``outer`` the decompressed stream, to ``sink``.
 
-    ``archive`` ``-`` reads from ``stdin``. Bytes reach ``sink`` as they are read, so
+    A status line on ``err`` shows the reads of the archive's file until the first
+    member byte is written, so it never mixes with the output on a terminal or under a
+    pager. ``archive`` ``-`` reads from ``stdin``. Bytes reach ``sink`` as they are read, so
     some or all of a member's bytes may already have been written when a digest
     mismatch is found: the run then exits ``1`` with the error on ``err``, as ``zcat``
     does.
@@ -85,7 +90,14 @@ def run_cat(
                 "--track-io counts member reads; it does not apply with --outer",
                 code=EXIT_USAGE,
             )
-        return _cat_outer(archive, sink=sink, stdin=stdin, config=config)
+    progress = make_progress_callback(hide_progress=hide_progress, stream=err)
+    if progress is not None:
+        # Every stderr line, log lines included, clears the status line first.
+        err = progress.guard(err)
+    if outer:
+        return _cat_outer(
+            archive, sink=sink, stdin=stdin, config=config, progress=progress
+        )
     return _cat_members(
         archive,
         patterns=patterns,
@@ -97,6 +109,7 @@ def run_cat(
         stdin=stdin,
         config=config,
         err=err,
+        progress=progress,
     )
 
 
@@ -106,6 +119,7 @@ def _cat_outer(
     sink: BinaryIO,
     stdin: BinaryIO | None,
     config: ArchiveyConfig | None,
+    progress: ProgressCallback | None,
 ) -> int:
     if archive == "-" and stdin is not None:
         source: Any = stdin
@@ -119,7 +133,12 @@ def _cat_outer(
             # points at open_archive(); this one names the CLI's view of it.
             raise outer_directory_error(shown)
     try:
-        stream = open_stream(source, config=config)
+        try:
+            stream = open_stream(source, config=with_source_progress(config, progress))
+        finally:
+            # Before the first byte goes out.
+            if progress is not None:
+                progress.close()
     except ArchiveyUsageError as exc:
         # Not an ArchiveyError, so main() would not catch it: a usage exit instead.
         raise CliError(f"--outer: {exc}", code=EXIT_USAGE) from exc
@@ -150,6 +169,7 @@ def _cat_members(
     stdin: BinaryIO | None,
     config: ArchiveyConfig | None,
     err: TextIO,
+    progress: ProgressCallback | None,
 ) -> int:
     pwd: PasswordInput = resolve_password(password)
     selection = MemberSelection(patterns, exclude)
@@ -160,11 +180,14 @@ def _cat_members(
         config=config,
         stdin=stdin,
         err=err,
+        progress=progress,
     ) as reader:
         indexed = reader.members_report_if_available()
         if indexed is not None:
             # Judge the patterns before writing anything when the index is free, so
             # a pattern that matches nothing fails before any bytes reach stdout.
+            if progress is not None:
+                progress.close()
             selection.settle_from(indexed, err=err)
             if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL
@@ -172,6 +195,9 @@ def _cat_members(
         # a closed stdout), rather than leaving it suspended for ``reader.close()``.
         with reader.stream_members(selection.predicate) as it:
             for member, stream in it:
+                if progress is not None:
+                    # Before the first line or byte goes out.
+                    progress.close()
                 if stream is None or member.is_dir:
                     # Directories, links and other entries have no body of their
                     # own. A pass reads forward only, so a link's target, an earlier

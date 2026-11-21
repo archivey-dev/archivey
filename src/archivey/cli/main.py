@@ -276,7 +276,10 @@ def _common_parent(*, suppress_defaults: bool) -> _ArchiveyArgumentParser:
         "--hide-progress",
         action="store_true",
         default=default_false,
-        help="suppress progress bars even when tqdm is installed",
+        help=(
+            "suppress progress bars and the reading status line even when tqdm is "
+            "installed"
+        ),
     )
     p.add_argument(
         "--track-io",
@@ -359,6 +362,7 @@ class _Common(TypedDict):
     password: str | None
     track_io: bool
     verbose: bool
+    hide_progress: bool
     config: ArchiveyConfig | None
     out: TextIO
     err: TextIO
@@ -391,11 +395,9 @@ def _run_list(args: argparse.Namespace, common: _Common) -> int:
 
 
 def _run_test(args: argparse.Namespace, common: _Common) -> int:
-    hide_progress = bool(args.hide_progress)
     return run_test(
         **common,
         **_selection(args),
-        hide_progress=hide_progress,
         outer=bool(args.outer),
     )
 
@@ -407,7 +409,6 @@ def _run_extract(args: argparse.Namespace, common: _Common) -> int:
         dest=args.dest,
         policy=args.policy,
         overwrite=args.overwrite,
-        hide_progress=bool(args.hide_progress),
         stop_on_error=bool(args.stop_on_error),
         abort_on=list(args.abort_on or ()),
         dry_run=bool(args.dry_run),
@@ -434,6 +435,7 @@ def _run_cat(args: argparse.Namespace, common: _Common) -> int:
         password=common["password"],
         track_io=common["track_io"],
         verbose=common["verbose"],
+        hide_progress=common["hide_progress"],
         config=common["config"],
         err=common["err"],
         **_selection(args),
@@ -736,6 +738,7 @@ def _dispatch(args: argparse.Namespace, *, out: TextIO, err: TextIO) -> int:
         password=args.password,
         track_io=bool(args.track_io),
         verbose=bool(args.verbose),
+        hide_progress=bool(args.hide_progress),
         config=ArchiveyConfig(always_probe_content=True)
         if args.probe_content
         else None,

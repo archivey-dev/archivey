@@ -14,6 +14,7 @@ from archivey.cli.format import (
     format_member_line,
 )
 from archivey.cli.password import resolve_password
+from archivey.cli.progress import make_progress_callback
 from archivey.config import ArchiveyConfig, PasswordInput
 
 
@@ -28,6 +29,7 @@ def run_list(
     verbose: bool,
     password: str | None,
     track_io: bool,
+    hide_progress: bool = False,
     config: ArchiveyConfig | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
@@ -36,11 +38,26 @@ def run_list(
     err = err if err is not None else sys.stderr
     pwd: PasswordInput = resolve_password(password)
     selection = MemberSelection(patterns, exclude)
+    # A status line while the listing reads the file (a .tar.gz is read to its end,
+    # a URL request by request), cleared before the first line is printed.
+    progress = make_progress_callback(hide_progress=hide_progress, stream=err)
+    if progress is not None:
+        # Every stderr line, log lines included, clears the status line first.
+        err = progress.guard(err)
 
     with open_for_cli(
-        archive, password=pwd, track_io=track_io, config=config, err=err
+        archive,
+        password=pwd,
+        track_io=track_io,
+        config=config,
+        err=err,
+        progress=progress,
     ) as reader:
-        report = reader.members_report()
+        try:
+            report = reader.members_report()
+        finally:
+            if progress is not None:
+                progress.close()
         # Select before printing, so the pattern warnings come first. ``list`` exits 0
         # when the patterns select nothing: the listing itself succeeded. A listing
         # that ends in damage gives no pattern warning; its error is printed below.
