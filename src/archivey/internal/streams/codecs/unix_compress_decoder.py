@@ -10,11 +10,13 @@ source.
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
+from archivey.internal import native
 from archivey.internal.diagnostics_collector import DiagnosticCollector
+from archivey.internal.native import NativeLzw
 from archivey.internal.overrides import override
 from archivey.internal.streams.decompressor_stream import (
     BaseDecoder,
@@ -23,6 +25,7 @@ from archivey.internal.streams.decompressor_stream import (
     SeekPoint,
     truncated_message,
 )
+from archivey.types import OptionalLibrary
 
 _INITIAL_CODE_WIDTH = 9
 _MAX_CODE_WIDTH = 16  # classic compress / ncompress format ceiling
@@ -694,15 +697,17 @@ class UnixCompressDecoder(BaseDecoder):
 
     def __init__(
         self,
-        state: LzwState,
+        state: LzwState | NativeLzw,
         *,
         comp_cursor: int,
         decomp_cursor: int,
         max_width: int | None = None,
         block_mode: bool | None = None,
         header_committed: bool = False,
+        make_state: Callable[..., LzwState | NativeLzw] = LzwState,
     ) -> None:
         self._state = state
+        self._make_state = make_state
         self._comp_cursor = comp_cursor
         self._decomp_cursor = decomp_cursor
         self._max_width = max_width
@@ -712,14 +717,14 @@ class UnixCompressDecoder(BaseDecoder):
     def recreate(self, point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
         del inner
         if self._max_width is not None and self._block_mode is not None:
-            state = LzwState(
+            state = self._make_state(
                 max_width=self._max_width,
                 block_mode=self._block_mode,
                 nine_bit_widens=self._state.nine_bit_widens,
             )
             header_committed = True
         else:
-            state = LzwState()
+            state = self._make_state()
             header_committed = False
         return UnixCompressDecoder(
             state,
@@ -728,6 +733,7 @@ class UnixCompressDecoder(BaseDecoder):
             max_width=self._max_width,
             block_mode=self._block_mode,
             header_committed=header_committed,
+            make_state=self._make_state,
         )
 
     def feed(self, chunk: bytes, max_length: int = -1) -> DecodeOut:
@@ -789,15 +795,27 @@ def UnixCompressDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
+    excluded: frozenset[OptionalLibrary] = frozenset(),
+    isolated: bool = False,
 ) -> DecompressorStream:
-    """Seekable unix-compress stream: CLEAR → :class:`SeekPoint` when indexing is on."""
+    """Seekable unix-compress stream: CLEAR → :class:`SeekPoint` when indexing is on.
+
+    The LZW decoder is archivey-codecs' when :func:`archivey.internal.native.lzw`
+    allows it (``excluded`` is the call's excluded libraries, ``isolated`` is
+    ``ProcessIsolation.NATIVE_DECODERS``), else :class:`LzwState`. The two give the
+    same bytes, errors and CLEAR seek points.
+    """
+    make_state: Callable[..., LzwState | NativeLzw] = (
+        native.lzw(excluded, isolated=isolated) or LzwState
+    )
 
     def make_decoder(point: SeekPoint, inner: BinaryIO) -> UnixCompressDecoder:
         del inner
         return UnixCompressDecoder(
-            LzwState(),
+            make_state(),
             comp_cursor=point.compressed_offset,
             decomp_cursor=point.decompressed_offset,
+            make_state=make_state,
         )
 
     return DecompressorStream(
