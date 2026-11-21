@@ -1,7 +1,7 @@
 //! The error kinds a kernel reports. The Python shim in archivey turns each into the
 //! archivey exception the pure-Python decoder raises, with the same message.
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DecodeError<E = std::convert::Infallible> {
     /// The data is damaged (archivey: `CorruptionError`, or the codec's own error).
     Corrupt(String),

@@ -6,24 +6,35 @@ and nothing else changes: the output bytes are the same, and damaged input raise
 same exception type with the same message. Without it, archivey uses its Python
 decoders.
 
-This is a pre-release. The API below is the prototype's. Before 0.1, it is reshaped to
-the standard-library shape in archivey's design
-(`openspec/changes/archive/*-rust-codecs-package/design.md` once that change is
-archived): `hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders and a
-`KERNELS` revision table.
+This is a pre-release. Most kernels have their final, standard-library-shaped API
+(`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders). LZX and BCJ2 still
+have the prototype's API, as private names, until they are reshaped too.
 
-| Kernel | Used for | Python decoder it mirrors |
+| Name | Used for | Python decoder it mirrors |
 | --- | --- | --- |
-| `LzxDecoder` | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
-| `LzwState` | Unix `compress` (`.Z`, `.tar.Z`) | `unix_compress_decoder.LzwState` |
-| `lzo1x_decompress` | `.lzo` files, LZO SquashFS images | `lzo_decoder.lzo1x_decompress_python` |
-| `ZipCryptoKeys` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
-| `Bcj2Core` | 7z BCJ2 (four-stream x86 filter) | the loop of `bcj2_filter.Bcj2DecoderStream` |
-| `arm64_decode`, `riscv_decode` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
+| `crc16_arc`, `Crc16Arc` | LHA data and header checks | `lha_reader.crc16` |
+| `lzo1x.decompress` | `.lzo` files, LZO SquashFS images | `lzo_decoder.lzo1x_decompress_python` |
+| `lzw.Decompressor` | Unix `compress` (`.Z`, `.tar.Z`) | `unix_compress_decoder.LzwState` |
+| `zipcrypto.Decryptor` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
+| `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
+| `_codecs._LzxFrameDecoder` (private for now) | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
+| `_codecs._Bcj2Core` (private for now) | 7z BCJ2 (four-stream x86 filter) | the loop of `bcj2_filter.Bcj2DecoderStream` |
 
-The kernels raise `CorruptData`, `TruncatedData` and `UnsupportedData`, all
-subclasses of `ValueError`. Every kernel that loops over caller data releases the GIL.
-The kernel modules (`src/kernels/`) forbid `unsafe` code.
+```python
+import archivey_codecs
+from archivey_codecs import lzw
+
+archivey_codecs.crc16_arc(b"123456789")  # 0xBB3D
+d = lzw.Decompressor()
+data = d.decompress(z_bytes) + d.flush()
+```
+
+Errors are `CorruptDataError`, `TruncatedDataError` and `UnsupportedDataError`, all
+subclasses of `CodecError`, which is a `ValueError`. `KERNELS` maps each kernel name to
+its revision; a decoder's `getstate()` names that revision, and `from_state()` refuses
+a state from another one. Every kernel releases the GIL while it loops over `bytes`
+input; other buffers are copied first. The kernel modules (`src/kernels/`) forbid
+`unsafe` code.
 
 ## Develop
 

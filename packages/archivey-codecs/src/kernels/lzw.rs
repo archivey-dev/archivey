@@ -59,6 +59,7 @@ pub fn parse_header(header: &[u8]) -> Result<(u32, bool), Err> {
     Ok((max_width, flag & 0x80 != 0))
 }
 
+#[derive(Clone)]
 pub struct LzwState {
     buf: Vec<u8>,
     pub nine_bit_widens: Option<bool>,

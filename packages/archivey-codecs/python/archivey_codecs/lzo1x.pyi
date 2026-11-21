@@ -1,0 +1,3 @@
+from _typeshed import ReadableBuffer as Buffer
+
+def decompress(block: Buffer, /, *, out_size: int) -> bytes: ...
