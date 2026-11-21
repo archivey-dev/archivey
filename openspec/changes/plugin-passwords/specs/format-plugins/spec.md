@@ -15,8 +15,9 @@ candidates come back `INCONCLUSIVE` SHALL run `full_check` on each in order unti
 `full_check` when one is given, and a `REJECTED` answer SHALL lead to the next provider
 call. An exception from either callback SHALL stop resolution and then go through the
 plugin's `translate_exception`. A plugin whose handler does not set `supports_password`
-SHALL get `ArchiveyUsageError` from `unlock`, and a `password=` value given for its
-format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`.
+SHALL get `ArchiveyUsageError` from `unlock`, and a concrete `password=` (a value or a
+list) given for its format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`; a provider
+callable SHALL stay uncalled and unreported.
 
 #### Scenario: unlock outcomes
 
@@ -37,6 +38,8 @@ format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`.
 | Static `["a", "b"]`, both `INCONCLUSIVE`, no `full_check` | `a`'s data; `a` is not promoted |
 | Provider answers wrong then right, `check` always `INCONCLUSIVE`, `full_check` given | Second answer's data; `full_check` rejected the first |
 | Handler without `supports_password` calls `unlock` | `ArchiveyUsageError` |
+| Handler without `supports_password`, `password="x"` | `PASSWORD_ARGUMENT_UNUSED` |
+| Handler without `supports_password`, `password=provider` | No diagnostic; provider never called |
 
 ### Requirement: CONFIRMED needs evidence of at least CRC-32 strength
 
@@ -125,4 +128,4 @@ SHALL receive the caller's `password=` through `unlock` like any plugin.
 | Case | Expected |
 | --- | --- |
 | Replacement sets `supports_password`, correct `password=` | Member reads |
-| Replacement does not set it, `password=` given | `PASSWORD_ARGUMENT_UNUSED`; member raises the plugin's own error |
+| Replacement does not set it, `password="x"` | `PASSWORD_ARGUMENT_UNUSED` with the replacement reason; member raises the plugin's own error |

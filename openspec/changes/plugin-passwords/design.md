@@ -210,10 +210,13 @@ class ReaderArchiveInfo(NamedTuple):
     is_encrypted: bool = False
 ```
 
-- `supports_password = False`: `password=` is reported unused
-  (`PASSWORD_ARGUMENT_UNUSED`) and `unlock` raises `ArchiveyUsageError` (a plugin bug).
-  This replaces the internal `register_builtin_format(..., SUPPORTS_PASSWORD=True)`
-  override.
+- `supports_password = False`: a concrete `password=` (a value or a list, not a
+  provider, which stays uncalled and unreported, as today) is reported unused, with the
+  replacement-specific reason for a replacement reader, (`PASSWORD_ARGUMENT_UNUSED`) and
+  `unlock` raises `ArchiveyUsageError` (a plugin bug). The shared backend-class builder
+  maps it next to `uses_encoding`, so registration and replacement agree, and makeself
+  declares it in the API PR. This replaces the internal
+  `register_builtin_format(..., SUPPORTS_PASSWORD=True)` override.
 - How an encrypted member's `verified` level rises is D7.
 - `ReaderArchiveInfo.is_encrypted` is per archive and becomes `ArchiveInfo.is_encrypted`
   (today the adapter always writes `False`). As for 7z and RAR5, it means the member
