@@ -224,6 +224,35 @@ def squashfs_seeds() -> list[bytes]:
     return tiny + [path.read_bytes() for path in paths]
 
 
+def dmg_seeds() -> list[bytes]:
+    """Tiny blobs and small UDIF images from ``tests/dmg_build.py``: GPT, Apple
+    partition map and bare layouts, each run codec, and HFS+ volumes with a folder, a
+    symlink, a hard link, an extended attribute and decmpfs files, a few KiB each. The
+    ``hdiutil`` fixtures are about 300 KiB, too large to mutate in the slice."""
+    from tests import dmg_build as build
+
+    nodes = [
+        build.Node("a.txt", data=b"hello dmg\n", xattrs={"com.example": b"v"}),
+        build.Node("d/b.txt", data=b"x" * 5000, compression=8),
+        build.Node("d/c.txt", data=b"y" * 300, compression=3),
+        build.Node("l", kind="symlink", target="a.txt"),
+        build.Node("d/h", kind="hardlink", target="a.txt"),
+    ]
+    small = {"block_size": 512, "node_size": 512, "spare_blocks": 4}
+    images = [
+        build.dmg_of(nodes, layout=layout, codec=codec, hfs_options=small)
+        for layout, codec in (
+            ("gpt", build.ZLIB),
+            ("apm", build.RAW),
+            ("none", build.ADC),
+            ("gpt", build.LZFSE),
+            ("none", build.BZIP2),
+            ("gpt", build.LZMA),
+        )
+    ]
+    return [b"", _koly_block(), b"encrcdsa" + bytes(504)] + images
+
+
 def xar_seeds() -> list[bytes]:
     """Tiny blobs and the bsdtar archives in tests/fixtures/external/xar_bsdtar, one per
     encoding, each a few kilobytes."""

@@ -366,8 +366,7 @@ class _NonSeekable(io.RawIOBase):
 # SUPPORTS_STREAMING_NON_SEEKABLE has to change this list too instead of silently
 # agreeing with itself.
 # TAR, ar, deb, CPIO, RPM, makeself, ZIP, RAR (with RARLAB unrar 7.00 or later) and the
-# raw codecs read from a pipe. DMG reports the same shape so the spool recipe does not
-# copy a file that open refuses from either shape.
+# raw codecs read from a pipe.
 _FORWARD_ONLY_CONTAINERS = {
     ContainerFormat.TAR,
     ContainerFormat.AR,
@@ -378,7 +377,6 @@ _FORWARD_ONLY_CONTAINERS = {
     ContainerFormat.ZIP,
     ContainerFormat.RAR,
     ContainerFormat.RAW_STREAM,
-    ContainerFormat.DMG,
 }
 
 

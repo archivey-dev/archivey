@@ -1,9 +1,10 @@
-"""UDIF disk images (``.dmg``) are recognised by the ``koly`` block and refused.
+"""UDIF disk images (``.dmg``) are recognised by the ``koly`` block.
 
 A compressed image's first block is a real zlib, bzip2 or xz stream. Detection used to
 stop there, extract that one block and call the rest of the image trailing data. The
 ``koly`` block — 12 bytes at offset 0, or at the start of the last 512 — is the image,
-and the block codec is a member of it. Reading the image is a separate feature.
+and the block codec is a member of it. The images here are a bare ``koly`` block with
+no property list, which the reader refuses by name; ``test_dmg.py`` reads real ones.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    CorruptionError,
     StreamCapability,
     UnsupportedFeatureError,
     detect_format,
@@ -140,10 +142,10 @@ def test_explicit_compressor_format_still_reads_the_first_block(tmp_path: Path) 
         assert reader.read(next(iter(reader))) == payload
 
 
-def test_explicit_dmg_format_is_refused() -> None:
-    with pytest.raises(UnsupportedFeatureError, match="UDIF"):
+def test_explicit_dmg_format_needs_a_koly_block() -> None:
+    with pytest.raises(CorruptionError, match="koly"):
         open_archive(io.BytesIO(b"not an image"), format=ArchiveFormat.DMG)
-    with pytest.raises(UnsupportedFeatureError, match="UDIF"):
+    with pytest.raises(CorruptionError, match="koly"):
         open_archive(io.BytesIO(b"not an image"), format="dmg")
 
 
@@ -193,30 +195,18 @@ def test_detection_restores_the_stream_position() -> None:
     stream = io.BytesIO(blob)
     assert detect_format(stream).format == ArchiveFormat.DMG
     assert stream.tell() == 0
-    with pytest.raises(UnsupportedFeatureError):
-        open_archive(stream)
-    assert stream.tell() == 0
 
 
-def test_dmg_is_known_and_not_supported() -> None:
+def test_dmg_is_supported_from_a_seekable_source() -> None:
     availability = format_availability(ArchiveFormat.DMG)
-    assert availability.support is FormatSupport.NONE
+    # Every run codec and the HFS+ reader are built in: nothing to install.
+    assert availability.support is FormatSupport.FULL
     assert availability.missing == ()
-    # FORWARD_ONLY so the spool recipe does not copy a file open refuses either way.
-    assert availability.required_source is StreamCapability.FORWARD_ONLY
+    # The run tables are at the end and the filesystem metadata anywhere in the disk.
+    assert availability.required_source is StreamCapability.SEEKABLE
     assert ArchiveFormat.DMG in list_known_formats()
-    assert ArchiveFormat.DMG not in list_supported_formats()
-
-
-def test_reader_for_format_refuses_dmg_without_an_archive_name() -> None:
-    """The registry raise is the same text, and it has no archive name.
-
-    ``open_archive`` refuses first so the exception can carry the name. This is
-    the path a direct ``reader_for_format`` call actually takes.
-    """
-    with pytest.raises(UnsupportedFeatureError, match="UDIF") as excinfo:
-        get_registry().reader_for_format(ArchiveFormat.DMG)
-    assert excinfo.value.archive_name is None
+    assert ArchiveFormat.DMG in list_supported_formats()
+    assert get_registry().reader_for_format(ArchiveFormat.DMG).READ_IMPLEMENTED
 
 
 def test_an_iso_payload_with_a_koly_trailer_is_the_iso() -> None:
