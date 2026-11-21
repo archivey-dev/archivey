@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Final
 
 from _typeshed import ReadableBuffer as Buffer
@@ -11,7 +12,7 @@ from archivey_codecs import (
     zipcrypto as zipcrypto,
 )
 
-KERNELS: Final[dict[str, int]]
+KERNELS: Final[Mapping[str, int]]
 
 class CodecError(ValueError): ...
 class CorruptDataError(CodecError): ...

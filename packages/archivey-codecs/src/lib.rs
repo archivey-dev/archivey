@@ -7,8 +7,9 @@
 //! one-shot block functions, and the `CodecError` family.
 //!
 //! Input: an immutable `bytes` object is read in place, and the GIL is released while
-//! a kernel reads it; any other buffer (`bytearray`, `memoryview`) is copied first, so
-//! no other thread can change the bytes a kernel is reading.
+//! a kernel reads it (by the CRC only from 64 KiB up); any other buffer is copied
+//! first, so no other thread can change the bytes a kernel is reading. The BCJ2
+//! decoder holds the GIL: it reads its input streams by calling their `read()`.
 
 pub mod kernels;
 
@@ -20,6 +21,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
+use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
     _codecs,
@@ -98,7 +100,12 @@ fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
     if let Ok(b) = obj.cast::<PyBytes>() {
         return Ok(Cow::Borrowed(b.as_bytes()));
     }
-    let buffer = PyBuffer::<u8>::get(obj)?;
+    if let Ok(buffer) = PyBuffer::<u8>::get(obj) {
+        return Ok(Cow::Owned(buffer.to_vec(obj.py())?));
+    }
+    // A buffer of wider items (`array.array("I")`): its bytes, as hashlib reads them.
+    let bytes = pyo3::types::PyMemoryView::from(obj)?.call_method1("cast", ("B",))?;
+    let buffer = PyBuffer::<u8>::get(&bytes)?;
     Ok(Cow::Owned(buffer.to_vec(obj.py())?))
 }
 
@@ -189,9 +196,12 @@ fn crc16_update(py: Python<'_>, crc: u16, data: &Bound<'_, PyAny>) -> PyResult<u
 /// CRC-16/ARC of `data`, continuing from `value`, like `zlib.crc32`.
 #[pyfunction]
 #[pyo3(signature = (data, value = 0, /))]
-fn crc16_arc(py: Python<'_>, data: &Bound<'_, PyAny>, value: u32) -> PyResult<u32> {
-    let value = u16::try_from(value)
-        .map_err(|_| PyValueError::new_err(format!("CRC-16 value {value} is above 0xFFFF")))?;
+fn crc16_arc(py: Python<'_>, data: &Bound<'_, PyAny>, value: i64) -> PyResult<u32> {
+    // A CRC-16 has 16 bits: unlike zlib.crc32, a value outside them is refused rather
+    // than masked, since it can only be a caller's mistake.
+    let value = u16::try_from(value).map_err(|_| {
+        PyValueError::new_err(format!("CRC-16 value {value} is outside 0 to 0xFFFF"))
+    })?;
     Ok(u32::from(crc16_update(py, value, data)?))
 }
 
@@ -287,6 +297,16 @@ impl Branch {
         }
     }
 
+    /// The most `decode()` holds back: ARM64 instructions are 4 bytes, so a cut one
+    /// leaves at most 3; the RISC-V filter needs 8 bytes to read an instruction pair,
+    /// so it holds at most 7.
+    fn max_held(self) -> usize {
+        match self {
+            Branch::Arm64 => 3,
+            Branch::Riscv => 7,
+        }
+    }
+
     fn decode(self, data: &[u8], pc: u64) -> Vec<u8> {
         match self {
             Branch::Arm64 => filters::arm64_decode(data, pc),
@@ -294,9 +314,6 @@ impl Branch {
         }
     }
 }
-
-/// The most a filter holds back: under one RISC-V instruction pair.
-const MAX_HELD: usize = 16;
 
 /// A branch filter's decoder: each `decode()` returns what can be decoded so far and
 /// holds back the bytes an instruction cut at the end may still need; `flush()`
@@ -323,14 +340,14 @@ impl BranchState {
         let (kind, pc) = (self.kind, self.pc);
         let out = py.detach(|| kind.decode(&buf, pc));
         self.held = buf[out.len()..].to_vec();
-        self.pc += out.len() as u64;
+        self.pc = self.pc.wrapping_add(out.len() as u64);
         self.total_out += out.len() as u64;
         Ok(out)
     }
 
     fn flush(&mut self) -> Vec<u8> {
         let out = std::mem::take(&mut self.held);
-        self.pc += out.len() as u64;
+        self.pc = self.pc.wrapping_add(out.len() as u64);
         self.total_out += out.len() as u64;
         out
     }
@@ -352,7 +369,7 @@ impl BranchState {
         let total_in = r.u64(k)?;
         let total_out = r.u64(k)?;
         let n = r.take(1, k)?[0] as usize;
-        if n > MAX_HELD {
+        if n > kind.max_held() {
             return Err(CorruptDataError::new_err(format!(
                 "the {k} state holds back {n} bytes"
             )));
@@ -517,18 +534,22 @@ impl ZipCryptoDecryptor {
 
 /// Unix `compress` (`.Z`) with the `lzma.LZMADecompressor` interface, plus `flush()`:
 /// the format has no end marker, so the caller says when the input has ended.
+///
+/// `max_length` bounds what each call decodes, `flush()` included: the kernel's
+/// final, uncapped pass runs only once less than one code of input is left.
 #[pyclass(module = "archivey_codecs.lzw", name = "Decompressor")]
 #[derive(Clone)]
 struct LzwDecompressor {
     inner: lzw::LzwState,
-    /// Decoded output past the last call's `max_length`, from `held_pos` on: one
-    /// dictionary entry can run past the cap.
+    /// Decoded output past the last call's `max_length`, from `held_pos` on: the
+    /// kernel stops after the entry that reaches its cap, and one entry can be long.
     held: Vec<u8>,
     held_pos: usize,
+    /// `flush()` was called: the input has ended.
     flushed: bool,
-    /// The header is read from the stream, so offsets count it.
+    /// The header is read from the stream, so offsets count its 3 bytes.
     header_in_stream: bool,
-    /// Where the last CLEAR's segment ended: (input, output) offsets.
+    /// Where the last CLEAR's segment ends: (input, output) offsets.
     clear_at: (u64, u64),
     clear_offsets: Vec<(u64, u64)>,
     /// Bytes passed to `decompress()`.
@@ -542,9 +563,7 @@ impl LzwDecompressor {
     }
 
     fn note_units(&mut self, units: lzw::Units) {
-        self.clear_offsets.clear();
-        if self.clear_at == (0, 0) && self.header_in_stream && self.inner.header_params.is_some()
-        {
+        if self.clear_at == (0, 0) && self.header_in_stream && self.inner.header_params.is_some() {
             self.clear_at = (3, 0);
         }
         for (decomp, comp) in units {
@@ -554,49 +573,73 @@ impl LzwDecompressor {
         }
     }
 
+    /// One kernel step: decode under `budget`, or after `flush()` with less than one
+    /// code left, run the final pass.
+    fn step(&mut self, py: Python<'_>, budget: i64) -> Result<Vec<u8>, DecodeError> {
+        let inner = &mut self.inner;
+        let (out, units) = if self.flushed && inner.needs_input() {
+            inner.flush()?
+        } else {
+            let before = inner.held_input();
+            let (out, units) = py.detach(|| inner.feed(&[], budget))?;
+            if self.flushed && out.is_empty() && inner.held_input() == before {
+                // Nothing moved: what is left is the kernel's to finish.
+                let (more, more_units) = inner.flush()?;
+                let mut units = units;
+                units.extend(more_units);
+                (more, units)
+            } else {
+                (out, units)
+            }
+        };
+        self.note_units(units);
+        Ok(out)
+    }
+
     /// Up to `max_length` bytes: held output first, then what the kernel decodes.
-    fn produce(&mut self, py: Python<'_>, max_length: i64, eof: bool) -> PyResult<Vec<u8>> {
+    fn produce(&mut self, py: Python<'_>, max_length: i64) -> PyResult<Vec<u8>> {
         let want = if max_length < 0 {
             usize::MAX
         } else {
             max_length as usize
         };
-        let n = self.held_len().min(want);
-        let mut out = self.held[self.held_pos..self.held_pos + n].to_vec();
-        self.held_pos += n;
-        if out.len() < want && self.held_len() == 0 {
+        self.clear_offsets.clear();
+        let mut out = Vec::new();
+        loop {
+            let n = self.held_len().min(want - out.len());
+            out.extend_from_slice(&self.held[self.held_pos..self.held_pos + n]);
+            self.held_pos += n;
+            if out.len() >= want {
+                break;
+            }
+            let done = if self.flushed {
+                self.inner.is_finished()
+            } else {
+                self.inner.needs_input()
+            };
+            if done {
+                break;
+            }
             let budget = if max_length < 0 {
                 -1
             } else {
                 (want - out.len()) as i64
             };
-            let inner = &mut self.inner;
-            let got = if eof {
-                inner.flush()
-            } else {
-                py.detach(|| inner.feed(&[], budget))
-            };
-            match got {
-                Ok((more, units)) => {
-                    self.note_units(units);
-                    out.extend_from_slice(&more);
-                }
-                Err(e) => {
-                    self.clear_offsets.clear();
-                    if out.is_empty() {
-                        return Err(to_py0(e));
+            match self.step(py, budget) {
+                Ok(more) => {
+                    let empty = more.is_empty();
+                    self.held.drain(..self.held_pos);
+                    self.held_pos = 0;
+                    self.held.extend_from_slice(&more);
+                    if empty && !self.flushed {
+                        break;
                     }
-                    // Give back the held bytes first; the kernel raises again.
-                    self.held_pos -= out.len();
-                    return self.produce(py, max_length, false);
                 }
+                // The kernel raises the same error again on the next call: give back
+                // the bytes before it first.
+                Err(_) if !out.is_empty() => break,
+                Err(e) => return Err(to_py0(e)),
             }
-            if out.len() > want {
-                self.held = out.split_off(want);
-                self.held_pos = 0;
-            }
-        } else {
-            self.clear_offsets.clear();
         }
         if self.held_pos == self.held.len() {
             self.held.clear();
@@ -655,17 +698,21 @@ impl LzwDecompressor {
             return Err(PyValueError::new_err("decompress() after flush()"));
         }
         let data = input(data)?;
+        self.clear_offsets.clear();
         if !data.is_empty() {
-            // feed() with no room decodes nothing: it only queues the input.
+            // A feed with no room decodes at most one entry: mostly it queues the input.
             let slice: &[u8] = &data;
             let inner = &mut self.inner;
             let (out, units) = py.detach(|| inner.feed(slice, 0)).map_err(to_py0)?;
-            debug_assert!(out.is_empty() || !units.is_empty() || true);
             self.held.extend_from_slice(&out);
             self.note_units(units);
             self.fed += data.len() as u64;
         }
-        let out = self.produce(py, max_length, false)?;
+        let first = std::mem::take(&mut self.clear_offsets);
+        let out = self.produce(py, max_length)?;
+        let mut all = first;
+        all.append(&mut self.clear_offsets);
+        self.clear_offsets = all;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -673,9 +720,8 @@ impl LzwDecompressor {
     /// `max_length` bytes a call; `eof` is true once all of it is returned.
     #[pyo3(signature = (max_length = -1))]
     fn flush<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
-        let first = !self.flushed;
         self.flushed = true;
-        let out = self.produce(py, max_length, first)?;
+        let out = self.produce(py, max_length)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -772,7 +818,8 @@ impl LzwDecompressor {
 
     /// The CLEAR codes the last call passed, as (input offset, output offset) pairs
     /// counted as `total_in` and `total_out` count: where a decoder made with this
-    /// stream's `header_params` can start, with a fresh dictionary.
+    /// stream's `header_params` can start with a fresh dictionary. Each call reports
+    /// only its own, so a caller that wants them all collects them.
     #[getter]
     fn clear_offsets(&self) -> Vec<(u64, u64)> {
         self.clear_offsets.clone()
@@ -857,6 +904,9 @@ struct LzxDecompressor {
     /// The queued input when the last frame ran out of it; the frame is tried again
     /// once the queue has grown enough, so feeding small pieces stays linear.
     starved_at: Option<usize>,
+    /// Input the last frame used: a frame is not tried before the queue holds about
+    /// twice that, since a try that runs out of input is a wasted decode.
+    last_used: usize,
     /// Bytes the kernel took from the queue.
     taken: u64,
     total_out: u64,
@@ -874,6 +924,7 @@ impl LzxDecompressor {
             ended: false,
             finished: false,
             starved_at: Some(0),
+            last_used: 0,
             taken: 0,
             total_out: 0,
         })
@@ -929,12 +980,20 @@ impl LzxDecompressor {
                 break;
             };
             let queued = self.queued();
-            if let (false, Some(at)) = (self.ended, self.starved_at) {
-                if queued < at.saturating_mul(2).max(1) && queued < at + 64 * 1024 {
+            if !self.ended {
+                let waiting = match self.starved_at {
+                    Some(at) => queued < at.saturating_mul(2).max(1) && queued < at + 64 * 1024,
+                    None => false,
+                };
+                // The look-ahead of a frame's last symbols reaches into the next
+                // block, so a queue the size of one frame's input usually runs out.
+                if waiting || queued < self.last_used.saturating_mul(2) {
+                    self.starved_at.get_or_insert(queued);
                     break;
                 }
             }
             let ended = self.ended;
+            let before = self.total_in();
             let (inner, data) = (&mut self.inner, &self.pending[self.cursor..]);
             let (got, used) = py.detach(|| {
                 let point = inner.checkpoint();
@@ -960,6 +1019,7 @@ impl LzxDecompressor {
                     self.out = bytes;
                     self.out_pos = 0;
                     self.starved_at = None;
+                    self.last_used = (self.total_in() - before) as usize;
                 }
                 Err(DecodeError::Source(NeedMore)) => {
                     self.starved_at = Some(queued);
@@ -1091,6 +1151,7 @@ impl LzxDecompressor {
             ended: false,
             finished: false,
             starved_at: Some(0),
+            last_used: 0,
             taken: total_in,
         })
     }
@@ -1137,7 +1198,9 @@ impl LzxDecompressor {
     }
 }
 
-// ── BCJ2 ────────────────────────────────────────────────────────────────────────────
+fn cleared() -> PyErr {
+    PyValueError::new_err("the decoder's input was cleared")
+}
 
 /// The four input streams' `read` methods, counting the bytes each returned.
 struct PyStreams<'a, 'py> {
@@ -1175,7 +1238,9 @@ impl bcj2::Streams for PyStreams<'_, '_> {
 #[pyclass(module = "archivey_codecs.bcj2", name = "Decompressor")]
 struct Bcj2Decompressor {
     inner: bcj2::Bcj2,
-    reads: [Py<PyAny>; 4],
+    /// `None` once the garbage collector cleared them: a stream object may hold the
+    /// decoder, a cycle the collector must see (`__traverse__`) to free.
+    reads: Option<[Py<PyAny>; 4]>,
     out_size: u64,
     /// Decoded output not yet returned, from `pending_pos` on.
     pending: Vec<u8>,
@@ -1200,7 +1265,7 @@ impl Bcj2Decompressor {
             .map_err(|_| PyValueError::new_err("BCJ2 takes four streams"))?;
         Ok(Bcj2Decompressor {
             inner,
-            reads,
+            reads: Some(reads),
             out_size,
             pending: Vec::new(),
             pending_pos: 0,
@@ -1212,11 +1277,15 @@ impl Bcj2Decompressor {
     }
 
     fn step(&mut self, py: Python<'_>) {
+        let Some(r) = self.reads.as_ref() else {
+            self.failure = Some(cleared());
+            return;
+        };
         let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
+            r[0].bind(py).clone(),
+            r[1].bind(py).clone(),
+            r[2].bind(py).clone(),
+            r[3].bind(py).clone(),
         ];
         let mut streams = PyStreams {
             reads: &reads,
@@ -1255,6 +1324,17 @@ impl Bcj2Decompressor {
         out_size: u64,
     ) -> PyResult<Self> {
         Self::build([main, call, jump, rc], bcj2::Bcj2::new(), out_size)
+    }
+
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for r in self.reads.iter().flatten() {
+            visit.call(r)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.reads = None;
     }
 
     /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.

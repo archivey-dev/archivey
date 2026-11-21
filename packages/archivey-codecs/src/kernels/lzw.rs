@@ -5,8 +5,8 @@
 //! classic prefix/suffix one rather than the Python flat-or-link entries; the bytes
 //! it produces are the same.
 
-use crate::kernels::state::{self, Reader};
 use crate::kernels::error::DecodeError;
+use crate::kernels::state::{self, Reader};
 
 const INITIAL_CODE_WIDTH: u32 = 9;
 const MAX_CODE_WIDTH: u32 = 16;
@@ -203,7 +203,9 @@ impl LzwState {
         if self.need_header {
             return;
         }
-        let (w, b) = self.header_params.unwrap_or((self.max_width, self.block_mode));
+        let (w, b) = self
+            .header_params
+            .unwrap_or((self.max_width, self.block_mode));
         out.push(w as u8);
         out.push(u8::from(b));
         state::put_u32(out, self.dict_len);
@@ -263,8 +265,7 @@ impl LzwState {
             let dict_len = r.u32()?;
             let next_code = r.u32()?;
             let width_limit = if w == INITIAL_CODE_WIDTH { w + 1 } else { w };
-            if dict_len < d.starting_code || dict_len > next_code || next_code > 1 << width_limit
-            {
+            if dict_len < d.starting_code || dict_len > next_code || next_code > 1 << width_limit {
                 return r.bad("a dictionary size out of range");
             }
             for i in d.starting_code..dict_len {
