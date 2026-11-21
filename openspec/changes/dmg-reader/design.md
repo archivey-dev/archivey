@@ -31,7 +31,7 @@ images yet; the implementer checks it first.
 | File | What it is |
 | --- | --- |
 | `prototype/dmgproto/udif.py`, `hfsplus.py`, `apfs.py`, `lzfse.py`, `adc.py`, `dmg.py` | A working pure-Python prototype (stdlib only, 1,470 lines). It reads every file of 41 real DMGs (36 HFS+, 5 APFS) byte for byte the same as 7-Zip, and all 10 unencrypted UDIF images in the fixture set. **Use it as the reference for the on-disk layouts; do not copy it as production code.** It has none of archivey's limits, error types or diagnostics, it decodes whole files into memory, and it has no decryption. |
-| `fixtures/` | Small real images made with `hdiutil` on macOS 26.7 (§9.1), with macOS's own listing, hashes and xattrs of the mounted volume. The two 16 MiB UDRW images (raw disks, no `koly`) are left out. |
+| `fixtures/` | Moved in Part B to `tests/fixtures/external/dmg_hdiutil/`: small real images made with `hdiutil` on macOS 26.7 (§9.1), with macOS's own listing, hashes and xattrs of the mounted volume. The two 16 MiB UDRW images (raw disks, no `koly`) are left out. |
 | `make-dmg-fixtures.sh` | The script that made `fixtures/` on a Mac (Appendix A). |
 | `dmgurls.txt` | The real-world corpus URL list, 54 URLs (Appendix B); 41 were measured in the investigation. |
 
@@ -520,7 +520,7 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 | Type | Data | Notes |
 | --- | --- | --- |
 | 1 | uncompressed, inline | |
-| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip. |
+| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip; without the marker the file is `UnsupportedFeatureError` at read, since no sample shows it is damage. |
 | 3 | zlib, inline (first byte `0x?F` = stored) | |
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |
@@ -1015,7 +1015,7 @@ module `tests/dmg_build.py`, a fuzz target in `tests/atheris_fuzz/targets.py` + 
 
 ### 9.1 Real fixtures from hdiutil (commit these)
 
-From `resources/fixtures/` in this change. Move them, as part B, under
+From `resources/fixtures/` in this change (moved in Part B) under
 `tests/fixtures/external/dmg_hdiutil/` with a README entry in
 `tests/fixtures/external/README.md` (producer, macOS 26.7.1, the script below, what each
 file is for). The content is our own test files, so there is no licence problem.
