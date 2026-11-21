@@ -75,6 +75,7 @@ from archivey.diagnostics import (
     ArchiveEofContext,
     DiagnosticCode,
     DigestContext,
+    MemberHeaderDamageContext,
     MemberHeaderRecordContext,
     UnknownMemberTypeContext,
 )
@@ -105,6 +106,7 @@ from archivey.internal.backends.rar_parser import (
     RAR5_QO_UNMATCHED_COPIES,
     RAR5_UNPLACED_BYTES,
     RAR_ID,
+    RAR_SERVICE_HEADER_CRC,
     DamagedServiceHeader,
     RarArchive,
     RarEncryptionInfo,
@@ -816,6 +818,30 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
             decoded += info.file_size
         costs.append(_DictionaryCost(min(window, decoded), window, declarer))
     return costs
+
+
+def _copy_source(member: ArchiveMember) -> ArchiveMember | None:
+    """The member a RAR5 file copy reads its bytes from, or ``None`` for any other
+    member. A copy of a copy is refused when it is read (``_open_file_copy``)."""
+    raw = member._raw
+    if not isinstance(raw, RarMemberInfo) or not raw.is_file_copy():
+        return None
+    source = member.link_target_member
+    if source is None or not isinstance(source._raw, RarMemberInfo):
+        return None
+    return None if source._raw.is_file_copy() else source
+
+
+def _unchecked_after_damage(raw: RarMemberInfo) -> bool:
+    """Whether ``raw`` is a payload with no digest after a damaged header the walk
+    followed in a solid archive (``RarMemberInfo.after_damaged_header``)."""
+    return (
+        raw.after_damaged_header is not None
+        and raw.is_payload_file()
+        and raw.file_size != 0
+        and raw.crc32 is None
+        and raw.blake2sp_hash is None
+    )
 
 
 def _member_stream_size(member: ArchiveMember) -> int:
@@ -4941,6 +4967,92 @@ class RarReader(BaseArchiveReader):
             return None
         return expected, transforms
 
+    @override
+    def _reports_member_read(self, member: ArchiveMember) -> bool:
+        raw = member._raw
+        if not isinstance(raw, RarMemberInfo):
+            return False
+        if raw.header_damaged or _unchecked_after_damage(raw):
+            return True
+        source = _copy_source(member)
+        return source is not None and self._reports_member_read(source)
+
+    @override
+    def _report_member_read(self, member: ArchiveMember) -> None:
+        """``MEMBER_HEADER_DAMAGED`` for a member listed from a header that failed its
+        CRC (``RarMemberInfo.damaged_header``), on each read and never at listing.
+
+        In a solid archive, a member with no digest after such a header has nothing
+        to check its bytes: after a skipped SERVICE header with data the solid state
+        is known to be wrong, so the read raises :class:`CorruptionError` (a refusal
+        ranks above wrong data, DR-1); after a listed member, only the split rests on
+        that member's size, which its own CRC checks, so the read goes on with
+        ``DIGEST_UNVERIFIABLE``.
+        """
+        raw = member._raw
+        assert isinstance(raw, RarMemberInfo)
+        source = _copy_source(member)
+        if source is not None and self._reports_member_read(source):
+            # A file copy reads its source's bytes (_open_file_copy).
+            self._report_member_read(source)
+        if _unchecked_after_damage(raw):
+            self._report_unchecked_after_damage(member, raw)
+        if raw.damaged_header is None:
+            return
+        volume, offset = raw.damaged_header
+        in_set = self._in_set
+        where = f" of volume {volume + 1}" if in_set else ""
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_DAMAGED,
+            message=(
+                f"RAR member {quoted(member.name)} is listed from a header that "
+                f"failed its CRC (at byte {offset}{where}), as unrar lists "
+                "it; its data is still checked against its own digest, but its name, "
+                "type, mode, times and flags may be wrong."
+            ),
+            context=MemberHeaderDamageContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member.member_id,
+                format=ArchiveFormat.RAR.display_name,
+                volume_index=volume if in_set else None,
+                header_offset=offset,
+            ),
+            member=member,
+            logger=integrity_logger,
+        )
+
+    def _report_unchecked_after_damage(
+        self, member: ArchiveMember, raw: RarMemberInfo
+    ) -> None:
+        """See :meth:`_report_member_read`."""
+        if raw.after_damaged_header == "service":
+            raise CorruptionError(
+                f"RAR member {quoted(member.name)} has no checksum and follows a "
+                "damaged service header in a solid archive: unrar skips that "
+                "header's data, so this member's bytes would come out wrong.",
+                archive_name=self._archive_name,
+                member_name=member.name,
+                source_format=ArchiveFormat.RAR,
+            )
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.DIGEST_UNVERIFIABLE,
+            message=(
+                f"RAR member {quoted(member.name)} has no checksum and follows a "
+                "member listed from a damaged header in a solid archive, so nothing "
+                "checks that its bytes decoded right."
+            ),
+            context=DigestContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member.member_id,
+                algorithm="",
+                reason="after_damaged_header",
+            ),
+            member=member,
+            logger=integrity_logger,
+        )
+
     def _emit_unknown_redirect(
         self, info: RarMemberInfo, member: ArchiveMember, member_id: int
     ) -> None:
@@ -5019,6 +5131,12 @@ class RarReader(BaseArchiveReader):
                     if member is not None
                     else f"This archive's {name} service header has {reason}, "
                     "which no writer leaves; they were not read."
+                )
+            elif record == RAR_SERVICE_HEADER_CRC:
+                message = (
+                    f"This archive's {name} service header has {reason}. The walk "
+                    "went past it by its sizes, which the next header confirmed, and "
+                    "nothing in it was read, as unrar skips it."
                 )
             elif record == RAR5_QO_UNMATCHED_COPIES:
                 message = (
@@ -5987,8 +6105,9 @@ class RarReader(BaseArchiveReader):
         ``None`` (:func:`_plain_unrar_masks`).
 
         ``None`` for every member when a volume's walk stopped at a damaged header
-        (``RarArchive.damaged``): ``unrar`` searches past it and may see headers the
-        listing does not hold, so no name is known to select one member. A cut volume
+        (``RarArchive.damaged``): ``unrar`` follows a damaged header's sizes without
+        the walk's confirmation and may see headers the listing does not hold, so no
+        name is known to select one member. A cut volume
         (``truncated``) ends the file, so it hides no header ``unrar`` could reach.
         """
         masks = self._plain_masks
@@ -6130,6 +6249,7 @@ class RarReader(BaseArchiveReader):
                     self._header_keys() if self._archive.has_header_encryption else None
                 ),
                 excluded=self._excluded,
+                damaged=raw.header_damaged,
             )
             check_against_listing(stored, raw, part_size=part_size)
         try:

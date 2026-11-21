@@ -113,6 +113,14 @@ shows only once the index has been read, and iterating raises it after the last 
 index doesn't list, such as an update appended to the archive, is dropped from the list then and
 logged as `ARCHIVE_UNLISTED_DATA`, since reading the same archive from a file never sees it.
 
+When the header of a RAR member is damaged, archivey does what `unrar` does: it takes the
+position of the next header from the damaged one, and goes on if the header there is intact. You
+get every member, the damaged one included, and then the exception. The damaged member's data is
+still checked against its checksum, but its name, times and other fields could be wrong, so each
+read of it records `MEMBER_HEADER_DAMAGED`. Under `STRICT`, reading that member raises and the
+other members can still be read. From a pipe, archivey can look ahead only 4 MiB, so if the
+damaged member is larger, the list stops there; save the archive to a file to get the rest.
+
 Where the format stores a checksum for each member, reading a member from start to end checks it,
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
 checked. A loop that reads in chunks gets every byte that could be read before the error, but those
