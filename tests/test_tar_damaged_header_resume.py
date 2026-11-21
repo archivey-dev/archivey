@@ -53,7 +53,7 @@ def _source(data: bytes, access: str) -> object:
 
 
 def _content(index: int, size: int) -> bytes:
-    return bytes([65 + index]) * size
+    return bytes([65 + index % 26]) * size
 
 
 def _build(
@@ -404,3 +404,50 @@ def test_archivey_test_reads_every_member_then_fails(tmp_path: Path) -> None:
     text = out.getvalue() + err.getvalue()
     assert "listed from a header that failed its checksum" in text
     assert "failed its checksum (bad header checksum)" in text
+
+
+@pytest.mark.parametrize("access", ["pipe", "streaming"])
+def test_many_damaged_headers_apart_on_a_forward_walk(access: str) -> None:
+    """A forward-only walk replays the bytes each look ahead read. Followed damaged
+    headers apart from each other (no run cap applies) must not stack those replays:
+    the walk stays flat and ends in the archive's damage error."""
+    count = 2500
+    data, offsets = _build((10,) * count)
+    damaged = _flip(data, *(offset + 5 for offset in offsets[1::2]))
+    source = _source(damaged, "pipe" if access == "pipe" else "random")
+    seen, error = _read_pass(source, streaming=True)
+    assert len(seen) == count
+    assert isinstance(error, CorruptionError)
+    assert [content for _, content, _ in seen[:2]] == [_content(0, 10), _content(1, 10)]
+
+
+@pytest.mark.parametrize("access", ["random", "pipe"])
+def test_a_damaged_header_after_a_links_zero_span_is_not_followed(access: str) -> None:
+    """A hard link whose declared blocks are all zeros, then a header that fails its
+    checksum: as for any block there that is no header, the zeros are the trailer and
+    the listing ends at the link, as GNU tar and ``tarfile`` read it. Following the
+    damaged size would choose between that reading and a member on unchecked bytes."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        first = tarfile.TarInfo("a.txt")
+        first.size = 3
+        tar.addfile(first, io.BytesIO(b"abc"))
+        link = tarfile.TarInfo("link")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "a.txt"
+        link.size = 2 * BLOCKSIZE
+        tar.addfile(link, io.BytesIO(bytes(2 * BLOCKSIZE)))
+        last = tarfile.TarInfo("b.txt")
+        last.size = 3
+        tar.addfile(last, io.BytesIO(b"def"))
+    data = buf.getvalue()
+    last_header = 5 * BLOCKSIZE
+    assert data[last_header : last_header + 5] == b"b.txt"
+    seen, error = _read_pass(
+        _source(_flip(data, last_header + 1), access), streaming=True
+    )
+    assert [(name, content) for name, content, _ in seen] == [
+        ("a.txt", b"abc"),
+        ("link", None),
+    ]
+    assert error is None
