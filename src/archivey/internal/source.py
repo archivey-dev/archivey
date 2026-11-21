@@ -275,6 +275,47 @@ class _ArrivedView(ReadOnlyIOStream):
         return self._source.read_arrived(n)
 
 
+class _PipeView(io.RawIOBase):
+    """A forward-only raw view of a source: ``seekable()`` is ``False`` and ``seek``
+    raises. :meth:`ArchiveSource.read_as_pipe` builds one; closing it closes the
+    source under it. It gives no ``name``, ``size`` or ``fileno()``, as a pipe of
+    the same bytes would not."""
+
+    # A class default, so that ``close()``, which ``IOBase``'s finalizer calls, runs on
+    # an instance whose ``__init__`` did not.
+    _inner: ArchiveSource | None = None
+
+    def __init__(self, inner: ArchiveSource) -> None:
+        super().__init__()
+        self._inner = inner
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def seekable(self) -> bool:
+        return False
+
+    @override
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        inner = self._inner
+        if inner is None or self.closed:
+            raise ValueError("read from a closed pipe view")
+        return inner.readinto(b)
+
+    @override
+    def close(self) -> None:
+        if self.closed:
+            return
+        inner, self._inner = self._inner, None
+        try:
+            if inner is not None:
+                inner.close()
+        finally:
+            super().close()
+
+
 class ArchiveSource(ReadOnlyIOStream):
     """A read-only stream over one archive source, carrying every source guarantee.
 
@@ -598,6 +639,21 @@ class ArchiveSource(ReadOnlyIOStream):
             joined=joined,
             seek_is_expensive=joined.seek_is_expensive,
         )
+
+    @classmethod
+    def read_as_pipe(cls, source: ArchiveSource) -> ArchiveSource:
+        """Own ``source`` and read it as a pipe: once, front to back, from where it is.
+
+        For ``open_archive(pipe=True)`` over a source that can seek. The result is the
+        non-seekable raw shape, so it has no path, no volume paths and no size, and
+        detection and the backend read it exactly as they read a pipe that carries the
+        same bytes. What a pipe-mode read gives therefore never depends on whether the
+        object the caller passed can seek. Closing the result closes ``source``.
+        """
+        view = _PipeView(source)
+        piped = cls.for_stream(cast("BinaryIO", view))
+        piped._owned = cast("BinaryIO", view)
+        return piped
 
     def adopt_remote(self, ranges: tuple[RangeSource, ...]) -> None:
         """Record the range sources this source reads (one, or a volume list's)."""

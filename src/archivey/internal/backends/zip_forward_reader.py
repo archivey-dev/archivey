@@ -1845,7 +1845,7 @@ class _DirectoryMatch(NamedTuple):
 class ZipForwardReader(ZipReader):
     """Reads a ZIP front to back through its local headers (``LocalHeaderWalk``).
 
-    Only ``streaming=True`` reaches it, on a source that cannot seek.
+    Only ``pipe=True`` reaches it: its source never seeks.
     """
 
     # The member list exists only once the walk has passed every member.

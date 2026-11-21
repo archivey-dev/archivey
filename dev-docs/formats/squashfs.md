@@ -233,7 +233,7 @@ offsets the image declares:
 
 | What you see | Where | More |
 | --- | --- | --- |
-| A pipe raises `StreamNotSeekableError`, also with `streaming=True` | **format** | The tables a listing needs come after the data (§1) |
+| A pipe raises `StreamNotSeekableError`, also with `pipe=True` | **format** | The tables a listing needs come after the data (§1) |
 | A SquashFS 3 image raises `UnsupportedFeatureError` | **archivey** | Only version 4 is read (§6) |
 | An LZ4 image raises `PackageNotInstalledError` | **library** | Its blocks need `lz4` (`[recommended]`) |
 | A firmware image does not open | **format** | Vendor forks change the magic or the compressors (§3) |

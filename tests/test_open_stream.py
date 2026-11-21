@@ -159,7 +159,7 @@ def test_open_stream_peels_compressed_tar(
     # reads in one pass under streaming=True, as it reads a pipe.
     with open_archive(path, streaming=True) as direct:
         expected_pass = _stream_snapshot(direct)
-    with open_stream(path) as stream, open_archive(stream, streaming=True) as peeled:
+    with open_stream(path) as stream, open_archive(stream, pipe=True) as peeled:
         assert peeled.format == ArchiveFormat.TAR
         assert _stream_snapshot(peeled) == expected_pass
 

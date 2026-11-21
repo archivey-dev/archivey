@@ -13,7 +13,7 @@ keep the status; this page states the behaviour and links the row.
 | --- | --- |
 | Read | Yes, with archivey's own header parser and walker (`internal/backends/tar_parser.py`), in random access and with `streaming=True`. It reads the source for a plain tar and archivey's own decompressor for a compressed one |
 | Write | **Not shipped**, for any format ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable for random access. Any source, a pipe included, with `streaming=True` |
+| Source | Seekable for random access. Any source, a pipe included, with `pipe=True` |
 | Listing cost | `REQUIRES_SCANNING` for a plain tar, `REQUIRES_DECOMPRESSION` for a compressed one |
 | Access cost | `DIRECT` for a plain tar. `SOLID` for a compressed one, with `is_solid=True` and `solid_block_count=1` |
 | Stream capability | `SEEKABLE` or `FORWARD_ONLY`, taken from the source |

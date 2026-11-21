@@ -156,7 +156,7 @@ def test_a_non_seekable_source_cannot_see_the_trailer() -> None:
     compressed = zlib.compress(payload)
     blob = _udif(compressed + b"\x00" * 40_000)
     with open_archive(
-        NonSeekableBytesIO(blob), streaming=True, config=_ALWAYS_PROBE
+        NonSeekableBytesIO(blob), pipe=True, config=_ALWAYS_PROBE
     ) as reader:
         assert reader.format == ArchiveFormat.ZLIB
         for _member, stream in reader.stream_members():

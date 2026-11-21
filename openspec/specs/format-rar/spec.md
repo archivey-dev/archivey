@@ -46,8 +46,8 @@ The RAR backend SHALL expose these properties:
 | Open non-header-encrypted RAR without `unrar`/`rar` | Listing and metadata still work through the native parser |
 | Read a stored, encrypted member in one part without `unrar`/`rar`, `cryptography` installed | Decrypted and returned by archivey |
 | Open from a non-seekable source, `streaming=False` | Open fails: random access needs seek |
-| Open from a non-seekable source, `streaming=True`, `unrar` 7.00 or later | Opens a forward reader (requirement below) |
-| Open from a non-seekable source, `streaming=True`, no `unrar` 7.00 or later | `StreamNotSeekableError` naming a seekable source or `unrar` 7.00 as the fix |
+| Open from a non-seekable source, `pipe=True`, `unrar` 7.00 or later | Opens a forward reader (requirement below) |
+| Open from a non-seekable source, `pipe=True`, no `unrar` 7.00 or later | `StreamNotSeekableError` naming a seekable source or `unrar` 7.00 as the fix |
 
 ### Requirement: Parse RAR headers natively (RAR 1.5 through RAR5)
 
@@ -1701,7 +1701,7 @@ before. A member whose password was confirmed against its own CRC SHALL NOT emit
 
 ### Requirement: Read a RAR archive forward from a non-seekable source
 
-For a non-seekable source opened with `streaming=True`, the RAR backend SHALL read a
+For a non-seekable source opened with `pipe=True`, the RAR backend SHALL read a
 single-volume archive front to back: each member is listed once its header and data are
 in the pass and the next header has been read, or once a volume that ends inside it is
 written, and every member with packed data is decoded by one RARLAB `unrar` (7.00 or

@@ -75,7 +75,7 @@ def _open(
 ) -> list[ArchiveEofContext]:
     """Member names must list; returns the trailing-data reports."""
     source: BinaryIO = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with open_archive(source, format=fmt, config=config, streaming=pipe) as reader:
+    with open_archive(source, format=fmt, config=config, pipe=pipe) as reader:
         if pipe:
             names = [member.name for member, _ in reader.stream_members()]
         else:
@@ -206,7 +206,7 @@ def test_zip_from_a_sized_pipe_agrees_with_detection(forced: bool) -> None:
     data = pe_file(_IMAGE, payload=_zip(), certificate_size=0x800)
     assert detect_format(_SizedPipe(data)).payload_end is None
     fmt = ArchiveFormat.ZIP if forced else None
-    with open_archive(_SizedPipe(data), format=fmt, streaming=True) as reader:
+    with open_archive(_SizedPipe(data), format=fmt, pipe=True) as reader:
         assert [m.name for m, _ in reader.stream_members()] == ["f.txt"]
         assert [
             d.code

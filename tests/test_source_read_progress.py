@@ -83,7 +83,7 @@ def test_a_nested_reader_reports_at_its_nest_level(tmp_path: Path) -> None:
     with open_archive(path, config=config) as outer, outer.open("inner.zip") as member:
         before = len(seen.calls)
         with (
-            open_archive(member, parent=outer, streaming=True) as nested,
+            open_archive(member, parent=outer, pipe=True) as nested,
             nested.stream_members() as members,
         ):
             for _, stream in members:
@@ -111,9 +111,7 @@ def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> 
     with (
         open_archive(path, config=config) as outer,
         outer.open("inner.zip") as member,
-        open_archive(
-            member, parent=outer, config=inner_config, streaming=True
-        ) as nested,
+        open_archive(member, parent=outer, config=inner_config, pipe=True) as nested,
         nested.stream_members() as members,
     ):
         for _, stream in members:
@@ -337,7 +335,7 @@ def test_a_pipe_reports_its_last_bytes(size: int) -> None:
     seen = _Recorder()
     config = ArchiveyConfig(on_source_read=seen)
     with (
-        open_archive(_Pipe(data), config=config, streaming=True) as reader,
+        open_archive(_Pipe(data), config=config, pipe=True) as reader,
         reader.stream_members() as members,
     ):
         for _, stream in members:
@@ -436,7 +434,7 @@ def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     )
     with (
         open_archive(
-            _Pipe(data), config=config, streaming=True, password="password"
+            _Pipe(data), config=config, pipe=True, password="password"
         ) as reader,
         reader.stream_members() as members,
     ):

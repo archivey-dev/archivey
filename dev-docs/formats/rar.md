@@ -11,7 +11,7 @@ Registers keep the status — this page states the behaviour and links the row.
 | --- | --- |
 | Read | Yes — metadata natively, member data through RARLAB `unrar` or `rar` |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable in both access modes; non-seekable with `streaming=True` and RARLAB `unrar` 7.00 or later, one volume only (§2.6) |
+| Source | Seekable in both access modes; non-seekable with `pipe=True` and RARLAB `unrar` 7.00 or later, one volume only (§2.6) |
 | Listing cost | `REQUIRES_SCANNING` — a header-to-header walk cached at open (§1). RAR5 with QO: read the copies, skip matching FILE headers on the walk (§1.1) |
 | Access cost | `SOLID` for a solid archive, `DIRECT` otherwise. `solid_block_count` is always `None` (§1) |
 | Stream capability | `FORWARD_ONLY` — of the source, which a pass reads front to back (§2.6). Member streams are a separate question (§5) |

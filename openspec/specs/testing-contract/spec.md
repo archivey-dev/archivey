@@ -199,17 +199,17 @@ A backend that requires a seekable source, including ISO and 7z per
 `access-mode-and-cost` and the format specs, SHALL fail fast at open time with
 `StreamNotSeekableError`, and so SHALL RAR when no RARLAB `unrar` 7.00 or later is
 found. So SHALL a backend that reads front to back (TAR, ZIP, the
-single-file compressors) opened with `streaming=False`. No backend may implicitly
+single-file compressors) opened without `pipe=True`. No backend may implicitly
 buffer the non-seekable source to make it seekable. The recovery path is to provide a
-seekable source for seek-required formats, or `streaming=True` where the backend reads
+seekable source for seek-required formats, or `pipe=True` where the backend reads
 front to back.
 
 #### Scenario: non-seekable-source matrix
 
 | Case | Expected |
 | --- | --- |
-| ZIP opened through a non-seekable double, `streaming=False` | `open_archive` raises `StreamNotSeekableError` at open, naming `streaming=True`; no member data read; never implicitly buffers |
-| ZIP opened through a non-seekable double, `streaming=True` | Members are iterable and data is readable without seek/tell; the members after the pass equal those of the same archive read from a file |
+| ZIP opened through a non-seekable double, `streaming=False` | `open_archive` raises `StreamNotSeekableError` at open, naming `pipe=True`; no member data read; never implicitly buffers |
+| ZIP opened through a non-seekable double, `pipe=True` | Members are iterable and data is readable without seek/tell; the members after the pass equal those of the same archive read from a file |
 | ISO opened through a non-seekable double | `StreamNotSeekableError` at open under the same seek-required rule |
 | `.tar.gz` opened through a non-seekable double | Members are iterable and data is readable without seek/tell |
 | Caller needs random access to a ZIP from non-seekable input | Use a seekable source; do not rely on Archivey buffering |
@@ -369,7 +369,7 @@ use a per-input wall-clock kill timeout.
 | Native 7z header parse | Deep coverage of the pure-Python header parser. Seeds MUST include archives whose next header is not compressed, so a mutation of a coder field is still a header |
 | 7z `open_archive` + member list + bounded member `open`/`read` | Reader/spine path after parse, including the coder pipeline, solid folders, AES and branch/Delta filters. MUST pass password candidates |
 | `detect_format` over arbitrary/prefix seeds | Magic/peek-replay entry point. Each input MUST also be offered to the ZIP, RAR and 7z SFX hit validators, once with a known remaining length and once with an unknown length |
-| ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup. A second open MUST use a non-seekable source and `streaming=True`, so the forward reader walks local headers and data descriptors |
+| ZIP `open_archive` + member list + bounded member `open`/`read` | Wrapper + native codec/AES read path; mutate local/CD headers and compressed content with CRC fixup. A second open MUST use a non-seekable source and `pipe=True`, so the forward reader walks local headers and data descriptors |
 | TAR `open_archive` + member list + bounded member read | Header checksum mutate-then-fixup, then the walk, including PAX/GNU extended headers and sparse maps when the seed has them |
 | ISO `open_archive` + member list + bounded file read | Shallow; MUST use a hard wall-clock kill timeout |
 | Native RAR header parse | Deep coverage of the pure-Python RAR3/RAR5 metadata parser (CRC mutate-then-fixup) |

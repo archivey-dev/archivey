@@ -116,15 +116,13 @@ def run_info(
 
     pwd: PasswordInput = resolve_password(password)
     identity_printed = False
-    # A read-once path opens in streaming mode, as in the other verbs: nothing below
-    # needs random access, and a random-access open of a pipe always fails.
+    # A read-once path opens in pipe mode, as in the other verbs: nothing below
+    # needs random access, and only pipe mode reads a pipe.
     source = resolve_archive(archive)
     remote = is_remote(archive)
-    streaming = not remote and is_read_once(archive)
+    pipe = not remote and is_read_once(archive)
     try:
-        with open_archive(
-            source, password=pwd, streaming=streaming, config=config
-        ) as reader:
+        with open_archive(source, password=pwd, pipe=pipe, config=config) as reader:
             # The open already detected the format; print what it found rather than
             # detecting a second time. No format= is passed, so it is never None.
             detected = reader.format_info
@@ -160,7 +158,7 @@ def run_info(
         # says nothing about it.
         if not identity_printed and (remote or _can_reread(archive)):
             _print_identity(archive, detect_format(source, config=config), out)
-        refusal = read_once_refusal(archive, exc, streaming=streaming)
+        refusal = read_once_refusal(archive, exc, pipe=pipe)
         if refusal is not None:
             _field("open", escape_control_chars(refusal), err)
         else:

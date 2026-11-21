@@ -10,7 +10,7 @@ states the behaviour and links the row.
 | --- | --- |
 | Read | Yes |
 | Write | **Not shipped**, for any format — no `archivey.create`, no writer module ([writing design](../investigations/archive-writing-design.md)) |
-| Source | Seekable, in both access modes; a pipe under `streaming=True` only, read forward (§2.2.2) |
+| Source | Seekable, in both access modes; a pipe under `pipe=True` only, read forward (§2.2.2) |
 | Listing cost | `INDEXED`; `REQUIRES_SCANNING` from a pipe |
 | Access cost | `DIRECT` |
 | Stream capability | `SEEKABLE`; `FORWARD_ONLY` from a pipe |
@@ -560,16 +560,16 @@ checks: the archive lists as empty (`EMPTY_ARCHIVE`), as with Info-ZIP unzip, wh
 
 #### 2.2.2 From a pipe: the forward pass
 
-A non-seekable source under `streaming=True` is read by `ZipForwardReader`
+A source under `pipe=True`, seekable or not, is read by `ZipForwardReader`
 (`internal/backends/zip_forward_reader.py`) over `LocalHeaderWalk`
 (`internal/backends/zip_local_walk.py`), which parses each local header and each central
-header with the parser's own code and reads the source forward only. `streaming=False`
-on a pipe raises `StreamNotSeekableError` naming `streaming=True`. Nothing is spooled
-(ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)). The receipt is
-`REQUIRES_SCANNING`, `DIRECT`, `FORWARD_ONLY`; `member_count` and the archive comment
-are `None`, and `members_report_if_available()` returns `None`, until the directory has
-been read. The full design, row by row, is the `native-zip-reader` change's `design.md`
-(§"Streaming: a forward walk over local headers").
+header with the parser's own code and reads the source forward only. A pipe without
+`pipe=True` raises `StreamNotSeekableError` naming `pipe=True`, in either access mode.
+Nothing is spooled (ADR [0010](../decisions/0010-no-silent-buffer-nonseekable.md)). The
+receipt is `REQUIRES_SCANNING`, `DIRECT`, `FORWARD_ONLY`; `member_count` and the archive
+comment are `None`, and `members_report_if_available()` returns `None`, until the
+directory has been read. The full design, row by row, is the `native-zip-reader`
+change's `design.md` (§"Streaming: a forward walk over local headers").
 
 **Where a member's data ends.** A sized local header gives it. With bit 3 set, a member
 the caller reads to its end is decoded to the codec's end marker (DEFLATE, Deflate64,
@@ -1295,7 +1295,7 @@ ours.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
-| A ZIP from a pipe opens only with `streaming=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
+| A ZIP from a pipe opens only with `pipe=True`, and its members arrive without the fields only the directory holds: no mode, host or comment, and a symlink is a `FILE` until the pass reaches the directory | **format** | The index is at the end (§1). The pass updates the members in place from the directory and says so through `member_state_final`; extraction applies the same fields to disk at the end of the pass (§2.2.2) |
 | From a pipe, a few crafted or damaged shapes fail a member, or leave files on disk, that a file read handles otherwise | **format** / **archivey** | The data goes by before the directory that would correct it arrives; matching the file read would mean buffering every member (ADR 0010). The list is in §2.2.2 |
 | A name whose UTF-8 flag is set over bytes that are not UTF-8 decodes as an unflagged name, with `MEMBER_NAME_ENCODING_INFERRED`, and `DiagnosticPolicy.STRICT` refuses it | **archivey** | The bytes refute the flag, so it cannot be honoured; reading the name as unflagged keeps every other member and the name itself, where refusing cost at least the rest of the listing. The diagnostic's `declared_encoding` is `"utf-8"` and its `inferred_encoding` the codec used (§2.2) |
 | The last part of a `zip -s` set opened alone, a `.zip` with its `.z01` … gone, lists nothing and raises `TruncatedError`, though it holds the whole central directory | **archivey** | Its members' data is on the parts that are gone, except for whichever members happen to sit on the last part; listing the directory would promise members that cannot be read. The end record's disk number says the set has more parts (`0xFFFF` is the ZIP64 sentinel, not a disk number), and the error says how many (§2.2). From a pipe the forward pass lists the members whole on that part before the end record arrives, as it does for any damage it meets late (§2.2.2) |
@@ -1327,7 +1327,7 @@ ours.
 | A central entry whose fields run past the directory's end, hold the headers after it (they chain from a signature inside exactly to the end), or whose name is shorter than its local header's with no header after it, is damage (§2.2) | Cutting the field, as stdlib does, listed a member named after the swallowed entries' bytes and dropped those entries with only a count warning, where a pipe listed every member (DR-1, DR-5); `unzip` and 7-Zip both stop with an error. As damage, both reads list every member from the local headers and raise | Cutting at the directory's end (the native reader's first choice; superseded by davi's 2026-10-17 ruling, PR 860); treating a signature with a wrong count as damage, which refuses an intact directory over a name and a count field |
 | Read members whatever "version needed" says | DR-4: the method and flags say what a member needs; 7-Zip reads such members | Stdlib's refusal of the whole archive above 6.3 |
 | archivey's codec layer for member data | Stdlib decodes four methods; the codec layer decodes seven, and unifies CRC verification and error translation with the other backends | Staying on `ZipExtFile`, which left ZIP advertising codecs it could not decode |
-| Read a non-seekable source forward over the local headers under `streaming=True`, and refuse it under `streaming=False`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
+| Read a non-seekable source forward over the local headers under `pipe=True`, and refuse it without `pipe=True`, rather than spool it | Silent buffering hides an unbounded memory or disk cost the caller did not ask for; the local headers make one forward pass possible (the maintainer, 2026-10-10) | Transparent `SpooledTemporaryFile`; still possible later as an explicit opt-in ([ADR 0010](../decisions/0010-no-silent-buffer-nonseekable.md)) |
 | Apply the fields only the directory holds at the end of a forward pass (2026-10-02) | Matches the file read on disk without buffering anything (ADR 0010) | Treating every member as a regular file, as libarchive's streaming reader does (a symlink becomes a file: DR-1); spooling the archive to read the directory first |
 | From a pipe, keep the files a directory-wide refusal finds after they were written (davi, 2026-10-14; the file read is to stop refusing these instead) | The pass learns of a mislabelled UTF-8 name only after every member is written; it raises the file read's error and leaves the files | Taking them back, as a member failure at the end of the pass does |
 | Seeking and concurrent member streams off by default, on ZIP too | A rewind always re-decodes from the start of that member (or its nearest seek point), which is why both stay opt-in even here — not merely because TAR/7z can be worse. Concurrent opens also share one archive handle — `zip_reader.py` keeps a single `fp` behind its own re-entrant lock (a source whose read closes the archive re-enters it on the same thread), for a path source exactly as for a caller-supplied stream, so it is serialized seeks (multiplexing) either way rather than a second handle. ZIP's advantage is only the absence of cross-member decode dependency, plus a source that is always seekable for random access, because a pipe is read only by the forward pass, whose streams never seek. The strict default is reversible before 1.0; the permissive one is not | Enabling them where member access is `DIRECT` ([ADR 0003](../decisions/0003-member-streams-opt-in.md)) |
@@ -1382,7 +1382,7 @@ move.
 | Claim |
 | --- |
 | Cost receipt, central-directory lookup without I/O |
-| Non-seekable refused at open under `streaming=False`, naming `streaming=True`; read under `streaming=True` |
+| Non-seekable refused at open without `pipe=True` in either access mode, naming `pipe=True`; read under `pipe=True` |
 | From a pipe: the walk and where each member's data ends |
 | From a pipe: members updated from the directory, `is_current` by directory order, unlisted local entries dropped, failures at the end of the pass, limits |
 | A bit-3 codec stream that runs on into its descriptor: `TruncatedError` from a file, read from a pipe (§2.2.2) |

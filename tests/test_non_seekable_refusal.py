@@ -2,9 +2,9 @@
 
 The refusal is one typed error (``StreamNotSeekableError``) for every format, but the
 *next step* it names depends on the backend rather than on the mode that was asked for.
-TAR, ZIP, RAR and the single-file compressors read forward-only, so ``streaming=True``
-really is the fix; ISO and 7z need seek in either mode, so for those the only fix is a
-seekable source. Suggesting ``streaming=True`` there sent callers into a second refusal
+TAR, ZIP, RAR and the single-file compressors read forward-only, so ``pipe=True``
+really is the fix; ISO and 7z cannot be read as a pipe, so for those the only fix is a
+seekable source. Suggesting ``pipe=True`` there would send callers into a second refusal
 that explained the retry could never have worked, which is what these tests pin shut.
 
 Every case names ``format=`` explicitly, so the refusal is reached before a byte is
@@ -35,7 +35,7 @@ _NEEDS_SEEK = (
     ArchiveFormat.SEVEN_Z,
 )
 
-# Read front to back, so a pipe is fine once the caller asks for streaming. The
+# Read front to back, so a pipe is fine once the caller asks for pipe mode. The
 # single-file compressors share one backend and one SUPPORTS_STREAMING_NON_SEEKABLE, so
 # sampling only GZ would miss a per-codec regression; the ones whose package is absent
 # skip through _skip_unless_registered rather than being left out of the list.
@@ -57,7 +57,7 @@ _READS_FORWARD = (
 
 
 def _skip_unless_registered(fmt: ArchiveFormat) -> None:
-    # Only the forward-reading formats need this. Their streaming=False refusal comes
+    # Only the forward-reading formats need this. Their refusal without pipe=True comes
     # after the availability check, so `.lz4` or `.zst` without its package fails as
     # PackageNotInstalledError first. The seek-only formats are refused before that
     # check, so their tests run in a core-only install too.
@@ -67,16 +67,21 @@ def _skip_unless_registered(fmt: ArchiveFormat) -> None:
 
 
 @pytest.mark.parametrize("fmt", _NEEDS_SEEK, ids=lambda f: f.display_name)
-@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
-def test_seek_only_format_never_proposes_streaming(
-    fmt: ArchiveFormat, streaming: bool
+@pytest.mark.parametrize(
+    "mode",
+    [{}, {"streaming": True}, {"pipe": True}],
+    ids=["random", "streaming", "pipe"],
+)
+def test_seek_only_format_never_proposes_pipe(
+    fmt: ArchiveFormat, mode: dict[str, bool]
 ) -> None:
     with pytest.raises(StreamNotSeekableError) as excinfo:
-        open_archive(NonSeekableBytesIO(b""), format=fmt, streaming=streaming)
+        open_archive(NonSeekableBytesIO(b""), format=fmt, **mode)
 
     message = str(excinfo.value)
-    assert "streaming=True" not in message, (
-        f"{fmt.display_name} refuses streaming=True as well, so proposing it is a "
+    assert "streaming=True" not in message
+    assert "Pass pipe=True" not in message, (
+        f"{fmt.display_name} refuses pipe=True as well, so proposing it is a "
         f"dead end: {message}"
     )
     assert "BytesIO" in message  # the step that does work
@@ -85,7 +90,7 @@ def test_seek_only_format_never_proposes_streaming(
 
 @pytest.mark.parametrize("fmt", _NEEDS_SEEK, ids=lambda f: f.display_name)
 def test_seek_only_format_refuses_both_modes_alike(fmt: ArchiveFormat) -> None:
-    """Same source, either mode, same answer — the mode was never the problem."""
+    """Same source, either access mode, same answer — the mode was never the problem."""
     messages = set()
     for streaming in (False, True):
         with pytest.raises(StreamNotSeekableError) as excinfo:
@@ -95,12 +100,14 @@ def test_seek_only_format_refuses_both_modes_alike(fmt: ArchiveFormat) -> None:
 
 
 @pytest.mark.parametrize("fmt", _READS_FORWARD, ids=lambda f: f.display_name)
-def test_forward_only_format_still_proposes_streaming(fmt: ArchiveFormat) -> None:
+@pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
+def test_forward_only_format_proposes_pipe(fmt: ArchiveFormat, streaming: bool) -> None:
     _skip_unless_registered(fmt)
     with pytest.raises(StreamNotSeekableError) as excinfo:
-        open_archive(NonSeekableBytesIO(b""), format=fmt, streaming=False)
+        open_archive(NonSeekableBytesIO(b""), format=fmt, streaming=streaming)
 
-    assert "streaming=True" in str(excinfo.value)
+    assert "Pass pipe=True" in str(excinfo.value)
+    assert "streaming=True" not in str(excinfo.value)
     assert excinfo.value.source_format is fmt
 
 

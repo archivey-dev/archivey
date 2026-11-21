@@ -2233,7 +2233,7 @@ class TarReadBackend(ReadBackend):
     HEADER_CHECKS: tuple[tuple[ArchiveFormat, Callable[[bytes], bool]], ...] = (
         (ArchiveFormat.TAR, starts_with_header),
     )
-    # TAR is walkable front-to-back, so streaming=True works on a non-seekable source
+    # TAR is walkable front-to-back, so pipe=True works on a non-seekable source
     # (random access always needs a seekable one — that side is format-independent).
     SUPPORTS_STREAMING_NON_SEEKABLE = True
     USES_ENCODING = True  # the fallback codec for names that are not valid UTF-8

@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import io
 import lzma
+import os
 import random
 import shutil
 import struct
@@ -18,6 +19,21 @@ from typing import BinaryIO, Self
 import pytest
 
 from tests.conftest import CPYTHON
+
+
+def open_mode(source: object, *, streaming: bool) -> dict[str, bool]:
+    """``open_archive`` mode arguments for a test that takes sources of either kind:
+    ``pipe=True`` for a stream that cannot seek, else ``streaming=streaming``. A path
+    and an fsspec ``OpenFile`` (read by range requests) can seek."""
+    seekable = getattr(source, "seekable", None)
+    is_open_file = hasattr(source, "fs") and hasattr(source, "path")
+    if (
+        isinstance(source, (str, os.PathLike))
+        or is_open_file
+        or (seekable is not None and seekable())
+    ):
+        return {"streaming": streaming}
+    return {"pipe": True}
 
 
 class NonSeekableBytesIO(io.RawIOBase):

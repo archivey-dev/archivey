@@ -29,7 +29,7 @@ from archivey.internal.windows_reparse import (
 )
 from archivey.types import ArchiveMember, MemberType
 from tests.memory_util import traced_peak
-from tests.streams_util import NonSeekableBytesIO
+from tests.streams_util import NonSeekableBytesIO, open_mode
 from tests.test_windows_reparse import _reparse_buffer
 from tests.test_zip_pipe import _streamed
 from tests.zipcrypto import build_zipcrypto_zip
@@ -55,7 +55,7 @@ def _from_file(data: bytes) -> dict[str, ArchiveMember]:
 
 
 def _from_pipe(data: bytes, *, read: bool) -> dict[str, ArchiveMember]:
-    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         for _, stream in reader.stream_members():
             if read and stream is not None:
                 stream.read()
@@ -134,7 +134,7 @@ def test_a_folder_the_pass_meets_as_a_junction_is_never_made(tmp_path: Path) -> 
     for piped in (False, True):
         out = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             report = reader.extract_all(out, on_blocked="skip")
         assert [r.status for r in report.results] == [ExtractionStatus.BLOCKED]
         trees.append(sorted(p.relative_to(out) for p in out.rglob("*")))
@@ -153,7 +153,7 @@ def test_a_member_declaring_a_huge_link_buffer_costs_the_pass_nothing() -> None:
     with archivey.open_archive(io.BytesIO(data), config=config) as reader:
         from_file = [m.name for m in reader.members()]
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, config=config
+        NonSeekableBytesIO(data), pipe=True, config=config
     ) as reader:
         for _ in reader.stream_members():
             pass
@@ -162,7 +162,9 @@ def test_a_member_declaring_a_huge_link_buffer_costs_the_pass_nothing() -> None:
 
 
 def _target_messages(source: io.BytesIO, *, streaming: bool) -> list[str]:
-    with archivey.open_archive(source, streaming=streaming) as reader:
+    with archivey.open_archive(
+        source, **open_mode(source, streaming=streaming)
+    ) as reader:
         if streaming:
             for _ in reader.stream_members():
                 pass
@@ -204,7 +206,7 @@ def test_parent_folders_of_a_link_refused_at_placement_are_never_made(
     for piped in (False, True):
         out = tmp_path / ("pipe" if piped else "file")
         source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=piped) as reader:
+        with archivey.open_archive(source, pipe=piped) as reader:
             report = reader.extract_all(out, on_blocked="skip")
         assert [r.status for r in report.results] == [ExtractionStatus.BLOCKED]
         trees.append(sorted(p.relative_to(out) for p in out.rglob("*")))
@@ -215,7 +217,7 @@ def _extracted(
     data: bytes, out: Path, *, piped: bool, config: archivey.ArchiveyConfig
 ) -> tuple[list[ExtractionStatus], list[tuple[Path, bool]]]:
     source = NonSeekableBytesIO(data) if piped else io.BytesIO(data)
-    with archivey.open_archive(source, streaming=piped, config=config) as reader:
+    with archivey.open_archive(source, pipe=piped, config=config) as reader:
         report = reader.extract_all(out, on_blocked="skip")
     tree = sorted((p.relative_to(out), p.is_symlink()) for p in out.rglob("*"))
     return [r.status for r in report.results], tree
@@ -295,7 +297,7 @@ def test_members_refused_a_reparse_prefix_keep_no_message_while_the_pass_runs() 
         return _zip([(f"{i}.bin", 0x20, content) for i in range(3000)])
 
     def listing(data: bytes) -> None:
-        with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+        with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
             for _ in reader.stream_members():
                 pass
 
@@ -333,7 +335,7 @@ def test_a_reparse_buffer_that_is_all_the_data_has_its_crc_checked(
     results = []
     for streaming in (False, True):
         source = NonSeekableBytesIO(data) if streaming else io.BytesIO(data)
-        with archivey.open_archive(source, streaming=streaming) as reader:
+        with archivey.open_archive(source, pipe=streaming) as reader:
             report = reader.extract_all(
                 tmp_path / str(streaming), on_error="continue", on_blocked="skip"
             )
@@ -354,7 +356,7 @@ def test_an_unread_encrypted_reparse_buffer_over_the_cap_says_why_from_a_pipe() 
     with archivey.open_archive(io.BytesIO(data), password="secret") as reader:
         assert reader.members()[0].link_target == "target"
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password="secret"
+        NonSeekableBytesIO(data), pipe=True, password="secret"
     ) as reader:
         for _ in reader.stream_members():
             pass
@@ -375,9 +377,7 @@ def test_a_reparse_buffer_the_caller_read_to_a_failed_crc_is_no_link() -> None:
     central = raw.rindex(b"PK\x01\x02")
     for crc_at in (14, central + 16):
         raw[crc_at] ^= 0xFF
-    with archivey.open_archive(
-        NonSeekableBytesIO(bytes(raw)), streaming=True
-    ) as reader:
+    with archivey.open_archive(NonSeekableBytesIO(bytes(raw)), pipe=True) as reader:
         for _, stream in reader.stream_members():
             assert stream is not None
             with pytest.raises(archivey.CorruptionError):
@@ -434,7 +434,7 @@ def test_short_damaged_data_past_a_link_buffer_is_a_file_from_a_pipe_too(
         assert from_file.type is MemberType.FILE
         with pytest.raises(archivey.CorruptionError), reader.open(from_file) as stream:
             stream.read()
-    with archivey.open_archive(NonSeekableBytesIO(data), streaming=True) as reader:
+    with archivey.open_archive(NonSeekableBytesIO(data), pipe=True) as reader:
         for member, stream in reader.stream_members():
             if read and member.name == "link":
                 assert stream is not None
@@ -560,7 +560,7 @@ def _listed_under(data: bytes, *, budget: int, pipe: bool) -> tuple[MemberType, 
         listing_limits=ListingLimits(max_metadata_bytes=budget)
     )
     source = NonSeekableBytesIO(data) if pipe else io.BytesIO(data)
-    with archivey.open_archive(source, streaming=pipe, config=config) as reader:
+    with archivey.open_archive(source, pipe=pipe, config=config) as reader:
         if pipe:
             for _ in reader.stream_members():
                 pass
@@ -661,7 +661,7 @@ def test_dropped_ciphertext_of_an_unread_reparse_point_stays_a_link_from_a_pipe(
     ) as reader:
         assert reader.members()[0].type is MemberType.FILE
     with archivey.open_archive(
-        NonSeekableBytesIO(data), streaming=True, password="secret", config=config
+        NonSeekableBytesIO(data), pipe=True, password="secret", config=config
     ) as reader:
         for _ in reader.stream_members():
             pass

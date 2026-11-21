@@ -122,7 +122,7 @@ for one reader, whatever the number of member streams open at once. Past that, m
 more requests, not more memory.
 
 Archivey learns the size at open and reads by range, so a source opened this way can seek:
-`streaming=True` isn't needed, and ZIP, 7z, RAR, ISO and the other formats that need a seekable
+`pipe=True` isn't needed, and ZIP, 7z, RAR, ISO and the other formats that need a seekable
 source all work. [Choosing how to read](reading.md) applies unchanged. Reading in one pass, in
 archive order, is still the cheapest way to read many members.
 

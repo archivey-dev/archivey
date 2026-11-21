@@ -868,7 +868,7 @@ def test_nested_archive_from_a_pass_handle_is_a_non_seekable_source(
             open_archive(stream)
     for stream in pass_handle():
         if key in _STREAMS_FROM_PIPE:
-            with open_archive(stream, streaming=True) as inner:
+            with open_archive(stream, pipe=True) as inner:
                 assert inner.cost.stream_capability is StreamCapability.FORWARD_ONLY
                 streams = [s for _, s in inner.stream_members() if s is not None]
                 assert len(streams) == file_count

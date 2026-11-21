@@ -32,7 +32,7 @@ The ZIP backend SHALL expose these properties for every opened ZIP archive:
 | Listing cost | `ListingCost.INDEXED` — end record read at open, central directory walked as members are listed; the local header of a file or link (not WinZip AE-2) whose central CRC-32 is 0 over data is read too (the requirement on headers that disagree) |
 | Access cost | `AccessCost.DIRECT` — independent local file offsets |
 | Stream capability | `StreamCapability.SEEKABLE`; `FORWARD_ONLY` for a non-seekable source |
-| Read source | Seekable in both access modes; non-seekable under `streaming=True` only; no implicit buffering/spooling |
+| Read source | Seekable in both access modes; non-seekable under `pipe=True` only; no implicit buffering/spooling |
 | Write support | No — writing is not shipped for any format (`dev-docs/investigations/archive-writing-design.md`) |
 
 `reader.get()` and other name lookups SHALL use the central-directory-derived
@@ -214,11 +214,13 @@ SHALL raise `UnsupportedFeatureError` naming Strong Encryption rather than
 
 ### Requirement: Read a non-seekable ZIP source in one forward pass
 
-A ZIP read from a non-seekable source SHALL be read under `streaming=True` in one
-forward pass over the local headers, with the central directory read after the last
-member. Under `streaming=False` it SHALL raise `StreamNotSeekableError` at open, naming
-`streaming=True`. The library MUST NOT buffer, spool, or copy the source into seekable
-storage. The member data `extract_all` stages in the destination (`safe-extraction`) is
+A ZIP read from a non-seekable source SHALL be read under `pipe=True` in one forward
+pass over the local headers, with the central directory read after the last member.
+Without `pipe=True` (under `streaming=False` or `streaming=True`) it SHALL raise
+`StreamNotSeekableError` at open, naming `pipe=True`. Under `pipe=True` a seekable
+source SHALL be read the same way, by its local headers (`access-mode-and-cost`). The
+library MUST NOT buffer, spool, or copy the source into seekable storage. The member
+data `extract_all` stages in the destination (`safe-extraction`) is
 extraction output, not a copy of the source. What the pass keeps SHALL be bounded: the
 directory and end records by the listing limits, and the member data it keeps (a
 password-confirmation prefix, a short member that may turn out to be a link) by fixed
@@ -347,8 +349,8 @@ re-type it. The archive comment SHALL be weighed against
 
 | Case | Expected |
 | --- | --- |
-| Non-seekable ZIP with default `streaming=False` | `StreamNotSeekableError` at open, naming `streaming=True`; no reader |
-| Non-seekable ZIP with `streaming=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
+| Non-seekable ZIP with default `streaming=False` | `StreamNotSeekableError` at open, naming `pipe=True`; no reader |
+| Non-seekable ZIP with `pipe=True` | Opens; `stream_members()` and `extract_all()` read every member in one pass; after the pass the members equal the file read's |
 | Implementation lacks seekable source | No implicit seekable-copy, temp-file, or spool fallback of the source; the member data `extract_all` stages is not one |
 | `stream_members()` from a pipe, a Unix symlink member | Yielded as `FILE`, `member_state_final` false; after the pass `SYMLINK` with its target |
 | A pipe, many small files whose data passes `max_metadata_bytes`, a symlink after them | Lists every member and the link's target, as a file read does |
@@ -937,7 +939,7 @@ end record nothing is corrected.
 | A deflated member of 2³² + 100 zero bytes, about 4 MiB compressed | `size` is `None` and `extra["size_mod_2_32"]` 100 at listing; `DiagnosticPolicy.STRICT` lists it; a read to the end yields 2³² + 100 bytes and fills in `size`, and the key stays |
 | A deflated member of 100 bytes padded with empty stored blocks to about 10 MB, stored size 100 | `size` is `None`, not 2³² + 100, and `member_state_final` `False`; a read yields 100 bytes and fills in `size`, and the flag reads `True`; with no read, it reads `True` once the reader closes |
 | The same, `streaming=True` | After the pass the member reads `True`: from a pipe with the size the pass counted, from a seekable source the caller did not read with `size` `None` |
-| The same with 5000 bytes, past the symlink target cap, `streaming=True` from a pipe, not read | After the pass the member reads `True` with `size` `None`, as from a file: the pass decoded it only to the byte past the cap |
+| The same with 5000 bytes, past the symlink target cap, `pipe=True` from a pipe, not read | After the pass the member reads `True` with `size` `None`, as from a file: the pass decoded it only to the byte past the cap |
 | A deflated member whose stored size is over 1032 times its compressed size | The stored size stays; the read raises `TruncatedError` |
 | A stream decoding to 101 bytes against a stored 100 | `size` is `None`; the read raises `CorruptionError` and `size` stays `None` |
 | A stream of unknown size with a wrong CRC-32 | The read raises `CorruptionError` and `size` stays `None` |
@@ -970,7 +972,7 @@ fields and comments against `max_metadata_bytes` as they arrive, raising
 | Three entries, end record declares 3 | `ResourceLimitError` at open |
 | Three entries, end record declares 1 | Opens; the listing, iteration or `stream_members()` raises `ResourceLimitError` at the third entry |
 | The same, `streaming=True`, each stream read as `stream_members()` yields it | The first two members read in full, then `ResourceLimitError` |
-| Three entries from a non-seekable source, `streaming=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
+| Three entries from a non-seekable source, `pipe=True` | The first two members yielded, then `ResourceLimitError` at the third local header |
 | Three entries from a file, then 1 MiB of other bytes (the end record past the search window) | Opens without reading the third member's data or the tail; the listing raises `ResourceLimitError`, as at the third directory entry |
 
 ### Requirement: Confirm multi-candidate ZipCrypto passwords

@@ -272,7 +272,7 @@ def _read_only_member(
     config = ArchiveyConfig(diagnostic_policy=policy) if policy else ArchiveyConfig()
     if pipe:
         with archivey.open_archive(
-            NonSeekableBytesIO(blob), streaming=True, config=config
+            NonSeekableBytesIO(blob), pipe=True, config=config
         ) as ar:
             read = []
             for _, stream in ar.stream_members():
@@ -292,7 +292,7 @@ def _read_only_member(
 def _local_header_reports(blob: bytes, *, pipe: bool) -> list[LocalHeaderContext]:
     """What the member reported about its local header, once its data was read."""
     source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
-    with archivey.open_archive(source, streaming=pipe) as ar:
+    with archivey.open_archive(source, pipe=pipe) as ar:
         if pipe:
             for _, stream in ar.stream_members():
                 assert stream is not None
@@ -341,7 +341,7 @@ def _directory_codes(blob: bytes, *, pipe: bool, policy: DiagnosticPolicy) -> li
     through its data: ``read()`` from a file, the pass from a pipe."""
     source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
     config = ArchiveyConfig(diagnostic_policy=policy)
-    with archivey.open_archive(source, streaming=pipe, config=config) as ar:
+    with archivey.open_archive(source, pipe=pipe, config=config) as ar:
         if pipe:
             for _ in ar.stream_members():
                 pass
@@ -484,7 +484,7 @@ def test_a_method_difference_is_reported_on_a_member_that_fails_its_crc(
     the CRC-32 the headers disagree on. Both report the method once and raise."""
     blob = _one_member_zip(_METHOD_TEXT, central_method=8, central_crc=0x1234_5678)
     source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
-    with archivey.open_archive(source, streaming=pipe) as ar:
+    with archivey.open_archive(source, pipe=pipe) as ar:
         try:
             with pytest.raises(CorruptionError, match="(?i)crc"):
                 if pipe:
@@ -511,7 +511,7 @@ def test_a_method_difference_beside_an_overlapping_size_differs_by_read(
     struct.pack_into("<I", blob, blob.index(b"PK\x01\x02") + 20, len(_METHOD_TEXT) * 2)
     source = NonSeekableBytesIO(bytes(blob)) if pipe else io.BytesIO(bytes(blob))
     match = "bytes stored against" if pipe else "Overlapped entries"
-    with archivey.open_archive(source, streaming=pipe) as ar:
+    with archivey.open_archive(source, pipe=pipe) as ar:
         try:
             with pytest.raises(CorruptionError, match=match):
                 if pipe:
@@ -543,7 +543,7 @@ def _drain_aes(blob: bytes, *, pipe: bool) -> None:
     """Read every member of the WinZip AES ``blob`` with the right password, and
     check, whatever it raises, that no method difference was reported."""
     source = NonSeekableBytesIO(blob) if pipe else io.BytesIO(blob)
-    with archivey.open_archive(source, streaming=pipe, password=b"pw") as ar:
+    with archivey.open_archive(source, pipe=pipe, password=b"pw") as ar:
         try:
             if pipe:
                 for _, stream in ar.stream_members():
@@ -763,9 +763,7 @@ def test_ae2_zero_central_crc_ignores_a_local_crc(pipe: bool) -> None:
     blob[14:18] = struct.pack("<I", zlib.crc32(b"h" * 22))
     config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
     source = NonSeekableBytesIO(bytes(blob)) if pipe else io.BytesIO(bytes(blob))
-    with archivey.open_archive(
-        source, streaming=pipe, password="pw", config=config
-    ) as ar:
+    with archivey.open_archive(source, pipe=pipe, password="pw", config=config) as ar:
         if pipe:
             read = [stream.read() for _, stream in ar.stream_members() if stream]
             (member,) = ar.members_report().members

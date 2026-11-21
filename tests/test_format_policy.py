@@ -764,7 +764,7 @@ def test_a_replacement_is_not_given_a_pipe() -> None:
 
     with pytest.raises(StreamNotSeekableError):
         open_archive(
-            io.BufferedReader(Pipe(_zip_bytes())), streaming=True, config=_REPLACE_ZIP
+            io.BufferedReader(Pipe(_zip_bytes())), pipe=True, config=_REPLACE_ZIP
         )
     assert _opened == []
 

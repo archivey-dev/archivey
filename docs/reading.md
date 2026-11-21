@@ -58,7 +58,7 @@ costs, but it never allows or refuses one: the options below do that.
 ```python
 import sys
 
-with archivey.open_archive(sys.stdin.buffer, streaming=True) as archive:
+with archivey.open_archive(sys.stdin.buffer, pipe=True) as archive:
     for member, stream in archive.stream_members():
         ...
 ```
@@ -78,11 +78,20 @@ held, archivey runs a garbage collection and tries once more before it raises. W
 [`concurrent_operations=True`](#several-members-at-once) they work, from any thread, on every
 format, and so does `extract_all`. Streams from the pass never seek.
 
-A pipe, a socket or an HTTP response can only be read this way. TAR, ZIP, cpio, ar, deb, RPM and
-makeself archives and single compressed files can come from one, and so can a RAR archive when
-RARLAB `unrar` 7.00 or later is installed ([RAR](formats.md#rar)). 7z, ISO,
-SquashFS, CAB, XAR, LHA and ARJ archives need a file or another source that can seek.
-`archivey.format_availability(format).required_source` says which a format needs.
+### Reading from a pipe
+
+A pipe, a socket or an HTTP response can be read only once, so open it with `pipe=True`, as in the
+example above. Without it, `open_archive` raises `StreamNotSeekableError`. `pipe=True` reads the
+archive in one pass, as `streaming=True` does, and reads it the way a pipe is read: from where
+the source is to its end, without going back, even if the source can seek. So the same call gives
+the same result on a pipe and on a file, and you can test code meant for a pipe on a file.
+
+What a pipe gives isn't always what a file gives, and that is why archivey doesn't switch to it on
+its own. TAR, ZIP, cpio, ar, deb, RPM and makeself archives and single compressed files can come
+from a pipe, and so can a RAR archive when RARLAB `unrar` 7.00 or later is installed
+([RAR](formats.md#rar)). 7z, ISO, SquashFS, CAB, XAR, LHA and ARJ archives need a file or another
+source that can seek. `archivey.format_availability(format).required_source` says which a format
+needs. [Reading from a pipe](formats.md#reading-from-a-pipe) lists what changes for each format.
 
 A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an
 index at its end. From a pipe, archivey finds each member by the short header in front of it, and
@@ -224,7 +233,7 @@ format, and the mistake shows up during development.
 |---|---|---|
 | Read a few members by name, or list and then read | nothing | Out-of-order reads can be slow on [solid archives](#solid-archives) |
 | Read everything once | `streaming=True` | [One pass only](#reading-once); no reads by name |
-| Read from a pipe | `streaming=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-once) |
+| Read from a pipe | `pipe=True` | [TAR, ZIP, cpio, ar, deb, RPM, makeself and single compressed files](#reading-from-a-pipe); [some results differ from a file](formats.md#reading-from-a-pipe) |
 | Seek inside a member | `seekable_members=True` | [A backward seek may decompress again](#seeking-inside-a-member), and a seek that [jumps over data](errors-and-diagnostics.md#damaged-archives) stops the checksum check |
 | Read members from several threads | `concurrent_operations=True` | [Slow on sources where each jump is costly](#several-members-at-once) |
 | Get the same result as other tools, on every machine | `use_rapidgzip` and `use_indexed_bzip2` set to `OFF` in `ArchiveyConfig` | [Large gzip and bzip2 reads are slower](#the-same-result-everywhere) |
