@@ -358,6 +358,35 @@ def test_lzx_eof_counts_stop_where_the_stream_does() -> None:
                 assert r.unused_data == b""
 
 
+def test_lzx_owed_pad_byte_in_a_later_call() -> None:
+    """An odd final uncompressed block owes a pad byte: fed in a later call, it still
+    belongs to the stream, so the split matches the one-call decode; with no more
+    input, ``flush()`` ends the stream without it."""
+    from cab_util import LzxEncoder
+
+    stream = b"".join(
+        LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(b"hello")
+    )
+    lzx = archivey_codecs.lzx
+    whole = lzx.Decompressor(15, output_size=5)
+    assert whole.decompress(stream + b"trailer") == b"hello"
+    assert (whole.total_in, whole.unused_data) == (len(stream), b"trailer")
+    d = lzx.Decompressor(15, output_size=5)
+    assert d.decompress(stream[:-1]) == b"hello"
+    assert not d.eof
+    assert d.needs_input
+    r = lzx.Decompressor.from_state(d.getstate())
+    for dec in (d, r):
+        assert dec.decompress(stream[dec.total_in :] + b"trailer") == b""
+        assert dec.eof
+        assert (dec.total_in, dec.unused_data) == (len(stream), b"trailer")
+    cut = lzx.Decompressor(15, output_size=5)
+    assert cut.decompress(stream[:-1]) == b"hello"
+    assert cut.flush() == b""
+    assert cut.eof
+    assert (cut.total_in, cut.unused_data) == (len(stream) - 1, b"")
+
+
 def test_lzx_parity_clean_and_damaged() -> None:
     rng = random.Random(5)
     for case, window, frames, sizes, data in lzx_streams(rng):
