@@ -15,6 +15,9 @@
 - [ ] 1.6a Tests: provider reentry from `open_member` and after a stream is materialized
   under `CONCURRENT`; two workers waiting on one provider; callback exceptions through
   `translate_exception`; strength-rule cases
+- [ ] 1.6b Tests (D8): reentry during first-touch listing; interleaved nested-member
+  reopen while another thread waits on the provider; repeat count per provider answer;
+  no provider answers on an unrepeatable walk; ARJ short source vs wrong-key exhaustion
 - [ ] 1.7 Docs: `adding-a-format.md` passwords section, `formats.py` docstring (docs
   session)
 

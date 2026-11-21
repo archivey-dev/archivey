@@ -103,20 +103,34 @@ before returning when the total would pass the cap, leaving the total unchanged.
 | Cap `None` | Never raises |
 | A nested archive inside the plugin's archive | Its own reader and budget |
 
-### Requirement: The provider runs outside the reader's handle lock
+### Requirement: The provider is called only at the reader's public boundary
 
-`unlock` SHALL release the adapter's handle guard for every provider call and take it
-again before calling `check`. A provider that reenters the same reader from its own
-thread or a copied context SHALL get `ArchiveyUsageError`, and two workers needing the
-provider at once SHALL be served one after the other.
+`unlock` SHALL NOT call the password provider inside a plugin call. When it needs a new
+provider answer it SHALL end the plugin call, and archivey SHALL call the provider with
+no archivey lock held and no listing in progress, then repeat the public operation,
+which tries the new answer. A provider that reenters the same reader from its own thread
+or a copied context SHALL get `ArchiveyUsageError` before any lock or listing wait, and
+two workers needing the provider at once SHALL be served one after the other. A
+sequential walk that cannot be repeated SHALL get no provider answers.
 
-#### Scenario: concurrency
+#### Scenario: concurrency and repeats
 
 | Case | Expected |
 | --- | --- |
-| `MemberStreams.CONCURRENT`, provider calls `reader.open(other_encrypted_member)` from inside `open_member`'s unlock | `ArchiveyUsageError`, no deadlock |
-| Same, after the member's stream was materialized | `ArchiveyUsageError`, no deadlock |
+| `MemberStreams.CONCURRENT`, provider calls `reader.open(other_encrypted_member)` | `ArchiveyUsageError`, no deadlock |
+| Same, after another member's stream was materialized | `ArchiveyUsageError`, no deadlock |
+| Provider waits on a copied-context worker that calls `reader.open()` during first-touch listing | `ArchiveyUsageError` in the worker, no deadlock |
 | Two threads open two encrypted members, provider sleeps | Provider called once at a time; both members read |
+| Thread A waits on the provider for a nested member while thread B reopens another nested member | Both read; neither sees the other's reopen state |
+| Provider answers wrong then right for one `open_member` | `open_member` called three times; rounds charged once per answer |
+| Sequential walk over a pipe with no spool, provider given | Provider not called; missing-password `EncryptionError` |
+
+#### Scenario: ARJ trial decode failures
+
+| Case | Expected |
+| --- | --- |
+| Source ends inside the packed span | `TruncatedError` propagates; no next password |
+| Complete span, decoder runs out of input under a wrong key | `REJECTED`; next password tried |
 
 ### Requirement: A replacement reader receives password= when it supports passwords
 

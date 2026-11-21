@@ -114,11 +114,14 @@ def check(password):
     return password, PasswordConfirmVerdict.INCONCLUSIVE   # nothing to test before the data
 
 def full_check(password):
+    packed = read_packed_span(member)          # whole span first: a short source read
+                                               # raises TruncatedError here and propagates
     try:
-        data = degarble_and_decode(member_data, password)  # counted like any member read
-    except CorruptionError:                    # LZH table or method-4 distance error:
-        return None, PasswordConfirmVerdict.REJECTED   # depends on the password
-    if crc32(data) != stored_crc:              # OSError, TruncatedError propagate
+        data = degarble_and_decode(packed, password)   # in memory, counted like a read
+    except CorruptionError:                    # includes TruncatedError: with the span
+        return None, PasswordConfirmVerdict.REJECTED   # complete, a decoder that runs out
+                                               # of input means a wrong key, not a cut
+    if crc32(data) != stored_crc:
         return None, PasswordConfirmVerdict.REJECTED
     if len(data) < 4:                          # below the strength rule
         return password, PasswordConfirmVerdict.INCONCLUSIVE
@@ -128,7 +131,9 @@ key = context.unlock(member_label, check, full_check=full_check, member=member)
 ```
 
 The plugin decides which of its own failures depend on the password (return `REJECTED`)
-and lets the rest propagate (source errors, `TruncatedError`, resource limits).
+and lets the rest propagate (source errors, a short read of the source itself, resource
+limits). It tells them apart by where the error arose, not by class: `TruncatedError` is
+a `CorruptionError`, and a decoder fed a complete span under a wrong key can raise it.
 `full_check` decodes the whole member, so it is charged to the same listing and decode
 limits as a read. It exists only where the plugin can replay the unit: an indexed
 reader, or a sequential one that reads its unit into a bounded buffer first.
@@ -269,19 +274,46 @@ class MemberData(NamedTuple):     # one open of a member
 Alternative: one member-wide flag set by the latest `unlock`. Rejected for the cases
 above.
 
-### D8. Provider calls never run under the reader's handle lock
+### D8. The provider is called only between plugin calls, never inside one
 
-Under `MemberStreams.CONCURRENT` the adapter calls `IndexedReader.open_member` and every
-plugin stream read inside its handle guard, a non-reentrant lock. `reader-concurrency`
-requires the provider to run with no archivey lock held, and a reentering provider to
-get `ArchiveyUsageError`, not a deadlock. So `unlock` releases the handle guard for each
-provider call and takes it again before calling `check`; static candidates are tried
-without releasing it. The plugin may call `unlock` from `open`, `iter_members`, `walk`
-and `open_member`, and from nowhere else (not from inside a stream's `read`), and must
-not keep state across the call that another thread's `open_member` could change: a
-`ReaderSource` view reads by offset, so views are safe to hold. Provider calls stay
-serialized per reader by `_PasswordCandidates`, and reentry is caught by its guard
-before any lock is taken.
+Inside a plugin call archivey may hold locks and per-call state: the handle guard around
+`open_member` and stream reads under `MemberStreams.CONCURRENT`, the listing lock and
+the materialization owner around `iter_members` and `walk`, and adapter scratch state
+such as the nested-reopen marker around `open_member`. Releasing one of them around a
+provider call leaves the others held, and releasing all of them would let another thread
+change state the suspended call still uses. So `unlock` never calls the provider itself:
+
+1. Inside the plugin call, `unlock` tries only what needs no provider call: the static
+   candidates, and provider answers already given for this unit (by `what` and
+   `member`), skipping any already rejected for it.
+2. When it would need a new provider answer, it raises an internal signal (not an
+   `ArchiveyError`, not visible to the plugin's `translate_exception`). The plugin call
+   unwinds, and every lock and per-call state goes with it.
+3. At the reader's public boundary (the caller's `open()`, iteration, `verify_all()` and
+   so on), with no archivey lock held and the listing not mid-walk, archivey runs the
+   provider call: the existing reentry check (own thread or copied context raises
+   `ArchiveyUsageError`) and the existing one-at-a-time serialization, both before any
+   lock or listing wait.
+4. archivey then repeats the public operation from the start. The new answer is now in
+   step 1's set, so the repeated call reaches the same `unlock` and tries it.
+
+Cost: each new provider answer repeats the plugin's work up to that `unlock`. For
+`open_member` that is a header read; for a first-touch listing it is the walk up to the
+encrypted unit (a makeself payload), and for DMG the image header at `open`. Provider
+answers are typed by a person or read from a keyring, so they are few; static candidates
+never cause a repeat. Key derivation already charged for a rejected answer is not
+charged again (the answer is skipped), and a plugin's own key cache survives the repeat.
+
+The plugin may call `unlock` from `open`, `iter_members`, `walk` and `open_member`, and
+from nowhere else (not from inside a stream's `read`). Its calls must be repeatable
+(they already are: archivey rewalks and reopens today). A sequential walk that cannot be
+repeated (a pipe with no spool) gets no provider answers: `unlock` there behaves as if
+the provider returned `None` after the static candidates, and the missing-password
+message says so.
+
+Alternative: release the locks around an in-place provider call. Rejected for the
+reasons above (round 2 of the Codex review: listing lock, materialization wait, reopen
+marker).
 
 ## Risks / Trade-offs
 
