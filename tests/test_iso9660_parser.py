@@ -149,13 +149,15 @@ def _assert_same_trees(data: bytes) -> IsoVolume:
 # --- images ----------------------------------------------------------------------
 
 
-def _pycdlib_image(*, rock_ridge: bool, joliet: bool, deep: int = 0) -> bytes:
+def _pycdlib_image(
+    *, rock_ridge: bool, joliet: bool, deep: int = 0, rr_version: str = "1.09"
+) -> bytes:
     import pycdlib
 
     iso = pycdlib.PyCdlib()
     kwargs: dict[str, Any] = {}
     if rock_ridge:
-        kwargs["rock_ridge"] = "1.09"
+        kwargs["rock_ridge"] = rr_version
     if joliet:
         kwargs["joliet"] = 3
     iso.new(interchange_level=3, **kwargs)
@@ -407,6 +409,35 @@ def test_a_malformed_system_use_entry_ends_that_records_area_only() -> None:
     assert damaged.mode is not None  # PX came before TF
     others = [e.rr for ident, e in entries.items() if ident != b"FILE.TXT;1"]
     assert all(rr is None or rr.dropped is None for rr in others)
+
+
+@pytest.mark.parametrize("serial_be", [1, 2], ids=["matching", "mismatched"])
+def test_rock_ridge_112_checks_both_copies_of_the_px_serial(serial_be: int) -> None:
+    data = bytearray(_pycdlib_image(rock_ridge=True, joliet=False, rr_version="1.12"))
+    root, _ = _root_records(data)
+    record = _record_offset(data, root, b"FILE.TXT;1")
+    px = data.index(b"PX", record, record + data[record])
+    assert data[px + 2] == 44
+    mode, uid, gid = 0o100640, 123, 456
+    for offset, value in ((4, mode), (20, uid), (28, gid)):
+        struct.pack_into("<I", data, px + offset, value)
+        struct.pack_into(">I", data, px + offset + 4, value)
+    struct.pack_into("<I", data, px + 36, 1)
+    struct.pack_into(">I", data, px + 40, serial_be)
+
+    volume = _volume(bytes(data))
+    assert volume.rock_ridge
+    entry = next(
+        e for _, e in iter_tree(volume.primary.root) if e.ident == b"FILE.TXT;1"
+    )
+    assert entry.rr is not None
+    if serial_be == 1:
+        assert entry.rr.dropped is None
+        assert (entry.rr.mode, entry.rr.uid, entry.rr.gid) == (mode, uid, gid)
+    else:
+        assert entry.rr.dropped is not None
+        assert "two byte orders disagree" in entry.rr.dropped
+        assert entry.rr.mode is None
 
 
 def test_a_continuation_area_past_its_block_is_dropped_not_refused() -> None:

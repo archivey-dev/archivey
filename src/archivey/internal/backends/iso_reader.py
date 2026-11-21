@@ -1865,9 +1865,10 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         def convert(date: RawDate | None, field: str, source: str) -> datetime | None:
             if date is None:
                 return None
-            if date_is_invalid(date):
+            value = date_value(date)
+            if value is None and date_is_invalid(date):
                 invalid.append((field, source, repr(date_fields(date))))
-            return date_value(date)
+            return value
 
         times = {} if rr is None else rr.times
         modified = convert(times.get("modified"), "modified", "rock_ridge")
