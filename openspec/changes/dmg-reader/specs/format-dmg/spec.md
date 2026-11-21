@@ -11,9 +11,10 @@ SHALL be charged as metadata before they are kept. Runs of type zero fill, raw, 
 (free space), ADC, zlib, bzip2, LZFSE and xz SHALL be read; a comment run SHALL be
 skipped and the terminator SHALL end the table. Each compressed run SHALL decode to
 exactly its sector count × 512 bytes. Before any byte of a run is read, a raw run whose
-stored length is not its decoded size, and a compressed run whose stored length exceeds
-its decoded size plus 1/16 plus 64 KiB, SHALL raise `CorruptionError`; no decoder pull
-SHALL return more than the decoded size plus one byte. Runs SHALL be decoded through
+stored length is not its decoded size, SHALL raise `CorruptionError`, and a compressed
+run whose stored length exceeds twice its decoded size plus 64 KiB SHALL raise
+`ResourceLimitError` (a support limit, not a validity bound); no decoder pull SHALL
+return more than the decoded size plus one byte. Runs SHALL be decoded through
 `ReaderContext.decompress` for zlib, bzip2 and xz and through archivey's own pure-Python
 decoders for LZFSE, LZVN and ADC, whose output is bounded by the run's size. A run that
 decodes to another length, runs that overlap or leave their table's sector range, and
@@ -43,7 +44,8 @@ partition; no work proportional to the image.
 | Data fork offset and mish data offset both non-zero | Runs read from their sum plus the run offset |
 | A signed image (code-signature blob before the `koly` block) | Read; no trailing-data report |
 | A plist length over 64 MiB | `ResourceLimitError`; no byte of the plist requested from the source |
-| A compressed run whose stored length is over the cap | `CorruptionError`; no byte of the run requested |
+| A compressed run whose stored length is over the cap | `ResourceLimitError`; no byte of the run requested |
+| A valid ADC run of one-byte literals (stored ≈ 2 × decoded) | The data |
 | A run whose decoder yields more than its decoded size | `CorruptionError` after at most the decoded size plus one byte |
 | A `mish` table that declares more runs than its data holds | `CorruptionError` before any run is kept |
 

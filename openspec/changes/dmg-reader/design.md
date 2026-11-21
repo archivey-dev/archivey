@@ -239,10 +239,16 @@ Run types:
 **Bounds before any byte of a run is read or allocated.** Let `decoded = count * 512`.
 A compressed run whose `decoded` exceeds 16 MiB is `UnsupportedFeatureError` (§4.4). A
 raw run whose stored length is not exactly `decoded` is `CorruptionError`. A compressed
-run whose stored length exceeds `decoded + decoded // 16 + 64 KiB` is `CorruptionError`:
-no codec here expands incompressible input by more than about 1 % plus a small header
-(zlib stored blocks, bzip2, xz, LZFSE raw blocks, ADC literals), so a larger stored
-length is damage, and the largest read for one run is about 17.1 MiB. These checks
+run whose stored length exceeds `2 * decoded + 64 KiB` is `ResourceLimitError` ("a
+compressed run stores more than archivey reads for one run"). This is a support limit,
+not a validity bound: a valid encoding can be arbitrarily inefficient (zlib allows
+empty stored blocks without end; ADC allows a one-byte literal per command, so a valid
+run can store about twice its decoded size). The limit admits every such ADC run and
+every real writer's output (hdiutil's runs are at most 1 MiB decoded and smaller
+stored), and caps the largest read for one run at 32 MiB + 64 KiB. Tests tell the two
+apart: a valid ADC run of one-byte literals reads; a valid zlib run padded with empty
+stored blocks past the limit raises `ResourceLimitError`; a malformed run within the
+limit raises `CorruptionError`. These checks
 run when the run table is parsed, so a bad run is known before any decode; the error is
 raised from the read that needs the run (other members stay readable).
 
@@ -1093,12 +1099,12 @@ links), libyal `libfshfs`/`libfsapfs` (no xz runs in `libmodi`).
   mapped raise `CorruptionError`.
 - UDIF bounds, through a source that counts the bytes requested from it: a plist length
   over 64 MiB raises `ResourceLimitError` with no byte of the plist requested; a run
-  whose stored length is over the cap raises `CorruptionError` with no byte of the run
-  requested; a run whose decoder yields more than `count * 512` bytes raises
+  whose stored length is over the cap raises `ResourceLimitError` with no byte of the
+  run requested; a run whose decoder yields more than `count * 512` bytes raises
   `CorruptionError` after at most `count * 512 + 1` decoded bytes; a `mish` table that
   declares more runs than its `Data` holds raises `CorruptionError` before any run is
-  kept; a member read never requests more bytes than the capped stored
-  lengths of the runs it covers.
+  kept; a member read never requests more bytes than the capped stored lengths of the
+  runs it covers.
 - Encryption (Part G): both key sizes open with `password="archivey"`; no password;
   wrong password; several candidates where only the last is right; iteration count over
   the budget; `cryptography` excluded through `exclude_libraries`; members report
