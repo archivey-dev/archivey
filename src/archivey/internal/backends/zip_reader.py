@@ -109,6 +109,7 @@ from archivey.exceptions import (
     exception_detail,
     raw_message_of,
 )
+from archivey.internal import native
 from archivey.internal.backends.zip_aes import (
     ZIP_WRONG_PASSWORD_MSG,
     ExtraField,
@@ -564,8 +565,12 @@ def _is_candidate_integrity_failure(
     payload is in the file (``payload_complete()``, asked only then: it costs a seek);
     otherwise the file really is short.
     The local header is not encrypted, so a damaged one is never the key's doing: it
-    raises before decryption starts.
+    raises before decryption starts. Nor is a panic in archivey-codecs' ZipCrypto
+    kernel: every byte string is valid input to the cipher, so the panic is a kernel
+    bug, and it stays a ``CorruptionError`` that names the kernel.
     """
+    if native.caused_by_panic(exc):
+        return False
     # TruncatedError is a CorruptionError subclass, so it must be tested first.
     if isinstance(exc, TruncatedError):
         return payload_complete()

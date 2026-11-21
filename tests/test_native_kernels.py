@@ -189,32 +189,51 @@ def test_zip_candidate_passwords_use_the_kernel_unless_switched_off(
         assert bool(_FakeDecryptor.built) is used
 
 
+@pytest.mark.parametrize(
+    "passwords", [b"pw", [b"wrong1", b"pw"]], ids=["one-password", "candidates"]
+)
 @pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
 def test_a_panic_in_a_zipcrypto_read_is_corruption(
-    monkeypatch: pytest.MonkeyPatch, streaming: bool
+    monkeypatch: pytest.MonkeyPatch, streaming: bool, passwords: object
 ) -> None:
-    """A panic while decrypting member data is a ``CorruptionError``, which the reader
-    then handles as any damaged ZipCrypto member: with only a one-byte password check,
-    it may also mean a wrong password, so the read raises ``EncryptionError``."""
+    """A panic while decrypting member data is a ``CorruptionError`` naming the
+    kernel, not a wrong-password error: no key can make the cipher panic. With
+    candidate passwords, the read does not move on to the next one."""
     _fake(monkeypatch, zipcrypto=1)
     _FakeDecryptor.panic = True
     raw = build_zipcrypto_zip(
         b"pw", b"a.txt", b"x" * 5000, compression=zipfile.ZIP_DEFLATED
     )
     with (
-        pytest.raises(EncryptionError) as info,
-        open_archive(io.BytesIO(raw), password=b"pw", streaming=streaming) as reader,
+        pytest.raises(CorruptionError, match="ZipCrypto decoder failed") as info,
+        open_archive(
+            io.BytesIO(raw), password=passwords, streaming=streaming
+        ) as reader,
     ):
         for _member, stream in reader.stream_members():
             assert stream is not None
             stream.read()
-    corruption = info.value.__cause__
-    assert isinstance(corruption, CorruptionError)
-    assert "ZipCrypto decoder failed" in str(corruption)
-    assert isinstance(corruption.__cause__, PanicException)
+    assert not isinstance(info.value, EncryptionError)
+    assert isinstance(info.value.__cause__, PanicException)
     # The switch turns the kernel off: Python's keys read the same archive.
     with open_archive(io.BytesIO(raw), password=b"pw", config=OFF) as reader:
         assert reader.read("a.txt") == b"x" * 5000
+
+
+def test_only_a_panic_cause_keeps_corruption_from_the_password_check() -> None:
+    plain = CorruptionError("bad")
+    assert not native.caused_by_panic(plain)
+    try:
+        try:
+            raise PanicException("boom")
+        except PanicException as panic:
+            raise CorruptionError("wrapped") from panic
+    except CorruptionError as exc:
+        assert native.caused_by_panic(exc)
+        try:
+            raise CorruptionError("outer") from exc
+        except CorruptionError as outer:
+            assert native.caused_by_panic(outer)
 
 
 def test_other_exceptions_pass_unchanged() -> None:

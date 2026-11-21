@@ -74,6 +74,19 @@ def is_panic(exc: BaseException) -> bool:
     return kind.__name__ == "PanicException" and kind.__module__ == "pyo3_runtime"
 
 
+def caused_by_panic(exc: BaseException) -> bool:
+    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
+    never something the archive's data or a password could cause."""
+    seen: set[int] = set()
+    cause = exc.__cause__
+    while cause is not None and id(cause) not in seen:
+        if is_panic(cause):
+            return True
+        seen.add(id(cause))
+        cause = cause.__cause__
+    return False
+
+
 @contextlib.contextmanager
 def panic_to_corruption(kernel: str) -> Generator[None]:
     """Raise a panic in the block as ``CorruptionError``, the panic its cause."""
