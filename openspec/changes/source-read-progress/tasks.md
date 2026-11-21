@@ -8,12 +8,12 @@
 
 ## 2. HTTP byte progress
 
-- [ ] 2.1 The HTTP adapter reads an answer one `sync()` per chunk and reports inside a
+- [x] 2.1 The HTTP adapter reads an answer one `sync()` per chunk and reports inside a
   request
 
 ## 3. CLI and docs
 
-- [ ] 3.1 URL status line on stderr for every verb (tqdm, after 0.5 s,
+- [x] 3.1 URL status line on stderr for every verb (tqdm, after 0.5 s,
   `--hide-progress`)
-- [ ] 3.2 `test` and `extract` use the input position when the output total is unknown
+- [x] 3.2 `test` and `extract` use the input position when the output total is unknown
 - [ ] 3.3 Docs: "Showing progress" in the reading guide and the remote archives page

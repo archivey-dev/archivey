@@ -1243,14 +1243,30 @@ class ArchiveSource(ReadOnlyIOStream):
         joins volumes reads its reader at its own offsets (a rebased one through a
         :class:`SlicingStream`). ``None`` before the handle opens: nothing is opened to
         answer.
+
+        While ``on_source_read`` reports this source's reads (:meth:`report_reads`), a
+        reader of the region reads past this source, so it reports what it read
+        through :meth:`file_region_report`.
         """
         if not self._seekable or self._gatherer is not None or self._joined is not None:
             return None
-        if self._progress is not None:
-            # An accelerator given the file under the source reads it with ``pread``,
-            # past the ``on_source_read`` reporter (:meth:`report_reads`).
+        if self._progress is not None and self.file_region_report() is None:
+            # Reports that a region reader cannot give (only the local parts of a
+            # mixed volume list, which is joined and returned above): the reads go
+            # through this source.
             return None
         return self._reader
+
+    def file_region_report(self) -> SourceReadReporter | None:
+        """Where a reader of :meth:`file_region_inner`'s file reports its reads, or
+        ``None`` when this source does not report.
+
+        Its ``read(position, n)`` takes ``position`` in this source's offsets, as the
+        source's own reads give it; its ``raise_if_stopped`` raises again what the
+        callback raised.
+        """
+        progress = self._progress
+        return progress if isinstance(progress, SourceReadReporter) else None
 
     def rebase_to_current_position(self) -> None:
         """Make the current position this source's offset 0.

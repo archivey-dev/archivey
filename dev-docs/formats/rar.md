@@ -311,20 +311,67 @@ the reader raises `TruncatedError` before it reaches this diagnostic, as it does
 missing-block one. That is deliberate: under a strict policy, emitting first would
 replace the `TruncatedError` with a `DiagnosticRaisedError` about lesser damage.
 
-**A damaged header after MAIN lists the members before it** (DR-2). Any header after
-the main header whose CRC fails, other than one taken as the end block above, ends the
-walk of its volume there: the parser records it in `RarArchive.damaged` (walks catch
-the private `_RarHeaderCrcError`), and the reader lists the members before it and then
-raises `CorruptionError`. This is the path the reader uses for `RarArchive.truncated`,
-with `CorruptionError` in place of `TruncatedError`. TAR does the same for a damaged
-header after its first member. Before this, the walk raised at open and listed nothing.
-Measured on unrar 7.00 with the last byte of the second FILE header flipped in
-`basic_nonsolid__rar4.rar` and `basic_nonsolid__.rar`: `unrar lb` lists `file1.txt`,
-reports "empty_file.txt - the file header is corrupt", lists the other four members,
-and exits 3. archivey stops at the damaged header and does not search for the next one:
-the damaged header's size is not data, and a search would trust bytes no CRC has
-checked yet. A damaged MAIN header still raises at open, since its flags are needed to
-read the rest.
+**A damaged header after MAIN is followed by its sizes** (salvage step 1, maintainer
+rulings 2026-11-07 and 2026-11-21; `openspec/changes/salvage-step-1`). `unrar` does not
+search past a damaged header, whatever the old text here said. `arcread.cpp`
+(`ReadHeader50`, `ReadHeader15`) reports "the file header is corrupt", parses the
+damaged header anyway and sets the next block's position from its own sizes. Measured
+on unrar 7.00 with the third FILE header of `basic_nonsolid__.rar` (and its RAR 1.5-4
+twin) changed: its last byte flipped, `unrar lb` lists all six members and exits 3; a
+name byte flipped, it lists and `unrar x` writes `suXdir/file2.txt`; the size vint
+damaged, it parses garbage and loses everything after ("Unexpected end of archive").
+
+archivey does the same, with one check that `unrar` lacks. When a plain header after
+MAIN fails its CRC (the walks catch the private `_RarHeaderCrcError`), the walk computes
+the next position from the damaged header's data offset and data size (RAR 1.5-4: its
+packed size, as `unrar` reads it). It goes there only when the header there passes its
+CRC and may follow MAIN (FILE, SERVICE, ENDARC). In RAR5 that one CRC32 is the
+confirmation (2⁻³² odds of a false match). In RAR 1.5-4 the header CRC is 16 bits, so
+the header after it must pass too, or be the clean end of the volume (2⁻³²). A second
+header that is itself damaged confirms once its own sizes are confirmed, so damage two
+headers apart is followed in both versions. A run of damaged headers is followed the
+same way, up to `_MAX_DAMAGED_HEADER_CHAIN` (8) damaged headers per check, and the
+header after the run vouches for all of them. A damaged header must read as FILE or
+SERVICE and its fields must parse in full: one that reads as MAIN, ENDARC, RAR5 `CRYPT`
+or anything else stops the walk, as before. Nothing searches the bytes; that is the
+opt-in salvage mode's job.
+
+The check proves the landing is a header, not that it is the *next* one. A damaged size
+that points at a real later header passes it, and the intact members between are
+skipped with nothing to say so: in `basic_nonsolid__rar4.rar`, HEAD_SIZE 127 (was 53) on
+the third header lands on `subdir/`, and `implicit_subdir/file3.txt` drops out. `unrar
+lb` 7.00 and `lsar` list the same five, since they take the next position from the same
+sizes. The pass still ends in `CorruptionError`. The damage text names the first four
+followed headers and counts the rest.
+
+A damaged FILE header is listed with the fields it holds (`RarMemberInfo.damaged_header`
+records where it is), as `unrar` lists it. Its data is still checked by the CRC it
+holds. Its name, type, mode, times and flags are checked by nothing, so every read of
+it emits `MEMBER_HEADER_DAMAGED`: `open()` before the member opens, and a
+`stream_members()` or extraction pass on its stream's first read
+(`BaseArchiveReader._report_member_read`). Listing it emits nothing, so `STRICT` gives
+the same listing and refuses only that member's read. A damaged SERVICE header is
+skipped, as `unrar` and `lsar` skip it, and reported as a damaged service header
+(`MEMBER_HEADER_RECORD_SKIPPED`, `record="header CRC"`). In a solid archive a member
+with no digest after the damage has nothing to check its bytes: after a skipped SERVICE
+header with data the solid state is known to be wrong (`unrar p` does not decode that
+data), so its read raises `CorruptionError`; after a listed damaged member it reads
+with `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`). A synthetic archive for
+`unrar` writes a damaged member's stored fields under a fresh CRC
+(`read_stored_header(damaged=True)`), so `unrar` decodes it as from the original.
+
+The pass still ends in `CorruptionError` after every member the walk reached, naming
+the first damaged header (`RarArchive.damaged`), as `RarArchive.truncated` ends it in
+`TruncatedError`. When the check fails, the walk stops at the damaged header as it did
+before this change: the members before it list, then the same error. Damage after the
+last member and a damaged MAIN header are unchanged (the end block rule above, and
+`CorruptionError` at open).
+
+*From a pipe* (maintainer, 2026-11-21). The forward source keeps its last 4 MiB for a
+seek back (`rar_forward.KEEP_BYTES`), so a pipe follows a damaged header exactly as a
+file does while the damaged member's data and the confirming header fit in that. A
+longer check stops the walk at the damaged header, and the error says a file would go
+on past it (`_forward_hold_note`). Nothing unconfirmed is listed from a pipe.
 
 *Fields parsed before the CRC.* RAR 1.5-4 parses a FILE header's fields before the CRC
 check, because they give the bytes the CRC covers, so a parse error in a header whose
@@ -336,7 +383,8 @@ open.
 
 *Volume sets.* The damaged header's size is not needed to find the next volume: its
 first header is at offset 0 of a separate file. So `needs_next_volume` is whatever the
-member headers before the damage (CRCs intact) said, as for a damaged end block: a
+member headers the walk read said (CRCs intact, or a listed damaged member whose sizes
+were confirmed), as for a damaged end block: a
 member whose data continues chains the walk to the next volume, whose members are
 listed, and the `CorruptionError` follows the whole listing and names the first damaged
 volume. This is the missing-middle-volume ruling (DR-2: "read past the gap. list
@@ -349,7 +397,9 @@ message names the damaged header as well.
 
 *Encrypted headers.* As for a cut and a damaged end block, this needs the header
 password proven. Unproven, a CRC mismatch reads the same as a wrong key, so it stays the
-wrong-password `EncryptionError`.
+wrong-password `EncryptionError`. Proven, a damaged encrypted header is not followed:
+the next header's IV or salt would come from a size no CRC checked, and `unrar` stops
+there too.
 
 ### 1.1 Quick Open (QO)
 
@@ -1452,6 +1502,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
+| Past a damaged header, an intact member can be missing from the listing | **format** | A damaged size that points at a real later header passes the check, and the members between are skipped, as `unrar` skips them (§1). The pass ends in `CorruptionError`; only salvage mode, which searches, can find them |
 | Listing an archive works on a machine where reading it fails | **format** | The compressor is proprietary and its reference tool is non-free, so no distribution installs it by default and no pip extra can ship it (§1, §3). `PackageNotInstalledError` names it and names the lookalikes that will not be accepted |
 | `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. `stream_members()` is never seekable by design: those handles are a single-pass decode, and seeking would break it. The `seekable_members=True` you declared still holds — it promises what random `open()` can do |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |

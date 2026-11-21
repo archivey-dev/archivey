@@ -7,7 +7,12 @@ import sys
 from typing import TextIO
 
 from archivey import FormatInfo, detect_format, open_archive
-from archivey.cli.common import is_read_once, read_once_refusal, reject_stdin_token
+from archivey.cli.common import (
+    is_read_once,
+    read_once_refusal,
+    reject_stdin_token,
+    with_source_progress,
+)
 from archivey.cli.format import (
     escape_path,
     format_access_summary,
@@ -16,6 +21,7 @@ from archivey.cli.format import (
     format_format_label,
 )
 from archivey.cli.password import resolve_password
+from archivey.cli.progress import make_progress_callback
 from archivey.cli.sources import is_remote, resolve_archive, url_label
 from archivey.config import ArchiveyConfig, PasswordInput
 from archivey.cost import CostReceipt
@@ -104,6 +110,7 @@ def run_info(
     password: str | None,
     track_io: bool,
     verbose: bool,
+    hide_progress: bool = False,
     config: ArchiveyConfig | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
@@ -121,8 +128,23 @@ def run_info(
     source = resolve_archive(archive)
     remote = is_remote(archive)
     pipe = not remote and is_read_once(archive)
+    # A status line while the open reads the file, cleared before the first line.
+    progress = make_progress_callback(hide_progress=hide_progress, stream=err)
+    if progress is not None:
+        # Every stderr line, log lines included, clears the status line first.
+        err = progress.guard(err)
     try:
-        with open_archive(source, password=pwd, pipe=pipe, config=config) as reader:
+        try:
+            opened = open_archive(
+                source,
+                password=pwd,
+                pipe=pipe,
+                config=with_source_progress(config, progress),
+            )
+        finally:
+            if progress is not None:
+                progress.close()
+        with opened as reader:
             # The open already detected the format; print what it found rather than
             # detecting a second time. No format= is passed, so it is never None.
             detected = reader.format_info
