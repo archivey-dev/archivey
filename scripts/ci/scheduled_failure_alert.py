@@ -24,7 +24,8 @@ Only text this workflow posted is read for the previous list: anyone can comment
 public issue, and a planted list would hide new failures.
 
 Stdlib only; GitHub is reached through the ``gh`` command. The run is described by the
-environment variables the workflow sets (`main` lists them).
+environment variables the workflow sets (`main` lists them) and, for the run's attempt,
+by the ``workflow_run`` event file (`_attempt`).
 """
 
 from __future__ import annotations
@@ -159,8 +160,9 @@ def decide(
     block, new = jobs_block(jobs, previous)
     if lost:
         block += (
-            "\n\nJobs no runner took (cancelled before any step, in this run and the "
-            "previous one):\n" + "\n".join(f"- `{job}`" for job in lost)
+            "\n\nJobs no runner took in this run (cancelled before any step):\n"
+            + "\n".join(f"- `{job}`" for job in lost)
+            + "\n\nThe previous run also lost a job, or its jobs could not be read."
         )
     if issue is not None:
         noun = "job" if new == 1 else "jobs"

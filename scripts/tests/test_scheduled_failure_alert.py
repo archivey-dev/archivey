@@ -231,7 +231,8 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     calls = run(lost, lost)
     assert calls[-1][:3] == ["issue", "comment", "7"]
     body = calls[-1][-1]
-    assert "Jobs no runner took" in body
+    assert "Jobs no runner took in this run" in body
+    assert "or its jobs could not be read" in body
     assert "- `macos`" in body
     # Lost jobs stay out of the failed list and its marker.
     assert "Failed jobs" not in body
