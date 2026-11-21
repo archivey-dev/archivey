@@ -191,10 +191,13 @@ Before the partition CRC-32 spanning check exists (Part F), members of a DMG SHA
 with `verifiable = LENGTH`. With it, `verifiable` SHALL be set at listing: `CHECKSUM`
 for a file member whose partition is fully covered by `blkx` tables that each carry a
 CRC-32, else `LENGTH`. Only `verified` SHALL change after the pass. `verify_all()` SHALL
-run a separate partition pass that decodes every run of the partition except "ignore"
-runs, in sector order, once per reader; members' `verified` SHALL reach `CHECKSUM` only
-when it matches. Ordinary member reads SHALL NOT run it. A mismatch or a decode error in
-the pass SHALL fail every member the partition covers. The checksum SHALL NOT be
+run a separate pass over whole checked tables: for each `blkx` table with a CRC-32
+that overlaps a filesystem partition, it SHALL decode every run of that table except
+"ignore" runs, in sector order, including runs outside the partition when the table
+straddles its boundary, once per reader. A member's `verified` SHALL reach `CHECKSUM`
+only when every table covering its partition matches. Ordinary member reads SHALL NOT
+run it. A mismatch or a decode error in a table SHALL fail every member of every
+partition that table overlaps. The checksum SHALL NOT be
 computed at open.
 
 #### Scenario: partition CRC
@@ -204,3 +207,4 @@ computed at open.
 | `verify_all()` on a fixture | Every file member `CHECKSUM` |
 | One byte flipped inside a zlib run that still decodes | `verify_all()` fails the partition's members |
 | One byte flipped in a run that only holds free space | `verify_all()` fails the partition's members |
+| One CRC table covering two GPT partitions (straddling their boundary) | The whole table is checked; both partitions' members reach `CHECKSUM`; a flipped byte in either fails both |

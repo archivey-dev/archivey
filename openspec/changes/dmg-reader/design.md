@@ -889,8 +889,11 @@ The CRC covers disk bytes that no member stream reads (filesystem metadata, free
 blocks, slack), and member streams overlap (hard links, clones, decmpfs), so member
 reads are not a proxy for it. Part F therefore runs a separate pass:
 
-- **Coverage:** for each `blkx` table with a CRC-32 (`checksum type 2`, 32 bits), every
-  run of that table except "ignore" runs, zero-fill included, decoded in sector order,
+- **Coverage:** the unit is a whole checked table, never a partition range (§5 lets GPT
+  and `blkx` boundaries differ, and the CRC covers the table). For each `blkx` table
+  with a CRC-32 (`checksum type 2`, 32 bits) that overlaps a filesystem partition, every
+  run of that table except "ignore" runs, including runs outside the partition when the
+  table straddles its boundary, zero-fill included, decoded in sector order,
   CRC over the decoded bytes. One run in memory at a time (bounded by §4.4). Raw and
   zero-fill runs can be any size, so they are fed to the CRC in fixed 1 MiB slices
   (zero fill from one reused zero buffer), never as one whole buffer.
@@ -905,10 +908,11 @@ reads are not a proxy for it. Part F therefore runs a separate pass:
   it and does not raise members to `CHECKSUM` (it does not cover every run). The pass
   runs once per reader; its result is kept, so a second `verify_all()` does not decode
   again. No retry: decoding is deterministic.
-- **Result:** match: `verified` reaches `CHECKSUM` for the members of that partition
-  whose own reads passed. Mismatch: a `SpanningCheckError` that fails every member the
-  partition covers; `verified` stays below `CHECKSUM`. A decode error during the pass
-  fails those members the same way, naming the run.
+- **Result:** a member's `verified` reaches `CHECKSUM` when every table covering its
+  partition matched and its own read passed. Mismatch in a table: a `SpanningCheckError`
+  that fails every member of every partition the table overlaps (one table covering two
+  GPT partitions fails both); `verified` stays below `CHECKSUM`. A decode error during
+  the pass fails those members the same way, naming the run.
 - **Hook:** today's spanning-check hook (`archivey.formats`) publishes a result for
   members but does not schedule reads of disk ranges. Part F adds a reader-driven pass
   to it (the reader decodes its own ranges when `verify_all()` asks), as part of the
@@ -916,7 +920,8 @@ reads are not a proxy for it. Part F therefore runs a separate pass:
 - **Tests:** `verify_all()` on a fixture raises every file to `CHECKSUM`; a flipped byte
   in a run that only holds free space or catalog nodes (no member reads it) is caught by
   `verify_all()`; a flipped byte in a zlib run that still decodes fails the partition's
-  members.
+  members; one CRC table straddling two GPT partitions is checked whole, and a flipped
+  byte in it fails the members of both.
 
 The data-fork CRC-32 and the master checksum in the `koly` block are checked in the same
 pass when present.
