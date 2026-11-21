@@ -144,6 +144,29 @@ request, on a typical object store. It matters most when listing an archive with
 store where each request is slow and bytes are cheap, and a smaller one a store that charges for
 the bytes.
 
+### Watching the requests
+
+`on_source_read` ([Showing progress](reading.md#showing-progress)) reports a URL's requests. It is
+called before each request, with `request_done` false and `request_received` 0, and after it, with
+`request_done` true. Over HTTP it is also called about once per MiB while a large answer comes
+in. `requests` counts the requests so far, and `request_start` and `request_end` give the range
+the current one asks for:
+
+```python
+def show(progress: archivey.SourceProgress) -> None:
+    if progress.request_done:
+        print(f"request {progress.requests}: {progress.request_received} bytes")
+
+config = archivey.ArchiveyConfig(on_source_read=show)
+with archivey.open_archive(fsspec.open("s3://bucket/data.zip"), config=config) as archive:
+    archive.members()
+```
+
+The callback runs on your thread, so raising an exception there stops the read. Over HTTP it also
+runs between two reads of an answer, which stops a slow download partway. On other stores, such as
+S3, the request in progress finishes first, and the exception stops the read before the next one.
+The [command-line tool](cli.md) uses the callback to show a status line.
+
 ## What archivey takes from an `OpenFile`
 
 An `OpenFile` carries some options that change the bytes it would give if it were opened.

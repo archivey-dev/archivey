@@ -16,4 +16,4 @@
 - [x] 3.1 URL status line on stderr for every verb (tqdm, after 0.5 s,
   `--hide-progress`)
 - [x] 3.2 `test` and `extract` use the input position when the output total is unknown
-- [ ] 3.3 Docs: "Showing progress" in the reading guide and the remote archives page
+- [x] 3.3 Docs: "Showing progress" in the reading guide and the remote archives page
