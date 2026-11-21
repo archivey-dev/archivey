@@ -59,12 +59,15 @@ class ReaderContext:
         *,
         full_check: Check[T] | None = None,
         member: ArchiveMember | None = None,
-    ) -> T: ...
+    ) -> tuple[T, PasswordConfirmVerdict]: ...
 ```
 
 `check(password)` tries one password and returns what that password unlocked (whatever
 the plugin needs to decrypt later: a derived key, a cipher state, a decrypted header),
-with how sure it is. archivey never looks inside the value; `unlock` returns it. Data is
+with how sure it is. archivey never looks inside the value; `unlock` returns it together
+with the verdict it won with (the full check's when one ran, or an earlier survivor's
+`INCONCLUSIVE` when archivey fell back to it), which the plugin puts on
+`MemberData.unlocked` or `MemberSpan.unlocked` (D7). Data is
 `None` only with `REJECTED`. An exception from `check` or `full_check` ends the loop
 (D2). `member` is what the provider's `PasswordRequest.member` shows (`None` for an
 archive-level unit). `what` names the unit in archivey's messages ("makeself payload 2",
@@ -100,7 +103,8 @@ def check(password: bytes) -> tuple[AesParams | None, PasswordConfirmVerdict]:
     # the stored (encrypted) bytes, so they cannot confirm the password either.
     return params, PasswordConfirmVerdict.INCONCLUSIVE
 
-params = context.unlock("makeself payload 1", check)
+params, verdict = context.unlock("makeself payload 1", check)
+# each span of this payload: MemberSpan(..., unlocked=verdict)
 ```
 
 makeself has no `full_check`: it is a forward walk with no replay, so with several
@@ -114,29 +118,35 @@ def check(password):
     return password, PasswordConfirmVerdict.INCONCLUSIVE   # nothing to test before the data
 
 def full_check(password):
-    packed = read_packed_span(member)          # whole span first: a short source read
-                                               # raises TruncatedError here and propagates
-    try:
-        data = degarble_and_decode(packed, password)   # in memory, counted like a read
-    except CorruptionError:                    # includes TruncatedError: with the span
-        return None, PasswordConfirmVerdict.REJECTED   # complete, a decoder that runs out
-                                               # of input means a wrong key, not a cut
-    if crc32(data) != stored_crc:
+    crc, size = 0, 0
+    with open_packed_span(member) as packed:     # a short source read raises
+        decoder = degarble_and_decode(packed, password)  # TruncatedError here: propagates
+        try:
+            while chunk := decoder.read(64 * 1024):   # bounded memory, never the
+                crc = zlib.crc32(chunk, crc)          # whole member
+                size += len(chunk)
+        except CorruptionError:                  # from the decoder over a complete span,
+            return None, PasswordConfirmVerdict.REJECTED  # TruncatedError included:
+                                                 # a wrong key, not a cut
+    if crc != stored_crc:
         return None, PasswordConfirmVerdict.REJECTED
-    if len(data) < 4:                          # below the strength rule
+    if size < 4:                                 # below the strength rule
         return password, PasswordConfirmVerdict.INCONCLUSIVE
     return password, PasswordConfirmVerdict.CONFIRMED
 
-key = context.unlock(member_label, check, full_check=full_check, member=member)
+key, verdict = context.unlock(member_label, check, full_check=full_check, member=member)
+return MemberData(degarbled_stream(key), unlocked=verdict)  # decoded again for the caller
 ```
 
 The plugin decides which of its own failures depend on the password (return `REJECTED`)
 and lets the rest propagate (source errors, a short read of the source itself, resource
 limits). It tells them apart by where the error arose, not by class: `TruncatedError` is
 a `CorruptionError`, and a decoder fed a complete span under a wrong key can raise it.
-`full_check` decodes the whole member, so it is charged to the same listing and decode
-limits as a read. It exists only where the plugin can replay the unit: an indexed
-reader, or a sequential one that reads its unit into a bounded buffer first.
+`full_check` decodes the whole member in bounded chunks (never holding it in memory, as
+the built-in full check does), and the caller's read decodes it again; both are charged
+where the decode limits measure them. It exists only where the plugin can replay the
+unit: an indexed reader, or a sequential one that reads its unit into a bounded buffer
+first.
 
 For DMG, `check` returns the unwrapped disk key, `CONFIRMED` once the key unwrap and the
 decrypted `koly` block (a 512-byte structure with magic, version and sizes) check out.
@@ -265,11 +275,15 @@ class MemberData(NamedTuple):     # one open of a member
   own verification proof (the per-stream proof and read watch the built-ins use), so two
   concurrent or respawned streams of a member never share it. A walk again (rewalk)
   reports its own spans, so the verdict is re-stated each time.
-- `INCONCLUSIVE` on a stream: a digest mismatch at its end (`ArchiveMember.hashes`,
-  `MemberData.digests`, or the plugin's own check with `checked=True`, which raises
-  `CorruptionError`) becomes the unverified-data `EncryptionError`; a stream closed
-  after delivering bytes but before its digest emits `ENCRYPTED_MEMBER_UNVERIFIED`, as
-  for ZipCrypto; a digest that passes raises the member past `UNLOCKED` as usual.
+- `INCONCLUSIVE` on a stream: a mismatch of a digest archivey checks itself
+  (`ArchiveMember.hashes`, `MemberData.digests`) at its end becomes the unverified-data
+  `EncryptionError`. A `checked=True` stream's own errors are not remapped: archivey
+  cannot tell its digest mismatch from a cut or a decoder fault (`TruncatedError` is a
+  `CorruptionError`), so they go through ordinary translation. A plugin that wants the
+  password-or-damage error declares the digest in `MemberData.digests` instead; a stream
+  closed after delivering bytes but before its digest emits
+  `ENCRYPTED_MEMBER_UNVERIFIED`, as for ZipCrypto; a digest that passes raises the
+  member past `UNLOCKED` as usual.
 
 Alternative: one member-wide flag set by the latest `unlock`. Rejected for the cases
 above.

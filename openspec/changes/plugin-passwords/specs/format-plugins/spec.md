@@ -9,9 +9,10 @@ A plugin whose handler sets `supports_password = True` SHALL read the caller's
 SHALL call `check` with one candidate at a time, in the order the built-in readers use
 (the password that last unlocked a unit of this reader first, then the static
 candidates, then the provider's answers, skipping any already tried for this unit),
-SHALL return the data of the first `CONFIRMED` result, and when several static
-candidates come back `INCONCLUSIVE` SHALL run `full_check` on each in order until one is
-`CONFIRMED`. A provider answer that `check` calls `INCONCLUSIVE` SHALL go through
+SHALL return the winning data with the verdict it won with (`unlock` returns
+`(data, verdict)`), the first `CONFIRMED` result winning at once, and when several
+static candidates come back `INCONCLUSIVE` SHALL run `full_check` on each in order until
+one is `CONFIRMED`. A provider answer that `check` calls `INCONCLUSIVE` SHALL go through
 `full_check` when one is given, and a `REJECTED` answer SHALL lead to the next provider
 call. An exception from either callback SHALL stop resolution and then go through the
 plugin's `translate_exception`. A plugin whose handler does not set `supports_password`
@@ -23,7 +24,7 @@ callable SHALL stay uncalled and unreported.
 
 | Case | Expected |
 | --- | --- |
-| `check` returns `(x, CONFIRMED)` for the first candidate | `x`; later candidates are not tried; the password is tried first for the next unit |
+| `check` returns `(x, CONFIRMED)` for the first candidate | `(x, CONFIRMED)`; later candidates are not tried; the password is tried first for the next unit |
 | `password=None` | `EncryptionError`: "{what} is encrypted: pass password= to read it" |
 | Provider's first answer is `None` | Same as `password=None` |
 | `check` returns `REJECTED` for every candidate and provider answer | `EncryptionError` from the wrong-password path: "Wrong password for {what}" |
@@ -34,7 +35,9 @@ callable SHALL stay uncalled and unreported.
 | A callback returns a non-tuple, or `None` data with `CONFIRMED` | Plugin bug |
 | Static `["a", "b"]`, `a` `INCONCLUSIVE`, `b` `CONFIRMED` | `b`'s data |
 | Static `["a", "b"]`, `a` `INCONCLUSIVE`, `b` `REJECTED` | `a`'s data; `full_check` not called |
-| Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check`: `a` `REJECTED`, `b` `CONFIRMED` | `b`'s data |
+| Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check`: `a` `REJECTED`, `b` `CONFIRMED` | `(b's data, CONFIRMED)` |
+| Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check` `INCONCLUSIVE` for both | `(a's data, INCONCLUSIVE)` (fallback to the first survivor) |
+| `a` `REJECTED` at `check`, `b` reaches `full_check` and its CRC fails | Unverified-data `EncryptionError` (password or damage) |
 | Static `["a", "b"]`, both `INCONCLUSIVE`, no `full_check` | `a`'s data; `a` is not promoted |
 | Provider answers wrong then right, `check` always `INCONCLUSIVE`, `full_check` given | Second answer's data; `full_check` rejected the first |
 | Handler without `supports_password` calls `unlock` | `ArchiveyUsageError` |
@@ -79,7 +82,9 @@ its digest SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED`.
 | Stream `unlocked=INCONCLUSIVE`, CRC-32 mismatch at the end | Unverified-data `EncryptionError`; link-target report `password_or_damage` |
 | Stream `unlocked=INCONCLUSIVE`, CRC-32 matches | `verified` rises past `UNLOCKED` |
 | Stream `unlocked=INCONCLUSIVE`, closed after 10 bytes | `ENCRYPTED_MEMBER_UNVERIFIED` |
-| Stream `unlocked=INCONCLUSIVE`, `checked=True` plugin stream raises `CorruptionError` | Unverified-data `EncryptionError` |
+| Stream `unlocked=INCONCLUSIVE`, digest in `MemberData.digests` mismatches | Unverified-data `EncryptionError` |
+| Stream `unlocked=INCONCLUSIVE`, `checked=True` stream raises `CorruptionError` | That error, through ordinary translation (not remapped) |
+| Stream `unlocked=INCONCLUSIVE`, source ends early | `TruncatedError` (not remapped) |
 | Stream `unlocked=CONFIRMED`, CRC-32 mismatch | `CorruptionError` |
 | Two concurrent streams of one member, one `CONFIRMED`, one `INCONCLUSIVE` | Each keeps its own verdict |
 

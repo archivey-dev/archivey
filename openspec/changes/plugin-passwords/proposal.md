@@ -23,6 +23,8 @@ private user. A plugin replacing ZIP, 7z or RAR cannot read an encrypted member 
 ### Modified Capabilities
 
 - `format-plugins`: a plugin can declare encryption and unlock encrypted units.
+- `archive-reading`: a plugin's `full_check` also settles provider answers; exhaustion
+  with a checksum-only rejection reports password-or-damage.
 
 ## Impact
 
