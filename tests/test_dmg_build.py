@@ -25,8 +25,8 @@ import pytest
 
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
-
-from . import dmg_build as d
+from tests import dmg_build as d
+from tests.conftest import run_7z
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -418,7 +418,11 @@ def _fsck(tmp_path: Path, volume: bytes) -> list[str]:
     path = tmp_path / "volume.img"
     path.write_bytes(volume)
     result = subprocess.run(
-        [_FSCK, "-n", "-f", str(path)], capture_output=True, text=True, check=False
+        ["fsck.hfsplus", "-n", "-f", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
     )
     problems = [
         line.strip()
@@ -505,12 +509,7 @@ def _7z_extract(tmp_path: Path, image: bytes) -> tuple[dict[str, bytes], set[str
     path = tmp_path / "image.dmg"
     path.write_bytes(image)
     out = tmp_path / "out"
-    result = subprocess.run(
-        [_7Z, "x", "-y", f"-o{out}", str(path)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_7z(["x", "-y", f"-o{out}", str(path)], text=True)
     text = result.stdout + result.stderr
     unsupported = {
         line.split(" : ", 1)[1].strip().split("/", 1)[-1]
