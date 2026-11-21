@@ -907,6 +907,10 @@ struct LzxDecompressor {
     /// Bytes the kernel took from the queue.
     taken: u64,
     total_out: u64,
+    /// Restored from a state saved at `eof`: the state's `total_in` already stops
+    /// where the stream does, and the input after it is given again, so the words
+    /// the bit buffer fetched ahead are not given back a second time.
+    split_at_end: bool,
 }
 
 impl LzxDecompressor {
@@ -924,6 +928,7 @@ impl LzxDecompressor {
             last_used: 0,
             taken: 0,
             total_out: 0,
+            split_at_end: false,
         })
     }
 
@@ -952,6 +957,33 @@ impl LzxDecompressor {
                 }
             }
         }
+    }
+
+    /// Input the kernel used, counting the words its bit buffer fetched ahead.
+    fn consumed(&self) -> u64 {
+        self.taken - self.inner.unread_input().len() as u64
+    }
+
+    /// At the end: 1 when the pad byte the stream owes is in the input (the kernel's
+    /// unread bytes or the queue), else 0.
+    fn pad_byte(&self) -> usize {
+        let available = self.inner.unread_input().len() + self.queued();
+        usize::from(self.inner.owes_pad_byte() && available > 0)
+    }
+
+    /// At the end, the input after the stream: the words fetched ahead for the last
+    /// frame's symbols, then the unread input and the queue, less an owed pad byte.
+    fn after_stream(&self) -> Vec<u8> {
+        if self.split_at_end {
+            return self.pending[self.cursor..].to_vec();
+        }
+        let mut rest = self.inner.lookahead().to_vec();
+        rest.extend_from_slice(self.inner.unread_input());
+        rest.extend_from_slice(&self.pending[self.cursor..]);
+        let pad = self.pad_byte();
+        let at = self.inner.lookahead().len();
+        rest.drain(at..at + pad);
+        rest
     }
 
     fn at_end(&self) -> bool {
@@ -990,7 +1022,7 @@ impl LzxDecompressor {
                 }
             }
             let ended = self.ended;
-            let before = self.total_in();
+            let before = self.consumed();
             let (inner, data) = (&mut self.inner, &self.pending[self.cursor..]);
             let (got, used) = py.detach(|| {
                 let point = inner.checkpoint();
@@ -1016,7 +1048,7 @@ impl LzxDecompressor {
                     self.out = bytes;
                     self.out_pos = 0;
                     self.starved_at = None;
-                    self.last_used = (self.total_in() - before) as usize;
+                    self.last_used = (self.consumed() - before) as usize;
                 }
                 Err(DecodeError::Source(NeedMore)) => {
                     self.starved_at = Some(queued);
@@ -1095,11 +1127,12 @@ impl LzxDecompressor {
 
     /// The decoder's state (design D3): the window, the trees, the bits of a partly
     /// read word and the output not yet returned; none of the queued input. Feed the
-    /// restored decoder from `total_in`.
+    /// restored decoder from `total_in` while it `needs_input`, then `flush()`.
+    ///
+    /// After `flush()` too: the restored decoder is one before `flush()`, so give it
+    /// all the input from `total_in` (none, once the decoder has read past the end of
+    /// its input) and call `flush()` at its end.
     fn getstate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        if self.ended || self.inner.padded() {
-            return Err(PyValueError::new_err("getstate() after flush()"));
-        }
         let mut out = state_header("lzx");
         self.inner.save(&mut out);
         state::put_bytes(&mut out, &self.out[self.out_pos..]);
@@ -1110,6 +1143,7 @@ impl LzxDecompressor {
             }
             None => out.push(0),
         }
+        out.push(u8::from(self.eof()));
         state::put_u64(&mut out, self.total_in());
         Ok(PyBytes::new(py, &out))
     }
@@ -1129,6 +1163,7 @@ impl LzxDecompressor {
         } else {
             None
         };
+        let split_at_end = r.bool().map_err(to_py0)?;
         let total_in = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
         let decoded = inner.decoded();
@@ -1150,6 +1185,7 @@ impl LzxDecompressor {
             starved_at: Some(0),
             last_used: 0,
             taken: total_in,
+            split_at_end,
         })
     }
 
@@ -1169,9 +1205,7 @@ impl LzxDecompressor {
         if !self.eof() {
             return PyBytes::new(py, b"");
         }
-        let mut rest = self.inner.unread_input().to_vec();
-        rest.extend_from_slice(&self.pending[self.cursor..]);
-        PyBytes::new(py, &rest)
+        PyBytes::new(py, &self.after_stream())
     }
 
     #[getter]
@@ -1184,9 +1218,16 @@ impl LzxDecompressor {
         self.inner.window_bits()
     }
 
+    /// Input bytes used. Mid-stream it counts the words fetched ahead for the next
+    /// symbols, as a saved state does; at `eof` it stops where the stream does, where
+    /// `unused_data` starts.
     #[getter]
     fn total_in(&self) -> u64 {
-        self.taken - self.inner.unread_input().len() as u64
+        if self.eof() && !self.split_at_end {
+            self.consumed() - self.inner.lookahead().len() as u64 + self.pad_byte() as u64
+        } else {
+            self.consumed()
+        }
     }
 
     #[getter]

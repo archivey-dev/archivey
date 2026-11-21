@@ -359,8 +359,43 @@ def test_lzx_state_refusals() -> None:
         lzx.Decompressor.from_state(other)
     with pytest.raises(CodecError):
         d.flush()
-    with pytest.raises(ValueError, match="flush"):
-        d.getstate()
+
+
+def test_lzx_one_call_unused_data_is_exact() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO + b"tail") == _HELLO
+    assert d.unused_data == b"tail"
+    assert d.total_in == len(_LZX_HELLO)
+
+
+def test_lzx_state_after_a_capped_flush() -> None:
+    """A state saved after ``flush(1)`` resumes with the rest. The restored decoder
+    is one before ``flush()``: it takes the input from ``total_in``, then flushes."""
+    for at in range(len(_HELLO)):
+        d = lzx.Decompressor(15, output_size=len(_HELLO))
+        assert d.decompress(_LZX_HELLO, 0) == b""
+        out = d.flush(1)
+        while len(out) < at:
+            out += d.flush(1)
+        r = lzx.Decompressor.from_state(d.getstate())
+        assert (r.total_out, r.total_in) == (d.total_out, d.total_in)
+        out += r.decompress(_LZX_HELLO[r.total_in :] + b"tail", 1)
+        while not r.eof:
+            out += r.flush(1)
+        assert out == _HELLO, at
+        assert r.unused_data == b"tail"
+        assert d.flush() == _HELLO[max(at, 1) :]
+
+
+def test_lzx_state_after_a_failed_flush_raises_again() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    d.decompress(_LZX_HELLO[:-10])
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        d.flush()
+    r = lzx.Decompressor.from_state(d.getstate())
+    r.decompress(_LZX_HELLO[r.total_in : -10])
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        r.flush()
 
 
 def test_lzw_flush_keeps_its_cap(tmp_path) -> None:

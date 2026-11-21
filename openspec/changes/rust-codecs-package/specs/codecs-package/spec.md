@@ -118,6 +118,8 @@ block's offset.
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |
 | An LZX decoder saved after returning 1 byte of a 12-byte last frame | `total_out` counts that 1 byte; the restored decoder returns the other 11, then `eof` |
+| LZX or LZW saved during a capped `flush()` | The restored decoder has not been flushed: given the input from `total_in` and then `flush()`, it returns the rest of the output and ends as the original does |
+| LZX at `eof` with bytes after the stream | `total_in` stops where the stream does (an odd uncompressed block's pad byte in, words fetched ahead out); `unused_data` holds the rest |
 | An ARM64 filter saved with 2 bytes held back | The resumed filter returns those 2 bytes first; output equals the straight decode |
 | ZipCrypto saved after `n` bytes | `getstate()` holds the three 32-bit keys after the kernel name and revision; decrypting from offset `n` equals the straight decrypt |
 | `copy()` then decode on both | Both produce the same output; neither affects the other |

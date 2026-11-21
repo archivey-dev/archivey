@@ -288,10 +288,18 @@ def lzx_rust(
                 break
             step()
         while not d.eof:
-            got = d.flush(rng.choice((-1, 7000)))
+            got = d.flush(rng.choice((-1, 1, 7000)))
             out += got
             if not got:
                 break
+            if not d.eof and rng.random() < 0.3:
+                # Saved during flush(): the restored decoder is not flushed, so it
+                # takes the input from its total_in again, then flushes on.
+                restored = lzx.Decompressor.from_state(d.getstate())
+                assert restored.total_out == d.total_out
+                assert restored.total_in == d.total_in
+                assert restored.decompress(data[restored.total_in :], 0) == b""
+                d = restored
     except Exception as exc:  # noqa: BLE001
         return bytes(out), outcome(lambda e=exc: (_ for _ in ()).throw(e))
     return bytes(out), ("ok", None)
@@ -322,6 +330,31 @@ def lzx_streams(rng: random.Random):
         frames = enc.encode(data)
         sizes = [min(FRAME, size - i) for i in range(0, size, FRAME)]
         yield case, window, frames, sizes, data
+
+
+def test_lzx_eof_counts_stop_where_the_stream_does() -> None:
+    """At ``eof``, ``total_in`` and ``unused_data`` split the input where the LZX
+    stream ends: words the bit buffer fetched ahead belong to what follows."""
+    from cab_util import LzxEncoder
+
+    rng = random.Random(11)
+    for blocks in (("verbatim",), ("aligned",), ("uncompressed",)):
+        for size in (1, 100, 5000, 40_000):
+            data = sample_data(rng, size)
+            stream = b"".join(LzxEncoder(window_bits=15, blocks=blocks).encode(data))
+            for cap in (-1, 1):
+                d = archivey_codecs.lzx.Decompressor(15, output_size=size)
+                out = bytearray(d.decompress(stream + b"appendix", cap))
+                while not d.eof:
+                    out += d.flush(cap)
+                assert out == data, (blocks, size)
+                assert d.unused_data == b"appendix", (blocks, size, d.unused_data)
+                assert d.total_in == len(stream), (blocks, size)
+                # Restored at eof, it ends where this one does, with nothing after.
+                r = archivey_codecs.lzx.Decompressor.from_state(d.getstate())
+                assert r.eof
+                assert r.total_in == len(stream)
+                assert r.unused_data == b""
 
 
 def test_lzx_parity_clean_and_damaged() -> None:
