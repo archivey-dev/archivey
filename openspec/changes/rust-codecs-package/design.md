@@ -233,16 +233,24 @@ until the next codecs release turns the kernel back on.
 - `[free-threaded]` includes the package (the module declares `gil_used = false`, and
   CI's GIL assertion over that extra covers it). `[all]` gets it through
   `[recommended]`.
-- Isolation: the kernels run in the caller's process under `ProcessIsolation.AUTO` and
-  `OFF`. Under `NATIVE_DECODERS`, which promises that no native decoder runs in the
-  caller's process, they run in archivey's decoder child, like zlib, lzma and
-  compress-utils today (question 13). A reused child adds about 3 ms per member
-  (measured on ZIP members, 2026-10-24) and the bytes cross a pipe twice; at 8x to 38x
-  the Python speed the kernels still win on anything but tiny members. A panic in the
-  child reaches the caller as `CorruptionError`, as in-process. The streaming kernels
-  push input as the child protocol already expects; BCJ2's four input streams need the
-  protocol to carry four inputs (task 2.7). If the child cannot start, the read follows
-  the existing `NATIVE_DECODERS` rule for other native decoders.
+- Isolation: under `ProcessIsolation.KNOWN_CRASHES` (the default) and `NONE` the kernels
+  run in the caller's process. Under `NATIVE_DECODERS`, which promises that no native
+  decoder runs in the caller's process, the decoding kernels (LZX, LZW, LZO, BCJ2,
+  ARM64, RISC-V, later LZFSE) run in archivey's decoder child, like zlib, lzma and
+  compress-utils today (question 13). CRC-16/ARC and ZipCrypto run in the caller's
+  process under every setting, as checksums and AES decryption do now. Each decoder in
+  the child costs about 0.6 to 1 ms (the `NATIVE_DECODERS` docstring in
+  `src/archivey/config.py`, measured with
+  `scripts/investigations/bench_process_isolation.py`), plus copying the bytes across
+  the pipe twice; at 8x to 38x the Python speed the kernels still win on anything but
+  tiny members. A panic in the child reaches the caller as `CorruptionError`, as
+  in-process. The streaming kernels push input as the child protocol already expects;
+  BCJ2's four input streams need the protocol to carry four inputs (task 2.7). If no
+  child can start, archivey uses the Python twin in the caller's process, as if
+  `ARCHIVEY_CODECS` were excluded: a Python decoder is not native, so the promise holds,
+  and the read gives the same bytes as without the package. LZO then goes to
+  compress-utils, which raises `ResourceUnavailableError` as today, and to Python only
+  when compress-utils is absent.
 - LZO order: archivey-codecs, then compress-utils, then Python (question 11), because
   ours is tested against our Python twin message for message.
 

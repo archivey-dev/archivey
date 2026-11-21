@@ -37,12 +37,19 @@ with the GIL held.
 
 ### Requirement: Streaming decoders follow lzma.LZMADecompressor
 
-Each streaming decoder SHALL have `decompress(data, max_length=-1) -> bytes` and the
-attributes `eof`, `needs_input` and `unused_data`, with the meaning
-`lzma.LZMADecompressor` gives them. A call SHALL return at most `max_length` bytes when
-it is not negative. A block decoder whose output size is known SHALL have
-`decompress(data, *, out_size)` that never allocates more than `out_size` bytes. Every
-allocation SHALL be bounded by a constructor argument, `max_length` or `out_size`.
+Each streaming object SHALL have one of three shapes. A decompressor (LZX, LZW) SHALL
+have `decompress(data, max_length=-1) -> bytes` and the attributes `eof`, `needs_input`
+and `unused_data`, with the meaning `lzma.LZMADecompressor` gives them, and SHALL
+return at most `max_length` bytes when it is not negative. The pull decoder (BCJ2)
+SHALL read from its four input streams with `read(n)` and SHALL have
+`read(max_length=-1) -> bytes` and `eof`, returning at most `max_length` bytes when it
+is not negative. A length-keeping transform (the ARM64 and RISC-V filters with
+`decode(data)` and `flush()`, ZipCrypto with `decrypt(data)`) SHALL return at most the
+input given plus the bytes it held back from the previous call, and `flush()` SHALL
+return the held-back bytes. A block function whose output size is known (LZO, later
+LZFSE) SHALL be `decompress(block, *, out_size)` and SHALL never allocate more than
+`out_size` bytes. Every allocation SHALL be bounded by a constructor argument,
+`max_length`, the input length or `out_size`.
 
 #### Scenario: decoder interface
 
@@ -50,6 +57,11 @@ allocation SHALL be bounded by a constructor argument, `max_length` or `out_size
 | --- | --- |
 | `decompress(data, max_length=10)` on a stream with more output | At most 10 bytes; `needs_input` is false |
 | The stream's end reached | `eof` true; bytes after it in `unused_data` |
+| BCJ2 `read(10)` with more output | At most 10 bytes; `eof` false |
+| BCJ2 at the end of its main stream | `read()` returns `b""`; `eof` true |
+| ARM64 `decode()` on 6 bytes, then `flush()` | `decode()` returns 4 bytes and holds 2; `flush()` returns the 2 unchanged |
+| ZipCrypto `decrypt(data)` | Exactly `len(data)` bytes |
+| `lzo1x.decompress(block, out_size=n)` whose output is shorter or longer than `n` | `CorruptDataError`; never more than `n` bytes allocated |
 | Corrupt input | `CorruptDataError`, a `CodecError` and `ValueError` |
 | Input ends inside the stream | `TruncatedDataError` |
 | A parameter the kernel does not support | `UnsupportedDataError` |
@@ -58,25 +70,32 @@ allocation SHALL be bounded by a constructor argument, `max_length` or `out_size
 
 ### Requirement: Streaming decoder state can be copied and saved
 
-Each streaming decoder SHALL have `copy()`, `getstate() -> bytes`, a class method
-`from_state(state)`, and the counters `total_in` (input bytes consumed) and `total_out`
-(output bytes produced). `getstate()` SHALL hold everything the decoder consumed,
-including bits of a partly read byte, and SHALL NOT hold input the decoder holds but
-has not used. A decoder made by `from_state` and fed the input from offset `total_in`
-SHALL produce exactly the output a straight decode produces from offset `total_out`.
-`from_state` SHALL refuse a state written by another kernel or another revision with
-`UnsupportedDataError`. One-shot block decoders have no state.
+Each streaming object SHALL have `copy()`, `getstate() -> bytes` and a class method
+`from_state(state)`, and SHALL count its input and output: a decompressor and a
+filter have `total_in` (input bytes consumed) and `total_out` (output bytes produced);
+BCJ2 has `total_in` as a tuple of four counts, one per input stream, and `total_out`;
+ZipCrypto has `total_in` only, since its output length equals its input length.
+`getstate()` SHALL hold everything the object consumed, including bits of a partly
+read byte and a filter's held-back bytes, and SHALL NOT hold input that the object
+holds but has not used. An object made by `from_state` and fed each input from its
+`total_in` offset SHALL produce exactly the output a straight decode produces from
+offset `total_out` (for ZipCrypto, from offset `total_in`). `from_state` SHALL refuse a
+state written by another kernel or another revision with `UnsupportedDataError`. Block
+functions have no state; a seek point is the block's offset.
 
 #### Scenario: resume from a saved state
 
 | Case | Expected |
 | --- | --- |
 | Save at any call boundary, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
+| BCJ2 saved mid-stream, resumed with each stream from its own `total_in` | Output equals the straight decode from `total_out` |
+| An ARM64 filter saved with 2 bytes held back | The resumed filter returns those 2 bytes first; output equals the straight decode |
+| ZipCrypto saved after `n` bytes | `getstate()` is 12 bytes; decrypting from offset `n` equals the straight decrypt |
 | `copy()` then decode on both | Both produce the same output; neither affects the other |
 | A state from LZW revision 1 given to revision 2 | `UnsupportedDataError` |
 | A state from the LZX kernel given to `lzw.Decompressor.from_state` | `UnsupportedDataError` |
 | A state with a valid header and damaged contents (window too large, table index out of range, cut off) | `CorruptDataError`; no allocation beyond the kernel's largest window |
-| `from_state` | `total_in` and `total_out` equal the saved values |
+| `from_state` | The counters equal the saved values |
 
 ### Requirement: KERNELS reports a revision per kernel
 

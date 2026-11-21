@@ -167,10 +167,14 @@ fixed bytes or messages of a later archivey. A panic in a kernel SHALL reach the
 as `CorruptionError` with the panic as its cause, never as `PanicException`, and the
 decoder object SHALL refuse every later call. `OptionalLibrary.ARCHIVEY_CODECS` in
 `FormatPolicy.exclude_libraries` SHALL turn every kernel off for that call. Under
-`ProcessIsolation.AUTO` and `OFF` the kernels SHALL run in the caller's process; under
-`NATIVE_DECODERS` they SHALL run in archivey's decoder child process, as other native
-decoders do, so no native decoder runs in the caller's process. A kernel panic in the
-child SHALL reach the caller as `CorruptionError`.
+`ProcessIsolation.KNOWN_CRASHES` and `NONE` the kernels SHALL run in the caller's
+process. Under `NATIVE_DECODERS` the decoding kernels (LZX, LZW, LZO, BCJ2, ARM64,
+RISC-V and LZFSE) SHALL run in archivey's decoder child process, as other native
+decoders do; CRC-16/ARC and ZipCrypto SHALL run in the caller's process under every
+setting, as checksums and AES decryption do. A kernel panic in the child SHALL reach the
+caller as `CorruptionError`. When no child process can start under `NATIVE_DECODERS`,
+archivey SHALL use the Python decoder in the caller's process for that kernel, as if
+`ARCHIVEY_CODECS` were excluded.
 
 #### Scenario: accelerator selection
 
@@ -184,5 +188,7 @@ child SHALL reach the caller as `CorruptionError`.
 | `ProcessIsolation.NATIVE_DECODERS`, an `.lzo` file | Rust LZO in the decoder child; never in the caller's process |
 | `ProcessIsolation.NATIVE_DECODERS`, a CAB with LZX | Rust LZX in the decoder child; same bytes and errors as in-process |
 | `ProcessIsolation.NATIVE_DECODERS`, a kernel panics in the child | `CorruptionError` in the caller |
+| `ProcessIsolation.NATIVE_DECODERS`, no child can start, a CAB with LZX | Python LZX in the caller's process; same bytes as without the package |
+| `ProcessIsolation.NATIVE_DECODERS`, a ZipCrypto member | Rust ZipCrypto in the caller's process, as AES decryption |
 | A kernel panics on a crafted input | `CorruptionError` from the read; the next read on that decoder raises the same |
 | A damaged CAB read with and without the package | Same bytes before the error; same error type and message |
