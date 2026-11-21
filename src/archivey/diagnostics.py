@@ -148,6 +148,16 @@ class DiagnosticCode(StrEnum):
     follows the sheet, and the image read without it lists that session."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
+    MEMBER_HEADER_DAMAGED = "member_header_damaged"
+    """A member's header failed its checksum, and the member is listed from the
+    fields its damaged bytes hold, as the format's own tool lists it, because the
+    header after it confirmed where the damaged header's sizes point. Where the
+    format has a member digest (RAR), the member's data is still checked against
+    it, so damage to its sizes or digest makes its read fail; where it has none
+    (TAR), only the size is confirmed, by that next header. Its name, type, mode,
+    times and flags are checked by nothing and may be wrong. Reported when the
+    member is read, never at listing, and the archive's listing still ends in
+    :class:`~archivey.CorruptionError`."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     """An optional record in a member's header could not be read and was dropped, so
     the field it would fill is left unset rather than wrong. RAR also reports two
@@ -304,6 +314,8 @@ DiagnosticCodeStr = Literal[
     "archive-unread-session",
     "member_timestamp_invalid",
     "member-timestamp-invalid",
+    "member_header_damaged",
+    "member-header-damaged",
     "member_header_record_skipped",
     "member-header-record-skipped",
     "symlink_target_unavailable",
@@ -669,6 +681,25 @@ class MemberTimestampContext(_JsonSafeContext):
     field: str = ""
     source: str = ""
     value_repr: str = ""
+
+
+@dataclass(frozen=True)
+class MemberHeaderDamageContext(_JsonSafeContext):
+    """A member is listed from a header that failed its checksum
+    (``MEMBER_HEADER_DAMAGED``).
+
+    ``header_offset`` is where the damaged header starts, counted from the start of
+    the file named by ``volume_index``: its 0-based position in a volume set, or
+    ``None`` for an archive in one file. ``format`` is the archive format's name.
+    """
+
+    kind: Literal["member_header_damage"] = "member_header_damage"
+    archive_name: str | None = None
+    member_name: str = ""
+    member_id: int | None = None
+    format: str = ""
+    volume_index: int | None = None
+    header_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -1283,6 +1314,7 @@ DiagnosticContext = (
     | UnlistedDataContext
     | UnreadSessionContext
     | MemberTimestampContext
+    | MemberHeaderDamageContext
     | MemberHeaderRecordContext
     | SymlinkTargetContext
     | DigestContext
@@ -1328,6 +1360,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ARCHIVE_UNLISTED_DATA: "unlisted_data",
         DiagnosticCode.ARCHIVE_UNREAD_SESSION: "unread_session",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
+        DiagnosticCode.MEMBER_HEADER_DAMAGED: "member_header_damage",
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE: "symlink_target",
         DiagnosticCode.DIGEST_UNVERIFIABLE: "digest",
@@ -1370,6 +1403,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.ARCHIVE_UNLISTED_DATA,
         DiagnosticCode.ARCHIVE_UNREAD_SESSION,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
+        DiagnosticCode.MEMBER_HEADER_DAMAGED,
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
         DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE,
         DiagnosticCode.DIGEST_UNVERIFIABLE,
@@ -2024,6 +2058,7 @@ __all__ = [
     "HeaderAmbiguityContext",
     "LinkDataContext",
     "LocalHeaderContext",
+    "MemberHeaderDamageContext",
     "MemberHeaderRecordContext",
     "MemberListReport",
     "MemberNameControlsContext",

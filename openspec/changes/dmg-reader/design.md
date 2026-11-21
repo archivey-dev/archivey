@@ -420,15 +420,22 @@ bit 13), read the journal info block at `journalInfoBlock`, then the journal hea
   `UnsupportedFeatureError("HFS+ volume with an unreplayed journal")` at open. Replay
   is later work (§12). A volume that `hdiutil` or a clean unmount wrote is clean.
 
-Tests: the builder writes each case (clean, need-init, pending, external). The pending
-case is checked independently with `fsck.hfsplus -n` from `hfsprogs` (Linux, apt),
-which reports a journal that needs replay, so the builder's layout is not only checked
-against itself.
+Tests: the builder writes each case (clean, need-init, pending, external), and a layout
+test checks each one's journal info block, journal header and (pending) block list header
+field by field against Apple's `hfs_journal.h` / `hfs_journal.c` (`journal_header`,
+`block_list_header`, `calc_checksum`, `JOURNAL_HEADER_CKSUM_SIZE`, `BLHDR_CHECKSUM_SIZE`).
+A pending image made on a Mac would be the independent check, if one turns up.
+`fsck.hfsplus -n` from `hfsprogs` cannot tell the states apart: on Linux it never reads
+the journal header (its journal check compares the volume signature without swapping
+bytes), so it exits 0 for all four states on 540.1.linux3-5 and fails every journaled
+volume on 540.1.linux3-6, its own `mkfs.hfsplus -J` output included. It checks the
+rest of the volume only.
 
 ### 6.2 Forks and extents
 
 A fork is up to 8 extents in its record, then more in the extents-overflow B-tree, keyed
-by (fork type 0x00 data / 0xFF resource, file id, start block). Production checks:
+by (file id, fork type 0x00 data / 0xFF resource, start block), compared in that order
+(Apple's `CompareExtentKeysPlus`). Production checks:
 every extent inside `totalBlocks`; sum of extents ≥ `logicalSize`; overflow lookups
 bounded (the fork cannot have more extents than its block count); bytes after
 `logicalSize` are not part of the file. Two files sharing blocks read normally.
@@ -512,12 +519,13 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 
 | Type | Data | Notes |
 | --- | --- | --- |
-| 1, 9 | uncompressed, inline | |
+| 1 | uncompressed, inline | |
+| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip. |
 | 3 | zlib, inline (first byte `0x?F` = stored) | |
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |
 | 8 | LZVN in resource fork (offset table, 64 KiB blocks) | **The fixture `compressed.txt` is type 8** (360,000 bytes), so this path has real data |
-| 10 | raw in resource fork | |
+| 10 | raw in resource fork | No tool here reads it (7-Zip refuses it), so the table layout is unconfirmed: the prototype and the test writer use the type 8 offset table. Check on a real file before relying on it. |
 | 11 | LZFSE inline (`0xFF` = stored) | |
 | 12 | LZFSE in resource fork | |
 | other | | `UnsupportedFeatureError` at that member's read |
@@ -531,9 +539,12 @@ chunk).
 Resource-fork types (4, 8, 10, 12): the fork holds `n = ceil(size / 64 KiB)` chunks,
 located by the type's table (type 4: the resource-map layout, a 256-byte resource fork
 header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
-12: `n + 1` little-endian u32 offsets; type 10: fixed 64 KiB chunks). The table must
+12, and as the prototype reads it type 10: `n + 1` little-endian u32 offsets). The table must
 have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
-chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. Decode chunk
+chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk
+that starts with its type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8)
+is the raw block after that byte, not encoded data: macOS stores a chunk that does not
+shrink that way, and 7-Zip reads it. Decode chunk
 by chunk through `block_stream`, not the whole file in memory like the prototype.
 
 Missing pieces: a file with `UF_COMPRESSED` but no `com.apple.decmpfs` attribute, a

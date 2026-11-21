@@ -40,13 +40,14 @@ import hashlib
 import hmac
 import io
 import itertools
+import re
 import struct
 import zlib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import pbkdf2_hmac
-from typing import BinaryIO, NamedTuple, Protocol
+from typing import BinaryIO, Literal, NamedTuple, Protocol
 
 from archivey.config import ListingLimits
 from archivey.exceptions import (
@@ -138,6 +139,10 @@ RAR5_UNPLACED_BYTES = "unplaced bytes"
 # diagnostic on its own. At most one per volume and it retains nothing
 # attacker-sized, so :data:`_MAX_DAMAGED_SERVICE_HEADERS` does not count it.
 RAR5_QO_UNMATCHED_COPIES = "unmatched copies"
+# The ``record`` of the entry on a SERVICE header (either version) whose header CRC
+# failed and that the walk went past by its sizes, as ``unrar`` and ``lsar`` skip it.
+# Nothing in such a header is read. Counted by :data:`_MAX_DAMAGED_SERVICE_HEADERS`.
+RAR_SERVICE_HEADER_CRC = "header CRC"
 # RAR 1.5-4 service header holding the preceding file's Unix owner (``rar -ow``),
 # and the ``reason`` of the ``skipped_header_records`` entry for one whose data holds
 # no NUL, which ``unrar`` applies no owner from.
@@ -523,6 +528,25 @@ class RarMemberInfo:
     # digest, and a synthetic archive for ``unrar`` copies it
     # (``rar_synthetic.py``). ``None`` for a member in one part.
     last_part_header: tuple[int, int, int] | None = None
+    # The member's header failed its CRC, and the walk listed it from the fields the
+    # damaged bytes hold because the header after it confirmed its sizes
+    # (``salvage-step-1``). Its data is still checked by its own digest; its name,
+    # type, mode, times and flags are not checked by anything. The reader reports
+    # ``MEMBER_HEADER_DAMAGED`` on each read. ``(volume_index, offset)``: the
+    # damaged header's volume and where it starts in that volume's own offsets; for a
+    # member split across volumes, its first damaged part's. ``None`` for a header
+    # that passed its CRC.
+    damaged_header: tuple[int, int] | None = None
+    # In a solid archive, the damaged header the walk went past before this member
+    # (``"member"``: a listed FILE; ``"service"``: a skipped SERVICE with data, which
+    # ``unrar`` does not decode, so the solid state after it is wrong). The reader
+    # refuses or flags a member that has no digest to check its bytes with.
+    after_damaged_header: Literal["member", "service"] | None = None
+
+    @property
+    def header_damaged(self) -> bool:
+        """Whether the member was listed from a header that failed its CRC."""
+        return self.damaged_header is not None
 
     @property
     def skipped_header_records_truncated(self) -> bool:
@@ -1103,6 +1127,22 @@ def _append_damaged_service_header(
     return True
 
 
+def _crc_damaged_service_header(name: str, header_offset: int) -> DamagedServiceHeader:
+    """The record of a SERVICE header that failed its CRC and that the walk went
+    past by its sizes (:data:`RAR_SERVICE_HEADER_CRC`)."""
+    return DamagedServiceHeader(
+        name=name,
+        skipped_header_records=(
+            (
+                RAR_SERVICE_HEADER_CRC,
+                None,
+                f"a header CRC that does not match, at byte {header_offset}",
+            ),
+        ),
+        header_walk_stop_reason=None,
+    )
+
+
 def _is_qo_unmatched_copies(source: RarMemberInfo | DamagedServiceHeader) -> bool:
     return isinstance(source, DamagedServiceHeader) and any(
         record == RAR5_QO_UNMATCHED_COPIES
@@ -1561,18 +1601,95 @@ class _RarHeaderCrcError(CorruptionError):
     """A header failed its CRC; private signal for the walk.
 
     With plain headers or a proven password, the walks catch it by this type after
-    the main header and list the members before the damaged header
+    the main header. They follow the damaged header's sizes when the headers after
+    it confirm them (:func:`_follow_damaged_rar5`, :meth:`_Rar3Walk._follow_damage`),
+    and otherwise list the members before the damaged header
     (``RarArchive.damaged``). Any other :class:`CorruptionError` raised in the same
     place, such as an invalid header size, still fails the open, and so does this
     one in the main header.
     """
 
+    #: The RAR5 header as its damaged bytes read, when its type, flags and sizes
+    #: parse; ``None`` otherwise. Set by :func:`_read_rar5_block`.
+    damaged_block: _Rar5Block | None = None
+
+
+#: How many damaged headers in a row the walk follows by their sizes. The header
+#: after the last one must pass its CRC, which vouches for every position before it;
+#: the cap bounds the work per damaged region and keeps an archive of nothing but
+#: damaged headers from being followed to its end on one CRC (``salvage-step-1``).
+_MAX_DAMAGED_HEADER_CHAIN = 8
+#: :meth:`_Rar3Walk._probe` found the end of the file where a header would start.
+_PROBE_END = "end"
+#: :meth:`_Rar3Walk._probe` found an intact end block with only zeros after it.
+_PROBE_CLEAN_END = "clean end"
+
 
 def _damaged_header(exc: CorruptionError, start: int) -> str:
-    """The ``RarArchive.damaged`` text for a member header that failed its CRC."""
+    """The ``RarArchive.damaged`` text for a member header that failed its CRC and
+    stopped the walk."""
     return (
         f"{exc}; the header starts at byte {start}, "
         "and no later member of that volume is listed"
+    )
+
+
+def _followed_damaged_header(exc: CorruptionError, start: int) -> str:
+    """The ``RarArchive.damaged`` text for a member header that failed its CRC and
+    that the walk went past by its sizes, confirmed by the headers after it."""
+    return (
+        f"{exc}; the header starts at byte {start}, and the members after it are "
+        "listed from where its sizes point, which the next header confirmed"
+    )
+
+
+# How many damages ``RarArchive.damaged`` names before it only counts the rest, so a
+# crafted archive of thousands of damaged headers cannot grow the error with its size.
+_NAMED_DAMAGES = 4
+_MORE_DAMAGES = re.compile(
+    r"; and ([0-9]+) more damaged headers? (?:was|were) followed\Z"
+)
+
+
+def _add_damage(current: str | None, text: str) -> str:
+    """``RarArchive.damaged`` with ``text`` added: the first damage leads, a later one,
+    past a followed header, is named after it, and past :data:`_NAMED_DAMAGES` of them
+    the rest are only counted."""
+    if current is None:
+        return text
+    more = _MORE_DAMAGES.search(current)
+    if more is not None:
+        count = int(more.group(1)) + 1
+        return (
+            f"{current[: more.start()]}; and {count} more damaged headers were followed"
+        )
+    if current.count("; also ") + 1 >= _NAMED_DAMAGES:
+        return f"{current}; and 1 more damaged header was followed"
+    return f"{current}; also {text}"
+
+
+def _solid_damage_after(
+    current: Literal["member", "service"] | None, service: bool, data_size: int
+) -> Literal["member", "service"] | None:
+    """``RarMemberInfo.after_damaged_header`` for the members after a damaged header
+    the walk followed in a solid archive. A SERVICE header with data is the worse
+    case and stays: ``unrar`` skips its data, so the solid state after it is wrong."""
+    if current == "service" or (service and data_size):
+        return "service"
+    return current if service else "member"
+
+
+def _forward_hold_note(source: BinaryIO) -> str:
+    """What to add to a damaged-header stop on a pipe whose held bytes ran out.
+
+    A forward source (``rar_forward``) keeps only its last bytes for a seek back, so
+    a damaged member longer than that cannot be confirmed there; a file can.
+    """
+    if source.seekable():
+        return ""
+    return (
+        "; from a file, the walk could check the header after it and go on: "
+        "save the archive to a file to read past the damage"
     )
 
 
@@ -2056,6 +2173,10 @@ def _merge_split_member(old: RarMemberInfo, new: RarMemberInfo) -> None:
     )
     old.split_after = new.split_after
     old.spanned_volumes = True
+    # One damaged part makes the member's header damaged: its digest, or the split
+    # that joins it, rests on a header no CRC checked.
+    if old.damaged_header is None:
+        old.damaged_header = new.damaged_header
     if old.size_unknown and not new.size_unknown:
         # The part that knows the size is the last one ``rar -v -si`` writes.
         old.file_size = new.file_size
@@ -2707,6 +2828,54 @@ def _parse_rar3(
     ).run()
 
 
+def _read_rar3_block(
+    header_fd: _Readable, header_start: int, encrypted: bool
+) -> _Rar3Block | None:
+    """Read and frame one RAR 1.5-4 block header; ``None`` when no byte is left.
+
+    Nothing is checked but the framing: the CRC16 covers type-specific bytes, so the
+    caller checks it. A header the file holds only part of raises
+    :class:`_RarHeaderCutError`; an invalid size raises :class:`CorruptionError`.
+    """
+    header_offset = _archive_offset(header_fd)
+    buf = read_exact(header_fd, _S_BLK_HDR.size)
+    if not buf:
+        return None
+    if len(buf) < _S_BLK_HDR.size:
+        raise _RarHeaderCutError("Unexpected EOF while reading RAR3 block header")
+
+    header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
+    if header_size < _S_BLK_HDR.size:
+        raise CorruptionError(f"Invalid RAR3 header size: {header_size}")
+    if header_size > _S_BLK_HDR.size:
+        rest = read_exact(header_fd, header_size - _S_BLK_HDR.size)
+        if len(rest) != header_size - _S_BLK_HDR.size:
+            raise _RarHeaderCutError("Unexpected EOF while reading RAR3 header body")
+        hdata = buf + rest
+    else:
+        hdata = buf
+    data_offset = _archive_offset(header_fd)
+
+    pos = _S_BLK_HDR.size
+    if flags & _RAR3_LONG_BLOCK:
+        add_size, pos = _load_le32(hdata, pos)
+    else:
+        add_size = 0
+    return _Rar3Block(
+        start=header_start,
+        encrypted=encrypted,
+        header_offset=header_offset,
+        header_crc=header_crc,
+        block_type=block_type,
+        flags=flags,
+        header_size=header_size,
+        hdata=hdata,
+        data_offset=data_offset,
+        add_size=add_size,
+        pos=pos,
+    )
+
+
 class _Rar3Walk:
     """The header walk over one RAR 1.5-4 volume.
 
@@ -2723,11 +2892,14 @@ class _Rar3Walk:
 
     Any other block type is skipped. A file that ends where a header should start is
     a clean end: RAR 1.5-4 writers may omit ``ENDARC``. A cut stops the walk and keeps
-    the members listed before it (``RarArchive.truncated``). So does a header after
-    ``MAIN`` whose CRC fails (``RarArchive.damaged``), and a damaged end block with
-    only zeros after it. In an encrypted header, either failure is a wrong password
-    until the password is proven (:func:`_header_failure`). Any other invalid header
-    raises.
+    the members listed before it (``RarArchive.truncated``). A plain ``FILE`` or
+    ``SUB`` header after ``MAIN`` whose CRC fails is followed by its own sizes when
+    the two headers they lead to pass their CRCs (:meth:`_follow_damage`), as in the
+    RAR5 walk; otherwise it stops the walk (``RarArchive.damaged``), and so does a
+    damaged end block with only zeros after it. In an encrypted header, either
+    failure is a wrong password until the password is proven
+    (:func:`_header_failure`), and a damaged one is not followed. Any other invalid
+    header raises.
     """
 
     def __init__(
@@ -2771,6 +2943,13 @@ class _Rar3Walk:
         self.needs_next_volume = False
         self.truncated: str | None = None
         self.damaged: str | None = None
+        # Damaged headers the walk confirmed and is about to list or skip, each with
+        # its parsed fields and where its CRC stops (:meth:`_follow_damage`).
+        self.resume: list[tuple[_Rar3Block, RarMemberInfo, int]] = []
+        self.solid_damage: Literal["member", "service"] | None = None
+        # The SUB headers that failed their CRC and that the walk went past.
+        self.damaged_service_headers: list[DamagedServiceHeader] = []
+        self.damaged_service_headers_omitted = 0
         self.main_seen = False
         self.end_block_damaged_at: int | None = None
         self.trailing_at: TrailingData | None = None
@@ -2802,7 +2981,21 @@ class _Rar3Walk:
                 break
             if block.block_type in (_RAR3_FILE, _RAR3_SUB):
                 if not self._on_file_header(block):
-                    break
+                    if not self.resume:
+                        break
+                    chain, self.resume = self.resume, []
+                    for damaged, member, crc_pos in chain:
+                        _seek_to(source, damaged.data_offset)
+                        self._on_parsed_file_header(
+                            damaged, member, crc_pos, damaged=True
+                        )
+                        pending, self.pending = self.pending, None
+                        if pending is not None:
+                            yield pending
+                            _seek_after_packed(
+                                source, pending.data_offset, pending.data_size
+                            )
+                    continue
                 pending, self.pending = self.pending, None
                 if pending is not None:
                     yield pending
@@ -2846,30 +3039,7 @@ class _Rar3Walk:
             )
 
         try:
-            header_offset = _archive_offset(header_fd)
-            buf = read_exact(header_fd, _S_BLK_HDR.size)
-            if not buf:
-                self.truncated = _no_header(
-                    source, header_start, encrypted_cut=block_encrypted
-                )
-                return None
-            if len(buf) < _S_BLK_HDR.size:
-                raise _RarHeaderCutError(
-                    "Unexpected EOF while reading RAR3 block header"
-                )
-
-            header_crc, block_type, flags, header_size = _S_BLK_HDR.unpack_from(buf)
-            if header_size < _S_BLK_HDR.size:
-                raise CorruptionError(f"Invalid RAR3 header size: {header_size}")
-            if header_size > _S_BLK_HDR.size:
-                rest = read_exact(header_fd, header_size - _S_BLK_HDR.size)
-                if len(rest) != header_size - _S_BLK_HDR.size:
-                    raise _RarHeaderCutError(
-                        "Unexpected EOF while reading RAR3 header body"
-                    )
-                hdata = buf + rest
-            else:
-                hdata = buf
+            block = _read_rar3_block(header_fd, header_start, block_encrypted)
         except CorruptionError as exc:
             # ``header_fd`` is the decrypt stream exactly when ``block_encrypted``.
             self.truncated = _header_failure(
@@ -2882,26 +3052,11 @@ class _Rar3Walk:
             if self.truncated is None:
                 raise
             return None
-        data_offset = _archive_offset(header_fd)
-
-        pos = _S_BLK_HDR.size
-        if flags & _RAR3_LONG_BLOCK:
-            add_size, pos = _load_le32(hdata, pos)
-        else:
-            add_size = 0
-        return _Rar3Block(
-            start=header_start,
-            encrypted=block_encrypted,
-            header_offset=header_offset,
-            header_crc=header_crc,
-            block_type=block_type,
-            flags=flags,
-            header_size=header_size,
-            hdata=hdata,
-            data_offset=data_offset,
-            add_size=add_size,
-            pos=pos,
-        )
+        if block is None:
+            self.truncated = _no_header(
+                source, header_start, encrypted_cut=block_encrypted
+            )
+        return block
 
     def _on_main(self, block: _Rar3Block) -> None:
         """Read the archive flags, and the old-style comment, from ``MAIN``."""
@@ -2963,7 +3118,7 @@ class _Rar3Walk:
             # Not an end block, so a header whose type byte is damaged.
             if not self.main_seen:
                 raise
-            self.damaged = _damaged_header(exc, block.start)
+            self.damaged = _add_damage(self.damaged, _damaged_header(exc, block.start))
             return
         self.needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
         volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
@@ -2977,11 +3132,46 @@ class _Rar3Walk:
         )
 
     def _on_file_header(self, block: _Rar3Block) -> bool:
-        """Handle a ``FILE`` or ``SUB`` header; ``False`` ends the walk at damage."""
+        """Handle a ``FILE`` or ``SUB`` header; ``False`` at damage, which ends the
+        walk unless ``resume`` holds the damaged headers to go on past."""
         parsed = self._parse_file_header(block)
         if parsed is None:
             return False
         member, crc_pos = parsed
+        self._on_parsed_file_header(block, member, crc_pos)
+        return True
+
+    def _on_parsed_file_header(
+        self,
+        block: _Rar3Block,
+        member: RarMemberInfo,
+        crc_pos: int,
+        *,
+        damaged: bool = False,
+    ) -> None:
+        """List a ``FILE`` header, or act on a ``SUB`` header.
+
+        ``damaged``: the header failed its CRC and :meth:`_follow_damage` confirmed
+        its sizes. A ``FILE`` is listed flagged; a ``SUB`` is reported as a damaged
+        service header and nothing in it is read, as ``unrar`` skips it.
+        """
+        member.after_damaged_header = self.solid_damage
+        if damaged:
+            member.damaged_header = (self.volume_index, block.start)
+            if self.is_solid:
+                self.solid_damage = _solid_damage_after(
+                    self.solid_damage,
+                    block.block_type == _RAR3_SUB,
+                    member.compress_size,
+                )
+        if damaged and block.block_type == _RAR3_SUB:
+            if not _append_damaged_service_header(
+                self.damaged_service_headers,
+                _crc_damaged_service_header(member.filename, block.start),
+            ):
+                self.damaged_service_headers_omitted += 1
+            _seek_after_packed(self.source, block.data_offset, member.compress_size)
+            return
 
         # The data size is PACK_SIZE (with HIGH_PACK_SIZE for a >4 GiB member),
         # whatever LONG_BLOCK says, as unrar reads it. ``add_size`` is the same
@@ -3009,21 +3199,172 @@ class _Rar3Walk:
                 self.needs_next_volume = True
             if self.yield_files:
                 self.pending = ForwardMember(member, block.data_offset, packed_size)
-                return True
+                return
         elif member.filename == RAR3_UOW_NAME and self.members:
             self._attach_owner(member)
         elif self._is_readable_comment(member, block.data_offset, packed_size):
             self._read_comment_service(member, block.data_offset, packed_size)
 
         _seek_after_packed(self.source, block.data_offset, packed_size)
-        return True
 
     def _parse_file_header(self, block: _Rar3Block) -> tuple[RarMemberInfo, int] | None:
         """Parse a ``FILE`` or ``SUB`` header and check its CRC16.
 
         Returns the member and where the CRC stops, or ``None`` for a damaged header
-        after ``MAIN`` (``damaged`` set).
+        after ``MAIN``: ``resume`` then holds the damaged headers to go on past, or
+        ``damaged`` says why the walk stops.
         """
+        member, crc_pos = self._file_header_fields(block)
+        try:
+            self.password_proven = _check_rar3_crc(
+                block.header_crc,
+                block.hdata[2:crc_pos],
+                "FILE",
+                encrypted=block.encrypted,
+                proven=self.password_proven,
+            )
+        except _RarHeaderCrcError as exc:
+            if not self.main_seen:
+                raise
+            chain = (
+                None if member is None else self._follow_damage(block, member, crc_pos)
+            )
+            if chain:
+                self.resume = chain
+                self.damaged = _add_damage(
+                    self.damaged, _followed_damaged_header(exc, block.start)
+                )
+            else:
+                self.damaged = _add_damage(
+                    self.damaged,
+                    _damaged_header(exc, block.start)
+                    + (_forward_hold_note(self.source) if chain is not None else ""),
+                )
+            return None
+        # A parse error leaves it unset only with a CRC that fails, raised above.
+        assert member is not None
+        return member, crc_pos
+
+    def _follow_damage(
+        self, first: _Rar3Block, member: RarMemberInfo, crc_pos: int
+    ) -> list[tuple[_Rar3Block, RarMemberInfo, int]] | None:
+        """The damaged headers to list or skip, from ``first`` on, when their sizes
+        lead to two headers that pass their CRCs; otherwise ``None`` or ``[]``.
+
+        :meth:`_Rar5Walk._follow_damage` with the RAR 1.5-4 confirmation: the header
+        CRC is 16 bits, so one header passing by chance has odds 2⁻¹⁶, too weak for a
+        backup corpus. The header the sizes lead to and the one after it must both
+        pass (2⁻³², as RAR5), or the second position is the clean end of the volume.
+        A second header that is itself damaged confirms when its own sizes are
+        confirmed the same way, so damage two headers apart is followed as RAR5
+        follows it; :data:`_MAX_DAMAGED_HEADER_CHAIN` bounds the damaged headers one
+        check reads. Each damaged header is a ``FILE`` or ``SUB`` whose fields parse;
+        the next position is its data offset plus its packed size, as ``unrar`` reads
+        it. Encrypted headers are not followed. ``[]``: confirmed, but the source no
+        longer holds the first header's data (a pipe); on success the source is at
+        that data.
+        """
+        if self.has_header_encryption:
+            return None
+        source = self.source
+        chain = [(first, member, crc_pos)]
+        try:
+            while True:
+                block, member, _ = chain[-1]
+                probe = self._probe(
+                    _packed_span_end(block.data_offset, member.compress_size)
+                )
+                if isinstance(probe, tuple):
+                    if len(chain) >= _MAX_DAMAGED_HEADER_CHAIN:
+                        return None
+                    chain.append(probe)
+                    continue
+                if probe == _PROBE_CLEAN_END:
+                    break
+                if not isinstance(probe, int) or not self._second_confirms(
+                    probe, _MAX_DAMAGED_HEADER_CHAIN - len(chain)
+                ):
+                    return None
+                break
+        except CorruptionError:
+            # A size past the seekable range: not confirmed.
+            return None
+        try:
+            _seek_to(source, first.data_offset)
+        except CorruptionError:
+            return []
+        return chain
+
+    def _second_confirms(self, pos: int, budget: int) -> bool:
+        """Whether the header at ``pos``, after one that passed, completes the
+        confirmation: it passes, the file ends there, or it is damaged and its own
+        sizes lead to a confirmed position, with at most ``budget`` damaged headers
+        read on the way."""
+        while True:
+            probe = self._probe(pos)
+            if probe in (_PROBE_END, _PROBE_CLEAN_END) or isinstance(probe, int):
+                return True
+            if not isinstance(probe, tuple):
+                return False
+            # A damaged header: follow its sizes (and any damaged run after it) to
+            # a header that passes, which then needs its own second.
+            while isinstance(probe, tuple):
+                if budget <= 0:
+                    return False
+                budget -= 1
+                block, member, _ = probe
+                probe = self._probe(
+                    _packed_span_end(block.data_offset, member.compress_size)
+                )
+            if not isinstance(probe, int):
+                return False
+            pos = probe
+
+    def _probe(
+        self, pos: int
+    ) -> int | str | tuple[_Rar3Block, RarMemberInfo, int] | None:
+        """What the plain header at ``pos`` is, for :meth:`_follow_damage`.
+
+        Where the block after it starts, for a ``FILE``, ``SUB`` or ``ENDARC`` that
+        passes its CRC; :data:`_PROBE_END` for the end of the file;
+        :data:`_PROBE_CLEAN_END` for an end block that passes and has nothing but
+        zeros after it, which confirms on its own; the block, its
+        fields and CRC end for a damaged ``FILE`` or ``SUB`` whose fields parse;
+        ``None`` for anything else.
+        """
+        source = self.source
+        _seek_to(source, pos)
+        try:
+            block = _read_rar3_block(source, pos, False)
+        except CorruptionError:
+            return None
+        if block is None:
+            return _PROBE_END
+        header_size = block.header_size
+        if block.block_type == _RAR3_ENDARC:
+            if block.header_crc != _crc32(block.hdata[2:header_size]) & 0xFFFF:
+                return None
+            end = _packed_span_end(block.data_offset, block.add_size)
+            # An intact end block with nothing but zeros after it is the clean end
+            # of the volume: that is the second check.
+            return _PROBE_CLEAN_END if _only_zeros_after(source, end) else end
+        if block.block_type not in (_RAR3_FILE, _RAR3_SUB):
+            return None
+        try:
+            member, crc_pos = self._file_header_fields(block)
+        except CorruptionError:
+            return None
+        if member is None:
+            return None
+        if block.header_crc != _crc32(block.hdata[2:crc_pos]) & 0xFFFF:
+            return block, member, crc_pos
+        return _packed_span_end(block.data_offset, member.compress_size)
+
+    def _file_header_fields(
+        self, block: _Rar3Block
+    ) -> tuple[RarMemberInfo | None, int]:
+        """A ``FILE`` or ``SUB`` header's fields and where its CRC stops; ``None``
+        fields when they do not parse under a CRC that fails."""
         flags = block.flags
         hdata = block.hdata
         header_size = block.header_size
@@ -3056,21 +3397,6 @@ class _Rar3Walk:
             if block.header_crc == _crc32(hdata[2:header_size]) & 0xFFFF:
                 raise
             crc_pos = header_size
-        try:
-            self.password_proven = _check_rar3_crc(
-                block.header_crc,
-                hdata[2:crc_pos],
-                "FILE",
-                encrypted=block.encrypted,
-                proven=self.password_proven,
-            )
-        except _RarHeaderCrcError as exc:
-            if not self.main_seen:
-                raise
-            self.damaged = _damaged_header(exc, block.start)
-            return None
-        # A parse error leaves it unset only with a CRC that fails, raised above.
-        assert member is not None
         return member, crc_pos
 
     def _attach_owner(self, uow: RarMemberInfo) -> None:
@@ -3176,6 +3502,8 @@ class _Rar3Walk:
             is_volume=self.is_volume,
             needs_next_volume=self.needs_next_volume,
             old_volume_naming=self.old_volume_naming,
+            damaged_service_headers=self.damaged_service_headers,
+            damaged_service_headers_omitted=self.damaged_service_headers_omitted,
             truncated=self.truncated,
             damaged=self.damaged,
             end_block_damaged_volumes=(
@@ -3972,10 +4300,14 @@ class _Rar5Walk:
     4. ``ENDARC`` ends the volume and says whether another volume follows.
 
     Any other block type is skipped. A cut stops the walk and keeps the members
-    listed before it (``RarArchive.truncated``). So does a header after ``MAIN``
-    whose CRC fails (``RarArchive.damaged``), and a damaged end block with only
-    zeros after it. In an encrypted header, either failure is a wrong password until
-    the password is proven (:func:`_header_failure`). Any other invalid header raises.
+    listed before it (``RarArchive.truncated``). A plain header after ``MAIN`` whose
+    CRC fails is followed by its own sizes when the header they point at passes its
+    CRC (:meth:`_follow_damage`): a damaged ``FILE`` is listed, flagged
+    (``RarMemberInfo.header_damaged``), and ``RarArchive.damaged`` is set. When
+    nothing confirms it, it stops the walk as a cut does, and so does a damaged end
+    block with only zeros after it. In an encrypted header, either failure is a wrong
+    password until the password is proven (:func:`_header_failure`), and a damaged
+    one is not followed. Any other invalid header raises.
     """
 
     def __init__(
@@ -4017,6 +4349,12 @@ class _Rar5Walk:
         self.damaged_service_headers_omitted = 0
         self.truncated: str | None = None
         self.damaged: str | None = None
+        # Whether a damaged header ended the walk, rather than being followed.
+        self.stopped_at_damage = False
+        # Damaged headers the walk confirmed and is about to list or skip
+        # (:meth:`_follow_damage`).
+        self.resume: list[_Rar5Block] = []
+        self.solid_damage: Literal["member", "service"] | None = None
         self.main_seen = False
         self.end_block_seen = False
         self.end_block_damaged_at: int | None = None
@@ -4065,7 +4403,19 @@ class _Rar5Walk:
 
             block = self._read_block(header_fd, header_start)
             if block is None:
-                break
+                if not self.resume:
+                    break
+                chain, self.resume = self.resume, []
+                for damaged in chain:
+                    _seek_to(source, damaged.data_offset)
+                    self._on_file_or_service(damaged, damaged=True)
+                    pending, self.pending = self.pending, None
+                    if pending is not None:
+                        yield pending
+                        _seek_after_packed(
+                            source, pending.data_offset, pending.data_size
+                        )
+                continue
             if block.block_type == _RAR5_MAIN:
                 self._on_main(block)
                 continue
@@ -4146,10 +4496,21 @@ class _Rar5Walk:
                 if not self.main_seen:
                     raise exc.generic from None
                 # Not an end block, so a member header whose type byte is damaged.
-                self.damaged = _damaged_header(exc.generic, header_start)
+                # Its type is not FILE or SERVICE, so it is not followed.
+                self._stop_at_damage(_damaged_header(exc.generic, header_start))
                 return None
             if isinstance(exc, _RarHeaderCrcError) and self.main_seen:
-                self.damaged = _damaged_header(exc, header_start)
+                chain = self._follow_damage(exc.damaged_block)
+                if chain:
+                    self.resume = chain
+                    self.damaged = _add_damage(
+                        self.damaged, _followed_damaged_header(exc, header_start)
+                    )
+                else:
+                    self._stop_at_damage(
+                        _damaged_header(exc, header_start)
+                        + (_forward_hold_note(source) if chain is not None else "")
+                    )
                 return None
             raise
         if block is None:
@@ -4157,6 +4518,89 @@ class _Rar5Walk:
                 source, header_start, encrypted_cut=self.hdr_enc is not None
             )
         return block
+
+    def _stop_at_damage(self, text: str) -> None:
+        self.damaged = _add_damage(self.damaged, text)
+        self.stopped_at_damage = True
+
+    def _follow_damage(self, first: _Rar5Block | None) -> list[_Rar5Block] | None:
+        """The damaged headers to list or skip, from ``first`` on, when their own
+        sizes lead to a header that passes its CRC; otherwise ``None`` or ``[]``.
+
+        As ``unrar`` does, each damaged header's next position is its data offset plus
+        its data size, read from the damaged bytes. Unlike ``unrar``, the walk goes
+        there only when the header there passes its CRC and its type may follow ``MAIN``
+        (``FILE``, ``SERVICE`` or ``ENDARC``): a damaged size then lands on bytes that
+        pass a CRC32 by chance with odds 2⁻³². That proves the landing is a header, not
+        the *next* one: a size that points at a real later header passes, and the
+        members between are skipped, as ``unrar`` skips them. A header at that position
+        that is itself damaged is followed the same way, up to
+        :data:`_MAX_DAMAGED_HEADER_CHAIN` in a row. Each damaged header must be a
+        ``FILE`` or ``SERVICE`` whose fields parse in full. Encrypted headers are not
+        followed: the next header's IV would come from a size no CRC checked, and
+        ``unrar`` stops there too.
+
+        ``[]`` means the chain was confirmed but the source no longer holds its
+        start, which happens only on a pipe (``rar_forward``); the source is left
+        wherever the check took it, as the walk stops. On success it is at the first
+        header's data.
+        """
+        if self.hdr_enc is not None:
+            return None
+        source = self.source
+        chain: list[_Rar5Block] = []
+        block = first
+        try:
+            while True:
+                if block is None or not self._damaged_fields_parse(block):
+                    return None
+                chain.append(block)
+                _seek_to(source, _packed_span_end(block.data_offset, block.add_size))
+                try:
+                    after = _read_rar5_block(source)
+                except _RarHeaderCrcError as exc:
+                    if len(chain) >= _MAX_DAMAGED_HEADER_CHAIN:
+                        return None
+                    block = exc.damaged_block
+                    continue
+                if after is None or after.block_type not in (
+                    _RAR5_FILE,
+                    _RAR5_SERVICE,
+                    _RAR5_ENDARC,
+                ):
+                    return None
+                break
+        except CorruptionError:
+            # A cut, an invalid size or an end-block-shaped header: not confirmed.
+            return None
+        try:
+            _seek_to(source, chain[0].data_offset)
+        except CorruptionError:
+            return []
+        return chain
+
+    def _damaged_fields_parse(self, block: _Rar5Block) -> bool:
+        """Whether a damaged header is a ``FILE`` or ``SERVICE`` whose fields parse."""
+        if block.block_type not in (_RAR5_FILE, _RAR5_SERVICE):
+            return False
+        try:
+            self._parse_file_block(block)
+        except CorruptionError:
+            return False
+        return True
+
+    def _parse_file_block(self, block: _Rar5Block) -> RarMemberInfo:
+        return _parse_rar5_file_block(
+            block.hdata,
+            block.pos,
+            block_flags=block.flags,
+            extra_size=block.extra_size,
+            header_offset=block.header_offset,
+            header_size=block.header_size,
+            data_offset=block.data_offset,
+            add_size=block.add_size,
+            volume_index=self.volume_index,
+        )
 
     def _on_main(self, block: _Rar5Block) -> None:
         """Read the archive flags from ``MAIN``, then try the quick-open copies."""
@@ -4257,20 +4701,30 @@ class _Rar5Walk:
             self.source, _packed_span_end(block.data_offset, block.add_size)
         )
 
-    def _on_file_or_service(self, block: _Rar5Block) -> None:
-        """List a ``FILE`` header, or read a ``SERVICE`` header's comment or damage."""
+    def _on_file_or_service(self, block: _Rar5Block, *, damaged: bool = False) -> None:
+        """List a ``FILE`` header, or read a ``SERVICE`` header's comment or damage.
+
+        ``damaged``: the header failed its CRC and :meth:`_follow_damage` confirmed
+        its sizes. A ``FILE`` is listed flagged; a ``SERVICE`` is reported as a
+        damaged service header and nothing in it is read, as ``unrar`` skips it.
+        """
         source = self.source
-        member = _parse_rar5_file_block(
-            block.hdata,
-            block.pos,
-            block_flags=block.flags,
-            extra_size=block.extra_size,
-            header_offset=block.header_offset,
-            header_size=block.header_size,
-            data_offset=block.data_offset,
-            add_size=block.add_size,
-            volume_index=self.volume_index,
-        )
+        member = self._parse_file_block(block)
+        member.after_damaged_header = self.solid_damage
+        if damaged:
+            member.damaged_header = (self.volume_index, block.header_offset)
+            if self.is_solid:
+                self.solid_damage = _solid_damage_after(
+                    self.solid_damage, block.block_type == _RAR5_SERVICE, block.add_size
+                )
+        if damaged and block.block_type == _RAR5_SERVICE:
+            if not _append_damaged_service_header(
+                self.damaged_service_headers,
+                _crc_damaged_service_header(member.filename, block.header_offset),
+            ):
+                self.damaged_service_headers_omitted += 1
+            _seek_after_packed(source, block.data_offset, block.add_size)
+            return
         if block.block_type == _RAR5_FILE:
             # File-version history rows (extra 0x04) are kept as members.
             # QO copies are emitted in `_emit_and_skip_qo_run` before this
@@ -4321,7 +4775,13 @@ class _Rar5Walk:
         # corrupt and the QO claim would rest on a header whose CRC failed, so it
         # is withheld there too. The entry bypasses the cap
         # (_is_qo_unmatched_copies).
-        if self.end_block_seen and self.end_block_damaged_at is None:
+        # A damaged header the walk followed is the same: the walk did reach every
+        # header, but the comparison would rest on one that failed its CRC.
+        if (
+            self.end_block_seen
+            and self.end_block_damaged_at is None
+            and self.damaged is None
+        ):
             unmatched = _qo_unmatched_copies(self.qo_by_off, self.seen_file_offsets)
             if unmatched is not None:
                 self.damaged_service_headers.append(unmatched)
@@ -4351,7 +4811,7 @@ class _Rar5Walk:
                 [volume_index]
                 if not self.end_block_seen
                 and self.truncated is None
-                and self.damaged is None
+                and not self.stopped_at_damage
                 else []
             ),
             end_block_damaged_volumes=(
@@ -4411,8 +4871,28 @@ def _read_rar5_block(fd: _Readable) -> _Rar5Block | None:
             damaged_type = None
         if damaged_type == _RAR5_ENDARC and _rar5_end_block_shaped(hdata, pos):
             raise _RarEndBlockCrcError(header_offset, data_offset)
-        raise _RarHeaderCrcError(f"RAR5 header CRC mismatch at offset {header_offset}")
+        error = _RarHeaderCrcError(
+            f"RAR5 header CRC mismatch at offset {header_offset}"
+        )
+        # unrar parses a damaged header anyway and takes the next header's position
+        # from its sizes (``arcread.cpp``); the walk does the same when the header
+        # after it confirms them.
+        try:
+            error.damaged_block = _rar5_block_fields(
+                hdata, pos, header_offset, header_size, data_offset
+            )
+        except CorruptionError:
+            pass
+        raise error
 
+    return _rar5_block_fields(hdata, pos, header_offset, header_size, data_offset)
+
+
+def _rar5_block_fields(
+    hdata: bytes, pos: int, header_offset: int, header_size: int, data_offset: int
+) -> _Rar5Block:
+    """The common fields of a RAR5 header read from ``hdata`` at ``pos`` (after the
+    size vint), whether or not its CRC matched."""
     block_type, pos = load_vint(hdata, pos)
     block_flags, pos = load_vint(hdata, pos)
     extra_size = 0

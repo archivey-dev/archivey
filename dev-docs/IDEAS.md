@@ -145,15 +145,16 @@ Each idea carries a status:
   every path would do the same everywhere. It is not clear cut: for a member cut short
   inside a truncated archive, `TruncatedError` is the right answer, so first find out
   which sources raise it, and when.
-- **Salvage mode.** *Needs design* (two design drafts wait for review: salvage step 1,
-  and salvage in every format). Backups are full of truncated and corrupt archives.
-  Reads already return the readable prefix and then raise, and a member's data error
-  already leaves `stream_members()` running wherever the next member is reachable (ZIP,
-  7z, RAR, ISO, plain TAR; `archive-reading` spec). What is left is damage to the
-  archive's structure, which ends the pass: nothing resyncs past it. A salvage mode would
-  walk ZIP local headers when the central directory is gone or a pipe's local-header walk
-  loses its place, resync a TAR or compressed TAR stream on the next valid header, and
-  return every recoverable member with its error.
+- **Salvage mode.** *Designed, not built* (maintainer rulings 2026-11-20; the opt-in
+  `salvage=True` mode is tracked internally). Backups are full of truncated and corrupt
+  archives. Reads already return the readable prefix and then raise, and a member's data
+  error already leaves `stream_members()` running wherever the next member is reachable
+  (ZIP, 7z, RAR, ISO, plain TAR; `archive-reading` spec). A RAR header that fails its
+  CRC is followed by its own sizes when the next header confirms them, and its member
+  is listed with `MEMBER_HEADER_DAMAGED` (`salvage-step-1`). What is left is damage a
+  size cannot cross: the salvage mode would search for the next valid header (RAR by
+  CRC, TAR by checksum, ZIP local headers when the central directory is gone), split
+  compressed streams into segments, and list every recoverable member, flagged.
 
 ## Performance
 
