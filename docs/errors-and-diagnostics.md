@@ -112,6 +112,8 @@ A ZIP read from a pipe gives you its members before its index, which comes last,
 shows only once the index has been read, and iterating raises it after the last member. A member the
 index doesn't list, such as an update appended to the archive, is dropped from the list then and
 logged as `ARCHIVE_UNLISTED_DATA`, since reading the same archive from a file never sees it.
+If the signature of one member's header is damaged, reading that member fails, from a pipe as from a
+file, and the members after it read as usual.
 
 When the header of a RAR member is damaged, archivey does what `unrar` does: it takes the
 position of the next header from the damaged one, and goes on if the header there is intact. You

@@ -106,6 +106,11 @@ from archivey.internal.streams.streamtools.binaryio import read_exact
 
 DATA_DESCRIPTOR_SIGNATURE = b"PK\x07\x08"
 
+# The most bytes, header and data, a forward walk reads ahead to confirm a local
+# header whose signature is damaged: the span a RAR or TAR pipe holds for the same
+# question (rar_forward.KEEP_BYTES; maintainer, 2026-11-21).
+_DAMAGED_HEADER_HOLD = 4 << 20
+
 _FLAG_ENCRYPTED = 0x01
 _FLAG_DATA_DESCRIPTOR = 0x08
 _METHOD_STORED = 0
@@ -264,6 +269,10 @@ class LocalEntry:
     #: The header carries a ZIP64 extra field, so a data descriptor's sizes are 8
     #: bytes wide (APPNOTE 4.3.9.2).
     zip64: bool
+    #: The header's signature is damaged, and the walk went past it by its sizes
+    #: (:meth:`LocalHeaderWalk._follow_damaged_signature`). Its data is not read: a
+    #: read fails as a read from a file fails on the same header.
+    damaged_signature: bool = False
 
     @property
     def deferred(self) -> bool:
@@ -1133,9 +1142,65 @@ class LocalHeaderWalk:
                 f"ZIP stream ends {len(sig)} bytes {self.where()}, before the "
                 "central directory"
             )
+        if self._index and sig not in _DIRECTORY_STARTS:
+            entry = self._follow_damaged_signature()
+            if entry is not None:
+                self._unsettled = entry
+                return entry
         # The directory, the end records, or bytes that are neither: what follows
         # the members is read whole by ``read_rest`` and parsed as a file's is.
         return None
+
+    def _follow_damaged_signature(self) -> LocalEntry | None:
+        """The local header at the current position when its signature is the only
+        thing wrong with it, else ``None`` (the walk stops there, as before).
+
+        Salvage step 2 (maintainer, 2026-11-07): a damaged header is followed by its
+        sizes when the next header confirms them, as for RAR and TAR. A local header
+        has no checksum of its own, so the other 26 bytes must pass the checks the
+        detector makes on a local header, its sizes must be in the header (bit 3
+        clear), and the four bytes where its data ends must be a ZIP signature that
+        may follow a member (the next local header, the directory, the end records).
+        The directory read at the end of the pass then checks the entry as any other.
+        A file read lists the member from the directory and its read fails on the
+        signature (``Bad magic number for file header``); so does the read here, and
+        the walk goes on to the members after it rather than holding the rest of the
+        stream to find them from the directory. The walk looks no further ahead than
+        :data:`_DAMAGED_HEADER_HOLD`, the span a RAR or TAR pipe holds.
+        """
+        head = self.source.peek(LOCAL_HEADER_SIZE)
+        if len(head) < LOCAL_HEADER_SIZE:
+            return None
+        fixed = LOCAL_HEADER_SIGNATURE + head[4:]
+        variable_len = local_header_variable_length(fixed)
+        whole = self.source.peek(LOCAL_HEADER_SIZE + variable_len)
+
+        def peek_more(n: int) -> bytes:
+            return (fixed + whole[LOCAL_HEADER_SIZE:])[:n]
+
+        if validate_zip_local_header(peek_more, None) is not HitOutcome.VALID:
+            return None
+        if struct.unpack_from("<H", fixed, 6)[0] & _FLAG_DATA_DESCRIPTOR:
+            return None
+        compressed, size = local_zip64_sizes(
+            whole[LOCAL_HEADER_SIZE + struct.unpack_from("<H", fixed, 26)[0] :],
+            *local_stored_sizes(fixed),
+        )
+        # Either size deferred to a ZIP64 field that does not hold it would make
+        # _read_local_header raise and end the pass; the old path goes on instead.
+        if compressed is None or size is None:
+            return None
+        end = LOCAL_HEADER_SIZE + variable_len + compressed
+        if end > _DAMAGED_HEADER_HOLD:
+            return None
+        after = self.source.peek(end + 4)[end:]
+        if after not in _AFTER_MEMBER:
+            return None
+        # Swap the damaged signature for PK\3\4 in the pushback buffer on purpose,
+        # so the header parses as usual; damaged_signature records the swap.
+        self.source.read(4)
+        self.source.unread(fixed[:4])
+        return replace(self._read_local_header(), damaged_signature=True)
 
     def where(self) -> str:
         """Where the walk is, for a message: after which member, if any."""
