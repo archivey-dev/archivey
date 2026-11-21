@@ -121,6 +121,12 @@ read of it records `MEMBER_HEADER_DAMAGED`. Under `STRICT`, reading that member 
 other members can still be read. From a pipe, archivey can look ahead only 4 MiB, so if the
 damaged member is larger, the list stops there; save the archive to a file to get the rest.
 
+TAR works the same way. When a TAR header fails its checksum but still has the `ustar` magic,
+archivey takes the damaged member's size from it and goes on if the header at that position is
+intact (or if it is the end of the archive). The damaged member is listed and records
+`MEMBER_HEADER_DAMAGED` on each read. A TAR member has no checksum, so nothing checks its data:
+only its size is confirmed, by the intact header after it. The 4 MiB pipe limit applies here too.
+
 Where the format stores a checksum for each member, reading a member from start to end checks it,
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is
 checked. A loop that reads in chunks gets every byte that could be read before the error, but those
