@@ -19,15 +19,17 @@ from archivey.types import ArchiveMember, MemberType
 
 
 @pytest.fixture(autouse=True)
-def _thread_lock_for_tqdm(monkeypatch: pytest.MonkeyPatch) -> None:
+def _thread_lock_for_tqdm() -> None:
     """The lock :func:`make_progress_callback` gives tqdm, for the tests that make
-    real bars themselves: tqdm's default lock starts a helper process on Python
-    3.14+, which the leak oracle reports."""
+    real bars themselves. tqdm's default lock starts multiprocessing's resource
+    tracker on Python 3.14+, a child that lives until the worker exits. The lock is
+    left in place after the test, as the CLI leaves it: restoring "no lock" would let
+    the next real bar in this worker start that child."""
     try:
         import tqdm
     except ImportError:
         return
-    monkeypatch.setattr(tqdm.tqdm, "_lock", threading.RLock(), raising=False)
+    tqdm.tqdm.set_lock(threading.RLock())
 
 
 class _FakeBar:
