@@ -38,7 +38,8 @@ from archivey.exceptions import (
     TruncatedError,
     UnsupportedFeatureError,
 )
-from archivey.internal.backends.arj_reader import ArjReader
+from archivey.formats import PasswordConfirmVerdict
+from archivey.internal.backends.arj_reader import ArjReader, _Location
 from archivey.internal.password import is_unverified_data_error
 from tests.pe_build import elf_file, pe_file
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
@@ -206,9 +207,11 @@ def test_a_garbled_member_over_the_ratio_is_refused_before_any_full_check(
     full_checks: list[str] = []
     original = ArjReader._full_check
 
-    def counting(self: ArjReader, member: ArchiveMember, *args: object) -> object:
+    def counting(
+        self: ArjReader, member: ArchiveMember, locator: _Location, password: bytes
+    ) -> tuple[bytes | None, PasswordConfirmVerdict]:
         full_checks.append(member.name)
-        return original(self, member, *args)  # type: ignore[arg-type]
+        return original(self, member, locator, password)
 
     monkeypatch.setattr(ArjReader, "_full_check", counting)
     limits = archivey.DecoderLimits(max_ratio=2, ratio_activation_threshold=0)
