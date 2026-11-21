@@ -7,6 +7,7 @@ from archivey_codecs import (
     filters as filters,
     lzo1x as lzo1x,
     lzw as lzw,
+    lzx as lzx,
     zipcrypto as zipcrypto,
 )
 

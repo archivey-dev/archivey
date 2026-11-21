@@ -9,4 +9,5 @@ pub mod filters;
 pub mod lzo;
 pub mod lzw;
 pub mod lzx;
+pub mod state;
 pub mod zipcrypto;

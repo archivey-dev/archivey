@@ -25,6 +25,7 @@ from archivey_codecs import (
     filters,
     lzo1x,
     lzw,
+    lzx,
     zipcrypto,
 )
 
@@ -43,6 +44,7 @@ def test_kernels_table() -> None:
         "crc16_arc": 1,
         "lzo1x": 1,
         "lzw": 1,
+        "lzx": 1,
         "riscv": 1,
         "zipcrypto": 1,
     }
@@ -228,6 +230,172 @@ def test_lzw_copy_is_independent() -> None:
     assert (
         copy.decompress(_Z_AB[4:]) + copy.flush() == d.decompress(_Z_AB[4:]) + d.flush()
     )
+
+
+# ── LZX ────────────────────────────────────────────────────────────────────────────
+
+# "hello world, hello lzx!" as one uncompressed LZX block, window 2**15.
+_LZX_HELLO = bytes.fromhex(
+    "0030700101000000010000000100000068656c6c6f20776f726c642c2068656c6c6f206c7a782100"
+)
+_HELLO = b"hello world, hello lzx!"
+# A block of type 7, which LZX does not have.
+_LZX_BAD = bytes.fromhex("007000000000")
+
+
+def test_lzx_one_call() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO + b"tail") == _HELLO
+    assert d.eof
+    assert not d.needs_input
+    assert d.unused_data.endswith(b"tail")
+    assert d.total_out == len(_HELLO)
+    with pytest.raises(EOFError):
+        d.decompress(b"x")
+
+
+def test_lzx_byte_at_a_time_waits_for_the_frame() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.needs_input
+    out = b""
+    for i in range(len(_LZX_HELLO)):
+        out += d.decompress(_LZX_HELLO[i : i + 1])
+        if i < len(_LZX_HELLO) - 2:
+            assert out == b""
+            assert d.needs_input
+    assert out + d.flush() == _HELLO
+    assert d.eof
+
+
+def test_lzx_max_length_slices_the_frame() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO, 5) == b"hello"
+    assert not d.needs_input
+    assert d.decompress(b"", 7) == b" world,"
+    assert d.decompress(b"") == b" hello lzx!"
+    assert d.eof
+
+
+def test_lzx_output_size_given_late() -> None:
+    d = lzx.Decompressor(15)
+    assert d.decompress(_LZX_HELLO) == b""
+    assert d.needs_input
+    d.set_output_size(len(_HELLO))
+    assert d.output_size == len(_HELLO)
+    assert d.decompress(b"") == _HELLO
+    assert d.eof
+    with pytest.raises(ValueError, match="below"):
+        d.set_output_size(3)
+
+
+def test_lzx_without_output_size() -> None:
+    # Every frame is 32 KiB, so a shorter stream runs into the zero padding after it
+    # (read as a block of type 0), as in the Python decoder...
+    d = lzx.Decompressor(15)
+    d.decompress(_LZX_HELLO)
+    with pytest.raises(CodecError):
+        d.flush()
+    # ...and no input at all is an empty stream.
+    d = lzx.Decompressor(15)
+    assert d.flush() == b""
+    assert d.eof
+
+
+def test_lzx_cut_stream() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO[:-10]) == b""
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        d.flush()
+
+
+def test_lzx_damage_raises_again() -> None:
+    d = lzx.Decompressor(15, output_size=100)
+    for _ in range(2):
+        with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
+            d.decompress(_LZX_BAD)
+
+
+def test_lzx_window_range() -> None:
+    with pytest.raises(archivey_codecs.CorruptDataError, match="window"):
+        lzx.Decompressor(14)
+
+
+def test_lzx_reset_and_copy() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO, 5) == b"hello"
+    c = d.copy()
+    assert d.decompress(b"") == _HELLO[5:]
+    assert c.decompress(b"") == _HELLO[5:]
+    d.reset(len(_HELLO))
+    assert (d.total_in, d.total_out, d.eof) == (0, 0, False)
+    assert d.decompress(_LZX_HELLO) == _HELLO
+
+
+def test_lzx_state_resumes_from_total_in() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    start = lzx.Decompressor.from_state(d.getstate())
+    assert start.decompress(_LZX_HELLO) == _HELLO
+    assert d.decompress(_LZX_HELLO, 5) == b"hello"
+    state, total_in = d.getstate(), d.total_in
+    r = lzx.Decompressor.from_state(state)
+    assert (r.total_in, r.total_out, r.window_bits) == (total_in, 5, 15)
+    assert r.decompress(_LZX_HELLO[total_in:]) == _HELLO[5:]
+    assert r.eof
+
+
+def test_lzx_state_refusals() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    state = d.getstate()
+    with pytest.raises(archivey_codecs.CorruptDataError, match="cut off"):
+        lzx.Decompressor.from_state(state[:-1])
+    with pytest.raises(archivey_codecs.CorruptDataError, match="follow"):
+        lzx.Decompressor.from_state(state + b"\0")
+    bad = bytearray(state)
+    bad[1 + len("lzx") + 4] = 22  # the window bits
+    with pytest.raises(archivey_codecs.CorruptDataError, match="window"):
+        lzx.Decompressor.from_state(bytes(bad))
+    other = archivey_codecs.zipcrypto.Decryptor(b"pw").getstate()
+    with pytest.raises(archivey_codecs.UnsupportedDataError):
+        lzx.Decompressor.from_state(other)
+    with pytest.raises(CodecError):
+        d.flush()
+
+
+def test_lzx_one_call_unused_data_is_exact() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO + b"tail") == _HELLO
+    assert d.unused_data == b"tail"
+    assert d.total_in == len(_LZX_HELLO)
+
+
+def test_lzx_state_after_a_capped_flush() -> None:
+    """A state saved after ``flush(1)`` resumes with the rest. The restored decoder
+    is one before ``flush()``: it takes the input from ``total_in``, then flushes."""
+    for at in range(len(_HELLO)):
+        d = lzx.Decompressor(15, output_size=len(_HELLO))
+        assert d.decompress(_LZX_HELLO, 0) == b""
+        out = d.flush(1)
+        while len(out) < at:
+            out += d.flush(1)
+        r = lzx.Decompressor.from_state(d.getstate())
+        assert (r.total_out, r.total_in) == (d.total_out, d.total_in)
+        out += r.decompress(_LZX_HELLO[r.total_in :] + b"tail", 1)
+        while not r.eof:
+            out += r.flush(1)
+        assert out == _HELLO, at
+        assert r.unused_data == b"tail"
+        assert d.flush() == _HELLO[max(at, 1) :]
+
+
+def test_lzx_state_after_a_failed_flush_raises_again() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    d.decompress(_LZX_HELLO[:-10])
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        d.flush()
+    r = lzx.Decompressor.from_state(d.getstate())
+    r.decompress(_LZX_HELLO[r.total_in : -10])
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        r.flush()
 
 
 def test_lzw_flush_keeps_its_cap(tmp_path) -> None:

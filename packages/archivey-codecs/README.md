@@ -7,8 +7,8 @@ the same exception type with the same message (two caller-only exceptions are li
 below). Without it, archivey uses its Python decoders.
 
 This is a pre-release. Most kernels have their final, standard-library-shaped API
-(`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders). LZX and BCJ2 still
-have the prototype's API, as private names, until they are reshaped too.
+(`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders). BCJ2 still has the
+prototype's API, as a private name, until it is reshaped too.
 
 | Name | Used for | Python decoder it mirrors |
 | --- | --- | --- |
@@ -17,7 +17,7 @@ have the prototype's API, as private names, until they are reshaped too.
 | `lzw.Decompressor` | Unix `compress` (`.Z`, `.tar.Z`) | `unix_compress_decoder.LzwState` |
 | `zipcrypto.Decryptor` | ZIP members with traditional encryption | `zipcrypto.ZipCryptoKeys` |
 | `filters.Arm64Decoder`, `filters.RiscvDecoder` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
-| `_codecs._LzxFrameDecoder` (private for now) | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
+| `lzx.Decompressor` | LZX folders in Microsoft cabinets | `lzx_decoder.LzxDecoder` |
 | `_codecs._Bcj2Core` (private for now) | 7z BCJ2 (four-stream x86 filter) | the loop of `bcj2_filter.Bcj2DecoderStream` |
 
 ```python

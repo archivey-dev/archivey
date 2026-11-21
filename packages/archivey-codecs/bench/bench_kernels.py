@@ -129,9 +129,9 @@ def main() -> None:
             assert b"".join(d.decode_frame(s) for s in sizes) == sample
 
         def run_rs():
-            it = iter(frames)
-            d = n._codecs._LzxFrameDecoder(21, lambda: next(it, None))
-            assert b"".join(d.decode_frame(s) for s in sizes) == sample
+            d = n.lzx.Decompressor(21, output_size=len(sample))
+            out = b"".join(d.decompress(f) for f in frames) + d.flush()
+            assert out == sample
 
         py = best(run_py, 1)
         rs = best(run_rs)
