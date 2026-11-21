@@ -27,7 +27,7 @@
   fresh `stream_members()` pass and `extract_all()`, skipped members never prompting;
   indexed seek-to-zero where the original and replacement verdicts differ; ARJ short
   source vs wrong-key exhaustion
-- [ ] 1.7 Docs: `adding-a-format.md` passwords section, `formats.py` docstring (docs
+- [x] 1.7 Docs: `adding-a-format.md` passwords section, `formats.py` docstring (docs
   session)
 
 ## 2. Users (separate PRs)
