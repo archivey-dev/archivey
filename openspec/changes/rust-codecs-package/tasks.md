@@ -1,0 +1,38 @@
+## 1. Package (from #1416's branch)
+
+- [ ] 1.1 Rebase the prototype on main; port the twinned-decoder changes made since
+  (LZO after PR 1612 first); drop `system-python.yml`
+- [ ] 1.2 Rename to `packages/archivey-codecs`, import `archivey_codecs`; version in
+  `Cargo.toml`; README and CHANGELOG
+- [ ] 1.3 Decoders to the `LZMADecompressor` shape (D3); one-shot block form; the
+  `CodecError` family; `#![forbid(unsafe_code)]` in kernel modules
+- [ ] 1.4 `KERNELS` table replacing `ABI_VERSION` (D4); stubs and `py.typed`
+- [ ] 1.5 `tests/test_api.py` (no archivey import); parity tests updated
+- [ ] 1.6 Hashes (D2), only if question 5 says so: fix the Python BLAKE2sp first,
+  measure, then port BLAKE2sp and CRC-16/ARC with parity tests
+
+## 2. archivey hook (maintainer merges: public names)
+
+- [ ] 2.1 `internal/native.py` with per-kernel minimum revisions and DEBUG fallback log
+- [ ] 2.2 `OptionalLibrary.ARCHIVEY_CODECS` passed through the CAB, ZipCrypto, filter,
+  LZW and LZO sites; `ARCHIVEY_CODECS=0`
+- [ ] 2.3 `[codecs]` extra with platform markers, checked with pip and uv on PyPy and
+  an unsupported platform
+- [ ] 2.4 Tests for every row of the accelerator-selection table
+
+## 3. CI and release
+
+- [ ] 3.1 Wheel matrix on `PyO3/maturin-action` (D7), per-wheel test job
+- [ ] 3.2 Parity job on PRs touching a kernel or a twin; full suite with kernels on,
+  post-merge and nightly
+- [ ] 3.3 clippy, fmt, cargo-deny; atheris targets on the kernels in the nightly fuzz
+  job
+- [ ] 3.4 `codecs-publish.yml` on `codecs-v*`; TestPyPI dry run; `RELEASING.md` section
+- [ ] 3.5 One-time (davi): PyPI and TestPyPI pending publishers for `archivey-codecs`
+
+## 4. Docs and follow-ups
+
+- [ ] 4.1 Install page section and package README (written by Opus)
+- [ ] 4.2 First release `codecs-v0.1.0`; then `[recommended]` one archivey release later
+  if question 9 says so
+- [ ] 4.3 Archive this change
