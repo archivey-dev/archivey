@@ -386,10 +386,18 @@ class _PartialThenError(io.RawIOBase):
     ``OnError.KEEP_PARTIAL`` (``_placement_data``): it reads the bytes staged before
     the failure from ``partial``, and then raises ``error``, as the stream did."""
 
+    # A class default, so close() works on an instance whose __init__ did not run.
+    _file: io.BufferedReader | None = None
+
     def __init__(self, partial: Path, error: ArchiveyError | OSError) -> None:
-        super().__init__()
-        self._file: io.BufferedReader = open(long_path(partial), "rb")  # noqa: SIM115
         self._error = error
+        super().__init__()
+        try:
+            self._file = open(long_path(partial), "rb")  # noqa: SIM115
+        except OSError:
+            # The staged bytes are out of reach: the member fails as if none had
+            # been staged, keeping nothing.
+            self._file = None
 
     @override
     def readable(self) -> bool:
@@ -397,14 +405,15 @@ class _PartialThenError(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
-        n = self._file.readinto(b)
+        n = self._file.readinto(b) if self._file is not None else 0
         if not n:
             raise self._error
         return n
 
     @override
     def close(self) -> None:
-        self._file.close()
+        if self._file is not None:
+            self._file.close()
         super().close()
 
 
