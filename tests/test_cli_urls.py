@@ -998,21 +998,60 @@ _REPORTS: list[list[SourceProgress]] | None = None
 
 
 @pytest.fixture(params=[False, True], ids=["unreported", "reported"])
-def reporting(request: pytest.FixtureRequest) -> Iterator[None]:
+def reporting(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
     """Run an HTTP adapter test without and with ``on_source_read``: with it, each
-    answer's body is read one chunk per call, and the outcome must be the same."""
+    answer's body is read one chunk per call, and the outcome must be the same.
+
+    The reported arm reads in 4 KiB chunks, so the answers of these tests (up to a few
+    hundred KiB) report inside themselves too. At teardown each request's reports
+    must be well formed: a report inside an answer never claims more than the
+    request's range, nor more than the answer brought in the end. A hook that
+    reported ``received + 1``, or counted the extra byte read past a ``206``'s
+    declared length, fails here.
+    """
     global _REPORTS
+    if request.param:
+        from archivey.internal import _http_range
+
+        monkeypatch.setattr(_http_range, "CHUNK", _SMALL_CHUNK)
     _REPORTS = [] if request.param else None
     try:
         yield
         for calls in _REPORTS or ():
-            totals = [c.bytes_read for c in calls]
-            assert totals == sorted(totals)
-            for c in calls:
-                assert c.request_start is not None and c.request_end is not None
-                assert 0 <= c.request_received <= c.request_end - c.request_start  # type: ignore[operator]
+            _check_reports(calls)
     finally:
         _REPORTS = None
+
+
+_SMALL_CHUNK = 4096
+
+
+def _check_reports(calls: list[SourceProgress]) -> None:
+    totals = [c.bytes_read for c in calls]
+    assert totals == sorted(totals)
+    by_request: dict[int, list[SourceProgress]] = {}
+    for c in calls:
+        assert c.requests is not None
+        assert c.request_start is not None and c.request_end is not None
+        assert c.request_received is not None
+        assert 0 <= c.request_received <= c.request_end - c.request_start
+        assert c.position == c.request_start + c.request_received
+        by_request.setdefault(c.requests, []).append(c)
+    for reports in by_request.values():
+        done = [c for c in reports if c.request_done]
+        within = [c for c in reports if not c.request_done and c.request_received]
+        received = [c.request_received for c in within]
+        assert received == sorted(received)
+        # Chunks are gathered whole until the answer ends, so a report inside it
+        # comes after a whole number of them.
+        assert all(r % _SMALL_CHUNK == 0 for r in received)  # type: ignore[operator]
+        if done:
+            assert all(r < done[-1].request_received for r in received)  # type: ignore[operator]
+            if done[-1].request_received > _SMALL_CHUNK:  # type: ignore[operator]
+                # An answer longer than one chunk reported before it ended.
+                assert within
 
 
 def _range_source(url: str) -> Any:
@@ -1344,9 +1383,18 @@ def test_http_a_large_answer_reports_as_it_comes_in(http_base: str) -> None:
     data = os.urandom(5 << 20)
     _Handler.files["/big.bin.xz"] = lzma.compress(data, preset=0)
     calls: list[SourceProgress] = []
-    config = ArchiveyConfig(on_source_read=calls.append)
+    threads: set[int] = set()
+
+    def record(progress: SourceProgress) -> None:
+        calls.append(progress)
+        threads.add(threading.get_ident())
+
+    config = ArchiveyConfig(on_source_read=record)
     with open_stream(fsspec.open(f"{http_base}/big.bin.xz"), config=config) as stream:
         assert stream.read() == data
+    # Every report, those inside an answer included, ran on this thread, never on
+    # fsspec's event loop thread (a hook called from ``read_chunk`` would).
+    assert threads == {threading.get_ident()}
     within = [c for c in calls if c.request_done is False and c.request_received]
     # Each MiB of an answer reports, before the answer ends: the requests grow to
     # 2 MiB and more, so a 5 MiB file has at least two such reports.
@@ -1361,13 +1409,36 @@ class _Stop(Exception):
     pass
 
 
-def test_http_a_stop_inside_an_answer_reaches_the_caller(http_base: str) -> None:
+def test_http_a_stop_inside_an_answer_reaches_the_caller(
+    http_base: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from archivey import ArchiveyConfig, open_stream
 
     pytest.importorskip("fsspec")
+    import aiohttp
     import fsspec
 
     _Handler.files["/big.bin.xz"] = lzma.compress(os.urandom(5 << 20), preset=0)
+    # Each GET answer aiohttp released. The answer the stop came inside must be
+    # among them: without ``finish`` after the hook raised, it stays open.
+    opened: list[object] = []
+    released: list[object] = []
+    request = aiohttp.ClientSession._request
+    release = aiohttp.ClientResponse.release
+
+    async def counted_request(self: Any, method: str, *args: Any, **kwargs: Any) -> Any:
+        response = await request(self, method, *args, **kwargs)
+        if method == "GET":
+            opened.append(response)
+        return response
+
+    def counted_release(self: Any) -> Any:
+        if self.method == "GET" and self not in released:
+            released.append(self)
+        return release(self)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "_request", counted_request)
+    monkeypatch.setattr(aiohttp.ClientResponse, "release", counted_release)
 
     def stop(progress: SourceProgress) -> None:
         if progress.request_done is False and progress.request_received:
@@ -1379,3 +1450,5 @@ def test_http_a_stop_inside_an_answer_reaches_the_caller(http_base: str) -> None
         open_stream(fsspec.open(f"{http_base}/big.bin.xz"), config=config) as s,
     ):
         s.read()
+    assert opened
+    assert all(response in released for response in opened)
