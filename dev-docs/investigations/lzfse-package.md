@@ -153,10 +153,10 @@ for 30 s, and records the case.
 | The literal count in a `bvx2` header is not a multiple of 4 | 989 | refuses | decodes the count rounded up | yes, the header walk can read it |
 | A `bvx2` block decodes to a size other than its declared raw size | 915 | refuses | accepts; Apple uses that field only for `bvx-` and `bvxn` blocks | yes, by comparing the output length with the declared total |
 | The matches use more literals than the block decoded | 639 | refuses | copies bytes that were never decoded (zeros or older literals) | **no** |
-| The initial bit accumulator has bits set above its count | 3 | accepts | refuses | Python decoder bug: Part A adds Apple's check |
+| A triple with no match carries a distance out of range | 3 | accepts | refuses | Python decoder bug: Part A adds Apple's check |
 
 `common.binding_checked` adds the strict header walk and the length check. With it, 642
-differences remain: the 639 literal overruns and the 3 accumulator cases. Fixing the
+differences remain: the 639 literal overruns and the 3 distance cases. Fixing the
 Python decoder removes the 3. The 639 remain, because only the decoder itself can see
 them.
 
@@ -167,9 +167,12 @@ The fuzz also found faults in the prototype that Part A must fix when it ports t
 - **Truncated block headers raise the wrong error.** A header cut short raised
   `struct.error` instead of `LzfseError` in 2,389 cases. Part A checks each header's
   length before unpacking it.
-- **One check of Apple's is missing.** After the first load into the bit accumulator, the
-  bits above its count must be zero (`fse_in_checked_init64`). Part A adds this check,
-  so the 3 accumulator cases are refused, as Apple refuses them.
+- **One check of Apple's is missing.** Apple checks every literal, match and distance
+  triple's distance against the output so far (`lzfse_decode_lmd`). It does this even
+  when the match length is 0, and the distance before the first match starts at -1. The
+  prototype checks the distance only when there is a match. Part A checks it as Apple
+  does, so the 3 cases are refused as Apple refuses them. The cause was found by running
+  Apple's code with each error return instrumented.
 
 ## Using it safely
 
