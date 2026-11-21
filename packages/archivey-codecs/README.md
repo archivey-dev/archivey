@@ -4,8 +4,7 @@ Rust versions of the decoders that [archivey](https://github.com/archivey-dev/ar
 otherwise runs in Python. When archivey finds this package, those decoders get faster,
 and nothing else changes: the output bytes are the same, and a damaged archive raises
 the same exception type with the same message (two caller-only exceptions are listed
-below). Without it, archivey uses its Python
-decoders.
+below). Without it, archivey uses its Python decoders.
 
 This is a pre-release. Most kernels have their final, standard-library-shaped API
 (`hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders). LZX and BCJ2 still

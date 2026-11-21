@@ -3,7 +3,9 @@ archivey is not installed."""
 
 from __future__ import annotations
 
+import io
 import os
+import random
 
 import pytest
 
@@ -71,7 +73,7 @@ def test_crc16_hash_interface() -> None:
 
 
 def test_crc16_value_out_of_range() -> None:
-    for value in (0x10000, -1):
+    for value in (0x10000, -1, 2**63, 2**64):
         with pytest.raises(ValueError, match="outside 0 to 0xFFFF"):
             crc16_arc(b"", value)
 
@@ -214,8 +216,8 @@ def test_lzw_empty_decompress_only_drains() -> None:
     assert not d.eof
 
 
-def test_lzw_header_arguments_go_together() -> None:
-    with pytest.raises(ValueError, match="together"):
+def test_lzw_max_width_needs_block_mode() -> None:
+    with pytest.raises(ValueError, match="give block_mode with max_width"):
         lzw.Decompressor(max_width=16)
 
 
@@ -279,3 +281,50 @@ def test_filter_state_hold_bounds() -> None:
 def test_filter_offset_wraps() -> None:
     d = filters.Arm64Decoder(start_offset=2**64 - 4)
     assert len(d.decode(bytes(64))) == 64
+
+
+def test_lzw_error_on_new_input_keeps_counts() -> None:
+    """A call that fails on its new input still counts that input: ``total_in``
+    stays within what was passed in."""
+    d = lzw.Decompressor()
+    with pytest.raises(CorruptDataError, match="invalid code"):
+        d.decompress(b"\x1f\x9d\x90\xff\xff\xff")
+    assert d.total_in <= 6
+
+
+def test_lzw_error_on_new_input_returns_held_output_first() -> None:
+    """Output decoded before a bad code comes out before the error, also when a cap
+    left part of an entry held: capped calls give what one uncapped call gives."""
+    ncompress = pytest.importorskip("ncompress")
+    rng = random.Random(3)
+    raw = bytes(rng.choice(b"ab") for _ in range(20_000))
+    buf = io.BytesIO()
+    ncompress.compress(io.BytesIO(raw), buf)
+    z = buf.getvalue()
+    garbage = b"\xff\xff\xff\xff"
+
+    for cut in range(8, 120):
+        # One uncapped call holds nothing back: the reference.
+        whole = lzw.Decompressor()
+        expected = bytearray(whole.decompress(z[:cut]))
+        try:
+            expected += whole.decompress(garbage)
+            for _ in range(4):
+                expected += whole.decompress(b"")
+        except CorruptDataError:
+            pass
+        else:
+            raise AssertionError(cut)
+        d = lzw.Decompressor()
+        got = bytearray(d.decompress(z[:cut], 1))
+        try:
+            while d.total_in < cut and not d.needs_input:
+                got += d.decompress(b"", 1)
+            got += d.decompress(garbage, 1)
+            for _ in range(100_000):
+                got += d.decompress(b"", 1)
+        except CorruptDataError:
+            pass
+        else:
+            raise AssertionError(cut)
+        assert got == expected, cut
