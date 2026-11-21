@@ -1,6 +1,6 @@
 ## A0. Evaluate the lzfse package
 
-- [ ] A0.1 Investigation PR: wheels, licence, output cap, raw LZVN, fuzz in a child
+- [x] A0.1 Investigation PR: wheels, licence, output cap, raw LZVN, fuzz in a child
   process, per-run cost, agreement with the prototype
 - [ ] A0.2 Maintainer decides: library only, Python only, or Python plus the library as
   an accelerator
