@@ -14,7 +14,7 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V), the call's ``process_isolation`` is not
+- for a decoding kernel (ARM64, RISC-V, LZW), the call's ``process_isolation`` is not
   ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python twin keeps
   that setting's promise that no native decoder runs in this process.
 
