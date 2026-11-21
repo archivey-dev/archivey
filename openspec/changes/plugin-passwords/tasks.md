@@ -2,7 +2,7 @@
 
 - [ ] 1.1 `FormatHandler.supports_password`; `register_builtin_format` reads it instead
   of the `SUPPORTS_PASSWORD=` override
-- [ ] 1.2 `ReaderContext.unlock`, `PasswordMatch`, `charge_key_derivation` over
+- [ ] 1.2 `ReaderContext.unlock`, `PasswordConfirmVerdict`, `charge_key_derivation` over
   `internal/password.py` and `KeyDerivationBudget`
 - [ ] 1.3 `ReaderArchiveInfo.is_encrypted`; member verification starts at `NONE` for
   `is_encrypted` members until an unlock confirms them
@@ -18,5 +18,5 @@
 
 - [ ] 2.1 makeself: `unlock` + `charge_key_derivation`; mark payload members
   `is_encrypted`; drop `ReaderContext._passwords`
-- [ ] 2.2 ARJ: decrypt garbled members (`UNCONFIRMED` + `full_check` on the CRC-32)
+- [ ] 2.2 ARJ: decrypt garbled members (`INCONCLUSIVE` + `full_check` on the CRC-32)
 - [ ] 2.3 DMG spec §6B: point at `unlock`

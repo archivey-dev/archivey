@@ -44,12 +44,12 @@ archivey's API (a plugin brings its own, or uses its library's).
 ```python
 T = TypeVar("T")
 
-class PasswordMatch(Enum):
-    WRONG = "wrong"              # this password is not the one
-    UNCONFIRMED = "unconfirmed"  # passed every check run so far, could still be wrong
-    CONFIRMED = "confirmed"      # the format's check proves it
+class PasswordConfirmVerdict(Enum):   # today internal/password_confirm.py; made public
+    REJECTED = "rejected"           # this password is not the one
+    INCONCLUSIVE = "inconclusive"   # passed every check run so far, could still be wrong
+    CONFIRMED = "confirmed"         # the format's check proves it
 
-Check = Callable[[bytes], tuple[T | None, PasswordMatch]]
+Check = Callable[[bytes], tuple[T | None, PasswordConfirmVerdict]]
 
 class ReaderContext:
     def unlock(
@@ -65,26 +65,29 @@ class ReaderContext:
 `check(password)` tries one password and returns what that password unlocked (whatever
 the plugin needs to decrypt later: a derived key, a cipher state, a decrypted header),
 with how sure it is. archivey never looks inside the value; `unlock` returns it. Data is
-`None` only with `WRONG`. Any exception `check` raises ends the loop and reaches the caller
+`None` only with `REJECTED`. Any exception `check` raises ends the loop and reaches the caller
 unchanged. `member` is what the provider's `PasswordRequest.member` shows (`None` for an
 archive-level unit). `what` names the unit in archivey's messages ("makeself payload 2",
 "the disk image").
 
 This is the public form of the internal `password_confirm.attempt_with_confirm`
-(probe + full check returning `PasswordConfirmVerdict`), which the ZIP, 7z and RAR
-readers already use.
+(probe + full check), which the ZIP, 7z and RAR readers already use. The enum is the one
+they use, moved to `archivey.formats` and imported from there by the built-in readers, so
+plugins and built-ins share one set of levels (davi 11-21). One change for the built-ins:
+a probe may now return `REJECTED`, where today it raises the wrong-password
+`EncryptionError` instead; both stay accepted inside archivey.
 
 Example, makeself (openssl, AES-256-CBC). `unlock` returns the AES key and IV of the
 password that worked:
 
 ```python
-def check(password: bytes) -> tuple[AesParams | None, PasswordMatch]:
+def check(password: bytes) -> tuple[AesParams | None, PasswordConfirmVerdict]:
     context.charge_key_derivation(10_000)        # PBKDF2 rounds, before the work
     params = derive_key(password, salt)          # AES key + IV
     first = aes_cbc_decrypt(params, first_block)
     if not first.startswith(GZIP_MAGIC):         # the payload must start with gzip
-        return None, PasswordMatch.WRONG
-    return params, PasswordMatch.CONFIRMED       # a false match is about 1 in 2**24
+        return None, PasswordConfirmVerdict.REJECTED
+    return params, PasswordConfirmVerdict.CONFIRMED       # a false match is about 1 in 2**24
 
 params = context.unlock("makeself payload 1", check)
 ```
@@ -93,13 +96,13 @@ Example, ARJ garble (each byte XORed with the password; only the member's CRC-32
 
 ```python
 def check(password):
-    return password, PasswordMatch.UNCONFIRMED   # nothing to test before the data
+    return password, PasswordConfirmVerdict.INCONCLUSIVE   # nothing to test before the data
 
 def full_check(password):
     crc = crc32_of(degarble_and_decode(member_data, password))
     if crc != stored_crc:
-        return None, PasswordMatch.WRONG
-    return password, PasswordMatch.CONFIRMED
+        return None, PasswordConfirmVerdict.REJECTED
+    return password, PasswordConfirmVerdict.CONFIRMED
 
 key = context.unlock(member_label, check, full_check=full_check, member=member)
 ```
@@ -116,7 +119,7 @@ one call at a time) and promotion would be each plugin's job.
 | Outcome | archivey raises |
 | --- | --- |
 | No password given, or the provider's first answer is `None` | `EncryptionError("{what} is encrypted: pass password= to read it")` |
-| Every password tried came back `WRONG` | wrong-password `EncryptionError("Wrong password for {what}")` |
+| Every password tried came back `REJECTED` | wrong-password `EncryptionError("Wrong password for {what}")` |
 | `check` or `full_check` raised | That exception, unchanged |
 
 Same class as today for both (`EncryptionError`); the error-handling spec has no
@@ -128,23 +131,23 @@ The loop is the one the built-in readers run (`_PasswordCandidates.attempt` with
 `settled`/`settle`):
 
 1. Each static candidate in order goes through `check`. The first `CONFIRMED` wins at
-   once, so no expensive derivation runs for the candidates after it. `WRONG` is dropped.
-   `UNCONFIRMED` is set aside and the next candidate is tried.
+   once, so no expensive derivation runs for the candidates after it. `REJECTED` is dropped.
+   `INCONCLUSIVE` is set aside and the next candidate is tried.
 2. When the candidates run out with **one** set aside, it wins; `full_check` does not
-   run for it (every other candidate was `WRONG`).
+   run for it (every other candidate was `REJECTED`).
 3. With **several** set aside, `full_check` runs on each in order. The first `CONFIRMED`
-   wins; `WRONG` is dropped. If none confirms (or there is no `full_check`), the first
-   still `UNCONFIRMED` wins.
+   wins; `REJECTED` is dropped. If none confirms (or there is no `full_check`), the first
+   still `INCONCLUSIVE` wins.
 4. With none left, the provider is asked, one answer at a time; its first answer that is
-   not `WRONG` wins (a person at a prompt answers one at a time, so there is nothing to
+   not `REJECTED` wins (a person at a prompt answers one at a time, so there is nothing to
    compare it with).
 
-A password that wins as `UNCONFIRMED` is not promoted to be tried first for later units
+A password that wins as `INCONCLUSIVE` is not promoted to be tried first for later units
 (unless it was the only password given), and a checksum failure of that member's data
 becomes the unverified-data `EncryptionError` ("wrong password or damaged data"), as for
 ZipCrypto, so the link-target report says `password_or_damage`.
 
-`PasswordMatch` is an enum, not a score: the loop only needs "confirmed wins, wrong is
+`PasswordConfirmVerdict` is an enum, not a score: the loop only needs "confirmed wins, wrong is
 dropped, the rest wait", and new levels can be added to an enum later. A numeric score
 would ask every plugin to calibrate numbers nothing compares across formats.
 
@@ -173,7 +176,7 @@ class ReaderArchiveInfo(NamedTuple):
   override.
 - A member the plugin lists with `is_encrypted=True` is `Verification.NONE` until a
   `CONFIRMED` `unlock(member=that_member)`, or an archive-level `CONFIRMED` `unlock` made
-  before the member was listed (DMG at open). An `UNCONFIRMED` win leaves it at `NONE`
+  before the member was listed (DMG at open). An `INCONCLUSIVE` win leaves it at `NONE`
   until its checksum passes.
 - `ReaderArchiveInfo.is_encrypted` becomes `ArchiveInfo.is_encrypted` (today the adapter
   always writes `False`).
@@ -197,10 +200,11 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 ## Open questions (for the maintainer, one at a time)
 
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi 11-21).
-2. D1/D3: `check` returns `(data, PasswordMatch)` (davi's idea, 11-21), with an optional
+2. D1/D3: `check` returns `(data, PasswordConfirmVerdict)` (davi 11-21: reuse the built-in
+   enum and its levels; built-ins and plugins share it), with an optional
    `full_check` to decide between several unconfirmed passwords? (Recommended: yes.)
 3. D2: archivey writes both messages? (Recommended: yes.)
 4. D4: `charge_key_derivation(rounds)` on the context? (Recommended: yes.)
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
-   `PasswordMatch` (`WRONG`, `UNCONFIRMED`, `CONFIRMED`).
+   `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`, `CONFIRMED`).
 6. Order: this API PR first, then makeself, ARJ and DMG on it? (Recommended: yes.)

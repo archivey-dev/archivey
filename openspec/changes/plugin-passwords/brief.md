@@ -23,7 +23,7 @@ it.
 - archivey raises the errors, so every format says the same thing: `EncryptionError`
   "… is encrypted: pass password= to read it" when no password was given, and the
   wrong-password `EncryptionError` "Wrong password for …" when every one failed.
-- An optional `full_check` decides between several `UNCONFIRMED` passwords (ARJ garble:
+- An optional `full_check` decides between several `INCONCLUSIVE` passwords (ARJ garble:
   decode the member and check its CRC-32). A checksum failure under a password that won
   unconfirmed says "wrong password or damaged data", as ZipCrypto does.
 - `ReaderContext.charge_key_derivation(rounds)` charges archive-declared key derivation
