@@ -10,8 +10,10 @@ asking again after an ignored range, detecting a changed object, and the I/O cou
 
 A request runs on fsspec's event loop thread. Without a progress hook it is one
 ``sync()`` call; with one (``on_received``) the answer's body is read one ``sync()`` per
-chunk of up to :data:`CHUNK` bytes, so the hook, and the ``on_source_read`` callback it
-calls, runs on the caller's thread between chunks.
+chunk of up to :data:`CHUNK` bytes, so the hook runs between chunks on the thread that
+sent the request. When that is a caller's thread, the hook calls ``on_source_read``
+there; on a thread archivey started (the RAR volume feeder) the reporter keeps the
+latest report for the caller's next read, as for the request's other reports.
 
 fsspec and aiohttp are never imported here at import time. :func:`bounded_http_cat`
 answers ``None`` unless fsspec's HTTP module is already loaded, so a core-only install

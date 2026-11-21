@@ -24,21 +24,21 @@ It SHALL run on the thread that read (as every caller function does). A read on 
 archivey started (the RAR volume feeder) SHALL NOT call it: the latest such report SHALL
 be kept and delivered on the caller's next read of the archive or of the member being
 read. Reports in between are merged, so `requests` may skip numbers and a request may
-lack its pair of calls; the once-before, once-after rule above applies to requests sent
-from a caller's thread. Bytes that an external program (`unrar`) or the RAR backend
-reads from volume paths directly are outside this requirement. An exception it raises
-SHALL propagate out of the read that called it, unchanged; every later read of the file
-SHALL raise it again, bytes served from a cache or a replay included, and an extraction
-or verification that goes on past a member's error SHALL stop on it instead. A reader
-opened with `parent=` SHALL report to the callback in its own config (its parent's
-unless given one) with `nest_level` one more than its parent's; a member stream opened
-without `parent=` is a source of its own and SHALL report at `nest_level` 0. A split set
-found beside a stub, and the track files of a `.cue` sheet, SHALL report as the file
-they stand in for. `position` and `read_start` SHALL count from the start of the file,
-also when a stream is opened where the caller left it. In a volume list that mixes local
-parts and URLs, the local parts SHALL report their reads and the URLs their requests,
-each byte once. With `on_source_read` unset, no reporting work SHALL be done beyond
-checking that it is unset.
+lack its pair of calls; the once-before, once-after rule and the calls as an HTTP answer
+comes in apply to requests sent from a caller's thread. Bytes that an external program
+(`unrar`) or the RAR backend reads from volume paths directly are outside this
+requirement. An exception it raises SHALL propagate out of the read that called it,
+unchanged; every later read of the file SHALL raise it again, bytes served from a cache
+or a replay included, and an extraction or verification that goes on past a member's
+error SHALL stop on it instead. A reader opened with `parent=` SHALL report to the
+callback in its own config (its parent's unless given one) with `nest_level` one more
+than its parent's; a member stream opened without `parent=` is a source of its own and
+SHALL report at `nest_level` 0. A split set found beside a stub, and the track files of
+a `.cue` sheet, SHALL report as the file they stand in for. `position` and `read_start`
+SHALL count from the start of the file, also when a stream is opened where the caller
+left it. In a volume list that mixes local parts and URLs, the local parts SHALL report
+their reads and the URLs their requests, each byte once. With `on_source_read` unset, no
+reporting work SHALL be done beyond checking that it is unset.
 
 #### Scenario: a local file read start to end
 

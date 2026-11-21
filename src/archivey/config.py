@@ -1102,7 +1102,8 @@ class ArchiveyConfig:
     (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
     <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
     a log of every region of the file read. A URL source reports every request
-    whatever this is.
+    whatever this is; over HTTP a request also reports about once per MiB of its
+    answer, a gap this step does not set.
     """
 
     if TYPE_CHECKING:

@@ -11,8 +11,8 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
   :meth:`~SourceReadReporter.request_started` and
   :meth:`~SourceReadReporter.request_ended` around each range request, and over HTTP
   :meth:`~SourceReadReporter.request_received` after each MiB of the answer. Each
-  reaches the caller. The source over a range source then reports no bytes of its own: the
-  requests already counted them.
+  reaches the caller. The source over a range source then reports no bytes of its own:
+  the requests already counted them.
 
 Nothing here runs when the callback is unset: the hooks check for a reporter first.
 
