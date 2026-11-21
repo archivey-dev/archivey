@@ -10,6 +10,10 @@ open issue per workflow, titled ``Scheduled run failing: <workflow>``:
   keeps that list in a hidden `MARKER` line. A job that the previous report's list did
   not name is marked **new**, so a second failure in a workflow that is already red does
   not read as the old one. A report with no earlier list marks nothing new.
+- **A red run whose only problem is a job no runner picked up** changes nothing. GitHub
+  cancels such a job without running a step ("The job was not acquired by Runner of
+  type hosted"), for example when macOS runners are short, and the run ends as a
+  failure although no code ran. A job that failed or timed out still reports the run.
 - **A green scheduled run** closes the issue. A green ``push`` run closes nothing: some
   workflows search for much less time after a merge than on their schedule.
 
@@ -71,6 +75,17 @@ def title(workflow: str) -> str:
 def failed_jobs(jobs: list[dict]) -> list[str]:
     """The names of the jobs that failed or timed out, sorted, each once."""
     return sorted({j["name"] for j in jobs if j.get("conclusion") in FAILED})
+
+
+def never_started(jobs: list[dict]) -> bool:
+    """Whether the run is red only because GitHub cancelled jobs before any step ran.
+
+    True when no job failed or timed out and at least one job was cancelled with no
+    steps: no runner took it, so nothing in the repository was checked.
+    """
+    if failed_jobs(jobs):
+        return False
+    return any(j.get("conclusion") == "cancelled" and not j.get("steps") for j in jobs)
 
 
 def previous_jobs(issue: dict) -> list[str] | None:
@@ -148,13 +163,13 @@ def _gh(*args: str) -> str:
     ).stdout
 
 
-def _run_jobs(run_id: str) -> list[str]:
+def _run_jobs(run_id: str) -> list[dict]:
     try:
         data = json.loads(_gh("run", "view", run_id, "--json", "jobs"))
     except (subprocess.CalledProcessError, json.JSONDecodeError):
         # Without the list the report reads as it did before jobs were named.
         return []
-    return failed_jobs(data.get("jobs") or [])
+    return data.get("jobs") or []
 
 
 def main() -> int:
@@ -179,7 +194,11 @@ def main() -> int:
         issue = json.loads(
             _gh("issue", "view", str(number), "--json", "author,body,comments")
         )
-    jobs = _run_jobs(env["RUN_ID"]) if conclusion != "success" else []
+    run_jobs = _run_jobs(env["RUN_ID"]) if conclusion != "success" else []
+    if never_started(run_jobs):
+        print(f"none: {name} (a job never got a runner; no job failed)")
+        return 0
+    jobs = failed_jobs(run_jobs)
     action = decide(
         workflow=workflow,
         conclusion=conclusion,

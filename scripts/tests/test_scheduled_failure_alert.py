@@ -69,6 +69,21 @@ def test_failed_jobs_keeps_failures_and_timeouts_only() -> None:
     assert alert.failed_jobs(jobs) == ["a", "b"]
 
 
+def test_a_job_no_runner_took_is_not_a_failure() -> None:
+    # Issue 1654: macOS runners were short, GitHub cancelled the job before any step,
+    # and the other jobs passed.
+    lost = {"name": "macos", "conclusion": "cancelled", "steps": []}
+    passed = {"name": "ubuntu", "conclusion": "success", "steps": [{"name": "x"}]}
+    assert alert.never_started([lost, passed])
+    # A real failure still reports, even next to a lost job.
+    failed = {"name": "win", "conclusion": "failure", "steps": [{"name": "x"}]}
+    assert not alert.never_started([lost, failed])
+    # A job cancelled after it started (or a run with no jobs) is not this case.
+    started = {**lost, "steps": [{"name": "x"}]}
+    assert not alert.never_started([started, passed])
+    assert not alert.never_started([])
+
+
 def test_a_new_issue_lists_the_jobs_and_keeps_the_marker() -> None:
     action = report()
     assert action.kind == "create"
@@ -154,7 +169,8 @@ if args[:2] == ["issue", "list"]:
 elif args[:2] == ["issue", "view"]:
     print(os.environ["GH_ISSUE"])
 elif args[:2] == ["run", "view"]:
-    print(json.dumps({"jobs": [{"name": "pypy3.11", "conclusion": "failure"}]}))
+    print(os.environ.get("GH_JOBS") or json.dumps(
+        {"jobs": [{"name": "pypy3.11", "conclusion": "failure"}]}))
 """
 
 
@@ -180,6 +196,14 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
     assert calls[-1][:3] == ["issue", "comment", "7"]
     assert "- **new:** `pypy3.11`" in calls[-1][-1]
+
+    env["GH_JOBS"] = json.dumps(
+        {"jobs": [{"name": "macos", "conclusion": "cancelled", "steps": []}]}
+    )
+    log.unlink()
+    subprocess.run([sys.executable, str(SCRIPT)], env=env, check=True)
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert calls[-1][:2] == ["run", "view"]
 
 
 @pytest.mark.parametrize("odd", ["name\twith\ttab", "line\nbreak", "ends --> here"])
