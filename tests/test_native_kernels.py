@@ -174,7 +174,7 @@ class _FakeLzw:
 
 class _FakeLzo1x:
     """Stands in for ``archivey_codecs.lzo1x``: Python's decoder, with the kernel's
-    exact-size contract, recorded. With ``panic`` set, decoding raises the fake
+    ``max_size`` contract, recorded. With ``panic`` set, decoding raises the fake
     panic."""
 
     calls: ClassVar[list[int]] = []
@@ -182,17 +182,14 @@ class _FakeLzo1x:
     error: ClassVar[type[Exception]] = ValueError
 
     @classmethod
-    def decompress(cls, data: bytes, out_size: int) -> bytes:
-        cls.calls.append(out_size)
+    def decompress(cls, data: bytes, *, max_size: int) -> bytes:
+        cls.calls.append(max_size)
         if cls.panic:
             raise PanicException("slice index out of range")
         try:
-            out = lzo1x_decompress_python(data, out_size)
+            return lzo1x_decompress_python(data, max_size)
         except LzoError as exc:
             raise cls.error(str(exc)) from None
-        if len(out) != out_size:
-            raise cls.error(f"the block decodes to {len(out)} bytes, not {out_size}")
-        return out
 
 
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
@@ -527,15 +524,15 @@ def test_lzo_uses_the_kernel_unless_switched_off_or_isolated(
     assert lzo1x_decompressor(frozenset(), IN_PROCESS) is lzo1x_decompress_python
 
 
-def test_an_lzo_block_shorter_than_its_limit_is_decoded_at_its_size(
+def test_an_lzo_block_shorter_than_its_limit_is_decoded_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A SquashFS block gives only the most it can decode to: the kernel refuses
-    any other size, so the block is decoded again at the size it named."""
+    """A SquashFS block gives only the most it can decode to: the kernel takes it as
+    ``max_size`` and decodes the block once."""
     _fake(monkeypatch, lzo1x=1)
     decode = lzo1x_decompressor(frozenset(), IN_PROCESS)
     assert decode(_LZO_BLOCK, 4096) == lzo1x_decompress_python(_LZO_BLOCK, 4096)
-    assert _FakeLzo1x.calls == [4096, 1000]
+    assert _FakeLzo1x.calls == [4096]
     with pytest.raises(LzoError, match="decodes to more than 999 bytes"):
         decode(_LZO_BLOCK, 999)
 
