@@ -137,11 +137,12 @@ images had no partition map. `hdiutil` marks every file with `com.apple.provenan
 
 The row in [`threat-model.md`](../threat-model.md). In short: every range and count is
 checked before it is used (§2.2); zero-fill runs make large disks from tiny files, so
-member reads are bounded by the archive-wide ratio and the extraction limits, and every run a listing decodes, a cache miss included, counts toward
-`ListingLimits.max_decoded_bytes`; the
-in-house ADC, LZFSE and LZVN decoders are bounded by their output length; B-tree leaf
-chains, folder parent chains and overflow extents are loop-checked; the open is bounded
-by the open budget. The fuzz target is `dmg` in `tests/atheris_fuzz/`.
+member reads are bounded by the archive-wide ratio and the extraction limits, and every
+run a listing decodes, a cache miss included, counts toward
+`ListingLimits.max_decoded_bytes`; the in-house ADC, LZFSE and LZVN decoders are bounded
+by their output length; B-tree leaf chains, folder parent chains and overflow extents
+are loop-checked; the open is bounded by the open budget. The fuzz target is `dmg` in
+`tests/atheris_fuzz/`.
 
 ## 5. Sharp edges
 
