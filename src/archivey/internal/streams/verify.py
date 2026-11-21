@@ -464,13 +464,20 @@ class MemberVerifier:
             if transform is not None:
                 computed = transform(computed)
             if computed != expected:
-                mismatch = CorruptionError(
+                message = (
                     f"Digest mismatch for {algorithm!r}: stored value does not match the "
                     f"decompressed content."
                 )
                 if self._digest_error is None:
-                    raise mismatch
-                raise self._digest_error(mismatch) from mismatch
+                    raise CorruptionError(message)
+                # No local keeps the mismatch: the raised error's traceback holds this
+                # frame, and a kept error must not hold itself through it.
+                mismatch = CorruptionError(message)
+                error = self._digest_error(mismatch)
+                try:
+                    raise error from mismatch
+                finally:
+                    del mismatch, error
 
     def _record_read(self, data: bytes) -> None:
         """Advance logical position and furthest-read position after a returning read.

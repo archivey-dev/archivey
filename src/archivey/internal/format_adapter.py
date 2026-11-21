@@ -399,16 +399,24 @@ class _PluginAdapter(BaseArchiveReader):
     @contextmanager
     def _unguarded(self) -> Generator[None]:
         """Let go of the handle lock this thread holds while the password provider
-        runs, and take it again after: the provider may open another member."""
+        runs, and take it again after: the provider may open another member.
+
+        The adapter fields a plugin step sets for its own calls are put back after:
+        while the lock is let go, another thread's step may set and clear them (a
+        data walk's ``_walk_step``)."""
         lock = self._handle_lock
-        if lock is None:
-            yield
-            return
-        lock.release()
+        saved = (self._walk_step, self._reopening)
         try:
-            yield
+            if lock is None:
+                yield
+                return
+            lock.release()
+            try:
+                yield
+            finally:
+                lock.acquire()
         finally:
-            lock.acquire()
+            self._walk_step, self._reopening = saved
 
     def _resolve(
         self,
@@ -857,9 +865,11 @@ class _PluginAdapter(BaseArchiveReader):
                 except BaseException:
                     # The walk waits at its yield for a winner it will never get:
                     # close it now, so its own cleanup runs before the error leaves.
+                    # A failing cleanup must not replace the error being raised.
                     close = getattr(steps, "close", None)
                     if close is not None:
-                        close()
+                        with suppress(Exception):
+                            close()
                     raise
                 try:
                     item = send(outcome)
@@ -2921,10 +2931,17 @@ class SequentialReaderAdapter(_PluginAdapter):
                     if self._decoded_in_place(decoded)
                     else None
                 )
-                stream = self._walk_handoff_locked(
-                    window,
-                    functools.partial(self._decoded_by_walk, decoded),
-                )
+                # Only the open made here may ask the provider: a reopen once the
+                # stream is handed off is a replacement open inside its read.
+                handed_off = False
+
+                def reopen(start: int) -> BinaryIO:
+                    return self._decoded_by_walk(
+                        decoded, start, allow_provider=not handed_off
+                    )
+
+                stream = self._walk_handoff_locked(window, reopen)
+                handed_off = True
             return self._decoded_parts(member, record, decoded, stream)
         shared = record.layer.shared
         assert shared is not None
@@ -2966,7 +2983,8 @@ class SequentialReaderAdapter(_PluginAdapter):
                     # The caller asked for seekable members: a forward seek reads
                     # through, and a backward one walks again to the member.
                     stream = RespawnStream(
-                        lambda: self._decoded_by_walk(decoded, 0),
+                        # A replacement open: it never asks the provider.
+                        lambda: self._decoded_by_walk(decoded, 0, allow_provider=False),
                         stream,
                         size=member.size,
                         what=f"{self._format.display_name} member data",
@@ -3032,11 +3050,15 @@ class SequentialReaderAdapter(_PluginAdapter):
             and decoded.consumed == 0
         )
 
-    def _decoded_by_walk(self, decoded: _Decoded, start: int) -> BinaryIO:
+    def _decoded_by_walk(
+        self, decoded: _Decoded, start: int, *, allow_provider: bool = True
+    ) -> BinaryIO:
         """``decoded``'s data from ``start``, reached by a walk of its own (random
         access): the idle one, when it is not past the member yet, or one from the
         start of the archive. The members before it are read past, as the listing
-        walk does: their decoded data drained, their stored data skipped."""
+        walk does: their decoded data drained, their stored data skipped. With
+        ``allow_provider=False`` (a replacement open) a request the walk yields gets
+        its saved winner only."""
         with self._data_walk_lock:
             data_walk, self._idle_data_walk = self._idle_data_walk, None
         if data_walk is not None and data_walk.next_index > decoded.index:
@@ -3061,7 +3083,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             if data_walk is None:
                 walk = _Walk()
                 data_walk = _DataWalk(walk, self._new_walk(walk))
-            target = self._walk_to_decoded(data_walk, decoded)
+            target = self._walk_to_decoded(
+                data_walk, decoded, allow_provider=allow_provider
+            )
             data_walk.current = target
             data_walk.next_index = decoded.index + 1
             if start:
@@ -3075,7 +3099,9 @@ class SequentialReaderAdapter(_PluginAdapter):
                 self._close_data_walk(data_walk)
             raise
 
-    def _walk_to_decoded(self, data_walk: _DataWalk, decoded: _Decoded) -> _Decoded:
+    def _walk_to_decoded(
+        self, data_walk: _DataWalk, decoded: _Decoded, *, allow_provider: bool = True
+    ) -> _Decoded:
         """Step ``data_walk`` to the member ``decoded`` describes and return its data
         as this walk's reader hands it over."""
         walk = data_walk.walk
@@ -3085,7 +3111,9 @@ class SequentialReaderAdapter(_PluginAdapter):
         index = data_walk.next_index
         while True:
             with boundary, guard:
-                span = self._walk_next(data_walk.spans, _REWALK)
+                span = self._walk_next(
+                    data_walk.spans, _REWALK, allow_provider=allow_provider
+                )
             if span is _END:
                 raise CorruptionError(
                     f"walking the archive again ended before {quoted(decoded.name)}"

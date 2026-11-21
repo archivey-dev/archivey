@@ -149,6 +149,9 @@ class Calls:
 
 class ToyXReader(IndexedReader[_Locator]):
     use_full_check: ClassVar[bool] = True
+    # Every password is rejected while this is set: a saved winner that no longer
+    # unlocks the unit.
+    reject_all: ClassVar[bool] = False
     rounds: ClassVar[int] = 0
     calls: ClassVar[Calls] = Calls()
     listing_unlocked: ClassVar[PasswordConfirmVerdict | None] = None
@@ -191,6 +194,8 @@ class ToyXReader(IndexedReader[_Locator]):
             self.calls.check.append(password)
             if self.rounds:
                 self._context.charge_key_derivation(self.rounds)
+            if self.reject_all:
+                return None, REJECTED
             if not self._checked:
                 return _key(password), INCONCLUSIVE
             if _tag(password) != locator.tag:
@@ -253,6 +258,7 @@ def toyx() -> Iterator[type[ToyXReader]]:
         ToyXReader.calls = Calls()
         yield ToyXReader
     ToyXReader.use_full_check = True
+    ToyXReader.reject_all = False
     ToyXReader.rounds = 0
     ToyXReader.listing_unlocked = None
     ToyXReader.archive_encrypted = False
@@ -675,6 +681,11 @@ def build_toyw(members: list[tuple[str, bytes]], password: bytes) -> bytes:
 
 
 class ToyWReader(SequentialReader):
+    # Every password is rejected while this is set.
+    reject_all: ClassVar[bool] = False
+    # Charge metadata once the walk has its key: a step that needs the walk's state.
+    charge_after_unlock: ClassVar[bool] = False
+
     def __init__(self, context: ReaderContext) -> None:
         self._context = context
 
@@ -684,11 +695,13 @@ class ToyWReader(SequentialReader):
         tag = stream.read_exact(4)
 
         def check(password: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
-            if _tag(password) != tag:
+            if self.reject_all or _tag(password) != tag:
                 return None, REJECTED
             return _key(password), CONFIRMED
 
         key, verdict = yield NeedsPassword("the TOYW archive", check)
+        if self.charge_after_unlock:
+            self._context.charge_metadata(10, what="header")
         pos = 0
 
         def read(n: int) -> bytes:
@@ -727,6 +740,8 @@ def toyw() -> Iterator[None]:
     with registration_scope():
         register_format(ToyWHandler)
         yield
+    ToyWReader.reject_all = False
+    ToyWReader.charge_after_unlock = False
 
 
 def test_walk_request_resolves(toyw: None, tmp_path: Path) -> None:
@@ -797,6 +812,25 @@ def test_walk_generator_is_closed_on_failure(tmp_path: Path) -> None:
         ):
             reader.members()
     assert closed == [True]
+
+
+def test_a_failing_walk_cleanup_keeps_the_password_error(tmp_path: Path) -> None:
+    class Messy(ToyWReader):
+        def walk(self, stream: ForwardStream) -> Iterator[Any]:
+            try:
+                yield from super().walk(stream)
+            finally:
+                raise RuntimeError("cleanup failed")
+
+    class Handler(ToyWHandler):
+        def open_sequential(self, context: ReaderContext) -> ToyWReader:
+            return Messy(context)
+
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    with registration_scope():
+        register_format(Handler)
+        with pytest.raises(EncryptionError, match="Wrong password"):
+            open_archive(path, password="no")
 
 
 def test_provider_reentry_during_a_paused_walk(tmp_path: Path) -> None:
@@ -985,3 +1019,232 @@ def test_a_known_good_password_is_rechecked_when_a_provider_can_answer(
         with open_archive(_one(tmp_path, checked=False), password=provider) as reader:
             assert reader.read("a.txt") == _SECRET
     assert next(answers, None) is None
+
+
+# --- replacement opens never ask the provider ----------------------------------------------
+
+
+def test_indexed_respawn_with_a_failing_saved_winner_does_not_ask(
+    toyx: type[ToyXReader], tmp_path: Path
+) -> None:
+    asked: list[int] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asked.append(request.attempt)
+        return b"right"
+
+    with (
+        open_archive(
+            _one(tmp_path), password=provider, seekable_members=True
+        ) as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.read() == _SECRET
+        toyx.reject_all = True
+        with pytest.raises(EncryptionError, match="Wrong password"):
+            stream.seek(0)
+            stream.read()
+    assert asked == [1]
+
+
+def test_sequential_respawn_with_a_failing_saved_winner_does_not_ask(
+    toyw: None, tmp_path: Path
+) -> None:
+    """A backward seek on data the walk decodes walks again, and that walk is a
+    replacement open: its request gets the saved winner only."""
+    path = _write(
+        tmp_path, build_toyw([("a", b"alpha"), ("b", b"beta")], b"pw"), "t.toyw"
+    )
+    asked: list[int] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asked.append(request.attempt)
+        return b"pw"
+
+    with open_archive(path, password=provider, seekable_members=True) as reader:
+        reader.members()
+        with reader.open("b") as stream:
+            assert stream.read() == b"beta"
+            ToyWReader.reject_all = True
+            with pytest.raises(EncryptionError, match="Wrong password"):
+                stream.seek(0)
+                stream.read()
+    assert asked == [1]
+
+
+def test_a_provider_call_puts_the_step_state_back(toyw: None, tmp_path: Path) -> None:
+    """The handle lock is let go while the provider runs, so another thread's plugin
+    step may set and clear the adapter's step fields meanwhile. They are this step's
+    again after. (A listing in progress keeps other threads' opens waiting, and a
+    data walk never asks the provider, so no public call interleaves today.)"""
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    with open_archive(path, password="pw", concurrent_operations=True) as reader:
+        lock = reader._handle_lock
+        assert lock is not None
+        with lock:
+            reader._walk_step = "this step"
+            reader._reopening = ("this", "step")
+            with reader._unguarded():
+                # Another thread's step, ending: its ``finally`` clears them.
+                reader._walk_step = None
+                reader._reopening = None
+            assert reader._walk_step == "this step"
+            assert reader._reopening == ("this", "step")
+            reader._walk_step = None
+            reader._reopening = None
+
+
+# --- the rest of the spec rows -----------------------------------------------------------
+
+
+class _LibraryError(Exception):
+    """An exception from the plugin's own library, which it translates."""
+
+
+def _translated_handler(reader_cls: type[ToyXReader]) -> type[ToyXHandler]:
+    class Translating(reader_cls):  # type: ignore[valid-type,misc]
+        def translate_exception(self, exc: Exception) -> Any:
+            if isinstance(exc, _LibraryError):
+                return CorruptionError(f"translated: {exc}")
+            return None
+
+    class Handler(ToyXHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyXReader:
+            return Translating(source, context)
+
+    return Handler
+
+
+def test_a_check_error_goes_through_translate_exception(tmp_path: Path) -> None:
+    class Broken(ToyXReader):
+        def _check(self, locator: _Locator) -> Callable[[bytes], Any]:
+            def check(password: bytes) -> Any:
+                raise _LibraryError("bad key schedule")
+
+            return check
+
+    with registration_scope():
+        register_format(_translated_handler(Broken))
+        with (
+            open_archive(_one(tmp_path), password=["a", "right"]) as reader,
+            pytest.raises(CorruptionError, match="translated: bad key schedule"),
+        ):
+            reader.read("a.txt")
+
+
+def test_a_then_error_goes_through_translate_exception(tmp_path: Path) -> None:
+    class Broken(ToyXReader):
+        def open_member(self, member: ArchiveMember, locator: _Locator) -> Any:
+            request = super().open_member(member, locator)
+            assert isinstance(request, NeedsPassword)
+
+            def then(key: bytes, verdict: PasswordConfirmVerdict) -> Any:
+                raise _LibraryError("cannot start the cipher")
+
+            return NeedsPassword(request.what, request.check, then=then)
+
+    with registration_scope():
+        register_format(_translated_handler(Broken))
+        with (
+            open_archive(_one(tmp_path), password="right") as reader,
+            pytest.raises(CorruptionError, match="translated: cannot start the cipher"),
+        ):
+            reader.read("a.txt")
+
+
+def test_an_encryption_error_from_check_is_raised_as_it_is(tmp_path: Path) -> None:
+    class Broken(ToyXReader):
+        def _check(self, locator: _Locator) -> Callable[[bytes], Any]:
+            def check(password: bytes) -> Any:
+                raise EncryptionError("unsupported cipher suite")
+
+            return check
+
+    class Handler(ToyXHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyXReader:
+            return Broken(source, context)
+
+    with registration_scope():
+        register_format(Handler)
+        with (
+            open_archive(_one(tmp_path), password=["a", "right"]) as reader,
+            pytest.raises(EncryptionError, match="unsupported cipher suite"),
+        ):
+            reader.read("a.txt")
+
+
+def test_full_check_inconclusive_for_both_takes_the_first(tmp_path: Path) -> None:
+    calls: list[bytes] = []
+
+    class Weak(ToyXReader):
+        def _full_check(self, locator: _Locator) -> Callable[[bytes], Any]:
+            def full_check(password: bytes) -> Any:
+                calls.append(password)
+                return _key(password), INCONCLUSIVE
+
+            return full_check
+
+    class Handler(ToyXHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyXReader:
+            return Weak(source, context)
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(
+            _one(tmp_path, checked=False), password=["right", "b"]
+        ) as reader:
+            assert reader.read("a.txt") == _SECRET
+            # Nothing confirmed it, and another password could still be the one.
+            assert reader._passwords._known_good == []
+    assert calls == [b"right", b"b"]
+
+
+def test_no_full_check_first_inconclusive_is_not_promoted(
+    toyx: type[ToyXReader], tmp_path: Path
+) -> None:
+    toyx.use_full_check = False
+    with open_archive(_one(tmp_path, checked=False), password=["right", "b"]) as reader:
+        assert reader.read("a.txt") == _SECRET
+        assert reader._passwords._known_good == []
+
+
+def test_two_requests_in_one_walk_keep_their_own_attempts(tmp_path: Path) -> None:
+    """Each request has its own tried set and attempt count: the second request's
+    provider call is its own attempt 1."""
+
+    class TwoKeys(ToyWReader):
+        def walk(self, stream: ForwardStream) -> Iterator[Any]:
+            if stream.read_exact(len(_WMAGIC)) != _WMAGIC:
+                raise CorruptionError("not a TOYW archive")
+            for _ in range(2):
+                tag = stream.read_exact(4)
+
+                def check(
+                    password: bytes, tag: bytes = tag
+                ) -> tuple[bytes | None, PasswordConfirmVerdict]:
+                    if _tag(password) != tag:
+                        return None, REJECTED
+                    return password, CONFIRMED
+
+                yield NeedsPassword("a TOYW key", check)
+            member = ArchiveMember(type=MemberType.FILE, name="a", size=1)
+            yield MemberSpan(member, data=io.BytesIO(b"a"))
+
+    class Handler(ToyWHandler):
+        def open_sequential(self, context: ReaderContext) -> ToyWReader:
+            return TwoKeys(context)
+
+    path = _write(tmp_path, _WMAGIC + _tag(b"one") + _tag(b"two"), "t.toyw")
+    answers = iter([b"one", b"two"])
+    asked: list[int] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asked.append(request.attempt)
+        return next(answers, None)
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(path, password=provider) as reader:
+            assert reader.read("a") == b"a"
+    # The second request tried the known-good "one" first, then asked.
+    assert asked == [1, 1]

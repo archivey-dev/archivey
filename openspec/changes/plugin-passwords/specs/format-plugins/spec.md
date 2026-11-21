@@ -121,24 +121,26 @@ before returning when the total would pass the cap, leaving the total unchanged.
 
 archivey SHALL run `check`, `full_check` and `then` under the same scoped handle guard
 and adapter state as the plugin call that handed over the request, entered and left
-around each callback. Only the provider SHALL run with no archivey lock held: before
-each provider call archivey SHALL leave every guard and physical lock it holds for the
-request, including an outer frame's (listing finalization reading link targets), and
-SHALL keep the request's ownership as a record instead: the active worker for a returned
-request, the paused walk for a yielded one. Every same-reader entry that would wait on
-that owner (listing, iteration, member `open()`, `stream_members()`, `close()`,
-link-target reads) SHALL raise `ArchiveyUsageError` at once when called from the
-provider's own thread or a context copied from it, and SHALL wait for the answer when
-called from any other thread. No plugin call SHALL be repeated to try a provider answer.
-Retry state SHALL live on the request. When the adapter calls a hook again on its own (a
-data walk, a respawn, a rewalk), it SHALL try first the saved winner of each request,
-keyed by the plugin call plus the request's index in that call's chain. archivey SHALL
-call the provider only on a first open of a member (the caller's `open()`, a data walk
-it starts, the first open of a lazy `stream_members()` or extraction handle), never on a
-replacement open of an already unlocked stream, and SHALL give a respawned stream the
-new `MemberData.unlocked` verdict. When resolution fails for a yielded request, archivey
-SHALL close the generator and the error SHALL end the walk. Two workers needing the
-provider at once SHALL be served one after the other.
+around each callback. Before each provider call archivey SHALL leave the handle guard it
+holds for the request and take it again after the answer, putting back the adapter state
+the request's step had set. A lock that orders the request against other work on the
+reader (the walk lock a listing or a paused walk holds, an outer frame's, such as
+listing finalization reading link targets) MAY stay held: the request's owner is then
+the thread holding it, the active worker for a returned request or the paused walk for a
+yielded one. Every same-reader entry that would wait on that owner (listing, iteration,
+member `open()`, `stream_members()`, `close()`, link-target reads) SHALL raise
+`ArchiveyUsageError` at once when called from the provider's own thread or a context
+copied from it, and SHALL wait for the answer when called from any other thread. No
+plugin call SHALL be repeated to try a provider answer. Retry state SHALL live on the
+request. When the adapter calls a hook again on its own (a data walk, a respawn, a
+rewalk), it SHALL try first the saved winner of each request, keyed by the plugin call
+plus the request's index in that call's chain. archivey SHALL call the provider only on
+a first open of a member (the caller's `open()`, a data walk it starts, the first open
+of a lazy `stream_members()` or extraction handle), never on a replacement open of an
+already unlocked stream, and SHALL give a respawned stream the new `MemberData.unlocked`
+verdict. When resolution fails for a yielded request, archivey SHALL close the generator
+and the error SHALL end the walk. Two workers needing the provider at once SHALL be
+served one after the other.
 
 #### Scenario: concurrency
 

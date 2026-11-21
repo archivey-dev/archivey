@@ -346,10 +346,6 @@ ResultT = TypeVar("ResultT")
 """What the plugin call returns once the unit is unlocked: the reader, or a
 :class:`MemberData`."""
 
-PasswordCheck = Callable[[bytes], "tuple[UnlockedT | None, PasswordConfirmVerdict]"]
-"""Tries one password: returns what it unlocked and how sure the check is, or
-``(None, PasswordConfirmVerdict.REJECTED)`` for a wrong one."""
-
 
 @dataclass(frozen=True)
 class NeedsPassword(Generic[UnlockedT, ResultT]):
@@ -372,10 +368,12 @@ class NeedsPassword(Generic[UnlockedT, ResultT]):
       with no ``then``, and get ``(unlocked, verdict)`` back from the ``yield``:
       ``params, verdict = yield NeedsPassword(...)``.
 
-    archivey raises the errors, the same for every format: ``EncryptionError``
-    "{what} is encrypted: pass password= to read it" when no password was given, and
-    "Wrong password for {what}" when every one was rejected. An exception from
-    ``check``, ``full_check`` or ``then`` ends the search and goes through
+    archivey raises the errors, the same for every format, all ``EncryptionError``:
+    "{what} is encrypted: pass password= to read it" when no password was given; "Wrong
+    password for {what}" when ``check`` rejected every one; and "Wrong password for
+    {what}, or its data is damaged" when ``full_check`` rejected at least one, since a
+    checksum fails under the right password too when the unit is damaged. An exception
+    from ``check``, ``full_check`` or ``then`` ends the search and goes through
     ``translate_exception`` like any other.
     """
 
@@ -395,8 +393,9 @@ class NeedsPassword(Generic[UnlockedT, ResultT]):
     ) = None
     """A slower check that settles a password ``check`` left ``INCONCLUSIVE``: decode
     the whole unit and test its checksum, say. archivey runs it when several passwords
-    given pass ``check``, and on each provider answer that passes ``check``. It exists
-    only where the reader can read the unit again."""
+    given pass ``check``, when one alone does while the provider could still be
+    asked, and on each provider answer that passes ``check``. It exists only where the
+    reader can read the unit again."""
 
     member: ArchiveMember | None = None
     """The member the unit belongs to, which the password provider is shown
