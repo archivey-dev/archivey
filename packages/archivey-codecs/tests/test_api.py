@@ -39,6 +39,7 @@ def test_error_family() -> None:
 def test_kernels_table() -> None:
     assert KERNELS == {
         "arm64": 1,
+        "bcj2": 1,
         "crc16_arc": 1,
         "lzo1x": 1,
         "lzw": 1,

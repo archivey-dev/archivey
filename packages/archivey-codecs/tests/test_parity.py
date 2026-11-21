@@ -10,6 +10,7 @@ archivey's hook.
 
 from __future__ import annotations
 
+import io
 import os
 import random
 import sys
@@ -33,6 +34,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.lha_reader import crc16 as lha_crc16
 from archivey.internal.backends.zipcrypto import ZipCryptoKeys
 from archivey.internal.streams.codecs.arm64_filter import arm64_decode
+from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.internal.streams.codecs.lzo_decoder import (
     LzoError,
     lzo1x_decompress_python,
@@ -353,6 +355,67 @@ def test_lzx_random_input() -> None:
         py = lzx_python(chunks, sizes, window)
         rs = lzx_rust(chunks, sum(sizes), window, rng)
         assert py == rs, case
+
+
+# ── BCJ2 ───────────────────────────────────────────────────────────────────────────
+
+
+def bcj2_python(streams: tuple[bytes, ...], size: int):
+    """The Python stream's output, with the bytes decoded before an error."""
+    stream = Bcj2DecoderStream(*(io.BytesIO(s) for s in streams), unpack_size=size)
+    try:
+        return stream.read(size), ("ok", None)
+    except Exception as exc:  # noqa: BLE001
+        partial = bytes(stream._pending)  # noqa: SLF001 - what decoded before it
+        return partial, outcome(lambda e=exc: (_ for _ in ()).throw(e))
+
+
+def bcj2_rust(streams: tuple[bytes, ...], size: int, rng: random.Random):
+    """The Rust decoder's output, read in random amounts and saved and restored (onto
+    new streams placed at ``total_in``) at random points."""
+    bcj2 = archivey_codecs.bcj2
+    out = bytearray()
+    try:
+        d = bcj2.Decompressor(*(io.BytesIO(s) for s in streams), out_size=size)
+        for _ in range(100_000):
+            if d.eof:
+                break
+            out += d.read(rng.choice((1, 7, 4096, 70_000, -1)))
+            if rng.random() < 0.1:
+                try:
+                    state = d.getstate()
+                except ValueError:
+                    continue  # an error waits for the next read()
+                total_in, total_out = d.total_in, d.total_out
+                fresh = [io.BytesIO(s) for s in streams]
+                for f, at in zip(fresh, total_in, strict=True):
+                    f.seek(at)
+                d = bcj2.Decompressor.from_state(state, *fresh)
+                assert (d.total_in, d.total_out) == (total_in, total_out)
+    except Exception as exc:  # noqa: BLE001
+        return bytes(out), outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    assert d.read() == b""
+    return bytes(out), ("ok", None)
+
+
+def test_bcj2_parity() -> None:
+    rng = random.Random(8)
+    for case in range(max(20, SEEDS // 5)):
+        size = rng.randint(0, 200_000)
+        main = bytes(
+            rng.choice(b"\xe8\xe9\x0f\x85\x80")
+            if rng.random() < 0.2
+            else rng.randrange(256)
+            for _ in range(size)
+        )
+        call = rng.randbytes(rng.randint(0, 4000) * 4 + rng.choice((0, 0, 1, 3)))
+        jump = rng.randbytes(rng.randint(0, 4000) * 4)
+        rc = b"\0" + rng.randbytes(rng.randint(0, 20_000))
+        if case % 4 == 0:
+            rc = rng.randbytes(rng.randint(0, 6))
+        out_size = rng.choice((size, size + 1000, max(0, size - 50), size * 2))
+        streams = (main, call, jump, rc)
+        assert bcj2_rust(streams, out_size, rng) == bcj2_python(streams, out_size), case
 
 
 # ── Unix compress (.Z) LZW ─────────────────────────────────────────────────────────

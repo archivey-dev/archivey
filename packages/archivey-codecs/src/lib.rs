@@ -51,6 +51,7 @@ pyo3::create_exception!(
 /// attribute name or error class takes a new key instead.
 const KERNELS: &[(&str, u32)] = &[
     ("arm64", 1),
+    ("bcj2", 1),
     ("crc16_arc", 1),
     ("lzo1x", 1),
     ("lzw", 1),
@@ -520,27 +521,89 @@ impl ZipCryptoDecryptor {
 #[derive(Clone)]
 struct LzwDecompressor {
     inner: lzw::LzwState,
-    /// Output `flush()` decoded but has not returned yet.
-    flushed: Option<Vec<u8>>,
-    eof: bool,
-    clear_offsets: Vec<(i64, i64)>,
-    total_in: u64,
+    /// Decoded output past the last call's `max_length`, from `held_pos` on: one
+    /// dictionary entry can run past the cap.
+    held: Vec<u8>,
+    held_pos: usize,
+    flushed: bool,
+    /// The header is read from the stream, so offsets count it.
+    header_in_stream: bool,
+    /// Where the last CLEAR's segment ended: (input, output) offsets.
+    clear_at: (u64, u64),
+    clear_offsets: Vec<(u64, u64)>,
+    /// Bytes passed to `decompress()`.
+    fed: u64,
     total_out: u64,
 }
 
 impl LzwDecompressor {
-    fn take(&mut self, max_length: i64) -> Vec<u8> {
-        let pending = self.flushed.get_or_insert_with(Vec::new);
-        let n = if max_length < 0 {
-            pending.len()
-        } else {
-            pending.len().min(max_length as usize)
-        };
-        let out: Vec<u8> = pending.drain(..n).collect();
-        if pending.is_empty() {
-            self.eof = true;
+    fn held_len(&self) -> usize {
+        self.held.len() - self.held_pos
+    }
+
+    fn note_units(&mut self, units: lzw::Units) {
+        self.clear_offsets.clear();
+        if self.clear_at == (0, 0) && self.header_in_stream && self.inner.header_params.is_some()
+        {
+            self.clear_at = (3, 0);
         }
-        out
+        for (decomp, comp) in units {
+            self.clear_at.0 += comp as u64;
+            self.clear_at.1 += decomp as u64;
+            self.clear_offsets.push(self.clear_at);
+        }
+    }
+
+    /// Up to `max_length` bytes: held output first, then what the kernel decodes.
+    fn produce(&mut self, py: Python<'_>, max_length: i64, eof: bool) -> PyResult<Vec<u8>> {
+        let want = if max_length < 0 {
+            usize::MAX
+        } else {
+            max_length as usize
+        };
+        let n = self.held_len().min(want);
+        let mut out = self.held[self.held_pos..self.held_pos + n].to_vec();
+        self.held_pos += n;
+        if out.len() < want && self.held_len() == 0 {
+            let budget = if max_length < 0 {
+                -1
+            } else {
+                (want - out.len()) as i64
+            };
+            let inner = &mut self.inner;
+            let got = if eof {
+                inner.flush()
+            } else {
+                py.detach(|| inner.feed(&[], budget))
+            };
+            match got {
+                Ok((more, units)) => {
+                    self.note_units(units);
+                    out.extend_from_slice(&more);
+                }
+                Err(e) => {
+                    self.clear_offsets.clear();
+                    if out.is_empty() {
+                        return Err(to_py0(e));
+                    }
+                    // Give back the held bytes first; the kernel raises again.
+                    self.held_pos -= out.len();
+                    return self.produce(py, max_length, false);
+                }
+            }
+            if out.len() > want {
+                self.held = out.split_off(want);
+                self.held_pos = 0;
+            }
+        } else {
+            self.clear_offsets.clear();
+        }
+        if self.held_pos == self.held.len() {
+            self.held.clear();
+            self.held_pos = 0;
+        }
+        self.total_out += out.len() as u64;
+        Ok(out)
     }
 }
 
@@ -558,12 +621,22 @@ impl LzwDecompressor {
                 "give max_width and block_mode together (a stream without its header), or neither",
             ));
         }
+        if let Some(w) = max_width {
+            if !(9..=16).contains(&w) {
+                return Err(PyValueError::new_err(format!(
+                    "max_width {w} is outside 9 to 16"
+                )));
+            }
+        }
         Ok(LzwDecompressor {
             inner: lzw::LzwState::new(max_width, block_mode, nine_bit_widens),
-            flushed: None,
-            eof: false,
+            held: Vec::new(),
+            held_pos: 0,
+            flushed: false,
+            header_in_stream: max_width.is_none(),
+            clear_at: (0, 0),
             clear_offsets: Vec::new(),
-            total_in: 0,
+            fed: 0,
             total_out: 0,
         })
     }
@@ -575,21 +648,24 @@ impl LzwDecompressor {
         data: &Bound<'py, PyAny>,
         max_length: i64,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        if self.eof {
+        if self.eof() {
             return Err(PyEOFError::new_err("End of stream already reached"));
         }
-        if self.flushed.is_some() {
+        if self.flushed {
             return Err(PyValueError::new_err("decompress() after flush()"));
         }
         let data = input(data)?;
-        let slice: &[u8] = &data;
-        let inner = &mut self.inner;
-        let (out, units) = py
-            .detach(|| inner.feed(slice, max_length))
-            .map_err(to_py0)?;
-        self.total_in += data.len() as u64;
-        self.total_out += out.len() as u64;
-        self.clear_offsets = units;
+        if !data.is_empty() {
+            // feed() with no room decodes nothing: it only queues the input.
+            let slice: &[u8] = &data;
+            let inner = &mut self.inner;
+            let (out, units) = py.detach(|| inner.feed(slice, 0)).map_err(to_py0)?;
+            debug_assert!(out.is_empty() || !units.is_empty() || true);
+            self.held.extend_from_slice(&out);
+            self.note_units(units);
+            self.fed += data.len() as u64;
+        }
+        let out = self.produce(py, max_length, false)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -597,15 +673,9 @@ impl LzwDecompressor {
     /// `max_length` bytes a call; `eof` is true once all of it is returned.
     #[pyo3(signature = (max_length = -1))]
     fn flush<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
-        if self.flushed.is_none() {
-            let (out, units) = self.inner.flush().map_err(to_py0)?;
-            self.flushed = Some(out);
-            self.clear_offsets = units;
-        } else {
-            self.clear_offsets = Vec::new();
-        }
-        let out = self.take(max_length);
-        self.total_out += out.len() as u64;
+        let first = !self.flushed;
+        self.flushed = true;
+        let out = self.produce(py, max_length, first)?;
         Ok(PyBytes::new(py, &out))
     }
 
@@ -613,14 +683,68 @@ impl LzwDecompressor {
         self.clone()
     }
 
+    /// The decoder's state (design D3): the dictionary, the bits of a partly read
+    /// code and the output not yet returned; none of the input it holds. Feed the
+    /// restored decoder from `total_in`.
+    fn getstate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if self.flushed {
+            return Err(PyValueError::new_err("getstate() after flush()"));
+        }
+        if self.inner.failed() {
+            return Err(PyValueError::new_err("getstate() after an error"));
+        }
+        let mut out = state_header("lzw");
+        self.inner.save(&mut out);
+        state::put_bytes(&mut out, &self.held[self.held_pos..]);
+        out.push(u8::from(self.header_in_stream));
+        state::put_u64(&mut out, self.clear_at.0);
+        state::put_u64(&mut out, self.clear_at.1);
+        state::put_u64(&mut out, self.total_in());
+        state::put_u64(&mut out, self.total_out);
+        Ok(PyBytes::new(py, &out))
+    }
+
+    #[classmethod]
+    fn from_state(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        state: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let state = input(state)?;
+        let head = StateReader::open("lzw", &state)?;
+        let mut r = head.rest("lzw");
+        let inner = lzw::LzwState::load(&mut r).map_err(to_py0)?;
+        let held = r.bytes(1 << 16).map_err(to_py0)?.to_vec();
+        let header_in_stream = r.bool().map_err(to_py0)?;
+        let clear_at = (r.u64().map_err(to_py0)?, r.u64().map_err(to_py0)?);
+        let fed = r.u64().map_err(to_py0)?;
+        let total_out = r.u64().map_err(to_py0)?;
+        r.finish().map_err(to_py0)?;
+        if clear_at.0 > fed || clear_at.1 > total_out + held.len() as u64 {
+            return Err(CorruptDataError::new_err(
+                "the lzw state holds offsets that do not agree",
+            ));
+        }
+        Ok(LzwDecompressor {
+            inner,
+            held,
+            held_pos: 0,
+            flushed: false,
+            header_in_stream,
+            clear_at,
+            clear_offsets: Vec::new(),
+            fed,
+            total_out,
+        })
+    }
+
     #[getter]
     fn eof(&self) -> bool {
-        self.eof
+        self.flushed && self.inner.is_finished() && self.held_len() == 0
     }
 
     #[getter]
     fn needs_input(&self) -> bool {
-        self.flushed.is_none() && self.inner.needs_input()
+        !self.flushed && self.held_len() == 0 && self.inner.needs_input()
     }
 
     #[getter]
@@ -647,15 +771,17 @@ impl LzwDecompressor {
     }
 
     /// The CLEAR codes the last call passed, as (input offset, output offset) pairs
-    /// from the stream's start: points where a decode can restart.
+    /// counted as `total_in` and `total_out` count: where a decoder made with this
+    /// stream's `header_params` can start, with a fresh dictionary.
     #[getter]
-    fn clear_offsets(&self) -> Vec<(i64, i64)> {
+    fn clear_offsets(&self) -> Vec<(u64, u64)> {
         self.clear_offsets.clone()
     }
 
+    /// Input bytes used: those passed in, less what the decoder holds undecoded.
     #[getter]
     fn total_in(&self) -> u64 {
-        self.total_in
+        self.fed - self.inner.held_input() as u64
     }
 
     #[getter]
@@ -1011,74 +1137,233 @@ impl LzxDecompressor {
     }
 }
 
+// ── BCJ2 ────────────────────────────────────────────────────────────────────────────
+
+/// The four input streams' `read` methods, counting the bytes each returned.
 struct PyStreams<'a, 'py> {
     reads: &'a [Bound<'py, PyAny>; 4],
+    counts: &'a mut [u64; 4],
 }
 
 impl bcj2::Streams for PyStreams<'_, '_> {
     type Error = PyErr;
     fn read(&mut self, which: usize, n: usize) -> Result<Vec<u8>, PyErr> {
         let data = self.reads[which].call1((n,))?;
-        if let Ok(b) = data.cast::<PyBytes>() {
-            return Ok(b.as_bytes().to_vec());
+        let data = match data.cast::<PyBytes>() {
+            Ok(b) => b.as_bytes().to_vec(),
+            Err(_) => data.extract::<Vec<u8>>()?,
+        };
+        if data.len() > n {
+            return Err(PyValueError::new_err(format!(
+                "read({n}) returned {} bytes",
+                data.len()
+            )));
         }
-        data.extract::<Vec<u8>>()
+        self.counts[which] += data.len() as u64;
+        Ok(data)
     }
 }
 
-/// The BCJ2 decode loop. `reads` are the four streams' `read` methods: main, call,
-/// jump, rc. On an error, the bytes decoded before it wait in `take_partial()`.
-#[pyclass(module = "archivey_codecs._codecs", name = "_Bcj2Core")]
-struct Bcj2Core {
+/// 7-Zip's BCJ2 x86 filter: four input streams (main, call, jump, rc) give one
+/// output of exactly `out_size` bytes, read with `read(max_length)`.
+///
+/// The streams are objects with `read(n)`. An input that ends before the output is
+/// complete raises `TruncatedDataError` naming the stream, and bytes left in main,
+/// call or jump after the last output byte raise `CorruptDataError`. The bytes
+/// decoded before an error are returned first; the error comes with the next call.
+/// No `copy()`: two copies would share the streams' read positions.
+#[pyclass(module = "archivey_codecs.bcj2", name = "Decompressor")]
+struct Bcj2Decompressor {
     inner: bcj2::Bcj2,
     reads: [Py<PyAny>; 4],
-    partial: Vec<u8>,
+    out_size: u64,
+    /// Decoded output not yet returned, from `pending_pos` on.
+    pending: Vec<u8>,
+    pending_pos: usize,
+    /// Bytes each stream's `read` returned (plus the restored `total_in`).
+    counts: [u64; 4],
+    /// The end check passed.
+    checked: bool,
+    /// The error that stopped decoding, raised once the bytes before it are returned.
+    failure: Option<PyErr>,
+    total_out: u64,
+}
+
+impl Bcj2Decompressor {
+    fn build(streams: [&Bound<'_, PyAny>; 4], inner: bcj2::Bcj2, out_size: u64) -> PyResult<Self> {
+        let mut reads = Vec::with_capacity(4);
+        for s in streams {
+            reads.push(s.getattr("read")?.unbind());
+        }
+        let reads: [Py<PyAny>; 4] = reads
+            .try_into()
+            .map_err(|_| PyValueError::new_err("BCJ2 takes four streams"))?;
+        Ok(Bcj2Decompressor {
+            inner,
+            reads,
+            out_size,
+            pending: Vec::new(),
+            pending_pos: 0,
+            counts: [0; 4],
+            checked: false,
+            failure: None,
+            total_out: 0,
+        })
+    }
+
+    fn step(&mut self, py: Python<'_>) {
+        let reads = [
+            self.reads[0].bind(py).clone(),
+            self.reads[1].bind(py).clone(),
+            self.reads[2].bind(py).clone(),
+            self.reads[3].bind(py).clone(),
+        ];
+        let mut streams = PyStreams {
+            reads: &reads,
+            counts: &mut self.counts,
+        };
+        let left = self.out_size - self.inner.decoded();
+        if left == 0 {
+            match self.inner.check_inputs_finished(&mut streams) {
+                Ok(()) => self.checked = true,
+                Err(e) => self.failure = Some(to_py(e)),
+            }
+            return;
+        }
+        if self.pending_pos > 0 {
+            self.pending.drain(..self.pending_pos);
+            self.pending_pos = 0;
+        }
+        if let Err(e) = self
+            .inner
+            .decode_block(left, &mut self.pending, &mut streams)
+        {
+            self.failure = Some(to_py(e));
+        }
+    }
 }
 
 #[pymethods]
-impl Bcj2Core {
+impl Bcj2Decompressor {
     #[new]
-    fn new(main: Py<PyAny>, call: Py<PyAny>, jump: Py<PyAny>, rc: Py<PyAny>) -> Self {
-        Bcj2Core {
-            inner: bcj2::Bcj2::new(),
-            reads: [main, call, jump, rc],
-            partial: Vec::new(),
-        }
+    #[pyo3(signature = (main, call, jump, rc, *, out_size))]
+    fn new(
+        main: &Bound<'_, PyAny>,
+        call: &Bound<'_, PyAny>,
+        jump: &Bound<'_, PyAny>,
+        rc: &Bound<'_, PyAny>,
+        out_size: u64,
+    ) -> PyResult<Self> {
+        Self::build([main, call, jump, rc], bcj2::Bcj2::new(), out_size)
     }
 
-    fn decode_block<'py>(&mut self, py: Python<'py>, left: u64) -> PyResult<Bound<'py, PyBytes>> {
-        let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
-        ];
-        let mut streams = PyStreams { reads: &reads };
-        let mut out = Vec::new();
-        match self.inner.decode_block(left, &mut out, &mut streams) {
-            Ok(()) => Ok(PyBytes::new(py, &out)),
-            Err(e) => {
-                self.partial = out;
-                Err(to_py(e))
+    /// Up to `max_length` bytes of output (all of it when negative); `b""` at the end.
+    #[pyo3(signature = (max_length = -1))]
+    fn read<'py>(&mut self, py: Python<'py>, max_length: i64) -> PyResult<Bound<'py, PyBytes>> {
+        let want = if max_length < 0 {
+            usize::MAX
+        } else {
+            max_length as usize
+        };
+        let mut result = Vec::new();
+        loop {
+            let n = (self.pending.len() - self.pending_pos).min(want - result.len());
+            result.extend_from_slice(&self.pending[self.pending_pos..self.pending_pos + n]);
+            self.pending_pos += n;
+            self.total_out += n as u64;
+            if result.len() >= want || self.checked {
+                break;
             }
+            if let Some(err) = &self.failure {
+                if result.is_empty() {
+                    return Err(err.clone_ref(py));
+                }
+                break;
+            }
+            self.step(py);
         }
+        Ok(PyBytes::new(py, &result))
     }
 
-    fn take_partial<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &std::mem::take(&mut self.partial))
+    /// The decoder's state (design D3): the range coder, the output position and the
+    /// output not yet returned; none of the streams' buffered bytes. Restore it with
+    /// `from_state(state, main, call, jump, rc)`, each stream placed at its
+    /// `total_in`.
+    fn getstate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        if self.failure.is_some() {
+            return Err(PyValueError::new_err("getstate() after an error"));
+        }
+        let mut out = state_header("bcj2");
+        self.inner.save(&mut out);
+        state::put_u64(&mut out, self.out_size);
+        out.push(u8::from(self.checked));
+        state::put_bytes(&mut out, &self.pending[self.pending_pos..]);
+        for t in self.total_in() {
+            state::put_u64(&mut out, t);
+        }
+        Ok(PyBytes::new(py, &out))
     }
 
-    fn check_inputs_finished(&mut self, py: Python<'_>) -> PyResult<()> {
-        let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
-        ];
-        let mut streams = PyStreams { reads: &reads };
-        self.inner
-            .check_inputs_finished(&mut streams)
-            .map_err(to_py)
+    #[classmethod]
+    #[pyo3(signature = (state, main, call, jump, rc))]
+    fn from_state(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        state: &Bound<'_, PyAny>,
+        main: &Bound<'_, PyAny>,
+        call: &Bound<'_, PyAny>,
+        jump: &Bound<'_, PyAny>,
+        rc: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        let state = input(state)?;
+        let head = StateReader::open("bcj2", &state)?;
+        let mut r = head.rest("bcj2");
+        let inner = bcj2::Bcj2::load(&mut r).map_err(to_py0)?;
+        let out_size = r.u64().map_err(to_py0)?;
+        let checked = r.bool().map_err(to_py0)?;
+        let pending = r.bytes(usize::MAX).map_err(to_py0)?.to_vec();
+        let mut counts = [0u64; 4];
+        for c in counts.iter_mut() {
+            *c = r.u64().map_err(to_py0)?;
+        }
+        r.finish().map_err(to_py0)?;
+        let decoded = inner.decoded();
+        if decoded > out_size
+            || (pending.len() as u64) > decoded
+            || (checked && decoded != out_size)
+        {
+            return Err(CorruptDataError::new_err(
+                "the bcj2 state holds sizes that do not agree",
+            ));
+        }
+        let mut d = Self::build([main, call, jump, rc], inner, out_size)?;
+        d.total_out = decoded - pending.len() as u64;
+        d.pending = pending;
+        d.checked = checked;
+        d.counts = counts;
+        Ok(d)
+    }
+
+    /// True once all `out_size` bytes are returned and the end check passed.
+    #[getter]
+    fn eof(&self) -> bool {
+        self.checked && self.pending_pos == self.pending.len()
+    }
+
+    #[getter]
+    fn out_size(&self) -> u64 {
+        self.out_size
+    }
+
+    /// Bytes used from each stream: (main, call, jump, rc).
+    #[getter]
+    fn total_in(&self) -> [u64; 4] {
+        let unread = self.inner.unread();
+        std::array::from_fn(|i| self.counts[i] - unread[i] as u64)
+    }
+
+    #[getter]
+    fn total_out(&self) -> u64 {
+        self.total_out
     }
 }
 
@@ -1105,7 +1390,6 @@ fn _codecs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ZipCryptoDecryptor", py.get_type::<ZipCryptoDecryptor>())?;
     m.add("LzwDecompressor", py.get_type::<LzwDecompressor>())?;
     m.add("LzxDecompressor", py.get_type::<LzxDecompressor>())?;
-    // The prototype's BCJ2 shape, until its D3 shape lands.
-    m.add("_Bcj2Core", py.get_type::<Bcj2Core>())?;
+    m.add("Bcj2Decompressor", py.get_type::<Bcj2Decompressor>())?;
     Ok(())
 }

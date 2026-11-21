@@ -5,6 +5,7 @@
 //! classic prefix/suffix one rather than the Python flat-or-link entries; the bytes
 //! it produces are the same.
 
+use crate::kernels::state::{self, Reader};
 use crate::kernels::error::DecodeError;
 
 const INITIAL_CODE_WIDTH: u32 = 9;
@@ -167,6 +168,142 @@ impl LzwState {
         self.pending_skip = 0;
         self.skip_may_end_at = 0;
         self.skip_reason = "after a CLEAR";
+    }
+
+    /// Input fed but not decoded yet.
+    pub fn held_input(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// An error is waiting to be raised again.
+    pub fn failed(&self) -> bool {
+        self.raise_after.is_some()
+    }
+
+    /// The decoder's state without the input it holds (design D3). Call only before
+    /// `flush()` and when no error is waiting.
+    pub fn save(&self, out: &mut Vec<u8>) {
+        debug_assert!(!self.finished && self.raise_after.is_none());
+        out.push(match self.nine_bit_widens {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        });
+        out.push(u8::from(self.at_nine_bit_fill));
+        out.push(u8::from(self.need_header));
+        for v in [
+            self.seg_comp,
+            self.seg_decomp,
+            self.pending_skip,
+            self.skip_may_end_at,
+        ] {
+            state::put_u64(out, v as u64);
+        }
+        out.push(u8::from(self.skip_reason != "after a CLEAR"));
+        if self.need_header {
+            return;
+        }
+        let (w, b) = self.header_params.unwrap_or((self.max_width, self.block_mode));
+        out.push(w as u8);
+        out.push(u8::from(b));
+        state::put_u32(out, self.dict_len);
+        state::put_u32(out, self.next_code);
+        for i in self.starting_code as usize..self.dict_len as usize {
+            state::put_u32(out, self.prefix[i]);
+            out.push(self.suffix[i]);
+        }
+        state::put_u64(out, self.bit_buffer);
+        out.push(self.bits_in_buffer as u8);
+        match self.prev_code {
+            Some(c) => {
+                out.push(1);
+                state::put_u32(out, c);
+            }
+            None => out.push(0),
+        }
+        out.push(self.code_width as u8);
+        state::put_u64(out, self.bytes_in_era as u64);
+        state::put_u64(out, self.codes_in_era as u64);
+    }
+
+    /// Rebuild a decoder from `save`'s bytes, refusing anything a decoder could not
+    /// have saved: no dictionary entry can point forward, and nothing larger than the
+    /// largest table is allocated.
+    pub fn load(r: &mut Reader<'_>) -> crate::kernels::error::Result<Self> {
+        let widens = match r.u8()? {
+            0 => None,
+            1 => Some(false),
+            2 => Some(true),
+            v => return r.bad(format!("a nine-bit setting of {v}")),
+        };
+        let at_fill = r.bool()?;
+        let need_header = r.bool()?;
+        let mut v = [0i64; 4];
+        for x in v.iter_mut() {
+            *x = r.u64()? as i64;
+        }
+        let [seg_comp, seg_decomp, pending_skip, skip_may_end_at] = v;
+        if v.iter().any(|&x| x < 0) || pending_skip > MAX_CODE_WIDTH as i64 {
+            return r.bad("a segment or skip out of range");
+        }
+        let reason = if r.bool()? {
+            "at a code-width increase"
+        } else {
+            "after a CLEAR"
+        };
+        let mut d = if need_header {
+            LzwState::new(None, None, widens)
+        } else {
+            let w = u32::from(r.u8()?);
+            let b = r.bool()?;
+            if !(INITIAL_CODE_WIDTH..=MAX_CODE_WIDTH).contains(&w) {
+                return r.bad(format!("a maximum code width of {w}"));
+            }
+            let mut d = LzwState::new(Some(w), Some(b), widens);
+            let dict_len = r.u32()?;
+            let next_code = r.u32()?;
+            let width_limit = if w == INITIAL_CODE_WIDTH { w + 1 } else { w };
+            if dict_len < d.starting_code || dict_len > next_code || next_code > 1 << width_limit
+            {
+                return r.bad("a dictionary size out of range");
+            }
+            for i in d.starting_code..dict_len {
+                let prefix = r.u32()?;
+                if prefix >= i {
+                    return r.bad("a dictionary entry that points forward");
+                }
+                let i = i as usize;
+                d.prefix[i] = prefix;
+                d.suffix[i] = r.u8()?;
+                d.length[i] = d.length[prefix as usize] + 1;
+            }
+            d.dict_len = dict_len;
+            d.next_code = next_code;
+            d.bit_buffer = r.u64()?;
+            d.bits_in_buffer = u32::from(r.u8()?);
+            d.prev_code = if r.bool()? { Some(r.u32()?) } else { None };
+            d.code_width = u32::from(r.u8()?);
+            d.bytes_in_era = r.u64()? as i64;
+            d.codes_in_era = r.u64()? as i64;
+            if !(INITIAL_CODE_WIDTH..=width_limit).contains(&d.code_width)
+                || d.bits_in_buffer >= d.code_width
+                || d.bit_buffer >> d.bits_in_buffer != 0
+                || d.prev_code.is_some_and(|c| c >= dict_len)
+                || d.bytes_in_era < 0
+                || d.codes_in_era < -1
+            {
+                return r.bad("a code reader out of range");
+            }
+            d.current_mask = (1 << d.code_width) - 1;
+            d
+        };
+        d.at_nine_bit_fill = at_fill;
+        d.seg_comp = seg_comp;
+        d.seg_decomp = seg_decomp;
+        d.pending_skip = pending_skip;
+        d.skip_may_end_at = skip_may_end_at;
+        d.skip_reason = reason;
+        Ok(d)
     }
 
     pub fn is_finished(&self) -> bool {
