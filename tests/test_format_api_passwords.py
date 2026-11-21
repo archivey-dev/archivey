@@ -1197,6 +1197,27 @@ def test_an_indexed_respawn_must_describe_its_checks_the_same(
             stream.read()
 
 
+@pytest.mark.parametrize("seek_back", [False, True])
+def test_a_rewalk_must_state_the_same_digests(
+    toyw: None, tmp_path: Path, seek_back: bool
+) -> None:
+    """A data walk, first or a backward seek's, whose span states other digests than
+    the listing walk's is refused, not read against the listing's digests."""
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    with open_archive(path, password="pw", seekable_members=seek_back) as reader:
+        reader.members()
+        with pytest.raises(ValueError, match="different digests when walked again"):
+            if seek_back:
+                with reader.open("a") as stream:
+                    assert stream.read() == b"alpha"
+                    ToyWReader.span_crc = b"\0\0\0\0"
+                    stream.seek(0)
+                    stream.read()
+            else:
+                ToyWReader.span_crc = b"\0\0\0\0"
+                reader.read("a")
+
+
 def test_a_rewalk_must_describe_its_checks_the_same(
     toyw: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

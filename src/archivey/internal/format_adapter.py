@@ -1562,8 +1562,8 @@ class IndexedReaderAdapter(_PluginAdapter):
                 # A digest's hasher factory may be a new callable each open.
                 (
                     "digests",
-                    [(d.name, d.expected) for d in first.digests],
-                    [(d.name, d.expected) for d in again.digests],
+                    _digest_values(first.digests),
+                    _digest_values(again.digests),
                 ),
                 ("checked", bool(first.checked), bool(again.checked)),
                 ("bounded", bool(first.bounded), bool(again.bounded)),
@@ -2024,6 +2024,7 @@ class _Decoded:
     __slots__ = (
         "checked",
         "consumed",
+        "digests",
         "done",
         "index",
         "name",
@@ -2041,9 +2042,12 @@ class _Decoded:
         size: int | None,
         name: str,
         unlocked: PasswordConfirmVerdict | None = None,
+        digests: tuple[MemberDigest, ...] = (),
     ) -> None:
         self.stream = stream
         self.checked = checked
+        # The span's digests as (name, expected): a rewalk must state the same ones.
+        self.digests = _digest_values(digests)
         # The span's ``MemberSpan.unlocked``, from the walk that yielded this data.
         self.unlocked = unlocked
         self.index = index
@@ -2912,7 +2916,13 @@ class SequentialReaderAdapter(_PluginAdapter):
         if data is not None:
             stream = self._decoded_stream(data, index, layer)
             decoded = _Decoded(
-                stream, span.checked, index, member.size, member.name, unlocked
+                stream,
+                span.checked,
+                index,
+                member.size,
+                member.name,
+                unlocked,
+                span.digests,
             )
         forward = layer.forward
         if unlocked is PasswordConfirmVerdict.CONFIRMED and member.is_encrypted:
@@ -3222,6 +3232,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     decoded.size,
                     decoded.name,
                     _checked_verdict(span.unlocked, type(self._reader).__name__),
+                    span.digests,
                 )
             # A member on the way, read past under the name it is listed by.
             name = _listed_name(span)
@@ -3283,7 +3294,9 @@ class SequentialReaderAdapter(_PluginAdapter):
 
     def _check_rewalked(self, span: MemberSpan, decoded: _Decoded) -> None:
         """Refuse a walk started over that does not yield, at the member's place, the
-        member the listing walk did: ``walk()`` must repeat itself."""
+        member the listing walk did, described the same way (its ``checked`` and its
+        digests): ``walk()`` must repeat itself, and the verifier over the caller's
+        stream was built from the listing walk's word."""
         found = _listed_name(span)
         if found != decoded.name:
             raise _plugin_bug(
@@ -3291,6 +3304,14 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"{type(self._reader).__name__}.walk() yielded {found!r} as member "
                     f"{decoded.index} when walked again, not {decoded.name!r}: a walk must "
                     "yield the same members in the same order each time"
+                )
+            )
+        if _digest_values(span.digests) != decoded.digests:
+            raise _plugin_bug(
+                ValueError(
+                    f"{type(self._reader).__name__}.walk() yielded {found!r} with "
+                    "different digests when walked again: a walk must describe each "
+                    "member's data the same way each time"
                 )
             )
         if bool(span.checked) != decoded.checked:
@@ -3514,6 +3535,15 @@ class SequentialReaderAdapter(_PluginAdapter):
 # Set on an error that reports a plugin breaking the interface, so the plugin's own
 # ``translate_exception`` is not offered it (``_PluginAdapter._translate_exception``).
 _PLUGIN_BUG = "_archivey_plugin_bug"
+
+
+def _digest_values(digests: object) -> tuple[tuple[object, object], ...]:
+    """``digests`` (a ``MemberDigest`` tuple, unchecked yet) as ``(name, expected)``
+    pairs, for comparing two opens: a digest's hasher factory may be a new callable
+    each time."""
+    if not isinstance(digests, tuple):
+        return (("", digests),)
+    return tuple((getattr(d, "name", d), getattr(d, "expected", None)) for d in digests)
 
 
 def _checked_verdict(value: object, owner: str) -> PasswordConfirmVerdict | None:
