@@ -131,12 +131,14 @@ link-target reads) SHALL raise `ArchiveyUsageError` at once when called from the
 provider's own thread or a context copied from it, and SHALL wait for the answer when
 called from any other thread. No plugin call SHALL be repeated to try a provider answer.
 Retry state SHALL live on the request. When the adapter calls a hook again on its own (a
-data walk, a respawn, a rewalk), it SHALL try the unit's saved winner first, SHALL call
-the provider only when that call serves the caller's `open()`, never inside a stream's
-`read`, and SHALL give a respawned stream the new `MemberData.unlocked` verdict. When
-resolution fails for a yielded request, archivey SHALL close the generator and the error
-SHALL end the walk. Two workers needing the provider at once SHALL be served one after
-the other.
+data walk, a respawn, a rewalk), it SHALL try first the saved winner of each request,
+keyed by the plugin call plus the request's index in that call's chain. archivey SHALL
+call the provider only on a first open of a member (the caller's `open()`, a data walk
+it starts, the first open of a lazy `stream_members()` or extraction handle), never on a
+replacement open of an already unlocked stream, and SHALL give a respawned stream the
+new `MemberData.unlocked` verdict. When resolution fails for a yielded request, archivey
+SHALL close the generator and the error SHALL end the walk. Two workers needing the
+provider at once SHALL be served one after the other.
 
 #### Scenario: concurrency
 
@@ -164,8 +166,12 @@ the other.
 | makeself, payload 1 unlocked by a provider answer at listing; a member of it opened later through a random-access data walk | The saved winner is tried first and unlocks it; the provider is not asked again |
 | Indexed member opened `INCONCLUSIVE`; backward seek respawns it and the toy plugin's `then` now reports `CONFIRMED` | The replacement stream is checked as `CONFIRMED` |
 | Same with the original `CONFIRMED` and the replacement `INCONCLUSIVE` | A digest mismatch on the replacement raises the unverified-data `EncryptionError` |
-| Respawn inside `read()` where the saved winner no longer unlocks the unit | D2 exhaustion error from that `read()`; provider not called |
+| Respawn (replacement open) inside `read()` where the saved winner no longer unlocks the unit | D2 exhaustion error from that `read()`; provider not called |
 | Reader closed, then reopened with `open_archive` | No saved winners carried over |
+| `open_member` chain: header request then data request, each won by a different provider answer; then seek to zero, provider has no more answers | Both saved winners reused; replacement stream reads |
+| Fresh reader, provider only, ARJ garbled member read through `stream_members()` | Provider asked on the handle's first `read()`; member reads |
+| Same pass, caller skips two garbled members and reads a third | Provider asked only for the third |
+| `extract_all()` with provider only, ARJ garbled members | Each garbled member asks once; extraction succeeds |
 
 #### Scenario: ARJ trial decode failures
 

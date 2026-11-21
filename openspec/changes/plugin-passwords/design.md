@@ -398,17 +398,26 @@ read out of order), a respawn of a forward-only indexed stream on a backward see
 Requests met there are resolved too, under these rules:
 
 - **The last winner is tried first.** The reader keeps, for its lifetime (dropped at
-  `close()`), the password that won each unit, keyed by the unit's place: the member for
-  an `open_member` request, the k-th request of a walk for a yielded one (a walk is
-  deterministic over the same source, as rewalks already assume), the handler for
-  `open`. A repeat tries that password first and still runs `check` (and `full_check`
-  when the first resolution needed it). So a late makeself rewalk does not ask the
-  provider again for payload 1, although its `INCONCLUSIVE` winner is not promoted
-  for other units (D3).
-- **The provider only at a public open.** A data walk started by the caller's `open()`
-  may ask the provider, as that open could. A respawn or a data walk stepped inside a
-  stream's `read` never does: there the saved winner and the static candidates are
-  tried, and if none unlocks the unit the read raises the D2 exhaustion error for it.
+  `close()`), the password that won each request, and whether its resolution needed
+  `full_check`, keyed by the request's place: the plugin call (the member for
+  `open_member`, the handler for `open`, the k-th yielded request for a walk; a walk is
+  deterministic over the same source, as rewalks already assume) plus the request's
+  index in that call's chain (0 for the first request, 1 for the one its `then`
+  returned, and so on). A member whose header and data need different passwords
+  therefore keeps both. A repeat tries the saved password first and still runs `check`
+  (and `full_check` when the first resolution needed it). So a late makeself rewalk
+  does not ask the provider again for payload 1, although its `INCONCLUSIVE` winner is
+  not promoted for other units (D3).
+- **The provider only at a first open.** A first open of a member may ask the provider:
+  the caller's `open()`, a data walk it starts, and the first open of a lazy pass handle
+  from `stream_members()` or extraction, which calls `open_member` on the handle's
+  first `read()`. So a member that `reader.open(name)` can read with a provider alone,
+  `stream_members()` and extraction can read too, and a member the caller skips is
+  never opened and never prompts. A replacement open of a stream that was already
+  unlocked (a respawn on a backward seek, a data walk stepped again inside that
+  stream's `read`) never asks: there the saved winners and the static candidates are
+  tried, and if none unlocks a request in the chain the read raises the D2 exhaustion
+  error for it.
 - **The verdict follows the replacement.** A respawn keeps the whole new `MemberData`,
   not only its stream: the replacement stream's verification proof takes the new
   `unlocked` verdict (and its `digests` and `checked`), so a replacement unlocked as
