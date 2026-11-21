@@ -73,8 +73,16 @@ def test_crc16_hash_interface() -> None:
 
 
 def test_crc16_value_out_of_range() -> None:
-    with pytest.raises(ValueError, match="above 0xFFFF"):
-        crc16_arc(b"", 0x10000)
+    for value in (0x10000, -1):
+        with pytest.raises(ValueError, match="outside 0 to 0xFFFF"):
+            crc16_arc(b"", value)
+
+
+def test_crc16_reads_any_buffer() -> None:
+    import array
+
+    words = array.array("I", [1, 2])
+    assert crc16_arc(words) == crc16_arc(words.tobytes())
 
 
 # ── LZO1X ──────────────────────────────────────────────────────────────────────────
@@ -351,3 +359,56 @@ def test_lzx_state_refusals() -> None:
         d.flush()
     with pytest.raises(ValueError, match="flush"):
         d.getstate()
+
+
+def test_lzw_flush_keeps_its_cap(tmp_path) -> None:
+    """``flush(max_length)`` decodes at most about ``max_length`` bytes a call: a
+    49 KB stream of 400 MB of zeros must not be decoded at once. Run in a fresh
+    process, so its resident memory says what the decoder holds (Linux only: it reads
+    ``/proc/self/statm``)."""
+    import subprocess
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("reads /proc/self/statm")
+    ncompress = pytest.importorskip("ncompress")
+    z = ncompress.compress(bytes(400_000_000))
+    path = tmp_path / "zeros.Z"
+    path.write_bytes(z)
+    del z
+    probe = (
+        "import sys\n"
+        "from archivey_codecs import lzw\n"
+        "z = open(sys.argv[1], 'rb').read()\n"
+        "rss = lambda: int(open('/proc/self/statm').read().split()[1]) * 4096\n"
+        "before = rss()\n"
+        "d = lzw.Decompressor()\n"
+        "assert len(d.decompress(z, 1)) == 1\n"
+        "for _ in range(100):\n"
+        "    assert len(d.flush(65536)) == 65536\n"
+        "print((rss() - before) >> 20)\n"
+    )
+    got = subprocess.run(
+        [sys.executable, "-c", probe, str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert int(got.stdout) < 50, f"flush grew the process by {got.stdout.strip()} MB"
+
+
+def test_filter_state_hold_bounds() -> None:
+    # A RISC-V decoder holds at most 7 bytes and an ARM64 one at most 3.
+    for cls, most in ((filters.RiscvDecoder, 7), (filters.Arm64Decoder, 3)):
+        state = cls().getstate()
+        assert state[-1] == 0
+        ok = state[:-1] + bytes([most]) + bytes(most)
+        assert cls.from_state(ok).flush() == bytes(most)
+        bad = state[:-1] + bytes([most + 1]) + bytes(most + 1)
+        with pytest.raises(CorruptDataError, match="holds back"):
+            cls.from_state(bad)
+
+
+def test_filter_offset_wraps() -> None:
+    d = filters.Arm64Decoder(start_offset=2**64 - 4)
+    assert len(d.decode(bytes(64))) == 64

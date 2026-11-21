@@ -2,8 +2,9 @@
 
 Rust versions of the decoders that [archivey](https://github.com/archivey-dev/archivey)
 otherwise runs in Python. When archivey finds this package, those decoders get faster,
-and nothing else changes: the output bytes are the same, and damaged input raises the
-same exception type with the same message. Without it, archivey uses its Python
+and nothing else changes: the output bytes are the same, and a damaged archive raises
+the same exception type with the same message (two caller-only exceptions are listed
+below). Without it, archivey uses its Python
 decoders.
 
 This is a pre-release. Most kernels have their final, standard-library-shaped API
@@ -32,9 +33,12 @@ data = d.decompress(z_bytes) + d.flush()
 Errors are `CorruptDataError`, `TruncatedDataError` and `UnsupportedDataError`, all
 subclasses of `CodecError`, which is a `ValueError`. `KERNELS` maps each kernel name to
 its revision; a decoder's `getstate()` names that revision, and `from_state()` refuses
-a state from another one. Every kernel releases the GIL while it loops over `bytes`
-input; other buffers are copied first. The kernel modules (`src/kernels/`) forbid
-`unsafe` code.
+a state from another one. Decoders release the GIL while they read `bytes` input (the
+CRC only above 64 KiB, where the release pays off); other buffers are copied first.
+The private LZX and BCJ2 classes hold the GIL, because they call back into Python for
+input. Two LZX refusals that only a caller can reach (a frame size off the 32 KiB grid)
+raise `CorruptDataError` where Python raises `IndexError` or grows its window; see
+`src/kernels/lzx.rs`. The kernel modules (`src/kernels/`) forbid `unsafe` code.
 
 ## Develop
 

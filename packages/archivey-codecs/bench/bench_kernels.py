@@ -64,12 +64,13 @@ def main() -> None:
     # LZO1X, as SquashFS uses it: 128 KiB blocks.
     import lzo
 
+    sizes = [len(text[i : i + 131072]) for i in range(0, len(text), 131072)]
     blocks = [
         lzo.compress(text[i : i + 131072], 1, False)
         for i in range(0, len(text), 131072)
     ]
     py = best(lambda: [lzo1x_decompress_python(b, 131072) for b in blocks], 1)
-    rs = best(lambda: [n.lzo1x.decompress(b, out_size=131072) for b in blocks])
+    rs = best(lambda: [n.lzo1x.decompress(b, out_size=k) for b, k in zip(blocks, sizes)])
     c = best(lambda: [lzo.decompress(b, False, 131072) for b in blocks])
     row(
         "LZO1X (128 KiB blocks)",

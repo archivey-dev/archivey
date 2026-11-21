@@ -169,6 +169,11 @@ impl LzwState {
         self.skip_reason = "after a CLEAR";
     }
 
+    /// Input fed but not decoded yet.
+    pub fn held_input(&self) -> usize {
+        self.buf.len()
+    }
+
     pub fn is_finished(&self) -> bool {
         self.finished
     }
