@@ -167,7 +167,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
                                         # at total_out
 ```
 
-- `total_in` counts input bytes consumed, `total_out` output bytes produced.
+- `total_in` counts input bytes consumed, `total_out` output bytes returned to the caller.
 - `getstate()` returns bytes holding what the decoder consumed, including the bits of a
   partly read byte and any decoded output not yet returned (at most one LZX frame, 32
   KiB), and never the input it holds but has not used. `total_out` counts the bytes
