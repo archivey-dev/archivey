@@ -1,10 +1,12 @@
 """LZO1X, and the ``.lzo`` file format ``lzop`` writes around it.
 
 LZO1X has no stream framing of its own: a block is decoded whole, to a size the
-container stores (a SquashFS block, an lzop block). ``compress-utils`` (its LZO1X
-decoder is derived from lzokay) decodes a block when it is installed and built with
-LZO1X, which is a build option (``is_available``); archivey also
-carries the decoder in Python (:func:`lzo1x_decompress_python`). It
+container stores (a SquashFS block, an lzop block). Three decoders can decode a block,
+tried in this order: ``archivey-codecs`` (a Rust port of archivey's Python decoder)
+when it is installed and allowed; ``compress-utils`` (its LZO1X decoder is derived
+from lzokay) when it is installed and built with LZO1X, which is a build option
+(``is_available``); and archivey's decoder in Python (:func:`lzo1x_decompress_python`).
+The Python one
 follows ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
 without the LZO-RLE extension, which neither lzop nor SquashFS writes.
 
@@ -12,9 +14,10 @@ Every read is checked: a run of literals or a match that would pass the end of t
 input, write past the limit or copy from before the start of the output raises
 :class:`LzoError`, and so do input left after the end marker and an end marker of a
 length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts any
-length there; the kernel and compress-utils refuse it, and the two decoders archivey
-uses agree on every block measured
-(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``).
+length there; the kernel and all three decoders archivey uses refuse it. compress-utils
+and the Python decoder agree on every block measured
+(``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``); archivey-codecs
+gives the Python decoder's bytes and messages (``tests/test_native_kernels.py``).
 
 The lzop format (``lzop`` 1.04, ``header.c`` and ``lzop.c``): a 9-byte magic, a header
 with the method, flags, mode, mtime and stored name, closed by a checksum, then blocks.
@@ -141,12 +144,6 @@ def _compress_utils(
     return decompress
 
 
-# archivey-codecs' refusal of a block that decodes to fewer bytes than asked for: its
-# ``lzo1x.decompress`` takes the exact size, and a container may give only the most a
-# block can decode to (a SquashFS block), so the block is decoded again at its size.
-_SHORT_BLOCK = re.compile(r"the block decodes to (\d+) bytes, not \d+")
-
-
 def _archivey_codecs(
     excluded: frozenset[OptionalLibrary],
     natives: Natives,
@@ -168,16 +165,10 @@ def _archivey_codecs(
         usage.note_backend("library", OptionalLibrary.ARCHIVEY_CODECS.value, "lzo")
 
     def decompress(data: bytes, limit: int) -> bytes:
+        # ``max_size``: a SquashFS block gives only the most it may decode to.
         with native.panic_to_corruption("LZO1X"):
             try:
-                return kernel(data, out_size=limit)
-            except errors as exc:
-                short = _SHORT_BLOCK.fullmatch(str(exc))
-                if short is None:
-                    raise LzoError(str(exc)) from None
-            # A valid block, shorter than ``limit``: decode it at its own size.
-            try:
-                return kernel(data, out_size=int(short[1]))
+                return kernel(data, max_size=limit)
             except errors as exc:
                 raise LzoError(str(exc)) from None
 
