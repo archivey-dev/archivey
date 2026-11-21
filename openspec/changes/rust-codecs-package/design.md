@@ -43,9 +43,21 @@ First release: the seven prototype kernels and CRC-16/ARC (LHA, ARJ; question 5)
 BLAKE2sp (RAR5) stays in Python: after PR 1709 it runs on the standard library's C
 `blake2s` in linear time, so a port would add a Rust dependency for little gain.
 
+**LZFSE and LZVN, for the DMG reader** (maintainer, 2026-11-21, "Build the DMG reader"
+thread: own fast kernel here rather than the `lzfse` PyPI package, which has no output
+cap and accepts blocks whose matches use more literals than the block decoded). They
+go in the first codecs release after the DMG reader's pure-Python twin
+(`streams/codecs/lzfse_decoder.py`) lands, as one-shot functions
+(`lzfse.decompress(chunk, out_size=)`, DMG chunks record their sizes). The kernel keeps
+every check of the Python decoder: the v2/v1 `n_raw` exact, the literal count a
+multiple of 4, no literal overrun, the distance check on every triple, nothing after
+`bvx$` or the LZVN end-of-stream, and output never past `out_size`. It must agree with
+the Python decoder on every DMG fixture and the DMG fuzz corpus. ADC (DMG's other
+codec) follows the same shape if measurement shows it is slow.
+
 Later, by value: LHA/ARJ static-Huffman and LHarc `-lh1-`; PPMd and Deflate64 as
 in-process decoders (new decoders, each needs the DR-20 damaged-input evaluation); the
-DOS-era ZIP methods and ARJ method 4; DMG's ADC and LZFSE if DMG resumes.
+DOS-era ZIP methods and ARJ method 4.
 
 ## D2. Hash API
 

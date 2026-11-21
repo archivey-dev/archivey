@@ -35,4 +35,7 @@
 
 - [ ] 4.1 Install page section and package README (written by Opus)
 - [ ] 4.2 First release `codecs-v0.1.0`; then `[recommended]` one archivey release later
-- [ ] 4.3 Archive this change
+- [ ] 4.3 LZFSE/LZVN one-shot kernel (D1) once the DMG reader's Python decoder has
+  merged, with parity on every DMG fixture and the DMG fuzz corpus; then a codecs
+  release
+- [ ] 4.4 Archive this change
