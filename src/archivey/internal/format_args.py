@@ -146,19 +146,13 @@ def _accepted_archive_formats() -> str:
 
     Extensions only, and lowercased. ``DIRECTORY`` and ``UNKNOWN`` have no extension,
     so the check below drops them: ``open_archive`` refuses ``format="unknown"``, and
-    ``format="directory"`` opens only a directory path. ``DMG``
-    has an extension, and offering it would do the same — the spelling resolves,
-    then open refuses the image — so it is excluded by name. Lowercasing keeps the
+    ``format="directory"`` opens only a directory path. Lowercasing keeps the
     list from implying that case is significant, in a message whose subject is a
     spelling that ignores it. A registered plugin's extension is listed too, so a typo
     of its name is not answered with a list that leaves it out.
     """
     spellings = sorted(
-        {
-            fmt.file_extension().lower()
-            for fmt in _FORMAT_NAMES
-            if fmt.file_extension() and fmt.container is not ContainerFormat.DMG
-        }
+        {fmt.file_extension().lower() for fmt in _FORMAT_NAMES if fmt.file_extension()}
         | {fmt.file_extension().lower() for fmt in _plugin_spellings.values()}
     )
     return ", ".join(repr(s) for s in spellings)
