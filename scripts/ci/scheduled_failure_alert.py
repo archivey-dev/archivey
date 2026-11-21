@@ -10,10 +10,13 @@ open issue per workflow, titled ``Scheduled run failing: <workflow>``:
   keeps that list in a hidden `MARKER` line. A job that the previous report's list did
   not name is marked **new**, so a second failure in a workflow that is already red does
   not read as the old one. A report with no earlier list marks nothing new.
-- **A red run whose only problem is a job no runner picked up** changes nothing. GitHub
-  cancels such a job without running a step ("The job was not acquired by Runner of
-  type hosted"), for example when macOS runners are short, and the run ends as a
-  failure although no code ran. A job that failed or timed out still reports the run.
+- **A red run whose only problem is jobs no runner picked up** changes nothing the first
+  time. GitHub cancels such a job without running a step ("The job was not acquired by
+  Runner of type hosted"), for example when macOS runners are short, and the run ends
+  as a failure although no code ran. When the workflow's previous scheduled or
+  post-merge run on `main` lost a job the same way, the run reports as a failure that
+  names the lost jobs, so a shortage that lasts, or a job no runner can ever take, is
+  not silent. A job that failed or timed out always reports the run.
 - **A green scheduled run** closes the issue. A green ``push`` run closes nothing: some
   workflows search for much less time after a merge than on their schedule.
 
@@ -77,15 +80,21 @@ def failed_jobs(jobs: list[dict]) -> list[str]:
     return sorted({j["name"] for j in jobs if j.get("conclusion") in FAILED})
 
 
-def never_started(jobs: list[dict]) -> bool:
-    """Whether the run is red only because GitHub cancelled jobs before any step ran.
+def lost_jobs(jobs: list[dict]) -> list[str]:
+    """The jobs GitHub cancelled before any step ran, when no job failed or timed out.
 
-    True when no job failed or timed out and at least one job was cancelled with no
-    steps: no runner took it, so nothing in the repository was checked.
+    Such a job was never taken by a runner, so nothing in the repository was checked.
+    The list is empty when a job failed or timed out: that run reports as usual.
     """
     if failed_jobs(jobs):
-        return False
-    return any(j.get("conclusion") == "cancelled" and not j.get("steps") for j in jobs)
+        return []
+    return sorted(
+        {
+            j["name"]
+            for j in jobs
+            if j.get("conclusion") == "cancelled" and not j.get("steps")
+        }
+    )
 
 
 def previous_jobs(issue: dict) -> list[str] | None:
@@ -172,6 +181,39 @@ def _run_jobs(run_id: str) -> list[dict]:
     return data.get("jobs") or []
 
 
+def _previous_run_lost(workflow: str, run_id: str) -> bool:
+    """Whether the previous scheduled or post-merge run on `main` also lost a job.
+
+    Its newest attempt counts, so a green rerun clears it. True when the runs cannot be
+    read: a report that might be noise is better than a gap nobody sees.
+    """
+    try:
+        runs = json.loads(
+            _gh(
+                "run",
+                "list",
+                "--workflow",
+                workflow,
+                "--branch",
+                "main",
+                "--limit",
+                "20",
+                "--json",
+                "databaseId,event,status",
+            )
+        )
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return True
+    for run in runs:
+        if (
+            str(run.get("databaseId")) != run_id
+            and run.get("status") == "completed"
+            and run.get("event") in ("schedule", "push")
+        ):
+            return bool(lost_jobs(_run_jobs(str(run["databaseId"]))))
+    return False
+
+
 def main() -> int:
     env = os.environ
     workflow, conclusion = env["WORKFLOW"], env["CONCLUSION"]
@@ -195,10 +237,11 @@ def main() -> int:
             _gh("issue", "view", str(number), "--json", "author,body,comments")
         )
     run_jobs = _run_jobs(env["RUN_ID"]) if conclusion != "success" else []
-    if never_started(run_jobs):
-        print(f"none: {name} (a job never got a runner; no job failed)")
+    lost = lost_jobs(run_jobs)
+    if lost and not _previous_run_lost(workflow, env["RUN_ID"]):
+        print(f"none: {name} (no runner took {', '.join(lost)}; no job failed)")
         return 0
-    jobs = failed_jobs(run_jobs)
+    jobs = failed_jobs(run_jobs) or lost
     action = decide(
         workflow=workflow,
         conclusion=conclusion,
