@@ -312,3 +312,14 @@ def test_all_reads_an_undamaged_member_as_the_default_does() -> None:
     data = _zip_with_a_bad_crc(zipfile.ZIP_DEFLATED)
     with open_archive(io.BytesIO(data), config=_ALL) as archive:
         assert archive.open("good.txt").read() == b"good"
+
+
+def test_reader_read_raises_at_all() -> None:
+    """``ArchiveReader.read()`` raises for a damaged member at every level: at ALL it
+    reads once more after reading to the end, to meet the deferred error."""
+    data = _zip_with_a_bad_crc(zipfile.ZIP_DEFLATED)
+    for config in (ArchiveyConfig(), _ALL):
+        with open_archive(io.BytesIO(data), config=config) as archive:
+            with pytest.raises(CorruptionError):
+                archive.read("bad.bin")
+            assert archive.read("good.txt") == b"good"

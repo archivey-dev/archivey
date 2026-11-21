@@ -266,8 +266,10 @@ class PartialDataRecovery(Enum):
     returns its bytes: the next read raises the check's error. Reading such a member to
     its end then gives every byte the decoder produced, the bytes that fail the check
     included. For a caller who keeps what it can of a damaged member and still wants
-    to hear that it failed. A reader that stops once it has the member's size, without
-    reading again, never sees the error."""
+    to hear that it failed. A caller that stops once it has the member's size, or
+    after one ``read()`` to the end, without reading again, never sees the error; keep
+    reading until a read returns ``b""`` or raises. :meth:`ArchiveReader.read
+    <archivey.ArchiveReader.read>` does, so it raises at every level."""
 
 
 # The string spellings of ``PartialDataRecovery``, for ``recover_partial_data``.

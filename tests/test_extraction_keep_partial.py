@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import struct
 import tarfile
 import warnings
 import zipfile
@@ -24,7 +25,12 @@ from archivey import (
     OverwritePolicy,
     open_archive,
 )
-from archivey.exceptions import ArchiveyError, ResourceLimitError, TruncatedError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+)
 from archivey.terminal import display_path
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
@@ -300,6 +306,39 @@ def test_a_check_failure_keeps_every_byte(tmp_path: Path, mode: str, size: int) 
     assert len(kept) == size
     assert kept[:50] == payload[:50]
     assert kept[51:] == payload[51:]
+
+
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+def test_a_member_longer_than_its_size_keeps_its_declared_bytes(
+    tmp_path: Path, mode: str, method: int
+) -> None:
+    """The uncompressed size says 1000 bytes and the data holds more: the size check
+    fails, and the file keeps the 1000 declared bytes in every mode. From a pipe the
+    pass checks the size in its own reader, which returns the declared bytes first."""
+    payload = bytes(range(256)) * 4000
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=method) as zf:
+        zf.writestr("big.bin", payload)
+        zf.writestr("good.txt", b"good")
+    data = bytearray(buf.getvalue())
+    struct.pack_into("<I", data, 22, 1000)  # the local header's size
+    central = data.index(b"PK\x01\x02")
+    struct.pack_into("<I", data, central + 24, 1000)
+    src = tmp_path / "long.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+    )
+    by_name = {r.member.name: r for r in report.results}
+    big = by_name["big.bin"]
+    assert big.status is ExtractionStatus.FAILED
+    assert isinstance(big.error, CorruptionError)
+    assert big.path == dest / "big.bin"
+    assert (dest / "big.bin").read_bytes() == payload[:1000]
+    assert by_name["good.txt"].status is ExtractionStatus.EXTRACTED
 
 
 def test_a_gzip_check_failure_keeps_what_the_decoder_gave(tmp_path: Path) -> None:

@@ -430,6 +430,10 @@ class _PassData:
     :data:`_MAX_REPARSE_PREFIX` and one byte.
     """
 
+    # The overrun found by the caller's read that returned the bytes up to the declared
+    # size (``_read_chunk(trim=True)``): the next read raises it.
+    _overrun: CorruptionError | None = None
+
     def __init__(
         self,
         reader: ZipForwardReader,
@@ -1146,7 +1150,11 @@ class _PassData:
         its CRC or size check, or for a ZipCrypto member the password may be wrong,
         the ``EncryptionError`` that says so, as from a file."""
         try:
-            chunk = self._read_chunk(n)
+            overrun = self._overrun
+            if overrun is not None:
+                self._overrun = None
+                raise overrun
+            chunk = self._read_chunk(n, trim=True)
             if not chunk and not self.done:
                 self._finish(raise_mismatch=True)
         except ArchiveyError as exc:
@@ -1173,8 +1181,14 @@ class _PassData:
             return failure
         return exc
 
-    def _read_chunk(self, n: int) -> bytes:
-        """Up to ``n`` decoded bytes, or ``b""`` once the codec or the data ends."""
+    def _read_chunk(self, n: int, *, trim: bool = False) -> bytes:
+        """Up to ``n`` decoded bytes, or ``b""`` once the codec or the data ends.
+
+        A chunk that runs past the declared size raises ``CorruptionError``. With
+        ``trim`` (the caller's read), it returns the bytes up to the declared size
+        first, when there are any, and keeps the error for the next read: the pass
+        checks the CRC only on the read after the data, so a member longer than its
+        declared size gives its declared bytes, as a CRC failure gives all of them."""
         if self.done or n == 0:
             return b""
         assert n > 0, "callers ask for a number of bytes"
@@ -1200,9 +1214,13 @@ class _PassData:
         if declared is not None and self._size + len(chunk) > declared:
             # The file read's verifier words it (``streams/verify.py``); the
             # ``_fixtures()`` table in ``test_zip_pipe_encrypted.py`` compares them.
-            raise CorruptionError(
+            error = CorruptionError(
                 f"Decompressed content exceeds its declared size of {declared} bytes."
             )
+            chunk = chunk[: declared - self._size]
+            if not (trim and chunk):
+                raise error
+            self._overrun = error
         if budget is not None:
             budget._draw_bytes(len(chunk))
         if chunk:

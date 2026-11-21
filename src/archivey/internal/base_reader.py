@@ -4948,7 +4948,13 @@ class BaseArchiveReader(ArchiveReader):
     def read(self, member: str | ArchiveMember) -> bytes:
         """Read member data as bytes."""
         with self.open(member) as f:
-            return f.read()
+            data = f.read()
+            if self._config.recover_partial_data is PartialDataRecovery.ALL:
+                # At ALL the read to the end returns a damaged member's bytes and
+                # keeps the error for the next read: make it, so this call raises at
+                # every level, as its contract says.
+                f.read()
+            return data
 
     # --- Public API: verify_all() and checks that span members ------------------------
 

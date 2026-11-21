@@ -2177,8 +2177,10 @@ def test_the_pass_decodes_a_bit3_member_it_reads_past_only_as_far_as_a_link_need
     decoded: dict[str, int] = {}
     read_chunk = zip_forward_reader._PassData._read_chunk
 
-    def counting(self: zip_forward_reader._PassData, n: int) -> bytes:
-        chunk = read_chunk(self, n)
+    def counting(
+        self: zip_forward_reader._PassData, n: int, *, trim: bool = False
+    ) -> bytes:
+        chunk = read_chunk(self, n, trim=trim)
         decoded[self.member.name] = decoded.get(self.member.name, 0) + len(chunk)
         return chunk
 
