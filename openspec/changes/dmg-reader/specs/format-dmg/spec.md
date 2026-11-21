@@ -194,7 +194,8 @@ SHALL count against archivey's key-derivation budget. Members SHALL report `encr
 Every length in the encrypted header (data block size, key-entry count and sizes, salt
 and wrapped-key lengths) SHALL be checked before any read: a data block size other than
 4096 SHALL raise `UnsupportedFeatureError`, a length past the header `CorruptionError`,
-and a length over its small constant cap `ResourceLimitError`. `cdsaencr` v1 images and
+and a length over its cap (16 key entries; 4 KiB for each key entry, the salt and the
+wrapped key) `ResourceLimitError`. `cdsaencr` v1 images and
 images with no password key entry SHALL raise `UnsupportedFeatureError`. Without
 `cryptography`, `PackageNotInstalledError`.
 

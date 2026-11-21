@@ -311,9 +311,12 @@ sectors) and serve bytes from decoded runs. Keep a small LRU cache of decoded ru
   sector count only has to keep `sector count × 512` below 2^63 (offsets stay in range;
   more is `CorruptionError`). Every loop is over runs or over bytes actually read: raw
   runs are bounded by the data fork, ignore runs and gaps are never walked, and
-  zero-fill runs are folded into the CRC in O(log n) (§7.2), so a huge sparse disk in a
-  small file costs nothing. No public ceiling is needed, because no loop over the sector
-  count remains.
+  zero-fill runs are folded into the CRC in O(log n) (§7.2), so listing a huge sparse
+  disk and checking its CRC allocate nothing in proportion to its size and loop over
+  none of its sectors. No public ceiling on the disk size is needed, because no loop
+  over the sector count remains. Reading a member is different: every byte a member read
+  returns, zero fill included, counts in the archive-wide ratio (§8), so reading a large
+  zero-fill file from a small image stops with `ResourceLimitError`.
 
 The cache is memory bounded by (cache slots * 16 MiB); state that in the handbook page
 and make the slot count a constant.
@@ -931,7 +934,9 @@ reads are not a proxy for it. Part F therefore runs a separate pass:
   (the GF(2) matrix squaring that zlib's `crc32_combine` uses; Python's `zlib` does not
   expose it, so implement it, about 30 lines, tested against `zlib.crc32` on sizes up to
   a few MiB). Test: a builder image with one zero-fill run of 2^50 bytes; `verify_all()`
-  returns at once with a match.
+  returns a match within a short timeout (a few seconds). The builder (§9.2) computes
+  that table's CRC-32 with the same fold, never by feeding the zero bytes to
+  `zlib.crc32`.
 - **`verifiable`:** set at listing and never raised later. A file member is
   `CHECKSUM` only when its whole partition range (which holds its data and every piece
   of filesystem metadata it relies on) is fully covered by `blkx` tables that each
@@ -1056,7 +1061,9 @@ or extend it on a Mac.
   all-zero runs, ignore, ADC as literal-only blocks, LZFSE as uncompressed `bvx-` blocks
   or LZVN literal-only blocks, or real LZFSE via the `lzfse` package when installed),
   with a correct `mish` table per partition, plist, CRC-32 checksums and `koly` block.
-  Options to break each field.
+  A zero-fill run can also be given by its length alone, with no bytes in `disk`, so a
+  test can build a disk of 2^50 bytes; the CRC-32 of such a run is computed with the
+  §7.2 fold. Options to break each field.
 - `write_gpt(partitions) -> bytes`, `write_apm(partitions) -> bytes`.
 - `write_hfsplus(tree) -> bytes`: a minimal HFS+ writer: volume header, allocation file,
   one catalog B-tree (header node + leaf nodes, enough for a few hundred entries),
