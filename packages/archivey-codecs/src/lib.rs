@@ -232,7 +232,7 @@ fn crc16_arc(
 }
 
 /// A running CRC-16/ARC with the `hashlib` interface; `digest()` is big-endian.
-#[pyclass(module = "archivey_codecs", name = "Crc16Arc")]
+#[pyclass(skip_from_py_object, module = "archivey_codecs", name = "Crc16Arc")]
 #[derive(Clone)]
 struct Crc16Arc {
     crc: u16,
@@ -414,7 +414,7 @@ impl BranchState {
 
 macro_rules! branch_decoder {
     ($rust:ident, $name:literal, $kind:expr) => {
-        #[pyclass(module = "archivey_codecs.filters", name = $name)]
+        #[pyclass(skip_from_py_object, module = "archivey_codecs.filters", name = $name)]
         #[derive(Clone)]
         struct $rust {
             inner: BranchState,
@@ -488,7 +488,11 @@ branch_decoder!(RiscvDecoder, "RiscvDecoder", Branch::Riscv);
 
 /// Traditional PKWARE encryption (ZipCrypto): a stream cipher, so `decrypt()` returns
 /// exactly as many bytes as it is given.
-#[pyclass(module = "archivey_codecs.zipcrypto", name = "Decryptor")]
+#[pyclass(
+    skip_from_py_object,
+    module = "archivey_codecs.zipcrypto",
+    name = "Decryptor"
+)]
 #[derive(Clone)]
 struct ZipCryptoDecryptor {
     keys: zipcrypto::Keys,
@@ -563,7 +567,11 @@ impl ZipCryptoDecryptor {
 ///
 /// `max_length` bounds what each call decodes, `flush()` included: the kernel's
 /// final, uncapped pass runs only once less than one code of input is left.
-#[pyclass(module = "archivey_codecs.lzw", name = "Decompressor")]
+#[pyclass(
+    skip_from_py_object,
+    module = "archivey_codecs.lzw",
+    name = "Decompressor"
+)]
 #[derive(Clone)]
 struct LzwDecompressor {
     inner: lzw::LzwState,
