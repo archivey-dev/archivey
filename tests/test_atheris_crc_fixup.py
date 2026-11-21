@@ -188,7 +188,9 @@ def test_fixup_rar5_restores_crcs_after_bitflip(basic_rar5: bytes) -> None:
     flipped[24] ^= 0x01  # in the first FILE header, after MAIN
     broken = bytes(flipped)
     damaged = parse_rar_archive(io.BytesIO(broken))
-    assert damaged.members == []
+    # The walk follows the damaged header's sizes, confirmed by the next header,
+    # and lists its member flagged.
+    assert damaged.members[0].header_damaged
     assert damaged.damaged is not None
     assert "RAR5 header CRC" in damaged.damaged
 
