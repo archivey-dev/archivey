@@ -7,11 +7,15 @@
 
 ## 2. Reader
 
-- [ ] 2.1 `IsoReader` on `IsoVolume`; remove the pycdlib hooks, the raw re-parse, the
+- [x] 2.1 `IsoReader` on `IsoVolume`; remove the pycdlib hooks, the raw re-parse, the
   handle lock and the error net
-- [ ] 2.2 Update the ISO tests whose expectations named pycdlib behaviour
-- [ ] 2.3 `pycdlib` out of `[recommended]` and `[free-threaded]`; ISO registered with no
+- [x] 2.2 Update the ISO tests whose expectations named pycdlib behaviour
+- [x] 2.3 `pycdlib` out of `[recommended]` and `[free-threaded]`; ISO registered with no
   optional dependency; specs that used ISO as the missing-package example move to
   another format
-- [ ] 2.4 Handbook (`dev-docs/formats/iso.md`) and user docs
-- [ ] 2.5 Check real images: Windows 11, Sintel Blu-ray, a Windows 98 ISO by URL
+- [x] 2.4 Handbook (`dev-docs/formats/iso.md`) and user docs
+- [x] 2.5 Check real images: the Sintel Blu-ray and a Windows 98 ISO by URL, an Ubuntu
+  4.10 and a Debian 12 netinst image, and libarchive's ISO test images. The Windows 11
+  image's listed tree is UDF, whose parser this change does not touch
+- [ ] 2.6 On archive: the `format-iso` Purpose and Related specs no longer name
+  `pycdlib`

@@ -75,8 +75,8 @@ the `ReadBackend`; `non_seekable_reason` on an indexed handler):
 | ISO, SquashFS, CAB, XAR | No | Their directories point at data anywhere in the file |
 
 For the "No" rows, `open_archive` refuses *before* checking optional packages, with a
-message that names the only fix, so a piped ISO without `pycdlib` is told about the pipe
-rather than sent to install a package that would not help.
+message that names the only fix, so a piped archive is told about the pipe rather than
+sent to install a package that would not help.
 
 ## Detection on a pipe
 

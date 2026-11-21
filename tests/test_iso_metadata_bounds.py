@@ -1,9 +1,9 @@
-"""ISO metadata whose declared size pycdlib reads at open, bounded before the read.
+"""ISO metadata whose size the image declares: what the open reads of it.
 
-pycdlib sizes two reads inside ``open_fp`` from the image's own fields and reads them
-before any of archivey's ``ListingLimits`` hooks used to run: the path tables, whose
-size the volume descriptor declares, and a Rock Ridge ``CE`` continuation area, whose
-length the ``CE`` entry declares. Every fixture is built in the test.
+Two fields size a read from the image's own bytes: the path tables' size in the volume
+descriptor, and a Rock Ridge ``CE`` continuation area's length. Listing reads no path
+table, and a ``CE`` area past its block is not read: the record it belongs to is
+listed from its other entries. Every fixture is built with pycdlib in the test.
 """
 
 from __future__ import annotations
@@ -11,13 +11,12 @@ from __future__ import annotations
 import io
 import struct
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from archivey import open_archive
 from archivey.config import ArchiveyConfig, ListingLimits
-from archivey.exceptions import CorruptionError, ResourceLimitError
+from archivey.diagnostics import DiagnosticCode
 from tests.conftest import requires
 from tests.memory_util import traced_peak
 
@@ -46,21 +45,6 @@ def _build_iso() -> bytearray:
     return bytearray(out.getvalue())
 
 
-def _peak_at_open(source: Any, config: ArchiveyConfig, error: type[Exception]) -> int:
-    """Peak traced bytes while ``open_archive`` refuses ``source`` with ``error``."""
-
-    def attempt() -> None:
-        with pytest.raises(error):
-            open_archive(
-                io.BytesIO(source) if isinstance(source, bytes) else source,
-                config=config,
-            )
-
-    # One untraced run first, so lazy imports and first-use caches are not counted.
-    attempt()
-    return traced_peak(attempt)
-
-
 def _with_path_table_size(size: int, image_size: int) -> bytes:
     data = _build_iso()
     (stored,) = struct.unpack_from("<I", data, _PATH_TABLE_SIZE)
@@ -75,75 +59,24 @@ def _with_path_table_size(size: int, image_size: int) -> bytes:
 @pytest.mark.parametrize(
     "limits", [ListingLimits(), ListingLimits.UNLIMITED], ids=["default", "unlimited"]
 )
-def test_a_path_table_past_the_image_is_refused_before_pycdlib_parses_it(
-    limits: ListingLimits,
-) -> None:
-    """A size past the image is corruption, whatever the limits, before the read.
+def test_a_path_table_size_past_the_image_reads_nothing(limits: ListingLimits) -> None:
+    """Listing walks the directories, so a path table size of 64 MiB in a 2 MiB image
+    is not read: the image opens, and the open holds little more than the image
+    (``io.BytesIO`` keeps one copy).
 
-    Unchecked, pycdlib 1.16 read the 2 MiB the image held and parsed it into one
-    object per 8-byte record, 28 MiB, before failing on the short read; 1.21 reads
-    it and refuses the short read before the parse, at about twice the image. The
-    image is read once here, and the bound holds about 512 KiB above it.
+    pycdlib read the path table at open and parsed it into one object per 8-byte
+    record, about 29 times its size.
     """
     data = _with_path_table_size(64 * 2**20, image_size=2 * 2**20)
     config = ArchiveyConfig(listing_limits=limits)
+    with open_archive(io.BytesIO(data), config=config) as reader:
+        assert [m.name for m in reader.members()] == ["a" * 230]
 
-    with pytest.raises(CorruptionError, match="path table at block"):
-        open_archive(io.BytesIO(data), config=config)
-    peak = _peak_at_open(data, config, CorruptionError)
-    assert peak < len(data) + 2**19, (peak, len(data))
+    def attempt() -> None:
+        open_archive(io.BytesIO(data), config=config).close()
 
-
-def test_a_path_table_over_max_metadata_bytes_is_refused_before_pycdlib_parses_it() -> (
-    None
-):
-    """Path tables are weighed with the rest of the image, before pycdlib reads them."""
-    data = _with_path_table_size(2**20, image_size=2 * 2**20)
-    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=2**19))
-
-    with pytest.raises(
-        ResourceLimitError, match=r"max_metadata_bytes=524288 .*a path table"
-    ):
-        open_archive(io.BytesIO(data), config=config)
-    peak = _peak_at_open(data, config, ResourceLimitError)
-    assert peak < 2 * len(data), (peak, len(data))
-
-
-def test_both_path_tables_count_against_max_metadata_bytes() -> None:
-    """The little- and big-endian tables are each parsed, so each is weighed.
-
-    Before them pycdlib has parsed one record, the PVD's 34-byte root record. A
-    budget that holds it and one table is crossed by the second, before the walk.
-    """
-    data = bytes(_build_iso())
-    (size,) = struct.unpack_from("<I", data, _PATH_TABLE_SIZE)
-    budget = 34 + size
-    limits = ListingLimits(max_metadata_bytes=budget)
-    with pytest.raises(
-        ResourceLimitError,
-        match=f"max_metadata_bytes={budget} .*has {34 + 2 * size} bytes.*a path table",
-    ):
-        open_archive(io.BytesIO(data), config=ArchiveyConfig(listing_limits=limits))
-
-
-def test_path_table_entries_over_max_members_are_refused_as_pycdlib_parses_them() -> (
-    None
-):
-    """Each entry is a directory, so a table of more than ``max_members + 1`` is refused.
-
-    A 1 MiB table of 8-byte entries fits the default ``max_metadata_bytes``; parsed
-    whole it cost about 30 MB. Counted against ``max_members=1000`` it stops after
-    1001 entries.
-    """
-    data = _with_path_table_size(2**20, image_size=2 * 2**20)
-    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=1000))
-
-    with pytest.raises(
-        ResourceLimitError, match=r"max_members=1000 \(ISO path table holds more"
-    ):
-        open_archive(io.BytesIO(data), config=config)
-    peak = _peak_at_open(data, config, ResourceLimitError)
-    assert peak < 2 * len(data), (peak, len(data))
+    attempt()
+    assert traced_peak(attempt) < len(data) + 2**19
 
 
 def test_an_image_whose_directories_fill_max_members_still_opens() -> None:
@@ -184,25 +117,37 @@ def _with_ce(offset: int | None = None, length: int | None = None) -> bytearray:
     return data
 
 
-def test_a_continuation_area_past_its_block_is_refused_before_pycdlib_reads_it(
-    tmp_path: Path,
-) -> None:
-    """pycdlib read the whole declared length, then refused it as past the block.
+def _skipped(data: bytes | bytearray | Path, reason: str) -> None:
+    """The file lists under its ISO 9660 name with ``MEMBER_HEADER_RECORD_SKIPPED``
+    naming ``reason``, and its data reads."""
+    source = data if isinstance(data, Path) else io.BytesIO(bytes(data))
+    with open_archive(source) as reader:
+        (member,) = reader.members()
+        assert member.name == "A.TXT"
+        codes = [d.code for d in member.diagnostics]
+        assert codes == [DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED]
+        assert reason in member.diagnostics[0].message
+        assert reader.read(member) == b"hello\n"
 
-    The image is a sparse file, so the source let pycdlib read 8 MiB of it; the
-    refusal is the same ``CorruptionError`` as before, raised before the read.
-    """
+
+def test_a_continuation_area_past_its_block_is_not_read(tmp_path: Path) -> None:
+    """A ``CE`` area of 8 MiB runs past its block: it is not read (Linux's
+    ``rock_continue`` refuses it too), under any limits, and only its record loses its
+    Rock Ridge name. The image is a sparse file of 16 MiB."""
     path = tmp_path / "ce.iso"
     with path.open("wb") as f:
         f.write(_with_ce(length=8 * 2**20))
         f.truncate(16 * 2**20)
 
+    _skipped(path, "continuation area of 8388608 bytes")
     for limits in (ListingLimits(), ListingLimits.UNLIMITED):
         config = ArchiveyConfig(listing_limits=limits)
-        with pytest.raises(CorruptionError, match="continuation area of 8388608 bytes"):
-            open_archive(path, config=config)
-        peak = _peak_at_open(path, config, CorruptionError)
-        assert peak < 2**20, peak
+
+        def attempt(config: ArchiveyConfig = config) -> None:
+            open_archive(path, config=config).close()
+
+        attempt()
+        assert traced_peak(attempt) < 2**20
 
 
 def _with_chained_ce(length: int) -> bytearray:
@@ -223,27 +168,28 @@ def _with_chained_ce(length: int) -> bytearray:
     return data
 
 
-def test_a_chained_continuation_area_past_its_block_is_refused_before_the_read(
+def test_a_chained_continuation_area_past_its_block_is_not_read(
     tmp_path: Path,
 ) -> None:
-    """Every link of a ``CE`` chain is held to its block, not only the record's own.
-
-    pycdlib follows the chain and reads each further link for its declared length,
-    clamped only to the image, before it refuses a link past its block: 8 MiB here,
-    under any limits.
-    """
+    """Every link of a ``CE`` chain is held to its block, not only the record's own."""
     path = tmp_path / "ce-chain.iso"
     with path.open("wb") as f:
         f.write(_with_chained_ce(8 * 2**20))
         f.truncate(16 * 2**20)
 
-    match = "continuation area of 8388608 bytes at offset 0 of block 100"
-    for limits in (ListingLimits(), ListingLimits.UNLIMITED):
-        config = ArchiveyConfig(listing_limits=limits)
-        with pytest.raises(CorruptionError, match=match):
-            open_archive(path, config=config)
-        peak = _peak_at_open(path, config, CorruptionError)
-        assert peak < 2**20, peak
+    with open_archive(path) as reader:
+        (member,) = reader.members()
+        # The name was whole before the second link: it stays.
+        assert member.name == "a" * 230
+        (diagnostic,) = member.diagnostics
+        assert diagnostic.code == DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
+        assert "8388608 bytes at offset 0 of block 100" in diagnostic.message
+
+    def attempt() -> None:
+        open_archive(path).close()
+
+    attempt()
+    assert traced_peak(attempt) < 2**20
 
 
 def test_a_chained_continuation_area_inside_its_block_is_read() -> None:
@@ -254,13 +200,12 @@ def test_a_chained_continuation_area_inside_its_block_is_read() -> None:
         assert [m.name for m in reader.members()] == ["a" * 230]
 
 
-def test_a_continuation_area_is_held_to_the_primary_descriptors_block() -> None:
-    """The block is the PVD's, which pycdlib checks against, in every tree.
+def test_a_continuation_entry_in_the_joliet_tree_is_not_followed() -> None:
+    """Joliet records carry no Rock Ridge, so a ``CE`` there is not followed.
 
     The Joliet descriptor here declares 4096-byte blocks, and its root's ``.`` record
-    carries a ``CE`` for 3000 bytes: inside the Joliet block size, past the PVD's
-    2048. Held to the descriptor being walked, the area was read and then refused by
-    pycdlib ("No room in continuation block").
+    carries a ``CE`` for 3000 bytes. pycdlib read that area and refused the image; the
+    Joliet tree's System Use areas are not parsed at all now.
     """
     import pycdlib
 
@@ -289,15 +234,13 @@ def test_a_continuation_area_is_held_to_the_primary_descriptors_block() -> None:
     data[root * 2048 : root * 2048 + len(directory)] = directory
     data += bytes(102 * 2048 - len(data))
 
-    with pytest.raises(CorruptionError, match="runs past the 2048-byte block"):
-        open_archive(io.BytesIO(bytes(data)))
+    with open_archive(io.BytesIO(bytes(data))) as reader:
+        assert [m.name for m in reader.members()] == ["a"]
 
 
 @pytest.mark.parametrize("offset", [2040, 2049])
-def test_a_continuation_area_offset_past_its_block_is_refused(offset: int) -> None:
-    data = _with_ce(offset=offset, length=16)
-    with pytest.raises(CorruptionError, match=f"at offset {offset} of block"):
-        open_archive(io.BytesIO(bytes(data)))
+def test_a_continuation_area_offset_past_its_block_is_not_read(offset: int) -> None:
+    _skipped(_with_ce(offset=offset, length=16), f"at offset {offset} of block")
 
 
 def test_a_continuation_area_ending_at_its_block_end_opens() -> None:

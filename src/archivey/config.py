@@ -43,7 +43,7 @@ from archivey.internal.arg_checks import (
 from archivey.internal.config_copy import copying_config
 from archivey.internal.enum_args import coerce_enum
 from archivey.terminal import quoted
-from archivey.types import ArchiveMember, OptionalLibrary
+from archivey.types import ArchiveMember, OnSourceRead, OptionalLibrary
 
 
 class AcceleratorMode(Enum):
@@ -345,8 +345,8 @@ class ListingLimits:
     the directory when the end record understates the count), 7z and RAR weigh the
     names and comments their headers hold against ``max_metadata_bytes`` (RAR's
     compressed RAR 1.5-4 comments by declared or packed size, whichever is larger,
-    before decoding them), and ISO the directory records and path tables ``pycdlib``
-    parses and the UDF descriptors and File Entries archivey parses, and XAR
+    before decoding them), and ISO the directories and Rock Ridge continuation areas of
+    its ISO 9660 and Joliet trees and the UDF descriptors and File Entries, and XAR
     applies ``max_members`` and weighs its
     table of contents' size and every path it builds there against
     ``max_metadata_bytes``, so ``open_archive`` raises. A ZIP read from a
@@ -1070,6 +1070,40 @@ class ArchiveyConfig:
     error either way: only the partial bytes before an error differ.
     """
 
+    on_source_read: OnSourceRead | None = None
+    """A callback called with a :class:`~archivey.SourceProgress` as archivey reads the
+    archive's own file, or ``None``.
+
+    A local file or stream reports about once per MiB read. A URL source (an
+    ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
+    reads count. It runs on the thread that read, and an exception it raises propagates
+    out of that read: raising is how a caller stops a slow read. Every later read of the
+    file raises it again, and ``extract_all(on_error="continue")`` stops on it rather
+    than counting it as one member's failure. A read on a thread archivey started (the
+    RAR volume feeder) does not call it: the latest such report is kept and delivered on
+    the caller's next read of the archive or of the member being read. Reports in
+    between are merged, so ``requests`` may skip numbers. Every reader reports to the
+    callback in its own config. A reader opened with ``parent=`` (an archive inside a
+    member, which uses the parent's config unless given one) reports with
+    :attr:`SourceProgress.nest_level <archivey.SourceProgress.nest_level>` one more than
+    its parent's. Each reader reports the bytes it reads from its own source (for a
+    nested reader, the member it was opened on), at its own level. A member stream
+    passed without ``parent=`` is a file of its own, at level 0. To tell apart nested
+    archives open at the same time, give each its own callback, such as
+    ``dataclasses.replace(config, on_source_read=functools.partial(on_read, name))``. A
+    split set found beside a stub, and the track files of a ``.cue`` sheet, report as
+    the file they stand in for. Bytes that an external program (``unrar``) or the RAR
+    reader's own volume reads take from a path directly are not reported.
+    """
+
+    source_read_step: int = 1 << 20
+    """Bytes taken from a local file or stream between two ``on_source_read`` calls
+    (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
+    <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
+    a log of every region of the file read. A URL source reports every request
+    whatever this is.
+    """
+
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
         # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
@@ -1107,6 +1141,8 @@ class ArchiveyConfig:
             unrar_path: str | os.PathLike[str] | None = ...,
             unar_path: str | os.PathLike[str] | None = ...,
             recover_partial_data: bool = ...,
+            on_source_read: OnSourceRead | None = ...,
+            source_read_step: int = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -1212,6 +1248,13 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
 def _check_scalar_fields(config: ArchiveyConfig) -> None:
     """Check the callback, the ZIP fallback encoding and the two integer limits."""
     check_callable(config.on_diagnostic, call="ArchiveyConfig(on_diagnostic=…)")
+    check_callable(config.on_source_read, call="ArchiveyConfig(on_source_read=…)")
+    check_limit(
+        config.source_read_step,
+        cls="ArchiveyConfig",
+        field_name="source_read_step",
+        allow_none=False,
+    )
     check_encoding(
         config.zip_unflagged_fallback_encoding,
         call="ArchiveyConfig(zip_unflagged_fallback_encoding=…)",

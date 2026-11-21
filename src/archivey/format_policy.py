@@ -9,6 +9,7 @@ an allowed plugin matches.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -185,7 +186,18 @@ def _coerce_libraries(
                 "decode with them. Refuse the containers and compressions that "
                 "carry them with only= or exclude= instead."
             )
-    return coerce_enum_collection(values, OptionalLibrary, call=_CALL, param=param)
+    libraries = coerce_enum_collection(values, OptionalLibrary, call=_CALL, param=param)
+    if OptionalLibrary.PYCDLIB in libraries:
+        # Deprecated in 0.6.0, removed in 0.7.0 (DR-12a). ``stacklevel=3`` names the
+        # caller's line: one level is this function, the next is ``__init__``.
+        warnings.warn(
+            f"OptionalLibrary.PYCDLIB in {param} is deprecated and has no effect: "
+            "ISO images need no optional package. Drop it; it will be removed in "
+            "0.7.0.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return libraries
 
 
 def _check_named_plugins(

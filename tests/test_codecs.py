@@ -45,6 +45,7 @@ from archivey.internal.config import (
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams import codecs as codecs_module, crypto
+from archivey.internal.streams.callers_source import mark_callers_source
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -56,7 +57,6 @@ from archivey.internal.streams.codecs import (
     stream_codec,
     stream_codecs,
 )
-from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,
@@ -3635,9 +3635,9 @@ def test_every_optional_package_archivey_imports_is_an_optional_library() -> Non
     assert not offenders, "imported but not an OptionalLibrary:\n" + "\n".join(
         offenders
     )
-    assert imported == set(OptionalLibrary), (
-        f"never imported: {sorted(set(OptionalLibrary) - imported)}"
-    )
+    # PYCDLIB is deprecated in 0.6.0 and removed in 0.7.0: ISO needs no package.
+    expected = set(OptionalLibrary) - {OptionalLibrary.PYCDLIB}
+    assert imported == expected, f"never imported: {sorted(expected - imported)}"
 
 
 def test_no_source_file_advertises_a_deleted_extra() -> None:

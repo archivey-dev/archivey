@@ -115,6 +115,7 @@ from archivey.internal.remote import (
 )
 from archivey.internal.sfx import read_payload_end
 from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs import (
     codec_for_stream_format,
     open_codec_stream,
@@ -344,6 +345,8 @@ def _follow_stub_volume(
         return None
     resolved = resolve_source(alt)
     try:
+        # The split set is the archive's file now: it reports as the stub did.
+        resolved.source.report_reads_like(slot.current)
         if format is not None:
             try:
                 info = detect_format(
@@ -351,11 +354,12 @@ def _follow_stub_volume(
                     config=probe_config(config),
                     follow_stub_volumes=False,
                 )
-            except FormatDetectionError:
+            except FormatDetectionError as exc:
+                if from_source_callback(exc):
+                    raise
                 # This probe only catches a confident container mismatch. A volume
                 # it cannot identify proves no conflict; the real detection after the
                 # switch reports it, to the caller's own collector.
-                pass
             else:
                 if info.format.container != format.container:
                     # DR-15's value half: format= is a usable type, and the call
@@ -568,7 +572,7 @@ def open_archive(
             variant or feature archivey cannot read, or ``config.formats`` does not
             allow the format.
         PackageNotInstalledError: The format needs an optional package that is not
-            installed, such as ``pycdlib`` for ISO.
+            installed, such as a plugin's own package.
         ResourceLimitError: The archive exceeds a limit that is checked at open, such as
             :class:`~archivey.ListingLimits` ``max_members`` while a ZIP, 7z, RAR or ISO
             index is parsed, or :class:`~archivey.DecoderLimits` for data the open
@@ -639,6 +643,14 @@ def open_archive(
         discover_volumes=effective_config.discover_volumes,
         max_read_through=effective_config.max_read_through,
     )
+    # Every reader reports to its own config's callback; a ``parent=`` reader's
+    # reports say how deep it is; each reader counts reads of its own source.
+    if effective_config.on_source_read is not None:
+        resolved.source.report_reads(
+            effective_config.on_source_read,
+            effective_config.source_read_step,
+            0 if parent is None else cast("BaseArchiveReader", parent)._nest_level + 1,
+        )
     slot = _SourceSlot(resolved.source)
     try:
         with noting_fsspec_decoding(source):
@@ -908,7 +920,9 @@ def _decide_format(
                 collector=collector,
                 follow_stub_volumes=False,
             )
-        except FormatDetectionError:
+        except FormatDetectionError as exc:
+            if from_source_callback(exc):
+                raise  # a stop from ``on_source_read``, not a format miss
             followed = _follow_stub_volume(slot, format, config)
             if followed is None:
                 raise
@@ -996,8 +1010,8 @@ def _refuse_unopenable_format(
         )
 
     # A raw CD sector image the built-in reader cannot read (Mode 2 Form 2, an unknown
-    # mode) is refused by name, ahead of the availability check, so the answer does
-    # not depend on pycdlib; a non-seekable source is left to the read-once refusal in
+    # mode) is refused by name, ahead of the backend, so the answer names the layout;
+    # a non-seekable source is left to the read-once refusal in
     # _backend_for_source, which is also ahead of it. A replacement reader is refused
     # every raw image: the bytes are not an ISO 9660 image, and only the built-in
     # reader strips the sectors.
@@ -1054,8 +1068,9 @@ def _backend_for_source(
     # the requested mode is not what went wrong, so both modes get the one message
     # naming the only fix. Proposing streaming=True here would send the caller into
     # a second refusal explaining the retry could never have worked. Ahead of the
-    # availability check for the same reason: a piped ISO without pycdlib would
-    # otherwise be told to install it, and only then that a pipe cannot be read.
+    # availability check for the same reason: a piped archive of a plugin format whose
+    # package is missing would otherwise be told to install it, and only then that a
+    # pipe cannot be read.
     #
     # The argument-hygiene diagnostics still run first, as they do ahead of the mode
     # half below: a refused open reports the same ``password=`` / ``encoding=``
@@ -1414,6 +1429,10 @@ def open_stream(
         codec_input = ArchiveSource.for_stream(source)
         # The mid-stream origin contract: the payload starts where the caller left it.
         codec_input.rebase_to_current_position()
+    if effective_config.on_source_read is not None:
+        codec_input.report_reads(
+            effective_config.on_source_read, effective_config.source_read_step
+        )
     # The returned stream owns the source from here, as a reader does: closing it closes
     # the source (which never closes the caller's object), and so does any refusal
     # before there is a stream to close.
@@ -1485,8 +1504,8 @@ def _open_stream_from_source(
     # A path goes to the codec as a path: it opens its own handles and can use
     # path-only accelerator features, and the source then never opens one.
     codec_source: str | BinaryIO
-    if codec_input.path is not None:
-        codec_source = str(codec_input.path)
+    if codec_input.codec_path is not None:
+        codec_source = str(codec_input.codec_path)
     elif source_is_seekable:
         codec_source = codec_input
     else:

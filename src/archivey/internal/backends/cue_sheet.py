@@ -42,7 +42,7 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Protocol
 
 from archivey.exceptions import CorruptionError, TruncatedError, UnsupportedFeatureError
 from archivey.formats import ReaderSource
@@ -58,6 +58,9 @@ from archivey.internal.backends.cd_sectors import (
 )
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat
+
+if TYPE_CHECKING:
+    from archivey.internal.read_progress import SourceReadReporter
 
 # A sheet is a few lines per track and at most 99 tracks; a larger file is not one.
 MAX_CUE_SIZE = 64 * 1024
@@ -253,11 +256,16 @@ class _TrackFile:
         self._lock = threading.Lock()
         self.size = st.st_size
         self.name = path.name
+        # ``ArchiveyConfig.on_source_read``'s reporter for this file, when set.
+        self.progress: SourceReadReporter | None = None
 
     def read_at(self, offset: int, n: int) -> bytes:
         with self._lock:
             self._fp.seek(offset)
-            return self._fp.read(n)
+            data = self._fp.read(n)
+        if self.progress is not None:
+            self.progress.read(offset + len(data), len(data), at_end=len(data) < n)
+        return data
 
     def close(self) -> None:
         self._fp.close()
@@ -383,7 +391,7 @@ class DiscSource(ReaderSource):
             if sector[1:6] != b"CD001" or sector[0] == 255:
                 break
         # And the sector after the terminator, where mkisofs writes a version
-        # descriptor that pycdlib reads.
+        # descriptor that the ISO 9660 parser reads.
         return end + 1
 
     def trailing_window(self, volume_end: int, limit: int) -> tuple[int, int]:
@@ -583,11 +591,25 @@ def _rebase(extents: list[_Extent], chosen: _Extent, delta: int) -> list[_Extent
     ]
 
 
-def disc_source(cue_path: Path, archive_name: str | None) -> DiscSource:
-    """The disc ``cue_path`` describes, as a :class:`DiscSource` on its chosen track."""
+def disc_source(
+    cue_path: Path,
+    archive_name: str | None,
+    progress_reporter: Callable[[str | None, int | None], SourceReadReporter | None]
+    | None = None,
+) -> DiscSource:
+    """The disc ``cue_path`` describes, as a :class:`DiscSource` on its chosen track.
+
+    ``progress_reporter`` gives each track file its ``on_source_read`` reporter: the
+    tracks are the archive's bytes, not the sheet.
+    """
     files = parse_cue(read_cue_text(cue_path, archive_name))
     opened = _open_files(cue_path, files)
     try:
+        if progress_reporter is not None:
+            for track_file in {id(f): f for f in opened}.values():
+                track_file.progress = progress_reporter(
+                    track_file.name, track_file.size
+                )
         extents, tracks = _layout_extents(files, opened, archive_name)
         if not extents:
             raise UnsupportedFeatureError(
@@ -623,7 +645,7 @@ def _settle_base(
 
     root = _root_extent(relative)
     if root is None:
-        return extents  # not ISO 9660 here: pycdlib says so when it opens
+        return extents  # not ISO 9660 here: the reader says so when it opens
     if root - chosen.lba in range(chosen.count) and _names_itself(
         relative(root - chosen.lba), root
     ):
@@ -693,7 +715,7 @@ def find_volume(
 def _descriptors_present(user_data: Callable[[int], bytes | None], base: int) -> bool:
     """Whether the volume descriptor set from ``base + 16`` is all in data sectors:
     up to the terminator (at most :data:`_MAX_DESCRIPTORS`) and the sector after it,
-    the sectors :meth:`DiscSource._measure_descriptors` and ``pycdlib`` read. A
+    the sectors :meth:`DiscSource._measure_descriptors` and ``iso9660.py`` read. A
     session cut inside its descriptors is not a volume the reader can open."""
     for at in range(base + 16, base + 16 + _MAX_DESCRIPTORS):
         sector = user_data(at)

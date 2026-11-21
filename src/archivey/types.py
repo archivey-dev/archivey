@@ -539,7 +539,9 @@ class OptionalLibrary(StrEnum):
     RAPIDGZIP = "rapidgzip"
     """The gzip, zlib, Deflate and bzip2 accelerator."""
     PYCDLIB = "pycdlib"
-    """ISO 9660 images."""
+    """Deprecated, and removed in 0.7.0: ISO 9660 images need no optional package
+    since 0.6.0. Naming it in ``exclude_libraries=`` or ``only_libraries=`` has no
+    effect and emits a ``DeprecationWarning``."""
     CRYPTOGRAPHY = "cryptography"
     """AES decryption in ZIP, 7z and RAR."""
     COMPRESS_UTILS = "compress_utils"
@@ -621,7 +623,7 @@ class MissingComponent:
     """
 
     name: str
-    """The package or program, such as ``"pycdlib"``, ``"brotli"`` or ``"unrar"``. For
+    """The package or program, such as ``"pyppmd"``, ``"brotli"`` or ``"unrar"``. For
     one of archivey's own packages it is the :class:`OptionalLibrary` member, which is
     a ``str``."""
 
@@ -2271,6 +2273,68 @@ class ExtractionProgress:
 
     members_blocked: int
     """Members refused so far by a safety check or by the policy."""
+
+
+@dataclass(frozen=True)
+class SourceProgress:
+    """Progress snapshot for ``ArchiveyConfig.on_source_read``: how far archivey has
+    read the archive's own file.
+
+    A local file or stream reports about once per MiB read
+    (``ArchiveyConfig.source_read_step``), or for every read. A URL source
+    (an ``fsspec.core.OpenFile``) reports before and after each range request, and only
+    then are the ``request_*`` fields and :attr:`requests` set.
+    """
+
+    name: str | None
+    """The source's name as archivey shows it: a path, or a URL without credentials.
+    ``None`` for a stream with no name."""
+
+    size: int | None
+    """The file's size in bytes (the sum of the parts for a volume set), or ``None``
+    when it is not known, as for a pipe."""
+
+    bytes_read: int
+    """Bytes taken from the file so far. A part read twice counts twice, so this may
+    pass :attr:`size`. For a URL source, the bytes the requests returned."""
+
+    position: int
+    """Where in the file the latest read ended. It moves backward when a format reads
+    out of order (ZIP reads its directory at the end first), so it is a percentage of
+    :attr:`size` only for a start-to-end read."""
+
+    requests: int | None = None
+    """For a URL source, the range requests so far, the current one included."""
+
+    request_start: int | None = None
+    """For a URL source, the first byte the current request asks for."""
+
+    request_end: int | None = None
+    """For a URL source, the end (exclusive) of the range the current request asks
+    for."""
+
+    request_received: int | None = None
+    """For a URL source, the bytes the current request has returned so far."""
+
+    request_done: bool | None = None
+    """For a URL source, whether the current request has returned."""
+
+    read_start: int | None = None
+    """For a local file or stream, where in the file the latest read started: that
+    read took the bytes from here to :attr:`position`. With
+    ``ArchiveyConfig(source_read_step=0)`` every read is reported, so these ranges are
+    every read of the file. ``None`` for a URL source, whose ``request_*`` fields give
+    each request's range."""
+
+    nest_level: int = 0
+    """Which archive's reads these are: 0 for the file the caller opened, 1 for an
+    archive opened from one of its members with ``open_archive(parent=…)``, and so on.
+    A nested reader that shares its parent's callback reports there too, so a caller
+    that wants only the file on disk keeps the reports at level 0."""
+
+
+OnSourceRead = Callable[[SourceProgress], None]
+"""The ``ArchiveyConfig.on_source_read`` callback."""
 
 
 @dataclass(frozen=True)

@@ -397,8 +397,8 @@ example because of a bug reported against it, list it in the policy's
 [`exclude_libraries=`](opening.md#configuration). archivey then decodes nothing with it in calls
 made with that config. To allow only the packages you chose, and none that a later archivey release
 adds, list them in `only_libraries=` instead. It doesn't import `brotli`, `pyppmd`, `inflate64`,
-`rapidgzip`, `compress_utils`, `bz3` or `cryptography` for them; `lz4`, `zstd` and `pycdlib` are
-imported when archivey loads, but not used. The standard library's `zlib`, `bz2` and `lzma` can't be
+`rapidgzip`, `compress_utils`, `bz3` or `cryptography` for them; `lz4` and `zstd` are imported when
+archivey loads, but not used. The standard library's `zlib`, `bz2` and `lzma` can't be
 excluded; refuse the formats that carry them with `only=` or `exclude=` instead.
 
 Opening one part of a multi-volume set by path, such as `x.part1.rar` or `x.7z.001`, also reads

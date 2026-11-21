@@ -80,10 +80,10 @@ expensive" (`seek_is_expensive`).
 
 **Backend.** Archivey's own code for one format: a `ReadBackend` subclass (a factory
 registered for some formats) and the reader class it opens. The third-party code a backend
-uses, such as `pycdlib` for ISO or the `unrar` program for RAR data, is the **library**.
-Handbook pages tag each limitation **format** (the format itself), **library** (the
-dependency's) or **archivey** (ours), which is why the word "backend" is never used for the
-library.
+uses, such as `pyppmd` for PPMd data or the `unrar` program for RAR data, is the
+**library**. Handbook pages tag each limitation **format** (the format itself),
+**library** (the dependency's) or **archivey** (ours), which is why the word "backend"
+is never used for the library.
 
 **Reader.** The object `open_archive()` returns: an instance of a backend's reader class,
 which always subclasses `BaseArchiveReader` (`internal/base_reader.py`). The public type is

@@ -43,6 +43,7 @@ from archivey.exceptions import (
 from archivey.internal.diagnostics_collector import leave_scope, resolve_collector
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.checked_spans import LevelRefresh
 from archivey.internal.streams.decompressor_stream import (
     DecompressorStream,
@@ -1562,6 +1563,8 @@ def _translation(
     if isinstance(e, ArchiveyError):
         stamp(e)
         return None
+    if from_source_callback(e):
+        return None  # the caller's own, such as from ``on_source_read``
     translated_closed = as_closed_source_error(e, member_name)
     if translated_closed is not None:
         # The *inner* stream hit a closed handle underneath it — typically the

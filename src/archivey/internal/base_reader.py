@@ -217,6 +217,7 @@ from archivey.internal.streams.archive_stream import (
     as_closed_source_error,
     compose_translators,
 )
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -678,8 +679,8 @@ class ReadBackend(ABC):
     # can record ENCODING_ARGUMENT_UNUSED rather than let the argument be dropped with
     # no signal.
     USES_ENCODING: bool = False
-    # The optional package this backend needs, such as ``OptionalLibrary.PYCDLIB``; the
-    # registry derives availability centrally from whether it imports. ``None`` for core
+    # The optional package this backend needs, an ``OptionalLibrary``; the registry
+    # derives availability centrally from whether it imports. ``None`` for core
     # backends.
     OPTIONAL_DEPENDENCY: OptionalLibrary | None = None
     # More modules the backend imports, checked after ``OPTIONAL_DEPENDENCY`` the same
@@ -973,7 +974,7 @@ class BaseArchiveReader(ArchiveReader):
         self._state = ReaderState(member_streams=member_streams, open_site=open_site)
         self._closed = False
         # A backend that shares one underlying handle across member streams (the TAR
-        # walk's stream, pycdlib _cdfp) sets this to a lock under CONCURRENT (and TAR
+        # walk's stream) sets this to a lock under CONCURRENT (and TAR
         # also under streaming). Backends acquire it via ``_handle_guard()`` so the "lock
         # when present, no-op otherwise" branch lives in one place. ``None`` = no shared
         # handle to serialize (default readers, path-per-open backends).
@@ -1168,9 +1169,9 @@ class BaseArchiveReader(ArchiveReader):
 
         Immutable, already-materialized state (the member list / name index) MAY be read
         read-only. Backends whose member addressing is owned by an external library that
-        already coordinates the shared handle (ISO via ``pycdlib``) are not required to
-        route through an archivey ``SharedSource`` view, but archivey-owned reader state
-        still MUST NOT hold unsynchronized per-open scratch.
+        already coordinates the shared handle are not required to route through an
+        archivey ``SharedSource`` view, but archivey-owned reader state still MUST NOT
+        hold unsynchronized per-open scratch.
 
         Concurrent ``open`` is supported when the reader declared concurrency
         (``MemberStreams.CONCURRENT``, from ``open_archive(concurrent_operations=True)``):
@@ -1241,13 +1242,17 @@ class BaseArchiveReader(ArchiveReader):
         ``EncryptionError`` (ZIP's password errors carry their own message and must
         not be reattributed).
         """
+        if from_source_callback(exc):
+            # The caller's own, such as from ``on_source_read``: not stamped, even
+            # when it is an ``ArchiveyError``.
+            raise exc
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
         closed = as_closed_source_error(exc, member_name)
         if closed is not None:
             # Checked before the backend's translator, which may map every ValueError
-            # to corruption (ZIP's bad-offset rule, ISO's pycdlib rule).
+            # to corruption (ZIP's bad-offset rule).
             raise closed from exc
         translated = self._translate_exception(exc)
         if translated is None:
@@ -2325,6 +2330,8 @@ class BaseArchiveReader(ArchiveReader):
                         try:
                             self._resolve_link_target(member)
                         except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                            if from_source_callback(exc):
+                                raise
                             self._report_unreadable_link_target(member, exc)
                             continue
                         if member.link_target is not None:
@@ -4133,7 +4140,7 @@ class BaseArchiveReader(ArchiveReader):
 
     def _note_reader_backend(self, format: ArchiveFormat) -> None:
         """Record the format reader in :attr:`backends_used`. A plugin adapter records
-        its plugin instead; a reader built on a package (ISO on pycdlib) adds it."""
+        its plugin instead; a reader built on a package adds it."""
         self._usage.note_backend("reader", "archivey", format.display_name)
 
     @property
@@ -4344,8 +4351,8 @@ class BaseArchiveReader(ArchiveReader):
 
         codec = codec_for_stream_format(stream_format)
         codec_source: str | BinaryIO
-        if source.path is not None:
-            codec_source = str(source.path)
+        if source.codec_path is not None:
+            codec_source = str(source.codec_path)
         else:
             codec_source = self._codec_input(source, track_seeks=True)
         decoded = open_codec_stream(
@@ -5012,6 +5019,8 @@ class BaseArchiveReader(ArchiveReader):
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
+                    if from_source_callback(e):
+                        raise
                     failures.append((m, e))
                     if isinstance(e, SpanningCheckError):
                         spanning.append(e)
