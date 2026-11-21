@@ -2,8 +2,9 @@
 
 Rust versions of the decoders that [archivey](https://github.com/archivey-dev/archivey)
 otherwise runs in Python. When archivey finds this package, those decoders get faster,
-and nothing else changes: the output bytes are the same, and damaged input raises the
-same exception type with the same message. Without it, archivey uses its Python
+and nothing else changes: the output bytes are the same, and a damaged archive raises
+the same exception type with the same message (two caller-only exceptions are listed
+below). Without it, archivey uses its Python
 decoders.
 
 This is a pre-release. The API below is the prototype's. Before 0.1, it is reshaped to
@@ -22,7 +23,10 @@ archived): `hashlib`-style hashes, `lzma.LZMADecompressor`-style decoders and a
 | `arm64_decode`, `riscv_decode` | 7z ARM64 and RISC-V branch filters | `arm64_filter`, `riscv_filter` |
 
 The kernels raise `CorruptData`, `TruncatedData` and `UnsupportedData`, all
-subclasses of `ValueError`. Every kernel that loops over caller data releases the GIL.
+subclasses of `ValueError`. LZO, the branch filters and `LzwState.feed` release the GIL
+while they decode; the others hold it (LZX and BCJ2 call back into Python for input).
+Two LZX refusals that only a caller can reach (a frame size off the 32 KiB grid) raise
+`CorruptData` where Python raises `IndexError` or grows its window; see `src/kernels/lzx.rs`.
 The kernel modules (`src/kernels/`) forbid `unsafe` code.
 
 ## Develop

@@ -2,8 +2,10 @@
 //!
 //! The kernels know nothing about archivey: they report `CorruptData`,
 //! `TruncatedData` or `ValueError`, and archivey's shim (`archivey.internal.native`)
-//! turns those into the exceptions the pure-Python decoders raise. Every entry point
-//! that loops over caller data releases the GIL.
+//! turns those into the exceptions the pure-Python decoders raise. LZO, the branch
+//! filters and `LzwState.feed` release the GIL while they decode. ZipCrypto and
+//! `LzwState.flush` hold it, and LZX and BCJ2 cannot release it, because they call
+//! back into Python for their input.
 
 pub mod kernels;
 
@@ -12,6 +14,7 @@ use kernels::{bcj2, filters, lzo, lzw, lzx, zipcrypto};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(_codecs, CorruptData, PyValueError, "The data is damaged.");
 pyo3::create_exception!(_codecs, TruncatedData, PyValueError, "The data ends early.");
@@ -135,7 +138,14 @@ impl lzx::Input for PyInput<'_, '_> {
 #[pyclass(module = "archivey_codecs._codecs")]
 struct LzxDecoder {
     inner: lzx::LzxDecoder,
-    more: Py<PyAny>,
+    /// The input callback; `None` once the garbage collector cleared it. The CAB
+    /// reader passes a method of the object that holds this decoder, a cycle the
+    /// collector must see (`__traverse__`) to free.
+    more: Option<Py<PyAny>>,
+}
+
+fn cleared() -> PyErr {
+    PyValueError::new_err("the decoder's input was cleared")
 }
 
 #[pymethods]
@@ -144,8 +154,19 @@ impl LzxDecoder {
     fn new(window_bits: u32, more: Py<PyAny>) -> PyResult<Self> {
         Ok(LzxDecoder {
             inner: lzx::LzxDecoder::new(window_bits).map_err(to_py0)?,
-            more,
+            more: Some(more),
         })
+    }
+
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        if let Some(more) = &self.more {
+            visit.call(more)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.more = None;
     }
 
     fn decode_frame<'py>(
@@ -153,7 +174,7 @@ impl LzxDecoder {
         py: Python<'py>,
         frame_size: usize,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let more = self.more.bind(py).clone();
+        let more = self.more.as_ref().ok_or_else(cleared)?.bind(py).clone();
         let mut input = PyInput { more: &more };
         let out = self
             .inner
@@ -183,8 +204,21 @@ impl bcj2::Streams for PyStreams<'_, '_> {
 #[pyclass(module = "archivey_codecs._codecs")]
 struct Bcj2Core {
     inner: bcj2::Bcj2,
-    reads: [Py<PyAny>; 4],
+    /// `None` once the garbage collector cleared them (see `LzxDecoder::more`).
+    reads: Option<[Py<PyAny>; 4]>,
     partial: Vec<u8>,
+}
+
+impl Bcj2Core {
+    fn streams<'py>(&self, py: Python<'py>) -> PyResult<[Bound<'py, PyAny>; 4]> {
+        let r = self.reads.as_ref().ok_or_else(cleared)?;
+        Ok([
+            r[0].bind(py).clone(),
+            r[1].bind(py).clone(),
+            r[2].bind(py).clone(),
+            r[3].bind(py).clone(),
+        ])
+    }
 }
 
 #[pymethods]
@@ -193,18 +227,24 @@ impl Bcj2Core {
     fn new(main: Py<PyAny>, call: Py<PyAny>, jump: Py<PyAny>, rc: Py<PyAny>) -> Self {
         Bcj2Core {
             inner: bcj2::Bcj2::new(),
-            reads: [main, call, jump, rc],
+            reads: Some([main, call, jump, rc]),
             partial: Vec::new(),
         }
     }
 
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for r in self.reads.iter().flatten() {
+            visit.call(r)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.reads = None;
+    }
+
     fn decode_block<'py>(&mut self, py: Python<'py>, left: u64) -> PyResult<Bound<'py, PyBytes>> {
-        let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
-        ];
+        let reads = self.streams(py)?;
         let mut streams = PyStreams { reads: &reads };
         let mut out = Vec::new();
         match self.inner.decode_block(left, &mut out, &mut streams) {
@@ -221,12 +261,7 @@ impl Bcj2Core {
     }
 
     fn check_inputs_finished(&mut self, py: Python<'_>) -> PyResult<()> {
-        let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
-        ];
+        let reads = self.streams(py)?;
         let mut streams = PyStreams { reads: &reads };
         self.inner
             .check_inputs_finished(&mut streams)
@@ -249,10 +284,24 @@ impl LzwState {
         max_width: Option<u32>,
         block_mode: Option<bool>,
         nine_bit_widens: Option<bool>,
-    ) -> Self {
-        LzwState {
-            inner: lzw::LzwState::new(max_width, block_mode, nine_bit_widens),
+    ) -> PyResult<Self> {
+        // The width sizes the dictionary, allocated at once: refuse what no header
+        // can hold (the Python twin asserts both are given together).
+        if max_width.is_some() != block_mode.is_some() {
+            return Err(PyValueError::new_err(
+                "give max_width and block_mode together, or neither",
+            ));
         }
+        if let Some(w) = max_width {
+            if !(9..=16).contains(&w) {
+                return Err(PyValueError::new_err(format!(
+                    "max_width {w} is outside 9 to 16"
+                )));
+            }
+        }
+        Ok(LzwState {
+            inner: lzw::LzwState::new(max_width, block_mode, nine_bit_widens),
+        })
     }
 
     #[pyo3(signature = (data, max_length=-1))]

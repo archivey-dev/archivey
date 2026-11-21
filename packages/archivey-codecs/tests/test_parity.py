@@ -3,16 +3,17 @@
 
 Same input, same output bytes; on damage, the same error kind and the same message.
 Run from the archivey checkout with archivey-codecs installed:
-``uv run pytest packages/archivey-codecs/tests``. BCJ2 parity comes with the
-``bcj2.Decompressor`` API: the prototype's BCJ2 loop was only reachable through
-archivey's hook.
+``uv run pytest packages/archivey-codecs/tests``.
 """
 
 from __future__ import annotations
 
+import gc
+import io
 import os
 import random
 import sys
+import weakref
 from collections.abc import Callable
 from pathlib import Path
 
@@ -356,45 +357,129 @@ def lzw_run(make: Callable, data: bytes, rng: random.Random, kwargs: dict) -> li
 def test_lzw_parity() -> None:
     from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
 
-    if True:
-        rng = random.Random(7)
-        cases = []
-        try:
-            import io
+    rng = random.Random(7)
+    cases = []
+    try:
+        import ncompress
 
-            import ncompress
-
-            for _ in range(20):
-                raw = sample_data(rng, rng.randint(0, 300_000))
-                buf = io.BytesIO()
-                ncompress.compress(io.BytesIO(raw), buf)
-                cases.append(buf.getvalue())
-        except ImportError:
-            pass
-        for _ in range(SEEDS):
-            cases.append(
-                pack_lzw(
-                    rng,
-                    rng.choice((9, 9, 10, 12, 16)),
-                    rng.random() < 0.8,
-                    rng.random() < 0.5,
-                    rng.randint(0, 4000),
-                )
+        for _ in range(20):
+            raw = sample_data(rng, rng.randint(0, 300_000))
+            buf = io.BytesIO()
+            ncompress.compress(io.BytesIO(raw), buf)
+            cases.append(buf.getvalue())
+    except ImportError:
+        pass
+    for _ in range(SEEDS):
+        cases.append(
+            pack_lzw(
+                rng,
+                rng.choice((9, 9, 10, 12, 16)),
+                rng.random() < 0.8,
+                rng.random() < 0.5,
+                rng.randint(0, 4000),
             )
-        for case, data in enumerate(cases):
-            for variant in range(3):
-                d = data if variant == 0 else damage(rng, data)
-                kwargs: dict = {}
-                if variant == 2 and len(d) > 3 and rng.random() < 0.5:
-                    kwargs = {
-                        "max_width": max(9, d[2] & 0x1F),
-                        "block_mode": bool(d[2] & 0x80),
-                        "nine_bit_widens": rng.choice((None, True, False)),
-                    }
-                    if kwargs["max_width"] > 16:
-                        continue
-                    d = d[3:]
-                seed = rng.random()
-                py = lzw_run(LzwState, d, random.Random(seed), kwargs)
-                rs = lzw_run(archivey_codecs.LzwState, d, random.Random(seed), kwargs)
-                assert py == rs, (case, variant)
+        )
+    for case, data in enumerate(cases):
+        for variant in range(3):
+            d = data if variant == 0 else damage(rng, data)
+            kwargs: dict = {}
+            if variant == 2 and len(d) > 3 and rng.random() < 0.5:
+                kwargs = {
+                    "max_width": max(9, d[2] & 0x1F),
+                    "block_mode": bool(d[2] & 0x80),
+                    "nine_bit_widens": rng.choice((None, True, False)),
+                }
+                if kwargs["max_width"] > 16:
+                    continue
+                d = d[3:]
+            seed = rng.random()
+            py = lzw_run(LzwState, d, random.Random(seed), kwargs)
+            rs = lzw_run(archivey_codecs.LzwState, d, random.Random(seed), kwargs)
+            assert py == rs, (case, variant)
+
+
+# ── BCJ2 ───────────────────────────────────────────────────────────────────────────
+
+
+def bcj2_python(streams: tuple[bytes, ...], size: int):
+    """The Python stream's output, with the bytes decoded before an error."""
+    from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
+
+    stream = Bcj2DecoderStream(*(io.BytesIO(s) for s in streams), unpack_size=size)
+    try:
+        return stream.read(size), ("ok", None)
+    except Exception as exc:  # noqa: BLE001
+        partial = bytes(stream._pending)
+        return partial, outcome(lambda e=exc: (_ for _ in ()).throw(e))
+
+
+def bcj2_rust(streams: tuple[bytes, ...], size: int):
+    """``Bcj2Core`` driven as the Python stream drives its own loop."""
+    core = archivey_codecs.Bcj2Core(*(io.BytesIO(s).read for s in streams))
+    out = bytearray()
+    try:
+        while len(out) < size:
+            out += core.decode_block(size - len(out))
+        core.check_inputs_finished()
+    except Exception as exc:  # noqa: BLE001
+        out += core.take_partial()
+        return bytes(out), outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return bytes(out), ("ok", None)
+
+
+def test_bcj2_parity() -> None:
+    rng = random.Random(8)
+    for case in range(max(20, SEEDS // 5)):
+        size = rng.randint(0, 200_000)
+        main = bytes(
+            rng.choice(b"\xe8\xe9\x0f\x85\x80")
+            if rng.random() < 0.2
+            else rng.randrange(256)
+            for _ in range(size)
+        )
+        call = rng.randbytes(rng.randint(0, 4000) * 4 + rng.choice((0, 0, 1, 3)))
+        jump = rng.randbytes(rng.randint(0, 4000) * 4)
+        rc = b"\0" + rng.randbytes(rng.randint(0, 20_000))
+        if case % 4 == 0:
+            rc = rng.randbytes(rng.randint(0, 6))
+        out_size = rng.choice((size, size + 1000, max(0, size - 50), size * 2))
+        streams = (main, call, jump, rc)
+        assert bcj2_rust(streams, out_size) == bcj2_python(streams, out_size), case
+
+
+# ── Bindings ───────────────────────────────────────────────────────────────────────
+
+
+def test_callback_cycles_are_collected() -> None:
+    """A decoder held by the object its input callback is bound to, as the CAB reader
+    holds its LZX decoder, is freed by the garbage collector."""
+
+    class LzxHolder:
+        def __init__(self) -> None:
+            self.d = archivey_codecs.LzxDecoder(21, self.more)
+
+        def more(self) -> None:
+            return None
+
+    class Bcj2Holder:
+        def __init__(self) -> None:
+            self.d = archivey_codecs.Bcj2Core(
+                self.read, self.read, self.read, self.read
+            )
+
+        def read(self, n: int) -> bytes:
+            return b""
+
+    for make in (LzxHolder, Bcj2Holder):
+        holder = make()
+        ref = weakref.ref(holder)
+        del holder
+        gc.collect()
+        assert ref() is None, make
+
+
+def test_lzw_width_is_checked() -> None:
+    with pytest.raises(ValueError, match="outside 9 to 16"):
+        archivey_codecs.LzwState(max_width=30, block_mode=True)
+    with pytest.raises(ValueError, match="together"):
+        archivey_codecs.LzwState(max_width=12)
