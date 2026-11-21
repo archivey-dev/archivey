@@ -555,13 +555,16 @@ def _peak_children(fn) -> int | None:
     if not sys.platform.startswith("linux"):
         fn()
         return None
+    # Children an earlier test left in this worker (multiprocessing's resource
+    # tracker, say) are not this call's.
+    before = _child_count()
     peak = 0
     stop = threading.Event()
 
     def watch() -> None:
         nonlocal peak
         while not stop.is_set():
-            peak = max(peak, _child_count())
+            peak = max(peak, _child_count() - before)
             stop.wait(0.005)
 
     watcher = threading.Thread(target=watch)

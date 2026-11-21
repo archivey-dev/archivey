@@ -185,8 +185,8 @@ def test_the_callback_s_exception_propagates_unchanged(
 
 @pytest.mark.parametrize("shape", ["zip", "bz2"])
 def test_accelerated_members_still_report_every_mib(tmp_path: Path, shape: str) -> None:
-    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region
-    # when nothing reports; while reporting it is read through the source.
+    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region,
+    # and while reporting the accelerator notes its reads of it.
     seen = _Recorder()
     config = ArchiveyConfig(on_source_read=seen)
     size = 6 * LOCAL_REPORT_STEP
