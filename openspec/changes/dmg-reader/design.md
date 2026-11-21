@@ -2,7 +2,7 @@
 
 This design is the implementation plan written for the implementer, kept here so the
 plan can be reviewed before any code. The prototype and the `hdiutil` fixtures it names
-are outside the repo; the maintainer supplies them. Decisions D1 to D7 (§2) were
+are outside the repo; the maintainer supplies them. Decisions D1 to D8 (§2) were
 ruled by the maintainer on 2026-11-21.
 
 
@@ -118,6 +118,7 @@ the PR body which defaults you implemented.
 | D4 | UDIF checksums | **Ruled by the maintainer 2026-11-21: this default.** Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, a separate partition pass that `verify_all()` runs (§7.2), which lifts members to `CHECKSUM`. Never check it at open (it needs a full decode, DR-15b). |
 | D5 | Several APFS volumes in one container (a container can hold up to 100) | **Ruled by the maintainer 2026-11-21: this default.** Same as D1: one volume at the root; several, each under its volume name. Volumes with a system role (Preboot, Recovery, VM, Update) are listed like any other; DMGs seen so far hold one data volume. |
 | D6 | Encrypted image, password checks | **Ruled by the maintainer 2026-11-21: this default** (the whole image, listing included, is under one key, so the password is tried once, at open, as for a header-encrypted RAR or 7z). The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: `EncryptionError` from `wrong_password_error`, as makeself does. |
+| D8 | Public codec names | **Ruled by the maintainer 2026-11-21:** add `CompressionAlgorithm.LZFSE`, `LZVN` and `ADC` in Part A, refusable one by one through the codec policy (§4.3). |
 | D7 | APFS metadata checksums (Fletcher-64 on every object) | **Ruled by the maintainer 2026-11-21:** always checked. In regular mode a block whose checksum fails is never used: the walk skips it (a bad leaf loses its records, a bad index node its subtree, a bad object-map node every object it maps), lists every member whose records are all intact, then raises `CorruptionError` at the end of the listing (DR-2). A member whose extents were partly in a skipped block lists but raises on read. Salvage mode (planned separately) will use bad blocks anyway, with a diagnostic, and show orphaned files. Metadata integrity only: it does not change `verifiable`. |
 
 ---
@@ -257,14 +258,18 @@ isolation. For the in-house decoders (LZFSE, ADC), pass `max_length = count * 51
 so output is bounded.
 
 Codec policy granularity: zlib, bzip2 and xz runs go through `ReaderContext.decompress`,
-so `config.formats` codec refusals apply to them as to every format. LZFSE, LZVN and ADC
-have no `CompressionAlgorithm` value, and this plan adds none: they are internal to the
-DMG reader and cannot be refused one by one; refusing `ArchiveFormat.DMG` refuses them.
-The handbook page states this. A public `CompressionAlgorithm.LZFSE` (and a policy
-entry) is a public name, so it is the maintainer's call; Part H, which adds
-`OptionalLibrary.LZFSE`, is the place to decide it. Members do not report a codec chain
-or a `compressed_size` (runs are shared across files, as in SquashFS);
-`dmg.run_codecs` in `archive_info().extra` reports them at archive level.
+so `config.formats` codec refusals apply to them as to every format. Part A adds
+`CompressionAlgorithm.LZFSE`, `CompressionAlgorithm.LZVN` and `CompressionAlgorithm.ADC`
+(D8), like the other format-specific codecs (`LZX`, `QUANTUM`, `LZH`, `SHRINK`, ...).
+The DMG reader asks `config.formats._codec_refusal(...)` before decoding an LZFSE, ADC
+or LZVN run or decmpfs block, as SquashFS does for LZ4, and a refused codec raises
+`UnsupportedFeatureError` at the read that needs it. An LZVN block inside an LZFSE
+stream (`bvxn`) is part of LZFSE and is governed by the `LZFSE` entry; `LZVN` governs
+decmpfs types 7 and 8. The values name the algorithm, not the implementation: the
+pure-Python decoder, the `lzfse` extra (Part H) and any later Rust kernel serve the same
+value, as `LZO` is served by archivey's decoder, python-lzo or compress-utils. Members
+do not report a codec chain or a `compressed_size` (runs are shared across files, as in
+SquashFS); `dmg.run_codecs` in `archive_info().extra` reports them at archive level.
 
 **Checks on the run table** (each failure is `CorruptionError` at open or first
 listing). Before any run is parsed: the header's run count must satisfy
@@ -1078,7 +1083,7 @@ the order after B is flexible except where noted.
 | Part | Contents | Depends on | Who merges |
 | --- | --- | --- | --- |
 | **A0. Evaluate the `lzfse` package** | An investigation PR (results under `dev-docs/investigations/`, scripts under `scripts/investigations/`, like the compress-utils LZO evaluation). Check: wheels for CPython 3.11 to 3.15, free-threaded 3.14t/3.15t, PyPy, Linux (glibc and musl), macOS (arm64 and x86) and Windows; licence and maintenance; whether a call can cap its output (a declared size must not drive the allocation); whether raw LZVN blocks (decmpfs types 7 and 8) can be decoded, directly or by wrapping them in a `bvxn` block header; behaviour under a fuzz run (no crash, hang or over-cap output, in a child process per DR-20); child-process cost per 1 MiB run; agreement with the prototype on the fixtures and random inputs. Ends with a recommendation on whether Part H uses it as the accelerator. | none | maintainer decides |
-| **A. Decoders** | `lzfse_decoder.py` (LZFSE + LZVN) and `adc_decoder.py`, pure Python, §9.4 tests. No reader. | none | agent |
+| **A. Decoders** | `lzfse_decoder.py` (LZFSE + LZVN) and `adc_decoder.py`, pure Python, §9.4 tests; `CompressionAlgorithm.LZFSE`, `LZVN`, `ADC` (D8). No reader. | none | maintainer (new public names) |
 | **B. UDIF + partitions + HFS+** | §3 to §7 for HFS+: `udif.py` rewrite, `disk_partitions.py`, `hfsplus.py`, `dmg_reader.py`, detection kept, the `encrcdsa`/`cdsaencr` signatures registered (§6B.1), encrypted and APFS refused by name, HFS+ fixtures, `tests/dmg_build.py` (UDIF, GPT, APM, HFS+ writers), 7-Zip oracle tests, fuzz target, handbook page, threat-model row, OpenSpec change. The big one: the test builders may go first as their own PR. | A | maintainer (new readable format, needs-minor) |
 | **C. User docs** | `docs/formats.md` §Disk images, the formats table, `--version -v` wording. Written in the maintainer's docs session (DR-22b). | B | maintainer |
 | **D. Hidden-content and edge polish** | Anything Part B's review defers: journal hiding cases, directory hard links if a fixture appears, xattr value caps, extra checks found by the corpus run. May be empty. | B | agent |

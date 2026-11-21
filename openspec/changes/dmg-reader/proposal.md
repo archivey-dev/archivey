@@ -34,8 +34,8 @@ before it is implemented in parts (2026-11-21).
 - Code: `internal/backends/udif.py` rewritten; new `disk_partitions.py`, `hfsplus.py`,
   `apfs.py`, `dmg_crypto.py`, `dmg_reader.py`; new decoders under
   `internal/streams/codecs/`.
-- Public API: no new names until the accelerator part (`OptionalLibrary.LZFSE` and an
-  extra, maintainer merges).
+- Public API: `CompressionAlgorithm.LZFSE`, `LZVN` and `ADC` with the decoders (Part
+  A); `OptionalLibrary.LZFSE` and an extra in the accelerator part.
 - Specs: new `format-dmg`; `format-detection` and `backend-registry` updated.
 - Docs: `dev-docs/formats/dmg.md`, `dev-docs/threat-model.md`, `docs/formats.md`.
 - Tests: committed `hdiutil` fixtures (`tests/fixtures/external/dmg_hdiutil/`),
