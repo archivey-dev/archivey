@@ -1202,6 +1202,13 @@ class MemberExtra(dict[str, object]):
     * ``arj.method`` (``int``) — the ARJ method, 0 (stored) to 4.
     * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
       4 volume label, 5 chapter label, 6 Unix special file.
+    * ``dmg.xattrs`` (``dict[str, bytes | None]``) — DMG. The extended attributes of
+      the HFS+ file, by name, with each value up to 1 KiB; a longer value is ``None``.
+      Absent when the file has none. Extraction does not write them. A transparently
+      compressed file's ``com.apple.decmpfs`` holds its data and is not listed.
+    * ``dmg.resource_fork_size`` (``int``) — DMG. The size of the file's resource
+      fork, when it has one; its bytes are not read. Absent on a compressed file,
+      whose resource fork holds its data.
     """
 
     __slots__ = ()
@@ -1279,6 +1286,10 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["arj.file_type"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["dmg.xattrs"], /) -> dict[str, bytes | None]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.resource_fork_size"], /) -> int: ...
+    @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
     def __getitem__(self, key: str, /) -> object:
@@ -1322,6 +1333,18 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``makeself.encryption`` (``str``)
     * ``makeself.payloads`` (``int``)
     * ``makeself.signed`` (``bool``)
+    * ``dmg.filesystem`` (``str``) — ``"HFS+"`` or ``"HFSX"``, the first volume's.
+    * ``dmg.volume_name`` (``str``) — the volume's name, when the image holds one.
+    * ``dmg.volumes`` (``list[str]``) — every volume's name, in partition order. With
+      more than one, each volume's members are under a top-level directory named
+      after it (``Untitled`` for an empty name, `` 1``, `` 2``, ... after a name
+      already taken, as macOS names its mount points).
+    * ``dmg.partition_scheme`` (``str``) — ``"GPT"``, ``"APM"`` or ``"none"``: where
+      the partitions were found (``"none"``: the image's run tables).
+    * ``dmg.run_codecs`` (``list[str]``) — the codecs of the runs that store bytes,
+      sorted: ``"raw"``, ``"adc"``, ``"zlib"``, ``"bzip2"``, ``"lzfse"``, ``"xz"``.
+    * ``dmg.code_signature`` (``bool``) — the image carries a code signature (not
+      checked).
     """
 
     __slots__ = ()
@@ -1380,6 +1403,18 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["makeself.payloads"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["makeself.signed"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.filesystem"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.volume_name"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.volumes"], /) -> list[str]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.partition_scheme"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.run_codecs"], /) -> list[str]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.code_signature"], /) -> bool: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

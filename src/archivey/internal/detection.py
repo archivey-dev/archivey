@@ -336,21 +336,26 @@ def _match_trailer(
 ) -> ArchiveFormat | None:
     """Return the format whose trailer magic matches the end of the source.
 
-    One read per distinct trailer length. A source that cannot seek cheaply, or
-    that is shorter than the block, is a decline: the caller keeps the answer it
-    already had.
+    One read, of the longest trailer: a shorter trailer is the end of that read (the
+    8-byte ``cdsaencr`` mark is the last 8 bytes of the 512 the ``koly`` block reads).
+    Another read happens only for a shorter trailer when the source is shorter than
+    the longest one. A source that cannot seek cheaply, or that is shorter than the
+    block, is a decline: the caller keeps the answer it already had.
     """
     if not entries:
         return None
     by_length: dict[int, list[TrailerSignature]] = {}
     for entry in entries:
         by_length.setdefault(entry.length, []).append(entry)
-    for length, group in by_length.items():
-        tail = workspace.read_tail(length)
-        if tail is None:
-            continue
-        for entry in group:
-            if tail.startswith(entry.magic):
+    tail: bytes | None = None
+    for length in sorted(by_length, reverse=True):
+        if tail is None or len(tail) < length:
+            tail = workspace.read_tail(length)
+            if tail is None:
+                continue
+        block = tail[len(tail) - length :]
+        for entry in by_length[length]:
+            if block.startswith(entry.magic):
                 return entry.format
     return None
 
