@@ -19,7 +19,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.internal.read_progress import LOCAL_REPORT_STEP
+from archivey.internal.read_progress import LOCAL_REPORT_STEP, SourceReadReporter
 from tests.conftest import requires, requires_unrar_cli
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -185,8 +185,8 @@ def test_the_callback_s_exception_propagates_unchanged(
 
 @pytest.mark.parametrize("shape", ["zip", "bz2"])
 def test_accelerated_members_still_report_every_mib(tmp_path: Path, shape: str) -> None:
-    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region
-    # when nothing reports; while reporting it is read through the source.
+    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region,
+    # and while reporting the accelerator notes its reads of it.
     seen = _Recorder()
     config = ArchiveyConfig(on_source_read=seen)
     size = 6 * LOCAL_REPORT_STEP
@@ -709,3 +709,30 @@ def test_a_compressed_url_reports_its_url_as_the_name() -> None:
         assert all(c.name and "example.zip.gz" in c.name for c in seen.calls)
     finally:
         fs.rm("/named", recursive=True)
+
+
+def test_bytes_a_failed_request_reported_stay_counted() -> None:
+    """A request that reported bytes inside its answer and then failed (it never
+    ends) took those bytes: the next request's report still counts them, so the
+    totals never go down. Fails if ``request_started`` drops the in-flight count."""
+    seen: list[int] = []
+    reporter = SourceReadReporter(lambda p: seen.append(p.bytes_read), "x", 1 << 30)
+    reporter.request_started(0, 3 << 20)
+    reporter.request_received(0, 3 << 20, 1 << 20)
+    reporter.request_received(0, 3 << 20, 2 << 20)
+    # The answer broke here: no request_ended. The reader retries.
+    reporter.request_started(2 << 20, 3 << 20)
+    reporter.request_ended(2 << 20, 3 << 20, 1 << 20)
+    assert seen == [0, 1 << 20, 2 << 20, 2 << 20, 3 << 20]
+
+
+def test_bytes_of_a_finished_request_count_once() -> None:
+    """Bytes reported inside an answer count once its request ends: the in-flight
+    count is cleared, not added again by the next request."""
+    seen: list[int] = []
+    reporter = SourceReadReporter(lambda p: seen.append(p.bytes_read), "x", 1 << 30)
+    reporter.request_started(0, 2 << 20)
+    reporter.request_received(0, 2 << 20, 1 << 20)
+    reporter.request_ended(0, 2 << 20, 2 << 20)
+    reporter.request_started(2 << 20, 3 << 20)
+    assert seen == [0, 1 << 20, 2 << 20, 2 << 20]

@@ -1637,6 +1637,38 @@ class BaseArchiveReader(ArchiveReader):
             member_name=member.name,
         )
 
+    def _reports_member_read(self, member: ArchiveMember) -> bool:
+        """Whether a read of ``member``'s data reports something first
+        (:meth:`_report_member_read`). The default reports nothing."""
+        return False
+
+    def _report_member_read(self, member: ArchiveMember) -> None:
+        """Emit what a read of ``member``'s data reports before its bytes, such as a
+        header that failed its checksum (``MEMBER_HEADER_DAMAGED``).
+
+        :meth:`open` calls it before the member opens, and a data pass on the
+        member's first read (:meth:`_reporting_stream`), never the listing: under a
+        policy that raises, the read of that member is refused and the listing and
+        every other member stay as they are. Called only when
+        :meth:`_reports_member_read` says so.
+        """
+
+    def _reporting_stream(
+        self, member: ArchiveMember, inner: ArchiveStreamImpl
+    ) -> ArchiveStreamImpl:
+        """A pass's stream for ``member`` that runs :meth:`_report_member_read` on its
+        first read and then reads ``inner``, which it takes over
+        (:meth:`ArchiveStreamImpl._collapse_nested`). Closed unread, it reports
+        nothing, and ``inner``, never opened either, holds nothing to free."""
+
+        def _open() -> BinaryIO:
+            self._report_member_read(member)
+            return inner
+
+        return self._wrap_member_stream(
+            member.name, _open, size=member.size, track_output=False, seekable=False
+        )
+
     def _refused_member_stream(self, member: ArchiveMember) -> ArchiveStreamImpl | None:
         """A pass's stream for ``member`` when its method is excluded: one that raises
         the refusal on its first read, as a lazy stream raises an open error. ``None``
@@ -4704,6 +4736,10 @@ class BaseArchiveReader(ArchiveReader):
                         f"member yielded by this reader, or look it up by name with "
                         f"reader.get(name)."
                     )
+            if self._reports_member_read(member):
+                # Before anything opens: under a policy that raises, this member's
+                # open is refused and nothing was spawned for it.
+                self._report_member_read(member)
             # Gate before spawn: ``_lazy_member_stream`` already registers first.
             # Reserve under the lock so two threads cannot both pass, then open,
             # then bind. A refused second open must not build a decompressor /
@@ -4716,6 +4752,10 @@ class BaseArchiveReader(ArchiveReader):
             judged: list[SolidRun] = []
 
             def before_open(target: ArchiveMember) -> None:
+                if target is not member and self._reports_member_read(target):
+                    # A link reads its target's data: what that read reports
+                    # holds for it too.
+                    self._report_member_read(target)
                 run = self._solid_run(target)
                 if run is not None:
                     self._note_solid_open(target, run)
@@ -5326,6 +5366,8 @@ class BaseArchiveReader(ArchiveReader):
                     stream.close()
                     stream = None
                 if selector is None or selector(m):
+                    if stream is not None and self._reports_member_read(m):
+                        stream = self._reporting_stream(m, stream)
                     if stream is not None:
                         # One rule for every backend, here rather than in each
                         # _iter_with_data: a pass handle never seeks. A seek would

@@ -31,7 +31,7 @@ images yet; the implementer checks it first.
 | File | What it is |
 | --- | --- |
 | `prototype/dmgproto/udif.py`, `hfsplus.py`, `apfs.py`, `lzfse.py`, `adc.py`, `dmg.py` | A working pure-Python prototype (stdlib only, 1,470 lines). It reads every file of 41 real DMGs (36 HFS+, 5 APFS) byte for byte the same as 7-Zip, and all 10 unencrypted UDIF images in the fixture set. **Use it as the reference for the on-disk layouts; do not copy it as production code.** It has none of archivey's limits, error types or diagnostics, it decodes whole files into memory, and it has no decryption. |
-| `fixtures/` | Small real images made with `hdiutil` on macOS 26.7 (§9.1), with macOS's own listing, hashes and xattrs of the mounted volume. The two 16 MiB UDRW images (raw disks, no `koly`) are left out. |
+| `fixtures/` | Moved in Part B to `tests/fixtures/external/dmg_hdiutil/`: small real images made with `hdiutil` on macOS 26.7 (§9.1), with macOS's own listing, hashes and xattrs of the mounted volume. The two 16 MiB UDRW images (raw disks, no `koly`) are left out. |
 | `make-dmg-fixtures.sh` | The script that made `fixtures/` on a Mac (Appendix A). |
 | `dmgurls.txt` | The real-world corpus URL list, 54 URLs (Appendix B); 41 were measured in the investigation. |
 
@@ -114,7 +114,7 @@ the PR body which defaults you implemented.
 | --- | --- | --- |
 | D1 | Listing when an image holds more than one readable filesystem | **Ruled by the maintainer 2026-11-21: this default.** One filesystem (every image seen so far): its files at the archive root, volume name in `archive_info().extra`. Several: each volume's files under a top-level directory named after the volume (as macOS mounts them). Do not read only the first and warn: that hides files (DR-1). |
 | D2 | Extended attributes and resource forks | **Ruled by the maintainer 2026-11-21: this default.** List names (and values up to 1 KiB) in `ArchiveMember.extra`, as TAR's pax xattrs are; do not write them on extract. Resource fork size goes in `extra` too. Docs note: code signatures of non-Mach-O files inside an `.app` (`com.apple.cs.*` xattrs) will not verify after extraction. |
-| D3 | LZFSE decoder | **Ruled by the maintainer 2026-11-21:** we already have a working pure-Python LZFSE/LZVN decoder (the prototype), so Part A ports it and it is always available. Part A0 evaluates the `lzfse` PyPI package (MIT, Apple's reference C, about 45x faster); if it passes, it becomes the optional fast path (Part H). In general the maintainer prefers an established package as an extra, and an extra being required is acceptable; our own decoder is kept here only because it exists already. |
+| D3 | LZFSE decoder | **Ruled by the maintainer 2026-11-21:** we already have a working pure-Python LZFSE/LZVN decoder (the prototype), so Part A ports it and it is always available. Part A0 evaluates the `lzfse` PyPI package (MIT, Apple's reference C, about 45x faster); if it passes, it becomes the optional fast path (Part H). In general the maintainer prefers an established package as an extra, and an extra being required is acceptable; our own decoder is kept here only because it exists already. **A0.2, ruled 2026-11-21:** the `lzfse` package has no output cap and accepts damage that no outside check can catch (`dev-docs/investigations/lzfse-package.md`), so the fast path is our own kernel in the `archivey-codecs` Rust package instead (Part H). |
 | D4 | UDIF checksums | **Ruled by the maintainer 2026-11-21: this default.** Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, a separate partition pass that `verify_all()` runs (§7.2), which lifts members to `CHECKSUM`. Never check it at open (it needs a full decode, DR-15b). |
 | D5 | Several APFS volumes in one container (a container can hold up to 100) | **Ruled by the maintainer 2026-11-21: this default.** Same as D1: one volume at the root; several, each under its volume name. Volumes with a system role (Preboot, Recovery, VM, Update) are listed like any other; DMGs seen so far hold one data volume. |
 | D6 | Encrypted image, password checks | **Ruled by the maintainer 2026-11-21: this default** (the whole image, listing included, is under one key, so the password is tried once, at open, as for a header-encrypted RAR or 7z). The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: the wrong-password `EncryptionError` that `ReaderContext.unlock` raises (§6B.0); the reader writes neither error itself. |
@@ -420,15 +420,22 @@ bit 13), read the journal info block at `journalInfoBlock`, then the journal hea
   `UnsupportedFeatureError("HFS+ volume with an unreplayed journal")` at open. Replay
   is later work (§12). A volume that `hdiutil` or a clean unmount wrote is clean.
 
-Tests: the builder writes each case (clean, need-init, pending, external). The pending
-case is checked independently with `fsck.hfsplus -n` from `hfsprogs` (Linux, apt),
-which reports a journal that needs replay, so the builder's layout is not only checked
-against itself.
+Tests: the builder writes each case (clean, need-init, pending, external), and a layout
+test checks each one's journal info block, journal header and (pending) block list header
+field by field against Apple's `hfs_journal.h` / `hfs_journal.c` (`journal_header`,
+`block_list_header`, `calc_checksum`, `JOURNAL_HEADER_CKSUM_SIZE`, `BLHDR_CHECKSUM_SIZE`).
+A pending image made on a Mac would be the independent check, if one turns up.
+`fsck.hfsplus -n` from `hfsprogs` cannot tell the states apart: on Linux it never reads
+the journal header (its journal check compares the volume signature without swapping
+bytes), so it exits 0 for all four states on 540.1.linux3-5 and fails every journaled
+volume on 540.1.linux3-6, its own `mkfs.hfsplus -J` output included. It checks the
+rest of the volume only.
 
 ### 6.2 Forks and extents
 
 A fork is up to 8 extents in its record, then more in the extents-overflow B-tree, keyed
-by (fork type 0x00 data / 0xFF resource, file id, start block). Production checks:
+by (file id, fork type 0x00 data / 0xFF resource, start block), compared in that order
+(Apple's `CompareExtentKeysPlus`). Production checks:
 every extent inside `totalBlocks`; sum of extents ≥ `logicalSize`; overflow lookups
 bounded (the fork cannot have more extents than its block count); bytes after
 `logicalSize` are not part of the file. Two files sharing blocks read normally.
@@ -512,12 +519,13 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 
 | Type | Data | Notes |
 | --- | --- | --- |
-| 1, 9 | uncompressed, inline | |
+| 1 | uncompressed, inline | |
+| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip; without the marker the file is `UnsupportedFeatureError` at read, since no sample shows it is damage. |
 | 3 | zlib, inline (first byte `0x?F` = stored) | |
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |
 | 8 | LZVN in resource fork (offset table, 64 KiB blocks) | **The fixture `compressed.txt` is type 8** (360,000 bytes), so this path has real data |
-| 10 | raw in resource fork | |
+| 10 | raw in resource fork | No tool here reads it (7-Zip refuses it), so the table layout is unconfirmed: the prototype and the test writer use the type 8 offset table. Check on a real file before relying on it. |
 | 11 | LZFSE inline (`0xFF` = stored) | |
 | 12 | LZFSE in resource fork | |
 | other | | `UnsupportedFeatureError` at that member's read |
@@ -531,9 +539,12 @@ chunk).
 Resource-fork types (4, 8, 10, 12): the fork holds `n = ceil(size / 64 KiB)` chunks,
 located by the type's table (type 4: the resource-map layout, a 256-byte resource fork
 header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
-12: `n + 1` little-endian u32 offsets; type 10: fixed 64 KiB chunks). The table must
+12, and as the prototype reads it type 10: `n + 1` little-endian u32 offsets). The table must
 have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
-chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. Decode chunk
+chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk
+that starts with its type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8)
+is the raw block after that byte, not encoded data: macOS stores a chunk that does not
+shrink that way, and 7-Zip reads it. Decode chunk
 by chunk through `block_stream`, not the whole file in memory like the prototype.
 
 Missing pieces: a file with `UF_COMPRESSED` but no `com.apple.decmpfs` attribute, a
@@ -1004,7 +1015,7 @@ module `tests/dmg_build.py`, a fuzz target in `tests/atheris_fuzz/targets.py` + 
 
 ### 9.1 Real fixtures from hdiutil (commit these)
 
-From `resources/fixtures/` in this change. Move them, as part B, under
+From `resources/fixtures/` in this change (moved in Part B) under
 `tests/fixtures/external/dmg_hdiutil/` with a README entry in
 `tests/fixtures/external/README.md` (producer, macOS 26.7.1, the script below, what each
 file is for). The content is our own test files, so there is no licence problem.
@@ -1191,8 +1202,8 @@ benchmark only if the repo's benchmark gate expects one for new formats (check
 
 One plan, built in parts. Each part is one PR unless noted, merges on its own, and
 leaves `main` with every test green and every DMG either read correctly or refused by
-name. Part A0 decides whether Part H uses the `lzfse` package; Parts B to E depend on A;
-the order after B is flexible except where noted.
+name. Part A0 decided that Part H does not use the `lzfse` package (A0.2); Parts B to E
+depend on A; the order after B is flexible except where noted.
 
 | Part | Contents | Depends on | Who merges |
 | --- | --- | --- | --- |
@@ -1204,7 +1215,7 @@ the order after B is flexible except where noted.
 | **E. APFS** | §6A: `apfs.py`, the reader using it, `write_apfs` builder, APFS fixtures, D5 multi-volume listing, Fletcher-64, refusals (encrypted volume, sealed, Fusion), fuzz target, handbook page section. | B | maintainer (new filesystem; davi decision D5) |
 | **F. Partition CRC-32 spanning check** | D4, as a partition pass (details in §7.2). | B | maintainer (changes a verification guarantee) |
 | **G. Encrypted images** | §6B: `dmg_crypto.py`, TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
-| **H. LZFSE accelerator** | D3: optional `lzfse` package in a child process through `Natives`, like LZO's `compress-utils` path (`lzo_decoder.py` `_compress_utils`): `OptionalLibrary.LZFSE`, an extra in `pyproject.toml` (copy how `bzip3` and `compress-utils` extras are declared), `exclude_libraries` support, `--version -v` "faster with" line, tests that both decoders agree on every fixture, `--all-configs` run. | A (useful after B) | maintainer (new public name and dependency) |
+| **H. LZFSE accelerator** | D3 as ruled in A0.2: archivey's own LZFSE and LZVN kernel in the `archivey-codecs` Rust package, with a bounded output and the same checks as the Python decoder, so the result never changes. archivey uses it when the package is installed. Tests that both decoders agree on every fixture and on the A0 fuzz corpus; `--all-configs` run. | A, and the `archivey-codecs` package | maintainer (new dependency) |
 
 Each part's PR body says which part of this plan it implements and lists any place it
 departs from the plan, with the reason.

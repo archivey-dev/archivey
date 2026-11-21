@@ -1307,12 +1307,13 @@ def test_rar_damaged_last_block_not_shaped_as_an_end_block_is_corruption(
 
 
 # ---------------------------------------------------------------------------
-# A damaged member header in the middle lists the members before it (DR-2)
+# A damaged member header in the middle is followed by its sizes (salvage-step-1)
 # ---------------------------------------------------------------------------
-# One flipped byte in the second FILE header, its CRC left as it was. TAR lists the
-# members before such damage and then raises; RAR used to raise CorruptionError at
-# open and list nothing. unrar 7.00 lists the first member, reports "the file header
-# is corrupt" for the second, and exits 3.
+# One flipped byte in the second FILE header, its CRC left as it was. RAR used to
+# raise CorruptionError at open and list nothing, then listed only the members before
+# it. unrar 7.00 reports "the file header is corrupt" for the second, lists every
+# member and exits 3; archivey now does the same, then ends the pass in
+# CorruptionError (tests/test_rar_damaged_header_resume.py has the matrix).
 
 _FILE_TYPES = {4: 0x74, 5: 2}
 
@@ -1329,12 +1330,12 @@ def _damage_second_file_header(data: bytes, version: int) -> bytes:
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["random", "streaming"])
 @pytest.mark.parametrize(("fixture", "version"), _ENDARC_FIXTURES)
-def test_rar_damaged_member_header_lists_the_members_before_it(
+def test_rar_damaged_member_header_is_followed_then_the_pass_raises(
     fixture: str, version: int, streaming: bool
 ) -> None:
     data = (_RAR_FIXTURES / fixture).read_bytes()
     with open_archive(io.BytesIO(data)) as reader:
-        first = _members_and_bytes(reader)[0]
+        everything = _members_and_bytes(reader)
     damaged = _damage_second_file_header(data, version)
     with open_archive(io.BytesIO(damaged), streaming=streaming) as reader:
         seen: list[tuple[str, bytes | None]] = []
@@ -1342,10 +1343,10 @@ def test_rar_damaged_member_header_lists_the_members_before_it(
             for member, stream in reader.stream_members():
                 seen.append((member.name, stream.read() if stream else None))
         assert not isinstance(excinfo.value, TruncatedError)
-        assert seen == [first]
+        assert seen == everything
     with open_archive(io.BytesIO(damaged), streaming=streaming) as reader:
         report = reader.members_report()
-        assert [m.name for m in report.members] == [first[0]]
+        assert [m.name for m in report.members] == [name for name, _ in everything]
         assert isinstance(report.error, CorruptionError)
         assert not isinstance(report.error, TruncatedError)
 

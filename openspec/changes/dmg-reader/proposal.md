@@ -18,8 +18,8 @@ before it is implemented in parts (2026-11-21).
   (AES, and TripleDES to unwrap the key).
 - `required_source` for DMG becomes `SEEKABLE`.
 - Detection keeps every current answer and adds the encrypted-image signatures.
-- Later parts: the partition CRC-32 as a spanning check, and an optional `lzfse`
-  accelerator package (`OptionalLibrary.LZFSE`, an extra).
+- Later parts: the partition CRC-32 as a spanning check, and a fast LZFSE and LZVN
+  kernel in the `archivey-codecs` Rust package (ruled 2026-11-21, A0.2).
 - **Breaking:** none for callers that read archives; a caller that relied on
   `UnsupportedFeatureError` for every `.dmg` now gets its members.
 
@@ -35,7 +35,7 @@ before it is implemented in parts (2026-11-21).
   `apfs.py`, `dmg_crypto.py`, `dmg_reader.py`; new decoders under
   `internal/streams/codecs/`.
 - Public API: `CompressionAlgorithm.LZFSE`, `LZVN` and `ADC` with the decoders (Part
-  A); `OptionalLibrary.LZFSE` and an extra in the accelerator part.
+  A); the accelerator part adds no public name of its own here.
 - Specs: new `format-dmg`; `format-detection` and `backend-registry` updated.
 - Docs: `dev-docs/formats/dmg.md`, `dev-docs/threat-model.md`, `docs/formats.md`.
 - Tests: committed `hdiutil` fixtures (`tests/fixtures/external/dmg_hdiutil/`),

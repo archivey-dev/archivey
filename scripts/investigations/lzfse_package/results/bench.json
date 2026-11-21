@@ -1,0 +1,17 @@
+{
+ "python": "3.13.18",
+ "runs": 342,
+ "decoded MiB": 337.0,
+ "mean run KiB": 1009,
+ "in process: MB/s, ms per run": [
+  249,
+  4.15
+ ],
+ "child over a pipe: MB/s, ms per run": [
+  208,
+  4.96
+ ],
+ "child start ms (fastest of 5)": 9.5,
+ "block walk ms per run": 0.007,
+ "prototype: MB/s on the first 20 runs": 4.7
+}

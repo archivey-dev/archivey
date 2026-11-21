@@ -1,0 +1,36 @@
+{
+  "python": "3.11.15",
+  "empty stream": {
+    "stream": "6276782d0000000062767824",
+    "result": "lzfse.error"
+  },
+  "short inputs": {
+    "(empty)": "lzfse.error",
+    "62767824": "lzfse.error",
+    "6276782d00": "lzfse.error",
+    "6276782d050000006162": "lzfse.error"
+  },
+  "raw LZVN": {
+    "encoder magic": "bvxn",
+    "rewrapped decodes": true,
+    "prototype raw lzvn": true
+  },
+  "bomb 1 x 16 MiB in 9983 bytes, 1 GiB limit": {
+    "binding": "ok",
+    "walk declares": 16777216
+  },
+  "bomb 16 x 16 MiB in 159668 bytes, 1 GiB limit": {
+    "binding": "lzfse.error",
+    "walk declares": 268435456
+  },
+  "bomb 256 x 16 MiB in 2554628 bytes, 1 GiB limit": {
+    "binding": "MemoryError",
+    "walk declares": 4294967296
+  },
+  "exact-size stream": {
+    "bytes": 16551819,
+    "binding ms": 81.0,
+    "one direct decode ms": 235.1,
+    "ratio": 0.34
+  }
+}

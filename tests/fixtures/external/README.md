@@ -298,3 +298,33 @@ Info-ZIP `unzip` is built without it, so these are the only bytes from a real wr
   from before the start of the output.
 
 The crate's comment on `reduce_zero_reduced.bin` gives the commands that made them.
+
+## `dmg_hdiutil/`
+
+Disk images that `hdiutil` on macOS 26.7.1 wrote (`macos-version.txt`). The content is
+our own test files, so there is no licence question. Most were made with
+`openspec/changes/dmg-reader/resources/make-dmg-fixtures.sh` from one tree (design §9.1
+of `openspec/changes/dmg-reader/`): an absolute and a relative symlink, a hard link, a
+decmpfs-compressed file (type 8, LZVN in the resource fork), a non-ASCII name and an
+extended attribute.
+
+- `hfs-UDZO.dmg` (zlib), `hfs-UDBZ.dmg` (bzip2), `hfs-ULFO.dmg` (LZFSE),
+  `hfs-ULMO.dmg` (xz), `hfs-UDRO.dmg` (raw): that tree on an HFS+ volume named
+  `Fixture`, in a GPT.
+- `apfs-UDZO.dmg`, `apfs-UDBZ.dmg`, `apfs-ULFO.dmg`, `apfs-ULMO.dmg`, `apfs-UDRO.dmg`:
+  the same files on an APFS volume (refused until APFS is read).
+- `hfs-UDZO-AES-128.dmg`, `hfs-UDZO-AES-256.dmg`, `apfs-UDZO-AES-128.dmg`,
+  `apfs-UDZO-AES-256.dmg`: encrypted (`encrcdsa`), password `archivey` (refused until
+  encryption is read).
+- `hfs-sha256.txt`, `hfs-listing.txt`, `hfs-xattrs.txt` and the `apfs-*.txt` set:
+  macOS's own hashes, listing and extended attributes of each mounted volume, the
+  expected values. `heads.txt` is the first bytes of each image.
+- `hfs-UDCO.dmg`: ADC (UDIF format `UDCO`, Disk Copy's compression from about 1999 to
+  2002), an HFS+ volume holding `repeat.txt` (300,000 bytes of the line
+  `hello adc fixture`; SHA-256 `f49602b2…01a02`) and `hello.txt` (`hello dmg`;
+  SHA-256 `c6ced9f7…677de`). The maintainer made it with
+  `hdiutil create -srcfolder <dir> -fs HFS+ -volname ADC -format UDCO`.
+
+`tests/test_dmg.py` reads them against the macOS listings and 7-Zip, and
+`tests/test_lzfse_decoder.py` decodes their runs: each partition's runs must decode to
+the CRC-32 the image stores, and the LZFSE images hold both `bvx2` and `bvxn` blocks.

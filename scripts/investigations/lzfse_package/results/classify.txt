@@ -1,0 +1,36 @@
+disagreements by cause:
+     988  ('LzfseError: block counts out of range', 'binding accepts', "output is a seed's data")
+     516  ('LzfseError: block decoded to #####, header says #####', 'binding accepts', "output is a seed's data")
+     395  ('LzfseError: block decoded to ####, header says ####', 'binding accepts', "output is a seed's data")
+     335  ('LzfseError: literal overrun', 'binding accepts', 'other output')
+     304  ('LzfseError: literal overrun', 'binding accepts', "output is a seed's data")
+       3  ('LzfseError: block decoded to ####, header says ####', 'binding accepts', 'other output')
+       3  ('prototype accepts', 'binding refuses', '-')
+       1  ('LzfseError: block counts out of range', 'binding accepts', 'other output')
+       1  ('LzfseError: block decoded to #####, header says ####', 'binding accepts', "output is a seed's data")
+binding-accepted disagreements whose output length equals the walk's declared total: {False: 915, True: 1628}
+capped call raised MemoryError under the 1 GiB limit, by input size (bytes, rounded down to 100): {0: 797, 600: 1015, 800: 1031, 1400: 1226, 1700: 1233, 1900: 1113, 2400: 1262}
+capped call returned more than the limit: 1078
+prototype errors other than LzfseError:
+     511  struct.error: unpack_from requires a buffer of at least 8 bytes for unpacking 4 bytes at offset 4 (actual buffer size is 7)
+     496  struct.error: unpack_from requires a buffer of at least 8 bytes for unpacking 4 bytes at offset 4 (actual buffer size is 4)
+     469  struct.error: unpack_from requires a buffer of at least 8 bytes for unpacking 4 bytes at offset 4 (actual buffer size is 5)
+     441  struct.error: unpack_from requires a buffer of at least 8 bytes for unpacking 4 bytes at offset 4 (actual buffer size is 6)
+      72  struct.error: unpack_from requires a buffer of at least 12 bytes for unpacking 8 bytes at offset 4 (actual buffer size is 9)
+      68  struct.error: unpack_from requires a buffer of at least 12 bytes for unpacking 8 bytes at offset 4 (actual buffer size is 11)
+      60  struct.error: unpack_from requires a buffer of at least 12 bytes for unpacking 8 bytes at offset 4 (actual buffer size is 5)
+      60  struct.error: unpack_from requires a buffer of at least 12 bytes for unpacking 8 bytes at offset 4 (actual buffer size is 7)
+disagreements left with common.binding_checked (strict walk + length check):
+     335  ('LzfseError: literal overrun', 'binding accepts', 'other output')
+     304  ('LzfseError: literal overrun', 'binding accepts', "output is a seed's data")
+       3  ('prototype accepts', 'binding refuses', '-')
+examples:
+  ('LzfseError: block decoded to ####, header says ####', 'binding accepts', "output is a seed's data") (100001, '62767832781300007803101d0050027049c16b4080a30450ac0000003ed82001afc05c4b55551554609f9c9cec93aa2aa0a09ad83146e7c15c378717', 5000)
+  ('LzfseError: block counts out of range', 'binding accepts', "output is a seed's data") (100025, '62767832001000003506903300b40120a1e8e3645db30340ab0000003f101001a717077b35aa2aaa0a9c5eeed51d510414108a565d6364ee79707674', 4096)
+  ('LzfseError: literal overrun', 'binding accepts', "output is a seed's data") (100026, '62767832204e000000000000000a007000000000001700308300000034bcc00ecfc164020000004c000000007811de99170000000000000000000000', 20000)
+  ('LzfseError: block decoded to #####, header says #####', 'binding accepts', "output is a seed's data") (100140, '627678321f4e0000ec0c806c00b10960065c9971480c1630ae0000003eb8b0005fc09e33aaaaa2aac0c1d5c1c1c1c1505540414555d5c47474eeb90e', 20000)
+  ('LzfseError: literal overrun', 'binding accepts', 'other output') (100313, '62767832204e0000dc0c806c00b10960065c9971480c1630ae0000003eb8b0005fc09e33aaaaa2aac0c1d5c1c1c1c1505540414555d5c47474eeb90e', 20000)
+  ('LzfseError: block decoded to ####, header says ####', 'binding accepts', 'other output') (115035, '6276783200100000f002b01800e30160b608f1e12db40370ac0000003fd48001cfc01a23aaaaaa88c03e393938b8198a0a20a8b6c958a307077bde9c', 4097)
+  ('prototype accepts', 'binding refuses', '-') (159668, '62767832881300002807603b0012021007f8bbcb908b0400ac0000003f000000e77bef91a8aaaa2a7077b9e7da1145400140358d69b20e568f6e0e4e', 5000)
+  ('LzfseError: block counts out of range', 'binding accepts', 'other output') (60145, '6276783200100000c106903300b40120a1e8e3645db30340ab0000003f101001a717077b35aa2aaa0a9c5eeed51d510414108a565d6364ee79707674', 4096)
+  ('LzfseError: block decoded to #####, header says ####', 'binding accepts', "output is a seed's data") (70302, '62767832200e000004000000000a007000000000001700308300000034bcc00ecfc164020000004c000000007811de99170000000000000000000000', 20000)

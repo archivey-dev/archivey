@@ -59,6 +59,7 @@ seam the remote benchmark uses to run every rule on small fixtures.
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import sys
 import threading
@@ -899,9 +900,19 @@ class RangeSource(io.RawIOBase):
         pieces: list[bytes] = []
         pos, ignored, short = start, 0, 0
         while pos < end:
-            if progress is not None:
+            if progress is None:
+                answer = bounded(self.path, pos, end)
+            else:
                 progress.request_started(base + pos, base + end)
-            answer = bounded(self.path, pos, end)
+                # Reports as the answer comes in, about once per MiB.
+                answer = bounded(
+                    self.path,
+                    pos,
+                    end,
+                    on_received=functools.partial(
+                        progress.request_received, base + pos, base + end
+                    ),
+                )
             self.fetch_count += 1
             self.bytes_fetched += len(answer.data)
             if progress is not None:

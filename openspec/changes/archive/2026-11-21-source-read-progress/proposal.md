@@ -34,14 +34,18 @@ The maintainer asked for a callback any caller can hook, and a CLI display built
   the caller's next read of the archive or of the member being read. Reports in between
   are merged, so `requests` may skip numbers. An exception it raises propagates out of
   the read.
+- Over HTTP, a request also reports about once per MiB of its answer as it comes in:
+  the adapter reads the body one event-loop call per chunk, so the callback runs on the
+  caller's thread between chunks.
 - Later in this change: the CLI status line for URLs and the input-position bar for
-  `test` and `extract` (tasks 3.x), and byte progress inside an HTTP answer (task 2.1).
+  `test` and `extract` (tasks 3.x).
 
 ## Capabilities
 
 ### Modified Capabilities
 
 - `archive-reading`: a requirement for `on_source_read`.
+- `cli`: a requirement for the line that shows the reads of the archive's file.
 
 ## Impact
 

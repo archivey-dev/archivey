@@ -715,6 +715,11 @@ class ReaderContext:
     # outside its stream (ARJ's password full check). Internal, set by the adapter;
     # not for plugins.
     _track_decoded: Callable[[BinaryIO], BinaryIO] | None = None
+    # ``_listing_draw(n)`` counts ``n`` bytes the reader decodes itself (DMG's runs)
+    # toward ``ListingLimits.max_decoded_bytes``, raising past the cap. It counts only
+    # while listing work runs on this thread, so a member read is not counted.
+    # Internal, set by the adapter; not for plugins.
+    _listing_draw: Callable[[int], None] | None = None
 
     def __init__(
         self,

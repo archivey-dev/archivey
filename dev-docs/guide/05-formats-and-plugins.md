@@ -1,10 +1,10 @@
 # 5. Formats and plugins
 
 **In one minute.** A format is written in one of two ways. The **internal tier** (ZIP,
-TAR, 7z, RAR, the single compressed file, the directory reader, DMG recognition)
-subclasses `BaseArchiveReader` directly and can use every internal feature: passwords,
-volumes, self-extractor stubs, accelerators, hand-tuned fast paths. The
-**`archivey.formats` tier** (ISO, SquashFS, CAB, XAR, CPIO, ar, RPM, deb) is written
+TAR, 7z, RAR, the single compressed file, the directory reader) subclasses
+`BaseArchiveReader` directly and can use every internal feature: passwords, volumes,
+self-extractor stubs, accelerators, hand-tuned fast paths. The **`archivey.formats`
+tier** (ISO, SquashFS, CAB, XAR, DMG, CPIO, ar, RPM, deb) is written
 against the small public interface an outside plugin would use: a *handler* that declares
 the format and a *reader* that yields members and bytes. One adapter class turns such a
 reader into a full `BaseArchiveReader`, so names, limits, links, extraction and checksums
@@ -50,7 +50,6 @@ are the formats that need something the public interface does not offer:
 | RAR | An external program for data, spooling, synthetic archives, multi-volume sets with gaps, file copies inside solid archives |
 | Single compressed file | One member whose metadata comes from the codec's own header, `open_stream()` |
 | Directory | No bytes at all: a folder on disk, read with `os.scandir` |
-| DMG (`udif.py`) | Nothing to read: it is registered so detection can name a disk image and refuse it with a clear message (`READ_IMPLEMENTED = False`) |
 
 ## Tier 2: the `archivey.formats` interface
 
@@ -67,7 +66,7 @@ There are two reader shapes, because archive formats come in two shapes:
 | | `IndexedReader` | `SequentialReader` |
 | --- | --- | --- |
 | Layout | An index somewhere (often at the end) says where each member is | Header, data, header, data, … from start to end |
-| Examples | ISO, SquashFS, CAB, XAR | CPIO, ar, RPM, deb |
+| Examples | ISO, SquashFS, CAB, XAR, DMG | CPIO, ar, RPM, deb |
 | Source | Always seekable (`ReaderSource`, with `view()`, `read_at()`) | A forward-only `ForwardStream`, so a pipe works |
 | Methods | `iter_members()` yields `MemberRecord(member, locator)`; `open_member(member, locator)` returns `MemberData` | `walk(stream)` yields `MemberSpan(member, data_length)` |
 | Who reads member data | The reader opens a stream from its locator | **archivey**: the span says "the next N bytes are the data", and archivey reads or skips them |

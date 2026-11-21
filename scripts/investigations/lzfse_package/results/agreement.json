@@ -1,0 +1,36 @@
+{
+  "fixtures": {
+    "records per image": {
+      "apfs-UDBZ.dmg": 6,
+      "apfs-UDRO.dmg": 6,
+      "apfs-UDZO.dmg": 6,
+      "apfs-ULFO.dmg": 8,
+      "apfs-ULMO.dmg": 6,
+      "hfs-UDBZ.dmg": 6,
+      "hfs-UDRO.dmg": 6,
+      "hfs-UDZO.dmg": 6,
+      "hfs-ULFO.dmg": 9,
+      "hfs-ULMO.dmg": 6
+    },
+    "by kind (count, bytes, mismatches)": {
+      "lzvn": [
+        60,
+        3600000,
+        0
+      ],
+      "lzfse": [
+        5,
+        2166784,
+        0
+      ]
+    }
+  },
+  "vscodium.dmg": {
+    "LZFSE runs": 342,
+    "decoded MiB": 337.0,
+    "mismatches": 0,
+    "prototype MB/s": 5.1,
+    "binding MB/s (in process)": 247.1,
+    "sha256 of the image": "8f0a114f873a7cd0"
+  }
+}
