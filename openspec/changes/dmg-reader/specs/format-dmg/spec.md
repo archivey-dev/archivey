@@ -77,20 +77,22 @@ encryption SHALL be in `archive_info().extra` under `dmg.` keys.
 ### Requirement: List an HFS+ volume as the Mac mounts it
 
 The system SHALL list an HFS+ or HFSX volume from its catalog B-tree: folders as
-`DIRECTORY`, files as `FILE`, files whose BSD mode is `S_IFLNK` (or, with mode 0, whose
-Finder type is `slnk`) as `SYMLINK` with the data fork as target, devices, FIFOs and
-sockets as `OTHER`. A `/` stored in a name SHALL be listed as `:`, and names SHALL keep
-their stored Unicode form. The private hard-link folders (`\0\0\0\0HFS+ Private Data`,
-`.HFS+ Private Directory Data\r`) and the journal files of a journaled volume SHALL NOT
-be listed. A journaled volume with pending transactions or an external journal SHALL
-raise `UnsupportedFeatureError` at open; a clean journal SHALL be read. A file hard link
-SHALL list its first path in listing order as `FILE` with the data, and each later path
-as `HARDLINK` to it. A directory hard link SHALL raise `UnsupportedFeatureError` for
-that member. Mode, owner, modification time and birth time SHALL come from the catalog
-record. A B-tree node or a folder reached twice, an extent outside the volume, and a
-record outside its node SHALL raise `CorruptionError`; members listed before the damage
-SHALL be delivered first. Extended attribute names, and values up to 1 KiB, SHALL be
-listed in `ArchiveMember.extra` and SHALL NOT be written on extraction.
+`DIRECTORY`, files as `FILE`, hard-link records (Finder `hlnk`/`hfs+`) as in the
+hard-link rule below, then files whose BSD mode is `S_IFLNK` (or, with mode 0, whose
+Finder type and creator are `slnk`/`rhap`) as `SYMLINK` with the data fork as target,
+devices, FIFOs and sockets as `OTHER`. A `/` stored in a name SHALL be listed as `:`,
+and names SHALL keep their stored Unicode form. The private hard-link folders
+(`\0\0\0\0HFS+ Private Data`, `.HFS+ Private Directory Data\r`) and the journal files of
+a journaled volume SHALL NOT be listed. A journaled volume with pending transactions or
+an external journal SHALL raise `UnsupportedFeatureError` at open; a clean journal SHALL
+be read. A file hard link SHALL list its first path in listing order as `FILE` with the
+data, and each later path as `HARDLINK` to it. A directory hard link SHALL raise
+`UnsupportedFeatureError` for that member. Mode, owner, modification time and birth time
+SHALL come from the catalog record. A B-tree node or a folder reached twice, an extent
+outside the volume, and a record outside its node SHALL raise `CorruptionError`; members
+listed before the damage SHALL be delivered first. Extended attribute names, and values
+up to 1 KiB, SHALL be listed in `ArchiveMember.extra` and SHALL NOT be written on
+extraction.
 
 #### Scenario: HFS+ listing
 
@@ -183,13 +185,15 @@ SHALL count against archivey's key-derivation budget. Members SHALL report `encr
 
 ### Requirement: Image checksums raise members together
 
-Members of a DMG SHALL list with `verifiable = LENGTH` until the partition CRC-32 is
-checked as a spanning check: then each file member whose partitions all have a CRC-32
-SHALL be `CHECKSUM` in `verifiable`. `verify_all()` SHALL run a separate partition
-pass that decodes every run of the partition except "ignore" runs, in sector order, once
-per reader; members SHALL reach `CHECKSUM` only when it matches. Ordinary member reads
-SHALL NOT run it. A mismatch or a decode error in the pass SHALL fail every member the
-partition covers. The checksum SHALL NOT be computed at open.
+Before the partition CRC-32 spanning check exists (Part F), members of a DMG SHALL list
+with `verifiable = LENGTH`. With it, `verifiable` SHALL be set at listing: `CHECKSUM`
+for a file member whose partition is fully covered by `blkx` tables that each carry a
+CRC-32, else `LENGTH`. Only `verified` SHALL change after the pass. `verify_all()` SHALL
+run a separate partition pass that decodes every run of the partition except "ignore"
+runs, in sector order, once per reader; members' `verified` SHALL reach `CHECKSUM` only
+when it matches. Ordinary member reads SHALL NOT run it. A mismatch or a decode error in
+the pass SHALL fail every member the partition covers. The checksum SHALL NOT be
+computed at open.
 
 #### Scenario: partition CRC
 

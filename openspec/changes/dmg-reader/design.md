@@ -310,8 +310,13 @@ and make the slot count a constant.
 disk (sector ranges to runs); two tables whose sector ranges overlap are
 `CorruptionError` before the index is built. Bytes of the disk always come from that
 index. Candidate partition ranges come from the first of these that is valid: (a) the
-partition map read from the disk (GPT with a good header CRC in the primary or the
-backup header, or an APM), (b) the `blkx` tables' own sector ranges when there is no map
+partition map read from the disk: a GPT whose header CRC and partition-entry array CRC
+both match and whose geometry is valid (entry size 128 × 2^n, entry count ≤ 128, entry
+array, first and last usable LBA inside the disk, every entry inside the usable range,
+no two entries overlapping), tried as the primary pair (header at sector 1 and its
+array) and then the backup pair (header at the last sector and its array); or an APM
+whose entries all have the `PM` signature, a consistent map count and ranges inside the
+disk, (b) the `blkx` tables' own sector ranges when there is no map
 or the map is damaged (a diagnostic says which), (c) the whole disk. Each candidate is
 probed, and the filesystem signature (step 3) alone decides what is read. `blkx` names
 (`Apple_HFS`, `Apple_APFS`) and GPT/APM type values only describe: a disagreement with
@@ -323,10 +328,11 @@ HFS+ entry with a matching header and an unrecognised `blkx` name is read.
    ` (Apple_Free : 3)`. The fixtures show the full GPT set.
 2. The names show what to expect: `Apple_HFS` or `Apple_HFSX` (HFS+), `Apple_APFS`
    (read by §6A from Part E). The partition maps:
-   - GPT: `EFI PART` at sector 1; partition entries; HFS+ type GUID
-     `48465300-0000-11AA-AA11-00306543ECAC`, APFS
-     `7C3457EF-0000-11AA-AA11-00306543ECAC`. Verify the header CRC; a mismatch is a
-     diagnostic, not a refusal, if the `mish` names agree.
+      - GPT: `EFI PART` at sector 1 (backup at the last sector); partition entries; HFS+
+     type GUID `48465300-0000-11AA-AA11-00306543ECAC`, APFS
+     `7C3457EF-0000-11AA-AA11-00306543ECAC`. Valid only as defined above (both CRCs and
+     the geometry); a primary that fails is a diagnostic and the backup is tried; both
+     failing falls back to (b). `blkx` names never make a GPT valid.
    - APM: Driver Descriptor Map `ER` at sector 0, entries with signature `PM`,
      type `Apple_HFS` / `Apple_HFSX`.
    - None (2 of 41 real images): a single `blkx` entry covering the whole disk; probe
@@ -341,9 +347,13 @@ HFS+ entry with a matching header and an unrecognised `blkx` name is read.
    (`ARCHIVE_UNLISTED_DATA`), as nothing we have seen does this.
 5. If a valid map and a `blkx` table disagree on where a partition starts, the map's
    range is probed (the bytes come from the disk index either way) and a diagnostic is
-   reported. Tests: a GPT image whose `blkx` names are unrecognised; a damaged GPT
-   (both headers bad) that falls back to the `blkx` ranges; two `mish` tables that
-   overlap.
+   reported. Tests: a GPT image whose `blkx` names are unrecognised; a valid primary
+   header with a damaged entry array (falls to the backup pair); both pairs bad (falls
+   back to the `blkx` ranges); two `mish` tables that overlap.
+
+   Probe work is capped: at most 128 candidates from any source, the `blkx` fallback
+   included (more is `ResourceLimitError` at open, naming the count). Each probe reads
+   the bounded amounts in §7.
 
 Several HFS+ partitions: D1. Top-level names (D1, D5), in partition order and then
 volume order inside a container: the volume name with `/` as `:`; an empty name, `.`
@@ -422,7 +432,12 @@ Members:
 | file, `fileType` `fdrp` creator `MACS` | directory hard link: `UnsupportedFeatureError` for that member (no fixture exists; DR-21a). Other members stay readable. |
 | file with BSD mode of a FIFO, socket, char/block device | `OTHER` (standing ruling: device, FIFO, socket = OTHER) |
 
-Type precedence: a non-zero BSD mode decides the type (`S_IFLNK`, `S_IFREG`, devices,
+Type precedence, in this order: (1) hard-link records first, by their Finder markers
+(`hlnk`/`hfs+` for a file link, `fdrp`/`MACS` for a directory link), whatever the BSD
+mode says: in the HFS+ fixture both `hello.txt` and `sub dir/hardlink.txt` are link
+records with mode `0100444` and an empty data fork, so a mode-first rule would list two
+empty files; the prototype checks the markers first. (2) For other records, a non-zero
+BSD mode decides the type (`S_IFLNK`, `S_IFREG`, devices,
 FIFOs, sockets), as the prototype does; TN1150 says macOS writes both the mode and the
 Finder `slnk`/`rhap` tags. When the mode is 0 (not set), the Finder tags decide. When
 both are set and disagree, the mode wins and a diagnostic is reported. Test: a
@@ -540,17 +555,22 @@ Physical address 0 and addresses at or past the container block count are
    size and the checkpoint descriptor area (`nx_xp_desc_blocks`, `nx_xp_desc_base`).
 2. Scan the checkpoint descriptor area for `NXSB` objects with the right type and a good
    checksum, and take the newest usable one, by xid (prototype `_latest_superblock`,
-   which checks only the superblock). Usable means the checkpoint is complete: the
-   `nx_xp_desc_len` blocks that end at it (from `nx_xp_desc_index`, wrapping in the
-   ring) are its checkpoint-map objects (type checkpoint map), each with a good checksum
-   and the same xid, and the last one has `CHECKPOINT_MAP_LAST`. An incomplete
-   checkpoint is skipped for the next older one, with a diagnostic. The reader needs no
-   ephemeral object (space manager, reaper), so it does not read them. Damage in
-   physical objects reached from a complete checkpoint (object maps, trees) never
-   triggers this fallback: it is D7 damage (§6A.6). Test: a newest superblock with a
-   good checksum but a missing checkpoint-map block, beside a complete older checkpoint:
-   the older one is read. Bound the area (refuse > 65,536 blocks); a non-contiguous area
-   (high bit of `desc_blocks` set) is `UnsupportedFeatureError` (never seen in a DMG).
+   which checks only the superblock). Usable means the checkpoint is complete. Its
+   descriptor span is `nx_xp_desc_len` blocks starting at ring index `nx_xp_desc_index`
+   and wrapping modulo `nx_xp_desc_blocks` (both values must be inside the ring, and
+   `desc_len` ≥ 2): the first `desc_len - 1` blocks are checkpoint-map objects (type
+   checkpoint map), each with a good checksum and the superblock's xid, the last of them
+   has `CHECKPOINT_MAP_LAST`, and the final block of the span is the candidate `NXSB`
+   itself. In the APFS UDRO fixture each checkpoint has `desc_len = 2`, laid out as
+   `[checkpoint map, NXSB]`; the newest has xid 4 and occupies ring indexes 6 and 7.
+   That fixture is the positive test. An incomplete checkpoint is skipped for the next
+   older one, with a diagnostic. The reader needs no ephemeral object (space manager,
+   reaper), so it does not read them. Damage in physical objects reached from a complete
+   checkpoint (object maps, trees) never triggers this fallback: it is D7 damage
+   (§6A.6). Test: a newest superblock with a good checksum but a missing checkpoint-map
+   block, beside a complete older checkpoint: the older one is read. Bound the area
+   (refuse > 65,536 blocks); a non-contiguous area (high bit of `desc_blocks` set) is
+   `UnsupportedFeatureError` (never seen in a DMG).
 3. Refuse Fusion containers (`incompatible_features & 0x100`).
 4. Load the container object map (`nx_omap_oid`): an `omap_phys_t` whose B-tree maps
    (oid, xid) to physical address. Lookup of an oid at transaction `x`: take the entry
@@ -797,17 +817,25 @@ DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
 ```
 
 - `open()`: a fixed envelope, nothing proportional to the image. It reads: the `koly`
-  block; the property list (≤ 64 MiB, §4.2) and its run tables; the partition map
-  (GPT header and entry array, at most 128 entries of 128 bytes; or APM, at most 64
-  entries); and for each candidate partition, its first 4 KiB (the HFS+ volume header
-  and, when journaled, the journal info block and journal header; the APFS block 0
-  container superblock). Errors raised at open: encrypted (before Part G) and segmented
-  refusals; `koly`, plist and run-table errors (§4); partition-map errors that leave no
-  candidate; no filesystem found; APFS-only before Part E; HFS+ volume header errors,
-  HFS wrapper, journal refusals (§6.1). Everything else is at first listing: the
-  catalog and other B-trees, the APFS checkpoint scan, object maps and volume
-  superblocks (so APFS volume names, and D1/D5 top-level names for APFS, are fixed at
-  first listing). Work past this envelope at open is a bug, not a deferral.
+  block; the property list (≤ 64 MiB, §4.2) and its run tables; the partition map (GPT
+  header and entry array, at most 128 entries of 128 bytes; or APM, at most 64 entries);
+  and for each candidate partition (at most 128, §5): a 4 KiB prefix probe (signature at
+  1024 for HFS+, at 32 for APFS); for HFS+, the 512-byte volume header and, when
+  journaled, exactly two more reads: the journal info block at
+  `journalInfoBlock × blockSize` (one 512-byte read) and the journal header at the
+  offset that block gives (one 512-byte read), both checked inside the partition; for
+  APFS, block 0 at its declared block size (4 KiB to 64 KiB), with its Fletcher-64
+  checked at open. So open-time disk reads are at most 128 × (4 KiB + 3 × 512 bytes, or
+  64 KiB for APFS) plus the map. The physical bytes behind them are bounded by the run
+  caps of §4.3, since each read decodes at most the runs it covers. Errors raised at
+  open: encrypted (before Part G) and segmented refusals; `koly`, plist and run-table
+  errors (§4); partition-map errors that leave no candidate; no filesystem found;
+  APFS-only before Part E; HFS+ volume header errors, HFS wrapper, journal refusals
+  (§6.1). Everything else is at first listing: the catalog and other B-trees, the APFS
+  checkpoint scan, object maps and volume superblocks (so APFS volume names, and D1/D5
+  top-level names for APFS, are fixed at first listing). Work past this envelope at open
+  is a bug, not a deferral. Tests count both the virtual-disk bytes requested and the
+  physical source bytes read, on a compressed image.
 - `iter_members()`: walk the catalog, yield `MemberRecord`s. Respect `max_members` the
   way squashfs does.
 - `open_member()`: `MemberData(stream, bounded=True)` over the data fork extents (a
@@ -854,10 +882,16 @@ reads are not a proxy for it. Part F therefore runs a separate pass:
 
 - **Coverage:** for each `blkx` table with a CRC-32 (`checksum type 2`, 32 bits), every
   run of that table except "ignore" runs, zero-fill included, decoded in sector order,
-  CRC over the decoded bytes. One run in memory at a time (bounded by §4.4).
-- **`verifiable`:** at listing, a file member is `CHECKSUM` when every partition its
-  data lies in has a table CRC; else `LENGTH`. Directories and links as for other
-  formats.
+  CRC over the decoded bytes. One run in memory at a time (bounded by §4.4). Raw and
+  zero-fill runs can be any size, so they are fed to the CRC in fixed 1 MiB slices
+  (zero fill from one reused zero buffer), never as one whole buffer.
+- **`verifiable`:** set at listing and never raised later. A file member is
+  `CHECKSUM` only when its whole partition range (which holds its data and every piece
+  of filesystem metadata it relies on) is fully covered by `blkx` tables that each
+  carry a CRC-32, with no gap in the disk index inside that range; otherwise `LENGTH`.
+  A partition that is read partly from an unchecked table or a gap stays `LENGTH` for
+  all its members. Directories and links as for other formats. The pass then advances
+  only `verified`.
 - **Trigger:** `verify_all()` only. An ordinary in-order read of members does not run
   it and does not raise members to `CHECKSUM` (it does not cover every run). The pass
   runs once per reader; its result is kept, so a second `verify_all()` does not decode
