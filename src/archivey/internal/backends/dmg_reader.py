@@ -380,9 +380,8 @@ class _VolumeWalk:
         if failure is None and self._looped:
             first = min(self._looped)
             failure = CorruptionError(
-                f"the HFS+ folder {first}'s parent chain loops or is deeper than "
-                f"{hfsplus.MAX_DEPTH}, so {orphans} records of the catalog are not "
-                "listed"
+                f"the HFS+ folder {first}'s parent chain loops, so {orphans} "
+                "records of the catalog are not listed"
             )
         elif failure is None and orphans:
             failure = CorruptionError(

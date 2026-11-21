@@ -457,7 +457,10 @@ data its pass keeps for link targets beside it.
   it keeps them; the open itself reads and decodes at most 64 MiB past the property list
   (`udif.OPEN_BUDGET`). Zero-fill runs make a large disk from a tiny file, so member
   reads count in the archive-wide ratio like ISO's, and the in-house ADC, LZFSE and LZVN
-  decoders are bounded by the run's sectors ([formats/dmg.md](formats/dmg.md) §4).
+  decoders are bounded by the run's sectors. Each run a listing decodes, a cache miss
+  included, counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
+  `UdifImage._decode_run`), so a catalog spread over more runs than the cache holds
+  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4).
   The TAR walker keeps nothing behind the member list, so nothing else is
   held. The caps bound memory, not work: a forward-only TAR walk reads through
   every member it skips, and a TAR walk in either mode reads the declared span of a
@@ -555,7 +558,9 @@ data its pass keeps for link targets beside it.
   `stage=True`: the archive's own codec stream, a `decompress()` layer, a stream opened
   during listing work) while listing work runs (`_listing_work`): a walk step, the first
   header a reader parses at open, a 7z encoded header, the link targets
-  `_finalize_links` reads (a solid 7z folder up to its last link). A caller's member
+  `_finalize_links` reads (a solid 7z folder up to its last link). A built-in reader
+  that decodes outside a stage draws directly through `ReaderContext._listing_draw`
+  (DMG's runs, in-house decoders included), under the same rule. A caller's member
   reads between steps do not count. A compressed TAR or cpio is decoded whole to list
   (an RPM lists from its header and decodes nothing); a ZIP read from a pipe decodes
   about 4 KiB of each compressed member it passes over. The error is an

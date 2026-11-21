@@ -83,10 +83,6 @@ XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
 _DECMPFS_KEEP = DECMPFS_CHUNK + 64
-# Most folders a parent chain may hold before it counts as damage: a support limit,
-# well past any tree a Mac addresses by path (``PATH_MAX`` is 1024 bytes, so at most
-# 512 levels of one-character names), and it bounds the walk of a chain that loops.
-MAX_DEPTH = 1024
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -703,16 +699,16 @@ def folder_path(
 ) -> str | None:
     """The path of folder ``cnid`` below the root (``""`` for the root), or ``None``
     when its chain does not reach the root: a folder the first pass did not find, or a
-    chain that comes back to a folder or is deeper than the cap. For the last two, the
-    folder's cnid goes in ``looped``, so the walk lists the other members and raises at
-    its end."""
+    chain that comes back to a folder. For a loop, the folder's cnid goes in ``looped``,
+    so the walk lists the other members and raises at its end. ``seen`` ends a loop and
+    the cache keeps the whole walk linear in the number of folders."""
     if cnid in cache:
         return cache[cnid]
     chain: list[int] = []
     seen: set[int] = set()
     at = cnid
     while at not in cache:
-        if at in seen or len(chain) > MAX_DEPTH:
+        if at in seen:
             for each in chain:
                 cache[each] = None
             looped.add(cnid)
