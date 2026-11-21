@@ -345,7 +345,6 @@ class _PluginAdapter(BaseArchiveReader):
         )
         context._nest = self._nest
         context._spanning_check = self._new_spanning_check
-        context._passwords = passwords
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
         self._reader_open = True
@@ -3870,7 +3869,9 @@ def register_builtin_format(
     false. A sequential format's compressed pairs are spelled as a plugin's are
     (``"ar.gz"``). ``overrides`` sets backend attributes a plugin cannot declare
     (``OPTIONAL_DEPENDENCY``, ``INSTALL_HINT``). Returns the backend class.
+    Password support is the handler's own ``supports_password``, never an override.
     """
+    assert "SUPPORTS_PASSWORD" not in overrides, "set supports_password on the handler"
     backend = _backend_class(plugin, plugin.format, overrides)
     get_registry().register_reader(backend)
     if issubclass(plugin, SequentialFormatHandler):

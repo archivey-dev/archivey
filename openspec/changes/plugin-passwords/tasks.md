@@ -1,6 +1,6 @@
 ## 1. API (one PR, maintainer merges: public names)
 
-- [ ] 1.1 `FormatHandler.supports_password`; `register_builtin_format` reads it instead
+- [x] 1.1 `FormatHandler.supports_password`; `register_builtin_format` reads it instead
   of the `SUPPORTS_PASSWORD=` override
 - [x] 1.2 `NeedsPassword` resolution for returned and yielded requests,
   `PasswordConfirmVerdict`, `charge_key_derivation` over
@@ -32,7 +32,7 @@
 
 ## 2. Users (separate PRs)
 
-- [ ] 2.1 makeself: yield `NeedsPassword` + `charge_key_derivation`; mark payload
+- [x] 2.1 makeself: yield `NeedsPassword` + `charge_key_derivation`; mark payload
   members `is_encrypted`; drop `ReaderContext._passwords`
 - [ ] 2.2 ARJ: decrypt garbled members (`INCONCLUSIVE` + `full_check` on the CRC-32)
 - [ ] 2.3 DMG spec §6B: return `NeedsPassword` from the handler's `open`
