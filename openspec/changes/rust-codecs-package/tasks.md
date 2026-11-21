@@ -1,8 +1,8 @@
 ## 1. Package (from #1416's branch)
 
-- [ ] 1.1 Rebase the prototype on main; port the twinned-decoder changes made since
+- [x] 1.1 Rebase the prototype on main; port the twinned-decoder changes made since
   (LZO after PR 1612 first); drop `system-python.yml`
-- [ ] 1.2 Rename to `packages/archivey-codecs`, import `archivey_codecs`; version in
+- [x] 1.2 Rename to `packages/archivey-codecs`, import `archivey_codecs`; version in
   `Cargo.toml`; README and CHANGELOG
 - [ ] 1.3 Decoders to the `LZMADecompressor` shape (D3); one-shot block form; the
   `CodecError` family; `#![forbid(unsafe_code)]` in kernel modules
