@@ -51,6 +51,7 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `ARCHIVE_UNLISTED_DATA` | `UnlistedDataContext`: `kind="unlisted_data"`, `archive_name`, `format`, `member_name`, `member_id` (the name and id the pass gave the entry before dropping it), `offset` (of its local header), `compressed_size` |
 | `ARCHIVE_UNREAD_SESSION` | `UnreadSessionContext`: `kind="unread_session"`, `archive_name`, `format="iso"`, `sector` (the image sector that holds the other volume's primary volume descriptor; for a `.cue` sheet that hides a session, the address by the sector headers of that session's primary volume descriptor). Emitted at open by a raw CD image read from its first track without its `.cue` sheet, when the data sectors after the listed volume hold another ISO 9660 volume that the sector addresses do not place in a readable later session; and by a `.cue` sheet, when the sector addresses of a data track after the chosen one start a later session that holds a volume the sheet-less reading lists |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
+| `MEMBER_HEADER_DAMAGED` | `MemberHeaderDamageContext`: `kind="member_header_damage"`, `archive_name`, `member_name`, `member_id`, `format`, `volume_index` (0-based position in a multi-volume set, not the format's volume number; `None` for a single file), `header_offset` (offset of the damaged header in its volume) |
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
 | `DIGEST_UNVERIFIABLE` | `DigestContext`: `kind="digest"`, `archive_name`, `member_name`, `member_id`, `algorithm`, `reason` |
@@ -72,46 +73,43 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
 | `SOLID_OPEN_REDECOMPRESSES` | `SolidReopenContext`: `kind="solid_reopen"`, `archive_name`, `member_name`, `member_id`, `bytes_again` |
 
-(`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
-exactly this union — no backend-defined variants. `observed_kind` ∈
-`{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"`
-for the trailer check; `"second_zero_block"` for a TAR trailer whose first block is
-zero and ends the members and whose second block is full and non-null, with
+(`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is exactly
+this union — no backend-defined variants. `observed_kind` ∈
+`{"absent","short","nonzero"}`. `expected_marker` is symbolic (`"two_zero_blocks"` for
+the trailer check; `"second_zero_block"` for a TAR trailer whose first block is zero and
+ends the members and whose second block is full and non-null, with
 `observed_kind="nonzero"` and both byte counts 512, where every member is listed;
-`"end_of_archive_block"` for a RAR5 archive or volume that ends without its end-of-archive
-block, with `format="rar"`, `observed_kind="absent"` and both byte counts 0, or whose
-end-of-archive block fails its header CRC, with `observed_kind="nonzero"` (a block is
-there, but it is not a valid end block), `observed_bytes` the offset where that block
-starts in its volume (counted from that volume's first byte, unlike member offsets,
-which count across the whole set; the message names the volume), and `expected_bytes` 0;
-`"end_of_central_directory"` for a ZIP end record that does not match the archive, with
-`format="zip"`: `observed_kind="nonzero"` when its entry count differs from the central
-directory's (`observed_bytes` the record's offset, `expected_bytes` 0), or
-`observed_kind="short"` when its comment length runs past the end of the file
-(`expected_bytes` 22 plus the declared comment length, `observed_bytes` the bytes from
-the record to the end of the file); `"zip64_end_of_central_directory"` for a ZIP64 end
-record a locator announces that is missing or does not match it, the classic record
-used instead (`observed_kind="absent"`, `observed_bytes` the locator's offset,
-`expected_bytes` 0); `"end_of_archive_byte"` for an LHA archive that ends without the
-zero byte after its last header (`format="lha"`, `observed_kind="absent"`,
-`expected_bytes` 1, `observed_bytes` 0); `"end_of_archive_header"` for an ARJ
-archive that ends without its 4-byte end header (`format="arj"`,
-`observed_kind="absent"`, `expected_bytes` 4, `observed_bytes` 0);
-`"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
-trailer, a 7z next header or last packed stream, whichever is later, a RAR
-end-of-archive block, an ISO image's volume space and partitions, a ZIP end record
-and its declared comment, or an LHA end byte or ARJ end header, after either of which
-0x1A also counts as padding), whose `format`
-names the archive format and whose `observed_bytes` is the offset of the first non-zero
-byte past that end;
-`"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the
-codec name, such as `"gzip"`, and whose `observed_bytes` is the offset of the first
-non-zero byte after that end).
-`member_id` MAY be `None` only before registration.
-`controls` SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints
-found, in the order they occur, so a caller can tell an override from a mark
-without re-scanning the name. `chosen_by` ∈ `{"argument","extension","content_probe"}`;
-`detected_format` is `None` when detection refuses the bytes outright.
+`"end_of_archive_block"` for a RAR5 archive or volume that ends without its
+end-of-archive block, with `format="rar"`, `observed_kind="absent"` and both byte counts
+0, or whose end-of-archive block fails its header CRC, with `observed_kind="nonzero"` (a
+block is there, but it is not a valid end block), `observed_bytes` the offset where that
+block starts in its volume (counted from that volume's first byte, unlike member
+offsets, which count across the whole set; the message names the volume), and
+`expected_bytes` 0; `"end_of_central_directory"` for a ZIP end record that does not
+match the archive, with `format="zip"`: `observed_kind="nonzero"` when its entry count
+differs from the central directory's (`observed_bytes` the record's offset,
+`expected_bytes` 0), or `observed_kind="short"` when its comment length runs past the
+end of the file (`expected_bytes` 22 plus the declared comment length, `observed_bytes`
+the bytes from the record to the end of the file); `"zip64_end_of_central_directory"`
+for a ZIP64 end record a locator announces that is missing or does not match it, the
+classic record used instead (`observed_kind="absent"`, `observed_bytes` the locator's
+offset, `expected_bytes` 0); `"end_of_archive_byte"` for an LHA archive that ends
+without the zero byte after its last header (`format="lha"`, `observed_kind="absent"`,
+`expected_bytes` 1, `observed_bytes` 0); `"end_of_archive_header"` for an ARJ archive
+that ends without its 4-byte end header (`format="arj"`, `observed_kind="absent"`,
+`expected_bytes` 4, `observed_bytes` 0); `"zeros_to_eof"` for the trailing-bytes check
+after an archive's end (a TAR trailer, a 7z next header or last packed stream, whichever
+is later, a RAR end-of-archive block, an ISO image's volume space and partitions, a ZIP
+end record and its declared comment, or an LHA end byte or ARJ end header, after either
+of which 0x1A also counts as padding), whose `format` names the archive format and whose
+`observed_bytes` is the offset of the first non-zero byte past that end;
+`"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the codec
+name, such as `"gzip"`, and whose `observed_bytes` is the offset of the first non-zero
+byte after that end). `member_id` MAY be `None` only before registration. `controls`
+SHALL be the comma-joined `U+XXXX` spellings of the bidi codepoints found, in the order
+they occur, so a caller can tell an override from a mark without re-scanning the name.
+`chosen_by` ∈ `{"argument","extension","content_probe"}`; `detected_format` is `None`
+when detection refuses the bytes outright.
 
 `PROBE_FORMAT_UNCONFIRMED` is a **separate code**, not a widening of
 `EXTENSION_FORMAT_UNCONFIRMED`. The two describe different provenance and fire on
@@ -122,15 +120,15 @@ provenance** — `detected_by="content_probe"` with nothing corroborating the cl
 matching extension, no inner-TAR upgrade, no self-checking header) — **and a decode
 failure**. A probe-only read failure MUST NOT double-report under the extension code.
 
-**Confidence is not part of that trigger.** The probe code fires on a probe-only failure at
-*any* `DetectionConfidence`, so an LZMA Alone hit (always `PROBABLE`) and a compressed-first
-Brotli hit (`PROBABLE`) are stamped exactly as an uncorroborated `GUESS` hit is. Confidence
-grades how strong the evidence looked; this code answers whether anything independent
-corroborated it. Keying the diagnostic on confidence left 53% of measured fabrications
-unsignalled, and made a probe's confidence value double as a switch for error behaviour.
-This matches `error-handling`'s `format_unconfirmed`, and the two SHALL agree by
-construction: the diagnostic is emitted while stamping that attribute, never on a separate
-test.
+**Confidence is not part of that trigger.** The probe code fires on a probe-only failure
+at *any* `DetectionConfidence`, so an LZMA Alone hit (always `PROBABLE`) and a
+compressed-first Brotli hit (`PROBABLE`) are stamped exactly as an uncorroborated
+`GUESS` hit is. Confidence grades how strong the evidence looked; this code answers
+whether anything independent corroborated it. Keying the diagnostic on confidence left
+53% of measured fabrications unsignalled, and made a probe's confidence value double as
+a switch for error behaviour. This matches `error-handling`'s `format_unconfirmed`, and
+the two SHALL agree by construction: the diagnostic is emitted while stamping that
+attribute, never on a separate test.
 
 `ExtractionOutcomeContext`, `NameCollisionContext` and `NameSanitizedContext` SHALL
 NOT exist: per-member extraction outcomes are carried by `ExtractionResult` (see
@@ -145,17 +143,17 @@ Copies on multiple surfaces MAY share `occurrence_id` by value; object identity
 and cross-run id stability are not promised.
 
 `ENCRYPTED_MEMBER_UNVERIFIED` SHALL be emitted when a member of an encrypted unit is
-closed before its declared digest was reached **and** the password behind those bytes was
-accepted on a check weaker than that digest. `check` names what accepted the password
-(`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the digest was
-not reached (`"partial_read"`, or `"seek"` when a seek left it unreached: a read skipped
-bytes past the hashing frontier and no read from it reached the end, or the stream was
-closed while parked past it; a WinZip AES
-HMAC survives seeks, so there `"seek"` means only that a failed seek left the position
-unknown). It SHALL NOT be emitted for a partial read whose password was confirmed
-against an integrity anchor — that restates what the caller already knows, which the
-admission clause refuses. Nor SHALL it be emitted for a stream closed before any read
-returned bytes, since nothing unchecked was delivered.
+closed before its declared digest was reached **and** the password behind those bytes
+was accepted on a check weaker than that digest. `check` names what accepted the
+password (`"weak_open_check"`, `"confirm_budget_exhausted"`); `reason` names why the
+digest was not reached (`"partial_read"`, or `"seek"` when a seek left it unreached: a
+read skipped bytes past the hashing frontier and no read from it reached the end, or the
+stream was closed while parked past it; a WinZip AES HMAC survives seeks, so there
+`"seek"` means only that a failed seek left the position unknown). It SHALL NOT be
+emitted for a partial read whose password was confirmed against an integrity anchor —
+that restates what the caller already knows, which the admission clause refuses. Nor
+SHALL it be emitted for a stream closed before any read returned bytes, since nothing
+unchecked was delivered.
 
 #### Scenario: value-model matrix
 
@@ -201,13 +199,13 @@ returned bytes, since nothing unchecked was delivered.
 - **WHEN** a backend drops an optional metadata record inside a member header, or in a
   header that belongs to one member (a RAR 1.5-4 `UOW` owner header), because it could
   not be parsed, and lists the member without it
-- **THEN** it SHALL emit `MEMBER_HEADER_RECORD_SKIPPED` with `MemberHeaderRecordContext`,
-  attached to that member
+- **THEN** it SHALL emit `MEMBER_HEADER_RECORD_SKIPPED` with
+  `MemberHeaderRecordContext`, attached to that member
 - **AND** `record` SHALL name the record as the format names it, and `record_id` SHALL
-  carry the format's numeric type where it has one, so a record the backend cannot name is
-  still identifiable
-- **AND** the field the record would have populated SHALL be absent rather than partially
-  written: a dropped record never changes a value, it only fails to set one
+  carry the format's numeric type where it has one, so a record the backend cannot name
+  is still identifiable
+- **AND** the field the record would have populated SHALL be absent rather than
+  partially written: a dropped record never changes a value, it only fails to set one
 
 ### Requirement: Exact bounded diagnostic summaries
 
@@ -535,7 +533,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `ARCHIVE_UNREAD_SESSION` (another reading of the file lists another filesystem), `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_OFFSET_SHIFTED`, `MEMBER_NAME_DUPLICATE_UNEXPECTED` (no writer of the format makes the shape) | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `SOLID_OPEN_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them), `SOURCE_CHANGE_UNDETECTABLE` (it describes the transport an `fsspec` source arrives through, not the archive's bytes, and holds for every read from such a store), `MEMBER_PATH_REFUSED` (an extraction policy's choice for the `archivey://` tree, not a finding about the bytes) |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `ARCHIVE_UNREAD_SESSION` (another reading of the file lists another filesystem), `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `MEMBER_HEADER_DAMAGED`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_OFFSET_SHIFTED`, `MEMBER_NAME_DUPLICATE_UNEXPECTED` (no writer of the format makes the shape) | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `SOLID_OPEN_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them), `SOURCE_CHANGE_UNDETECTABLE` (it describes the transport an `fsspec` source arrives through, not the archive's bytes, and holds for every read from such a store), `MEMBER_PATH_REFUSED` (an extraction policy's choice for the `archivey://` tree, not a finding about the bytes) |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -588,9 +586,9 @@ reports it, so no writer of that format makes the shape (maintainer, 2026-11-11)
 on a successful open: an extension-only empty listing, where no byte confirmed the
 format at all, is exactly the case a `STRICT` caller wants stopped.
 
-Presets SHALL be ordinary frozen `DiagnosticPolicy` values — no new resolution axis,
-and no field on `Diagnostic`. A caller adjusts a preset by building another policy from
-the same sets, for example
+Presets SHALL be ordinary frozen `DiagnosticPolicy` values — no new resolution axis, and
+no field on `Diagnostic`. A caller adjusts a preset by building another policy from the
+same sets, for example
 `DiagnosticPolicy(raise_on=ARCHIVE_INTEGRITY_CODES, ignore={PASSWORD_ARGUMENT_UNUSED})`.
 
 **Taxonomy growth.** New `DiagnosticCode` members MAY be added in minor releases.
@@ -817,3 +815,28 @@ outside `_INFO_LOG_CODES`.
 - **THEN** detection answers `ZST` and does not raise
 - **WHEN** it is detected with `raise_on=["detection_decoder_limited"]`
 - **THEN** `detect_format` raises `DiagnosticRaisedError`
+
+### Requirement: Report every read of a member listed from a damaged header
+
+When a member walk lists a member from a header that failed its own check and resumes
+past it on a position the format's checks confirm (`format-rar`,
+`format-tar`), every read, open,
+stream or extraction of that member SHALL emit `MEMBER_HEADER_DAMAGED` before any of its
+bytes are returned. Listing the member SHALL NOT emit it, so that a policy that raises
+on the code refuses that member's read and no other: the listing, the other members and
+the `CorruptionError` that ends the pass are unchanged. Its default delivery SHALL be a
+warning. The message SHALL say which fields nothing checked (the name, type, mode, times
+and flags) and what still checks the member: its own digest where the format has one
+(RAR), or only the header its size pointed at where it has none (TAR, `format-tar`). The code is
+format-neutral, for every walk that lists a member from a damaged header the same way.
+
+#### Scenario: member header damaged
+
+| Case | Expected |
+| --- | --- |
+| RAR with one damaged, confirmed FILE header, default policy, `members()` | Every member listed, the damaged one included; no `MEMBER_HEADER_DAMAGED` yet; `CorruptionError` at the end |
+| The same, read the damaged member | One `MEMBER_HEADER_DAMAGED`; its bytes, checked by its digest |
+| The same under `DiagnosticPolicy.STRICT`, `stream_members()` | The damaged member's read raises `DiagnosticRaisedError`; every other member reads; `CorruptionError` at the end |
+| `extract_all()` under the default policy | Every member written, the damaged one under its stored name; one `MEMBER_HEADER_DAMAGED`; then `CorruptionError` |
+| A damaged header the walk cannot resume past | No `MEMBER_HEADER_DAMAGED`; `CorruptionError` after the members before it |
+| TAR with one damaged, confirmed member header, read the damaged member | One `MEMBER_HEADER_DAMAGED`; its bytes, which nothing but the confirmed size checks |

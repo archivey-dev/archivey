@@ -283,12 +283,13 @@ jobs:
       # xorriso builds the hybrid ISOs tests/test_iso_trailing_data.py checks;
       # genisoimage and udftools (mkudffs) the UDF images tests/test_iso_udf.py reads.
       # tabix ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks
-      # the block walk against.
-      - name: Install unrar, unar, xorriso, bgzip, genisoimage and udftools (Linux)
+      # the block walk against. hfsprogs (fsck.hfsplus) checks the HFS+ volumes that
+      # tests/dmg_build.py writes (tests/test_dmg_build.py).
+      - name: Install unrar, unar, xorriso, bgzip, genisoimage, udftools and hfsprogs (Linux)
         if: (matrix.install == 'all' || matrix.install == 'all-lowest') && runner.os == 'Linux'
         uses: ./.github/actions/apt-install
         with:
-          packages: unrar unar xorriso genisoimage udftools tabix
+          packages: unrar unar xorriso genisoimage udftools tabix hfsprogs
       # The built binary links against the image's libgnustep-base and libicu, whose
       # sonames change between Ubuntu releases, so the key names the image as well as
       # the pinned sources (the script's hash).
