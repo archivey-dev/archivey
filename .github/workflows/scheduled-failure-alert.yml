@@ -68,6 +68,8 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          # The attempt that finished: a rerun may already be the run's latest attempt.
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           SHA: ${{ github.event.workflow_run.head_sha }}
           EVENT: ${{ github.event.workflow_run.event }}
           # Assigned so the alert reaches a person even with repository watching off.

@@ -202,12 +202,15 @@ def test_main_drives_gh(tmp_path: Path) -> None:
         "SHA": "0123456789abcdef",
         "RUN_URL": "https://run",
         "RUN_ID": "5",
+        "ATTEMPT": "1",
         "ASSIGNEE": "davitf",
     }
     subprocess.run([sys.executable, str(SCRIPT)], env=env, check=True)
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert ["run", "view", "5", "--attempt", "1", "--json", "jobs"] in calls
     assert calls[-1][:3] == ["issue", "comment", "7"]
     assert "- **new:** `pypy3.11`" in calls[-1][-1]
+    assert "https://run/attempts/1" in calls[-1][-1]
 
     def run(jobs: dict, previous: dict) -> list[list[str]]:
         env["GH_JOBS"], env["GH_PREVIOUS_JOBS"] = json.dumps(jobs), json.dumps(previous)

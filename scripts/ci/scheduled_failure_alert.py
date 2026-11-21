@@ -183,9 +183,11 @@ def _gh(*args: str) -> str:
     ).stdout
 
 
-def _run_jobs(run_id: str) -> list[dict]:
+def _run_jobs(run_id: str, attempt: str) -> list[dict]:
     try:
-        data = json.loads(_gh("run", "view", run_id, "--json", "jobs"))
+        data = json.loads(
+            _gh("run", "view", run_id, "--attempt", attempt, "--json", "jobs")
+        )
     except (subprocess.CalledProcessError, json.JSONDecodeError):
         # Without the list the report reads as it did before jobs were named.
         return []
@@ -256,7 +258,9 @@ def main() -> int:
         issue = json.loads(
             _gh("issue", "view", str(number), "--json", "author,body,comments")
         )
-    run_jobs = _run_jobs(env["RUN_ID"]) if conclusion != "success" else []
+    run_jobs = (
+        _run_jobs(env["RUN_ID"], env["ATTEMPT"]) if conclusion != "success" else []
+    )
     lost = lost_jobs(run_jobs)
     if lost and not _previous_run_lost(workflow, env["RUN_ID"]):
         print(f"none: {name} (no runner took {', '.join(lost)}; no job failed)")
@@ -267,7 +271,7 @@ def main() -> int:
         conclusion=conclusion,
         event=env["EVENT"],
         sha=env["SHA"],
-        run_url=env["RUN_URL"],
+        run_url=env["RUN_URL"] + "/attempts/" + env["ATTEMPT"],
         issue=issue,
         jobs=jobs,
         lost=lost,
