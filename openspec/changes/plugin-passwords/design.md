@@ -477,3 +477,7 @@ same as a provider that waits for any lock its own caller holds, and the docs sa
     extraction handle) may ask the provider, like `open()`; replacement opens never do?
     RULED yes (davi 11-21, card).
     (`PasswordRequest` is already the provider's argument type.)
+12. D8: the walk lock and an outer frame's lock stay held while the provider runs, with
+    provider-context waits refused, rather than released with ownership records only?
+    RULED keep them held (davi 11-21, card). The `reader-concurrency` delta amends "no
+    Archivey lock held" to match.

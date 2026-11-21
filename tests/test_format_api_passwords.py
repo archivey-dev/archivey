@@ -986,6 +986,50 @@ def test_provider_reentry_during_a_paused_walk(tmp_path: Path) -> None:
                 reader.members()
 
 
+def test_another_thread_waits_for_the_answer_during_a_listing(tmp_path: Path) -> None:
+    """The walk lock stays held while the provider runs: an independent thread's
+    ``members()`` waits for the answer and the listing, and then sees every member."""
+
+    class Late(ToyWReader):
+        """Lists a plain member first, so the request comes during ``members()``."""
+
+        def walk(self, stream: ForwardStream) -> Iterator[Any]:
+            plain = ArchiveMember(type=MemberType.FILE, name="p", size=1)
+            yield MemberSpan(plain, data=io.BytesIO(b"p"))
+            yield from super().walk(stream)
+
+    class Handler(ToyWHandler):
+        def open_sequential(self, context: ReaderContext) -> ToyWReader:
+            return Late(context)
+
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    box: list[Any] = []
+    seen: list[list[str]] = []
+    other: list[threading.Thread] = []
+
+    def list_members() -> None:
+        seen.append([m.name for m in box[0].members()])
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        thread = threading.Thread(target=list_members)
+        other.append(thread)
+        thread.start()
+        thread.join(timeout=0.3)
+        assert thread.is_alive(), "members() did not wait for the provider's answer"
+        assert not seen
+        return b"pw"
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(
+            path, password=provider, concurrent_operations=True
+        ) as reader:
+            box.append(reader)
+            assert [m.name for m in reader.members()] == ["p", "a"]
+            other[0].join(timeout=10)
+    assert seen == [["p", "a"]]
+
+
 # --- how often the plugin is called ------------------------------------------------------
 
 

@@ -125,7 +125,7 @@ around each callback. Before each provider call archivey SHALL leave the handle 
 holds for the request and take it again after the answer, putting back the adapter state
 the request's step had set. A lock that orders the request against other work on the
 reader (the walk lock a listing or a paused walk holds, an outer frame's, such as
-listing finalization reading link targets) MAY stay held: the request's owner is then
+listing finalization reading link targets) SHALL stay held: the request's owner is then
 the thread holding it, the active worker for a returned request or the paused walk for a
 yielded one. Every same-reader entry that would wait on that owner (listing, iteration,
 member `open()`, `stream_members()`, `close()`, link-target reads) SHALL raise
@@ -160,7 +160,7 @@ the provider at once SHALL be served one after the other.
 | Another thread calls `reader.members()` while the walk waits on the provider | Waits, then gets the full list |
 | DMG `open` returns a request | Handler `open` called once; `then` returns the reader |
 | Provider calls `reader.close()` from a copied context while an `open_member` request waits on it | `ArchiveyUsageError` in the helper, no deadlock |
-| Listing finalization reads an encrypted link target whose request needs the provider | Listing lock released for the provider call; provider's own-context `reader.members()` raises `ArchiveyUsageError`; another thread's waits |
+| Listing finalization reads an encrypted link target whose request needs the provider | Listing lock stays held for the provider call; provider's own-context `reader.members()` raises `ArchiveyUsageError`; another thread's waits |
 | Toy plugin with one shared handle, two overlapping requests, `full_check` decoding on the handle | Callbacks serialized by the handle guard; provider runs with the guard released |
 | Provider's own thread calls `reader.read(member)` during a paused walk | `ArchiveyUsageError`, no deadlock |
 
