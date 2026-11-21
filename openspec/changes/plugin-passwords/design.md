@@ -219,8 +219,12 @@ The loop is the one the built-in readers run (`_PasswordCandidates.attempt` with
 1. Each static candidate in order goes through `check`. The first `CONFIRMED` wins at
    once, so no expensive derivation runs for the candidates after it. `REJECTED` is
    dropped. `INCONCLUSIVE` is set aside and the next candidate is tried.
-2. When the candidates run out with **one** set aside, it wins; `full_check` does not
-   run for it (every other candidate was `REJECTED`).
+2. When the candidates run out with **one** set aside, it wins without `full_check` when
+   no provider can be asked or there is no `full_check`: every other candidate was
+   `REJECTED`, and the read's own check reports a wrong one. While a provider can be
+   asked and there is a `full_check`, it runs (maintainer decision, 11-21): the survivor
+   may be a known-good password from another unit. `CONFIRMED` or `INCONCLUSIVE` wins,
+   and `REJECTED` leads to step 4.
 3. With **several** set aside, `full_check` runs on each in order. The first `CONFIRMED`
    wins; `REJECTED` is dropped. If none confirms (or there is no `full_check`), the
    first still `INCONCLUSIVE` wins.

@@ -135,9 +135,10 @@ plugin call SHALL be repeated to try a provider answer. Retry state SHALL live o
 request. When the adapter calls a hook again on its own (a data walk, a respawn, a
 rewalk), it SHALL try first the saved winner of each request, keyed by the plugin call
 plus the request's index in that call's chain. archivey SHALL call the provider only on
-a first open of a member (the caller's `open()`, a data walk it starts, the first open
-of a lazy `stream_members()` or extraction handle), never on a replacement open of an
-already unlocked stream, and SHALL give a replacement stream the new `unlocked` verdict
+the first unlock of a unit: a request from the handler's `open` (with `member=None`), a
+listing walk's request, or a first open of a member (the caller's `open()`, a data walk
+it starts, the first open of a lazy `stream_members()` or extraction handle). It SHALL
+never call it on a replacement open of an already unlocked stream, and SHALL give a replacement stream the new `unlocked` verdict
 (a respawn's `MemberData`, a data walk's span). A replacement whose `digests`, `checked`
 or `bounded` differ from the first open's SHALL be refused as a plugin bug. When
 resolution fails for a yielded request, archivey SHALL close the generator and the error

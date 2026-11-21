@@ -67,8 +67,10 @@ remain to probe: every remaining static candidate SHALL be probed with the same 
 plan. Then:
 
 - one survivor SHALL be accepted, `INCONCLUSIVE`, when no provider can be asked for the
-  unit. When one can, the survivor SHALL run the full check as several do, and a
-  `REJECTED` result SHALL lead to the provider: the survivor may be a known-good
+  unit, or when the unit has no full check (it is read once, or a plugin gave no
+  `full_check`): the provider is then not asked first. When a provider can be asked and
+  there is a full check, the survivor SHALL run it as several do, and a `REJECTED`
+  result SHALL lead to the provider: the survivor may be a known-good
   password from another unit, and the provider may hold this unit's own. With no
   provider, a lone survivor means every other static candidate was rejected, so the
   read's own check reports a wrong one and the unit is decoded once;

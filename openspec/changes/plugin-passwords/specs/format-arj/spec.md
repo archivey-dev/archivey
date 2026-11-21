@@ -5,8 +5,11 @@
 The backend SHALL raise `CorruptionError` for a header without `60 EA`, a basic header
 over 2600 bytes or under its fixed part, a basic or extended header that fails its
 CRC-32, a name with no NUL, a second main header, a Unix special header cut short, and a
-member whose data fails its CRC-32. It SHALL raise `TruncatedError` for a file that ends
-inside a header or a member's data. A member split across volumes, a method past 4, and
+member whose data fails its CRC-32 when the member is not garbled or its password was
+`CONFIRMED`. A garbled member read under an `INCONCLUSIVE` password (one password, no
+full check) whose data fails its CRC-32 or its decoder SHALL raise the
+wrong-password-or-damage `EncryptionError` instead. It SHALL raise `TruncatedError` for
+a file that ends inside a header or a member's data, garbled or not. A member split across volumes, a method past 4, and
 a garbled member of an archive whose main header names the GOST cipher (encryption
 version 2 or later) SHALL raise `UnsupportedFeatureError` when read.
 
