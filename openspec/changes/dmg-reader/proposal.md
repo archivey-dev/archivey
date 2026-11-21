@@ -23,6 +23,12 @@ before it is implemented in parts (2026-11-21).
 - **Breaking:** none for callers that read archives; a caller that relied on
   `UnsupportedFeatureError` for every `.dmg` now gets its members.
 
+## Dependencies
+
+- Encrypted images (Part G) need the public password API that a separate change adds
+  to the plugin interface first (maintainer, 2026-11-21). The reader uses that API, not
+  the private `ReaderContext._passwords` hook. Other parts do not depend on it.
+
 ## Impact
 
 - Code: `internal/backends/udif.py` rewritten; new `disk_partitions.py`, `hfsplus.py`,

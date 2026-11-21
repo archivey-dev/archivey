@@ -46,6 +46,8 @@
 
 ## G. Encrypted images
 
+- [ ] G.0 Wait for the plugin-interface password change; use its public API
+
 - [ ] G.1 Confirm the `encrcdsa` v2 layout on the AES-128 and AES-256 fixtures; write it
   in the handbook page
 - [ ] G.2 Pure-Python 3DES with NIST vectors; key unwrap; password flow; key-derivation

@@ -128,7 +128,7 @@ the PR body which defaults you implemented.
 | `internal/backends/disk_partitions.py` (new) | GPT and APM parsing, partition selection (§5). Pure functions over a `ReaderSource`. |
 | `internal/backends/hfsplus.py` (new) | The HFS+ volume parser: volume header, fork extents, B-tree walk, catalog, extents overflow, attributes, hard links, decmpfs. Plays the role `iso9660.py` / `udf.py` play for ISO: no `ArchiveMember`s here, only parsed entries. |
 | `internal/backends/apfs.py` (new, Part E) | The APFS container and volume parser (§6A), same role as `hfsplus.py`. |
-| `internal/backends/dmg_crypto.py` (new, Part G) | `encrcdsa` v2 header parse, key unwrap, and `EncryptedDmgSource(ReaderSource)`: a decrypted view that `UdifImage` reads instead of the file (§6B). Uses `internal/streams/crypto.py` (`get_crypto_backend`, AES-CBC stages, `wrong_password_error`) and the caller's passwords through `ReaderContext._passwords` with `passwords.attempt`, exactly as `makeself_reader.py` does. |
+| `internal/backends/dmg_crypto.py` (new, Part G) | `encrcdsa` v2 header parse, key unwrap, and `EncryptedDmgSource(ReaderSource)`: a decrypted view that `UdifImage` reads instead of the file (§6B). Uses `internal/streams/crypto.py` (`get_crypto_backend`, AES-CBC stages, `wrong_password_error`) and the caller's passwords through the **public password API of the plugin interface** (`archivey.formats`), which a separate change adds first (see §6B.0). Do not use the private `ReaderContext._passwords` hook. |
 | `internal/backends/dmg_reader.py` (new) | `DmgReader(IndexedReader[...])` and `DmgHandler(IndexedFormatHandler)`, registered with `register_builtin_format`. Turns HFS+ entries into `MemberRecord`s. |
 | `internal/streams/codecs/lzfse_decoder.py` (new) | Pure-Python LZFSE (`bvx1`, `bvx2`, `bvxn`, `bvx-`, `bvx$`) and LZVN decoders, bounded output (`max_length`), `CorruptionError` on any bad input. Part H adds the optional native path here. |
 | `internal/streams/codecs/adc_decoder.py` (new) | Apple Data Compression decoder (tiny; see prototype `adc.py`). |
@@ -515,6 +515,18 @@ a compact array and charge it.
 
 ## 6B. Encrypted images (Part G)
 
+### 6B.0 Dependency: passwords in the plugin interface
+
+The DMG reader is written against `archivey.formats`, the plugin interface, like
+SquashFS. That interface has no public way for a reader to receive the caller's
+`password=` today (its module docstring lists passwords among what it leaves out); only
+a private hook exists, used by makeself. The maintainer ruled (2026-11-21) that password
+support is added to the plugin interface first, as its own change, and that new formats
+use the plugin interface. **Part G depends on that change** and uses its API for: trying
+candidates, telling "no password" from "wrong password", and charging the key-derivation
+budget. Where this section names an error or behaviour (D6), it is the outcome required;
+the calls come from that API. Parts A to F do not depend on it.
+
 An encrypted DMG is a different file: the whole UDIF image (data fork, plist, `koly`) is
 encrypted inside it. There is no `koly` block in clear text; detection must find the
 encryption header instead.
@@ -548,7 +560,7 @@ into the handbook page:
 
 ### 6B.3 Unlocking
 
-For each password candidate (`passwords.attempt`, like makeself):
+For each password candidate the public password API hands the reader (§6B.0):
 
 1. `PBKDF2-HMAC-SHA1(password, salt, iterations, 24 bytes)` → a 3DES key. Charge the
    iterations against the key-derivation budget the other readers use (the "cap key
@@ -840,7 +852,7 @@ name. Parts B to E depend on A; the order after B is flexible except where noted
 | **D. Hidden-content and edge polish** | Anything Part B's review defers: journal hiding cases, directory hard links if a fixture appears, xattr value caps, extra checks found by the corpus run. May be empty. | B | agent |
 | **E. APFS** | §6A: `apfs.py`, the reader using it, `write_apfs` builder, APFS fixtures, D5 multi-volume listing, Fletcher-64, refusals (encrypted volume, sealed, Fusion), fuzz target, handbook page section. | B | maintainer (new filesystem; davi decision D5) |
 | **F. Partition CRC-32 spanning check** | D4: mark members `verifiable = CHECKSUM` from listing; run the CRC over every run except "ignore" runs, zero-fill included, during an in-order full read or `verify_all()`; mismatch is a `SpanningCheckError` covering the partition's members. Follow `dev-docs/topics/verification.md` §2.5 (7z folder CRC is the model). Data-fork CRC-32 and the master checksum too, if cheap. | B | maintainer (changes a verification guarantee) |
-| **G. Encrypted images** | §6B: detection signatures, `dmg_crypto.py`, pure-Python 3DES, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B (E for APFS images) | maintainer (password handling, new crypto code) |
+| **G. Encrypted images** | §6B: detection signatures, `dmg_crypto.py`, pure-Python 3DES, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
 | **H. LZFSE accelerator** | D3: optional `lzfse` package in a child process through `Natives`, like LZO's `compress-utils` path (`lzo_decoder.py` `_compress_utils`): `OptionalLibrary.LZFSE`, an extra in `pyproject.toml` (copy how `bzip3` and `compress-utils` extras are declared), `exclude_libraries` support, `--version -v` "faster with" line, tests that both decoders agree on every fixture, `--all-configs` run. | A (useful after B) | maintainer (new public name and dependency) |
 
 Each part's PR body says which part of this plan it implements and lists any place it
