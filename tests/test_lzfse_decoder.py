@@ -31,8 +31,9 @@ from archivey.internal.streams.codecs.lzfse_decoder import (
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 _IMAGES = ("hfs-ULFO.dmg", "apfs-ULFO.dmg")
+_ADC_IMAGE = "hfs-UDCO.dmg"
 
-_ZERO, _RAW, _IGNORE, _LZFSE = 0, 1, 2, 0x80000007
+_ZERO, _RAW, _IGNORE, _ADC, _LZFSE = 0, 1, 2, 0x80000004, 0x80000007
 _COMMENT, _END = 0x7FFFFFFE, 0xFFFFFFFF
 
 
@@ -132,13 +133,15 @@ requires_lzfse = pytest.mark.skipif(
 # --- Real data -------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", _IMAGES)
-def test_fixture_partitions_match_their_crc(name: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "codec"), [(name, _LZFSE) for name in _IMAGES] + [(_ADC_IMAGE, _ADC)]
+)
+def test_fixture_partitions_match_their_crc(name: str, codec: int) -> None:
     """Every partition of the image decodes to the CRC-32 hdiutil stored for it: zero
-    fill and raw runs as they are, LZFSE runs through the decoder, ignore runs left
-    out (the measured rule)."""
+    fill and raw runs as they are, LZFSE and ADC runs through their decoders, ignore
+    runs left out (the measured rule)."""
     data = (_FIXTURES / name).read_bytes()
-    lzfse_runs = 0
+    decoded_runs = 0
     for crc, runs in _tables(_FIXTURES / name):
         value = 0
         for kind, sectors, off, length in runs:
@@ -147,15 +150,34 @@ def test_fixture_partitions_match_their_crc(name: str) -> None:
                 value = zlib.crc32(bytes(size), value)
             elif kind == _RAW:
                 value = zlib.crc32(data[off : off + length], value)
-            elif kind == _LZFSE:
-                out = lzfse_decompress(data[off : off + length], size)
+            elif kind == codec:
+                decode = lzfse_decompress if kind == _LZFSE else adc_decompress
+                out = decode(data[off : off + length], size)
                 assert len(out) == size
                 value = zlib.crc32(out, value)
-                lzfse_runs += 1
+                decoded_runs += 1
             else:
                 assert kind in (_IGNORE, _COMMENT, _END)
         assert value == crc
-    assert lzfse_runs >= 7
+    assert decoded_runs >= 7
+
+
+def test_adc_image_holds_the_files_it_was_made_from() -> None:
+    """``hfs-UDCO.dmg`` holds ``repeat.txt`` (300,000 bytes of one repeated line, so
+    ADC writes long matches) and ``hello.txt``; both appear whole in the decoded disk."""
+    path = _FIXTURES / _ADC_IMAGE
+    data = path.read_bytes()
+    disk = bytearray()
+    for _crc, runs in _tables(path):
+        for kind, sectors, off, length in runs:
+            if kind == _ZERO:
+                disk += bytes(sectors * 512)
+            elif kind == _RAW:
+                disk += data[off : off + length]
+            elif kind == _ADC:
+                disk += adc_decompress(data[off : off + length], sectors * 512)
+    assert (b"hello adc fixture\n" * 20_000)[:300_000] in disk
+    assert b"hello dmg\n" in disk
 
 
 def test_fixtures_hold_every_block_kind_hdiutil_writes() -> None:
