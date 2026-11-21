@@ -53,9 +53,11 @@ _CALL = "FormatPolicy()"
 
 # Methods whose data runs another method's decoder too: every xz stream holds LZMA2
 # data, so turning LZMA2 off turns xz off. Not the reverse: 7z's LZMA2 has no xz
-# container around it.
+# container around it. An LZFSE stream may hold LZVN blocks, so turning LZVN off
+# turns LZFSE off too.
 _DECODES_WITH: dict[CompressionAlgorithm, tuple[CompressionAlgorithm, ...]] = {
     CompressionAlgorithm.XZ: (CompressionAlgorithm.XZ, CompressionAlgorithm.LZMA2),
+    CompressionAlgorithm.LZFSE: (CompressionAlgorithm.LZFSE, CompressionAlgorithm.LZVN),
 }
 
 # The method each whole-file compression decodes with, so a method in ``exclude``

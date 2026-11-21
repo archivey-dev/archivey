@@ -2,17 +2,17 @@
 
 - [x] A0.1 Investigation PR: wheels, licence, output cap, raw LZVN, fuzz in a child
   process, per-run cost, agreement with the prototype
-- [ ] A0.2 Maintainer decides: library only, Python only, or Python plus the library as
+- [x] A0.2 Maintainer decides: library only, Python only, or Python plus the library as
   an accelerator
 
 ## A. Decoders
 
-- [ ] A.1 `lzfse_decoder.py`: LZFSE (`bvx2`, `bvxn`, `bvx-`, `bvx$` ported from the
+- [x] A.1 `lzfse_decoder.py`: LZFSE (`bvx2`, `bvxn`, `bvx-`, `bvx$` ported from the
   prototype; `bvx1` written from Apple's `lzfse_decode_base.c`, since the prototype
   raises on it) and LZVN, bounded output
-- [ ] A.2 `adc_decoder.py`
-- [ ] A.2b `CompressionAlgorithm.LZFSE`, `LZVN`, `ADC`; codec-policy refusal tests
-- [ ] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
+- [x] A.2 `adc_decoder.py`
+- [x] A.2b `CompressionAlgorithm.LZFSE`, `LZVN`, `ADC`; codec-policy refusal tests
+- [x] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
   installed, damage and truncation
 
 ## B. UDIF, partitions and HFS+
@@ -71,9 +71,14 @@
 
 ## H. LZFSE accelerator
 
-- [ ] H.1 Optional `lzfse` package in a child process; `OptionalLibrary.LZFSE`; extra;
-  `exclude_libraries`; `--version -v`
-- [ ] H.2 Tests that both decoders agree on every fixture; `--all-configs`
+Ruled 2026-11-21 (A0.2): the fast path is archivey's own LZFSE and LZVN kernel in the
+`archivey-codecs` Rust package, with the same checks as the Python decoder, not the
+`lzfse` PyPI package.
+
+- [ ] H.1 LZFSE and LZVN kernel in `archivey-codecs` with a bounded output and the
+  Python decoder's checks; archivey uses it when the package is installed
+- [ ] H.2 Tests that both decoders agree on every fixture and on the A0 fuzz corpus;
+  `--all-configs`
 
 ## On archive
 
