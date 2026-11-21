@@ -343,8 +343,8 @@ failed streaming walk on purpose because the prefix is out. There `unlock` calls
 provider in place, as makeself and the built-in streaming readers do today, with the
 handle guard released, and the walk lock still held. The known limit is the one those
 readers have now: a provider that waits on a copied-context worker calling into the same
-reader during the walk can block. This keeps makeself's provider on a pipe working.
-Open question 8.
+reader during the walk can block. This keeps makeself's provider on a pipe working
+(maintainer decision, question 8).
 
 The plugin may call `unlock` from `open`, `iter_members`, `walk` and `open_member`, and
 from nowhere else (not from inside a stream's `read`). Its calls must be repeatable
@@ -364,7 +364,7 @@ walk case, where no repeat is possible.
 - A plugin can still decrypt without `unlock` by reading the password some other way
   (an environment variable). Nothing stops that, and nothing needs to.
 
-## Open questions (1-7 ruled by the maintainer 2026-11-21; 8 open)
+## Open questions (all ruled by the maintainer, 2026-11-21)
 
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi
    11-21).
@@ -382,4 +382,4 @@ walk case, where no repeat is possible.
    `MemberSpan` and `MemberData`? RULED yes (davi 11-21, card).
 8. D8: a walk that already yielded members calls the provider in place, as makeself and
    the built-in streaming readers do today (with the same copied-context limit), instead
-   of giving it no provider answers? (Recommended: yes; Codex review C14.) OPEN.
+   of giving it no provider answers? RULED yes (davi 11-21, card).
