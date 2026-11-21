@@ -114,7 +114,7 @@ Alternative: hand the plugin an iterator of candidates. Rejected (davi chose the
 archivey): the provider's rules (skip repeats, stop after three own repeats, no reentry,
 one call at a time) and promotion would be each plugin's job.
 
-### D2. archivey builds both errors
+### D2. archivey builds both errors (RULED: davi 11-21, card)
 
 | Outcome | archivey raises |
 | --- | --- |
@@ -202,8 +202,8 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi 11-21).
 2. D1/D3: `check` returns `(data, PasswordConfirmVerdict)` (davi 11-21: reuse the built-in
    enum and its levels; built-ins and plugins share it), with an optional
-   `full_check` to decide between several unconfirmed passwords? (Recommended: yes.)
-3. D2: archivey writes both messages? (Recommended: yes.)
+   `full_check` to decide between several unconfirmed passwords? RULED yes (davi 11-21).
+3. D2: archivey writes both messages? RULED yes (davi 11-21, card).
 4. D4: `charge_key_derivation(rounds)` on the context? (Recommended: yes.)
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
    `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`, `CONFIRMED`).
