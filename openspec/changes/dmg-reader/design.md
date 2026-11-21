@@ -650,9 +650,18 @@ of oids the same way. Every later lookup checks these ranges:
   overlaps a damaged range, the member lists, and its read raises `CorruptionError`
   naming the damaged node's address at the first byte the extents can no longer show,
   instead of serving zeros.
-- Inode, xattrs and directory records of an object: `(oid, 3..9, *)`. If they overlap a
-  damaged range, the member is not listed (its type and size cannot be trusted), and
-  the end-of-listing `CorruptionError` counts it.
+- Listing a member depends on exact keys, not on an interval over the object id (the
+  inode id and the data-stream id are often the same number, as in the APFS UDRO
+  fixture's `random.bin`, id 22 for both, so an interval would also catch its extents):
+  its inode record `(oid, 3)`; the directory record that names it, `(parent, 9, name)`;
+  and the xattrs that change what it is, `(oid, 4, "com.apple.fs.symlink")` for a
+  symlink and `(oid, 4, "com.apple.decmpfs")` for a file with `UF_COMPRESSED`. If any of
+  those keys falls in a damaged range, the member is not listed (its type and size
+  cannot be trusted), and the end-of-listing `CorruptionError` counts it. Other xattrs
+  in a damaged range leave the member listed with those names missing from `extra`, and
+  the listing still ends with `CorruptionError`. A directory whose own `(oid, 9, *)`
+  range overlaps a damaged range lists the children that remain, then the same error.
+  Extents (type 8) are handled only by the data-stream rule above, never by this one.
 - An oid looked up in the object map that falls into a damaged oid range is
   `CorruptionError` ("mapped by a damaged object-map node"), not "not found".
 
@@ -1041,11 +1050,13 @@ links), libyal `libfshfs`/`libfsapfs` (no xz runs in `libmodi`).
 - APFS (Part E): every fixture; plain and hashed keys; a stale checkpoint is skipped for
   the newest valid one; every refusal in §6A; Fletcher-64 damage on each object kind.
 - APFS damaged key ranges (Part E): a filesystem tree of three leaves from `write_apfs`
-  holding a sparse file A (a hole between two extents, leaf 1), a file B whose extents
-  sit in leaf 2, and a file C (leaf 3); leaf 2's checksum is broken. Expected: A reads
-  with zeros in its hole; B lists and its read raises `CorruptionError` (not zeros); C
-  reads normally; the listing ends with `CorruptionError`. The same with a damaged
-  object-map leaf: lookups of the oids it mapped raise `CorruptionError`.
+  holding a sparse file A (a hole between two extents, leaf 1), a file B whose inode id
+  and data-stream id are the same number (as in the fixtures) and whose extents alone
+  sit in leaf 2 (its inode and directory record in leaf 1), and a file C (leaf 3); leaf
+  2's checksum is broken. Expected: A reads with zeros in its hole; B lists and its read
+  raises `CorruptionError` (not zeros); C reads normally; the listing ends with
+  `CorruptionError`. The same with a damaged object-map leaf: lookups of the oids it
+  mapped raise `CorruptionError`.
 - UDIF bounds, through a source that counts the bytes requested from it: a plist length
   over 64 MiB raises `ResourceLimitError` with no byte of the plist requested; a run
   whose stored length is over the cap raises `CorruptionError` with no byte of the run

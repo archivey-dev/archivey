@@ -131,19 +131,20 @@ on HFS+ and on APFS.
 ### Requirement: List an APFS volume
 
 The system SHALL read an APFS container from the newest complete checkpoint (its
-superblock and checkpoint-map blocks all valid),
-resolve objects through the container and volume object maps, and check the Fletcher-64
-checksum of every object it reads. An object whose checksum fails SHALL NOT be used: the
-walk SHALL skip it, list every member whose records are all intact, and then raise
-`CorruptionError`. It SHALL list the live filesystem tree of each volume (not
-snapshots), with types from the inode mode, symlink targets from `com.apple.fs.symlink`,
-hard links as for HFS+, sparse extents and holes as zeros, and names as stored. A node
-or object-map node that is skipped SHALL mark the key range its verified parent gives it
-as damaged: a member whose inode, xattr or directory records fall in a damaged range
-SHALL NOT be listed, and a read that needs extents or an object-map entry in a damaged
-range SHALL raise `CorruptionError`, never serve zeros. Holes outside damaged ranges
-SHALL read as zeros. Encrypted volumes, sealed volumes and Fusion containers SHALL raise
-`UnsupportedFeatureError` naming the feature.
+superblock and checkpoint-map blocks all valid), resolve objects through the container
+and volume object maps, and check the Fletcher-64 checksum of every object it reads. An
+object whose checksum fails SHALL NOT be used: the walk SHALL skip it, list every member
+whose records are all intact, and then raise `CorruptionError`. It SHALL list the live
+filesystem tree of each volume (not snapshots), with types from the inode mode, symlink
+targets from `com.apple.fs.symlink`, hard links as for HFS+, sparse extents and holes as
+zeros, and names as stored. A node or object-map node that is skipped SHALL mark the key
+range its verified parent gives it as damaged: a member whose inode record, naming
+directory record, or symlink or decmpfs xattr falls in a damaged range SHALL NOT be
+listed; damage that touches only its extents SHALL NOT stop it listing, and a read that
+needs extents or an object-map entry in a damaged range SHALL raise `CorruptionError`,
+never serve zeros. Holes outside damaged ranges SHALL read as zeros. Encrypted volumes,
+sealed volumes and Fusion containers SHALL raise `UnsupportedFeatureError` naming the
+feature.
 
 #### Scenario: APFS
 
