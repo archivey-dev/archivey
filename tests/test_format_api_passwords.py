@@ -512,7 +512,9 @@ def test_copied_context_close_raises_while_another_close_drains(
     ) as reader:
         box.append(reader)
         reader.members()
-        assert reader.read("a.txt") == _SECRET
+        # Not read(): the independent closer closes the reader as soon as open()
+        # returns, so the stream may already be closed when it comes back.
+        reader.open("a.txt").close()
     for closer in closers:
         closer.join(timeout=10)
     assert len(outcome) == 1
