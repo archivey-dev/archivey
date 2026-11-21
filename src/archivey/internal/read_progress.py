@@ -67,6 +67,9 @@ class SourceReadReporter:
         self._bytes_read = 0
         self._reported_at = 0
         self._requests = 0
+        # Bytes an unfinished request has reported inside its answer: counted in
+        # ``bytes_read`` from then on, even when the request fails and never ends.
+        self._in_flight = 0
         # What the callback raised, once it has: every later report raises it again.
         self._stopped: BaseException | None = None
         # A report due while archivey's own thread read: the next report on a
@@ -83,7 +86,8 @@ class SourceReadReporter:
         self.raise_if_stopped()
         position += self._offset
         with self._lock:
-            self._bytes_read += n
+            self._bytes_read += n + self._in_flight
+            self._in_flight = 0
             total = self._bytes_read
             if total == self._reported_at:
                 return
@@ -128,6 +132,9 @@ class SourceReadReporter:
         sent (a volume's base offset already added)."""
         self.raise_if_stopped()
         with self._lock:
+            # A request that failed after reporting took those bytes all the same.
+            self._bytes_read += self._in_flight
+            self._in_flight = 0
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
         self._report_or_defer(snapshot)
@@ -135,9 +142,11 @@ class SourceReadReporter:
     def request_received(self, start: int, end: int, received: int) -> None:
         """The answer to the request for ``[start, end)`` has brought ``received``
         bytes so far. ``bytes_read`` includes them; :meth:`request_ended` then adds the
-        request's bytes once."""
+        request's bytes once. When the request fails instead, the next
+        :meth:`request_started` or local read adds them."""
         self.raise_if_stopped()
         with self._lock:
+            self._in_flight = received
             snapshot = self._remote_progress(
                 start, end, received, done=False, position=start + received
             )
@@ -147,6 +156,7 @@ class SourceReadReporter:
     def request_ended(self, start: int, end: int, received: int) -> None:
         """The request for ``[start, end)`` returned ``received`` bytes."""
         with self._lock:
+            self._in_flight = 0
             self._bytes_read += received
             snapshot = self._remote_progress(
                 start, end, received, done=True, position=start + received

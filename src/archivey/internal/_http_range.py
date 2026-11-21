@@ -93,6 +93,16 @@ class _Body:
     """A ``206``'s declared length, which the body must match."""
     total: int | None
 
+    @property
+    def complete(self) -> int:
+        """The size of a complete body: a ``206``'s declared length, else ``limit``."""
+        return self.length if self.length is not None else self.limit
+
+    def next_read(self, received: int) -> int:
+        """How many bytes to ask for next, after ``received``: at most one chunk, and
+        never past ``limit``. 0 once ``limit`` is reached."""
+        return min(CHUNK, self.limit - received)
+
     def answer(self, url: str, start: int, data: bytes) -> HttpAnswer:
         if self.length is not None and len(data) != self.length:
             raise OSError(
@@ -225,8 +235,8 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
             return body
         out = bytearray()
         try:
-            while len(out) < body.limit:
-                chunk = await read_chunk(body, min(CHUNK, body.limit - len(out)))
+            while n := body.next_read(len(out)):
+                chunk = await read_chunk(body, n)
                 if not chunk:
                     break
                 out += chunk
@@ -250,15 +260,12 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
             return body
         out = bytearray()
         try:
-            while len(out) < body.limit:
-                chunk = cast(
-                    bytes,
-                    sync(fs.loop, read_chunk, body, min(CHUNK, body.limit - len(out))),
-                )
+            while n := body.next_read(len(out)):
+                chunk = cast(bytes, sync(fs.loop, read_chunk, body, n))
                 if not chunk:
                     break
                 out += chunk
-                if len(out) < body.limit - (body.length is not None):
+                if len(out) < body.complete:
                     # On the caller's thread, between two reads of the body. Not
                     # once the body is complete: the request's end report follows.
                     on_received(len(out))
