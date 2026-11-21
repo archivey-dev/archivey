@@ -568,6 +568,8 @@ struct LzwDecompressor {
     clear_offsets: Vec<(u64, u64)>,
     /// Bytes passed to `decompress()`.
     fed: u64,
+    /// The kernel raised: it raises again, and no state is saved.
+    failed: bool,
     total_out: u64,
 }
 
@@ -651,8 +653,14 @@ impl LzwDecompressor {
                 }
                 // The kernel raises the same error again on the next call: give back
                 // the bytes before it first.
-                Err(_) if !out.is_empty() => break,
-                Err(e) => return Err(to_py0(e)),
+                Err(_) if !out.is_empty() => {
+                    self.failed = true;
+                    break;
+                }
+                Err(e) => {
+                    self.failed = true;
+                    return Err(to_py0(e));
+                }
             }
         }
         if self.held_pos == self.held.len() {
@@ -696,6 +704,7 @@ impl LzwDecompressor {
             clear_at: (0, 0),
             clear_offsets: Vec::new(),
             fed: 0,
+            failed: false,
             total_out: 0,
         })
     }
@@ -729,8 +738,11 @@ impl LzwDecompressor {
                 }
                 // Output decoded before the error comes first; the kernel raises the
                 // same error again on the call after it.
-                Err(_) if self.held_len() > 0 => {}
-                Err(e) => return Err(to_py0(e)),
+                Err(_) if self.held_len() > 0 => self.failed = true,
+                Err(e) => {
+                    self.failed = true;
+                    return Err(to_py0(e));
+                }
             }
         }
         let first = std::mem::take(&mut self.clear_offsets);
@@ -761,7 +773,7 @@ impl LzwDecompressor {
         if self.flushed {
             return Err(PyValueError::new_err("getstate() after flush()"));
         }
-        if self.inner.failed() {
+        if self.failed || self.inner.failed() {
             return Err(PyValueError::new_err("getstate() after an error"));
         }
         let mut out = state_header("lzw");
@@ -790,7 +802,8 @@ impl LzwDecompressor {
         let fed = r.u64().map_err(to_py0)?;
         let total_out = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
-        if clear_at.0 > fed || clear_at.1 > total_out + held.len() as u64 {
+        let produced = total_out.checked_add(held.len() as u64);
+        if clear_at.0 > fed || produced.is_none_or(|p| clear_at.1 > p) {
             return Err(CorruptDataError::new_err(
                 "the lzw state holds offsets that do not agree",
             ));
@@ -804,6 +817,7 @@ impl LzwDecompressor {
             clear_at,
             clear_offsets: Vec::new(),
             fed,
+            failed: false,
             total_out,
         })
     }
@@ -1393,7 +1407,9 @@ impl Bcj2Decompressor {
     }
 
     /// The decoder's state (design D3): the range coder, the output position and the
-    /// output not yet returned; none of the streams' buffered bytes. Restore it with
+    /// output not yet returned; none of the streams' buffered bytes. A read decodes to
+    /// the end of a 64 KiB `main` chunk, so a state can hold up to five times that
+    /// (each converted branch adds 4 bytes), even after a small `read()`. Restore it with
     /// `from_state(state, main, call, jump, rc)`, each stream placed at its
     /// `total_in`.
     fn getstate<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
@@ -1427,7 +1443,7 @@ impl Bcj2Decompressor {
         let inner = bcj2::Bcj2::load(&mut r).map_err(to_py0)?;
         let out_size = r.u64().map_err(to_py0)?;
         let checked = r.bool().map_err(to_py0)?;
-        let pending = r.bytes(usize::MAX).map_err(to_py0)?.to_vec();
+        let pending = r.bytes(bcj2::MAX_BLOCK_OUTPUT).map_err(to_py0)?.to_vec();
         let mut counts = [0u64; 4];
         for c in counts.iter_mut() {
             *c = r.u64().map_err(to_py0)?;

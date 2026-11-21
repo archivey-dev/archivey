@@ -60,6 +60,22 @@ pub fn parse_header(header: &[u8]) -> Result<(u32, bool), Err> {
     Ok((max_width, flag & 0x80 != 0))
 }
 
+/// Where the padding being skipped comes from, for the truncation message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkipReason {
+    Clear,
+    Widen,
+}
+
+impl SkipReason {
+    fn message(self) -> &'static str {
+        match self {
+            SkipReason::Clear => "after a CLEAR",
+            SkipReason::Widen => "at a code-width increase",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct LzwState {
     buf: Vec<u8>,
@@ -73,7 +89,7 @@ pub struct LzwState {
     seg_decomp: i64,
     pending_skip: i64,
     skip_may_end_at: i64,
-    skip_reason: &'static str,
+    skip_reason: SkipReason,
     step_output: Vec<u8>,
     raise_after: Option<Err>,
     // Dictionary state.
@@ -114,7 +130,7 @@ impl LzwState {
             seg_decomp: 0,
             pending_skip: 0,
             skip_may_end_at: 0,
-            skip_reason: "after a CLEAR",
+            skip_reason: SkipReason::Clear,
             step_output: Vec::new(),
             raise_after: None,
             max_width: 0,
@@ -167,7 +183,7 @@ impl LzwState {
         self.codes_in_era = if block_mode { 0 } else { -1 };
         self.pending_skip = 0;
         self.skip_may_end_at = 0;
-        self.skip_reason = "after a CLEAR";
+        self.skip_reason = SkipReason::Clear;
     }
 
     /// Input fed but not decoded yet.
@@ -199,7 +215,10 @@ impl LzwState {
         ] {
             state::put_u64(out, v as u64);
         }
-        out.push(u8::from(self.skip_reason != "after a CLEAR"));
+        out.push(match self.skip_reason {
+            SkipReason::Clear => 0,
+            SkipReason::Widen => 1,
+        });
         if self.need_header {
             return;
         }
@@ -248,10 +267,10 @@ impl LzwState {
         if v.iter().any(|&x| x < 0) || pending_skip > MAX_CODE_WIDTH as i64 {
             return r.bad("a segment or skip out of range");
         }
-        let reason = if r.bool()? {
-            "at a code-width increase"
-        } else {
-            "after a CLEAR"
+        let reason = match r.u8()? {
+            0 => SkipReason::Clear,
+            1 => SkipReason::Widen,
+            v => return r.bad(format!("a skip reason of {v}")),
         };
         let mut d = if need_header {
             LzwState::new(None, None, widens)
@@ -338,7 +357,8 @@ impl LzwState {
         if self.pending_skip != 0 && self.pending_skip != self.skip_may_end_at {
             self.truncation = Some(format!(
                 "it ends {} byte(s) short of the padding {}",
-                self.pending_skip, self.skip_reason
+                self.pending_skip,
+                self.skip_reason.message()
             ));
         } else if self.header_params.is_some() && self.bits_in_buffer > 0 {
             let leftover = self.bit_buffer & ((1u64 << self.bits_in_buffer) - 1);
@@ -439,7 +459,7 @@ impl LzwState {
             if skip < pad {
                 self.pending_skip = (pad - skip) as i64;
                 self.skip_may_end_at = if skip == 0 { pad as i64 } else { 0 };
-                self.skip_reason = "at a code-width increase";
+                self.skip_reason = SkipReason::Widen;
             }
         }
         self.code_width = INITIAL_CODE_WIDTH + 1;
@@ -654,7 +674,7 @@ impl LzwState {
                     if target > buf_len as i64 {
                         self.pending_skip = target - buf_len as i64;
                         self.skip_may_end_at = 0;
-                        self.skip_reason = "after a CLEAR";
+                        self.skip_reason = SkipReason::Clear;
                         buf_i = buf_len;
                     } else {
                         buf_i = target as usize;
@@ -736,7 +756,7 @@ impl LzwState {
                         if buf_i as i64 + pad > buf_len as i64 {
                             self.pending_skip = buf_i as i64 + pad - buf_len as i64;
                             self.skip_may_end_at = if buf_i == buf_len { pad } else { 0 };
-                            self.skip_reason = "at a code-width increase";
+                            self.skip_reason = SkipReason::Widen;
                             buf_i = buf_len;
                         } else {
                             buf_i += pad as usize;
