@@ -45,6 +45,7 @@ The maintainer asked for a callback any caller can hook, and a CLI display built
 ### Modified Capabilities
 
 - `archive-reading`: a requirement for `on_source_read`.
+- `cli`: a requirement for the line that shows the reads of the archive's file.
 
 ## Impact
 

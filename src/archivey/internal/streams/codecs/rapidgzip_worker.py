@@ -32,7 +32,9 @@ Parent to child:
   (``file_region``): mainly a ZIP member in an archive on disk, and also a ``.gz`` or
   ``.bz2`` opened from the caller's ``open(path, "rb")``. The compressed bytes then
   never cross a pipe. A ``.tar.gz`` does not qualify: it is read through detection's
-  peek reader (``_BoundedPeekReader``), which ends the walk.
+  peek reader (``_BoundedPeekReader``), which ends the walk. Argument 3 is argument 2
+  for a source whose reads the parent reports (``ArchiveyConfig.on_source_read``):
+  the child also sends ``RANGE_READ`` with the reads of the range.
 - ``READ`` (argument: at most this many bytes), ``SEEK`` (argument: offset; payload: one
   byte, ``whence``), ``RESUME`` (argument: a decompressed offset; the reply's argument is
   the largest index point at or before it, or -1), ``POINTS`` (argument: a
@@ -57,6 +59,11 @@ Child to parent:
 - ``SRC_READ`` (argument: size), ``SRC_SEEK`` (argument: offset; payload: ``whence``),
   ``SRC_TELL``: rapidgzip reading the parent's stream. They can arrive before the reply
   to any request, since rapidgzip's own threads read ahead in the background.
+- ``RANGE_READ`` (argument: how many records; payload: that many
+  ``RANGE_READ_RECORD``, where a read ended, counted from the range's start, and the
+  bytes it returned): the reads of an ``OPEN_RANGE_NOTED`` range since the last
+  ``RANGE_READ``, in order, a read that starts where the one before ended merged into
+  it. Sent just before a request's reply, when there are any; it gets no answer.
 
 The parent closes its end of the pipes to stop the child. A child whose stream ended
 cleanly can be ``RESET`` and given another ``OPEN``: the parent reuses children for the
@@ -124,8 +131,12 @@ BZIP2_ARG = "bzip2"
 SRC_DATA, SRC_VALUE, SRC_FAIL = 10, 11, 12
 OK, ERR = shared.OK, shared.ERR
 SRC_READ, SRC_SEEK, SRC_TELL = 10, 11, 12
+# Child to parent, never answered: reads of an ``OPEN_RANGE_NOTED`` range.
+RANGE_READ = 13
+# One RANGE_READ record: where a read ended (from the range's start), and its bytes.
+RANGE_READ_RECORD = struct.Struct("<qq")
 
-OPEN_PATH, OPEN_STREAM, OPEN_RANGE = 0, 1, 2
+OPEN_PATH, OPEN_STREAM, OPEN_RANGE, OPEN_RANGE_NOTED = 0, 1, 2, 3
 # The OPEN_RANGE payload after the limit: file descriptor, start offset, length.
 OPEN_RANGE_ARGS = struct.Struct("<qqq")
 
@@ -258,12 +269,18 @@ class _FileRange(io.RawIOBase):
     rapidgzip stays inside the range.
     """
 
-    def __init__(self, fd: int, start: int, length: int) -> None:
+    def __init__(
+        self, fd: int, start: int, length: int, *, noting: bool = False
+    ) -> None:
         super().__init__()
         self._fd = fd
         self._start = start
         self._length = length
         self._pos = 0
+        # Whether reads are noted for the parent (``OPEN_RANGE_NOTED``), and the
+        # reads not sent yet, as [end, count] (``take_noted``).
+        self._noting = noting
+        self._noted: list[list[int]] = []
         # rapidgzip's threads share one position.
         self._lock = threading.Lock()
 
@@ -287,7 +304,20 @@ class _FileRange(io.RawIOBase):
                 return 0
             view[: len(data)] = data
             self._pos += len(data)
+            if self._noting and data:
+                noted = self._noted
+                if noted and noted[-1][0] == self._pos - len(data):
+                    noted[-1][0] = self._pos
+                    noted[-1][1] += len(data)
+                else:
+                    noted.append([self._pos, len(data)])
             return len(data)
+
+    def take_noted(self) -> bytes:
+        """The reads since the last call, as ``RANGE_READ`` records; empty if none."""
+        with self._lock:
+            noted, self._noted = self._noted, []
+        return b"".join(RANGE_READ_RECORD.pack(end, count) for end, count in noted)
 
     @override
     def seek(self, offset: int, whence: int = 0) -> int:
@@ -322,10 +352,26 @@ def _points_around(stream: Any, offset: int) -> tuple[int, bytes]:
     return len(points), POINTS_REPLY.pack(*before, *after)
 
 
-def _serve(channel: _Channel, stream: Any, watch: _MemoryWatch) -> bool:
+def _serve(
+    channel: _Channel,
+    stream: Any,
+    watch: _MemoryWatch,
+    noted: _FileRange | None = None,
+) -> bool:
     """Answer the parent's requests until it sends ``RESET`` (True) or goes away
     (False). Each ``READ`` and ``SEEK`` reply waits for one more check against
-    ``watch``'s ceiling."""
+    ``watch``'s ceiling. ``noted``: the range whose reads go to the parent before each
+    reply (``RANGE_READ``)."""
+
+    def send(tag: int, arg: int = 0, payload: bytes = b"") -> bool:
+        if noted is not None:
+            records = noted.take_noted()
+            if records and not channel.send(
+                RANGE_READ, len(records) // RANGE_READ_RECORD.size, records
+            ):
+                return False
+        return channel.send(tag, arg, payload)
+
     while True:
         tag, arg, payload = channel.requests.get()
         if tag == 0:  # ``_EOF``: the parent closed its end of the pipe
@@ -336,32 +382,30 @@ def _serve(channel: _Channel, stream: Any, watch: _MemoryWatch) -> bool:
             if tag == READ:
                 data = stream.read(arg)
                 check_memory(watch.ceiling)
-                ok = channel.send(OK, len(data), data)
+                ok = send(OK, len(data), data)
             elif tag == SEEK:
                 position = stream.seek(arg, payload[0] if payload else 0)
                 check_memory(watch.ceiling)
-                ok = channel.send(OK, position)
+                ok = send(OK, position)
             elif tag == RESUME:
                 offsets = stream.available_block_offsets().values()
                 preceding = [value for value in offsets if value <= arg]
-                ok = channel.send(OK, max(preceding) if preceding else -1)
+                ok = send(OK, max(preceding) if preceding else -1)
             elif tag == POINTS:
-                ok = channel.send(OK, *_points_around(stream, arg))
+                ok = send(OK, *_points_around(stream, arg))
             elif tag == TELL_COMPRESSED:
-                ok = channel.send(OK, stream.tell_compressed())
+                ok = send(OK, stream.tell_compressed())
             elif tag == OFFSETS:
                 offsets = (
                     stream.block_offsets()
                     if arg == OFFSETS_COMPLETE
                     else stream.available_block_offsets()
                 )
-                ok = channel.send(OK, len(offsets), _offsets_payload(offsets))
+                ok = send(OK, len(offsets), _offsets_payload(offsets))
             else:
-                ok = channel.send(
-                    ERR, 0, shared.error_payload(ValueError(f"bad tag {tag}"))
-                )
+                ok = send(ERR, 0, shared.error_payload(ValueError(f"bad tag {tag}")))
         except Exception as exc:  # noqa: BLE001 - reported to the parent, which raises
-            ok = channel.send(ERR, 0, shared.error_payload(exc))
+            ok = send(ERR, 0, shared.error_payload(exc))
         if not ok:
             return False
 
@@ -595,10 +639,14 @@ def _main(argv: list[str], refs: int | None) -> None:
             if opener is None:
                 opener = _load_opener(argv)
             source: object
+            noted = None
             if kind == OPEN_PATH:
                 source = os.fsdecode(payload)
             elif kind == OPEN_RANGE:
                 source = _FileRange(*OPEN_RANGE_ARGS.unpack(payload))
+            elif kind == OPEN_RANGE_NOTED:
+                source = _FileRange(*OPEN_RANGE_ARGS.unpack(payload), noting=True)
+                noted = source
             else:
                 source = _ParentSource(channel)
             stream = opener(source, parallelization=0)
@@ -610,7 +658,7 @@ def _main(argv: list[str], refs: int | None) -> None:
             # the interpreter and rapidgzip's start-up.
             if limit != NO_MEMORY_LIMIT:
                 watch.arm(limit)
-            reset = channel.send(OK) and _serve(channel, stream, watch)
+            reset = channel.send(OK) and _serve(channel, stream, watch, noted)
         finally:
             watch.disarm()
             # close(), not join_threads(), stops rapidgzip's threads; one still running

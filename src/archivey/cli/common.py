@@ -16,6 +16,7 @@ from archivey import detect_format, open_archive
 from archivey.cli.errors import CliError
 from archivey.cli.exit_codes import EXIT_USAGE
 from archivey.cli.format import format_format_label
+from archivey.cli.progress import ProgressCallback
 from archivey.cli.sources import is_remote, resolve_archive, shown_archive
 from archivey.config import DEFAULT_ARCHIVEY_CONFIG, ArchiveyConfig, PasswordInput
 from archivey.exceptions import StreamNotSeekableError
@@ -187,6 +188,7 @@ def open_for_cli(
     stdin: BinaryIO | None = None,
     err: TextIO | None = None,
     format: ArchiveFormat | None = None,
+    progress: ProgressCallback | None = None,
 ) -> Generator[ForwardArchiveReader, None, None]:
     """Open an archive, optionally wrapping the call in measurement for ``--track-io``.
 
@@ -195,7 +197,8 @@ def open_for_cli(
     Each verb then reads the archive in one forward pass. A verb that reads ``-`` from
     stdin passes the stream as ``stdin``, which opens in streaming mode as well; for
     every other verb ``-`` is refused. ``format`` skips detection, as
-    ``open_archive(format=)`` does.
+    ``open_archive(format=)`` does. ``progress`` shows how far the archive's file is
+    read (``ArchiveyConfig.on_source_read``); it is closed when the block ends.
     """
     source: Any
     if archive == "-" and stdin is not None:
@@ -207,28 +210,46 @@ def open_for_cli(
         source = resolve_archive(str(archive))
         streaming = not is_remote(str(archive)) and is_read_once(archive)
     err = err if err is not None else sys.stderr
-    if track_io:
-        with (
-            enable_measurement(),
-            _open(
+    config = with_source_progress(config, progress)
+    try:
+        if track_io:
+            with (
+                enable_measurement(),
+                _open(
+                    source,
+                    password=password,
+                    streaming=streaming,
+                    config=config,
+                    format=format,
+                ) as reader,
+            ):
+                yield reader
+                if progress is not None:
+                    progress.close()
+                _report_track_io(reader, err)
+        else:
+            with _open(
                 source,
                 password=password,
                 streaming=streaming,
                 config=config,
                 format=format,
-            ) as reader,
-        ):
-            yield reader
-            _report_track_io(reader, err)
-    else:
-        with _open(
-            source,
-            password=password,
-            streaming=streaming,
-            config=config,
-            format=format,
-        ) as reader:
-            yield reader
+            ) as reader:
+                yield reader
+    finally:
+        # Cleared before any later line: the error of a failed open, the summary.
+        if progress is not None:
+            progress.close()
+
+
+def with_source_progress(
+    config: ArchiveyConfig | None, progress: ProgressCallback | None
+) -> ArchiveyConfig | None:
+    """``config`` with ``progress`` as its ``on_source_read``; ``config`` unchanged
+    when there is no progress line to show."""
+    if progress is None:
+        return config
+    return replace(config or ArchiveyConfig(), on_source_read=progress.source_read)
 
 
 def _open(

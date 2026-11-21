@@ -249,7 +249,11 @@ current directory; write `.` for that.
 Options shared by every command can go before or after the command; a command's own options,
 such as `-d` or `--exclude`, go after it. Besides `--password` and `-v`, the shared ones are:
 
-- `--hide-progress` turns off progress bars.
+- `--hide-progress` turns off progress bars. Without it, on a terminal with `tqdm` installed,
+  every command shows how far it has read the archive's file once that takes more than half a
+  second; for a URL the line also counts the requests and the bytes they fetched. `test` and
+  `extract` show a bar for the members' data instead, which counts the position in the file
+  when the members' total size isn't known in advance, as for a `.tar.xz`.
 - `--track-io` reports how many bytes archivey decompressed and read, and how often it seeked.
   For a URL it also reports how many range requests archivey made and how many bytes they
   fetched, in total and as a share of the archive's size. Each file also costs one size lookup

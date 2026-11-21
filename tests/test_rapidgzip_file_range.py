@@ -22,11 +22,21 @@ from pathlib import Path
 
 import pytest
 
-from archivey import AcceleratorMode, ArchiveyConfig, open_archive
+from archivey import (
+    AcceleratorMode,
+    ArchiveyConfig,
+    SourceProgress,
+    open_archive,
+    open_stream,
+)
 from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.codecs import rapidgzip_child, rapidgzip_worker
-from archivey.internal.streams.codecs.rapidgzip_worker import OPEN, OPEN_RANGE
+from archivey.internal.streams.codecs.rapidgzip_worker import (
+    OPEN,
+    OPEN_RANGE,
+    OPEN_RANGE_NOTED,
+)
 from archivey.internal.streams.streamtools import SharedView, SlicingStream
 from archivey.internal.streams.streamtools.slice import file_region
 
@@ -155,6 +165,137 @@ def test_a_zip_member_is_read_from_the_file(
             stream.seek(250_000)
             assert stream.read(1000) == _DATA[250_000:251_000]
     assert kinds == [OPEN_RANGE]
+
+
+def _covered(calls: list[SourceProgress]) -> set[int]:
+    """The offsets of the file that the reported reads (``source_read_step=0``) cover;
+    checks that each call is one read and that the reads add up to ``bytes_read``."""
+    ranges = [(c.read_start, c.position) for c in calls]
+    assert all(s is not None and s < e for s, e in ranges)
+    assert sum(e - s for s, e in ranges) == calls[-1].bytes_read  # type: ignore[operator]
+    covered: set[int] = set()
+    for start, end in ranges:
+        covered.update(range(start, end))  # type: ignore[arg-type]
+    return covered
+
+
+@posix_only
+@pytest.mark.parametrize("method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_BZIP2])
+def test_a_reported_member_is_still_read_from_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: int
+) -> None:
+    # While ``on_source_read`` reports, the child still reads the file itself, and
+    # notes each read (``OPEN_RANGE_NOTED``): the reports cover the member's data.
+    pytest.importorskip("rapidgzip")
+    path = _zip(tmp_path, method)
+    kinds = _open_kinds(monkeypatch)
+    calls: list[SourceProgress] = []
+    config = ArchiveyConfig(
+        use_rapidgzip=AcceleratorMode.ON,
+        use_indexed_bzip2=AcceleratorMode.ON,
+        on_source_read=calls.append,
+        source_read_step=0,
+    )
+    with open_archive(path, config=config) as r:
+        assert r.read("data.bin") == _DATA
+    assert kinds == [OPEN_RANGE_NOTED]
+    with zipfile.ZipFile(path) as zf:
+        info = zf.getinfo("data.bin")
+        start = info.header_offset + 30 + len(info.filename) + len(info.extra)
+    assert _covered(calls).issuperset(range(start, start + info.compress_size))
+
+
+@posix_only
+def test_a_reported_gzip_file_is_read_by_the_child_to_its_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("rapidgzip")
+    path = tmp_path / "data.gz"
+    path.write_bytes(gzip.compress(_DATA))
+    kinds = _open_kinds(monkeypatch)
+    calls: list[SourceProgress] = []
+    config = ArchiveyConfig(
+        use_rapidgzip=AcceleratorMode.ON,
+        on_source_read=calls.append,
+        source_read_step=0,
+    )
+    with open_stream(path, config=config) as stream:
+        assert stream.read() == _DATA
+    assert kinds == [OPEN_RANGE_NOTED]
+    assert _covered(calls).issuperset(range(path.stat().st_size))
+    assert calls[-1].position == path.stat().st_size
+
+
+class _Stop(OSError):
+    pass
+
+
+@posix_only
+def test_a_stop_on_a_noted_read_reaches_the_caller(tmp_path: Path) -> None:
+    # Each report can raise; the read that called it raises that exception, also
+    # for the reads the child made itself.
+    pytest.importorskip("rapidgzip")
+    path = _zip(tmp_path, zipfile.ZIP_DEFLATED)
+
+    def read(callback: object) -> None:
+        config = ArchiveyConfig(
+            use_rapidgzip=AcceleratorMode.ON,
+            on_source_read=callback,  # type: ignore[arg-type]
+            source_read_step=0,
+        )
+        with open_archive(path, config=config) as r:
+            r.read("data.bin")
+
+    calls: list[SourceProgress] = []
+    read(calls.append)
+    for n in range(1, len(calls) + 1):
+        seen = 0
+
+        def stop(progress: SourceProgress, n: int = n) -> None:
+            nonlocal seen
+            seen += 1
+            if seen == n:
+                raise _Stop("stop")
+
+        with pytest.raises(_Stop):
+            read(stop)
+
+
+@posix_only
+def test_a_stop_holds_for_every_later_read(tmp_path: Path) -> None:
+    # A caller that catches the stop and reads on gets the stop again each time,
+    # never an error of the stream's own (the child is not taken for dead).
+    pytest.importorskip("rapidgzip")
+    path = tmp_path / "big.zip"
+    data = random.Random(5).randbytes(16 << 20)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("data.bin", data)
+    armed = False
+
+    def stop(progress: SourceProgress) -> None:
+        if armed:
+            raise _Stop("stop")
+
+    config = ArchiveyConfig(
+        use_rapidgzip=AcceleratorMode.ON, on_source_read=stop, source_read_step=0
+    )
+    with open_archive(path, config=config) as r, r.open("data.bin") as stream:
+        assert stream.read(10) == data[:10]
+        armed = True
+        # The first stop comes with the first report after arming. How many reads
+        # that takes depends on how far the child has read ahead, so read until it
+        # comes (the member is 16 MiB: four reads reach its end).
+        for _ in range(5):
+            try:
+                stream.read(4 << 20)
+            except _Stop:
+                break
+        else:
+            pytest.fail("no report after arming raised the stop")
+        # Every later read raises it again, even with no new report and at the end.
+        for _ in range(3):
+            with pytest.raises(_Stop):
+                stream.read(4 << 20)
 
 
 def _read_after_close(path: Path, config: ArchiveyConfig, what: str) -> Exception:

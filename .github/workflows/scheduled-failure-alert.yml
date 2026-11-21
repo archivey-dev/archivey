@@ -9,9 +9,11 @@ name: Scheduled failure alert
 # requests) opens or comments the same way, since nobody watches it either; a green one
 # closes nothing, because some of them (the accelerator crash search and fuzz soak) run
 # a much shorter budget than the scheduled run. Cancelled and skipped runs change
-# nothing. Dispatched and pull request runs are ignored; the person who started them is
-# already looking. Each failure report lists the failed jobs and marks as new the ones the
-# previous report did not name; scripts/ci/scheduled_failure_alert.py does the work.
+# nothing, and so does a failed run whose only bad jobs are ones no runner picked up,
+# unless the previous run lost a job the same way. Dispatched and pull request runs are
+# ignored; the person who started them is already looking. Each failure report lists
+# the failed jobs and marks as new the ones the previous report did not name;
+# scripts/ci/scheduled_failure_alert.py does the work.
 #
 # `workflows` matches each workflow's `name:`. A new scheduled workflow goes in this list
 # or in the exclusions of `test_every_scheduled_workflow_is_alerted` in
