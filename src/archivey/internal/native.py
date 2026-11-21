@@ -33,7 +33,9 @@ from archivey.internal.streams.codecs import deps
 from archivey.types import OptionalLibrary
 
 MIN_REVISIONS: dict[str, int] = {
+    "arm64": 1,
     "crc16_arc": 1,
+    "riscv": 1,
     "zipcrypto": 1,
 }
 """The oldest revision of each kernel this archivey uses: the one whose output and
@@ -168,5 +170,78 @@ def zipcrypto(
     def new(password: bytes) -> NativeZipCrypto:
         with panic_to_corruption("ZipCrypto"):
             return NativeZipCrypto(decryptor(password))
+
+    return new
+
+
+# ── ARM64 and RISC-V branch filters ───────────────────────────────────────────────────
+
+
+class Branch(Protocol):
+    """One stream through a branch filter, as archivey's filter decoder drives it."""
+
+    def decode(self, data: bytes) -> bytes:
+        """Decode what can be decoded of the input so far; the few bytes an
+        instruction cut at the end may still need wait for the next call."""
+        ...
+
+    def flush(self) -> bytes:
+        """At the end of the input: the bytes held back, unchanged."""
+        ...
+
+
+class _BranchDecoder(Protocol):
+    """``archivey_codecs.filters.Arm64Decoder`` or ``RiscvDecoder``."""
+
+    def decode(self, data: bytes) -> bytes: ...
+
+    def flush(self) -> bytes: ...
+
+
+class NativeBranch:
+    """archivey-codecs' ARM64 or RISC-V decoder, as a :class:`Branch`."""
+
+    __slots__ = ("_decoder", "_kernel")
+
+    def __init__(self, decoder: _BranchDecoder, kernel: str) -> None:
+        self._decoder = decoder
+        self._kernel = kernel
+
+    def decode(self, data: bytes) -> bytes:
+        with panic_to_corruption(self._kernel):
+            return self._decoder.decode(data)
+
+    def flush(self) -> bytes:
+        with panic_to_corruption(self._kernel):
+            return self._decoder.flush()
+
+
+_BRANCH_CLASSES = {
+    "arm64": ("Arm64Decoder", "ARM64"),
+    "riscv": ("RiscvDecoder", "RISC-V"),
+}
+
+
+def branch_filter(
+    kernel: str, excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[int], NativeBranch] | None:
+    """A constructor of :class:`NativeBranch` from the filter's start offset, or
+    ``None`` to use the Python filter. ``kernel`` is ``"arm64"`` or ``"riscv"``.
+
+    ``isolated`` is ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native
+    decoder runs in this process. Until the decoder child can run these kernels, the
+    Python filter keeps that promise: it gives the same bytes, only slower.
+    """
+    if isolated:
+        return None
+    module = kernels(kernel, excluded)
+    if module is None:
+        return None
+    class_name, label = _BRANCH_CLASSES[kernel]
+    decoder = getattr(module.filters, class_name)
+
+    def new(start_offset: int) -> NativeBranch:
+        with panic_to_corruption(label):
+            return NativeBranch(decoder(start_offset), label)
 
     return new
