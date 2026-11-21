@@ -11,6 +11,18 @@ fn too_big<T>(limit: usize) -> Result<T> {
 const END_INSTR: &str = "the input ends inside an instruction";
 const PAST_END: &str = "a literal run passes the end of the input";
 
+/// Make room for `n` more bytes without letting the capacity pass `limit`. Every call
+/// site has already checked that `out.len() + n <= limit`; the doubling keeps appends
+/// amortised, and the clamp keeps `limit` the bound on the allocation, not only on
+/// the length (a plain `extend` could double past it).
+fn room(out: &mut Vec<u8>, n: usize, limit: usize) {
+    let need = out.len() + n;
+    if need > out.capacity() {
+        let want = out.capacity().saturating_mul(2).max(need).min(limit);
+        out.reserve_exact(want - out.len());
+    }
+}
+
 pub fn lzo1x_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     let end = data.len();
     let mut out: Vec<u8> = Vec::with_capacity(limit.min(end.saturating_mul(4)).min(1 << 26));
@@ -25,6 +37,7 @@ pub fn lzo1x_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
         if t > limit {
             return too_big(limit);
         }
+        room(&mut out, t, limit);
         out.extend_from_slice(&data[ip..ip + t]);
         ip += t;
         state = if t > 3 { 4 } else { t };
@@ -59,6 +72,7 @@ pub fn lzo1x_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
                 if out.len() + count > limit {
                     return too_big(limit);
                 }
+                room(&mut out, count, limit);
                 out.extend_from_slice(&data[ip..ip + count]);
                 ip += count;
                 state = 4;
@@ -130,6 +144,7 @@ pub fn lzo1x_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
         if out.len() + length > limit {
             return too_big(limit);
         }
+        room(&mut out, length, limit);
         if distance >= length {
             out.extend_from_within(start..start + length);
         } else {
@@ -146,9 +161,32 @@ pub fn lzo1x_decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
             if out.len() + nxt > limit {
                 return too_big(limit);
             }
+            room(&mut out, nxt, limit);
             out.extend_from_slice(&data[ip..ip + nxt]);
             ip += nxt;
         }
         state = nxt;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lzo1x_decompress;
+
+    #[test]
+    fn capacity_stays_within_the_limit() {
+        // One literal, then many 33-byte matches at distance 1, then the end marker:
+        // the output is far larger than the reservation made from the input size.
+        for n in [1usize, 7, 100, 1000, 4097] {
+            let mut data = vec![18, b'a'];
+            for _ in 0..n {
+                data.extend_from_slice(&[63, 0, 0]);
+            }
+            data.extend_from_slice(&[17, 0, 0]);
+            let size = 1 + 33 * n;
+            let out = lzo1x_decompress(&data, size).unwrap();
+            assert_eq!(out, vec![b'a'; size]);
+            assert!(out.capacity() <= size, "{} > {size}", out.capacity());
+        }
     }
 }

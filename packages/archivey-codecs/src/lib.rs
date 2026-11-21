@@ -20,7 +20,8 @@ use kernels::{bcj2, crc16, filters, lzo, lzw, lzx, state, zipcrypto};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyInt};
+use pyo3::sync::critical_section::with_critical_section;
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView};
 use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
@@ -95,17 +96,35 @@ fn to_py(err: DecodeError<PyErr>) -> PyErr {
 
 /// The bytes of a bytes-like argument: borrowed from an immutable `bytes`, copied from
 /// anything else that exports a buffer.
+///
+/// On a free-threaded interpreter another thread can write to a mutable input during
+/// the call. A `bytearray`, given directly or through a `memoryview` of one, is copied
+/// under its lock (a critical section; a no-op with the GIL), so the copy is never
+/// torn by a write through the `bytearray`'s own methods. Any other mutable exporter
+/// (`array.array`, `mmap`, a write through a second `memoryview`) has no lock to take:
+/// as with CPython's own `zlib` and `hashlib`, the caller must not write to it during
+/// the call. Either way the kernel reads only its own copy.
 fn input<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<Cow<'a, [u8]>> {
     if let Ok(b) = obj.cast::<PyBytes>() {
         return Ok(Cow::Borrowed(b.as_bytes()));
     }
+    if let Ok(b) = obj.cast::<PyByteArray>() {
+        return Ok(Cow::Owned(b.to_vec()));
+    }
+    // The object whose lock guards the exported bytes: a memoryview's base, if any.
+    let owner = match obj.cast::<PyMemoryView>() {
+        Ok(view) => view.getattr("obj")?,
+        Err(_) => obj.clone(),
+    };
     if let Ok(buffer) = PyBuffer::<u8>::get(obj) {
-        return Ok(Cow::Owned(buffer.to_vec(obj.py())?));
+        let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
+        return Ok(Cow::Owned(copy));
     }
     // A buffer of wider items (`array.array("I")`): its bytes, as hashlib reads them.
-    let bytes = pyo3::types::PyMemoryView::from(obj)?.call_method1("cast", ("B",))?;
+    let bytes = PyMemoryView::from(obj)?.call_method1("cast", ("B",))?;
     let buffer = PyBuffer::<u8>::get(&bytes)?;
-    Ok(Cow::Owned(buffer.to_vec(obj.py())?))
+    let copy = with_critical_section(&owner, || buffer.to_vec(obj.py()))?;
+    Ok(Cow::Owned(copy))
 }
 
 // ── Saved state ─────────────────────────────────────────────────────────────────────
@@ -714,7 +733,13 @@ impl LzwDecompressor {
         }
         let data = input(data)?;
         self.clear_offsets.clear();
-        if !data.is_empty() {
+        if !data.is_empty() && self.held_len() > 0 {
+            // Output from an earlier call is still owed: queue the input and decode no
+            // more until it drains, so `held` never holds more than one entry (the
+            // bound `from_state` checks).
+            self.inner.queue(&data);
+            self.fed += data.len() as u64;
+        } else if !data.is_empty() {
             // A feed with no room decodes at most one entry: mostly it queues the input.
             let slice: &[u8] = &data;
             let inner = &mut self.inner;
