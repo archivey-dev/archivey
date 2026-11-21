@@ -1604,6 +1604,14 @@ impl Bcj2Decompressor {
         self.out_size
     }
 
+    /// Output bytes decoded so far, returned or not: a read decodes to the end of a
+    /// `main` chunk, so this runs ahead of `total_out`. The end check runs once the
+    /// read that returns the last byte drains them.
+    #[getter]
+    fn decoded(&self) -> u64 {
+        self.inner.decoded()
+    }
+
     /// Bytes used from each stream: (main, call, jump, rc).
     #[getter]
     fn total_in(&self) -> (u64, u64, u64, u64) {

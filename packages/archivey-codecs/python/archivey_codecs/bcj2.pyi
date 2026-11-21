@@ -31,6 +31,9 @@ class Decompressor:
     @property
     def out_size(self) -> int: ...
     @property
+    def decoded(self) -> int:
+        """Output bytes decoded so far, returned or not: ahead of ``total_out``."""
+    @property
     def total_in(self) -> tuple[int, int, int, int]: ...
     @property
     def total_out(self) -> int: ...

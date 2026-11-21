@@ -611,7 +611,10 @@ def _fuzz_bcj2(body: bytes) -> None:
     unpack = int.from_bytes(body[8:12], "little") % (_MAX_FILTER_BYTES + 1)
     parts = _split4(body[12 : 12 + _MAX_FILTER_BYTES], weights)
     decoder = Bcj2DecoderStream(
-        *(io.BytesIO(part) for part in parts), unpack_size=unpack
+        *(io.BytesIO(part) for part in parts),
+        unpack_size=unpack,
+        excluded=NO_EXCLUSIONS,
+        isolated=False,
     )
     try:
         decoder.read(min(4096, unpack))

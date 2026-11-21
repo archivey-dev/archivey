@@ -812,3 +812,16 @@ def test_mutable_inputs_are_copied() -> None:
     assert crc16_arc(memoryview(ba)) == want
     assert crc16_arc(memoryview(bytearray(b"x" + data))[1:]) == want
     assert crc16_arc(words) == want
+
+
+def test_bcj2_decoded_runs_ahead_of_total_out() -> None:
+    """A read decodes to the end of a ``main`` chunk: ``decoded`` counts those
+    bytes, returned or not, and reaches ``out_size`` before ``total_out`` does."""
+    d = _bcj2()
+    assert d.decoded == 0
+    d.read(1)
+    assert d.total_out == 1
+    assert d.decoded == 64 * 1024
+    while not d.eof:
+        d.read(100_000)
+    assert d.decoded == d.total_out == len(_BCJ2_MAIN)

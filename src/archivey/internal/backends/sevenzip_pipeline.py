@@ -1081,6 +1081,8 @@ def open_folder_pipeline(
                 jump,
                 rc,
                 unpack_size=chain.source.unpack_size,
+                excluded=config.excluded_libraries,
+                isolated=config.natives.isolated,
                 # A bare pack-stream branch is a borrowed view (``rc``, usually);
                 # every other branch is wrapped in a private slice.
                 owns_inputs=[b.unpack_size is not None for b in chain.source.branches],
