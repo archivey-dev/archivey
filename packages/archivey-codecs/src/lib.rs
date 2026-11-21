@@ -891,7 +891,11 @@ fn lzx_error(err: DecodeError<NeedMore>) -> PyErr {
 /// the input by up to two frames: call `flush()` at the end of the input for the
 /// rest, even when the input given covers it. After `flush()` the kernel reads up to
 /// two zero bytes past the input, as libmspack's lzxd does.
-#[pyclass(module = "archivey_codecs.lzx", name = "Decompressor")]
+#[pyclass(
+    skip_from_py_object,
+    module = "archivey_codecs.lzx",
+    name = "Decompressor"
+)]
 #[derive(Clone)]
 struct LzxDecompressor {
     inner: lzx::LzxDecoder,
