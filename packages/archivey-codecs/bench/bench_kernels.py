@@ -70,7 +70,9 @@ def main() -> None:
         for i in range(0, len(text), 131072)
     ]
     py = best(lambda: [lzo1x_decompress_python(b, 131072) for b in blocks], 1)
-    rs = best(lambda: [n.lzo1x.decompress(b, out_size=k) for b, k in zip(blocks, sizes)])
+    rs = best(
+        lambda: [n.lzo1x.decompress(b, out_size=k) for b, k in zip(blocks, sizes)]
+    )
     c = best(lambda: [lzo.decompress(b, False, 131072) for b in blocks])
     row(
         "LZO1X (128 KiB blocks)",
