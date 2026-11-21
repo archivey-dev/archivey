@@ -1194,6 +1194,11 @@ class ArchiveSource(ReadOnlyIOStream):
         """
         if not self._seekable or self._gatherer is not None or self._joined is not None:
             return None
+        if self._progress is not None and self.file_region_report() is None:
+            # Reports that a region reader cannot give (only the local parts of a
+            # mixed volume list, which is joined and returned above): the reads go
+            # through this source.
+            return None
         return self._reader
 
     def file_region_report(self) -> SourceReadReporter | None:

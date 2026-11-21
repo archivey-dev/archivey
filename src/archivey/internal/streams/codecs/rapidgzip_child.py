@@ -1097,6 +1097,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     @override
     def read(self, n: int | None = -1, /) -> bytes:
+        # First, what ``on_source_read`` raised: the caller's own stop wins over every
+        # other error, and a stop that reached a region check mid-read never reaches
+        # the rewind below, which would take it for a dead child.
+        for report in self._region_reports:
+            report.reporter.raise_if_stopped()
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
         self._raise_if_unusable()
         if n == 0:

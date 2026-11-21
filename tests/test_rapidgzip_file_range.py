@@ -261,6 +261,36 @@ def test_a_stop_on_a_noted_read_reaches_the_caller(tmp_path: Path) -> None:
             read(stop)
 
 
+@posix_only
+def test_a_stop_holds_for_every_later_read(tmp_path: Path) -> None:
+    # A caller that catches the stop and reads on gets the stop again each time,
+    # never an error of the stream's own (the child is not taken for dead).
+    pytest.importorskip("rapidgzip")
+    path = tmp_path / "big.zip"
+    data = random.Random(5).randbytes(16 << 20)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("data.bin", data)
+    armed = False
+
+    def stop(progress: SourceProgress) -> None:
+        if armed:
+            raise _Stop("stop")
+
+    config = ArchiveyConfig(
+        use_rapidgzip=AcceleratorMode.ON, on_source_read=stop, source_read_step=0
+    )
+    with open_archive(path, config=config) as r, r.open("data.bin") as stream:
+        assert stream.read(10) == data[:10]
+        armed = True
+        raised = 0
+        for _ in range(5):
+            try:
+                stream.read(4 << 20)
+            except _Stop:
+                raised += 1
+        assert raised >= 4
+
+
 def _read_after_close(path: Path, config: ArchiveyConfig, what: str) -> Exception:
     """Close the reader's archive handle, or the caller's file under it, while the
     member stream stays open; then read on."""

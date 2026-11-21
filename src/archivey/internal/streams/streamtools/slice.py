@@ -470,7 +470,11 @@ class FileRegion:
     """Where a stream's bytes sit in a regular file: ``length`` bytes from ``start`` of
     the file open as ``fd``. ``checks`` raise as a read of the stream would once it can
     no longer be read: the views' ``check_open`` callables (the archive was closed),
-    then a check that each source and the file itself are still open.
+    a check that each source and the file itself are still open, and for each source
+    whose reads are reported (``on_source_read``), a check that raises again what its
+    callback raised. ``reports`` holds one :class:`RegionReport` per such source: a
+    reader of the region must report every read it makes there, or the reads go
+    unreported and a stop does not reach it.
 
     ``fd`` is a bare number, valid only while the stream it came from stays open and
     alive: the caller holds that stream until the descriptor has been handed on.
