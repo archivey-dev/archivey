@@ -37,7 +37,10 @@ from archivey.internal import native
 from archivey.internal.backends import lha_reader, zipcrypto
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
-from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
+from archivey.internal.streams.codecs.bcj2_filter import (
+    _BLOCK as _BCJ2_BLOCK,
+    Bcj2DecoderStream,
+)
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from archivey.internal.streams.codecs.lzma_filter_decoder import (
     PythonBranch,
@@ -1224,3 +1227,94 @@ def test_a_panic_in_a_bcj2_read_is_corruption_and_refuses_after(
         isolated=True,
     )
     assert len(python.read(1000)) == 1000
+
+
+class _FailingInput(io.BytesIO):
+    """An input stream whose reads raise ``OSError`` from ``at`` on."""
+
+    def __init__(self, data: bytes, at: int) -> None:
+        super().__init__(data)
+        self._at = at
+
+    def read(self, n: int | None = -1, /) -> bytes:
+        if self.tell() >= self._at:
+            raise OSError("input went away")
+        left = self._at - self.tell()
+        return super().read(left if n is None or n < 0 else min(n, left))
+
+
+def _bcj2_failing_calls(
+    streams: tuple[bytes, ...], which: int, excluded: frozenset
+) -> list:
+    """Reads of a stream whose input ``which`` fails halfway: each read's size, or
+    the error it raised and whether it is the first error raised again."""
+    inputs = [io.BytesIO(s) for s in streams]
+    inputs[which] = _FailingInput(streams[which], len(streams[which]) // 2)
+    stream = Bcj2DecoderStream(
+        *inputs, unpack_size=200_000, excluded=excluded, isolated=False
+    )
+    results: list = []
+    first: Exception | None = None
+    for _ in range(10):
+        try:
+            results.append(len(stream.read(30_000)))
+        except OSError as exc:
+            first = first or exc
+            results.append((type(exc).__name__, str(exc), exc is first))
+    return results
+
+
+@pytest.mark.parametrize("which", range(4))
+def test_bcj2_input_error_raises_the_same_and_again_after(which: int) -> None:
+    """An input's ``OSError`` stops decoding as a decode error does: the reads after
+    it raise the same error object, with the kernel and with the Python decoder."""
+    streams = bcj2_encode(random.Random(5), 200_000)
+    python = _bcj2_failing_calls(streams, which, EXCLUDED)
+    errors = [r for r in python if isinstance(r, tuple)]
+    assert len(errors) > 1
+    assert all(again for *_, again in errors)
+    if native.bcj2(frozenset(), isolated=False) is not None:
+        assert _bcj2_failing_calls(streams, which, frozenset()) == python
+
+
+class _CountingBcj2:
+    """Stands in for ``archivey_codecs.bcj2.Decompressor``: returns zeros and
+    records the largest read."""
+
+    largest: ClassVar[int] = 0
+    eof = False
+    total_in = (0, 0, 0, 0)
+
+    def __init__(self, *streams: object, out_size: int) -> None:
+        self._size = out_size
+        self.decoded = self.total_out = 0
+
+    def read(self, max_length: int = -1) -> bytes:
+        n = self._size - self.total_out
+        if max_length >= 0:
+            n = min(n, max_length)
+            type(self).largest = max(type(self).largest, max_length)
+        self.total_out += n
+        self.decoded = self.total_out
+        self.eof = self.total_out == self._size
+        return bytes(n)
+
+
+def test_bcj2_kernel_seek_forward_decodes_one_block_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long forward seek on the kernel path holds one block of output at a time,
+    as the Python path does, not the whole gap."""
+    module = _fake(monkeypatch, bcj2=1)
+    module.bcj2 = types.SimpleNamespace(Decompressor=_CountingBcj2)
+    monkeypatch.setattr(_CountingBcj2, "largest", 0)
+    size = 50 * _BCJ2_BLOCK
+    stream = Bcj2DecoderStream(
+        *(io.BytesIO() for _ in range(4)),
+        unpack_size=size,
+        excluded=frozenset(),
+        isolated=False,
+    )
+    assert stream.seek(size - 10) == size - 10
+    assert stream.read(100) == bytes(10)
+    assert 0 < _CountingBcj2.largest <= _BCJ2_BLOCK

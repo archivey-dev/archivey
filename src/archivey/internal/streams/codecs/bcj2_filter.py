@@ -216,7 +216,7 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         self._range = 0xFFFFFFFF
         self._code: int | None = None  # read lazily: an empty output needs no rc bytes
         self._checked_end = False
-        self._failure: CorruptionError | TruncatedError | None = None
+        self._failure: Exception | None = None
         # A position at or past the end that seek() reached without decoding to it.
         self._past_end: int | None = None
 
@@ -250,7 +250,8 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
             raise self._failure
         try:
             self._decode_python_block()
-        except (CorruptionError, TruncatedError) as exc:
+        except Exception as exc:
+            # Every error, an input's OSError too: the kernel latches them all.
             self._failure = exc
             raise
 
@@ -428,7 +429,9 @@ class Bcj2DecoderStream(ReadOnlyIOStream):
         while (skip := target - self.tell()) > 0:
             if not self._pending:
                 if self._kernel is not None:
-                    self._take(skip)
+                    # One block at a time, as the Python path: a long skip must not
+                    # hold the whole gap in memory.
+                    self._take(min(skip, _BLOCK))
                 else:
                     self._decode_block()
             del self._pending[:skip]
