@@ -168,8 +168,9 @@ as `CorruptionError` with the panic as its cause, never as `PanicException`, and
 decoder object SHALL refuse every later call. `OptionalLibrary.ARCHIVEY_CODECS` in
 `FormatPolicy.exclude_libraries` SHALL turn every kernel off for that call. Under
 `ProcessIsolation.AUTO` and `OFF` the kernels SHALL run in the caller's process; under
-`NATIVE_DECODERS` archivey SHALL NOT use them, so no native decoder runs in the
-caller's process.
+`NATIVE_DECODERS` they SHALL run in archivey's decoder child process, as other native
+decoders do, so no native decoder runs in the caller's process. A kernel panic in the
+child SHALL reach the caller as `CorruptionError`.
 
 #### Scenario: accelerator selection
 
@@ -180,7 +181,8 @@ caller's process.
 | Package present, `KERNELS["lzw"]` below the needed revision | Python LZW; other kernels still Rust |
 | Package present, kernel missing from `KERNELS` | Python decoder for that kernel |
 | `exclude_libraries={OptionalLibrary.ARCHIVEY_CODECS}` | Python decoders for that call only |
-| `ProcessIsolation.NATIVE_DECODERS`, an `.lzo` file | compress-utils in a child if installed, else Python in-process; never the kernel |
-| `ProcessIsolation.NATIVE_DECODERS`, a CAB with LZX | Python LZX in-process |
+| `ProcessIsolation.NATIVE_DECODERS`, an `.lzo` file | Rust LZO in the decoder child; never in the caller's process |
+| `ProcessIsolation.NATIVE_DECODERS`, a CAB with LZX | Rust LZX in the decoder child; same bytes and errors as in-process |
+| `ProcessIsolation.NATIVE_DECODERS`, a kernel panics in the child | `CorruptionError` in the caller |
 | A kernel panics on a crafted input | `CorruptionError` from the read; the next read on that decoder raises the same |
 | A damaged CAB read with and without the package | Same bytes before the error; same error type and message |

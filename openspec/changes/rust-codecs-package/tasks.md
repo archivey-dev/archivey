@@ -24,9 +24,12 @@
   kernel panic (a mocked kernel) that reaches the caller as `CorruptionError`
 - [ ] 2.5 `ProcessIsolation` docstrings in `src/archivey/config.py` and
   `dev-docs/threat-model.md` §2 "Parsers to decoders": name archivey-codecs and where
-  it runs (off under `NATIVE_DECODERS`, question 13)
+  it runs (the decoder child under `NATIVE_DECODERS`, question 13)
 - [ ] 2.6 `dev-docs/library-analysis.md`: the per-codec choice and the new LZO order;
   the dependency-audit guard that checks extras against `src/` imports
+- [ ] 2.7 Kernels in the decoder child under `NATIVE_DECODERS`: one-input kernels
+  through the existing protocol, BCJ2 with four inputs; panic in the child -> caller's
+  `CorruptionError`; tests for each scenario row
 
 ## 3. CI and release
 

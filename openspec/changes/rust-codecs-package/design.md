@@ -235,8 +235,14 @@ until the next codecs release turns the kernel back on.
   `[recommended]`.
 - Isolation: the kernels run in the caller's process under `ProcessIsolation.AUTO` and
   `OFF`. Under `NATIVE_DECODERS`, which promises that no native decoder runs in the
-  caller's process, archivey does not use them: LZO goes to compress-utils in a child as
-  today, and the other codecs use their Python twins in-process (question 13).
+  caller's process, they run in archivey's decoder child, like zlib, lzma and
+  compress-utils today (question 13). A reused child adds about 3 ms per member
+  (measured on ZIP members, 2026-10-24) and the bytes cross a pipe twice; at 8x to 38x
+  the Python speed the kernels still win on anything but tiny members. A panic in the
+  child reaches the caller as `CorruptionError`, as in-process. The streaming kernels
+  push input as the child protocol already expects; BCJ2's four input streams need the
+  protocol to carry four inputs (task 2.7). If the child cannot start, the read follows
+  the existing `NATIVE_DECODERS` rule for other native decoders.
 - LZO order: archivey-codecs, then compress-utils, then Python (question 11), because
   ours is tested against our Python twin message for message.
 
@@ -325,8 +331,7 @@ All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless note
 10. D7: free-threaded wheels in 0.1, no PyPy wheels until measured? RULED yes.
 11. D5: LZO order archivey-codecs, then compress-utils, then Python? RULED yes.
 12. Name of the extra: `[codecs]`? RULED yes.
-13. D5: under `ProcessIsolation.NATIVE_DECODERS`, archivey leaves the kernels off, so
-    the setting keeps its promise? Recommended: yes. Alternative: kernels in-process
-    under every setting, with the `NATIVE_DECODERS` docstring and the threat model
-    changed to say archivey's own Rust kernels are trusted in-process. RULED yes (raised
-    by review round 1, card).
+13. D5: under `ProcessIsolation.NATIVE_DECODERS`, where do the kernels run? RULED: in
+    archivey's decoder child, like the other native decoders, so the setting keeps its
+    promise and keeps the speed-up (card, after an earlier card had chosen Python
+    in-process; raised by review round 1).
