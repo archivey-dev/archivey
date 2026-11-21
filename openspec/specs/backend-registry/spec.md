@@ -22,13 +22,13 @@ selection.
 ### Requirement: Backends self-register at import time
 
 The system SHALL register all known core and optional backends when `archivey`
-imports. Optional library-backed backends (ISO, ZST, LZ4) and optional 7z writing
+imports. Optional library-backed backends (ZST, LZ4) and optional 7z writing
 SHALL be imported behind `try/except ImportError` guards and registered
 regardless of dependency availability. Missing dependencies make a format known
 but unavailable, not unknown, and import MUST NOT fail.
 
 Each backend SHALL declare dependency metadata as data. Availability SHALL be
-derived centrally from the module-or-`None` sentinel idiom (`_optional("pycdlib")`
+derived centrally from the module-or-`None` sentinel idiom (`_optional("lz4")`
 returns module or `None`), not per-backend booleans. 7z and RAR reading are
 native and known; RAR data reads additionally require the external `unrar` binary
 at read time. That binary SHALL be counted as an optional tool (see *Format support is
@@ -37,19 +37,19 @@ usable RARLAB `unrar` or `rar` is on `PATH`, and a member read that needs it rai
 `PackageNotInstalledError`.
 
 ```python
-pycdlib = _optional("pycdlib")
+example = _optional("example")
 
-class IsoReadBackend(ReadBackend):
-    FORMATS = (ArchiveFormat.ISO,)
-    EXTENSIONS = {".iso": ArchiveFormat.ISO}
-    MAGIC = ((32769, b"CD001", ArchiveFormat.ISO),)
-    OPTIONAL_DEPENDENCY = "pycdlib"
+class ExampleReadBackend(ReadBackend):
+    FORMATS = (ArchiveFormat.EXAMPLE,)
+    EXTENSIONS = {".example": ArchiveFormat.EXAMPLE}
+    MAGIC = ((0, b"EXMP", ArchiveFormat.EXAMPLE),)
+    OPTIONAL_DEPENDENCY = "example"
 
     def open_read(self, source, format, streaming, password, encoding, archive_name):
-        assert pycdlib is not None
+        assert example is not None
         ...
 
-register_reader(IsoReadBackend)
+register_reader(ExampleReadBackend)
 ```
 
 The sentinel SHALL type-check cleanly under Pyrefly and ty because uses occur
@@ -60,7 +60,7 @@ behind `is not None` or equivalent registry-selection guarantees.
 | Case | Expected |
 | --- | --- |
 | `import archivey` with no optional extras | Core formats plus native 7z/RAR register; supported formats show FULL/PARTIAL where applicable |
-| `pycdlib` absent at import | No `ImportError`; ISO absent from supported formats but present in known formats with NONE support and install hint |
+| A backend's optional dependency absent at import | No `ImportError`; its format absent from supported formats but present in known formats with NONE support and install hint |
 
 ### Requirement: Backend classes are stateless factories
 
@@ -159,7 +159,7 @@ command from the same metadata exposed by `format_availability()`.
 
 | Missing component kind | Support | Later error |
 | --- | --- | --- |
-| Single-codec format backend/codec missing (ISO without `pycdlib`, `.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `PackageNotInstalledError` at open with hint, except a non-seekable source for a format that needs seek (ISO), which gets `StreamNotSeekableError` (`access-mode-and-cost`) |
+| Single-codec format backend/codec missing (`.zst` without zstd backend before 3.14, `.lz4` without `lz4`) | NONE | `PackageNotInstalledError` at open with hint, except a non-seekable source for a format that needs seek, which gets `StreamNotSeekableError` (`access-mode-and-cost`) |
 | Multi-codec container missing optional member codec/tool | PARTIAL | Opens/lists; member read raises `PackageNotInstalledError` or documented missing-tool error |
 | 7z writing (not yet implemented) | Read support unaffected | Write raises `UnsupportedFeatureError` |
 
@@ -167,8 +167,8 @@ command from the same metadata exposed by `format_availability()`.
 
 | Case | Expected |
 | --- | --- |
-| ISO magic source opened without `pycdlib` | `PackageNotInstalledError` names `pycdlib` and `pip install archivey[recommended]`; no `ImportError` |
-| `list_supported_formats()` without `pycdlib` | ISO absent; native 7z/RAR and satisfied formats present |
+| `.zst` source opened with no zstd backend (before 3.14) | `PackageNotInstalledError` names `backports.zstd` and `pip install archivey[recommended]`; no `ImportError` |
+| `list_supported_formats()` with no optional package | ISO, native 7z/RAR and satisfied formats present; formats whose only backend or codec is missing absent |
 
 ### Requirement: Codec availability and install hints come from descriptors
 
@@ -333,7 +333,7 @@ conservative answer.
 | `format_availability(ZIP).required_source` | `FORWARD_ONLY` — `streaming=True` reads a ZIP forward over its local headers |
 | `format_availability(RAR).required_source` | `FORWARD_ONLY` — `streaming=True` reads a single-volume RAR forward with RARLAB `unrar` 7.00 or later; without it the open raises `StreamNotSeekableError` naming the fix |
 | `format_availability(ISO \| SEVEN_Z \| FOLDER).required_source` | `SEEKABLE` |
-| ISO queried without `pycdlib` | `support=NONE` **and** `required_source=SEEKABLE` — the answer does not depend on installability |
+| ISO queried with every optional package absent | `support=FULL` **and** `required_source=SEEKABLE`: ISO needs no optional package |
 | `required_source <= reader.cost.stream_capability` for a format opened successfully from that source | `True` for every format/source pair the library accepts |
 
 #### Scenario: Speed-up packages are reported apart from missing ones
