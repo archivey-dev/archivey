@@ -183,6 +183,17 @@ def _gh(*args: str) -> str:
     ).stdout
 
 
+def _attempt() -> str:
+    """The attempt that finished, from the ``workflow_run`` event GitHub saved for the job.
+
+    A rerun may already be the run's latest attempt, which ``gh run view`` reads by
+    default. Read from the event file, not passed in from the workflow, so the workflow
+    puts no event text in its environment.
+    """
+    with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+        return str(int(json.load(f)["workflow_run"]["run_attempt"]))
+
+
 def _run_jobs(run_id: str, attempt: str) -> list[dict]:
     try:
         data = json.loads(
@@ -258,9 +269,8 @@ def main() -> int:
         issue = json.loads(
             _gh("issue", "view", str(number), "--json", "author,body,comments")
         )
-    run_jobs = (
-        _run_jobs(env["RUN_ID"], env["ATTEMPT"]) if conclusion != "success" else []
-    )
+    attempt = _attempt()
+    run_jobs = _run_jobs(env["RUN_ID"], attempt) if conclusion != "success" else []
     lost = lost_jobs(run_jobs)
     if lost and not _previous_run_lost(workflow, env["RUN_ID"]):
         print(f"none: {name} (no runner took {', '.join(lost)}; no job failed)")
@@ -271,7 +281,7 @@ def main() -> int:
         conclusion=conclusion,
         event=env["EVENT"],
         sha=env["SHA"],
-        run_url=env["RUN_URL"] + "/attempts/" + env["ATTEMPT"],
+        run_url=env["RUN_URL"] + "/attempts/" + attempt,
         issue=issue,
         jobs=jobs,
         lost=lost,

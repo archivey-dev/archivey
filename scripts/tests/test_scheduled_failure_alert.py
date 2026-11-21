@@ -191,6 +191,8 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     stub.write_text(STUB, encoding="utf-8")
     stub.chmod(0o755)
     log = tmp_path / "log"
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"workflow_run": {"run_attempt": 1}}), encoding="utf-8")
     env = {
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
@@ -202,7 +204,7 @@ def test_main_drives_gh(tmp_path: Path) -> None:
         "SHA": "0123456789abcdef",
         "RUN_URL": "https://run",
         "RUN_ID": "5",
-        "ATTEMPT": "1",
+        "GITHUB_EVENT_PATH": str(event),
         "ASSIGNEE": "davitf",
     }
     subprocess.run([sys.executable, str(SCRIPT)], env=env, check=True)
