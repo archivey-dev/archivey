@@ -44,11 +44,14 @@ class _FakeDecryptor:
     """Stands in for ``archivey_codecs.zipcrypto.Decryptor``: Python's keys, recorded.
 
     With ``panic`` set, decrypting member data (anything but the 12-byte header)
-    raises the fake panic.
+    raises the fake panic; with ``panic_header`` set, decrypting the header does.
+    ``calls`` counts ``decrypt`` and ``copy`` calls.
     """
 
     built: ClassVar[list[bytes]] = []
     panic: ClassVar[bool] = False
+    panic_header: ClassVar[bool] = False
+    calls: ClassVar[int] = 0
 
     def __init__(self, password: bytes, keys: zipcrypto.ZipCryptoKeys | None = None):
         if keys is None:
@@ -58,10 +61,13 @@ class _FakeDecryptor:
         self._keys = keys
 
     def copy(self) -> _FakeDecryptor:
+        type(self).calls += 1
         return _FakeDecryptor(self._password, self._keys.copy())
 
     def decrypt(self, data: bytes) -> bytes:
-        if self.panic and len(data) != zipcrypto.ZIPCRYPTO_HEADER_LEN:
+        type(self).calls += 1
+        header = len(data) == zipcrypto.ZIPCRYPTO_HEADER_LEN
+        if self.panic_header if header else self.panic:
             raise PanicException("index out of bounds")
         return self._keys.decrypt(data)
 
@@ -74,6 +80,8 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
 
     monkeypatch.setattr(_FakeDecryptor, "built", [])
     monkeypatch.setattr(_FakeDecryptor, "panic", False)
+    monkeypatch.setattr(_FakeDecryptor, "panic_header", False)
+    monkeypatch.setattr(_FakeDecryptor, "calls", 0)
     module = types.SimpleNamespace(
         KERNELS=kernels,
         crc16_arc=crc16_arc,
@@ -218,6 +226,56 @@ def test_a_panic_in_a_zipcrypto_read_is_corruption(
     # The switch turns the kernel off: Python's keys read the same archive.
     with open_archive(io.BytesIO(raw), password=b"pw", config=OFF) as reader:
         assert reader.read("a.txt") == b"x" * 5000
+
+
+def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a panic the kernel's state may be half updated: the wrapper raises the
+    same error again and never calls the kernel object."""
+    _fake(monkeypatch, zipcrypto=1)
+    keys = zipcrypto.new_keys(b"pw")
+    _FakeDecryptor.panic = True
+    with pytest.raises(CorruptionError, match="ZipCrypto decoder failed") as info:
+        keys.decrypt(b"x" * 100)
+    calls = _FakeDecryptor.calls
+    for again in (lambda: keys.decrypt(b"x" * 100), keys.copy):
+        with pytest.raises(CorruptionError) as repeat:
+            again()
+        assert repeat.value is info.value
+    assert _FakeDecryptor.calls == calls
+    # Errors other than a panic leave the state usable.
+    _FakeDecryptor.panic = False
+    other = zipcrypto.new_keys(b"pw")
+    with pytest.raises(TypeError):
+        other.decrypt(None)  # type: ignore[arg-type]
+    assert other.decrypt(b"abc") == zipcrypto.ZipCryptoKeys(b"pw").decrypt(b"abc")
+
+
+def test_a_panic_on_the_zipcrypto_header_closes_the_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.backends.zip_reader import ZipReader
+
+    _fake(monkeypatch, zipcrypto=1)
+    _FakeDecryptor.panic_header = True
+    opened: list[io.IOBase] = []
+    original = ZipReader._open_raw_payload
+
+    def track(self: ZipReader, loc: object, member: object) -> object:
+        raw = original(self, loc, member)  # type: ignore[arg-type]
+        opened.append(raw)  # type: ignore[arg-type]
+        return raw
+
+    monkeypatch.setattr(ZipReader, "_open_raw_payload", track)
+    raw = build_zipcrypto_zip(b"pw", b"a.txt", b"x" * 5000)
+    with (
+        pytest.raises(CorruptionError, match="ZipCrypto decoder failed"),
+        open_archive(io.BytesIO(raw), password=b"pw") as reader,
+    ):
+        reader.read("a.txt")
+    assert opened
+    assert all(stream.closed for stream in opened)
 
 
 def test_only_a_panic_cause_keeps_corruption_from_the_password_check() -> None:
