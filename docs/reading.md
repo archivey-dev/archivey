@@ -184,7 +184,7 @@ threads. Archivey never calls your code from a thread it started.
 
 To show how far archivey has read the archive's own file, set `on_source_read`. Archivey calls it
 with a `SourceProgress` as it reads: about once per MiB for a file on disk or a stream, and for a
-URL before and after each range request ([Remote archives](remote.md#watching-the-requests)).
+URL around each range request ([Remote archives](remote.md#watching-the-requests)).
 
 ```python
 import archivey
