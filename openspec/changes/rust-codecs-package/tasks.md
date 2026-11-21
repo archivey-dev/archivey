@@ -16,10 +16,17 @@
 
 - [ ] 2.1 `internal/native.py` with per-kernel minimum revisions and DEBUG fallback log
 - [ ] 2.2 `OptionalLibrary.ARCHIVEY_CODECS` passed through the CAB, ZipCrypto, filter,
-  LZW and LZO sites; `ARCHIVEY_CODECS=0`
+  LZW and LZO sites (no environment switch)
 - [ ] 2.3 `[codecs]` extra with platform markers, checked with pip and uv on PyPy and
-  an unsupported platform; `archivey-cli` depends on `archivey[codecs]`
-- [ ] 2.4 Tests for every row of the accelerator-selection table
+  armv7l, i686, ppc64le, s390x and 32-bit Windows; `archivey-cli` depends on
+  `archivey[codecs]`; `[free-threaded]` includes the package
+- [ ] 2.4 Tests for every row of the accelerator-selection table, including a forced
+  kernel panic (a mocked kernel) that reaches the caller as `CorruptionError`
+- [ ] 2.5 `ProcessIsolation` docstrings in `src/archivey/config.py` and
+  `dev-docs/threat-model.md` §2 "Parsers to decoders": name archivey-codecs and where
+  it runs (per question 13)
+- [ ] 2.6 `dev-docs/library-analysis.md`: the per-codec choice and the new LZO order;
+  the dependency-audit guard that checks extras against `src/` imports
 
 ## 3. CI and release
 

@@ -17,21 +17,23 @@ package other than its build-time binding layer. It SHALL NOT import archivey.
 
 ### Requirement: Hash objects follow hashlib
 
-Each hash SHALL be a type whose constructor takes optional initial data and whose
-objects have `update(data)`, `digest()`, `hexdigest()`, `copy()`, `name`,
-`digest_size` and `block_size`, with the meaning `hashlib` gives them. Each CRC SHALL
-also have a function form `name(data, value=0) -> int`, like `zlib.crc32`, and SHALL be
-named after its CRC catalogue entry. A CRC's `digest()` SHALL be big-endian. `update()`
-SHALL release the GIL for inputs above a documented size.
+Each hash SHALL be a type, named in CamelCase (`Crc16Arc`), whose constructor takes
+optional initial data and whose objects have `update(data)`, `digest()`, `hexdigest()`,
+`copy()`, `name`, `digest_size` and `block_size`, with the meaning `hashlib` gives them.
+Each CRC SHALL also have a separate function `name(data, value=0) -> int` in snake case,
+like `zlib.crc32`, and both SHALL be named after its CRC catalogue entry. A CRC's
+`digest()` SHALL be big-endian. `update()` SHALL release the GIL only for immutable
+`bytes` input above a documented size; a mutable buffer SHALL be copied first or read
+with the GIL held.
 
 #### Scenario: hash interface
 
 | Case | Expected |
 | --- | --- |
-| `h = crc16_arc.new(); h.update(a); h.update(b)` | `h.digest()` equals `crc16_arc.new(a + b).digest()` |
+| `h = Crc16Arc(); h.update(a); h.update(b)` | `h.digest()` equals `Crc16Arc(a + b).digest()` |
 | `h.copy()` then more `update()` on the copy | The original's digest is unchanged |
 | `crc16_arc(b, crc16_arc(a))` | Equals `crc16_arc(a + b)` |
-| `crc16_arc.new()` fed `a`, `digest()` | `crc16_arc(a).to_bytes(2, "big")` |
+| `Crc16Arc(a).digest()` | `crc16_arc(a).to_bytes(2, "big")` |
 
 ### Requirement: Streaming decoders follow lzma.LZMADecompressor
 
@@ -52,6 +54,7 @@ allocation SHALL be bounded by a constructor argument, `max_length` or `out_size
 | Input ends inside the stream | `TruncatedDataError` |
 | A parameter the kernel does not support | `UnsupportedDataError` |
 | Two threads call one object at once | One raises `RuntimeError`; the object's state is intact |
+| A `bytearray` input that another thread writes during the call | The kernel reads a consistent copy, or holds the GIL; never reads memory being written |
 
 ### Requirement: Streaming decoder state can be copied and saved
 
@@ -72,13 +75,17 @@ SHALL produce exactly the output a straight decode produces from offset `total_o
 | `copy()` then decode on both | Both produce the same output; neither affects the other |
 | A state from LZW revision 1 given to revision 2 | `UnsupportedDataError` |
 | A state from the LZX kernel given to `lzw.Decompressor.from_state` | `UnsupportedDataError` |
+| A state with a valid header and damaged contents (window too large, table index out of range, cut off) | `CorruptDataError`; no allocation beyond the kernel's largest window |
+| `from_state` | `total_in` and `total_out` equal the saved values |
 
 ### Requirement: KERNELS reports a revision per kernel
 
 `archivey_codecs.KERNELS` SHALL map each kernel's name to an integer revision. A
 release that changes a kernel's observable behaviour (output bytes, error kind or
 message, reported state such as seek points) SHALL raise that kernel's revision. A
-release SHALL NOT remove a kernel or lower a revision within a major version.
+release SHALL NOT remove a kernel or lower a revision before 1.0, nor within a major
+version after it. A raised revision SHALL keep the kernel's call signature, attribute
+names and error classes; a change to any of them SHALL use a new `KERNELS` key.
 
 #### Scenario: revisions
 
@@ -87,6 +94,7 @@ release SHALL NOT remove a kernel or lower a revision within a major version.
 | A release adds a kernel | New key; other revisions unchanged |
 | A fix changes the LZW error message | `KERNELS["lzw"]` goes up |
 | A change to the saved-state layout | That kernel's revision goes up |
+| A new required constructor argument for LZX | A new key (for example `"lzx2"`); `"lzx"` stays |
 | A refactor with identical behaviour | No revision changes |
 
 ### Requirement: archivey-codecs is versioned and released on its own
@@ -95,8 +103,9 @@ The package SHALL carry its own semantic version, single-sourced in `Cargo.toml`
 its own changelog. A release SHALL come from a `codecs-vX.Y.Z` tag that matches that
 version, and SHALL publish abi3 wheels for CPython 3.11 and later on manylinux and
 musllinux (x86_64, aarch64), macOS (arm64, x86_64) and Windows (x86_64, arm64),
-per-version free-threaded wheels on the same platforms, and an sdist. Every wheel SHALL
-pass the package's API and parity tests on its platform before upload.
+per-version free-threaded wheels on the same platforms from CPython 3.13t on, and an
+sdist. Every wheel SHALL pass the package's API and parity tests on its platform before
+upload.
 
 #### Scenario: release
 

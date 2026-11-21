@@ -39,8 +39,12 @@ use too.
 ## Impact
 
 - archivey callers: none unless they install the extra; with it, the same results,
-  faster. Same-input-same-outcome (DR-5) holds because every kernel is tested against
-  its Python twin, and a kernel that is older than archivey needs is not used.
+  faster. Same-input-same-outcome (DR-5) holds at the revisions archivey was released
+  with, because every kernel is tested against its Python twin and a kernel older than
+  archivey needs is not used; a newer revision gives a later archivey's fixed results.
+  A kernel panic reaches the caller as `CorruptionError`.
+- Isolation: under `ProcessIsolation.NATIVE_DECODERS` the kernels stay off (proposed,
+  design.md question 13).
 - Maintenance: a fix to a twinned Python decoder is made in Rust in the same PR (the
   "change it twice" rule, enforced by the parity job).
 - Releases: davi creates `codecs-v*` releases in the GitHub web UI, unticking "Set as

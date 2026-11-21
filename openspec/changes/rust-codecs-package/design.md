@@ -3,8 +3,8 @@
 Sources: draft PR #1416 (branch `claude/project-thread-dle5be`, package
 `packages/archivey-native`), its report `reports/rust-native-kernels-2026-11-09.md` in
 the project files, the 2026-11-17 compress-utils investigation, and the plan
-`plans/rust-codecs-package-2026-11-21.md`. The maintainer ruled every open question on
-2026-11-21 (§Open questions).
+`plans/rust-codecs-package-2026-11-21.md`. The maintainer ruled questions 1-12 on
+2026-11-21; question 13 is open (§Open questions).
 
 ## Context
 
@@ -62,20 +62,25 @@ DOS-era ZIP methods and ARJ method 4.
 ## D2. Hash API
 
 ```python
-archivey_codecs.crc16_arc(data, value=0) -> int   # like zlib.crc32
-c = archivey_codecs.crc16_arc.new(b"optional initial data")  # hashlib-shaped
+archivey_codecs.crc16_arc(data, value=0) -> int     # function, like zlib.crc32
+c = archivey_codecs.Crc16Arc(b"optional initial data")  # type, like hashlib.sha256
 c.update(chunk); c.digest(); c.hexdigest(); c.copy()
-c.name, c.digest_size, c.block_size
+c.name, c.digest_size, c.block_size                 # "crc16_arc", 2, 1
 ```
 
-- Every hash is a type with `update`, `digest`, `hexdigest`, `copy`, `name`,
-  `digest_size`, `block_size`, and a constructor taking optional initial data.
-- CRCs also have the `zlib.crc32` function form.
+- Every hash is a type, named in CamelCase (`Crc16Arc`), with `update`, `digest`,
+  `hexdigest`, `copy`, `name`, `digest_size`, `block_size`, and a constructor taking
+  optional initial data. That type is the name to use in annotations.
+- A CRC also has a function in snake case (`crc16_arc`), the `zlib.crc32` form. A PyO3
+  function cannot carry attributes, so the two are separate names.
 - CRC names follow the CRC catalogue (`crc16_arc`), since "CRC-16" names over twenty
   algorithms.
 - A CRC's `digest()` is big-endian (question 6), matching the `crc32c` package and
   archivey's `MemberDigest`.
-- `update()` releases the GIL above a threshold (64 KiB), as `hashlib` does.
+- `update()` releases the GIL above a threshold (64 KiB), as `hashlib` does, but only
+  for immutable `bytes` input. A `bytearray` or writable `memoryview` is copied first,
+  or hashed with the GIL held, so no other thread can write the buffer while Rust
+  reads it. The same rule applies to every `decompress()` and `decrypt()`.
 
 ## D3. Decoder API
 
@@ -85,13 +90,35 @@ out = d.decompress(data, max_length=-1)
 d.eof, d.needs_input, d.unused_data
 
 archivey_codecs.lzo1x.decompress(block, out_size=n)
-archivey_codecs.filters.arm64_decode(buf, start_offset)
 ```
+
+The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
+
+| Kernel | `KERNELS` key | Python name | Constructor or call |
+| --- | --- | --- | --- |
+| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits)`; `reset()` at a CAB folder start |
+| Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None)`; `header_params`, `clear_offsets` |
+| LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` |
+| ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
+| BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc)`, four readable binary streams |
+| ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
+| RISC-V filter | `"riscv"` | `filters.RiscvDecoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
+| CRC-16/ARC | `"crc16_arc"` | `crc16_arc`, `Crc16Arc` | `(data, value=0) -> int`; `Crc16Arc(data=b"")` |
+| LZFSE/LZVN (later) | `"lzfse"` | `lzfse.decompress` | `(chunk, *, out_size)` |
+
+- ZipCrypto is a cipher, so its object is a `Decryptor` with `decrypt()`, not a
+  decompressor. It has `copy()`, `getstate()` and `from_state()` (12 bytes) like the
+  streaming decoders, and `total_in` (bytes decrypted).
+- BCJ2 reads four input streams, so it cannot take one `data` argument. It pulls from
+  four objects with `read(n)` and gives output through `read(max_length)` with `eof`.
+  Its state holds `total_in` for each of the four streams.
+- The branch filters are streaming objects, not functions: an instruction can span two
+  calls, so each keeps the cut-off bytes until the next `decode()` or `flush()`.
 
 Two kinds of decoder (question 4):
 
-- **Streaming objects** for codecs whose state carries over: LZX, LZW, BCJ2 and the
-  other 7z filters.
+- **Streaming objects** for codecs whose state carries over: LZX, LZW, BCJ2, the ARM64
+  and RISC-V filters, and (as a cipher) ZipCrypto.
 - **One-shot functions** for codecs whose blocks stand alone: LZO (lzop and SquashFS
   record each block's sizes), later DMG's ADC and LZFSE chunks. `out_size` is
   required and exact; output that ends short or would run past it is
@@ -112,6 +139,11 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   partly read byte, and never the input it holds but has not used.
 - The state starts with the kernel's name and revision; `from_state` refuses any other
   with `UnsupportedDataError`, so a stale seek index cannot decode wrong bytes.
+- `from_state` checks a state's contents as it checks input: a window size over the
+  kernel's maximum, a table entry out of range or a cut-off state is
+  `CorruptDataError`, and it allocates no more than the kernel's largest window.
+- A decoder made by `from_state` starts with `total_in` and `total_out` at the saved
+  values, so its counters keep counting from the stream's start.
 - Sizes: LZX up to its 2 MiB window (cheap to copy, too big to keep at every point;
   archivey's `MAX_SNAPSHOT_BYTES` cap applies), LZW a few hundred KB at most,
   ZipCrypto 12 bytes, filters tens of bytes.
@@ -127,6 +159,13 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   `UnsupportedDataError`. Messages are not public API for outside users; archivey's
   parity tests compare them, and its wrappers re-raise archivey's own exceptions with
   the same message.
+- Panics: a missed check in a kernel panics, and PyO3 raises
+  `pyo3_runtime.PanicException`, a `BaseException` that gets past `except Exception`.
+  `internal/native.py` catches it around every kernel call and raises archivey's
+  `CorruptionError` with the panic as `__cause__`, so the caller sees a typed error as
+  with the Python twin. The decoder object is then unusable (its state may be half
+  updated): every later call raises the same error. Fuzzing and parity treat any panic
+  as a bug to fix.
 - Memory: every allocation is bounded by a constructor argument or by `max_length` /
   `out_size`; input data alone cannot make a kernel allocate much.
 - Threads: one thread at a time per object. A concurrent call into the same object
@@ -149,6 +188,18 @@ loses only the kernels that changed, and neither package's release waits for the
 other. The prototype's single `ABI_VERSION` would turn every kernel off when any one
 changed.
 
+What "same results" means across versions. archivey's parity guarantee holds at the
+revisions it was released with. A newer revision is a fixed kernel, so an older
+archivey that meets it can see different bytes or messages from its own Python twin:
+the fixed ones, as the newer archivey's Python twin gives. That is the point of "or
+newer"; the alternative, exact pinning, would keep old bugs in the native path.
+
+What a raised revision may not change: the call signature, the attribute names and the
+error classes. A change to any of those is not a new revision of the same kernel. It
+gets a new `KERNELS` key (for example `"lzx2"`) next to the old one, or waits for 1.0.
+Before 1.0, and within a major version after it, a release removes no kernel and lowers
+no revision.
+
 The "change it twice" rule stays: a fix to a twinned Python decoder is made in Rust in
 the same PR, and the kernel's revision goes up. Users get the fixed Python version
 until the next codecs release turns the kernel back on.
@@ -160,16 +211,32 @@ until the next codecs release turns the kernel back on.
   ```toml
   codecs = [
     "archivey-codecs>=0.1,<1; platform_python_implementation == 'CPython'"
-    " and sys_platform in 'linux darwin win32'",
+    " and (sys_platform == 'linux' or sys_platform == 'darwin' or sys_platform == 'win32')"
+    " and (platform_machine == 'x86_64' or platform_machine == 'AMD64'"
+    " or platform_machine == 'aarch64' or platform_machine == 'arm64'"
+    " or platform_machine == 'ARM64')",
   ]
   ```
 
-  (the final marker form is checked against pip and uv in the implementation PR).
+  Every term is `==`: PEP 508 `in` on strings tests for a substring, so
+  `platform_machine in '...x86_64...'` would also match 32-bit Windows (`x86`). The
+  allowlist is exactly D7's platforms, so armv7l, i686, ppc64le, s390x and 32-bit
+  Windows never ask for the package. No marker tells a free-threaded build apart, so
+  D7 builds free-threaded wheels for every free-threaded CPython from 3.13t on. The
+  implementation PR checks the marker with pip and uv on each excluded platform.
 - `archivey-cli` depends on `archivey[codecs]` from the first archivey release that
   knows the package; `[recommended]` gains it one archivey release later (question 9).
 - `OptionalLibrary.ARCHIVEY_CODECS` (question 8), passed through every call site (the
-  prototype reached only LZO), and `ARCHIVEY_CODECS=0` in the environment for tests.
-- Kernels run in-process whatever `ProcessIsolation` says.
+  prototype reached only LZO). It is the only switch: tests that need the Python path
+  pass `exclude_libraries`, or use a fixture that patches `internal/native.py`. No
+  environment variable turns the kernels off.
+- `[free-threaded]` includes the package (the module declares `gil_used = false`, and
+  CI's GIL assertion over that extra covers it). `[all]` gets it through
+  `[recommended]`.
+- Isolation: the kernels run in the caller's process under `ProcessIsolation.AUTO` and
+  `OFF`. Under `NATIVE_DECODERS`, which promises that no native decoder runs in the
+  caller's process, archivey does not use them: LZO goes to compress-utils in a child as
+  today, and the other codecs use their Python twins in-process (proposed, question 13).
 - LZO order: archivey-codecs, then compress-utils, then Python (question 11), because
   ours is tested against our Python twin message for message.
 
@@ -198,7 +265,7 @@ One workflow on `PyO3/maturin-action`. abi3 (cp311) wheels, one per platform:
 manylinux x86_64 and aarch64 (native arm runner), musllinux x86_64 and aarch64, macOS
 arm64 and x86_64 (cross-compiled), Windows x86_64 and arm64. About 300 KB each.
 
-- Free-threaded (3.14t, later 3.15t): per-version wheels on the same platforms
+- Free-threaded (3.13t, 3.14t, later 3.15t): per-version wheels on the same platforms
   (question 10). The module already declares `gil_used = false`.
 - PyPy: none for now (question 10). cpyext call overhead is high and PyPy's JIT already
   runs the Python decoders well; measure once before adding.
@@ -229,13 +296,14 @@ Release when a kernel is added or its revision changes, or for a security fix.
 
 - Bus factor and review load: Rust review is new to the loop. Kept small by
   line-by-line ports and the parity tests.
-- A missed check panics instead of corrupting memory; panics reach Python as
-  `PanicException` (a `BaseException`). The parity and fuzz jobs treat that as failure.
+- A missed check panics instead of corrupting memory; archivey turns the panic into
+  `CorruptionError` (D3). The parity and fuzz jobs treat any panic as a failure.
 - Allocation failure aborts the process; bounded by D3's memory rule.
 
 ## Open questions
 
-All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless noted).
+Questions 1-12 ruled by the maintainer (davi, project thread, 2026-11-21, cards unless
+noted). Question 13 is open.
 
 1. Go ahead with a separately versioned package, starting from #1416? RULED yes.
 2. D1: name `archivey-codecs`? RULED yes.
@@ -258,3 +326,8 @@ All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless note
 10. D7: free-threaded wheels in 0.1, no PyPy wheels until measured? RULED yes.
 11. D5: LZO order archivey-codecs, then compress-utils, then Python? RULED yes.
 12. Name of the extra: `[codecs]`? RULED yes.
+13. D5: under `ProcessIsolation.NATIVE_DECODERS`, archivey leaves the kernels off, so
+    the setting keeps its promise? Recommended: yes. Alternative: kernels in-process
+    under every setting, with the `NATIVE_DECODERS` docstring and the threat model
+    changed to say archivey's own Rust kernels are trusted in-process. Open (raised by
+    review round 1).
