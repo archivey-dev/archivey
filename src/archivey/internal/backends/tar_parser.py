@@ -1668,6 +1668,9 @@ class TarWalker:
             if (
                 isinstance(parsed, RejectedBlock)
                 and parsed.reason in _CHECKSUM_FAULTS
+                # Right after a link's zero span, any non-header makes the span the
+                # trailer (_end_at_zero_span); following an unchecked size there would
+                # pick between that reading and a member on bytes nothing vouches for.
                 and (zero_span is None or offset != zero_span[1])
             ):
                 followed = self._follow_damaged(block, parsed, chain)
@@ -1838,9 +1841,13 @@ class TarWalker:
                 self._held_block = held
             return _HOLD_EXCEEDED
         data = prefix + self._read_header_bytes(pos - start + count - len(prefix))
-        self._stream = cast(
-            BinaryIO, _ReplayStream(0, data, self._stream, position=_no_position)
-        )
+        stream = self._stream
+        # One replay however many headers are followed: a layer per look ahead would
+        # cost every later read a frame per layer, past the recursion limit.
+        if not (isinstance(stream, _ReplayStream) and stream.prepend(data)):
+            self._stream = cast(
+                BinaryIO, _ReplayStream(0, data, stream, position=_no_position)
+            )
         self._stream_pos = start
         return data[pos - start :]
 
@@ -1854,6 +1861,8 @@ class TarWalker:
                 f"the extended header at offset {extended_at} is followed by a "
                 f"block that is no header ({reason})"
             )
+        # A block a look ahead or _header_follows held is past the end set here, so
+        # no later read of this walk asks for it.
         self._held_block = None
         self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason + chain.note)
         return self.end
@@ -2489,8 +2498,9 @@ _SEEK_RANGE_ERRNOS = frozenset((errno.EINVAL, errno.EOVERFLOW))
 
 class _ReplayStream:
     """``zeros`` zero bytes, then ``head``, then the rest of ``stream``: a walk's
-    view of bytes it had read past, as stream_after_end serves them. The zeros are
-    made as they are read, so a long span costs no memory."""
+    view of bytes it had read past, as stream_after_end serves them, and a
+    forward-only walk's own stream after a look ahead (TarWalker._look_ahead). The
+    zeros are made as they are read, so a long span costs no memory."""
 
     def __init__(
         self,
@@ -2501,6 +2511,9 @@ class _ReplayStream:
     ) -> None:
         self._zeros = zeros
         self._head = head
+        # Where the unread part of ``head`` starts: slicing it on every read would
+        # copy a held span of megabytes once per block.
+        self._at = 0
         self._stream = stream
         # Puts the stream where the replayed bytes end, once, before its first read.
         self._position: Callable[[], None] | None = position
@@ -2512,16 +2525,25 @@ class _ReplayStream:
         n = min(size, self._zeros)
         self._zeros -= n
         out = bytes(n)
-        if len(out) < size and self._head:
-            take = size - len(out)
-            out += self._head[:take]
-            self._head = self._head[take:]
+        if len(out) < size and self._at < len(self._head):
+            end = self._at + size - len(out)
+            out += self._head[self._at : end]
+            self._at = min(end, len(self._head))
         if len(out) < size:
             if self._position is not None:
                 self._position()
                 self._position = None
             out += self._stream.read(size - len(out))
         return out
+
+    def prepend(self, data: bytes) -> bool:
+        """Serve ``data`` before what is left, and say whether it could: only once
+        the zeros are used up, as ``data`` was read after them."""
+        if self._zeros:
+            return False
+        self._head = data + self._head[self._at :]
+        self._at = 0
+        return True
 
 
 # Damaged headers (TarWalker._follow_damaged) ---------------------------------------
