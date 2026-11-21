@@ -87,7 +87,7 @@ def test_an_old_or_missing_kernel_is_not_used_and_logged_once(
     with caplog.at_level(logging.DEBUG, logger="archivey.streams"):
         assert native.kernels("crc16_arc", frozenset()) is None
         assert native.kernels("crc16_arc", frozenset()) is None
-    logged = [r for r in caplog.records if "crc16_arc kernel revision" in r.message]
+    logged = [r for r in caplog.records if "'crc16_arc' kernel revision" in r.message]
     assert len(logged) == 1
     assert "needs 1 or newer" in logged[0].message
 

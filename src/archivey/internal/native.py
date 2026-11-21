@@ -58,7 +58,7 @@ def kernels(name: str, excluded: frozenset[OptionalLibrary]) -> ModuleType | Non
         if name not in _too_old_logged:
             _too_old_logged.add(name)
             logs.streams.debug(
-                "archivey-codecs has %s kernel revision %r; archivey needs %d or "
+                "archivey-codecs has %r kernel revision %r; archivey needs %d or "
                 "newer, so it uses its Python decoder for it",
                 name,
                 have,
