@@ -1927,6 +1927,9 @@ class ZipForwardReader(ZipReader):
         self._directory_order: list[ArchiveMember] | None = None
         self._end_record: EndRecord | None = None
         self._entries_read: int | None = None
+        # The members whose local header the walk went past by its sizes, its
+        # signature damaged (``LocalEntry.damaged_signature``): ``id()`` of each.
+        self._damaged_signatures: set[int] = set()
         # The first header is parsed at open, so a stream that is no ZIP fails here
         # (DR-15b), as a TAR's does.
         try:
@@ -1936,6 +1939,23 @@ class ZipForwardReader(ZipReader):
             raise
 
     # -- the walk ----------------------------------------------------------------
+
+    @override
+    def _reports_member_read(self, member: ArchiveMember) -> bool:
+        return id(member) in self._damaged_signatures
+
+    @override
+    def _report_member_read(self, member: ArchiveMember) -> None:
+        """Refuse the read of a member whose local signature is damaged, as a read
+        from a file refuses it (``zip_parser.read_local_header``): ``unzip`` and
+        7-Zip refuse it too. The walk went past it by its sizes
+        (``LocalHeaderWalk._follow_damaged_signature``), so the members after it
+        still read."""
+        raise CorruptionError(
+            "Bad magic number for file header",
+            member_name=member.name,
+            source_format=ArchiveFormat.ZIP,
+        )
 
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
@@ -1976,6 +1996,8 @@ class ZipForwardReader(ZipReader):
         )
         self._by_offset[entry.offset] = member
         self._local_offsets.add(entry.offset)
+        if entry.damaged_signature:
+            self._damaged_signatures.add(id(member))
         self._data_starts[entry.offset] = entry.header.data_start
         if entry.deferred and entry.header.extra[:2] == b"UX":
             self._mac_data_starts[entry.offset] = entry.header.data_start
