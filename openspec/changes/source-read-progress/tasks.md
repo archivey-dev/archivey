@@ -8,7 +8,7 @@
 
 ## 2. HTTP byte progress
 
-- [ ] 2.1 The HTTP adapter reads an answer one `sync()` per chunk and reports inside a
+- [x] 2.1 The HTTP adapter reads an answer one `sync()` per chunk and reports inside a
   request
 
 ## 3. CLI and docs

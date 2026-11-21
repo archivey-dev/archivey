@@ -9,8 +9,9 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
   for every read when that is 0.
 - :class:`~archivey.internal.remote.RangeSource` calls
   :meth:`~SourceReadReporter.request_started` and
-  :meth:`~SourceReadReporter.request_ended` around each range request. Each reaches
-  the caller. The source over a range source then reports no bytes of its own: the
+  :meth:`~SourceReadReporter.request_ended` around each range request, and over HTTP
+  :meth:`~SourceReadReporter.request_received` after each MiB of the answer. Each
+  reaches the caller. The source over a range source then reports no bytes of its own: the
   requests already counted them.
 
 Nothing here runs when the callback is unset: the hooks check for a reporter first.
@@ -31,6 +32,7 @@ and goes on cannot lose the stop: it surfaces at the next read.
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from archivey.internal.streams.callers_source import mark_source_callback
@@ -128,6 +130,18 @@ class SourceReadReporter:
         with self._lock:
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
+        self._report_or_defer(snapshot)
+
+    def request_received(self, start: int, end: int, received: int) -> None:
+        """The answer to the request for ``[start, end)`` has brought ``received``
+        bytes so far. ``bytes_read`` includes them; :meth:`request_ended` then adds the
+        request's bytes once."""
+        self.raise_if_stopped()
+        with self._lock:
+            snapshot = self._remote_progress(
+                start, end, received, done=False, position=start + received
+            )
+            snapshot = replace(snapshot, bytes_read=self._bytes_read + received)
         self._report_or_defer(snapshot)
 
     def request_ended(self, start: int, end: int, received: int) -> None:

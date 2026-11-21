@@ -7,9 +7,11 @@
 
 For a source read by range requests (an `fsspec.core.OpenFile`, alone or in a volume
 list) it SHALL be called once before each request, with `request_received == 0` and
-`request_done` false, and once after the request returns, with `request_done` true. A
-request sent again (an ignored range, a short answer continued) counts as a request.
-`bytes_read` is then the bytes those requests returned.
+`request_done` false, and once after the request returns, with `request_done` true. Over
+HTTP it SHALL also be called as the answer comes in, about once per MiB of it, with
+`request_received` the bytes so far and `request_done` false. A request sent again (an
+ignored range, a short answer continued) counts as a request. `bytes_read` is then the
+bytes those requests returned, the current one's so far included.
 
 For any other source it SHALL be called at least once per `source_read_step` bytes
 taken from the source (1 MiB by default), and the request fields SHALL be `None`.
@@ -65,6 +67,12 @@ checking that it is unset.
 - **WHEN** `on_source_read` is set and an archive is listed from an `OpenFile`
 - **THEN** every request gives one call before it and one after it, and the last call's
   `requests` and `bytes_read` equal the request count and bytes fetched
+
+#### Scenario: a large HTTP answer
+
+- **WHEN** `on_source_read` is set and one HTTP request returns several MiB
+- **THEN** the callback runs about once per MiB while the answer comes in, on the
+  caller's thread, with `request_received` growing and `request_done` false
 
 #### Scenario: the callback raises
 
