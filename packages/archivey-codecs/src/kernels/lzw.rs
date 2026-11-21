@@ -59,6 +59,7 @@ pub fn parse_header(header: &[u8]) -> Result<(u32, bool), Err> {
     Ok((max_width, flag & 0x80 != 0))
 }
 
+#[derive(Clone)]
 pub struct LzwState {
     buf: Vec<u8>,
     pub nine_bit_widens: Option<bool>,
@@ -168,6 +169,11 @@ impl LzwState {
         self.skip_reason = "after a CLEAR";
     }
 
+    /// Input fed but not decoded yet.
+    pub fn held_input(&self) -> usize {
+        self.buf.len()
+    }
+
     pub fn is_finished(&self) -> bool {
         self.finished
     }
@@ -184,6 +190,13 @@ impl LzwState {
             return self.buf.len() < pad + NINE_BIT_PROBE_BYTES;
         }
         self.buf.is_empty()
+    }
+
+    /// Queue input without decoding any of it.
+    pub fn queue(&mut self, data: &[u8]) {
+        if !self.finished {
+            self.buf.extend_from_slice(data);
+        }
     }
 
     pub fn feed(&mut self, data: &[u8], max_length: i64) -> Result<(Vec<u8>, Units), Err> {

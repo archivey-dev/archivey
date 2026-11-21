@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bcj2;
+pub mod crc16;
 pub mod error;
 pub mod filters;
 pub mod lzo;

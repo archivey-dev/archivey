@@ -88,6 +88,7 @@ more than `out_size` bytes. Every allocation SHALL be bounded by a constructor a
 | A parameter the kernel does not support | `UnsupportedDataError` |
 | Two threads call one object at once | One raises `RuntimeError`; the object's state is intact |
 | A `bytearray` input that another thread writes during the call | The kernel reads a consistent copy, or holds the GIL; never reads memory being written |
+| Another mutable buffer (`array.array`, `mmap`, a write through a second `memoryview`) written during the call | The caller's to prevent, as with CPython's own `zlib` and `hashlib`: such an exporter has no lock to take. The kernel still reads only its own copy |
 
 ### Requirement: Streaming decoder state can be copied and saved
 
