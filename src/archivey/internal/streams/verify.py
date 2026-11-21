@@ -54,9 +54,11 @@ Per ADR 0014 / ``compressed-streams``:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import zlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, BinaryIO, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
@@ -202,6 +204,38 @@ _VERIFIER_PROOFS = tuple(
     )
     for ended in (False, True)
 )
+
+
+# Under ``OnError.KEEP_PARTIAL``, the extraction coordinator wants the chunk a failed
+# verdict withholds, to keep it in the partial file (``keeping_withheld``).
+_withheld_sink: ContextVar[Callable[[MemberVerifier, bytes], None] | None] = ContextVar(
+    "archivey_withheld_sink", default=None
+)
+
+
+@contextlib.contextmanager
+def keeping_withheld(
+    sink: Callable[[MemberVerifier, bytes], None],
+) -> Generator[None, None, None]:
+    """Hand ``sink`` each chunk a failed verdict withholds while the block runs, with
+    the verifier that withheld it.
+
+    The read still raises and returns nothing: only ``sink`` sees the bytes. The
+    caller matches the verifier with the stream it reads, so a chunk an outer layer
+    withholds (a compressed TAR's own stream) is told apart from the member's.
+    """
+    token = _withheld_sink.set(sink)
+    try:
+        yield
+    finally:
+        _withheld_sink.reset(token)
+
+
+def _hand_withheld(verifier: MemberVerifier, data: bytes) -> None:
+    """Give ``data``, withheld by ``verifier``'s failed verdict, to the sink, if any."""
+    sink = _withheld_sink.get()
+    if sink is not None and data:
+        sink(verifier, data)
 
 
 class MemberVerifier:
@@ -619,6 +653,7 @@ class MemberVerifier:
         try:
             self._check_digests_if_complete()
         except BaseException:
+            _hand_withheld(self, data)
             del data  # withheld: the kept traceback must not pin it
             raise
         return data
@@ -667,6 +702,8 @@ class MemberVerifier:
             # The raise withholds these bytes, and its traceback keeps this frame
             # alive for as long as the caller keeps the error: let the body go —
             # the list and the last piece read, which can be the whole member.
+            if _withheld_sink.get() is not None:
+                _hand_withheld(self, b"".join(chunks))
             chunks.clear()
             piece = b""
             raise
@@ -709,6 +746,7 @@ class MemberVerifier:
                 try:
                     self._conclude(inner)
                 except BaseException:
+                    _hand_withheld(self, data)
                     del data  # withheld: the kept traceback must not pin it
                     raise
             return data
@@ -754,6 +792,7 @@ class MemberVerifier:
                 try:
                     self._conclude(inner)
                 except BaseException:
+                    _hand_withheld(self, data)
                     del data  # withheld: the kept traceback must not pin it
                     raise
             return data

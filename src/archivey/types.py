@@ -2101,8 +2101,9 @@ class OnError(Enum):
     KEEP_PARTIAL = "keep_partial"
     """As ``CONTINUE``, except that a file whose data fails part-way stays on disk,
     holding the bytes its data gave before the failure, as ``unrar x -kb``, 7-Zip and
-    GNU tar leave it. A check at the end of the data (a CRC or a size) can fail on the
-    member's last read, and then that read's bytes are not in the file. The result is
+    GNU tar leave it. A member whose only damage is a failed CRC or size check keeps
+    every byte, unless the decoder makes that check itself (gzip's trailer CRC), which
+    can lose the last bytes it decoded. The result is
     ``FAILED`` with the error, and its ``path`` names the partial file. The file lands
     as a complete one would, so under ``OverwritePolicy.REPLACE`` it replaces an entry
     already at its name.

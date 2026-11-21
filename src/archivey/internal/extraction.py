@@ -103,6 +103,7 @@ from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.internal.streams.callers_source import from_source_callback
+from archivey.internal.streams.verify import MemberVerifier, keeping_withheld
 from archivey.internal.win32_errors import (
     ERROR_FILENAME_EXCED_RANGE,
     ERROR_INVALID_NAME,
@@ -867,6 +868,10 @@ class _MemberState:
     # from it lands by renaming or linking it (``_write_file_atomic``), and its bytes
     # were counted when it was staged.
     staged: Path | None = None
+    # The member's bytes and entry were counted when the pass staged them, and its
+    # data is the partial file ``OnError.KEEP_PARTIAL`` kept then: the write copies it
+    # without counting it again (``_place_member``).
+    precounted: bool = False
     # A streaming pass's earlier copies of this member's name, left in place while it
     # is handled so it can replace one atomically: path -> index of the superseded
     # result. See ``_park_earlier_copies``.
@@ -1328,6 +1333,7 @@ class ExtractionCoordinator:
         current_by_name: dict[str, int] | None,
         members_done: int,
         staged: Path | None = None,
+        precounted: bool = False,
         fail_with: ArchiveyError | OSError | None = None,
         report: bool = True,
     ) -> int | None:
@@ -1340,10 +1346,11 @@ class ExtractionCoordinator:
         so no earlier copy is ever taken back (``_park_earlier_copies``).
         ``members_done`` is the number of members handled before this one. ``staged``
         is the member's data as a pass staged it (``_stage_then_place``): its bytes and
-        its entry were counted then, so they are not counted again. ``fail_with`` fails
-        a member the pass knows is bad, once the filter and the checks have let it
-        through, for a type that reads no ``stream``. ``report=False`` makes no
-        progress report for it.
+        its entry were counted then, so they are not counted again. ``precounted`` says
+        the same of a partial file kept while staging, which ``stream`` reads.
+        ``fail_with`` fails a member the pass knows is bad, once the filter and the
+        checks have let it through, for a type that reads no ``stream``.
+        ``report=False`` makes no progress report for it.
         """
         state = self._state
         results = state.results
@@ -1352,7 +1359,7 @@ class ExtractionCoordinator:
         recorded_index: int | None = None
         presented_name: str | None = None
         rewrites: frozenset[NameRewrite] = frozenset()
-        current = self._current = _MemberState(staged=staged)
+        current = self._current = _MemberState(staged=staged, precounted=precounted)
 
         def record(_error: object, failed: ExtractionResult) -> bool:
             nonlocal recorded_index
@@ -1395,7 +1402,7 @@ class ExtractionCoordinator:
                     current_by_name[original.name] = result_index
                 if fail_with is not None and transformed.type is not MemberType.FILE:
                     raise fail_with
-                if not original.is_anti and staged is None:
+                if not original.is_anti and staged is None and not precounted:
                     # Counted only now, once the selector, the filter and the
                     # universal check have accepted the member: a member skipped or
                     # rejected before this does not count toward max_entries.
@@ -1564,6 +1571,7 @@ class ExtractionCoordinator:
                 current_by_name=None,
                 members_done=members_done,
                 staged=entry.staged if stream is None else None,
+                precounted=entry.partial is not None,
                 fail_with=fail_with,
                 report=False,
             )
@@ -1638,9 +1646,11 @@ class ExtractionCoordinator:
                     tracker.refund(tracker.member_bytes)
                     raise
                 if kept is not None:
-                    # Placement writes the kept bytes again, and counts them then.
-                    tracker.refund(tracker.member_bytes)
+                    # Counted now, as a staged file is: placement copies the kept
+                    # bytes without counting them again, and ``_unstage`` refunds
+                    # them when the member is not placed.
                     entry.partial = kept.path
+                    entry.staged_bytes = tracker.member_bytes
                     raise kept.error
                 entry.staged_bytes = tracker.member_bytes
         self._report_progress(original, members_done + 1, entry.staged_bytes)
@@ -1734,8 +1744,12 @@ class ExtractionCoordinator:
         state.tracker.check_recorded_size()
         path = state.staging / name
         fd = _open_new_file(path, 0o666)
+        withheld: list[bytes] = []
         try:
-            with os.fdopen(fd, "wb") as dst:
+            with (
+                os.fdopen(fd, "wb") as dst,
+                self._withheld_kept(stream, withheld, keep=True),
+            ):
                 self._copy_to_fileobj(
                     stream,
                     dst if self._dry is None else self._dry.sink,
@@ -1746,6 +1760,7 @@ class ExtractionCoordinator:
             keep = False
             if self._keeps_partial(exc):
                 with contextlib.suppress(OSError):
+                    self._append_withheld(path, withheld)
                     keep = os.stat(long_path(path)).st_size > 0
             if not keep:
                 with contextlib.suppress(OSError):
@@ -1833,10 +1848,12 @@ class ExtractionCoordinator:
         the bomb limits counted for it: its bytes, and its entry too unless its member
         was ``placed`` (a link placed without its data). The archive-wide ratio keeps
         its bytes: they were decoded. A partial file ``OnError.KEEP_PARTIAL`` kept
-        while staging is removed too: placement copied it, and it counts for nothing
-        now."""
+        while staging is removed too, as placement copied it; its bytes and entry are
+        refunded unless the member was ``placed`` (its partial file landed)."""
         partial, entry.partial = entry.partial, None
         if partial is not None:
+            if not placed:
+                self._state.tracker.refund(entry.staged_bytes, entry=True)
             with contextlib.suppress(OSError):
                 os.unlink(long_path(partial))
         staged = entry.staged
@@ -2948,7 +2965,7 @@ class ExtractionCoordinator:
     ) -> None:
         """Raise ``error`` (``exc`` as caught) if the run stops on it, else log it."""
         # OnError governs failures only. A BLOCKED stops the run only under the
-        # fail-closed AbortOn.BLOCKED_MEMBER opt-in, under either OnError value; its
+        # fail-closed AbortOn.BLOCKED_MEMBER opt-in, under every OnError value; its
         # recorded result is discarded with the rest of the report.
         if (self._stops_on_failure() and status is ExtractionStatus.FAILED) or (
             status is ExtractionStatus.BLOCKED
@@ -4844,10 +4861,12 @@ class ExtractionCoordinator:
         assert copy_begins is None or staged is None
         if staged is not None:
             return self._land_staged(staged, dest_path, member)
+        precounted = self._current.precounted
         # Every check that could still skip the member has passed, so a member whose
         # recorded size is already over the ratio is refused before any temp file
-        # exists.
-        self._state.tracker.check_recorded_size()
+        # exists. A precounted member was checked when it was staged.
+        if not precounted:
+            self._state.tracker.check_recorded_size()
         if self._effective_mode(member) is None:
             tmp = self._temp_sibling(self._parent(dest_path))
             fd = _open_new_file(tmp, 0o666)
@@ -4855,9 +4874,13 @@ class ExtractionCoordinator:
             # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
             # the content private until the chmod below.
             fd, tmp = self._new_temp_file(self._parent(dest_path))
+        withheld: list[bytes] = []
         try:
             try:
-                with os.fdopen(fd, "wb") as dst:
+                with (
+                    os.fdopen(fd, "wb") as dst,
+                    self._withheld_kept(stream, withheld, keep=keep_partial),
+                ):
                     if copy_begins is not None:
                         copy_begins()
                     # A dry run reads and verifies the body like a real one; only the
@@ -4865,12 +4888,12 @@ class ExtractionCoordinator:
                     self._copy_to_fileobj(
                         stream,
                         dst if self._dry is None else self._dry.sink,
-                        self._state.tracker,
+                        None if precounted else self._state.tracker,
                         emit_progress=self._current.emit_progress,
                     )
             except (ArchiveyError, OSError) as exc:
                 if keep_partial and self._keeps_partial(exc):
-                    self._land_partial(tmp, dest_path, member, exc)
+                    self._land_partial(tmp, dest_path, member, exc, withheld)
                 raise
             self._apply_metadata(tmp, member)
             return self._swap_into_place(tmp, dest_path, member, fresh=True)
@@ -4894,18 +4917,56 @@ class ExtractionCoordinator:
                 )
             raise
 
+    def _withheld_kept(
+        self, stream: BinaryIO | None, withheld: list[bytes], *, keep: bool
+    ) -> contextlib.AbstractContextManager[None]:
+        """Collect into ``withheld`` the chunk that a failed check of ``stream``'s own
+        member withholds from the read that meets it (``keeping_withheld``), when the
+        write may keep a partial file (``_keeps_partial``). A chunk an outer layer
+        withholds (a compressed TAR's stream) is another verifier's, and not taken."""
+        if (
+            not keep
+            or self._on_error is not OnError.KEEP_PARTIAL
+            or self._dry is not None
+        ):
+            return contextlib.nullcontext()
+
+        def sink(verifier: MemberVerifier, data: bytes) -> None:
+            if verifier is getattr(stream, "_verifier", None):
+                withheld[:] = [data]
+
+        return keeping_withheld(sink)
+
+    def _append_withheld(self, path: Path, withheld: list[bytes]) -> None:
+        """Append the chunk a failed check withheld to the partial file ``path``,
+        counted toward the limits as a written chunk is. A chunk the limits refuse is
+        left out: the file keeps what it has."""
+        if not withheld:
+            return
+        data = withheld.pop()
+        try:
+            self._state.tracker.count(len(data))
+        except ResourceLimitError:
+            return
+        with open(long_path(path), "ab") as f:
+            f.write(data)
+
     def _land_partial(
         self,
         tmp: Path,
         dest_path: Path,
         member: ArchiveMember,
         exc: ArchiveyError | OSError,
+        withheld: list[bytes],
     ) -> None:
         """Land the partial file ``tmp`` of a copy that failed with ``exc`` on
-        ``dest_path`` and raise ``_PartialKept``, for ``_write_file_atomic``. Returns,
-        landing nothing, when ``tmp`` is empty or the landing fails: the caller then
-        removes ``tmp`` and raises ``exc``."""
+        ``dest_path`` and raise ``_PartialKept``, for ``_write_file_atomic``. The
+        chunk the failed check withheld, if any, goes in first, so a member whose only
+        damage is a failed check keeps every byte. Returns, landing nothing, when
+        ``tmp`` is empty or the landing fails: the caller then removes ``tmp`` and
+        raises ``exc``."""
         try:
+            self._append_withheld(tmp, withheld)
             if os.stat(long_path(tmp)).st_size == 0:
                 return
             landed = self._swap_into_place(tmp, dest_path, member, fresh=True)

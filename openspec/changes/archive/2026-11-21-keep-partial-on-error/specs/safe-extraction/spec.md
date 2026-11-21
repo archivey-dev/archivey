@@ -21,7 +21,11 @@ and proceeds.
 copied (damaged data, a check at the end of the data, a write error): its file SHALL land
 at its destination as a complete one would, under the same overwrite policy, holding the
 bytes the member's data gave before the failure, and its result SHALL be `FAILED` with the
-error and `path` set to where it landed. The kept file SHALL get none of the member's
+error and `path` set to where it landed. The chunk that a failed check of the member's own verifier (its
+CRC, digest or declared size) withholds from the read that meets it SHALL be written to
+the kept file too, so a member whose only damage is that check keeps every byte; a
+check made inside a decoder (gzip's trailer CRC) can still lose the decoder's last
+output. The kept file SHALL get none of the member's
 metadata (no stored mode, owner or times). It SHALL count as written for later members:
 a later member meets it as an entry this run wrote, and one that replaces it under
 `REPLACE` leaves its result `FAILED` with `path=None`. Nothing SHALL be kept when no byte

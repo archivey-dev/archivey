@@ -25,7 +25,6 @@ from archivey import (
     open_archive,
 )
 from archivey.exceptions import ArchiveyError, ResourceLimitError, TruncatedError
-from archivey.internal.extraction import _CHUNK
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
 
@@ -98,10 +97,9 @@ def test_keep_partial_keeps_a_file_whose_check_fails(tmp_path: Path, mode: str) 
     assert isinstance(bad.error, ArchiveyError)
     assert bad.path == dest / "bad.bin"
     kept = (dest / "bad.bin").read_bytes()
-    # Where the read that meets the failed check raises instead of returning its
-    # bytes, the file holds what the reads before it gave: at most one copy chunk
-    # less. A ZIP from a pipe checks after its last read, so it keeps every byte.
-    assert len(_PAYLOAD) - _CHUNK <= len(kept) <= len(_PAYLOAD)
+    # The chunk the failed check withholds from its read goes into the file too, so
+    # every byte is kept, in every mode.
+    assert len(kept) == len(_PAYLOAD)
     assert kept[:100] == _PAYLOAD[:100]
     assert kept[100] != _PAYLOAD[100]
     assert by_name["good.txt"].status is ExtractionStatus.EXTRACTED
@@ -273,3 +271,100 @@ def test_a_later_member_replaces_a_kept_partial_file(tmp_path: Path, mode: str) 
     assert second.path is not None
     assert second.path.read_bytes() == b"second"
     assert [p.name for p in dest.iterdir()] == [second.path.name]
+
+
+@pytest.mark.parametrize("mode", _MODES)
+@pytest.mark.parametrize("size", [1000, 3 * 2**20 + 5])
+def test_a_check_failure_keeps_every_byte(tmp_path: Path, mode: str, size: int) -> None:
+    # Bit-rot that still decodes: one flipped byte, so only the CRC fails. Below one
+    # copy chunk the whole member arrives in the read that meets the check.
+    payload = bytes(range(256)) * (size // 256) + b"x" * (size % 256)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("rot.bin", payload)
+    data = bytearray(buf.getvalue())
+    data[data.find(payload[:200]) + 50] ^= 0xFF
+    src = tmp_path / "rot.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+    )
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    assert result.path == dest / "rot.bin"
+    kept = result.path.read_bytes()
+    assert len(kept) == size
+    assert kept[:50] == payload[:50]
+    assert kept[51:] == payload[51:]
+
+
+def test_a_gzip_check_failure_keeps_what_the_decoder_gave(tmp_path: Path) -> None:
+    # A single-file .gz whose trailer CRC is wrong. zlib makes that check itself
+    # and raises from the decode, so its last output can be lost (measured: 1 byte);
+    # what is kept is a prefix of the data.
+    packed = bytearray(gzip.compress(_PAYLOAD))
+    packed[-8] ^= 0xFF
+    src = tmp_path / "data.bin.gz"
+    src.write_bytes(bytes(packed))
+    dest = tmp_path / "out"
+    report = open_and_extract(src, dest, on_error=OnError.KEEP_PARTIAL)
+    (result,) = report.results
+    assert result.status is ExtractionStatus.FAILED
+    assert result.path is not None
+    kept = result.path.read_bytes()
+    assert len(_PAYLOAD) - 2**20 <= len(kept) <= len(_PAYLOAD)
+    assert _PAYLOAD.startswith(kept)
+
+
+def _zip_with_wrong_crcs(path: Path, entries: dict[str, bytes], bad: str) -> Path:
+    """A DEFLATED ZIP whose ``bad`` member stores a wrong CRC in both its local header
+    and its central entry, so its data decodes in full and only the check fails."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    data = bytearray(buf.getvalue())
+    target = bad.encode()
+    for magic, crc_at, name_len_at, name_at in (
+        (b"PK\x03\x04", 14, 26, 30),
+        (b"PK\x01\x02", 16, 28, 46),
+    ):
+        pos = 0
+        while (i := data.find(magic, pos)) >= 0:
+            n = int.from_bytes(data[i + name_len_at : i + name_len_at + 2], "little")
+            if bytes(data[i + name_at : i + name_at + n]) == target:
+                data[i + crc_at] ^= 0xFF
+            pos = i + 4
+    path.write_bytes(bytes(data))
+    return path
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_a_kept_member_counts_once_toward_the_ratio(tmp_path: Path, mode: str) -> None:
+    # From a pipe the member is staged and then placed: its bytes count once, so a
+    # member under the archive-wide ratio from a file stays under it from a pipe.
+    payload = (b"\0" * 900 + bytes(range(100))) * 3000
+    src = _zip_with_wrong_crcs(
+        tmp_path / "ratio.zip", {"bad.bin": payload, "good.txt": b"good"}, "bad.bin"
+    )
+    ratio = len(payload) / src.stat().st_size
+    limits = DecoderLimits(
+        max_ratio=ratio * 1.5,
+        ratio_activation_threshold=100_000,
+        live_ratio_activation_threshold=100_000,
+    )
+    dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        config=ArchiveyConfig(decoder_limits=limits),
+        on_error=OnError.KEEP_PARTIAL,
+    )
+    by_name = {r.member.name: r for r in report.results}
+    assert by_name["bad.bin"].status is ExtractionStatus.FAILED
+    assert (dest / "bad.bin").read_bytes() == payload
+    assert (dest / "good.txt").read_bytes() == b"good"
