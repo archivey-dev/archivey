@@ -1,9 +1,9 @@
 # Design: reading DMG disk images
 
 This design is the implementation plan written for the implementer, kept here so the
-plan can be reviewed before any code. The prototype and the `hdiutil` fixtures it names
-are outside the repo; the maintainer supplies them. Decisions D1 to D8 (§2) were
-ruled by the maintainer on 2026-11-21.
+plan can be reviewed before any code. The prototype and the `hdiutil` fixtures are in
+this change under `resources/` (§0). Decisions D1 to D8 (§2) were ruled by the
+maintainer on 2026-11-21.
 
 
 Written 2026-11-21 for an implementer who works on github.com/archivey-dev/archivey and
@@ -33,7 +33,7 @@ images yet; the implementer checks it first.
 | `prototype/dmgproto/udif.py`, `hfsplus.py`, `apfs.py`, `lzfse.py`, `adc.py`, `dmg.py` | A working pure-Python prototype (stdlib only, 1,470 lines). It reads every file of 41 real DMGs (36 HFS+, 5 APFS) byte for byte the same as 7-Zip, and all 10 unencrypted UDIF images in the fixture set. **Use it as the reference for the on-disk layouts; do not copy it as production code.** It has none of archivey's limits, error types or diagnostics, it decodes whole files into memory, and it has no decryption. |
 | `fixtures/` | Small real images made with `hdiutil` on macOS 26.7 (§9.1), with macOS's own listing, hashes and xattrs of the mounted volume. The two 16 MiB UDRW images (raw disks, no `koly`) are left out. |
 | `make-dmg-fixtures.sh` | The script that made `fixtures/` on a Mac (Appendix A). |
-| `dmgurls.txt` | The 41-image real-world corpus (Appendix B). |
+| `dmgurls.txt` | The real-world corpus URL list, 54 URLs (Appendix B); 41 were measured in the investigation. |
 
 **Read these in the repo first, in this order:**
 
@@ -107,7 +107,7 @@ thing, or leave as today):
 
 ## 2. Decisions (ruled by the maintainer, 2026-11-21)
 
-All seven are ruled. Build them as written. Mention in
+All eight are ruled. Build them as written. Mention in
 the PR body which defaults you implemented.
 
 | # | Question | Recommended default |
@@ -117,7 +117,7 @@ the PR body which defaults you implemented.
 | D3 | LZFSE decoder | **Ruled by the maintainer 2026-11-21:** we already have a working pure-Python LZFSE/LZVN decoder (the prototype), so Part A ports it and it is always available. Part A0 evaluates the `lzfse` PyPI package (MIT, Apple's reference C, about 45x faster); if it passes, it becomes the optional fast path (Part H). In general the maintainer prefers an established package as an extra, and an extra being required is acceptable; our own decoder is kept here only because it exists already. |
 | D4 | UDIF checksums | **Ruled by the maintainer 2026-11-21: this default.** Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, a separate partition pass that `verify_all()` runs (§7.2), which lifts members to `CHECKSUM`. Never check it at open (it needs a full decode, DR-15b). |
 | D5 | Several APFS volumes in one container (a container can hold up to 100) | **Ruled by the maintainer 2026-11-21: this default.** Same as D1: one volume at the root; several, each under its volume name. Volumes with a system role (Preboot, Recovery, VM, Update) are listed like any other; DMGs seen so far hold one data volume. |
-| D6 | Encrypted image, password checks | **Ruled by the maintainer 2026-11-21: this default** (the whole image, listing included, is under one key, so the password is tried once, at open, as for a header-encrypted RAR or 7z). The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: `EncryptionError` from `wrong_password_error`, as makeself does. |
+| D6 | Encrypted image, password checks | **Ruled by the maintainer 2026-11-21: this default** (the whole image, listing included, is under one key, so the password is tried once, at open, as for a header-encrypted RAR or 7z). The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: the wrong-password `EncryptionError` that `ReaderContext.unlock` raises (§6B.0); the reader writes neither error itself. |
 | D8 | Public codec names | **Ruled by the maintainer 2026-11-21:** add `CompressionAlgorithm.LZFSE`, `LZVN` and `ADC` in Part A, refusable one by one through the codec policy (§4.3). |
 | D7 | APFS metadata checksums (Fletcher-64 on every object) | **Ruled by the maintainer 2026-11-21:** always checked. In regular mode a block whose checksum fails is never used: the walk skips it (a bad leaf loses its records, a bad index node its subtree, a bad object-map node every object it maps), lists every member whose records are all intact, then raises `CorruptionError` at the end of the listing (DR-2). A member whose extents were partly in a skipped block lists but raises on read. Salvage mode (planned separately) will use bad blocks anyway, with a diagnostic, and show orphaned files. Metadata integrity only: it does not change `verifiable`. |
 
@@ -140,7 +140,7 @@ the PR body which defaults you implemented.
 | `dev-docs/formats/dmg.md` | Rewrite as the handbook page for a readable format, same section layout as `squashfs.md` (At a glance, Shape, Pipeline, In the wild, Threat surface, Sharp edges, Decisions, Open questions, Verify, References). |
 | `docs/formats.md` §Disk images | User docs. **Leave the prose for the maintainer's docs session** (user docs are written by a specific reviewer model by rule DR-22b); put a short factual draft in the PR body instead. |
 | `dev-docs/threat-model.md` | Add a DMG row (§8). |
-| `openspec/changes/dmg-reader/` | proposal, design, tasks, and spec deltas: a new `specs/format-dmg/spec.md`, and deltas to `format-detection`, `backend-registry`, `detection-cost` and `testing-contract` where they say DMG is refused (grep `openspec/specs` for `UDIF`/`DMG`). |
+| `openspec/changes/dmg-reader/` | proposal, design, tasks, and spec deltas: a new `specs/format-dmg/spec.md`, and deltas to `format-detection`, `backend-registry` and `testing-contract` where they say DMG is refused (`detection-cost` needs none: the trailer receipt stays one 512-byte read, §6B.1) (grep `openspec/specs` for `UDIF`/`DMG`). |
 | `tests/` | §9. |
 
 Detection: the handler API's `magic` holds only fixed-offset `Magic` entries. The `koly`
@@ -288,9 +288,10 @@ the descriptors are kept. Keep the runs as compact arrays (`array('Q')` per fiel
 one packed `bytes` searched with `struct.unpack_from`), never one Python object per run.
 Then: runs sorted by sector and not overlapping; every run inside the table's sector
 range; every table inside the disk's sector count; compressed ranges inside the data
-fork; sector count per run bounded (see 4.4). Gaps between runs read as zeros (7-Zip
-does the same; hdiutil leaves none). Two runs whose stored bytes overlap are allowed (no
-writer does it, but it costs nothing): each decodes on its own.
+fork; sector count per run bounded (see 4.4). Gaps between runs, inside the table's
+sector range, read as zeros (the spec states this; 7-Zip does the same; hdiutil leaves
+none). Two runs whose stored bytes overlap are allowed (no writer does it, but it costs
+nothing): each decodes on its own.
 
 ### 4.4 `UdifSource`
 
@@ -333,13 +334,15 @@ not used: a diagnostic, and candidates come from (b); entry array, first and las
 LBA inside the disk, every entry inside the usable range, no two entries overlapping),
 tried as the primary pair (header at sector 1 and its array) and then the backup pair
 (header at the last sector and its array); or an APM whose entries all have the `PM`
-signature, a consistent map count and ranges inside the disk, (b) the `blkx` tables' own
-sector ranges when there is no map or the map is damaged (a diagnostic says which), (c)
-the whole disk. Each candidate is probed, and the filesystem signature (step 3) alone
-decides what is read. `blkx` names (`Apple_HFS`, `Apple_APFS`) and GPT/APM type values
-only describe: a disagreement with the signature is a diagnostic, never a reason to skip
-or read a partition. So a GPT HFS+ entry with a matching header and an unrecognised
-`blkx` name is read.
+signature, a consistent map count and ranges inside the disk, with the map count taken
+from the first entry and capped at 64 before any further entry is read (a valid larger
+map: a diagnostic, and candidates come from (b), as for an oversized GPT), (b) the
+`blkx` tables' own sector ranges when there is no map or the map is damaged (a
+diagnostic says which), (c) the whole disk. Each candidate is probed, and the filesystem
+signature (step 3) alone decides what is read. `blkx` names (`Apple_HFS`, `Apple_APFS`)
+and GPT/APM type values only describe: a disagreement with the signature is a
+diagnostic, never a reason to skip or read a partition. So a GPT HFS+ entry with a
+matching header and an unrecognised `blkx` name is read.
 
 1. Each `blkx` entry is normally one partition, named like `disk image (Apple_HFS : 4)`,
    `Protective Master Boot Record (MBR : 0)`, `GPT Header (Primary GPT Header : 1)`,
@@ -370,7 +373,8 @@ or read a partition. So a GPT HFS+ entry with a matching header and an unrecogni
    back to the `blkx` ranges); two `mish` tables that overlap.
 
    Probe work is capped: at most 128 candidates from any source, the `blkx` fallback
-   included (more is `ResourceLimitError` at open, naming the count). Each probe reads
+      included (more is `ResourceLimitError` at open, naming the count; never a silent
+   stop at 128, which could hide a volume, DR-1). Each probe reads
    the bounded amounts in §7.
 
 Several HFS+ partitions: D1. Top-level names (D1, D5), in partition order and then
@@ -821,8 +825,14 @@ blocks. AES goes through archivey's crypto backend (`cryptography`, optional): w
 is missing, `PackageNotInstalledError` naming `cryptography`, as for ZIP AES. Then the
 whole UDIF pipeline (§4 onward) runs on that source unchanged.
 
-Memory and work per read are bounded by the block size; no part of the image is
-decrypted at open except the `koly` block and the plist.
+Header lengths are checked before any read (DR-21a for the block size): the data block
+size must be 4096, the only size any fixture or producer shows (another is
+`UnsupportedFeatureError`); the key-entry count is capped at 16, each entry's size and
+the salt and wrapped-key lengths at 4 KiB; every offset + length must stay inside the
+header (past it is `CorruptionError`; over a cap is `ResourceLimitError`), checked
+before the bytes are read or allocated. With a fixed 4096-byte block, memory and work
+per read are bounded; no part of the image is decrypted at open except the `koly`
+block and the plist.
 
 ---
 
@@ -894,7 +904,7 @@ DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
 | Encrypted image, no password or wrong password | `EncryptionError` (§6B.3) |
 | APFS Fletcher-64 mismatch, omap entry missing, B-tree loop | `CorruptionError` |
 | AES needed and `cryptography` missing or excluded | `PackageNotInstalledError` |
-| Plist > 64 MiB, too many members, metadata over `max_metadata_bytes` | `ResourceLimitError` |
+| Plist > 64 MiB, more than 128 partition candidates, the 64 MiB open budget or the checkpoint-scan budget spent, a compressed run's stored size over its cap, an encrypted-header length over its cap, too many members, metadata over `max_metadata_bytes` | `ResourceLimitError` |
 | Decoder errors in zlib/bzip2/xz runs | already translated by `ReaderContext.decompress` |
 | LZFSE/LZVN/ADC bad input | `CorruptionError` from the decoder, naming the run's file offset |
 
@@ -1003,8 +1013,10 @@ Committing all of them is about 5 MB. If that is too much, keep UDZO, ULFO, ULMO
 both AES-128 images for each filesystem (about 2.7 MB) and leave the rest to the
 external run.
 
-Every HFS+ and APFS image holds the same tree (GPT, one `Apple_HFS` partition named
-`Fixture`):
+Every HFS+ and APFS image holds the same members with the same hashes (names keep their
+stored Unicode form, so `café.txt` is decomposed, `cafe\u0301.txt`, in `hfs-listing.txt`
+and composed, `caf\u00e9.txt`, in `apfs-listing.txt`; tests compare each fixture to its
+own listing) (GPT, one `Apple_HFS` partition named `Fixture`):
 
 ```
 Applications        -> /Applications   (absolute symlink)
@@ -1094,15 +1106,18 @@ the secondary oracle for builder-made images.
 
 ### 9.5 External corpus run (not committed, not in CI)
 
-41 real DMGs from GitHub release pages (third-party apps, so not committable). URL list
-in Appendix B. Provide a script (e.g. `scripts/dev/dmg_corpus.py`, or document the
-commands in the handbook page §Verify) that downloads them to a cache directory and
-compares archivey with 7-Zip file by file (SHA-256), applying the §9.3 exceptions.
-Expected from the prototype: 36 HFS+ images identical except the macFUSE hard links
-(where 7-Zip is wrong); the 5 APFS images (MacVim, VSCodium, Zed, dosbox-staging,
-Mumble) identical once Part E lands. The maintainer runs it before merging Parts B and
-E. Optional extra oracles from the investigation: `dpp-py` (Rust; fails on HFS+ hard
-links), libyal `libfshfs`/`libfsapfs` (no xz runs in `libmodi`).
+Real DMGs from GitHub release pages (third-party apps, so not committable). The URL list
+(Appendix B, `resources/dmgurls.txt`) has 54 URLs; the 2026-11-09 investigation measured
+the 41 of them that downloaded and parsed then (the numbers elsewhere in this plan are
+those 41). The script runs every URL, records which ones download, and compares those.
+Provide a script (e.g. `scripts/dev/dmg_corpus.py`, or document the commands in the
+handbook page §Verify) that downloads them to a cache directory and compares archivey
+with 7-Zip file by file (SHA-256), applying the §9.3 exceptions. Expected from the
+prototype: 36 HFS+ images identical except the macFUSE hard links (where 7-Zip is
+wrong); the 5 APFS images (MacVim, VSCodium, Zed, dosbox-staging, Mumble) identical once
+Part E lands. The maintainer runs it before merging Parts B and E. Optional extra
+oracles from the investigation: `dpp-py` (Rust; fails on HFS+ hard links), libyal
+`libfshfs`/`libfsapfs` (no xz runs in `libmodi`).
 
 ### 9.6 Behaviour tests to include
 
@@ -1206,7 +1221,8 @@ departs from the plan, with the reason.
 - [ ] `./scripts/check.sh` and `./scripts/test.sh` pass; `--all-configs` from Part H on.
 - [ ] `dev-docs/formats/dmg.md`, `threat-model.md`, `docs/formats.md`, and the OpenSpec
       change are updated with each part.
-- [ ] The external corpus run (9.5) matches 7-Zip on all 41 images, apart from the
+- [ ] The external corpus run (9.5) matches 7-Zip on every image in the list that
+  downloads (41 at the investigation), apart from the
       listed 7-Zip differences.
 - [ ] After Part F, `verify_all()` on a fixture raises every file to `CHECKSUM`, and a
       flipped byte in any run is caught.

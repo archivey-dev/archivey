@@ -7,33 +7,36 @@ XML property list and its `mish` run tables, and serve the virtual disk they des
 The property list's length SHALL be checked before any byte of it is read: over 64 MiB
 SHALL raise `ResourceLimitError`. It SHALL then be parsed with `plistlib`. A `mish`
 table whose run count does not fit its data SHALL raise `CorruptionError`, and the runs
-SHALL be charged as metadata before they are kept. Runs of type zero fill, raw, ignore
-(free space), ADC, zlib, bzip2, LZFSE and xz SHALL be read; a comment run SHALL be
-skipped and the terminator SHALL end the table. Each compressed run SHALL decode to
-exactly its sector count × 512 bytes. Before any byte of a run is read, a raw run whose
-stored length is not its decoded size, SHALL raise `CorruptionError`, and a compressed
-run whose stored length exceeds twice its decoded size plus 64 KiB SHALL raise
-`ResourceLimitError` (a support limit, not a validity bound); no decoder pull SHALL
-return more than the decoded size plus one byte. Runs SHALL be decoded through
-`ReaderContext.decompress` for zlib, bzip2 and xz and through archivey's own pure-Python
-decoders for LZFSE, LZVN and ADC, whose output is bounded by the run's size. A run that
-decodes to another length, runs that overlap or leave their table's sector range, and
-stored ranges outside the data fork SHALL raise `CorruptionError`; a file that ends
-inside a run or the property list SHALL raise `TruncatedError`. An unknown run type, and
-a compressed run that declares more than 16 MiB decoded, SHALL raise
-`UnsupportedFeatureError` from the read that needs it, leaving other members readable.
-The format SHALL require a seekable source. A run's stored range SHALL be
-`data fork offset + mish data offset + compressed offset` for its compressed length,
-inside the data fork. A code-signature blob declared in the `koly` block SHALL be
-allowed and not verified; file bytes outside the declared structures SHALL be reported
-as trailing data. Opening SHALL read only a fixed envelope: the `koly` block, the
-property list and run tables, the partition map (a GPT entry array of at most 64 KiB),
-and for each of at most 128 candidate partitions a 4 KiB probe, the HFS+ volume header
-and, when journaled, the journal info block and journal header (512 bytes each), or the
-APFS block 0 at its declared size (at most 64 KiB). Beyond the property list, the
-physical bytes read and the bytes decoded at open SHALL together stay within 64 MiB;
-more SHALL raise `ResourceLimitError` at open. No work SHALL be proportional to the
-image.
+SHALL be charged as metadata before they are kept. A sector inside a table's range that
+no run covers SHALL read as zeros. Runs of type zero fill, raw, ignore (free space),
+ADC, zlib, bzip2, LZFSE and xz SHALL be read; a comment run SHALL be skipped and the
+terminator SHALL end the table. Each compressed run SHALL decode to exactly its sector
+count × 512 bytes. Before any byte of a run is read, a raw run whose stored length is
+not its decoded size, SHALL raise `CorruptionError`, and a compressed run whose stored
+length exceeds twice its decoded size plus 64 KiB SHALL raise `ResourceLimitError` (a
+support limit, not a validity bound); no decoder pull SHALL return more than the decoded
+size plus one byte. Runs SHALL be decoded through `ReaderContext.decompress` for zlib,
+bzip2 and xz and through archivey's own pure-Python decoders for LZFSE, LZVN and ADC,
+whose output is bounded by the run's size. A run that decodes to another length, runs
+that overlap or leave their table's sector range, and stored ranges outside the data
+fork SHALL raise `CorruptionError`; a file that ends inside a run or the property list
+SHALL raise `TruncatedError`. An unknown run type, and a compressed run that declares
+more than 16 MiB decoded, SHALL raise `UnsupportedFeatureError` from the read that needs
+it, leaving other members readable. The format SHALL require a seekable source. A run's
+stored range SHALL be `data fork offset + mish data offset + compressed offset` for its
+compressed length, inside the data fork. A code-signature blob declared in the `koly`
+block SHALL be allowed and not verified; file bytes outside the declared structures
+SHALL be reported as trailing data. Opening SHALL read only a fixed envelope: the `koly`
+block, the property list and run tables, the partition map (a GPT entry array of at most
+64 KiB, or an Apple Partition Map of at most 64 entries, each size checked from its
+header before the read; a larger valid map SHALL be reported and the `blkx` ranges used
+instead), and for each of at most 128 candidate partitions (a 129th candidate from any
+source SHALL raise `ResourceLimitError` at open, so no volume is silently skipped) a 4
+KiB probe, the HFS+ volume header and, when journaled, the journal info block and
+journal header (512 bytes each), or the APFS block 0 at its declared size (at most 64
+KiB). Beyond the property list, the physical bytes read and the bytes decoded at open
+SHALL together stay within 64 MiB; more SHALL raise `ResourceLimitError` at open. No
+work SHALL be proportional to the image.
 
 #### Scenario: UDIF runs
 
@@ -50,6 +53,9 @@ image.
 | A signed image (code-signature blob before the `koly` block) | Read; no trailing-data report |
 | 128 candidates each probing a different maximal compressed run | `ResourceLimitError` at open once the 64 MiB open budget is spent |
 | A GPT entry array over 64 KiB | Diagnostic; candidates from the `blkx` ranges |
+| An APM whose map count is far above 64 | No entry beyond the cap read; diagnostic; candidates from the `blkx` ranges |
+| 129 candidates, the filesystem only in the last | `ResourceLimitError` at open, not an empty listing |
+| A one-sector gap inside a table's range | That sector reads as zeros |
 | A plist length over 64 MiB | `ResourceLimitError`; no byte of the plist requested from the source |
 | A compressed run whose stored length is over the cap | `ResourceLimitError`; no byte of the run requested |
 | A valid ADC run of one-byte literals (stored ≈ 2 × decoded) | The data |
@@ -163,7 +169,7 @@ zeros. Encrypted volumes, sealed volumes and Fusion containers SHALL raise
 
 | Case | Expected |
 | --- | --- |
-| The `hdiutil` APFS fixtures, each codec | The same tree and hashes as the HFS+ fixtures |
+| The `hdiutil` APFS fixtures, each codec | The same members and hashes as the HFS+ fixtures; `café.txt` keeps its stored form, composed (U+00E9) on APFS and decomposed (`e` U+0301) on HFS+, as the two listing files show |
 | A newer checkpoint with a bad checksum | The older valid one is read |
 | A newer superblock with a good checksum but a missing checkpoint-map block | The older complete one is read |
 | An object deleted at xid 11, live at 10 | Absent at 11; found at 10 |
@@ -181,8 +187,12 @@ image SHALL then be read as an unencrypted one through 4 KiB AES-CBC blocks. Wit
 password `open_archive` SHALL raise `EncryptionError`; with no right password among the
 candidates it SHALL raise the wrong-password `EncryptionError`. The key-derivation work
 SHALL count against archivey's key-derivation budget. Members SHALL report `encrypted`.
-`cdsaencr` v1 images and images with no password key entry SHALL raise
-`UnsupportedFeatureError`. Without `cryptography`, `PackageNotInstalledError`.
+Every length in the encrypted header (data block size, key-entry count and sizes, salt
+and wrapped-key lengths) SHALL be checked before any read: a data block size other than
+4096 SHALL raise `UnsupportedFeatureError`, a length past the header `CorruptionError`,
+and a length over its small constant cap `ResourceLimitError`. `cdsaencr` v1 images and
+images with no password key entry SHALL raise `UnsupportedFeatureError`. Without
+`cryptography`, `PackageNotInstalledError`.
 
 #### Scenario: encrypted images
 

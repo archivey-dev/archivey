@@ -7,8 +7,9 @@
 
 ## A. Decoders
 
-- [ ] A.1 `lzfse_decoder.py` (ported from the prototype): LZFSE (`bvx1`, `bvx2`, `bvxn`,
-  `bvx-`, `bvx$`) and LZVN, bounded output
+- [ ] A.1 `lzfse_decoder.py`: LZFSE (`bvx2`, `bvxn`, `bvx-`, `bvx$` ported from the
+  prototype; `bvx1` written from Apple's `lzfse_decode_base.c`, since the prototype
+  raises on it) and LZVN, bounded output
 - [ ] A.2 `adc_decoder.py`
 - [ ] A.2b `CompressionAlgorithm.LZFSE`, `LZVN`, `ADC`; codec-policy refusal tests
 - [ ] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
@@ -31,7 +32,8 @@
 - [ ] B.8 7-Zip oracle tests with the listed differences; fuzz target
 - [ ] B.9 Handbook page `dev-docs/formats/dmg.md`, threat-model row, remove
   recognised-only special cases
-- [ ] B.10 External corpus run on the 41 real images (maintainer, before merge)
+- [ ] B.10 External corpus run over the 54-URL list, which gave the 41 measured images
+  (maintainer, before merge)
 
 ## C. User docs
 
@@ -52,8 +54,9 @@
 
 ## F. Partition CRC-32
 
-- [ ] F.1 Spanning check over each partition's runs (ignore runs excluded);
-  `verify_all()`
+- [ ] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
+  partition (ignore runs excluded, runs outside the partition included, zero fill folded
+  in O(log n)); one table straddling two partitions fails both; `verify_all()`
 - [ ] F.2 Data-fork and master checksums if cheap
 
 ## G. Encrypted images
@@ -74,5 +77,8 @@
 
 ## On archive
 
-- [ ] Z.1 The `testing-contract` examples that use the UDIF refusal (auto-detect open
-  target, bounded member read) move to an encrypted or segmented image, or to a read
+- [ ] Z.1 The `testing-contract` delta in this change moves the UDIF-refusal examples
+  (auto-detect open target, detection-then-bounded-read matrix) to a segmented UDIF
+  image (`segment count` 2), which stays refused with `UnsupportedFeatureError`, and
+  adds an unencrypted UDIF image that opens and reads its first member. Apply it on
+  archive
