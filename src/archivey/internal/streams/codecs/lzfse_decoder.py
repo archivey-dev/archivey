@@ -33,8 +33,9 @@ stream (``dev-docs/investigations/lzfse-package.md`` measured each case):
 
 Every length is checked against the input before it is used, output never passes the
 caller's ``max_length``, and a match may not reach back before the start of the
-output. Every LZVN opcode consumes input, and the work of a ``bvx1`` or ``bvx2`` block
-is bounded by its output, so the work is linear in the input and ``max_length``.
+output. Every LZVN opcode consumes input. A ``bvx1`` or ``bvx2`` block costs one table
+build, fixed by its frequencies, plus decode work bounded by its output. So the total
+work is linear in the input and ``max_length``.
 """
 
 from __future__ import annotations
