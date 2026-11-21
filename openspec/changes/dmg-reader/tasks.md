@@ -2,7 +2,7 @@
 
 - [x] A0.1 Investigation PR: wheels, licence, output cap, raw LZVN, fuzz in a child
   process, per-run cost, agreement with the prototype
-- [ ] A0.2 Maintainer decides: library only, Python only, or Python plus the library as
+- [x] A0.2 Maintainer decides: library only, Python only, or Python plus the library as
   an accelerator
 
 ## A. Decoders
@@ -71,9 +71,14 @@
 
 ## H. LZFSE accelerator
 
-- [ ] H.1 Optional `lzfse` package in a child process; `OptionalLibrary.LZFSE`; extra;
-  `exclude_libraries`; `--version -v`
-- [ ] H.2 Tests that both decoders agree on every fixture; `--all-configs`
+Ruled 2026-11-21 (A0.2): the fast path is archivey's own LZFSE and LZVN kernel in the
+`archivey-codecs` Rust package, with the same checks as the Python decoder, not the
+`lzfse` PyPI package.
+
+- [ ] H.1 LZFSE and LZVN kernel in `archivey-codecs` with a bounded output and the
+  Python decoder's checks; archivey uses it when the package is installed
+- [ ] H.2 Tests that both decoders agree on every fixture and on the A0 fuzz corpus;
+  `--all-configs`
 
 ## On archive
 
