@@ -55,6 +55,7 @@ from archivey.internal.backends.udif import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
     ArchiveInfoExtra,
@@ -148,7 +149,7 @@ class DmgReader(IndexedReader[FileData | None]):
             context.report(
                 DiagnosticCode.ARCHIVE_UNLISTED_DATA,
                 (
-                    f"The DMG partition {candidate.label!r} ({candidate.length} bytes "
+                    f"The DMG partition {quoted(candidate.label)} ({candidate.length} bytes "
                     f"at disk offset {candidate.start}) holds {what}. It is not listed."
                 ),
                 UnlistedDataContext(
@@ -190,7 +191,7 @@ class DmgReader(IndexedReader[FileData | None]):
         self._image.report_structure(
             "partition_name",
             (
-                f"The DMG partition {candidate.label!r} at disk offset "
+                f"The DMG partition {quoted(candidate.label)} at disk offset "
                 f"{candidate.start} is named as {hint}, and holds "
                 f"{filesystem or 'no filesystem archivey reads'}; its contents decide."
             ),
@@ -212,8 +213,8 @@ class DmgReader(IndexedReader[FileData | None]):
                 self._image.report_structure(
                     "partition_start",
                     (
-                        f"The DMG partition map places {candidate.label!r} at disk "
-                        f"offset {candidate.start}, and the run table {table.name!r} "
+                        f"The DMG partition map places {quoted(candidate.label)} at disk "
+                        f"offset {candidate.start}, and the run table {quoted(table.name)} "
                         f"at {start}; the map's range is read."
                     ),
                     candidate.start,
@@ -286,18 +287,20 @@ class DmgReader(IndexedReader[FileData | None]):
     def archive_info(self) -> ReaderArchiveInfo:
         labels = [self._label(v) for v in self._volumes]
         first = self._volumes[0].volume
-        extra: dict[str, object] = {
-            "dmg.filesystem": "HFSX" if first.hfsx else "HFS+",
-            "dmg.partition_scheme": self._scheme,
-            "dmg.run_codecs": sorted(self._image.run_codecs),
-            "dmg.volumes": labels,
-            "dmg.code_signature": self._image.code_signature,
-        }
+        extra = ArchiveInfoExtra(
+            {
+                "dmg.filesystem": "HFSX" if first.hfsx else "HFS+",
+                "dmg.partition_scheme": self._scheme,
+                "dmg.run_codecs": sorted(self._image.run_codecs),
+                "dmg.volumes": labels,
+                "dmg.code_signature": self._image.code_signature,
+            }
+        )
         if len(labels) == 1:
             extra["dmg.volume_name"] = labels[0]
         return ReaderArchiveInfo(
             format_version="UDIF 4",  # the koly signature holds version 4
-            extra=ArchiveInfoExtra(extra),
+            extra=extra,
         )
 
 
@@ -472,7 +475,7 @@ class _VolumeWalk:
                 self._refused(
                     entry,
                     UnsupportedFeatureError,
-                    f"{path!r} is an HFS+ directory hard link, which archivey does not "
+                    f"{quoted(path)} is an HFS+ directory hard link, which archivey does not "
                     "read",
                 ),
             )
@@ -480,7 +483,7 @@ class _VolumeWalk:
             self._context.report(
                 DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
                 (
-                    f"The HFS+ file {path!r} has a mode that says "
+                    f"The HFS+ file {quoted(path)} has a mode that says "
                     f"{'symlink' if kind == hfsplus.SYMLINK else 'not a symlink'} and "
                     "Finder information that says otherwise; the mode decides."
                 ),
@@ -517,7 +520,7 @@ class _VolumeWalk:
                 self._refused(
                     entry,
                     CorruptionError,
-                    f"the HFS+ hard link {path!r} names inode {link_id}, which the "
+                    f"the HFS+ hard link {quoted(path)} names inode {link_id}, which the "
                     "volume's private folder does not hold",
                 ),
             )
@@ -576,7 +579,7 @@ class _VolumeWalk:
         if problem is not None:
             member.size = 0
             return self._refused(
-                entry, CorruptionError, f"the HFS+ file {member.name!r} {problem}"
+                entry, CorruptionError, f"the HFS+ file {quoted(member.name)} {problem}"
             )
         member.size = size
         return FileData(self._index, entry.cnid, entry.record, attribute)
@@ -589,7 +592,7 @@ class _VolumeWalk:
                 member,
                 reason="too_long",
                 message=(
-                    f"The HFS+ symlink {member.name!r} stores a {fork.size}-byte target, "
+                    f"The HFS+ symlink {quoted(member.name)} stores a {fork.size}-byte target, "
                     f"more than the {hfsplus.SYMLINK_MAX} bytes macOS allows."
                 ),
                 target_in_archive=True,
@@ -602,7 +605,10 @@ class _VolumeWalk:
             self._context.link_target_unavailable(
                 member,
                 reason="damaged",
-                message=f"The target of the HFS+ symlink {member.name!r} cannot be read: {exc}",
+                message=(
+                    f"The target of the HFS+ symlink {quoted(member.name)} cannot be "
+                    f"read: {exc}"
+                ),
                 target_in_archive=True,
             )
             return
@@ -618,7 +624,7 @@ class _VolumeWalk:
             self._context.report(
                 DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
                 (
-                    f"An extended attribute record of the HFS+ file {member.name!r} "
+                    f"An extended attribute record of the HFS+ file {quoted(member.name)} "
                     "cannot be read; the member is listed without it."
                 ),
                 MemberHeaderRecordContext(record="xattr", reason="damaged record"),

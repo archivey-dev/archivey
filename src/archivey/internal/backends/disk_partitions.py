@@ -27,6 +27,7 @@ from typing import NamedTuple
 
 from archivey.exceptions import ResourceLimitError
 from archivey.internal.backends.udif import SECTOR, UdifImage
+from archivey.terminal import quoted
 
 # At most this many ranges are probed, from any source (design §5).
 MAX_CANDIDATES = 128
@@ -186,7 +187,9 @@ def _gpt_copy(image: UdifImage, header_sector: int) -> list[Candidate]:
     ordered = sorted(found, key=lambda item: item[0])
     for (_, previous_last, a), (first, _, b) in itertools.pairwise(ordered):
         if first <= previous_last:
-            raise _GptRefused(f"entries {a.label!r} and {b.label!r} overlap")
+            raise _GptRefused(
+                f"entries {quoted(a.label)} and {quoted(b.label)} overlap"
+            )
     return [candidate for _, _, candidate in found]
 
 

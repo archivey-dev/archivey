@@ -49,6 +49,7 @@ from archivey.formats import ReaderContext, ReaderSource
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
+from archivey.terminal import quoted
 
 if TYPE_CHECKING:
     from _typeshed import WriteableBuffer
@@ -436,7 +437,7 @@ class UdifImage:
                 )
             if first + count > self.sector_count:
                 raise CorruptionError(
-                    f"the mish table {name!r} covers sectors {first} to "
+                    f"the mish table {quoted(name)} covers sectors {first} to "
                     f"{first + count}, past the disk's {self.sector_count}"
                 )
             total_runs += runs
@@ -462,7 +463,7 @@ class UdifImage:
         for name, first, count, checksum, data, data_offset in parsed:
             if count and first < previous_end:
                 raise CorruptionError(
-                    f"the mish tables {previous_name!r} and {name!r} cover the same "
+                    f"the mish tables {quoted(previous_name)} and {quoted(name)} cover the same "
                     "sectors"
                 )
             first_run = len(self._kind)
@@ -492,14 +493,14 @@ class UdifImage:
                 continue
             if ended:
                 raise CorruptionError(
-                    f"the mish table {name!r} has a run after its terminator"
+                    f"the mish table {quoted(name)} has a run after its terminator"
                 )
             if kind == _COMMENT or sectors == 0:
                 continue
             start = first + sector
             if start < previous_end or start + sectors > table_end:
                 raise CorruptionError(
-                    f"run {i} of the mish table {name!r} (sectors {start} to "
+                    f"run {i} of the mish table {quoted(name)} (sectors {start} to "
                     f"{start + sectors}) is out of order or outside the table's "
                     f"sectors {first} to {table_end}"
                 )
@@ -511,7 +512,7 @@ class UdifImage:
                 and stored_at + length > fork_end
             ):
                 raise CorruptionError(
-                    f"run {i} of the mish table {name!r} stores "
+                    f"run {i} of the mish table {quoted(name)} stores "
                     f"{_shown_range(stored_at, length)}, outside the data fork"
                 )
             codec = RUN_CODECS.get(kind)
