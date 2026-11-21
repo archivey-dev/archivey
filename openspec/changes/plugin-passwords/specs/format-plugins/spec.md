@@ -8,8 +8,8 @@ SHALL call `check` with one candidate at a time, in the order the built-in reade
 (the password that last unlocked a unit of this archive first, then the static
 candidates, then the provider's answers, skipping any already tried for this unit), and
 SHALL return the first confirmed result. A plugin whose handler does not set
-`supports_password` SHALL get `ArchiveyUsageError` from `unlock`, and a `password=` value
-given for its format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`.
+`supports_password` SHALL get `ArchiveyUsageError` from `unlock`, and a `password=`
+value given for its format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`.
 
 #### Scenario: unlock outcomes
 
@@ -41,9 +41,9 @@ When a member's data was decrypted under a password that `unlock` accepted only 
 ### Requirement: Plugin key derivation is charged to max_key_derivation_rounds
 
 `ReaderContext.charge_key_derivation(rounds)` SHALL add `rounds` to the open archive's
-key-derivation total and SHALL raise `ResourceLimitError` before returning when the total
-would pass `DecoderLimits.max_key_derivation_rounds`. The total SHALL be the one the
-built-in readers charge.
+key-derivation total and SHALL raise `ResourceLimitError` before returning when the
+total would pass `DecoderLimits.max_key_derivation_rounds`. The total SHALL be the one
+the built-in readers charge.
 
 #### Scenario: budget
 

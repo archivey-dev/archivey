@@ -1,13 +1,14 @@
 ## Context
 
-The built-in password machinery is `internal/password.py`. `_PasswordCandidates` holds the
-caller's `password=` (one value, a list, or a provider callable) for one open archive, and
-`attempt(member, decrypt)` tries the passwords on one encrypted unit: static candidates
-first (the one that last worked leads), then the provider, skipping answers already tried
-and stopping a provider stuck on one answer. It guards provider reentry and serializes
-provider calls across threads. `wrong_password_error` marks the `EncryptionError` that a
-failed check raises, so exhaustion keeps its message; `unverified_data_error` marks a
-checksum failure under a password nothing confirmed (ZipCrypto, RAR 2.9-4).
+The built-in password machinery is `internal/password.py`. `_PasswordCandidates` holds
+the caller's `password=` (one value, a list, or a provider callable) for one open
+archive, and `attempt(member, decrypt)` tries the passwords on one encrypted unit:
+static candidates first (the one that last worked leads), then the provider, skipping
+answers already tried and stopping a provider stuck on one answer. It guards provider
+reentry and serializes provider calls across threads. `wrong_password_error` marks the
+`EncryptionError` that a failed check raises, so exhaustion keeps its message;
+`unverified_data_error` marks a checksum failure under a password nothing confirmed
+(ZipCrypto, RAR 2.9-4).
 
 makeself is the one plugin-shaped reader that uses it (`makeself_reader.py`
 `MakeselfReader._decrypt`), through the private `ReaderContext._passwords`. It also
@@ -61,8 +62,8 @@ shows (`None` for an archive-level unit). `what` names the unit in archivey's me
 
 Alternative: hand the plugin an iterator of candidates. Rejected because the provider's
 rules (skip repeats, stop after three own repeats, no reentry, one call at a time) and
-promotion would then be each plugin's job, and a mistake asks a person to type a password
-again or loops forever.
+promotion would then be each plugin's job, and a mistake asks a person to type a
+password again or loops forever.
 
 ### D2. `None` means wrong; archivey builds both errors
 
@@ -115,9 +116,10 @@ class ReaderArchiveInfo(NamedTuple):
     is_encrypted: bool = False
 ```
 
-- `supports_password = False`: `password=` is reported unused (`PASSWORD_ARGUMENT_UNUSED`)
-  and `unlock` raises `ArchiveyUsageError` (a plugin bug). This replaces the internal
-  `register_builtin_format(..., SUPPORTS_PASSWORD=True)` override.
+- `supports_password = False`: `password=` is reported unused
+  (`PASSWORD_ARGUMENT_UNUSED`) and `unlock` raises `ArchiveyUsageError` (a plugin bug).
+  This replaces the internal `register_builtin_format(..., SUPPORTS_PASSWORD=True)`
+  override.
 - A member the plugin lists with `is_encrypted=True` is `Verification.NONE` until a
   confirmed `unlock(member=that_member)`, or an archive-level confirmed `unlock` made
   before the member was listed (DMG at open). An unconfirmed unlock leaves it at `NONE`
@@ -135,16 +137,19 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 
 - `unlock` is per call: a format that tries one password against many units must cache
   derived keys itself (makeself's `_keys` dict); archivey only orders the candidates.
-- `what` is free text from the plugin and goes into an error message. Plain text is fine:
-  error messages are not parsed, and archivey already quotes member names it inserts.
+- `what` is free text from the plugin and goes into an error message. Plain text is
+  fine: error messages are not parsed, and archivey already quotes member names it
+  inserts.
 - A plugin can still decrypt without `unlock` by reading the password some other way
   (an environment variable). Nothing stops that, and nothing needs to.
 
 ## Open questions (for the maintainer, one at a time)
 
 1. D1: archivey runs the loop and the plugin writes only `check`? (Recommended: yes.)
-2. D2: `check` returns `None` for wrong, and archivey writes both messages? (Recommended: yes.)
+2. D2: `check` returns `None` for wrong, and archivey writes both messages?
+   (Recommended: yes.)
 3. D3: weak checks in v1 through `unconfirmed()`? (Recommended: yes, for ARJ.)
 4. D4: `charge_key_derivation(rounds)` on the context? (Recommended: yes.)
-5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`, `unconfirmed`.
+5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
+   `unconfirmed`.
 6. Order: this API PR first, then makeself, ARJ and DMG on it? (Recommended: yes.)
