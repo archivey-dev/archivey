@@ -130,7 +130,7 @@ the PR body which defaults you implemented.
 | `internal/backends/disk_partitions.py` (new) | GPT and APM parsing, partition selection (§5). Pure functions over a `ReaderSource`. |
 | `internal/backends/hfsplus.py` (new) | The HFS+ volume parser: volume header, fork extents, B-tree walk, catalog, extents overflow, attributes, hard links, decmpfs. Plays the role `iso9660.py` / `udf.py` play for ISO: no `ArchiveMember`s here, only parsed entries. |
 | `internal/backends/apfs.py` (new, Part E) | The APFS container and volume parser (§6A), same role as `hfsplus.py`. |
-| `internal/backends/dmg_crypto.py` (new, Part G) | `encrcdsa` v2 header parse, key unwrap, and `EncryptedDmgSource(ReaderSource)`: a decrypted view that `UdifImage` reads instead of the file (§6B). Uses `internal/streams/crypto.py` (`get_crypto_backend`, AES-CBC stages, `wrong_password_error`) and the caller's passwords through the **public password API of the plugin interface** (`archivey.formats`), which a separate change adds first (see §6B.0). Do not use the private `ReaderContext._passwords` hook. |
+| `internal/backends/dmg_crypto.py` (new, Part G) | `encrcdsa` v2 header parse, key unwrap, and `EncryptedDmgSource(ReaderSource)`: a decrypted view that `UdifImage` reads instead of the file (§6B). Uses `internal/streams/crypto.py` (`get_crypto_backend`, AES-CBC stages, `wrong_password_error` is not needed) and the caller's passwords through the **public password API of the plugin interface** (`archivey.formats`), which a separate change adds first (see §6B.0). Do not use the private `ReaderContext._passwords` hook. |
 | `internal/backends/dmg_reader.py` (new) | `DmgReader(IndexedReader[...])` and `DmgHandler(IndexedFormatHandler)`, registered with `register_builtin_format`. Turns HFS+ entries into `MemberRecord`s. |
 | `internal/streams/codecs/lzfse_decoder.py` (new) | Pure-Python LZFSE (`bvx1`, `bvx2`, `bvxn`, `bvx-`, `bvx$`) and LZVN decoders, bounded output (`max_length`), `CorruptionError` on any bad input. Part H adds the optional native path here. |
 | `internal/streams/codecs/adc_decoder.py` (new) | Apple Data Compression decoder (tiny; see prototype `adc.py`). |
@@ -537,6 +537,21 @@ An encrypted DMG is a different file: the whole UDIF image (data fork, plist, `k
 encrypted inside it. There is no `koly` block in clear text; detection must find the
 encryption header instead.
 
+The API, as ruled by the maintainer in PR 1705 (`openspec/changes/plugin-passwords`, not
+merged when this was written; follow the merged version if it differs):
+
+- The handler sets `supports_password = True`.
+- At open, the reader calls `ReaderContext.unlock("the disk image", check)`.
+  `check(password)` returns `(unwrapped_key, PasswordConfirmVerdict.CONFIRMED)` when the
+  key unwraps and the decrypted `koly` block checks out, or
+  `(None, PasswordConfirmVerdict.REJECTED)` when the password is wrong. archivey writes
+  both the missing-password and the wrong-password `EncryptionError`.
+- Before each PBKDF2 derivation the reader calls
+  `ReaderContext.charge_key_derivation(rounds)`.
+- `ReaderArchiveInfo.is_encrypted` is `True` for an encrypted image, and members list
+  with `is_encrypted=True`.
+- Build order (ruled): the API PR, then makeself, then ARJ, then DMG Part G.
+
 ### 6B.1 Detection
 
 - `encrcdsa` (8 bytes) at offset 0: v2 encrypted image (every fixture, macOS 10.5+).
@@ -566,11 +581,10 @@ into the handbook page:
 
 ### 6B.3 Unlocking
 
-For each password candidate the public password API hands the reader (§6B.0):
+Inside the `check(password)` callback passed to `ReaderContext.unlock` (§6B.0):
 
 1. `PBKDF2-HMAC-SHA1(password, salt, iterations, 24 bytes)` → a 3DES key. Charge the
-   iterations against the key-derivation budget the other readers use (the "cap key
-   derivation total" rule; see how `sevenzip_aes.py` / `zip_aes.py` charge it). An
+   iterations first with `ReaderContext.charge_key_derivation(rounds)`. An
    iteration count over the cap is `ResourceLimitError`.
 2. 3DES-EDE-CBC decrypt the wrapped key with the blob's IV. Check PKCS#7 padding; bad
    padding means a wrong password. The plaintext holds the AES key (16 or 32 bytes per
@@ -585,9 +599,8 @@ For each password candidate the public password API hands the reader (§6B.0):
    data; it must be a valid `koly` block. That, plus the padding check, gives a strong
    check (D6).
 
-Wrong for every candidate: `wrong_password_error("Wrong password for the encrypted
-DMG")`; no password given: `EncryptionError("... is encrypted: pass password= to read
-it")`, both as makeself words them.
+The missing-password and wrong-password `EncryptionError`s come from
+`ReaderContext.unlock`; the reader writes neither.
 
 ### 6B.4 Decrypted view
 
