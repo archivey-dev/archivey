@@ -420,15 +420,19 @@ bit 13), read the journal info block at `journalInfoBlock`, then the journal hea
   `UnsupportedFeatureError("HFS+ volume with an unreplayed journal")` at open. Replay
   is later work (§12). A volume that `hdiutil` or a clean unmount wrote is clean.
 
-Tests: the builder writes each case (clean, need-init, pending, external). The pending
-case is checked independently with `fsck.hfsplus -n` from `hfsprogs` (Linux, apt),
-which reports a journal that needs replay, so the builder's layout is not only checked
-against itself.
+Tests: the builder writes each case (clean, need-init, pending, external), and a layout
+test checks each one's journal info block and journal header field by field.
+`fsck.hfsplus -n` from `hfsprogs` cannot tell the states apart: on Linux it never reads
+the journal header (its journal check compares the volume signature without swapping
+bytes), so it exits 0 for all four states on 540.1.linux3-5 and fails every journaled
+volume on 540.1.linux3-6, its own `mkfs.hfsplus -J` output included. It checks the
+rest of the volume only.
 
 ### 6.2 Forks and extents
 
 A fork is up to 8 extents in its record, then more in the extents-overflow B-tree, keyed
-by (fork type 0x00 data / 0xFF resource, file id, start block). Production checks:
+by (file id, fork type 0x00 data / 0xFF resource, start block), compared in that order
+(Apple's `CompareExtentKeysPlus`). Production checks:
 every extent inside `totalBlocks`; sum of extents ≥ `logicalSize`; overflow lookups
 bounded (the fork cannot have more extents than its block count); bytes after
 `logicalSize` are not part of the file. Two files sharing blocks read normally.
