@@ -743,7 +743,11 @@ impl LzwDecompressor {
         }
         let data = input(data)?;
         self.clear_offsets.clear();
-        if !data.is_empty() && self.held_len() > 0 {
+        if self.inner.is_finished() {
+            // Restored after the final pass of a capped `flush()`: the kernel takes no
+            // more input, so the input given again is not counted, and `total_in`
+            // stays where the original's ended.
+        } else if !data.is_empty() && self.held_len() > 0 {
             // Output from an earlier call is still owed: queue the input and decode no
             // more until it drains, so `held` never holds more than one entry (the
             // bound `from_state` checks).

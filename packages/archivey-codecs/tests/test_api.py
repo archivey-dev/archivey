@@ -756,6 +756,22 @@ def test_lzw_state_after_the_final_pass_keeps_truncation() -> None:
     assert r.truncation == straight.truncation
 
 
+def test_lzw_state_after_a_final_pass_on_a_partial_header() -> None:
+    """A two-byte prefix of the header: restored after the final pass and given the
+    input again, the decoder ends with the original's ``total_in`` and truncation."""
+    straight = lzw.Decompressor()
+    straight.decompress(_Z_AB[:2])
+    assert straight.flush() == b""
+    d = lzw.Decompressor()
+    d.decompress(_Z_AB[:2])
+    d.flush(1)
+    r = lzw.Decompressor.from_state(d.getstate())
+    r.decompress(_Z_AB[r.total_in : 2])
+    assert r.flush() == b""
+    assert r.eof
+    assert (r.total_in, r.truncation) == (straight.total_in, straight.truncation)
+
+
 def test_lzw_getstate_refused_after_an_error() -> None:
     d = lzw.Decompressor()
     with pytest.raises(CorruptDataError):
