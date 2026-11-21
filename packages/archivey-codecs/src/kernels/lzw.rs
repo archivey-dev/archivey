@@ -192,6 +192,13 @@ impl LzwState {
         self.buf.is_empty()
     }
 
+    /// Queue input without decoding any of it.
+    pub fn queue(&mut self, data: &[u8]) {
+        if !self.finished {
+            self.buf.extend_from_slice(data);
+        }
+    }
+
     pub fn feed(&mut self, data: &[u8], max_length: i64) -> Result<(Vec<u8>, Units), Err> {
         if self.finished {
             return Ok((Vec::new(), Vec::new()));

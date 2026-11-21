@@ -328,3 +328,37 @@ def test_lzw_error_on_new_input_returns_held_output_first() -> None:
         else:
             raise AssertionError(cut)
         assert got == expected, cut
+
+
+def test_lzw_new_input_waits_while_output_is_owed() -> None:
+    """While a cap leaves decoded output owed, new input is queued, not decoded: the
+    held output stays within one dictionary entry however many capped calls bring
+    more input."""
+    ncompress = pytest.importorskip("ncompress")
+    z = ncompress.compress(bytes(10_000_000))  # zeros: entries 1, 2, 3, ... bytes long
+    d = lzw.Decompressor()
+    out = bytearray(d.decompress(z[:8], 1))
+    calls = 3000
+    for i in range(8, 8 + calls):
+        out += d.decompress(z[i : i + 1], 1)
+    assert out == bytes(len(out))
+    # Emitting ~3000 bytes takes ~80 entries of growing length, about 100 bytes of
+    # input; decoding one entry per call would have used nearly all 3000.
+    assert d.total_in < 400, d.total_in
+    out += d.decompress(z[8 + calls :]) + d.flush()
+    assert out == bytes(10_000_000)
+
+
+def test_mutable_inputs_are_copied() -> None:
+    """A ``bytearray``, a ``memoryview`` of one (also a slice) and an ``array`` give
+    the same result as ``bytes``: each is copied, a ``bytearray`` under its lock."""
+    import array
+
+    data = bytes(range(256)) * 4
+    want = crc16_arc(data)
+    ba = bytearray(data)
+    words = array.array("I", data)
+    assert crc16_arc(ba) == want
+    assert crc16_arc(memoryview(ba)) == want
+    assert crc16_arc(memoryview(bytearray(b"x" + data))[1:]) == want
+    assert crc16_arc(words) == want
