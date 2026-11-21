@@ -7,8 +7,9 @@
 //! one-shot block functions, and the `CodecError` family.
 //!
 //! Input: an immutable `bytes` object is read in place, and the GIL is released while
-//! a kernel reads it; any other buffer (`bytearray`, `memoryview`) is copied first, so
-//! no other thread can change the bytes a kernel is reading.
+//! a kernel reads it (by the CRC only from 64 KiB up); any other buffer is copied
+//! first, so no other thread can change the bytes a kernel is reading. The private
+//! LZX and BCJ2 classes hold the GIL: they call back into Python for input.
 
 pub mod kernels;
 
@@ -20,6 +21,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
+use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
     _codecs,
@@ -679,7 +681,14 @@ impl lzx::Input for PyInput<'_, '_> {
 #[pyclass(module = "archivey_codecs._codecs", name = "_LzxFrameDecoder")]
 struct LzxDecoder {
     inner: lzx::LzxDecoder,
-    more: Py<PyAny>,
+    /// The input callback; `None` once the garbage collector cleared it. The CAB
+    /// reader passes a method of the object that holds this decoder, a cycle the
+    /// collector must see (`__traverse__`) to free.
+    more: Option<Py<PyAny>>,
+}
+
+fn cleared() -> PyErr {
+    PyValueError::new_err("the decoder's input was cleared")
 }
 
 #[pymethods]
@@ -688,8 +697,19 @@ impl LzxDecoder {
     fn new(window_bits: u32, more: Py<PyAny>) -> PyResult<Self> {
         Ok(LzxDecoder {
             inner: lzx::LzxDecoder::new(window_bits).map_err(to_py0)?,
-            more,
+            more: Some(more),
         })
+    }
+
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        if let Some(more) = &self.more {
+            visit.call(more)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.more = None;
     }
 
     fn decode_frame<'py>(
@@ -697,7 +717,7 @@ impl LzxDecoder {
         py: Python<'py>,
         frame_size: usize,
     ) -> PyResult<Bound<'py, PyBytes>> {
-        let more = self.more.bind(py).clone();
+        let more = self.more.as_ref().ok_or_else(cleared)?.bind(py).clone();
         let mut input = PyInput { more: &more };
         let out = self
             .inner
@@ -727,8 +747,21 @@ impl bcj2::Streams for PyStreams<'_, '_> {
 #[pyclass(module = "archivey_codecs._codecs", name = "_Bcj2Core")]
 struct Bcj2Core {
     inner: bcj2::Bcj2,
-    reads: [Py<PyAny>; 4],
+    /// `None` once the garbage collector cleared them (see `LzxDecoder::more`).
+    reads: Option<[Py<PyAny>; 4]>,
     partial: Vec<u8>,
+}
+
+impl Bcj2Core {
+    fn streams<'py>(&self, py: Python<'py>) -> PyResult<[Bound<'py, PyAny>; 4]> {
+        let r = self.reads.as_ref().ok_or_else(cleared)?;
+        Ok([
+            r[0].bind(py).clone(),
+            r[1].bind(py).clone(),
+            r[2].bind(py).clone(),
+            r[3].bind(py).clone(),
+        ])
+    }
 }
 
 #[pymethods]
@@ -737,18 +770,24 @@ impl Bcj2Core {
     fn new(main: Py<PyAny>, call: Py<PyAny>, jump: Py<PyAny>, rc: Py<PyAny>) -> Self {
         Bcj2Core {
             inner: bcj2::Bcj2::new(),
-            reads: [main, call, jump, rc],
+            reads: Some([main, call, jump, rc]),
             partial: Vec::new(),
         }
     }
 
+    fn __traverse__(&self, visit: PyVisit<'_>) -> Result<(), PyTraverseError> {
+        for r in self.reads.iter().flatten() {
+            visit.call(r)?;
+        }
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        self.reads = None;
+    }
+
     fn decode_block<'py>(&mut self, py: Python<'py>, left: u64) -> PyResult<Bound<'py, PyBytes>> {
-        let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
-        ];
+        let reads = self.streams(py)?;
         let mut streams = PyStreams { reads: &reads };
         let mut out = Vec::new();
         match self.inner.decode_block(left, &mut out, &mut streams) {
@@ -765,12 +804,7 @@ impl Bcj2Core {
     }
 
     fn check_inputs_finished(&mut self, py: Python<'_>) -> PyResult<()> {
-        let reads = [
-            self.reads[0].bind(py).clone(),
-            self.reads[1].bind(py).clone(),
-            self.reads[2].bind(py).clone(),
-            self.reads[3].bind(py).clone(),
-        ];
+        let reads = self.streams(py)?;
         let mut streams = PyStreams { reads: &reads };
         self.inner
             .check_inputs_finished(&mut streams)

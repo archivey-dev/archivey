@@ -1,8 +1,18 @@
 //! LZX as Microsoft cabinets store it: a port of archivey's `LzxDecoder`
 //! (`internal/streams/codecs/lzx_decoder.py`), which follows libmspack's `lzxd.c`.
-//! Same state machine, same checks, same messages. Where the Python decoder relies on
-//! Python semantics (a slice assignment that would grow the window, an `IndexError`),
-//! this port raises a `Corrupt` error instead; see the parity notes in the report.
+//! Same state machine, same checks, same messages, with these intended differences:
+//!
+//! - A literal written at `window_pos == window_size` raises `Corrupt("LZX match runs
+//!   past the end of the window")`, where the Python decoder raises a bare
+//!   `IndexError`.
+//! - An uncompressed run past the end of the window raises the same `Corrupt`, where
+//!   Python's slice assignment grows the window.
+//! - After an error inside a run, `decode_run_inner` has already stored `r0..r2`, the
+//!   bit buffer and `window_pos`; Python stores them only on success. A decoder is not
+//!   used again after an error, so nothing reads them.
+//!
+//! The first two need a frame size that leaves `window_pos` off a 32 KiB boundary, so
+//! only a caller can reach them, never an archive: CAB frames are 32 KiB but the last.
 
 use crate::kernels::error::{DecodeError, Result};
 
