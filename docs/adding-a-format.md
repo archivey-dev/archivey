@@ -855,9 +855,9 @@ archive behind a prefix (a self-extracting stub or other leading bytes) with
 cannot seek with `StreamNotSeekableError`, and a raw CD sector image detected as ISO,
 since its bytes are not an ISO 9660 image (the built-in reader strips the sectors as it reads). The format's own config options, such as
 `zip_unflagged_fallback_encoding` or `rar_decompressor`, reach the plugin through
-`ReaderContext.config`; honouring them is the plugin's job. `password=` does not reach a
-replacement, as it reaches no plugin, so a replaced ZIP, 7z or RAR cannot read an encrypted
-member; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
+`ReaderContext.config`; honouring them is the plugin's job. `password=` reaches a
+replacement that sets `supports_password` and asks for passwords with `NeedsPassword`, as
+any plugin does; `encoding=` reaches it when the plugin sets `uses_encoding`. A missing module in
 `requires` raises `PackageNotInstalledError` naming the plugin, without falling back to
 the built-in reader.
 
@@ -986,6 +986,6 @@ turn it off: a replacement runs only in a call whose config names it in `replace
 
 - A format with an index inside an outer compressor. Only a format read in one pass can
   be.
-- Self-extracting archives, multi-volume sets and passwords.
+- Self-extracting archives and multi-volume sets.
 - New diagnostic codes. A plugin reports with archivey's existing codes.
 - Writing archives.
