@@ -92,8 +92,9 @@ accepted, `INCONCLUSIVE`, and its read-time digest decides, as for one candidate
 is a choice that MAY change: spooling the whole unit would allow the full check.
 
 The full check is proportional to the unit's size, and it SHALL run only for candidates
-that survived the bounded plan when more than one did, or, for a plugin that passed a
-`full_check`, for an `INCONCLUSIVE` provider answer.
+that survived the bounded plan when more than one did, for a lone survivor while a
+provider can still be asked for the unit, or, for a plugin that passed a `full_check`,
+for an `INCONCLUSIVE` provider answer.
 
 A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
 SHALL be added to known-good only when the candidate set is unambiguous. The
