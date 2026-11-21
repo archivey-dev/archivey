@@ -89,9 +89,12 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
     OPEN_PATH,
     OPEN_RANGE,
     OPEN_RANGE_ARGS,
+    OPEN_RANGE_NOTED,
     OPEN_STREAM,
     POINTS,
     POINTS_REPLY,
+    RANGE_READ,
+    RANGE_READ_RECORD,
     READ,
     RESET,
     RESUME,
@@ -107,7 +110,7 @@ from archivey.internal.streams.codecs.rapidgzip_worker import (
 )
 from archivey.internal.streams.decompressor_stream import SeekPoint, truncated_message
 from archivey.internal.streams.streamtools import ReadOnlyIOStream
-from archivey.internal.streams.streamtools.slice import file_region
+from archivey.internal.streams.streamtools.slice import RegionReport, file_region
 from archivey.types import OptionalLibrary
 
 _WORKER = Path(__file__).with_name("decoder_worker.py")
@@ -529,6 +532,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         # The checks of a file region (``file_region``): the child reads the file
         # itself, so they run here, before each call.
         self._region_checks: tuple[Callable[[], None], ...] = ()
+        # Where the child's reads of a file region are reported (``on_source_read``),
+        # and the reads it noted that are not reported yet, as (end, count).
+        self._region_reports: tuple[RegionReport, ...] = ()
+        self._noted: list[tuple[int, int]] = []
         pass_fds: tuple[int, ...] = ()
         if isinstance(source, (str, os.PathLike)) or os.name != "posix":
             region = None
@@ -540,9 +547,12 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             # A byte range of a file on disk (a ZIP member): the child reads it with
             # ``os.pread`` on an inherited descriptor, so no compressed byte crosses a
             # pipe. POSIX only: ``pass_fds`` has no Windows form.
-            open_kind = OPEN_RANGE
+            # A source whose reads are reported has the child note each read
+            # (``RANGE_READ``), so they are reported as if it had read them itself.
+            open_kind = OPEN_RANGE_NOTED if region.reports else OPEN_RANGE
             open_path = OPEN_RANGE_ARGS.pack(region.fd, region.start, region.length)
             self._region_checks = region.checks
+            self._region_reports = region.reports
             pass_fds = (region.fd,)
         else:
             self._source = source
@@ -703,6 +713,10 @@ class RapidgzipChildStream(ReadOnlyIOStream):
             frame = self._read_frame()
             if frame is None or frame[0] in (OK, ERR):
                 return frame
+            if frame[0] == RANGE_READ:
+                # Reported by the next read() that returns, never in mid-exchange.
+                self._noted.extend(RANGE_READ_RECORD.iter_unpack(frame[2]))
+                continue
             self._answer_source(*frame)
 
     def _call(
@@ -1083,6 +1097,11 @@ class RapidgzipChildStream(ReadOnlyIOStream):
 
     @override
     def read(self, n: int | None = -1, /) -> bytes:
+        # First, what ``on_source_read`` raised: the caller's own stop wins over every
+        # other error, and a stop that reached a region check mid-read never reaches
+        # the rewind below, which would take it for a dead child.
+        for report in self._region_reports:
+            report.reporter.raise_if_stopped()
         # Before the buffer: a closed or dead stream raises even with read-ahead left.
         self._raise_if_unusable()
         if n == 0:
@@ -1092,10 +1111,22 @@ class RapidgzipChildStream(ReadOnlyIOStream):
         start = self._pos
         want = -1 if n is None or n < 0 else n
         try:
-            return self._read_into(want)
+            data = self._read_into(want)
         except Exception:
             self._rewind_after_failed_read(start)
             raise
+        if self._noted:
+            self._report_noted()
+        return data
+
+    def _report_noted(self) -> None:
+        """Report the child's reads of the file region (``on_source_read``), on the
+        caller's thread, between two exchanges. What the callback raises propagates,
+        and stops every later call (``region.checks``)."""
+        noted, self._noted = self._noted, []
+        for end, count in noted:
+            for report in self._region_reports:
+                report.read(end, count)
 
     def _rewind_after_failed_read(self, start: int | None) -> None:
         """Put the stream back where a read that failed started.
