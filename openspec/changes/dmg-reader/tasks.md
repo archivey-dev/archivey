@@ -7,12 +7,12 @@
 
 ## A. Decoders
 
-- [ ] A.1 `lzfse_decoder.py`: LZFSE (`bvx2`, `bvxn`, `bvx-`, `bvx$` ported from the
+- [x] A.1 `lzfse_decoder.py`: LZFSE (`bvx2`, `bvxn`, `bvx-`, `bvx$` ported from the
   prototype; `bvx1` written from Apple's `lzfse_decode_base.c`, since the prototype
   raises on it) and LZVN, bounded output
-- [ ] A.2 `adc_decoder.py`
-- [ ] A.2b `CompressionAlgorithm.LZFSE`, `LZVN`, `ADC`; codec-policy refusal tests
-- [ ] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
+- [x] A.2 `adc_decoder.py`
+- [x] A.2b `CompressionAlgorithm.LZFSE`, `LZVN`, `ADC`; codec-policy refusal tests
+- [x] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
   installed, damage and truncation
 
 ## B. UDIF, partitions and HFS+
