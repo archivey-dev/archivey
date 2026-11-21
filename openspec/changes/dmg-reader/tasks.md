@@ -1,7 +1,14 @@
+## A0. Evaluate the lzfse package
+
+- [ ] A0.1 Investigation PR: wheels, licence, output cap, raw LZVN, fuzz in a child
+  process, per-run cost, agreement with the prototype
+- [ ] A0.2 Maintainer decides: library only, Python only, or Python plus the library as
+  an accelerator
+
 ## A. Decoders
 
-- [ ] A.1 `lzfse_decoder.py`: LZFSE (`bvx1`, `bvx2`, `bvxn`, `bvx-`, `bvx$`) and LZVN,
-  bounded output
+- [ ] A.1 Per A0: `lzfse_decoder.py`: LZFSE (`bvx1`, `bvx2`, `bvxn`, `bvx-`, `bvx$`) and
+  LZVN, bounded output
 - [ ] A.2 `adc_decoder.py`
 - [ ] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
   installed, damage and truncation
