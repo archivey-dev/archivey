@@ -142,20 +142,22 @@ on HFS+ and on APFS.
 ### Requirement: List an APFS volume
 
 The system SHALL read an APFS container from the newest complete checkpoint (its
-superblock and checkpoint-map blocks all valid), resolve objects through the container
-and volume object maps, and check the Fletcher-64 checksum of every object it reads. An
-object whose checksum fails SHALL NOT be used: the walk SHALL skip it, list every member
-whose records are all intact, and then raise `CorruptionError`. It SHALL list the live
-filesystem tree of each volume (not snapshots), with types from the inode mode, symlink
-targets from `com.apple.fs.symlink`, hard links as for HFS+, sparse extents and holes as
-zeros, and names as stored. A node or object-map node that is skipped SHALL mark the key
-range its verified parent gives it as damaged: a member whose inode record, naming
-directory record, or symlink or decmpfs xattr falls in a damaged range SHALL NOT be
-listed; damage that touches only its extents SHALL NOT stop it listing, and a read that
-needs extents or an object-map entry in a damaged range SHALL raise `CorruptionError`,
-never serve zeros. Holes outside damaged ranges SHALL read as zeros. Encrypted volumes,
-sealed volumes and Fusion containers SHALL raise `UnsupportedFeatureError` naming the
-feature.
+superblock and checkpoint-map blocks all valid; the checkpoint scan at first listing
+SHALL count its physical and decoded bytes against a 64 MiB budget and raise
+`ResourceLimitError` when the next block would exceed it), resolve objects through the
+container and volume object maps, and check the Fletcher-64 checksum of every object it
+reads. An object whose checksum fails SHALL NOT be used: the walk SHALL skip it, list
+every member whose records are all intact, and then raise `CorruptionError`. It SHALL
+list the live filesystem tree of each volume (not snapshots), with types from the inode
+mode, symlink targets from `com.apple.fs.symlink`, hard links as for HFS+, sparse
+extents and holes as zeros, and names as stored. A node or object-map node that is
+skipped SHALL mark the key range its verified parent gives it as damaged: a member whose
+inode record, naming directory record, or symlink or decmpfs xattr falls in a damaged
+range SHALL NOT be listed; damage that touches only its extents SHALL NOT stop it
+listing, and a read that needs extents or an object-map entry in a damaged range SHALL
+raise `CorruptionError`, never serve zeros. Holes outside damaged ranges SHALL read as
+zeros. Encrypted volumes, sealed volumes and Fusion containers SHALL raise
+`UnsupportedFeatureError` naming the feature.
 
 #### Scenario: APFS
 
@@ -197,15 +199,16 @@ SHALL count against archivey's key-derivation budget. Members SHALL report `encr
 Before the partition CRC-32 spanning check exists (Part F), members of a DMG SHALL list
 with `verifiable = LENGTH`. With it, `verifiable` SHALL be set at listing: `CHECKSUM`
 for a file member whose partition is fully covered by `blkx` tables that each carry a
-CRC-32, else `LENGTH`. Only `verified` SHALL change after the pass. `verify_all()` SHALL
-run a separate pass over whole checked tables: for each `blkx` table with a CRC-32
-that overlaps a filesystem partition, it SHALL decode every run of that table except
-"ignore" runs, in sector order, including runs outside the partition when the table
-straddles its boundary, once per reader. A member's `verified` SHALL reach `CHECKSUM`
-only when every table covering its partition matches. Ordinary member reads SHALL NOT
-run it. A mismatch or a decode error in a table SHALL fail every member of every
-partition that table overlaps. The checksum SHALL NOT be
-computed at open.
+CRC-32, else `LENGTH`. Only `verified` SHALL change after the pass. A zero-fill run
+SHALL be folded into the CRC in time logarithmic in its length, never walked byte by
+byte or slice by slice. `verify_all()` SHALL run a separate pass over whole checked
+tables: for each `blkx` table with a CRC-32 that overlaps a filesystem partition, it
+SHALL decode every run of that table except "ignore" runs, in sector order, including
+runs outside the partition when the table straddles its boundary, once per reader. A
+member's `verified` SHALL reach `CHECKSUM` only when every table covering its partition
+matches. Ordinary member reads SHALL NOT run it. A mismatch or a decode error in a table
+SHALL fail every member of every partition that table overlaps. The checksum SHALL NOT
+be computed at open.
 
 #### Scenario: partition CRC
 

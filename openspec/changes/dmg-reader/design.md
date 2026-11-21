@@ -179,7 +179,7 @@ The last 512 bytes of the file (an old layout puts it at offset 0, with data-for
 | data checksum (type u32, bits u32, 128 bytes) | Type 2, 32 bits = CRC-32 of the data fork bytes (D4: checked from Part F). |
 | XML offset, XML length | Required. Length 0: refuse ("DMG without a property list"). Must lie inside the file. |
 | master checksum (type, bits, 128 bytes) | CRC-32 of the partition checksums; checked from Part F if cheap. |
-| image variant u32, sector count u64 | Sector count = virtual disk size / 512. Bound it (see 4.4). |
+| image variant u32, sector count u64 | Sector count = virtual disk size / 512. Bounded only so offsets stay below 2^63; never an allocation length or loop count (see 4.4). |
 | code signature offset u64, length u64 (at `koly + 0x128`, inside what the struct above calls the 120 reserved bytes; 7-Zip `DmgHandler.cpp` reads it there) | Optional (both 0 when absent). A signed image keeps its code-signature blob here. Not verified. In range: allowed, and `dmg.code_signature` is `True` in `archive_info().extra`. Outside the file or overlapping another structure: a diagnostic (no existing code fits; Part B adds one, e.g. `ARCHIVE_SIGNATURE_RANGE_INVALID`, to `DiagnosticCodeStr`), the blob is ignored, and the image is read. |
 
 The image's extent is the union of the declared, validated ranges: data fork, property
@@ -306,7 +306,13 @@ sectors) and serve bytes from decoded runs. Keep a small LRU cache of decoded ru
 - Pass read hints to `source._will_read` for the stored ranges, as `iso_reader` does for
   a remote source (optional, but cheap).
 - Disk size is what the `koly` block says; a filesystem that claims more is
-  `CorruptionError`.
+  `CorruptionError`. The disk size is never an allocation length or a loop count: the
+  sector count only has to keep `sector count × 512` below 2^63 (offsets stay in range;
+  more is `CorruptionError`). Every loop is over runs or over bytes actually read: raw
+  runs are bounded by the data fork, ignore runs and gaps are never walked, and
+  zero-fill runs are folded into the CRC in O(log n) (§7.2), so a huge sparse disk in a
+  small file costs nothing. No public ceiling is needed, because no loop over the sector
+  count remains.
 
 The cache is memory bounded by (cache slots * 16 MiB); state that in the handbook page
 and make the slot count a constant.
@@ -581,8 +587,14 @@ Physical address 0 and addresses at or past the container block count are
    checkpoint (object maps, trees) never triggers this fallback: it is D7 damage
    (§6A.6). Test: a newest superblock with a good checksum but a missing checkpoint-map
    block, beside a complete older checkpoint: the older one is read. Bound the area
-   (refuse > 65,536 blocks); a non-contiguous area (high bit of `desc_blocks` set) is
-   `UnsupportedFeatureError` (never seen in a DMG).
+   (refuse > 65,536 blocks), and bound the work: the scan counts the physical bytes it
+   reads and the bytes it decodes against a 64 MiB budget (the same constant as the open
+   budget, §7, counted separately because the scan runs at first listing), and raises
+   `ResourceLimitError` when the next block would exceed it. Real checkpoint areas are a
+   few blocks (the fixtures: `desc_len = 2`), so the budget only stops a hostile area,
+   such as 65,536 blocks of 64 KiB covered by LZFSE runs (about 4 GiB of decode); a
+   non-contiguous area (high bit of `desc_blocks` set) is `UnsupportedFeatureError`
+   (never seen in a DMG).
 3. Refuse Fusion containers (`incompatible_features & 0x100`).
 4. Load the container object map (`nx_omap_oid`): an `omap_phys_t` whose B-tree maps
    (oid, xid) to physical address. Lookup of an oid at transaction `x`: take the entry
@@ -902,9 +914,14 @@ reads are not a proxy for it. Part F therefore runs a separate pass:
   with a CRC-32 (`checksum type 2`, 32 bits) that overlaps a filesystem partition, every
   run of that table except "ignore" runs, including runs outside the partition when the
   table straddles its boundary, zero-fill included, decoded in sector order,
-  CRC over the decoded bytes. One run in memory at a time (bounded by §4.4). Raw and
-  zero-fill runs can be any size, so they are fed to the CRC in fixed 1 MiB slices
-  (zero fill from one reused zero buffer), never as one whole buffer.
+  CRC over the decoded bytes. One run in memory at a time (bounded by §4.4). Raw runs
+  are bounded by the data fork and are fed to the CRC in fixed 1 MiB slices, never as
+  one whole buffer. A zero-fill run is never walked: `sector count × 512` zero bytes are
+  folded into the running CRC-32 in O(log n) time with the zero-extension operator
+  (the GF(2) matrix squaring that zlib's `crc32_combine` uses; Python's `zlib` does not
+  expose it, so implement it, about 30 lines, tested against `zlib.crc32` on sizes up to
+  a few MiB). Test: a builder image with one zero-fill run of 2^50 bytes; `verify_all()`
+  returns at once with a match.
 - **`verifiable`:** set at listing and never raised later. A file member is
   `CHECKSUM` only when its whole partition range (which holds its data and every piece
   of filesystem metadata it relies on) is fully covered by `blkx` tables that each
