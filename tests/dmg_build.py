@@ -760,8 +760,10 @@ def _decmpfs(kind: int, data: bytes) -> tuple[bytes, bytes]:
     blocks = [data[i : i + DECMPFS_BLOCK] for i in range(0, len(data), DECMPFS_BLOCK)]
 
     def chunk(encoded: bytes, block: bytes, stored_marker: bytes) -> bytes:
-        # A chunk that would not fit in 64 KiB is stored behind its marker byte, as
-        # macOS stores a chunk that does not shrink; 7-Zip refuses a longer chunk.
+        # A chunk that would not fit in 64 KiB is stored behind its marker byte (0xFF
+        # for types 4 and 12, 0x06 for type 8), as macOS stores a chunk that does not
+        # shrink; 7-Zip refuses a longer chunk. A full 64 KiB literal-only chunk always
+        # takes this path.
         return encoded if len(encoded) <= DECMPFS_BLOCK else stored_marker + block
 
     if kind == 4:
@@ -795,6 +797,9 @@ def _decmpfs(kind: int, data: bytes) -> tuple[bytes, bytes]:
         elif kind == 12:
             encoded = [chunk(lzfse_stored(b), b, b"\xff") for b in blocks]
         else:
+            # Type 10: the type 8 offset table over raw blocks, as the prototype reads
+            # it. This is an unverified stand-in: no tool here reads type 10, so the
+            # layout must be checked on a real file before anyone relies on it (§6.6).
             encoded = list(blocks)
         offsets = [4 * (len(encoded) + 1)]
         for e in encoded:
@@ -1091,11 +1096,6 @@ def write_hfsplus(
     ] = []  # cnid, fork, start
     xattrs: dict[int, dict[str, bytes]] = {}
     file_bodies: dict[str, tuple[bytes, bytes, int]] = {}  # path -> data, rsrc, flags
-    inode_of: dict[str, int] = {}
-    for first, link_paths in links.items():
-        inode_of[first] = cnids[first]
-        for lp in link_paths:
-            inode_of[lp] = cnids[first]
 
     def place(
         path: str, cnid: int, data: bytes, fork_type: int, pieces: int
@@ -1274,10 +1274,7 @@ def write_hfsplus(
         )
         counts["folders"] += 1
 
-    link_ids: dict[str, int] = {}
-    for first, link_paths in links.items():
-        for lp in [first, *link_paths]:
-            link_ids[lp] = cnids[lp] if lp != first else 0
+    link_ids = {lp: cnids[lp] for paths in links.values() for lp in paths}
     # The first file's own path also becomes a link, with a fresh CNID.
     for first in links:
         link_ids[first] = next_id

@@ -534,7 +534,10 @@ located by the type's table (type 4: the resource-map layout, a 256-byte resourc
 header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
 12, and as the prototype reads it type 10: `n + 1` little-endian u32 offsets). The table must
 have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
-chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. Decode chunk
+chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk
+that starts with its type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8)
+is the raw block after that byte, not encoded data: macOS stores a chunk that does not
+shrink that way, and 7-Zip reads it. Decode chunk
 by chunk through `block_stream`, not the whole file in memory like the prototype.
 
 Missing pieces: a file with `UF_COMPRESSED` but no `com.apple.decmpfs` attribute, a

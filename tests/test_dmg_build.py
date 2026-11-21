@@ -315,11 +315,11 @@ def test_udif_fields_match_hdiutil(name: str) -> None:
             assert [r[0] for r in oruns] == [r[0] for r in truns] == [d.IGNORE, d.END]
             assert oh[10] == th[10] == bytes(128)
         else:
-            assert (
-                oh[5] == th[5]
-                or "Apple_HFS" in te["Name"]
-                or "Apple_APFS" in te["Name"]
-            )
+            # buffers needed: run_sectors + 1, which is hdiutil's 2049 for its
+            # one-run tables (its partition table counts more).
+            assert oh[5] == 2048 + 1
+            if "Apple_HFS" not in te["Name"] and "Apple_APFS" not in te["Name"]:
+                assert th[5] == oh[5]
     image = (_FIXTURES / name).read_bytes()
     their_plst = plistlib.loads(image[their_koly[15] : their_koly[15] + their_koly[16]])
     our_plst = plistlib.loads(
@@ -566,6 +566,29 @@ def test_journal_checksum_matches_apple() -> None:
     assert d._journal_checksum(b"\x01\x02") == 0xFFFFFEFC
 
 
+@pytest.mark.parametrize(
+    ("kind", "marker"), [(4, b"\xff"), (8, b"\x06"), (12, b"\xff")]
+)
+def test_decmpfs_full_chunk_is_stored_behind_its_marker(
+    kind: int, marker: bytes
+) -> None:
+    # One full chunk zlib cannot shrink, then a short one.
+    data = random.Random(7).randbytes(d.DECMPFS_BLOCK) + _BIG[:1000]
+    _value, rsrc = d._decmpfs(kind, data)
+    if kind == 4:  # resource map layout: 256-byte header, then length, count, table
+        base = 0x100 + 4
+        (count,) = struct.unpack_from("<I", rsrc, base)
+        table = [
+            struct.unpack_from("<II", rsrc, base + 4 + 8 * i) for i in range(count)
+        ]
+        chunks = [rsrc[base + off : base + off + n] for off, n in table]
+    else:  # n + 1 little-endian offsets
+        offsets = struct.unpack_from("<3I", rsrc, 0)
+        chunks = [rsrc[offsets[i] : offsets[i + 1]] for i in range(2)]
+    assert chunks[0] == marker + data[: d.DECMPFS_BLOCK]
+    assert not chunks[1].startswith(marker)  # the short chunk stays encoded
+
+
 @needs_fsck
 def test_hfsplus_hooks_break_the_volume(tmp_path: Path) -> None:
     def bad_header(vh: bytearray) -> None:
@@ -604,9 +627,11 @@ def test_hfsplus_records_where_things_went() -> None:
 # ── Whole images through 7-Zip ───────────────────────────────────────────────────────
 
 
-def _7z_extract(tmp_path: Path, image: bytes) -> tuple[dict[str, bytes], set[str], str]:
+def _7z_extract(
+    tmp_path: Path, image: bytes
+) -> tuple[dict[str, bytes], set[str], str, dict[str, str]]:
     """The files 7-Zip extracts (paths below the volume name), the ones it reports
-    as an unsupported method, and its output."""
+    as an unsupported method, its output, and the symlinks with their targets."""
     path = tmp_path / "image.dmg"
     path.write_bytes(image)
     out = tmp_path / "out"
@@ -624,13 +649,16 @@ def _7z_extract(tmp_path: Path, image: bytes) -> tuple[dict[str, bytes], set[str
     ]
     assert not other_errors, text
     files = {}
+    symlinks = {}
     for root, _dirs, names in os.walk(out):
         for n in names:
             full = Path(root) / n
-            rel = full.relative_to(out).as_posix()
-            if full.is_file() and not full.is_symlink():
-                files[rel.split("/", 1)[-1]] = full.read_bytes()
-    return files, unsupported, text
+            rel = full.relative_to(out).as_posix().split("/", 1)[-1]
+            if full.is_symlink():
+                symlinks[rel] = os.readlink(full)
+            elif full.is_file():
+                files[rel] = full.read_bytes()
+    return files, unsupported, text, symlinks
 
 
 # 7-Zip decodes decmpfs types 3, 4, 7, 8 and 9 and reports 10, 11 and 12 (stored in
@@ -651,7 +679,7 @@ def test_7zip_reads_images(tmp_path: Path, layout: str, codec: int) -> None:
         codec=codec,
         hfs_options={"name": "Fixture", "attributes_in_fork": ("user.big",)},
     )
-    files, unsupported, text = _7z_extract(tmp_path, image)
+    files, unsupported, text, symlinks = _7z_extract(tmp_path, image)
     if codec == d.LZMA and any(not u.startswith("comp/") for u in unsupported):
         pytest.skip("this 7-Zip cannot read xz runs")
     assert unsupported <= _7Z_MAY_LACK, text
@@ -666,6 +694,7 @@ def test_7zip_reads_images(tmp_path: Path, layout: str, codec: int) -> None:
     assert all(files.get(p) == b"" for p in _LINKED)
     inodes = [k for k in files if k.startswith("[HFS+ Private Data]/iNode")]
     assert [files[k] for k in inodes] == [b"linked content\n"]
+    assert symlinks == {"link": "hello.txt"}
 
 
 # 7-Zip 23.01 locates runs from offset 0 (512 with ``koly`` in front) and ignores the
@@ -683,7 +712,7 @@ def test_7zip_reads_images(tmp_path: Path, layout: str, codec: int) -> None:
 )
 def test_7zip_reads_layout_options(tmp_path: Path, options: dict) -> None:
     nodes = [d.Node("a.txt", data=b"layout\n" * 100)]
-    files, unsupported, text = _7z_extract(
+    files, unsupported, text, _symlinks = _7z_extract(
         tmp_path, d.dmg_of(nodes, codec=d.ZLIB, **options)
     )
     assert not unsupported, text
