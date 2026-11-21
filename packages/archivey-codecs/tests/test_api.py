@@ -641,10 +641,10 @@ def test_bcj2_restored_twice_reads_independently() -> None:
 
 
 # The LZW state after ``_Z_AB`` without its flush: header (8 bytes), finished, the
-# truncation flag (no message), nine-bit setting, at-fill, need-header, four segment and skip counters, the skip reason, the maximum
-# width and block mode, the dictionary size and next code, one entry (prefix, suffix),
-# the code reader; then the held output, header-in-stream, the CLEAR offsets,
-# total_in and total_out.
+# truncation flag (no message), nine-bit setting, at-fill, need-header, four segment and
+# skip counters, the skip reason, the maximum width and block mode, the dictionary size
+# and next code, one entry (prefix, suffix), the code reader; then the held output,
+# header-in-stream, the CLEAR offsets, total_in and total_out.
 _NINE_BIT = 10
 _PENDING_SKIP = 13 + 16
 _REASON = 13 + 32
