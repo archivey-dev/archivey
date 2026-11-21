@@ -9,11 +9,14 @@ so the choice changes speed only. Design: openspec change ``rust-codecs-package`
 A kernel is used when all of these hold:
 
 - the call's ``FormatPolicy`` does not turn ``OptionalLibrary.ARCHIVEY_CODECS`` off
-  (``exclude_libraries`` or ``only_libraries``), the only switch;
+  (``exclude_libraries`` or ``only_libraries``), the one switch a caller sets for it;
 - the package is installed and imports;
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
-  DEBUG).
+  DEBUG);
+- for a decoding kernel (ARM64, RISC-V), the call's ``process_isolation`` is not
+  ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python twin keeps
+  that setting's promise that no native decoder runs in this process.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
 ``BaseException`` that passes ``except Exception``. :func:`panic_to_corruption` turns it
@@ -234,8 +237,9 @@ class Branch(Protocol):
     """One stream through a branch filter, as archivey's filter decoder drives it."""
 
     def decode(self, data: bytes) -> bytes:
-        """Decode what can be decoded of the input so far; the few bytes an
-        instruction cut at the end may still need wait for the next call."""
+        """Return the decoded prefix of everything fed so far. The last few bytes can
+        be the start of an instruction that the end of the chunk cut off, so they are
+        held back for the next call: at most 3 for ARM64, 7 for RISC-V."""
         ...
 
     def flush(self) -> bytes:
