@@ -130,9 +130,13 @@ that owner (listing, iteration, member `open()`, `stream_members()`, `close()`,
 link-target reads) SHALL raise `ArchiveyUsageError` at once when called from the
 provider's own thread or a context copied from it, and SHALL wait for the answer when
 called from any other thread. No plugin call SHALL be repeated to try a provider answer.
-Retry state SHALL live on the request. When resolution fails for a yielded request,
-archivey SHALL close the generator and the error SHALL end the walk. Two workers needing
-the provider at once SHALL be served one after the other.
+Retry state SHALL live on the request. When the adapter calls a hook again on its own (a
+data walk, a respawn, a rewalk), it SHALL try the unit's saved winner first, SHALL call
+the provider only when that call serves the caller's `open()`, never inside a stream's
+`read`, and SHALL give a respawned stream the new `MemberData.unlocked` verdict. When
+resolution fails for a yielded request, archivey SHALL close the generator and the error
+SHALL end the walk. Two workers needing the provider at once SHALL be served one after
+the other.
 
 #### Scenario: concurrency
 
@@ -152,6 +156,16 @@ the provider at once SHALL be served one after the other.
 | Listing finalization reads an encrypted link target whose request needs the provider | Listing lock released for the provider call; provider's own-context `reader.members()` raises `ArchiveyUsageError`; another thread's waits |
 | Toy plugin with one shared handle, two overlapping requests, `full_check` decoding on the handle | Callbacks serialized by the handle guard; provider runs with the guard released |
 | Provider's own thread calls `reader.read(member)` during a paused walk | `ArchiveyUsageError`, no deadlock |
+
+#### Scenario: calls archivey makes again
+
+| Case | Expected |
+| --- | --- |
+| makeself, payload 1 unlocked by a provider answer at listing; a member of it opened later through a random-access data walk | The saved winner is tried first and unlocks it; the provider is not asked again |
+| Indexed member opened `INCONCLUSIVE`; backward seek respawns it and the toy plugin's `then` now reports `CONFIRMED` | The replacement stream is checked as `CONFIRMED` |
+| Same with the original `CONFIRMED` and the replacement `INCONCLUSIVE` | A digest mismatch on the replacement raises the unverified-data `EncryptionError` |
+| Respawn inside `read()` where the saved winner no longer unlocks the unit | D2 exhaustion error from that `read()`; provider not called |
+| Reader closed, then reopened with `open_archive` | No saved winners carried over |
 
 #### Scenario: ARJ trial decode failures
 

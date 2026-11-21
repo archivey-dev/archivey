@@ -391,6 +391,31 @@ A plugin hands over requests from `open`, `iter_members`, `walk` and `open_membe
 (and from a `then` it was given), and from nowhere else: not from inside a stream's
 `read`.
 
+**Calls archivey makes again on its own.** The adapter calls the same hooks again
+without a new public call: a random-access data walk over a sequential plugin (makeself
+read out of order), a respawn of a forward-only indexed stream on a backward seek
+(`RespawnStream` calling `open_member` once more), and a rewalk after the listing.
+Requests met there are resolved too, under these rules:
+
+- **The last winner is tried first.** The reader keeps, for its lifetime (dropped at
+  `close()`), the password that won each unit, keyed by the unit's place: the member for
+  an `open_member` request, the k-th request of a walk for a yielded one (a walk is
+  deterministic over the same source, as rewalks already assume), the handler for
+  `open`. A repeat tries that password first and still runs `check` (and `full_check`
+  when the first resolution needed it). So a late makeself rewalk does not ask the
+  provider again for payload 1, although its `INCONCLUSIVE` winner is not promoted
+  for other units (D3).
+- **The provider only at a public open.** A data walk started by the caller's `open()`
+  may ask the provider, as that open could. A respawn or a data walk stepped inside a
+  stream's `read` never does: there the saved winner and the static candidates are
+  tried, and if none unlocks the unit the read raises the D2 exhaustion error for it.
+- **The verdict follows the replacement.** A respawn keeps the whole new `MemberData`,
+  not only its stream: the replacement stream's verification proof takes the new
+  `unlocked` verdict (and its `digests` and `checked`), so a replacement unlocked as
+  `INCONCLUSIVE` after a `CONFIRMED` original is checked as `INCONCLUSIVE` from then on,
+  and the reverse.
+
+
 Remaining limit: a provider that waits for a separate thread (not a copied context) that
 needs the same request's owner waits forever. That is the provider's own deadlock, the
 same as a provider that waits for any lock its own caller holds, and the docs say so.
