@@ -8,11 +8,13 @@
 //! - An uncompressed run past the end of the window raises the same `Corrupt`, where
 //!   Python's slice assignment grows the window.
 //! - After an error inside a run, `decode_run_inner` has already stored `r0..r2`, the
-//!   bit buffer and `window_pos`; Python stores them only on success. A decoder is not
-//!   used again after an error, so nothing reads them.
+//!   bit buffer and `window_pos`; Python stores them only on success. Nothing reads
+//!   them: the wrapper rolls a failed frame back from its `Checkpoint`, which restores
+//!   them, and the next call raises again.
 //!
-//! The first two need a frame size that leaves `window_pos` off a 32 KiB boundary, so
-//! only a caller can reach them, never an archive: CAB frames are 32 KiB but the last.
+//! The first two need `window_pos` off a 32 KiB boundary, which an archive cannot
+//! cause (CAB frames are 32 KiB but the last): only a caller-chosen frame size or a
+//! crafted saved state (`load` takes the saved offset as it is) can put it there.
 
 use crate::kernels::error::{DecodeError, Result};
 use crate::kernels::state::{self, Reader};

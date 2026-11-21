@@ -853,9 +853,11 @@ fn lzx_error(err: DecodeError<NeedMore>) -> PyErr {
 ///
 /// Output comes in frames of 32 KiB, the last one shorter: the kernel decodes a whole
 /// frame once its input has arrived, and returns it in `max_length` slices. A frame
-/// that the input given so far does not cover is undone and tried again when more
-/// arrives. `flush()` marks the end of the input, after which the kernel reads up to
-/// two zero bytes past it, as libmspack's lzxd does.
+/// is tried only once the queued input is about twice what the last frame used (a
+/// frame the input does not cover is undone and tried again later), so output lags
+/// the input by up to two frames: call `flush()` at the end of the input for the
+/// rest, even when the input given covers it. After `flush()` the kernel reads up to
+/// two zero bytes past the input, as libmspack's lzxd does.
 #[pyclass(module = "archivey_codecs.lzx", name = "Decompressor")]
 #[derive(Clone)]
 struct LzxDecompressor {
