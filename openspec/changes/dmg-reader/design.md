@@ -421,7 +421,10 @@ bit 13), read the journal info block at `journalInfoBlock`, then the journal hea
   is later work (§12). A volume that `hdiutil` or a clean unmount wrote is clean.
 
 Tests: the builder writes each case (clean, need-init, pending, external), and a layout
-test checks each one's journal info block and journal header field by field.
+test checks each one's journal info block, journal header and (pending) block list header
+field by field against Apple's `hfs_journal.h` / `hfs_journal.c` (`journal_header`,
+`block_list_header`, `calc_checksum`, `JOURNAL_HEADER_CKSUM_SIZE`, `BLHDR_CHECKSUM_SIZE`).
+A pending image made on a Mac would be the independent check, if one turns up.
 `fsck.hfsplus -n` from `hfsprogs` cannot tell the states apart: on Linux it never reads
 the journal header (its journal check compares the volume signature without swapping
 bytes), so it exits 0 for all four states on 540.1.linux3-5 and fails every journaled

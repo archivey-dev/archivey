@@ -951,6 +951,7 @@ JOURNAL_STATES = ("clean", "pending", "need-init", "external")
 JOURNAL_SIZE = 512 * 1024
 _JHDR_SIZE = 512  # the journal header's sector
 _BLHDR_SIZE = 4096  # one block list header
+_BLHDR_CHECKSUM_SIZE = 32  # header + binfo[0], BLHDR_CHECKSUM_SIZE in hfs_journal.c
 
 
 def _journal_checksum(data: bytes) -> int:
@@ -976,7 +977,9 @@ def _write_journal(
         end = start + _BLHDR_SIZE
         blhdr = bytearray(_BLHDR_SIZE)
         struct.pack_into("<HHII", blhdr, 0, _BLHDR_SIZE // 16 - 1, 1, _BLHDR_SIZE, 0)
-        struct.pack_into("<I", blhdr, 8, _journal_checksum(bytes(blhdr[:16])))
+        struct.pack_into(
+            "<I", blhdr, 8, _journal_checksum(bytes(blhdr[:_BLHDR_CHECKSUM_SIZE]))
+        )
         volume[journal_at + start : journal_at + end] = blhdr
     header = bytearray(
         struct.pack(

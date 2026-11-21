@@ -557,7 +557,7 @@ def test_hfsplus_journal_layout(state: str) -> None:
         assert len(bl) == blhdr
         bl_cksum = struct.unpack_from("<I", bl, 8)[0]
         struct.pack_into("<I", bl, 8, 0)
-        assert bl_cksum == d._journal_checksum(bytes(bl[:16]))
+        assert bl_cksum == d._journal_checksum(bytes(bl[: d._BLHDR_CHECKSUM_SIZE]))
 
 
 def test_journal_checksum_matches_apple() -> None:
