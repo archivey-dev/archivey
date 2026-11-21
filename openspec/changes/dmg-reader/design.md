@@ -236,21 +236,24 @@ Run types:
 | `0xFFFFFFFF` | terminator | ends the table; runs after it are an error |
 | other | | `UnsupportedFeatureError` naming the type in hex, raised when a read needs that run (DR-2: other members stay readable) |
 
-**Bounds before any byte of a run is read or allocated.** Let `decoded = count * 512`.
-A compressed run whose `decoded` exceeds 16 MiB is `UnsupportedFeatureError` (§4.4). A
-raw run whose stored length is not exactly `decoded` is `CorruptionError`. A compressed
-run whose stored length exceeds `2 * decoded + 64 KiB` is `ResourceLimitError` ("a
+**Bounds before any byte of a run is read or allocated.** Let `decoded = count * 512`. A
+compressed run whose `decoded` exceeds 16 MiB is `UnsupportedFeatureError` (§4.4). A raw
+run whose stored length is not exactly `decoded` is `CorruptionError`. A compressed run
+whose stored length exceeds `2 * decoded + 64 KiB` is `ResourceLimitError` ("a
 compressed run stores more than archivey reads for one run"). This is a support limit,
-not a validity bound: a valid encoding can be arbitrarily inefficient (zlib allows
-empty stored blocks without end; ADC allows a one-byte literal per command, so a valid
-run can store about twice its decoded size). The limit admits every such ADC run and
-every real writer's output (hdiutil's runs are at most 1 MiB decoded and smaller
-stored), and caps the largest read for one run at 32 MiB + 64 KiB. Tests tell the two
-apart: a valid ADC run of one-byte literals reads; a valid zlib run padded with empty
-stored blocks past the limit raises `ResourceLimitError`; a malformed run within the
-limit raises `CorruptionError`. These checks
-run when the run table is parsed, so a bad run is known before any decode; the error is
-raised from the read that needs the run (other members stay readable).
+not a validity bound: a valid encoding can be arbitrarily inefficient (zlib allows empty
+stored blocks without end; ADC allows a one-byte literal per command, so a valid run can
+store about twice its decoded size). The limit admits every such ADC run and every real
+writer's output (hdiutil's runs are at most 1 MiB decoded and smaller stored), and caps
+the largest read for one run at 32 MiB + 64 KiB. Tests tell the two apart: a valid ADC
+run of one-byte literals reads; a valid zlib run padded with empty stored blocks past
+the limit raises `ResourceLimitError`; a malformed run within the limit raises
+`CorruptionError`. The cap bounds work as well as memory: the run cache holds only a few
+runs, so without it, repeated metadata reads that miss the cache could each re-read a
+huge run. If the external corpus run (§9.5) ever hits the cap, switch to a streaming
+read under an explicit per-run input budget instead of raising it. These checks run when
+the run table is parsed, so a bad run is known before any decode; the error is raised
+from the read that needs the run (other members stay readable).
 
 Then use the same block-decode pattern as `SquashfsReader._block_decoder`: read the
 run's stored bytes in one `read_exact` (bounded by the check above), decode from memory,
