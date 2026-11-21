@@ -76,6 +76,9 @@ impl SkipReason {
     }
 }
 
+/// The longest `truncation` message a saved state may hold.
+const MAX_TRUNCATION: usize = 256;
+
 #[derive(Clone)]
 pub struct LzwState {
     buf: Vec<u8>,
@@ -199,7 +202,17 @@ impl LzwState {
     /// The decoder's state without the input it holds (design D3). Call only before
     /// `flush()` and when no error is waiting.
     pub fn save(&self, out: &mut Vec<u8>) {
-        debug_assert!(!self.finished && self.raise_after.is_none());
+        debug_assert!(self.raise_after.is_none());
+        // After the final pass of a capped `flush()`: the stream has ended, and what
+        // the pass found is kept for the restored decoder's `truncation`.
+        out.push(u8::from(self.finished));
+        match &self.truncation {
+            Some(t) => {
+                out.push(1);
+                state::put_bytes(out, t.as_bytes());
+            }
+            None => out.push(0),
+        }
         out.push(match self.nine_bit_widens {
             None => 0,
             Some(false) => 1,
@@ -251,6 +264,15 @@ impl LzwState {
     /// have saved: no dictionary entry can point forward, and nothing larger than the
     /// largest table is allocated.
     pub fn load(r: &mut Reader<'_>) -> crate::kernels::error::Result<Self> {
+        let finished = r.bool()?;
+        let truncation = if r.bool()? {
+            match String::from_utf8(r.bytes(MAX_TRUNCATION)?.to_vec()) {
+                Ok(t) if finished => Some(t),
+                _ => return r.bad("a truncation message it could not have written"),
+            }
+        } else {
+            None
+        };
         let widens = match r.u8()? {
             0 => None,
             1 => Some(false),
@@ -323,6 +345,8 @@ impl LzwState {
         d.pending_skip = pending_skip;
         d.skip_may_end_at = skip_may_end_at;
         d.skip_reason = reason;
+        d.finished = finished;
+        d.truncation = truncation;
         Ok(d)
     }
 
@@ -342,6 +366,13 @@ impl LzwState {
             return self.buf.len() < pad + NINE_BIT_PROBE_BYTES;
         }
         self.buf.is_empty()
+    }
+
+    /// Queue input without decoding any of it.
+    pub fn queue(&mut self, data: &[u8]) {
+        if !self.finished {
+            self.buf.extend_from_slice(data);
+        }
     }
 
     pub fn feed(&mut self, data: &[u8], max_length: i64) -> Result<(Vec<u8>, Units), Err> {

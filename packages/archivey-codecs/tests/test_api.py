@@ -361,8 +361,43 @@ def test_lzx_state_refusals() -> None:
         lzx.Decompressor.from_state(other)
     with pytest.raises(CodecError):
         d.flush()
-    with pytest.raises(ValueError, match="flush"):
-        d.getstate()
+
+
+def test_lzx_one_call_unused_data_is_exact() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    assert d.decompress(_LZX_HELLO + b"tail") == _HELLO
+    assert d.unused_data == b"tail"
+    assert d.total_in == len(_LZX_HELLO)
+
+
+def test_lzx_state_after_a_capped_flush() -> None:
+    """A state saved after ``flush(1)`` resumes with the rest. The restored decoder
+    is one before ``flush()``: it takes the input from ``total_in``, then flushes."""
+    for at in range(len(_HELLO)):
+        d = lzx.Decompressor(15, output_size=len(_HELLO))
+        assert d.decompress(_LZX_HELLO, 0) == b""
+        out = d.flush(1)
+        while len(out) < at:
+            out += d.flush(1)
+        r = lzx.Decompressor.from_state(d.getstate())
+        assert (r.total_out, r.total_in) == (d.total_out, d.total_in)
+        out += r.decompress(_LZX_HELLO[r.total_in :] + b"tail", 1)
+        while not r.eof:
+            out += r.flush(1)
+        assert out == _HELLO, at
+        assert r.unused_data == b"tail"
+        assert d.flush() == _HELLO[max(at, 1) :]
+
+
+def test_lzx_state_after_a_failed_flush_raises_again() -> None:
+    d = lzx.Decompressor(15, output_size=len(_HELLO))
+    d.decompress(_LZX_HELLO[:-10])
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        d.flush()
+    r = lzx.Decompressor.from_state(d.getstate())
+    r.decompress(_LZX_HELLO[r.total_in : -10])
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        r.flush()
 
 
 def test_lzw_flush_keeps_its_cap(tmp_path) -> None:
@@ -563,6 +598,33 @@ def test_bcj2_stream_returning_too_much_is_refused() -> None:
         d.read()
 
 
+def test_bcj2_total_in_is_a_tuple() -> None:
+    d = _bcj2()
+    d.read(10)
+    assert type(d.total_in) is tuple
+    assert len({d.total_in: None}) == 1  # hashable, so it can key a seek index
+
+
+def test_bcj2_exact_read_runs_the_end_check() -> None:
+    """The read that returns the last byte runs the end check: ``eof`` is true after
+    it, and surplus bytes in ``main`` raise on the next call."""
+    d = _bcj2(b"abc")
+    assert d.read(3) == b"abc"
+    assert d.eof
+    assert d.read() == b""
+    d = bcj2.Decompressor(
+        io.BytesIO(b"abcd"),
+        io.BytesIO(),
+        io.BytesIO(),
+        io.BytesIO(_BCJ2_RC),
+        out_size=3,
+    )
+    assert d.read(3) == b"abc"
+    assert not d.eof
+    with pytest.raises(CorruptDataError, match="main stream has bytes past the end"):
+        d.read()
+
+
 def test_bcj2_restored_twice_reads_independently() -> None:
     """Two decoders restored from one state, each on its own streams, read interleaved
     past their buffers, both give the straight decode."""
@@ -578,14 +640,14 @@ def test_bcj2_restored_twice_reads_independently() -> None:
     assert not hasattr(bcj2.Decompressor, "copy")
 
 
-# The LZW state after ``_Z_AB`` without its flush: header (8 bytes), nine-bit setting,
-# at-fill, need-header, four segment and skip counters, the skip reason, the maximum
+# The LZW state after ``_Z_AB`` without its flush: header (8 bytes), finished, the
+# truncation flag (no message), nine-bit setting, at-fill, need-header, four segment and skip counters, the skip reason, the maximum
 # width and block mode, the dictionary size and next code, one entry (prefix, suffix),
 # the code reader; then the held output, header-in-stream, the CLEAR offsets,
 # total_in and total_out.
-_NINE_BIT = 8
-_PENDING_SKIP = 11 + 16
-_REASON = 11 + 32
+_NINE_BIT = 10
+_PENDING_SKIP = 13 + 16
+_REASON = 13 + 32
 _WIDTH = _REASON + 1
 _DICT_LEN = _WIDTH + 2
 _ENTRY = _DICT_LEN + 8
@@ -657,14 +719,80 @@ def test_lzw_held_output_offset_check_does_not_overflow() -> None:
         lzw.Decompressor.from_state(bad)
 
 
-def test_lzw_getstate_refused_after_flush_or_an_error() -> None:
+def test_lzw_state_after_a_capped_flush() -> None:
+    """A state saved during ``flush(1)`` resumes: the restored decoder is one before
+    ``flush()``, so it takes the input from ``total_in``, then flushes."""
+    for restore_after in range(3):
+        d = lzw.Decompressor()
+        assert d.decompress(_Z_AB, 0) == b""
+        out = b""
+        for _ in range(restore_after):
+            out += d.flush(1)
+        if restore_after:
+            r = lzw.Decompressor.from_state(d.getstate())
+            assert (r.total_in, r.total_out) == (d.total_in, d.total_out)
+            assert not r.eof
+            r.decompress(_Z_AB[r.total_in :], 0)
+            d = r
+        while not d.eof:
+            out += d.flush(1)
+        assert out == b"ab", restore_after
+        assert d.truncation is None
+
+
+def test_lzw_state_after_the_final_pass_keeps_truncation() -> None:
+    cut = _Z_AB[:-1]  # the second code loses its last bit
+    straight = lzw.Decompressor()
+    want = straight.decompress(cut) + straight.flush()
+    assert straight.truncation is not None
     d = lzw.Decompressor()
-    d.decompress(_Z_AB)
-    d.flush()
-    with pytest.raises(ValueError, match="after flush"):
-        d.getstate()
+    d.decompress(cut, 0)
+    out = d.flush(1)
+    r = lzw.Decompressor.from_state(d.getstate())
+    r.decompress(cut[r.total_in :], 0)
+    while not r.eof:
+        out += r.flush(1)
+    assert out == want
+    assert r.truncation == straight.truncation
+
+
+def test_lzw_getstate_refused_after_an_error() -> None:
     d = lzw.Decompressor()
     with pytest.raises(CorruptDataError):
         d.decompress(b"\x1f\x9d\x90\xff\xff\xff")
     with pytest.raises(ValueError, match="after an error"):
         d.getstate()
+
+
+def test_lzw_new_input_waits_while_output_is_owed() -> None:
+    """While a cap leaves decoded output owed, new input is queued, not decoded: the
+    held output stays within one dictionary entry however many capped calls bring
+    more input."""
+    ncompress = pytest.importorskip("ncompress")
+    z = ncompress.compress(bytes(10_000_000))  # zeros: entries 1, 2, 3, ... bytes long
+    d = lzw.Decompressor()
+    out = bytearray(d.decompress(z[:8], 1))
+    calls = 3000
+    for i in range(8, 8 + calls):
+        out += d.decompress(z[i : i + 1], 1)
+    assert out == bytes(len(out))
+    # Emitting ~3000 bytes takes ~80 entries of growing length, about 100 bytes of
+    # input; decoding one entry per call would have used nearly all 3000.
+    assert d.total_in < 400, d.total_in
+    out += d.decompress(z[8 + calls :]) + d.flush()
+    assert out == bytes(10_000_000)
+
+
+def test_mutable_inputs_are_copied() -> None:
+    """A ``bytearray``, a ``memoryview`` of one (also a slice) and an ``array`` give
+    the same result as ``bytes``: each is copied, a ``bytearray`` under its lock."""
+    import array
+
+    data = bytes(range(256)) * 4
+    want = crc16_arc(data)
+    ba = bytearray(data)
+    words = array.array("I", data)
+    assert crc16_arc(ba) == want
+    assert crc16_arc(memoryview(ba)) == want
+    assert crc16_arc(memoryview(bytearray(b"x" + data))[1:]) == want
+    assert crc16_arc(words) == want

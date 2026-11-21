@@ -301,9 +301,26 @@ impl LzxDecoder {
         &self.buf[self.pos..end]
     }
 
+    /// Whether the stream still owes the pad byte after an uncompressed block of odd
+    /// length: the decoder skips it at the next block header, so at the end of the
+    /// stream it is unread, but it is part of the stream.
+    pub fn owes_pad_byte(&self) -> bool {
+        self.block_type == UNCOMPRESSED && self.block_remaining == 0 && self.block_length & 1 == 1
+    }
+
     /// Whether the decoder has read zero padding past the end of its input.
     pub fn padded(&self) -> bool {
         self.padding > 0
+    }
+
+    /// At a frame boundary, the input bytes of the whole words the bit buffer fetched
+    /// ahead and has not used (the zero padding left out). They belong to what follows
+    /// the frame: at the end of the stream they are not part of it.
+    pub fn lookahead(&self) -> &[u8] {
+        let words = (self.nbits / 16) as usize * 2;
+        let start = self.pos - words.min(self.pos);
+        let real_end = self.buf.len().saturating_sub(self.padding);
+        &self.buf[start..self.pos.min(real_end).max(start)]
     }
 
     /// A copy of everything `decode_frame` can change, to undo a frame that ran out of
@@ -331,10 +348,9 @@ impl LzxDecoder {
     }
 
     /// The decoder's state between two frames (design D3): everything it consumed,
-    /// none of the input it holds unread. Call only between frames, before the end of
-    /// the input was reached.
+    /// none of the input it holds unread. Past the end of its input, the zero padding
+    /// it added is saved too, so the restored decoder pads as this one would.
     pub fn save(&self, out: &mut Vec<u8>) {
-        debug_assert_eq!(self.padding, 0);
         out.push(self.window_bits as u8);
         out.extend_from_slice(&self.window);
         // The last bytes read: `align_for_raw` steps back over the bytes still in the
@@ -362,6 +378,16 @@ impl LzxDecoder {
         state::put_u32(out, self.block_remaining as u32);
         state::put_u64(out, self.offset);
         state::put_u64(out, self.frame);
+        // Past the end of its input the decoder has read every input byte (each read
+        // that appends zero padding goes into it), so only the padding is left: how
+        // much was added, and how much of it is not read yet.
+        debug_assert!(self.padding == 0 || self.unread_input().is_empty());
+        out.push(self.padding as u8);
+        out.push(if self.padding > 0 {
+            (self.buf.len() - self.pos) as u8
+        } else {
+            0
+        });
     }
 
     /// Rebuild a decoder from `save`'s bytes, checking them as `decode_frame` checks
@@ -433,6 +459,12 @@ impl LzxDecoder {
         d.offset = r.u64()?;
         d.frame = r.u64()?;
         d.window_pos = (d.offset % d.window_size as u64) as usize;
+        d.padding = usize::from(r.u8()?);
+        let zeros = usize::from(r.u8()?);
+        if d.padding > MAX_PADDING || zeros > d.padding {
+            return r.bad(format!("{} bytes of padding, {zeros} unread", d.padding));
+        }
+        d.buf.resize(d.buf.len() + zeros, 0);
         Ok(d)
     }
 
