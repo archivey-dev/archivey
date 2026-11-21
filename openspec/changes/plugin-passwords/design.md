@@ -431,7 +431,7 @@ Requests met there are resolved too, under these rules:
   new `unlocked` verdict, from a respawn's `MemberData` or a data walk's span, so a
   replacement unlocked as `INCONCLUSIVE` after a `CONFIRMED` original is checked as
   `INCONCLUSIVE` from then on, and the reverse. Its checks (`digests`, `checked`,
-  `bounded`; a span's `checked`) must match the first open's, because the verifier over
+  `bounded`; a span's `checked` and `digests`) must match the first open's, because the verifier over
   the caller's stream was built from those: a replacement that changes them is refused
   as a plugin bug.
 
