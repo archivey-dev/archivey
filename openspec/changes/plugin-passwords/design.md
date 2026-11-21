@@ -65,17 +65,25 @@ class ReaderContext:
 `check(password)` tries one password and returns what that password unlocked (whatever
 the plugin needs to decrypt later: a derived key, a cipher state, a decrypted header),
 with how sure it is. archivey never looks inside the value; `unlock` returns it. Data is
-`None` only with `REJECTED`. Any exception `check` raises ends the loop and reaches the caller
-unchanged. `member` is what the provider's `PasswordRequest.member` shows (`None` for an
+`None` only with `REJECTED`. An exception from `check` or `full_check` ends the loop
+(D2). `member` is what the provider's `PasswordRequest.member` shows (`None` for an
 archive-level unit). `what` names the unit in archivey's messages ("makeself payload 2",
 "the disk image").
 
-This is the public form of the internal `password_confirm.attempt_with_confirm`
-(probe + full check), which the ZIP, 7z and RAR readers already use. The enum is the one
-they use, moved to `archivey.formats` and imported from there by the built-in readers, so
-plugins and built-ins share one set of levels (davi 11-21). One change for the built-ins:
-a probe may now return `REJECTED`, where today it raises the wrong-password
-`EncryptionError` instead; both stay accepted inside archivey.
+This is the public form of the internal `password_confirm.attempt_with_confirm` (probe +
+full check), which the ZIP, 7z and RAR readers already use. The enum is the one they
+use, moved to `archivey.formats` and imported from there by the built-in readers, so
+plugins and built-ins share one set of levels (davi 11-21).
+
+**Strength rule** (the one `archive-reading` already states for the built-ins): a
+verdict is `CONFIRMED` only on evidence at least as strong as a CRC-32 over 4 or more
+decoded bytes (a false match no more often than 1 in 2^32), or a cryptographic check
+(an AES key wrap, an HMAC, a validated decrypted structure of that strength). Anything
+weaker (a magic number, padding, a CRC over fewer than 4 bytes) is a rejection filter:
+it may return `REJECTED`, and otherwise `INCONCLUSIVE`.
+
+One change for the built-ins: a probe may now return `REJECTED`, where today it raises
+the wrong-password `EncryptionError` instead; both stay accepted inside archivey.
 
 Example, makeself (openssl, AES-256-CBC). `unlock` returns the AES key and IV of the
 password that worked:
@@ -87,10 +95,17 @@ def check(password: bytes) -> tuple[AesParams | None, PasswordConfirmVerdict]:
     first = aes_cbc_decrypt(params, first_block)
     if not first.startswith(GZIP_MAGIC):         # the payload must start with gzip
         return None, PasswordConfirmVerdict.REJECTED
-    return params, PasswordConfirmVerdict.CONFIRMED       # a false match is about 1 in 2**24
+    # A magic match is wrong about 1 time in 2**24 (2**19 for Unix compress): below the
+    # strength rule, so a filter, not a proof. The payload digests in the header hash
+    # the stored (encrypted) bytes, so they cannot confirm the password either.
+    return params, PasswordConfirmVerdict.INCONCLUSIVE
 
 params = context.unlock("makeself payload 1", check)
 ```
+
+makeself has no `full_check`: it is a forward walk with no replay, so with several
+candidates that pass the magic the first one wins, unpromoted, as today. Its members
+stay `NONE` until a read ends with the decoded TAR and compressor checks passing.
 
 Example, ARJ garble (each byte XORed with the password; only the member's CRC-32 tells):
 
@@ -99,16 +114,27 @@ def check(password):
     return password, PasswordConfirmVerdict.INCONCLUSIVE   # nothing to test before the data
 
 def full_check(password):
-    crc = crc32_of(degarble_and_decode(member_data, password))
-    if crc != stored_crc:
+    try:
+        data = degarble_and_decode(member_data, password)  # counted like any member read
+    except CorruptionError:                    # LZH table or method-4 distance error:
+        return None, PasswordConfirmVerdict.REJECTED   # depends on the password
+    if crc32(data) != stored_crc:              # OSError, TruncatedError propagate
         return None, PasswordConfirmVerdict.REJECTED
+    if len(data) < 4:                          # below the strength rule
+        return password, PasswordConfirmVerdict.INCONCLUSIVE
     return password, PasswordConfirmVerdict.CONFIRMED
 
 key = context.unlock(member_label, check, full_check=full_check, member=member)
 ```
 
-For DMG, `check` returns the unwrapped disk key, `CONFIRMED` once the 3DES padding and the
-decrypted `koly` block check out.
+The plugin decides which of its own failures depend on the password (return `REJECTED`)
+and lets the rest propagate (source errors, `TruncatedError`, resource limits).
+`full_check` decodes the whole member, so it is charged to the same listing and decode
+limits as a read. It exists only where the plugin can replay the unit: an indexed
+reader, or a sequential one that reads its unit into a bounded buffer first.
+
+For DMG, `check` returns the unwrapped disk key, `CONFIRMED` once the key unwrap and the
+decrypted `koly` block (a 512-byte structure with magic, version and sizes) check out.
 
 Alternative: hand the plugin an iterator of candidates. Rejected (davi chose the loop in
 archivey): the provider's rules (skip repeats, stop after three own repeats, no reentry,
@@ -120,10 +146,14 @@ one call at a time) and promotion would be each plugin's job.
 | --- | --- |
 | No password given, or the provider's first answer is `None` | `EncryptionError("{what} is encrypted: pass password= to read it")` |
 | Every password tried came back `REJECTED` | wrong-password `EncryptionError("Wrong password for {what}")` |
-| `check` or `full_check` raised | That exception, unchanged |
+| `full_check` came back `REJECTED` for every candidate it ran on, and nothing stronger than the data checksum rejected them | unverified-data `EncryptionError` ("wrong password or damaged data"): a damaged member fails every CRC too |
+| `check` or `full_check` raised (any exception, `EncryptionError` included) | Resolution stops; no further candidate or provider call. The exception then goes through the plugin's `translate_exception` like any other plugin exception |
+| A callback returned something other than a 2-tuple of data and `PasswordConfirmVerdict`, or `None` data with a verdict other than `REJECTED` | Plugin bug (`_plugin_bug`, as for a bad `open_member` return) |
 
 Same class as today for both (`EncryptionError`); the error-handling spec has no
-subclasses for them, and callers already tell them apart only by message.
+subclasses for them, and callers already tell them apart only by message. The
+built-ins keep their path, where a probe's wrong-password `EncryptionError` means
+`REJECTED`; the plugin path rejects only through the returned verdict.
 
 ### D3. How several passwords are decided
 
@@ -131,34 +161,44 @@ The loop is the one the built-in readers run (`_PasswordCandidates.attempt` with
 `settled`/`settle`):
 
 1. Each static candidate in order goes through `check`. The first `CONFIRMED` wins at
-   once, so no expensive derivation runs for the candidates after it. `REJECTED` is dropped.
-   `INCONCLUSIVE` is set aside and the next candidate is tried.
+   once, so no expensive derivation runs for the candidates after it. `REJECTED` is
+   dropped. `INCONCLUSIVE` is set aside and the next candidate is tried.
 2. When the candidates run out with **one** set aside, it wins; `full_check` does not
    run for it (every other candidate was `REJECTED`).
 3. With **several** set aside, `full_check` runs on each in order. The first `CONFIRMED`
-   wins; `REJECTED` is dropped. If none confirms (or there is no `full_check`), the first
-   still `INCONCLUSIVE` wins.
-4. With none left, the provider is asked, one answer at a time; its first answer that is
-   not `REJECTED` wins (a person at a prompt answers one at a time, so there is nothing to
-   compare it with).
+   wins; `REJECTED` is dropped. If none confirms (or there is no `full_check`), the
+   first still `INCONCLUSIVE` wins.
+4. With none left, the provider is asked, one answer at a time. An answer `check` calls
+   `INCONCLUSIVE` goes through `full_check` when the plugin gives one; `REJECTED` from
+   either asks the provider again. The first `CONFIRMED` answer wins, and an
+   `INCONCLUSIVE` one wins only when there is no `full_check` (or it also came back
+   `INCONCLUSIVE`), since a person at a prompt answers one at a time and there is
+   nothing to compare it with.
 
 A password that wins as `INCONCLUSIVE` is not promoted to be tried first for later units
 (unless it was the only password given), and a checksum failure of that member's data
 becomes the unverified-data `EncryptionError` ("wrong password or damaged data"), as for
 ZipCrypto, so the link-target report says `password_or_damage`.
 
-`PasswordConfirmVerdict` is an enum, not a score: the loop only needs "confirmed wins, wrong is
-dropped, the rest wait", and new levels can be added to an enum later. A numeric score
-would ask every plugin to calibrate numbers nothing compares across formats.
+`PasswordConfirmVerdict` is an enum, not a score: the loop only needs "confirmed wins,
+wrong is dropped, the rest wait", and new levels can be added to an enum later. A
+numeric score would ask every plugin to calibrate numbers nothing compares across
+formats.
 
 ### D4. Key derivation: `ReaderContext.charge_key_derivation(rounds)` (RULED: davi 11-21)
 
-Charges `rounds` to the open archive's `DecoderLimits.max_key_derivation_rounds` (shared
-with every other derivation on that archive and visible in resource usage) and raises
-`ResourceLimitError` before the work when it would pass the cap. The plugin calls it
-inside `check`, before each derivation it does not have cached. Alternative: the plugin
-reads the limit from `config` and counts itself; rejected because it would not share the
-total with nested archives or show in resource usage.
+Charges `rounds` to the reader's one `KeyDerivationBudget` for
+`DecoderLimits.max_key_derivation_rounds`. The budget is per reader, as
+`archive-reading` scopes it: the adapter builds it and registers it with resource usage
+before the plugin's `open` runs, so DMG can charge at open and makeself across payloads
+and rewalks. A nested archive is its own reader with its own budget (and gets no
+`password=`, as today). It raises `ResourceLimitError` before the work when the total
+would pass the cap, and the total is then unchanged. `rounds` is an `int` of 0 or more
+(0 for a mode with no iterations); anything else is a plugin bug and changes nothing.
+The plugin calls it inside `check`, before each derivation it does not have cached.
+Alternative: the plugin reads the limit from `config` and counts itself; rejected
+because the total would not show in resource usage or cover the other derivations on the
+same reader.
 
 ### D5. Declaring and reporting encryption
 
@@ -174,10 +214,7 @@ class ReaderArchiveInfo(NamedTuple):
   (`PASSWORD_ARGUMENT_UNUSED`) and `unlock` raises `ArchiveyUsageError` (a plugin bug).
   This replaces the internal `register_builtin_format(..., SUPPORTS_PASSWORD=True)`
   override.
-- A member the plugin lists with `is_encrypted=True` is `Verification.NONE` until a
-  `CONFIRMED` `unlock(member=that_member)`, or an archive-level `CONFIRMED` `unlock` made
-  before the member was listed (DMG at open). An `INCONCLUSIVE` win leaves it at `NONE`
-  until its checksum passes.
+- How an encrypted member's `verified` level rises is D7.
 - `ReaderArchiveInfo.is_encrypted` is per archive and becomes `ArchiveInfo.is_encrypted`
   (today the adapter always writes `False`). As for 7z and RAR5, it means the member
   list itself is encrypted (a password is needed to list): `True` for a DMG encrypted
@@ -192,6 +229,57 @@ A replacement plugin for ZIP, 7z or RAR whose handler sets `supports_password` g
 caller's `password=` through `unlock`, as any plugin does. The sentence in
 `adding-a-format.md` saying a replaced ZIP cannot read encrypted members goes.
 
+### D7. The verdict travels with the data it covers (open question 7)
+
+Call order proves nothing: makeself unlocks one payload at a time and may walk again, a
+replaced RAR can confirm its encrypted headers and still meet member data under another
+key, and two streams of one member can be opened under different passwords. So the
+plugin states what each verdict covers, on the object that carries the data:
+
+```python
+class MemberRecord(NamedTuple):   # indexed listing
+    ...
+    unlocked: PasswordConfirmVerdict | None = None
+class MemberSpan(NamedTuple):     # sequential walk
+    ...
+    unlocked: PasswordConfirmVerdict | None = None
+class MemberData(NamedTuple):     # one open of a member
+    ...
+    unlocked: PasswordConfirmVerdict | None = None
+```
+
+- `None`: no claim (a member that is not encrypted, or one whose data is still locked).
+- On `MemberRecord`/`MemberSpan`: the listing step already unlocked this member's data
+  with that verdict (DMG: every member `CONFIRMED` at listing; makeself: each payload's
+  members `INCONCLUSIVE`). A `CONFIRMED` one makes the member `UNLOCKED` when listed. A
+  header-only unlock sets nothing here: it proved only that the listing could be read.
+- On `MemberData`: the verdict for this one stream. archivey keeps it on that stream's
+  own verification proof (the per-stream proof and read watch the built-ins use), so two
+  concurrent or respawned streams of a member never share it. A walk again (rewalk)
+  reports its own spans, so the verdict is re-stated each time.
+- `INCONCLUSIVE` on a stream: a digest mismatch at its end (`ArchiveMember.hashes`,
+  `MemberData.digests`, or the plugin's own check with `checked=True`, which raises
+  `CorruptionError`) becomes the unverified-data `EncryptionError`; a stream closed
+  after delivering bytes but before its digest emits `ENCRYPTED_MEMBER_UNVERIFIED`, as
+  for ZipCrypto; a digest that passes raises the member past `UNLOCKED` as usual.
+
+Alternative: one member-wide flag set by the latest `unlock`. Rejected for the cases
+above.
+
+### D8. Provider calls never run under the reader's handle lock
+
+Under `MemberStreams.CONCURRENT` the adapter calls `IndexedReader.open_member` and every
+plugin stream read inside its handle guard, a non-reentrant lock. `reader-concurrency`
+requires the provider to run with no archivey lock held, and a reentering provider to
+get `ArchiveyUsageError`, not a deadlock. So `unlock` releases the handle guard for each
+provider call and takes it again before calling `check`; static candidates are tried
+without releasing it. The plugin may call `unlock` from `open`, `iter_members`, `walk`
+and `open_member`, and from nowhere else (not from inside a stream's `read`), and must
+not keep state across the call that another thread's `open_member` could change: a
+`ReaderSource` view reads by offset, so views are safe to hold. Provider calls stay
+serialized per reader by `_PasswordCandidates`, and reentry is caught by its guard
+before any lock is taken.
+
 ## Risks / Trade-offs
 
 - `unlock` is per call: a format that tries one password against many units must cache
@@ -202,15 +290,19 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 - A plugin can still decrypt without `unlock` by reading the password some other way
   (an environment variable). Nothing stops that, and nothing needs to.
 
-## Open questions (all ruled by the maintainer, 2026-11-21)
+## Open questions (1-6 ruled by the maintainer 2026-11-21; 7 open)
 
-1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi 11-21).
-2. D1/D3: `check` returns `(data, PasswordConfirmVerdict)` (davi 11-21: reuse the built-in
-   enum and its levels; built-ins and plugins share it), with an optional
+1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi
+   11-21).
+2. D1/D3: `check` returns `(data, PasswordConfirmVerdict)` (davi 11-21: reuse the
+   built-in enum and its levels; built-ins and plugins share it), with an optional
    `full_check` to decide between several unconfirmed passwords? RULED yes (davi 11-21).
 3. D2: archivey writes both messages? RULED yes (davi 11-21, card).
 4. D4: `charge_key_derivation(rounds)` on the context? RULED yes (davi 11-21, card).
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
    `charge_key_derivation`, `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`,
    `CONFIRMED`). RULED keep all (davi 11-21, card).
-6. Order: this API PR first, then makeself, ARJ and DMG on it? RULED yes (davi 11-21, card).
+6. Order: this API PR first, then makeself, ARJ and DMG on it? RULED yes (davi 11-21,
+   card).
+7. D7: the new public field `unlocked: PasswordConfirmVerdict | None` on `MemberRecord`,
+   `MemberSpan` and `MemberData`? (Recommended: yes; Codex review C2, C3.) OPEN.

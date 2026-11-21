@@ -31,6 +31,9 @@ it.
 - `ReaderArchiveInfo.is_encrypted`, and members listed with `is_encrypted=True`, report
   encryption the way the built-in readers do.
 
+- The verdict travels with the data it covers: `unlocked` on `MemberRecord`,
+  `MemberSpan` and `MemberData` (design.md D7, open).
+
 **After it lands:** makeself moves off `_passwords` (and starts marking its encrypted
 members), ARJ reads garbled members, and the DMG spec §6B uses `unlock` instead of the
 private hook.
