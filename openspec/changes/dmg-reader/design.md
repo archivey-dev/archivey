@@ -26,12 +26,14 @@ images yet; the implementer checks it first.
 
 ## 0. Before you start
 
-**Attachments the maintainer gives you with this spec** (they are not in the repo):
+**Resources in this change** (`openspec/changes/dmg-reader/resources/`):
 
 | File | What it is |
 | --- | --- |
-| `dmgproto/udif.py`, `hfsplus.py`, `apfs.py`, `lzfse.py`, `adc.py`, `dmg.py` | A working pure-Python prototype (stdlib only, 1,470 lines). It reads every file of 41 real DMGs (36 HFS+, 5 APFS) byte for byte the same as 7-Zip, and all 10 unencrypted UDIF images in the fixture set. **Use it as the reference for the on-disk layouts; do not copy it as production code.** It has none of archivey's limits, error types or diagnostics, it decodes whole files into memory, and it has no decryption. |
-| `dmg-fixtures-2026-11-10.tar.gz` | Small real images made with `hdiutil` on macOS 26.7.1 (§9.1). Ignore the `._*` AppleDouble files in the tar. |
+| `prototype/dmgproto/udif.py`, `hfsplus.py`, `apfs.py`, `lzfse.py`, `adc.py`, `dmg.py` | A working pure-Python prototype (stdlib only, 1,470 lines). It reads every file of 41 real DMGs (36 HFS+, 5 APFS) byte for byte the same as 7-Zip, and all 10 unencrypted UDIF images in the fixture set. **Use it as the reference for the on-disk layouts; do not copy it as production code.** It has none of archivey's limits, error types or diagnostics, it decodes whole files into memory, and it has no decryption. |
+| `fixtures/` | Small real images made with `hdiutil` on macOS 26.7 (§9.1), with macOS's own listing, hashes and xattrs of the mounted volume. The two 16 MiB UDRW images (raw disks, no `koly`) are left out. |
+| `make-dmg-fixtures.sh` | The script that made `fixtures/` on a Mac (Appendix A). |
+| `dmgurls.txt` | The 41-image real-world corpus (Appendix B). |
 
 **Read these in the repo first, in this order:**
 
@@ -110,7 +112,7 @@ the PR body which defaults you implemented.
 
 | # | Question | Recommended default |
 | --- | --- | --- |
-| D1 | Listing when an image holds more than one readable filesystem | One filesystem (every image seen so far): its files at the archive root, volume name in `archive_info().extra`. Several: each volume's files under a top-level directory named after the volume (as macOS mounts them). Do not read only the first and warn: that hides files (DR-1). |
+| D1 | Listing when an image holds more than one readable filesystem | **Ruled by the maintainer 2026-11-21: this default.** One filesystem (every image seen so far): its files at the archive root, volume name in `archive_info().extra`. Several: each volume's files under a top-level directory named after the volume (as macOS mounts them). Do not read only the first and warn: that hides files (DR-1). |
 | D2 | Extended attributes and resource forks | List names (and values up to 1 KiB) in `ArchiveMember.extra`, as TAR's pax xattrs are; do not write them on extract. Resource fork size goes in `extra` too. Docs note: code signatures of non-Mach-O files inside an `.app` (`com.apple.cs.*` xattrs) will not verify after extraction. |
 | D3 | LZFSE speed | Pure-Python LZFSE/LZVN decoder always available (about 7 MB/s). Optional `lzfse` PyPI package (MIT, wheels, Apple's reference C, about 330 MB/s) as an accelerator in a child process. **The accelerator is a separate PR** (Part H) because it adds a public `OptionalLibrary` member and an extra, which the maintainer merges. |
 | D4 | UDIF checksums | Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, which lifts members to `CHECKSUM` after a full in-order read or `verify_all()`. Never check it at open (it needs a full decode, DR-15b). |
@@ -569,10 +571,12 @@ For each password candidate the public password API hands the reader (§6B.0):
 2. 3DES-EDE-CBC decrypt the wrapped key with the blob's IV. Check PKCS#7 padding; bad
    padding means a wrong password. The plaintext holds the AES key (16 or 32 bytes per
    key bits) followed by the 20-byte HMAC-SHA1 key (confirm on the fixtures).
-3. **3DES:** `cryptography` keeps TripleDES only under its "decrepit" module. Write a
-   small pure-Python DES/3DES (decrypt only, one 40 to 64-byte unwrap per attempt) in
-   `internal/streams/` with test vectors from NIST SP 800-67 / FIPS 81, rather than
-   depending on that module. It never handles file data, only the key blob.
+3. **3DES:** use `cryptography`'s TripleDES, which encrypted images need anyway for
+   AES. Import it from `cryptography.hazmat.decrepit.ciphers.algorithms` (there since
+   cryptography 43; the old `primitives.ciphers.algorithms.TripleDES` warns and is due
+   for removal). Add it to archivey's crypto backend beside AES-CBC, so the
+   `exclude_libraries` and missing-package handling are shared. It only unwraps the key
+   blob, never file data.
 4. Confirm the key: decrypt the block that holds the last 512 bytes of the encrypted
    data; it must be a valid `koly` block. That, plus the padding check, gives a strong
    check (D6).
@@ -678,11 +682,11 @@ module `tests/dmg_build.py`, a fuzz target in `tests/atheris_fuzz/targets.py` + 
 
 ### 9.1 Real fixtures from hdiutil (commit these)
 
-From `dmg-fixtures-2026-11-10.tar.gz`. Commit under
+From `resources/fixtures/` in this change. Move them, as part B, under
 `tests/fixtures/external/dmg_hdiutil/` with a README entry in
 `tests/fixtures/external/README.md` (producer, macOS 26.7.1, the script below, what each
 file is for). The content is our own test files, so there is no licence problem.
-Suggested set (about 2.5 MB; drop UDRO if size matters):
+Suggested set:
 
 | File | Run codec | Use |
 | --- | --- | --- |
@@ -852,7 +856,7 @@ name. Parts B to E depend on A; the order after B is flexible except where noted
 | **D. Hidden-content and edge polish** | Anything Part B's review defers: journal hiding cases, directory hard links if a fixture appears, xattr value caps, extra checks found by the corpus run. May be empty. | B | agent |
 | **E. APFS** | §6A: `apfs.py`, the reader using it, `write_apfs` builder, APFS fixtures, D5 multi-volume listing, Fletcher-64, refusals (encrypted volume, sealed, Fusion), fuzz target, handbook page section. | B | maintainer (new filesystem; davi decision D5) |
 | **F. Partition CRC-32 spanning check** | D4: mark members `verifiable = CHECKSUM` from listing; run the CRC over every run except "ignore" runs, zero-fill included, during an in-order full read or `verify_all()`; mismatch is a `SpanningCheckError` covering the partition's members. Follow `dev-docs/topics/verification.md` §2.5 (7z folder CRC is the model). Data-fork CRC-32 and the master checksum too, if cheap. | B | maintainer (changes a verification guarantee) |
-| **G. Encrypted images** | §6B: detection signatures, `dmg_crypto.py`, pure-Python 3DES, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
+| **G. Encrypted images** | §6B: detection signatures, `dmg_crypto.py`, TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
 | **H. LZFSE accelerator** | D3: optional `lzfse` package in a child process through `Natives`, like LZO's `compress-utils` path (`lzo_decoder.py` `_compress_utils`): `OptionalLibrary.LZFSE`, an extra in `pyproject.toml` (copy how `bzip3` and `compress-utils` extras are declared), `exclude_libraries` support, `--version -v` "faster with" line, tests that both decoders agree on every fixture, `--all-configs` run. | A (useful after B) | maintainer (new public name and dependency) |
 
 Each part's PR body says which part of this plan it implements and lists any place it

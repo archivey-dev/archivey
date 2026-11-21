@@ -1,0 +1,17 @@
+total 1328
+drwxr-xr-x  9 user  staff  -             374 Nov 10 21:08 .
+drwx------@ 5 user  staff  -             160 Nov 10 21:07 ..
+lrwxr-xr-x@ 1 user  staff  -              13 Nov 10 21:08 Applications -> /Applications
+-rw-r--r--@ 1 user  staff  compressed 360000 Nov 10 21:07 compressed.txt
+-rw-r--r--@ 2 user  staff  -              10 Nov 10 21:07 hello.txt
+lrwxr-xr-x@ 1 user  staff  -               9 Nov 10 21:08 link-rel -> hello.txt
+-rw-r--r--@ 1 user  staff  -          300000 Nov 10 21:07 random.bin
+drwxr-xr-x@ 4 user  staff  -             136 Nov 10 21:07 sub dir
+-rw-r--r--@ 1 user  staff  -          360000 Nov 10 21:07 text.txt
+
+./sub dir:
+total 16
+drwxr-xr-x@ 4 user  staff  - 136 Nov 10 21:07 .
+drwxr-xr-x  9 user  staff  - 374 Nov 10 21:08 ..
+-rw-r--r--@ 1 user  staff  -   6 Nov 10 21:07 café.txt
+-rw-r--r--@ 2 user  staff  -  10 Nov 10 21:07 hardlink.txt

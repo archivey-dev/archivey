@@ -50,8 +50,8 @@
 
 - [ ] G.1 Confirm the `encrcdsa` v2 layout on the AES-128 and AES-256 fixtures; write it
   in the handbook page
-- [ ] G.2 Pure-Python 3DES with NIST vectors; key unwrap; password flow; key-derivation
-  budget
+- [ ] G.2 TripleDES from cryptography's decrepit module in the crypto backend; key
+  unwrap; password flow; key-derivation budget
 - [ ] G.3 `EncryptedDmgSource`; `encrypt_dmg` test writer; damage tests
 
 ## H. LZFSE accelerator

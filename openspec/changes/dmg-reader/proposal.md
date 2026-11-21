@@ -14,8 +14,8 @@ before it is implemented in parts (2026-11-21).
   unencrypted images: the UDIF container with every run codec (zlib, bzip2, xz, LZFSE,
   ADC, raw, zero fill), GPT and Apple Partition Map, HFS+/HFSX and APFS volumes,
   transparent compression (decmpfs), and password-encrypted `encrcdsa` images.
-- New pure-Python LZFSE/LZVN and ADC decoders, and a pure-Python 3DES used only to
-  unwrap the key of an encrypted image.
+- New pure-Python LZFSE/LZVN and ADC decoders. Encrypted images use `cryptography`
+  (AES, and TripleDES to unwrap the key).
 - `required_source` for DMG becomes `SEEKABLE`.
 - Detection keeps every current answer and adds the encrypted-image signatures.
 - Later parts: the partition CRC-32 as a spanning check, and an optional `lzfse`
