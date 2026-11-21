@@ -98,7 +98,8 @@ def resolve_request(
 
     The order is the built-in one: known-good, then the static candidates (a
     ``CONFIRMED`` result wins at once; ``INCONCLUSIVE`` ones are set aside, then a lone
-    survivor wins, several go through ``full_check`` in order), then the provider, one
+    survivor wins unless the provider could still be asked, several go through
+    ``full_check`` in order), then the provider, one
     answer at a time, each ``INCONCLUSIVE`` answer through ``full_check`` when there is
     one. Raises the "required" ``EncryptionError`` when nothing was tried, the
     wrong-password one when every password was rejected by ``check``, and the
@@ -151,7 +152,13 @@ def resolve_request(
                 return win(password, data, verdict, False)
             if verdict is PasswordConfirmVerdict.INCONCLUSIVE:
                 survivors.append((password, data))
-        if len(survivors) == 1 or (survivors and full_check is None):
+        # A lone survivor wins unchecked only when nothing else could be asked: the
+        # read's own checksum then reports a wrong one. With a provider it is settled,
+        # so a wrong one leads to the provider instead.
+        provider_left = allow_provider and passwords.has_provider()
+        if survivors and (
+            full_check is None or (len(survivors) == 1 and not provider_left)
+        ):
             password, data = survivors[0]
             return win(password, data, PasswordConfirmVerdict.INCONCLUSIVE, False)
         fallback: tuple[bytes, Any] | None = None

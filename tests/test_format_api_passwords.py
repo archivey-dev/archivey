@@ -950,3 +950,38 @@ def test_chain_then_seek_to_zero_with_an_exhausted_provider(tmp_path: Path) -> N
             stream.seek(0)
             assert stream.read() == _SECRET
     assert next(answers, None) is None
+
+
+def test_a_known_good_password_is_rechecked_when_a_provider_can_answer(
+    tmp_path: Path,
+) -> None:
+    """The first request's winner is known-good, and survives the unchecked second
+    request alone. With a provider set it goes through ``full_check``, which rejects
+    it, and the provider is asked for the second request's password."""
+
+    class Chained(ToyXReader):
+        def open_member(self, member: ArchiveMember, locator: _Locator) -> Any:
+            inner = super().open_member(member, locator)
+            assert isinstance(inner, NeedsPassword)
+            return NeedsPassword(
+                "the header",
+                lambda password: (
+                    (password, CONFIRMED) if password == b"header" else (None, REJECTED)
+                ),
+                then=lambda key, verdict: inner,
+            )
+
+    class Handler(ToyXHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyXReader:
+            return Chained(source, context)
+
+    answers = iter([b"header", b"right"])
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        return next(answers, None)
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(_one(tmp_path, checked=False), password=provider) as reader:
+            assert reader.read("a.txt") == _SECRET
+    assert next(answers, None) is None

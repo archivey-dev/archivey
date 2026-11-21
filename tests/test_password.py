@@ -735,3 +735,55 @@ def test_provider_answers_are_not_gathered() -> None:
     )
     assert result == (b"a", "inconclusive")
     assert asked == [1]
+
+
+def _settle_only(right: bytes) -> Callable[[bytes, str], str]:
+    def settle(password: bytes, _result: str) -> str:
+        if password != right:
+            raise EncryptionError("checksum failed")
+        return "confirmed"
+
+    return settle
+
+
+def test_a_lone_survivor_is_settled_when_a_provider_can_answer() -> None:
+    """A known-good password from another unit that survives a weak probe alone goes
+    through the full check while the provider can still be asked, and a rejected one
+    leads to the provider."""
+    asked: list[int] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asked.append(request.attempt)
+        return b"right"
+
+    candidates = _PasswordCandidates.from_input(provider)
+    candidates.record_success(b"earlier")
+    result = candidates.attempt(
+        None,
+        lambda _password: "probe passed",
+        settled=lambda result: result == "confirmed",
+        settle=_settle_only(b"right"),
+    )
+    # The provider's answer is accepted on its probe, as before.
+    assert result == "probe passed"
+    assert asked == [1]
+
+
+def test_a_lone_survivor_wins_unsettled_with_no_provider() -> None:
+    """With no provider there is nothing else to try: the lone survivor wins without
+    the full check, and the read's own check reports a wrong one."""
+    settled: list[bytes] = []
+
+    def settle(password: bytes, result: str) -> str:
+        settled.append(password)
+        return "confirmed"
+
+    candidates = _PasswordCandidates.from_input("only")
+    result = candidates.attempt(
+        None,
+        lambda _password: "probe passed",
+        settled=lambda result: result == "confirmed",
+        settle=settle,
+    )
+    assert result == "probe passed"
+    assert settled == []

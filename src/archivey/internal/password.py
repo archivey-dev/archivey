@@ -265,6 +265,11 @@ class _PasswordCandidates:
         with self._state_lock:
             return bool(self._known_good or self._candidates)
 
+    def has_provider(self) -> bool:
+        """Whether a provider callable can be asked once the static candidates fail."""
+        with self._state_lock:
+            return self._provider is not None
+
     def is_ambiguous(self) -> bool:
         """Whether a weak password check needs confirmation before accepting a result.
 
@@ -429,7 +434,9 @@ class _PasswordCandidates:
         the rest of the static candidates are probed:
 
         - **No survivor:** the provider is consulted, as without ``settled``.
-        - **One survivor:** it wins. Every other candidate was rejected.
+        - **One survivor:** with no provider, it wins: every other candidate was
+          rejected, and the read's own check reports a wrong one. With a provider it
+          is settled as several are, so a wrong one leads to the provider instead.
         - **Several:** ``settle(password, result)`` runs the full check on each in
           order. The first settled result wins; one that raises ``EncryptionError``
           is rejected. When none settles, the first that was not rejected wins, and
@@ -471,7 +478,9 @@ class _PasswordCandidates:
                 return accept(password, result)
             survivors.append((password, result))
 
-        if len(survivors) == 1 or (survivors and settle is None):
+        if survivors and (
+            settle is None or (len(survivors) == 1 and not self.has_provider())
+        ):
             return accept(*survivors[0])
         fallback: tuple[bytes, _T] | None = None
         for password, result in survivors:
