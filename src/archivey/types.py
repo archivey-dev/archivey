@@ -2098,6 +2098,19 @@ class OnError(Enum):
     CONTINUE = "continue"
     """The failure is recorded in the report as ``FAILED``, its partial output is
     removed, and extraction goes on with the next member."""
+    KEEP_PARTIAL = "keep_partial"
+    """As ``CONTINUE``, except that a file whose data fails part-way stays on disk,
+    holding the bytes its data gave before the failure, as ``unrar x -kb``, 7-Zip and
+    GNU tar leave it. A check at the end of the data (a CRC or a size) fails on the
+    member's last read, so that read's bytes are not in the file. The result is
+    ``FAILED`` with the error, and its ``path`` names the partial file.
+
+    Nothing is kept when no byte was written, when the member failed before its data
+    was read (an existing entry under ``OverwritePolicy.ERROR``), when a limit refused
+    it, in a dry run, or for a hard link. The partial file gets none of the member's
+    metadata: its modification time is when it was written, and its mode is the one
+    archivey creates files with (``0o600``, or ``0o666`` less the umask for a member
+    with no stored mode under ``TRUSTED``)."""
 
 
 # The string spellings of ``OnError``, so a type checker flags a bad one at the
@@ -2105,7 +2118,7 @@ class OnError(Enum):
 # ``internal.enum_args`` accepts: coercion also takes the member *name* and ignores
 # case, and a literal can express neither, so this is the canonical spelling.
 # Keep it beside the enum — ``tests/test_enum_arguments.py`` fails if the two drift.
-OnErrorStr = Literal["stop", "continue"]
+OnErrorStr = Literal["stop", "continue", "keep_partial", "keep-partial"]
 
 
 class OnBlocked(StrEnum):

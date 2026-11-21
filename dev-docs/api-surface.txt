@@ -571,6 +571,7 @@ class archivey.OnError(Enum)
 enum archivey.OnError
 value archivey.OnError.STOP = 'stop'
 value archivey.OnError.CONTINUE = 'continue'
+value archivey.OnError.KEEP_PARTIAL = 'keep_partial'
 class archivey.OpenError(ArchiveyError)
 init archivey.OpenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.OptionalLibrary(StrEnum)
