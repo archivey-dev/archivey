@@ -26,11 +26,15 @@ stream (``dev-docs/investigations/lzfse-package.md`` measured each case):
   encoder writes it (Apple decodes the count rounded up);
 - the matches of a block may use no more literals than it decoded (Apple checks only
   the size of its literal buffer, and copies whatever the buffer holds);
+- a ``bvx1`` or ``bvx2`` block may hold no more literals than its raw size plus 3, and
+  no more matches than its raw size (Apple bounds both only by fixed per-block limits,
+  so a block that writes nothing could cost 10,000 iterations);
 - nothing may follow the end-of-stream block or an LZVN end-of-stream opcode.
 
 Every length is checked against the input before it is used, output never passes the
 caller's ``max_length``, and a match may not reach back before the start of the
-output, so the work is bounded by the input and ``max_length``.
+output. Every LZVN opcode consumes input, and the work of a ``bvx1`` or ``bvx2`` block
+is bounded by its output, so the work is linear in the input and ``max_length``.
 """
 
 from __future__ import annotations
@@ -123,12 +127,12 @@ def lzfse_decompress(data: bytes, max_length: int) -> bytes:
                 raise _too_long(max_length)
             if n_raw == 0:
                 raise CorruptionError("LZVN block declares no output")
-            target = len(out) + n_raw
-            end = _lzvn(src, start, start + n_payload, out, target)
-            if len(out) != target:
+            block_start = len(out)
+            end = _lzvn(src, start, start + n_payload, out, block_start + n_raw)
+            if len(out) != block_start + n_raw:
+                decoded = len(out) - block_start
                 raise CorruptionError(
-                    f"LZVN block decodes to {n_raw - (target - len(out))} bytes, "
-                    f"its header says {n_raw}"
+                    f"LZVN block decodes to {decoded} bytes, its header says {n_raw}"
                 )
             if end != start + n_payload:
                 raise CorruptionError(
@@ -416,6 +420,16 @@ def _fse_block(src: bytes, pos: int, v2: bool, out: bytearray, max_length: int) 
     if n_literals % 4:
         raise CorruptionError(
             f"LZFSE block literal count {n_literals} is not a multiple of 4"
+        )
+    # Every literal a match uses is one output byte, and every match an encoder writes
+    # makes at least one, so these tie the block's work to its output.
+    if n_literals > n_raw + 3:
+        raise CorruptionError(
+            f"LZFSE block has {n_literals} literals for {n_raw} bytes of output"
+        )
+    if n_matches > n_raw:
+        raise CorruptionError(
+            f"LZFSE block has {n_matches} matches for {n_raw} bytes of output"
         )
     if (
         max(lit_state) >= _LIT_STATES

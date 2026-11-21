@@ -372,6 +372,72 @@ def test_bvx2_initial_state_out_of_range() -> None:
         lzfse_decompress(broken, len(data))
 
 
+def _v2_block(
+    n_raw: int, n_literals: int, n_matches: int, lmd_payload: int = 7
+) -> bytes:
+    """A ``bvx2`` block with an empty frequency area (every frequency 0, so every
+    symbol costs no bits), all states 0 and zero-filled payloads."""
+    p0 = n_literals | (7 << 20) | (n_matches << 40) | (7 << 60)
+    p1 = (lmd_payload << 40) | (7 << 60)
+    p2 = 32
+    payload = bytes(7 + lmd_payload)
+    return b"bvx2" + struct.pack("<IQQQ", n_raw, p0, p1, p2) + payload
+
+
+def test_bvx2_block_with_an_empty_frequency_area_decodes() -> None:
+    assert lzfse_decompress(_v2_block(0, 0, 0) + b"bvx$", 0) == b""
+
+
+@pytest.mark.parametrize(
+    ("n_literals", "n_matches", "message"),
+    [
+        (40_000, 0, "40000 literals for 0 bytes"),
+        (0, 1, "1 matches for 0 bytes"),
+    ],
+)
+def test_bvx2_work_is_bounded_by_its_output(
+    n_literals: int, n_matches: int, message: str
+) -> None:
+    # Such blocks cost no input bits per symbol: unchecked, 46 bytes would buy 10,000
+    # loop iterations that write nothing.
+    stream = _v2_block(0, n_literals, n_matches) * 100 + b"bvx$"
+    with pytest.raises(CorruptionError, match=message):
+        lzfse_decompress(stream, 0)
+
+
+def test_bvx2_bit_stream_shorter_than_its_first_load() -> None:
+    # The match stream's first load may not reach back into the literal payload.
+    with pytest.raises(CorruptionError, match="shorter than its first load"):
+        lzfse_decompress(_v2_block(0, 0, 0, lmd_payload=3) + b"bvx$", 0)
+
+
+def test_bvx2_header_shorter_than_its_fixed_fields() -> None:
+    data, stream = _v2_stream()
+    broken = _v2_field(stream, 2, 0, 32, 16)
+    with pytest.raises(CorruptionError, match="block header of 16 bytes"):
+        lzfse_decompress(broken, len(data))
+
+
+def test_bvx2_matches_may_not_use_more_literals_than_decoded() -> None:
+    data, stream = _v2_stream()
+    (p0,) = struct.unpack_from("<Q", stream, 8)
+    broken = _v2_field(stream, 0, 0, 20, (p0 & 0xFFFFF) - 4)
+    with pytest.raises(CorruptionError, match="uses more literals than it decoded"):
+        lzfse_decompress(broken, len(data))
+
+
+def test_truncated_bvx1_header() -> None:
+    _data, stream = _v2_stream()
+    with pytest.raises(TruncatedError, match="inside a block header"):
+        lzfse_decompress(_to_v1(stream)[:700], 1 << 20)
+
+
+def test_lzvn_block_declaring_no_output_is_refused() -> None:
+    stream = b"bvxn" + struct.pack("<II", 0, 8) + b"\x06" + bytes(7) + b"bvx$"
+    with pytest.raises(CorruptionError, match="declares no output"):
+        lzfse_decompress(stream, 100)
+
+
 def test_lzvn_block_must_use_its_whole_payload() -> None:
     for data, stream in _small_streams():
         if stream[:4] != b"bvxn":
@@ -404,6 +470,12 @@ def test_lzvn_block_must_use_its_whole_payload() -> None:
         (b"\x1e", "undefined LZVN opcode"),
         (b"\x70", "undefined LZVN opcode"),
         (b"\xd5", "undefined LZVN opcode"),
+        (b"\x7e", "undefined LZVN opcode"),
+        (b"\xe3abc\x07\x00", "ends inside an opcode"),  # lrg_d
+        (b"\xe3abc\x01", "ends inside an opcode"),  # sml_d
+        (b"\xe3abc\xa0\x00", "ends inside an opcode"),  # med_d
+        (b"\xe0", "ends inside an opcode"),  # lrg_l
+        (b"\xf0", "ends inside an opcode"),  # lrg_m
         (b"\xe3ab", "ends inside a literal"),
         (b"\xe3abc\x06\0\0", "ends inside its end marker"),
         (b"\xe3abc", "before its end-of-stream opcode"),
