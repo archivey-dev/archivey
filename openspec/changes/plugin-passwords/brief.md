@@ -1,9 +1,8 @@
 # plugin-passwords — let a plugin format read encrypted members
 
 **Status:** Design. The maintainer ruled open questions 1-7 on 2026-11-21 (design.md
-§Open questions); question 7 (the `unlocked` field) too. No code until the
-maintainer has reviewed and merged this design. Additive: no current call changes.
-Target: 0.6.0 (before DMG encryption).
+§Open questions). No code until the maintainer has reviewed and merged this design.
+Additive: no current call changes. Target: 0.6.0 (before DMG encryption).
 
 **Why it matters:** `password=` never reaches a plugin. Three readers need it: makeself
 (already decrypts, through the private `ReaderContext._passwords`), DMG (encrypted
