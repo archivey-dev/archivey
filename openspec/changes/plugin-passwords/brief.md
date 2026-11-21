@@ -1,8 +1,9 @@
 # plugin-passwords — let a plugin format read encrypted members
 
-**Status:** Design. The maintainer ruled open questions 1-7 on 2026-11-21 (design.md
-§Open questions). No code until the maintainer has reviewed and merged this design.
-Additive: no current call changes. Target: 0.6.0 (before DMG encryption).
+**Status:** Design. The maintainer ruled open questions 1-9 on 2026-11-21 (design.md
+§Open questions); question 10 (the request's name) is open. No code until the maintainer
+has reviewed and merged this design. Additive: no current call changes. Target: 0.6.0
+(before DMG encryption).
 
 **Why it matters:** `password=` never reaches a plugin. Three readers need it: makeself
 (already decrypts, through the private `ReaderContext._passwords`), DMG (encrypted
@@ -15,13 +16,17 @@ it.
 
 - `FormatHandler.supports_password` declares that a format can be encrypted, so a
   concrete `password=` given for it is no longer reported as unused.
-- `ReaderContext.unlock(what, check, *, full_check=None, member=None)` runs archivey's
-  whole password loop for one encrypted unit (a member, a payload, a whole image):
-  candidates in order, the password that worked tried first next time, the provider
-  asked only after the list runs out, its repeats skipped. The plugin writes only
-  `check(password)`, which returns what the password unlocked (the key it needs later)
-  with a `PasswordConfirmVerdict`: `REJECTED`, `INCONCLUSIVE` or `CONFIRMED` (the enum
-  the built-in readers already use, made public). design.md D1 has worked examples.
+- A plugin hands archivey a
+  `NeedsPassword(what, check, *, full_check=None, member=None, then=None)` request for
+  one encrypted unit (a member, a payload, a whole image): `open` and `open_member`
+  return it, and `walk` and `iter_members` yield it. archivey runs its whole password
+  loop while no plugin code is running, then calls `then(data, verdict)` or sends
+  `(data, verdict)` back into the walk. The loop is the built-in one: candidates in
+  order, the password that worked tried first next time, the provider asked only after
+  the list runs out, its repeats skipped. The plugin writes only `check(password)`,
+  which returns what the password unlocked (the key it needs later) with a
+  `PasswordConfirmVerdict`: `REJECTED`, `INCONCLUSIVE` or `CONFIRMED` (the enum the
+  built-in readers already use, made public). design.md D1 has worked examples.
 - archivey raises the errors, so every format says the same thing: `EncryptionError`
   "… is encrypted: pass password= to read it" when no password was given, and the
   wrong-password `EncryptionError` "Wrong password for …" when every one failed.
@@ -36,5 +41,5 @@ it.
   `MemberSpan` and `MemberData` (design.md D7).
 
 **After it lands:** makeself moves off `_passwords` (and starts marking its encrypted
-members), ARJ reads garbled members, and the DMG spec §6B uses `unlock` instead of the
-private hook.
+members), ARJ reads garbled members, and the DMG spec §6B uses `NeedsPassword` instead
+of the private hook.

@@ -1,30 +1,33 @@
 ## ADDED Requirements
 
-### Requirement: A plugin unlocks an encrypted unit through ReaderContext.unlock
+### Requirement: A plugin unlocks an encrypted unit by handing archivey a NeedsPassword request
 
 A plugin whose handler sets `supports_password = True` SHALL read the caller's
-`password=` only through
-`ReaderContext.unlock(what, check, *, full_check=None, member=None)`, where `check` and
-`full_check` take one password and return `(data, PasswordConfirmVerdict)`. archivey
-SHALL call `check` with one candidate at a time, in the order the built-in readers use
-(the password that last unlocked a unit of this reader first, then the static
-candidates, then the provider's answers, skipping any already tried for this unit),
-SHALL return the winning data with the verdict it won with (`unlock` returns
-`(data, verdict)`), the first `CONFIRMED` result winning at once, and when several
-static candidates come back `INCONCLUSIVE` SHALL run `full_check` on each in order until
-one is `CONFIRMED`. A provider answer that `check` calls `INCONCLUSIVE` SHALL go through
+`password=` only through a `NeedsPassword(what, check, *, full_check=None, member=None,
+then=None)` request, where `check` and `full_check` take one password and return
+`(data, PasswordConfirmVerdict)`. The handler's `open` and `open_member` SHALL hand it
+over by returning it with `then`; `iter_members` and `walk` SHALL hand it over by
+yielding it without `then`, and archivey SHALL send `(data, verdict)` back into the
+generator. archivey SHALL call `then(data, verdict)` for a returned request, and `then`
+MAY return another request. archivey SHALL call `check` with one candidate at a time, in
+the order the built-in readers use (the password that last unlocked a unit of this
+reader first, then the static candidates, then the provider's answers, skipping any
+already tried for this request), SHALL pass on the winning data with the verdict it won
+with, the first `CONFIRMED` result winning at once, and when several static candidates
+come back `INCONCLUSIVE` SHALL run `full_check` on each in order until one is
+`CONFIRMED`. A provider answer that `check` calls `INCONCLUSIVE` SHALL go through
 `full_check` when one is given, and a `REJECTED` answer SHALL lead to the next provider
 call. An exception from either callback SHALL stop resolution and then go through the
-plugin's `translate_exception`. A plugin whose handler does not set `supports_password`
-SHALL get `ArchiveyUsageError` from `unlock`, and a concrete `password=` (a value or a
-list) given for its format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`; a provider
-callable SHALL stay uncalled and unreported.
+plugin's `translate_exception`. A request handed over by a plugin whose handler does not
+set `supports_password` SHALL be a plugin bug (`ArchiveyUsageError`), and a concrete
+`password=` (a value or a list) given for its format SHALL be reported with
+`PASSWORD_ARGUMENT_UNUSED`; a provider callable SHALL stay uncalled and unreported.
 
-#### Scenario: unlock outcomes
+#### Scenario: request outcomes
 
 | Case | Expected |
 | --- | --- |
-| `check` returns `(x, CONFIRMED)` for the first candidate | `(x, CONFIRMED)`; later candidates are not tried; the password is tried first for the next unit |
+| `check` returns `(x, CONFIRMED)` for the first candidate | `then(x, CONFIRMED)` (or `(x, CONFIRMED)` sent into the walk); later candidates are not tried; the password is tried first for the next unit |
 | `password=None` | `EncryptionError`: "{what} is encrypted: pass password= to read it" |
 | Provider's first answer is `None` | Same as `password=None` |
 | `check` returns `REJECTED` for every candidate and provider answer | `EncryptionError` from the wrong-password path: "Wrong password for {what}" |
@@ -38,12 +41,15 @@ callable SHALL stay uncalled and unreported.
 | Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check`: `a` `REJECTED`, `b` `CONFIRMED` | `(b's data, CONFIRMED)` |
 | Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check` `INCONCLUSIVE` for both | `(a's data, INCONCLUSIVE)` (fallback to the first survivor) |
 | No static candidates; provider answers `a` (`REJECTED` at `check`), then `b` (`INCONCLUSIVE`, `full_check` CRC fails), then `None` | Unverified-data `EncryptionError` (password or damage) |
-| Two member-less `unlock("encrypted payload", ...)` calls in one walk, needing different keys | Each has its own rejected set and provider attempt count |
-| Listing recreated, same unit unlocked again on a fresh member object | Same unit: answers already rejected for it are skipped |
+| Two member-less requests yielded in one walk, needing different keys | Each has its own rejected set and provider attempt count |
 | ARJ trial: source ends early inside a decoder pull | `TruncatedError` propagates (source-side), next password not tried |
 | Static `["a", "b"]`, both `INCONCLUSIVE`, no `full_check` | `a`'s data; `a` is not promoted |
 | Provider answers wrong then right, `check` always `INCONCLUSIVE`, `full_check` given | Second answer's data; `full_check` rejected the first |
-| Handler without `supports_password` calls `unlock` | `ArchiveyUsageError` |
+| Handler without `supports_password` returns or yields a request | `ArchiveyUsageError` |
+| `open_member` returns a request without `then` | Plugin bug |
+| `walk` yields a request with `then` | Plugin bug |
+| `then` returns a second request (headers, then data) | Resolved in turn; its `then` returns the `MemberData` |
+| `then` raises | That error, after `translate_exception` |
 | Handler without `supports_password`, `password="x"` | `PASSWORD_ARGUMENT_UNUSED` |
 | Handler without `supports_password`, `password=provider` | No diagnostic; provider never called |
 
@@ -111,32 +117,34 @@ before returning when the total would pass the cap, leaving the total unchanged.
 | Cap `None` | Never raises |
 | A nested archive inside the plugin's archive | Its own reader and budget |
 
-### Requirement: The provider is called outside plugin calls where the step can repeat
+### Requirement: The provider runs while no plugin code is in progress
 
-Where nothing has reached the caller yet (the handler's `open`, `open_member` before its
-stream is returned, an indexed listing before its first member is published), `unlock`
-SHALL NOT call the password provider inside the plugin call: it SHALL end the call, and
-archivey SHALL call the provider with no archivey lock held, then repeat that step,
-which tries the new answer. A walk that already yielded a member SHALL call the provider
-in place, with the handle guard released, as the built-in streaming readers do. A
-provider that reenters the same reader from its own thread or a copied context SHALL get
-`ArchiveyUsageError` before any lock or listing wait where the step repeats, and two
-workers needing the provider at once SHALL be served one after the other. Retry state
-SHALL be keyed by an internal identity of the unit within the pending step, not by
-`what` or `member`.
+archivey SHALL resolve a returned request after the plugin call has finished, with no
+archivey lock or per-call adapter state held, and SHALL call `then` under the same guard
+and state as the original call. archivey SHALL resolve a yielded request while the
+generator is paused, keeping the walk's ownership, marking the walk as waiting on the
+provider and releasing the handle guard; a call from the provider's own thread or a
+context copied from it that would wait for that walk SHALL raise `ArchiveyUsageError` at
+once, and a call from any other thread SHALL wait for the answer. No plugin call SHALL
+be repeated to try a provider answer. Retry state SHALL live on the request. When
+resolution fails for a yielded request, archivey SHALL close the generator and the error
+SHALL end the walk. Two workers needing the provider at once SHALL be served one after
+the other.
 
-#### Scenario: concurrency and repeats
+#### Scenario: concurrency
 
 | Case | Expected |
 | --- | --- |
-| `MemberStreams.CONCURRENT`, provider calls `reader.open(other_encrypted_member)` | `ArchiveyUsageError`, no deadlock |
+| `MemberStreams.CONCURRENT`, provider calls `reader.open(other_encrypted_member)` | Provider's own thread: `ArchiveyUsageError`, no deadlock |
 | Same, after another member's stream was materialized | `ArchiveyUsageError`, no deadlock |
 | Provider waits on a copied-context worker that calls `reader.open()` during first-touch listing | `ArchiveyUsageError` in the worker, no deadlock |
 | Two threads open two encrypted members, provider sleeps | Provider called once at a time; both members read |
 | Thread A waits on the provider for a nested member while thread B reopens another nested member | Both read; neither sees the other's reopen state |
-| Provider answers wrong then right for one `open_member` | `open_member` called three times; rounds charged once per answer |
-| makeself on a pipe, payload 2 needs a provider answer after payload 1's members were yielded | Provider called in place; payload 1 is not yielded again |
-| DMG `open` needs a provider answer | Handler `open` repeated; no reader returned before |
+| Provider answers wrong then right for one `open_member` | `open_member` called once, `then` once; rounds charged once per answer |
+| makeself on a pipe, payload 2 needs a provider answer after payload 1's members were yielded | Walk paused at the request, provider called, walk resumed; payload 1 is not yielded again |
+| makeself payload 2: every password wrong | Generator closed; wrong-password `EncryptionError` ends the walk |
+| Another thread calls `reader.members()` while the walk waits on the provider | Waits, then gets the full list |
+| DMG `open` returns a request | Handler `open` called once; `then` returns the reader |
 
 #### Scenario: ARJ trial decode failures
 
@@ -148,7 +156,7 @@ SHALL be keyed by an internal identity of the unit within the pending step, not 
 ### Requirement: A replacement reader receives password= when it supports passwords
 
 A replacement plugin (`FormatPolicy(replace=)`) whose handler sets `supports_password`
-SHALL receive the caller's `password=` through `unlock` like any plugin.
+SHALL receive the caller's `password=` through `NeedsPassword` like any plugin.
 
 #### Scenario: replaced ZIP with an encrypted member
 

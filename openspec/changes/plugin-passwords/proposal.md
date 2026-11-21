@@ -10,17 +10,20 @@ private user. A plugin replacing ZIP, 7z or RAR cannot read an encrypted member 
 ## What Changes
 
 - New public names in `archivey.formats`, ruled by the maintainer on 2026-11-21:
-  `FormatHandler.supports_password`, `ReaderContext.unlock()` (returns
-  `(data, PasswordConfirmVerdict)`), `PasswordConfirmVerdict` (the built-in enum, made
-  public), `ReaderContext.charge_key_derivation()`, `ReaderArchiveInfo.is_encrypted`,
-  and `unlocked` on `MemberRecord`, `MemberSpan` and `MemberData`.
-- The password provider is called only at the reader's public boundary, never inside a
-  plugin call; a new provider answer repeats the operation (design.md D8).
+  `FormatHandler.supports_password`, the `NeedsPassword` request a plugin returns or
+  yields (name still open; archivey calls back with `(data, PasswordConfirmVerdict)`),
+  `PasswordConfirmVerdict` (the built-in enum, made public),
+  `ReaderContext.charge_key_derivation()`, `ReaderArchiveInfo.is_encrypted`, and
+  `unlocked` on `MemberRecord`, `MemberSpan` and `MemberData`.
+- The password provider runs while no plugin code is in progress: archivey resolves a
+  returned request after the plugin call and a yielded one while the walk is paused, so
+  no plugin call is repeated (design.md D8).
 - The adapter passes the caller's `password=` to every plugin whose handler sets
   `supports_password`, including a replacement reader.
 - archivey builds the missing-password and wrong-password `EncryptionError`s for a
   plugin from the `what` text it passes.
-- Follow-up PRs: makeself on `unlock` (drops `_passwords`), ARJ garble decryption, DMG.
+- Follow-up PRs: makeself on `NeedsPassword` (drops `_passwords`), ARJ garble
+  decryption, DMG.
 
 ## Capabilities
 

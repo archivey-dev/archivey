@@ -2,7 +2,8 @@
 
 - [ ] 1.1 `FormatHandler.supports_password`; `register_builtin_format` reads it instead
   of the `SUPPORTS_PASSWORD=` override
-- [ ] 1.2 `ReaderContext.unlock`, `PasswordConfirmVerdict`, `charge_key_derivation` over
+- [ ] 1.2 `NeedsPassword` resolution for returned and yielded requests,
+  `PasswordConfirmVerdict`, `charge_key_derivation` over
   `internal/password.py` and `KeyDerivationBudget`
 - [ ] 1.3 `ReaderArchiveInfo.is_encrypted`; `unlocked` on MemberRecord, MemberSpan,
   MemberData (D7); verification starts at `NONE` for `is_encrypted` members until an
@@ -11,19 +12,21 @@
   `EncryptionError`; the password is not promoted
 - [ ] 1.5 Replacement readers get `password=` when they set `supports_password`
 - [ ] 1.6 Tests: a toy XOR-with-check plugin and a toy no-check plugin in `tests/`,
-  covering every row of the spec tables; provider repeats and reentry through `unlock`
+  covering every row of the spec tables; provider repeats and reentry while a request is
+  resolved
 - [ ] 1.6a Tests: provider reentry from `open_member` and after a stream is materialized
   under `CONCURRENT`; two workers waiting on one provider; callback exceptions through
   `translate_exception`; strength-rule cases
-- [ ] 1.6b Tests (D8): reentry during first-touch listing; interleaved nested-member
-  reopen while another thread waits on the provider; repeat count per provider answer;
-  no provider answers on an unrepeatable walk; ARJ short source vs wrong-key exhaustion
+- [ ] 1.6b Tests (D8): reentry during first-touch listing and during a paused walk;
+  another thread waiting on a paused walk; interleaved nested-member reopen while
+  another thread waits on the provider; `open_member` and `then` called once per
+  request; generator closed on failure; ARJ short source vs wrong-key exhaustion
 - [ ] 1.7 Docs: `adding-a-format.md` passwords section, `formats.py` docstring (docs
   session)
 
 ## 2. Users (separate PRs)
 
-- [ ] 2.1 makeself: `unlock` + `charge_key_derivation`; mark payload members
-  `is_encrypted`; drop `ReaderContext._passwords`
+- [ ] 2.1 makeself: yield `NeedsPassword` + `charge_key_derivation`; mark payload
+  members `is_encrypted`; drop `ReaderContext._passwords`
 - [ ] 2.2 ARJ: decrypt garbled members (`INCONCLUSIVE` + `full_check` on the CRC-32)
-- [ ] 2.3 DMG spec §6B: point at `unlock`
+- [ ] 2.3 DMG spec §6B: return `NeedsPassword` from the handler's `open`

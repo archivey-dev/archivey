@@ -74,7 +74,7 @@ plan. Then:
   any, SHALL be consulted as if no static candidate had survived;
 - provider answers SHALL NOT be gathered this way: the provider stays lazy, and its
   first answer that is not `REJECTED` SHALL be accepted. Exception: for a format plugin
-  that passes a `full_check` to `ReaderContext.unlock` (`format-plugins`), an
+  whose `NeedsPassword` request carries a `full_check` (`format-plugins`), an
   `INCONCLUSIVE` provider answer SHALL run that full check first, and a `REJECTED`
   result SHALL lead to the next provider call. The built-in readers keep the rule above.
 

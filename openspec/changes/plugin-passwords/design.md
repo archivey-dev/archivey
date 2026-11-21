@@ -39,10 +39,11 @@ archivey's API (a plugin brings its own, or uses its library's).
 
 ## Decisions (recommended; each is an open question below until ruled)
 
-### D1. archivey runs the loop; the plugin writes `check` (RULED: davi 11-21, card)
+### D1. archivey runs the loop; the plugin hands it a `NeedsPassword` request (RULED: davi 11-21, cards for questions 1 and 9)
 
 ```python
-T = TypeVar("T")
+T = TypeVar("T")   # what one password unlocks: a derived key, a cipher state, a header
+R = TypeVar("R")   # what the plugin call returns once the unit is unlocked
 
 class PasswordConfirmVerdict(Enum):   # today internal/password_confirm.py; made public
     REJECTED = "rejected"           # this password is not the one
@@ -51,32 +52,44 @@ class PasswordConfirmVerdict(Enum):   # today internal/password_confirm.py; made
 
 Check = Callable[[bytes], tuple[T | None, PasswordConfirmVerdict]]
 
-class ReaderContext:
-    def unlock(
-        self,
-        what: str,
-        check: Check[T],
-        *,
-        full_check: Check[T] | None = None,
-        member: ArchiveMember | None = None,
-    ) -> tuple[T, PasswordConfirmVerdict]: ...
+@dataclass(frozen=True)
+class NeedsPassword(Generic[T, R]):
+    what: str                                   # names the unit in archivey's messages
+    check: Check[T]
+    full_check: Check[T] | None = None
+    member: ArchiveMember | None = None         # shown to the provider
+    then: Callable[[T, PasswordConfirmVerdict], R] | None = None
 ```
 
-`check(password)` tries one password and returns what that password unlocked (whatever
-the plugin needs to decrypt later: a derived key, a cipher state, a decrypted header),
-with how sure it is. archivey never looks inside the value; `unlock` returns it together
-with the verdict it won with (the full check's when one ran, or an earlier survivor's
-`INCONCLUSIVE` when archivey fell back to it), which the plugin puts on
-`MemberData.unlocked` or `MemberSpan.unlocked` (D7). Data is
-`None` only with `REJECTED`. An exception from `check` or `full_check` ends the loop
-(D2). `member` is what the provider's `PasswordRequest.member` shows (`None` for an
-archive-level unit). `what` names the unit in archivey's messages ("makeself payload 2",
-"the disk image").
+The plugin never calls into archivey to unlock. It hands archivey a request and archivey
+calls back with the result, so the password loop and the provider always run while no
+plugin code is in progress (D8):
 
-This is the public form of the internal `password_confirm.attempt_with_confirm` (probe +
-full check), which the ZIP, 7z and RAR readers already use. The enum is the one they
-use, moved to `archivey.formats` and imported from there by the built-in readers, so
-plugins and built-ins share one set of levels (davi 11-21).
+| Plugin call | How the plugin hands over the request | What archivey does with it |
+| --- | --- | --- |
+| `FormatHandler.open` (DMG) | Returns `NeedsPassword(..., then=...)` instead of the reader | Runs the loop, then calls `then(data, verdict)`, which returns the reader |
+| `IndexedReader.open_member` (ARJ, a replaced ZIP) | Returns `NeedsPassword(..., then=...)` instead of `MemberData` | Runs the loop, then calls `then(data, verdict)`, which returns the `MemberData` |
+| `IndexedReader.iter_members`, `SequentialReader.walk` (makeself, encrypted headers) | `data, verdict = yield NeedsPassword(...)`, with no `then` | Runs the loop while the generator is paused, then sends `(data, verdict)` into it |
+
+`then` may itself return another `NeedsPassword` (headers under one key, then data under
+another). A returned request without `then`, a yielded one with `then`, and a request
+yielded by an iterator that is not a generator are plugin bugs.
+
+`check(password)` tries one password and returns what that password unlocked (whatever
+the plugin needs to decrypt later), with how sure it is. archivey never looks inside the
+value; it passes the value on with the verdict it won with (the full check's when one
+ran, or an earlier survivor's `INCONCLUSIVE` when archivey fell back to it), and the
+plugin puts that verdict on `MemberData.unlocked` or `MemberSpan.unlocked` (D7). Data is
+`None` only with `REJECTED`. An exception from `check` or `full_check` ends the loop
+(D2). `member` is what the provider's existing `PasswordRequest.member` shows (`None`
+for an archive-level unit); the new type is not called `PasswordRequest` because that
+name is already the provider's argument. `what` names the unit in archivey's messages
+("makeself payload 2", "the disk image").
+
+The loop is the public form of the internal `password_confirm.attempt_with_confirm`
+(probe + full check), which the ZIP, 7z and RAR readers already use. The enum is the one
+they use, moved to `archivey.formats` and imported from there by the built-in readers,
+so plugins and built-ins share one set of levels (davi 11-21).
 
 **Strength rule** (the one `archive-reading` already states for the built-ins): a
 verdict is `CONFIRMED` only on evidence at least as strong as a CRC-32 over 4 or more
@@ -88,8 +101,7 @@ it may return `REJECTED`, and otherwise `INCONCLUSIVE`.
 One change for the built-ins: a probe may now return `REJECTED`, where today it raises
 the wrong-password `EncryptionError` instead; both stay accepted inside archivey.
 
-Example, makeself (openssl, AES-256-CBC). `unlock` returns the AES key and IV of the
-password that worked:
+Example, makeself (openssl, AES-256-CBC). The walk pauses at each encrypted payload:
 
 ```python
 def check(password: bytes) -> tuple[AesParams | None, PasswordConfirmVerdict]:
@@ -103,15 +115,19 @@ def check(password: bytes) -> tuple[AesParams | None, PasswordConfirmVerdict]:
     # the stored (encrypted) bytes, so they cannot confirm the password either.
     return params, PasswordConfirmVerdict.INCONCLUSIVE
 
-params, verdict = context.unlock("makeself payload 1", check)
-# each span of this payload: MemberSpan(..., unlocked=verdict)
+def walk(self, stream):
+    ...
+    params, verdict = yield NeedsPassword(f"makeself payload {n}", check)
+    for span in self._tar_spans(decrypting(stream, params)):
+        yield span._replace(unlocked=verdict)
 ```
 
 makeself has no `full_check`: it is a forward walk with no replay, so with several
 candidates that pass the magic the first one wins, unpromoted, as today. Its members
 stay `NONE` until a read ends with the decoded TAR and compressor checks passing.
 
-Example, ARJ garble (each byte XORed with the password; only the member's CRC-32 tells):
+Example, ARJ garble (each byte XORed with the password; only the member's CRC-32 tells).
+Garbled members are listed normally; only opening one needs the password:
 
 ```python
 def check(password):
@@ -138,8 +154,13 @@ def full_check(password):
         return password, PasswordConfirmVerdict.INCONCLUSIVE
     return password, PasswordConfirmVerdict.CONFIRMED
 
-key, verdict = context.unlock(member_label, check, full_check=full_check, member=member)
-return MemberData(degarbled_stream(key), unlocked=verdict)  # decoded again for the caller
+def open_member(self, member, locator):
+    if not locator.garbled:
+        return MemberData(...)
+    return NeedsPassword(
+        member_label, check, full_check=full_check, member=member,
+        then=lambda key, verdict: MemberData(degarbled_stream(key), unlocked=verdict),
+    )                                                 # decoded again for the caller
 ```
 
 The plugin decides which of its own failures depend on the password (return `REJECTED`)
@@ -156,12 +177,22 @@ where the decode limits measure them. It exists only where the plugin can replay
 unit: an indexed reader, or a sequential one that reads its unit into a bounded buffer
 first.
 
-For DMG, `check` returns the unwrapped disk key, `CONFIRMED` once the key unwrap and the
-decrypted `koly` block (a 512-byte structure with magic, version and sizes) check out.
+For DMG, the handler's `open` reads the `encrcdsa` header and returns a request whose
+`check` returns the unwrapped disk key, `CONFIRMED` once the key unwrap and the
+decrypted `koly` block (a 512-byte structure with magic, version and sizes) check out;
+its `then` builds the reader over the decrypting source.
 
-Alternative: hand the plugin an iterator of candidates. Rejected (davi chose the loop in
-archivey): the provider's rules (skip repeats, stop after three own repeats, no reentry,
-one call at a time) and promotion would be each plugin's job.
+Alternatives:
+
+- Hand the plugin an iterator of candidates. Rejected (davi chose the loop in archivey):
+  the provider's rules (skip repeats, stop after three own repeats, no reentry, one call
+  at a time) and promotion would be each plugin's job.
+- `ReaderContext.unlock(...)`, called from inside the plugin (this design's first
+  version). Replaced (davi 11-21, question 9): archivey could not call the provider
+  while the plugin's call held its locks, so `unlock` had to raise a hidden internal
+  signal through plugin code and repeat the plugin call once per provider answer, with
+  retry state keyed by call order, and a walk that had already yielded still called the
+  provider with the listing lock held.
 
 ### D2. archivey builds both errors (RULED: davi 11-21, card)
 
@@ -172,6 +203,8 @@ one call at a time) and promotion would be each plugin's job.
 | `full_check` came back `REJECTED` for every candidate it ran on, and nothing stronger than the data checksum rejected them | unverified-data `EncryptionError` ("wrong password or damaged data"): a damaged member fails every CRC too |
 | `check` or `full_check` raised (any exception, `EncryptionError` included) | Resolution stops; no further candidate or provider call. The exception then goes through the plugin's `translate_exception` like any other plugin exception |
 | A callback returned something other than a 2-tuple of data and `PasswordConfirmVerdict`, or `None` data with a verdict other than `REJECTED` | Plugin bug (`_plugin_bug`, as for a bad `open_member` return) |
+| A request misused (D1: `then` missing or present in the wrong place, yielded by a non-generator, handed over by a handler without `supports_password`) | Plugin bug |
+| `then` raised | An ordinary plugin exception, through `translate_exception` |
 
 Same class as today for both (`EncryptionError`); the error-handling spec has no
 subclasses for them, and callers already tell them apart only by message. The
@@ -236,9 +269,9 @@ class ReaderArchiveInfo(NamedTuple):
 - `supports_password = False`: a concrete `password=` (a value or a list, not a
   provider, which stays uncalled and unreported, as today) is reported unused, with the
   replacement-specific reason for a replacement reader, (`PASSWORD_ARGUMENT_UNUSED`) and
-  `unlock` raises `ArchiveyUsageError` (a plugin bug). The shared backend-class builder
-  maps it next to `uses_encoding`, so registration and replacement agree, and makeself
-  declares it in the API PR. This replaces the internal
+  a `NeedsPassword` it hands over is a plugin bug (`ArchiveyUsageError`). The shared
+  backend-class builder maps it next to `uses_encoding`, so registration and replacement
+  agree, and makeself declares it in the API PR. This replaces the internal
   `register_builtin_format(..., SUPPORTS_PASSWORD=True)` override.
 - How an encrypted member's `verified` level rises is D7.
 - `ReaderArchiveInfo.is_encrypted` is per archive and becomes `ArchiveInfo.is_encrypted`
@@ -252,7 +285,7 @@ class ReaderArchiveInfo(NamedTuple):
 ### D6. Replacement readers
 
 A replacement plugin for ZIP, 7z or RAR whose handler sets `supports_password` gets the
-caller's `password=` through `unlock`, as any plugin does. The sentence in
+caller's `password=` through `NeedsPassword`, as any plugin does. The sentence in
 `adding-a-format.md` saying a replaced ZIP cannot read encrypted members goes.
 
 ### D7. The verdict travels with the data it covers (RULED: davi 11-21, card)
@@ -293,78 +326,64 @@ class MemberData(NamedTuple):     # one open of a member
   `ENCRYPTED_MEMBER_UNVERIFIED`, as for ZipCrypto; a digest that passes raises the
   member past `UNLOCKED` as usual.
 
-Alternative: one member-wide flag set by the latest `unlock`. Rejected for the cases
+Alternative: one member-wide flag set by the latest request. Rejected for the cases
 above.
 
-### D8. The provider is called only between plugin calls, never inside one
+### D8. The provider runs while no plugin code is in progress (RULED: davi 11-21, question 9)
 
-Inside a plugin call archivey may hold locks and per-call state: the handle guard around
+Inside a plugin call archivey holds locks and per-call state: the handle guard around
 `open_member` and stream reads under `MemberStreams.CONCURRENT`, the listing lock and
 the materialization owner around `iter_members` and `walk`, and adapter scratch state
-such as the nested-reopen marker around `open_member`. Releasing one of them around a
-provider call leaves the others held, and releasing all of them would let another thread
-change state the suspended call still uses. So `unlock` never calls the provider itself:
+such as the nested-reopen marker around `open_member`. Because the plugin hands over a
+request instead of calling in (D1), archivey resolves it at a point where it chooses
+what is held:
 
-1. Inside the plugin call, `unlock` tries only what needs no provider call: the static
-   candidates, and provider answers already given for this unit, skipping any already
-   rejected for it. The unit is identified internally, not by `what` (display text) or
-   `member` (which may be `None`, or a fresh object after a recreated listing): it is
-   the n-th `unlock` call of the pending public operation, which a repeat reaches in the
-   same order because plugin calls are deterministic over the same source. Retry state
-   lives with the pending operation and ends with it; known-good promotion across units
-   stays per reader, as today.
-2. When it would need a new provider answer, it raises an internal signal (not an
-   `ArchiveyError`, not visible to the plugin's `translate_exception`). The plugin call
-   unwinds, and every lock and per-call state goes with it.
-3. At the reader's public boundary (the caller's `open()`, iteration, `verify_all()` and
-   so on), with no archivey lock held and the listing not mid-walk, archivey runs the
-   provider call: the existing reentry check (own thread or copied context raises
-   `ArchiveyUsageError`) and the existing one-at-a-time serialization, both before any
-   lock or listing wait.
-4. archivey then repeats the step that raised it, which tries the new answer.
+- **A returned request** (`open`, `open_member`): the plugin call has finished.
+  archivey leaves the handle guard and the per-call scratch state, runs the loop and
+  any provider call with no archivey lock held, then calls `then` under the same guard
+  and scratch state as the original call. `then` uses only what its closure captured
+  and the reader's own state, as `open_member` already must under `CONCURRENT`, since
+  another thread may use the reader while the provider runs.
+- **A yielded request** (`walk`, `iter_members`): the generator is paused at its
+  `yield`, so no plugin frame is running. The walk keeps its listing lock and
+  materialization ownership (no other thread may advance it), and archivey marks it as
+  waiting on the provider and releases the handle guard. Every call that would wait for
+  that walk checks the mark first: from the provider's own thread or a context copied
+  from it, it raises `ArchiveyUsageError` at once instead of waiting; from any other
+  thread it waits until the provider has answered, as it waits for the walk today.
 
-**Which steps repeat** (the boundary is "before anything was handed to the caller"):
+In both cases the request object is the unit. Its rejected answers and the provider's
+attempt count for it live on the request and end with it, so no identity by call order
+is needed, and no plugin call is ever repeated. Promotion of a known-good password
+across units stays per reader, as today. The provider's reentry check and one-at-a-time
+serialization run before any lock or listing wait, as today.
 
-| Plugin call | Repeated step | Visible effects before the repeat |
-| --- | --- | --- |
-| `FormatHandler.open` (DMG whole-image unlock) | The handler open | None: the reader is not returned yet |
-| `IndexedReader.open_member` | That member open | None: no stream returned yet |
-| `iter_members` (indexed listing) | The listing, before its first member is published | None while no member is published |
-| `walk` / `iter_members` after a member was yielded | Not repeated (see below) | Members, bytes, files written by extraction |
+When resolution fails (no password, every password wrong, or a callback raised), a
+returned request raises that error from the public call. For a yielded request archivey
+closes the generator and the error ends the walk, as any walk error does: a streaming
+walk that already yielded members is poisoned, as today, and an indexed listing that
+failed before its first member publishes nothing.
 
-Cost: each new provider answer repeats that step up to the `unlock`: a header read for a
-member, the image header for DMG. Static candidates never cause a repeat. Key derivation
-already charged for a rejected answer is not charged again (the answer is skipped), and
-a plugin's own key cache survives the repeat.
+A plugin hands over requests from `open`, `iter_members`, `walk` and `open_member`
+(and from a `then` it was given), and from nowhere else: not from inside a stream's
+`read`.
 
-**A walk that has already yielded members** (makeself payload 2, after payload 1's
-members went to `stream_members()` or extraction) cannot be repeated: archivey poisons a
-failed streaming walk on purpose because the prefix is out. There `unlock` calls the
-provider in place, as makeself and the built-in streaming readers do today, with the
-handle guard released, and the walk lock still held. The known limit is the one those
-readers have now: a provider that waits on a copied-context worker calling into the same
-reader during the walk can block. This keeps makeself's provider on a pipe working
-(maintainer decision, question 8).
-
-The plugin may call `unlock` from `open`, `iter_members`, `walk` and `open_member`, and
-from nowhere else (not from inside a stream's `read`). Its calls must be repeatable
-(they already are: archivey rewalks and reopens today).
-
-Alternative: release the locks around an in-place provider call everywhere. Rejected for
-the reasons above (listing lock, materialization wait, reopen marker), except in the
-walk case, where no repeat is possible.
+Remaining limit: a provider that waits for a separate thread (not a copied context) that
+needs the same paused walk waits forever. That is the provider's own deadlock, the same
+as a provider that waits for any lock its own caller holds, and the docs say so.
 
 ## Risks / Trade-offs
 
-- `unlock` is per call: a format that tries one password against many units must cache
-  derived keys itself (makeself's `_keys` dict); archivey only orders the candidates.
+- Each request is one unit: a format that tries one password against many units must
+  cache derived keys itself (makeself's `_keys` dict); archivey only orders the
+  candidates.
 - `what` is free text from the plugin and goes into an error message. Plain text is
   fine: error messages are not parsed, and archivey already quotes member names it
   inserts.
-- A plugin can still decrypt without `unlock` by reading the password some other way
-  (an environment variable). Nothing stops that, and nothing needs to.
+- A plugin can still decrypt without `NeedsPassword` by reading the password some other
+  way (an environment variable). Nothing stops that, and nothing needs to.
 
-## Open questions (all ruled by the maintainer, 2026-11-21)
+## Open questions
 
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi
    11-21).
@@ -375,11 +394,15 @@ walk case, where no repeat is possible.
 4. D4: `charge_key_derivation(rounds)` on the context? RULED yes (davi 11-21, card).
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
    `charge_key_derivation`, `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`,
-   `CONFIRMED`). RULED keep all (davi 11-21, card).
+   `CONFIRMED`). RULED keep all (davi 11-21, card); `unlock` later replaced by
+   question 9.
 6. Order: this API PR first, then makeself, ARJ and DMG on it? RULED yes (davi 11-21,
    card).
 7. D7: the new public field `unlocked: PasswordConfirmVerdict | None` on `MemberRecord`,
    `MemberSpan` and `MemberData`? RULED yes (davi 11-21, card).
-8. D8: a walk that already yielded members calls the provider in place, as makeself and
-   the built-in streaming readers do today (with the same copied-context limit), instead
-   of giving it no provider answers? RULED yes (davi 11-21, card).
+8. D8: a walk that already yielded members calls the provider in place? RULED yes (davi
+   11-21, card); superseded by question 9, which removes the in-place call.
+9. D1/D8: instead of calling `context.unlock`, the plugin returns or yields a request
+   and archivey calls back with the key? RULED yes (davi 11-21, card).
+10. D1: the request's name, `NeedsPassword`. OPEN. (`PasswordRequest` is already the
+    provider's argument type.)
