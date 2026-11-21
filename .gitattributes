@@ -9,3 +9,4 @@
 *.sqfs binary
 *.run binary
 tests/fixtures/script-installers/cpack-stgz.sh binary
+*.dmg binary

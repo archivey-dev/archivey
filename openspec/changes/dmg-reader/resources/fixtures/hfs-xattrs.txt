@@ -1,0 +1,11 @@
+./compressed.txt: com.apple.provenance: 
+./hello.txt: com.apple.provenance: 
+./hello.txt: com.example.test: xattr value
+./link-rel: com.apple.provenance: 
+./link-rel: com.example.test: xattr value
+./random.bin: com.apple.provenance: 
+./sub dir/café.txt: com.apple.provenance: 
+./sub dir/hardlink.txt: com.apple.provenance: 
+./sub dir/hardlink.txt: com.example.test: xattr value
+./sub dir: com.apple.provenance: 
+./text.txt: com.apple.provenance: 

@@ -1,0 +1,2 @@
+ProductName:		macOS
+ProductVersion:		26.7.1
