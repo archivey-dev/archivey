@@ -404,5 +404,5 @@ as a provider that waits for any lock its own caller holds, and the docs say so.
    11-21, card); superseded by question 9, which removes the in-place call.
 9. D1/D8: instead of calling `context.unlock`, the plugin returns or yields a request
    and archivey calls back with the key? RULED yes (davi 11-21, card).
-10. D1: the request's name, `NeedsPassword`. OPEN. (`PasswordRequest` is already the
-    provider's argument type.)
+10. D1: the request's name, `NeedsPassword`. RULED yes (davi 11-21, card).
+    (`PasswordRequest` is already the provider's argument type.)
