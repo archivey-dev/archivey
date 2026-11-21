@@ -73,7 +73,9 @@ install_linux_packages() {
   # tabix: ships bgzip, the reference BGZF writer tests/test_bgzf_seek.py checks the
   #   block walk against (the test skips without it).
   # liblzo2-dev: python-lzo builds against it (below).
-  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso genisoimage udftools zip unzip tabix liblzo2-dev
+  # hfsprogs: fsck.hfsplus checks the HFS+ volumes tests/dmg_build.py writes
+  #   (tests/test_dmg_build.py skips those checks without it).
+  ${SUDO} apt-get install -y unrar rar p7zip-full unar xorriso genisoimage udftools zip unzip tabix liblzo2-dev hfsprogs
   # 7zz 26.05: Ubuntu's 7z predates the RISC-V filter that tests/test_sevenzip_riscv.py
   # checks against. Built from source (about half a minute); a no-op once installed.
   # Non-fatal: without it only those live checks skip.
