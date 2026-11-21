@@ -320,17 +320,20 @@ disk (sector ranges to runs); two tables whose sector ranges overlap are
 `CorruptionError` before the index is built. Bytes of the disk always come from that
 index. Candidate partition ranges come from the first of these that is valid: (a) the
 partition map read from the disk: a GPT whose header CRC and partition-entry array CRC
-both match and whose geometry is valid (entry size 128 × 2^n, entry count ≤ 128, entry
-array, first and last usable LBA inside the disk, every entry inside the usable range,
-no two entries overlapping), tried as the primary pair (header at sector 1 and its
-array) and then the backup pair (header at the last sector and its array); or an APM
-whose entries all have the `PM` signature, a consistent map count and ranges inside the
-disk, (b) the `blkx` tables' own sector ranges when there is no map
-or the map is damaged (a diagnostic says which), (c) the whole disk. Each candidate is
-probed, and the filesystem signature (step 3) alone decides what is read. `blkx` names
-(`Apple_HFS`, `Apple_APFS`) and GPT/APM type values only describe: a disagreement with
-the signature is a diagnostic, never a reason to skip or read a partition. So a GPT
-HFS+ entry with a matching header and an unrecognised `blkx` name is read.
+both match and whose geometry is valid (entry size 128 × 2^n and at most 512 bytes,
+entry count ≤ 128, so the array is at most 64 KiB and its size is checked from the
+header before it is read; a GPT that is valid by the UEFI rules but larger than this is
+not used: a diagnostic, and candidates come from (b); entry array, first and last usable
+LBA inside the disk, every entry inside the usable range, no two entries overlapping),
+tried as the primary pair (header at sector 1 and its array) and then the backup pair
+(header at the last sector and its array); or an APM whose entries all have the `PM`
+signature, a consistent map count and ranges inside the disk, (b) the `blkx` tables' own
+sector ranges when there is no map or the map is damaged (a diagnostic says which), (c)
+the whole disk. Each candidate is probed, and the filesystem signature (step 3) alone
+decides what is read. `blkx` names (`Apple_HFS`, `Apple_APFS`) and GPT/APM type values
+only describe: a disagreement with the signature is a diagnostic, never a reason to skip
+or read a partition. So a GPT HFS+ entry with a matching header and an unrecognised
+`blkx` name is read.
 
 1. Each `blkx` entry is normally one partition, named like `disk image (Apple_HFS : 4)`,
    `Protective Master Boot Record (MBR : 0)`, `GPT Header (Primary GPT Header : 1)`,
@@ -827,7 +830,7 @@ DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
 
 - `open()`: a fixed envelope, nothing proportional to the image. It reads: the `koly`
   block; the property list (≤ 64 MiB, §4.2) and its run tables; the partition map (GPT
-  header and entry array, at most 128 entries of 128 bytes; or APM, at most 64 entries);
+  header and entry array, at most 64 KiB as bounded in §5; or APM, at most 64 entries);
   and for each candidate partition (at most 128, §5): a 4 KiB prefix probe (signature at
   1024 for HFS+, at 32 for APFS); for HFS+, the 512-byte volume header and, when
   journaled, exactly two more reads: the journal info block at
@@ -835,16 +838,21 @@ DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
   offset that block gives (one 512-byte read), both checked inside the partition; for
   APFS, block 0 at its declared block size (4 KiB to 64 KiB), with its Fletcher-64
   checked at open. So open-time disk reads are at most 128 × (4 KiB + 3 × 512 bytes, or
-  64 KiB for APFS) plus the map. The physical bytes behind them are bounded by the run
-  caps of §4.3, since each read decodes at most the runs it covers. Errors raised at
-  open: encrypted (before Part G) and segmented refusals; `koly`, plist and run-table
-  errors (§4); partition-map errors that leave no candidate; no filesystem found;
-  APFS-only before Part E; HFS+ volume header errors, HFS wrapper, journal refusals
-  (§6.1). Everything else is at first listing: the catalog and other B-trees, the APFS
-  checkpoint scan, object maps and volume superblocks (so APFS volume names, and D1/D5
-  top-level names for APFS, are fixed at first listing). Work past this envelope at open
-  is a bug, not a deferral. Tests count both the virtual-disk bytes requested and the
-  physical source bytes read, on a compressed image.
+  64 KiB for APFS) plus the map. The physical bytes behind them are bounded per run by
+  the caps of §4.3, and in total by an **open budget**: beyond the property list, the
+  physical bytes read plus the bytes decoded at open must stay within 64 MiB (a
+  constant). Each probe usually touches one run of at most 1 MiB decoded, so real images
+  use a few MiB; a hostile image whose 128 probes each land in a maximal run stops with
+  `ResourceLimitError` at open when the budget is spent. The normative spec states this
+  same envelope. Errors raised at open: encrypted (before Part G) and segmented
+  refusals; `koly`, plist and run-table errors (§4); partition-map errors that leave no
+  candidate; no filesystem found; APFS-only before Part E; HFS+ volume header errors,
+  HFS wrapper, journal refusals (§6.1). Everything else is at first listing: the catalog
+  and other B-trees, the APFS checkpoint scan, object maps and volume superblocks (so
+  APFS volume names, and D1/D5 top-level names for APFS, are fixed at first listing).
+  Work past this envelope at open is a bug, not a deferral. Tests count both the
+  virtual-disk bytes requested and the physical source bytes read, on a compressed
+  image, and assert the 64 MiB aggregate ceiling with 128 probes into maximal runs.
 - `iter_members()`: walk the catalog, yield `MemberRecord`s. Respect `max_members` the
   way squashfs does.
 - `open_member()`: `MemberData(stream, bounded=True)` over the data fork extents (a

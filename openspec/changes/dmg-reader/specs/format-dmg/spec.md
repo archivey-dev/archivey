@@ -27,8 +27,13 @@ The format SHALL require a seekable source. A run's stored range SHALL be
 inside the data fork. A code-signature blob declared in the `koly` block SHALL be
 allowed and not verified; file bytes outside the declared structures SHALL be reported
 as trailing data. Opening SHALL read only a fixed envelope: the `koly` block, the
-property list and run tables, the partition map, and the first 4 KiB of each candidate
-partition; no work proportional to the image.
+property list and run tables, the partition map (a GPT entry array of at most 64 KiB),
+and for each of at most 128 candidate partitions a 4 KiB probe, the HFS+ volume header
+and, when journaled, the journal info block and journal header (512 bytes each), or the
+APFS block 0 at its declared size (at most 64 KiB). Beyond the property list, the
+physical bytes read and the bytes decoded at open SHALL together stay within 64 MiB;
+more SHALL raise `ResourceLimitError` at open. No work SHALL be proportional to the
+image.
 
 #### Scenario: UDIF runs
 
@@ -43,6 +48,8 @@ partition; no work proportional to the image.
 | Segment count over 1 | `UnsupportedFeatureError` naming segmented images |
 | Data fork offset and mish data offset both non-zero | Runs read from their sum plus the run offset |
 | A signed image (code-signature blob before the `koly` block) | Read; no trailing-data report |
+| 128 candidates each probing a different maximal compressed run | `ResourceLimitError` at open once the 64 MiB open budget is spent |
+| A GPT entry array over 64 KiB | Diagnostic; candidates from the `blkx` ranges |
 | A plist length over 64 MiB | `ResourceLimitError`; no byte of the plist requested from the source |
 | A compressed run whose stored length is over the cap | `ResourceLimitError`; no byte of the run requested |
 | A valid ADC run of one-byte literals (stored ≈ 2 × decoded) | The data |
