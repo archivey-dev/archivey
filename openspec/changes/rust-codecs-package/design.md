@@ -98,7 +98,7 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 | --- | --- | --- | --- |
 | LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)`; `reset(output_size=None)` at a CAB folder start |
 | Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None, nine_bit_widens=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
-| LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` |
+| LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` or `(block, *, max_size)` |
 | ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
 | BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc, *, out_size)`, four readable binary streams |
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
@@ -163,10 +163,14 @@ Two kinds of decoder (question 4):
 
 - **Streaming objects** for codecs whose state carries over: LZX, LZW, BCJ2, the ARM64
   and RISC-V filters, and (as a cipher) ZipCrypto.
-- **One-shot functions** for codecs whose blocks stand alone: LZO (lzop and SquashFS
-  record each block's sizes), later DMG's ADC and LZFSE chunks. `out_size` is
-  required and exact; output that ends short or would run past it is
+- **One-shot functions** for codecs whose blocks stand alone: LZO, later DMG's ADC and
+  LZFSE chunks. `out_size` is exact; output that ends short or would run past it is
   `CorruptDataError`. There is no state, and a seek point is the block's offset.
+  lzop records each block's decoded size, but SquashFS records only the most a block
+  may decode to, and most fragment blocks decode to less. So LZO also takes
+  `max_size=` instead: output up to that many bytes, and `CorruptDataError` past it.
+  Without it every short SquashFS block was decoded twice, about twice as slow as
+  compress-utils on an image of small files (review of the LZO hook, round 1).
 
 Seeking (question 4b). Every streaming object has (BCJ2 without `copy()`, as above):
 
