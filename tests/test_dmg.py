@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import struct
+import sys
 import unicodedata
 import uuid
 from collections.abc import Callable
@@ -759,17 +760,32 @@ def _archivey_files(image: bytes) -> tuple[dict[str, bytes], set[str]]:
     return files, links
 
 
-def _compare_with_7zip(tmp_path: Path, image: bytes, *, may_lack: set[str]) -> None:
+def _compare_with_7zip(
+    tmp_path: Path, image: bytes, *, may_lack: set[str], compressed: set[str]
+) -> None:
+    """``compressed``: the decmpfs files. On macOS 7-Zip leaves their data fork empty
+    and hands the compression to the file system, where macOS's own mount shows their
+    data (``hfs-sha256.txt``), so there an empty file is 7-Zip's, not a difference."""
     import shutil
+
+    from tests.conftest import sevenzip_version
 
     if shutil.which("7z") is None:
         pytest.skip("7z not installed")
+    # p7zip 17.05 opens builder volumes with a Headers Error.
+    if (sevenzip_version() or (0, 0)) < (23, 1):
+        pytest.skip("7-Zip older than 23.01 does not read these HFS+ volumes")
     ours, links = _archivey_files(image)
     theirs = _7z_files(tmp_path, image)
     if theirs is None or not any(not k.startswith(_7Z_PRIVATE) for k in theirs):
         pytest.skip("this 7-Zip cannot read the image")
     inodes = {k: v for k, v in theirs.items() if k.startswith(_7Z_PRIVATE)}
     theirs = {k: v for k, v in theirs.items() if k not in inodes}
+    if sys.platform == "darwin":
+        for name in compressed:
+            if theirs.get(name) == b"":
+                del theirs[name]
+                may_lack = may_lack | {name}
     # A hard link's paths are empty files in 7-Zip's extraction; its data is the
     # inode's.
     for name in links | {n for n in ours if theirs.get(n) == b"" and ours[n]}:
@@ -790,7 +806,20 @@ def _compare_with_7zip(tmp_path: Path, image: bytes, *, may_lack: set[str]) -> N
 def test_7zip_extracts_what_archivey_reads_from_hdiutil_images(
     tmp_path: Path, name: str
 ) -> None:
-    _compare_with_7zip(tmp_path, (_FIXTURES / name).read_bytes(), may_lack=set())
+    # The root files macOS's listing flags ``compressed`` (``ls -lO``).
+    listing = (_FIXTURES / "hfs-listing.txt").read_text(encoding="utf-8")
+    compressed = {
+        line.split(maxsplit=9)[-1]
+        for line in listing.split("\n\n", 1)[0].splitlines()
+        if " compressed " in line
+    }
+    assert compressed == {"compressed.txt"}
+    _compare_with_7zip(
+        tmp_path,
+        (_FIXTURES / name).read_bytes(),
+        may_lack=set(),
+        compressed=compressed,
+    )
 
 
 @pytest.mark.parametrize("layout", ["gpt", "apm", "none"])
@@ -798,14 +827,16 @@ def test_7zip_extracts_what_archivey_reads_from_hdiutil_images(
 def test_7zip_extracts_what_archivey_reads_from_builder_images(
     tmp_path: Path, layout: str, codec: int
 ) -> None:
-    from tests.conftest import sevenzip_version
-
-    if (sevenzip_version() or (0, 0)) < (23, 1):
-        pytest.skip("p7zip 17.05 opens these volumes with a Headers Error")
     lacking = {f"comp/t{k}.txt" for k in (10, 11, 12)} | {
         f"comp/big{k}.bin" for k in (10, 12)
     }
-    _compare_with_7zip(tmp_path, _image(layout=layout, codec=codec), may_lack=lacking)
+    compressed = {n.path for n in _tree() if n.compression is not None}
+    _compare_with_7zip(
+        tmp_path,
+        _image(layout=layout, codec=codec),
+        may_lack=lacking,
+        compressed=compressed,
+    )
 
 
 def test_strict_raises_on_a_structure_the_read_worked_around() -> None:
