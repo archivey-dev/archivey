@@ -17,5 +17,5 @@
 - [x] 2.5 Check real images: the Sintel Blu-ray and a Windows 98 ISO by URL, an Ubuntu
   4.10 and a Debian 12 netinst image, and libarchive's ISO test images. The Windows 11
   image's listed tree is UDF, whose parser this change does not touch
-- [ ] 2.6 On archive: the `format-iso` Purpose and Related specs no longer name
+- [x] 2.6 On archive: the `format-iso` Purpose and Related specs no longer name
   `pycdlib`

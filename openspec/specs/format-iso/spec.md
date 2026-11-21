@@ -2,10 +2,10 @@
 
 ## Purpose
 
-ISO 9660 disc images are read through the unified `ArchiveReader` API using
-`pycdlib` from the optional `[recommended]` extra. The backend selects the richest
-available filename/metadata namespace and reports that choice so callers can
-reason about fidelity.
+ISO 9660 disc images are read through the unified `ArchiveReader` API by archivey's own
+ISO 9660, Joliet, Rock Ridge and UDF parsers, with no optional package. The backend
+selects the richest available filename/metadata namespace and reports that choice so
+callers can reason about fidelity.
 
 ## Related specs
 
@@ -15,7 +15,7 @@ reason about fidelity.
 | `access-mode-and-cost` | Indexed/direct cost model and seekability requirements |
 | `format-detection` | ISO magic at `CD001` offset and extended peek window |
 | `reader-concurrency` | `MemberStreams.CONCURRENT`, operation ownership, lock boundaries |
-| `packaging-and-extras` | Optional `pycdlib` (`[recommended]`) availability |
+| `packaging-and-extras` | ISO in the core install; `pycdlib` only in the `dev` group |
 
 ## Requirements
 
@@ -25,16 +25,18 @@ The ISO backend SHALL expose these properties for every opened ISO image:
 
 | Property | Value |
 | --- | --- |
-| Backend dependency | `pycdlib` |
+| Backend dependency | None (built in) |
 | Listing cost | `ListingCost.INDEXED` — directory tree in header/catalog region |
 | Access cost | `AccessCost.DIRECT` |
 | Stream capability | `StreamCapability.SEEKABLE` |
 | Read source | Seekable only |
 | Write support | No; ISO writing is out of scope |
 
-Write attempts SHALL raise `UnsupportedFeatureError`. Non-seekable read
-sources SHALL be rejected at open because `pycdlib` requires seeking; the backend
-MUST NOT implicitly buffer or copy the image to make it seekable.
+Write attempts SHALL raise `UnsupportedFeatureError`. Non-seekable read sources SHALL be
+rejected at open, because the volume descriptors and directory records are at absolute
+offsets in the image; the backend MUST NOT implicitly buffer or copy the image to make
+it seekable. Member data SHALL be read through views of the source, which take the
+source's lock per read, so concurrent member streams need no lock of the backend's own.
 
 #### Scenario: ISO property matrix
 
@@ -42,6 +44,7 @@ MUST NOT implicitly buffer or copy the image to make it seekable.
 | --- | --- |
 | Open valid ISO | `cost.listing_cost=INDEXED`, `cost.access_cost=DIRECT`, `cost.stream_capability=SEEKABLE` |
 | Open from non-seekable source | Seekability error at open; no implicit buffering |
+| Two ISO file members opened and read interleaved, or from several threads | Each stream yields exact bytes in order |
 
 ### Requirement: Auto-select the richest available namespace
 
@@ -75,45 +78,6 @@ Fields unavailable in the selected namespace SHALL be `None`.
 | Rock Ridge TF record with an attribute-change time | `ctime` holds it; `created` comes only from a TF creation time, else `None` |
 | Rock Ridge TF record with both a creation and an attribute-change time | `created` holds the creation time and `ctime` the attribute-change time |
 
-### Requirement: Serialize shared pycdlib handle operations for concurrent reads
-
-For ISO readers that allow concurrent member streams under
-`MemberStreams.CONCURRENT`, the backend SHALL keep using `pycdlib` payload APIs
-(a `PyCdlibIO` built from the member's directory record) and SHALL serialize every operation that
-touches `pycdlib`'s shared image handle with one per-reader lock. This preserves
-pycdlib extent and namespace behavior while preventing races on shared state.
-
-The lock SHALL cover `PyCdlib.open()` / `open_fp()` initialization and failure
-cleanup, `PyCdlibIO` construction and `PyCdlibIO.__enter__`, member `read` /
-`readinto` / supported `seek` / `tell`, member close/context exit,
-archive/PyCdlib close, and any audited operation that repositions or closes
-`PyCdlib._cdfp` or `PyCdlibIO._fp`. Archivey buffering/error/lifecycle wrappers
-sit outside it; exception translation, diagnostics/logging, lifecycle release,
-callbacks, and finalizers run after the lock is released. Unsupported positioning
-retains normal `io.UnsupportedOperation` behavior.
-
-For the pinned `pycdlib` implementation, the root `get_record()` and the
-directory-record child enumeration (`pycdlib.pycdlib._yield_children`) SHALL be
-treated as audited in-memory catalog operations under the materialization owner
-scope. Regression tests SHALL record that audit; if a supported `pycdlib` version
-adds handle access, the affected call joins the critical section.
-
-The lock guarantees correctness but not parallel throughput. Any later
-independent-handle or raw-extent optimization SHALL use targeted before/after
-measurements; this baseline has no correctness speed threshold.
-
-#### Scenario: ISO handle-lock matrix
-
-| Case | Expected |
-| --- | --- |
-| Two ISO file members opened/read interleaved | Each stream yields exact bytes in order |
-| Multiple threads read distinct members under `MemberStreams.CONCURRENT` after materialization | No data races on shared `pycdlib` handle |
-| Workers concurrently call member `open()` | `PyCdlibIO` construction and `__enter__` execute under the same per-reader lock as stream operations |
-| Independent streams read/readinto/close and use supported positioning | Complete pycdlib operations serialize; member positions remain correct |
-| Materialization uses pinned root `get_record()` / `_yield_children()` | Regression probe confirms catalog-only behavior; future handle access receives the lock |
-| Operation raises or closes | Translation/logging/lifecycle/callback work runs without the ISO handle lock held |
-| Future throughput optimization proposed | Evidence compares wall/lock timing and practical seek/byte counters; adds peak memory only if buffering/materialization changes |
-
 ### Requirement: Read raw CD sector images of a data track
 
 The ISO backend SHALL recognise a raw CD sector image — a dump whose sectors begin with
@@ -125,9 +89,9 @@ When the first sector is Mode 1 or Mode 2 Form 1 and a second sync shows the sec
 the plain ISO it holds: each sector stripped to its 2048 bytes of user data (after the
 16-byte header, and for Mode 2 also the 8-byte subheader). Each sector SHALL be checked
 when it is read: a sector without the sync or with another mode byte SHALL raise
-`CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read that
-reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and ECC bytes
-are not checked, and documentation SHALL say so.
+`CorruptionError` and a Mode 2 Form 2 sector `UnsupportedFeatureError`, for the read
+that reaches it; a sector read ahead and not asked for SHALL NOT fail a read. EDC and
+ECC bytes are not checked, and documentation SHALL say so.
 
 Without a `.cue` sheet beside it (next requirement), the backend SHALL read the session
 the sheet would choose from the addresses in the sector headers (BCD minutes, seconds
@@ -154,9 +118,8 @@ hints SHALL name the raw sectors that hold a member's extents, also for a later 
 placed by its addresses (a span across two runs has no hint).
 
 Any other layout (Mode 2 Form 2, an unknown mode byte, no second sync) SHALL be refused
-with `UnsupportedFeatureError` naming the layout, before the availability check, so the
-refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
-(`FormatPolicy.replace`) SHALL be refused every raw image.
+with `UnsupportedFeatureError` naming the layout, before the directory tree is parsed. A
+replacement reader (`FormatPolicy.replace`) SHALL be refused every raw image.
 
 #### Scenario: raw-sector matrix
 
@@ -176,7 +139,6 @@ refusal SHALL NOT depend on `pycdlib` being installed. A replacement reader
 | Raw Mode 2 Form 2 image | `UnsupportedFeatureError` saying it holds no ISO 9660 filesystem |
 | Unknown mode byte, or a single sector | `UnsupportedFeatureError` naming the layout |
 | `detect_format` on a raw image | `ISO`, `CERTAIN`, `detected_by="magic"` |
-| `pycdlib` not installed, unread layout | The same refusal |
 | Replacement ISO reader | `UnsupportedFeatureError` naming the replacement |
 | Plain `.iso` | Unaffected: it starts with the zero-filled system area, never the sync |
 
@@ -232,11 +194,10 @@ that passes is not reported, since both readings list the same files.
 
 ### Requirement: List every ISO directory record as its own member
 
-The ISO backend SHALL walk directory records, not names: each record is one
-member, and its name is a rendering of the record rather than a key looked up
-again. A name that does not round-trip through pycdlib's own path lookup (a Rock
-Ridge name holding `/`, two entries sharing one Rock Ridge name) SHALL NOT cost
-any other member, and each directory extent SHALL be descended at most once.
+The ISO backend SHALL walk directory records, not names: each entry is one member, and
+its name is a rendering of the entry rather than a key looked up again. A name holding
+`/`, or two entries sharing one name, SHALL NOT cost any other member, and each
+directory extent SHALL be descended at most once.
 
 Member type SHALL come from the Rock Ridge PX mode when one is present: a
 directory or symlink as already recognised, a regular file as `FILE`, and any
@@ -259,23 +220,21 @@ In the Joliet namespace the versions of one name SHALL list together, the highes
 and other files SHALL keep their record order.
 
 Records that share an identifier in one directory SHALL be worked out from the
-directory as written, in on-disc order, and not from pycdlib's links or order. A
-file record carrying the multi-extent flag as written SHALL continue into the next
-record when that is a file record of the same kind (associated file or not), and
-the records joined this way SHALL be one file. Every other record SHALL be listed
-as its own member, including a file record that follows a directory record with
-its identifier and an associated-file record (flag bit 2) in either order. Each
-pycdlib record SHALL be matched to its record on disc by the fields pycdlib keeps
-as written, not by its extent alone. Members with one name then follow the shared
-duplicate-name rule (`archive-data-model`): the later one is current.
+directory as written, in on-disc order. A file record carrying the multi-extent flag
+SHALL continue into the next record when that has the same identifier and is a file
+record of the same kind (associated file or not), and the records joined this way SHALL
+be one file. Every other record SHALL be listed as its own member, including a
+directory and a file with one identifier in either order, two directories with one
+identifier, and an associated-file record (flag bit 2) in either order. Members with one
+name then follow the shared duplicate-name rule (`archive-data-model`): the later one is
+current.
 
 In the Rock Ridge namespace a record whose System Use area carries no Rock Ridge
 entries SHALL still be listed, under its ISO 9660 identifier (version and
 empty-extension dot removed), with `MEMBER_HEADER_RECORD_SKIPPED` emitted and
 attached to it. A record whose `NM` entries spell an empty name SHALL be listed the
 same way, with `MEMBER_HEADER_RECORD_SKIPPED` and `record="NM"`, as Linux's isofs
-falls back; an `NM` entry with more than one of its CONTINUE, CURRENT and PARENT flags
-SHALL end the record's System Use area there rather than refuse the image.
+falls back.
 
 In the Rock Ridge namespace the relocation directory (a root-level directory
 every child of which is a relocated directory, its `..` carrying a PL record)
@@ -294,16 +253,14 @@ SHALL NOT be listed; the relocated subtrees appear at their logical place.
 | Joliet or plain file `.;1`, `..;1`, `...;1`, `SUB/....;1` | Listed as stored, with no `iso.version`; never `.` or `..` |
 | Plain directory identifier `DI;1` holding `X.TXT;1` | `DI;1/` and `DI;1/X.TXT` (version 1); the directory has no `iso.version` |
 | Two file records with one identifier, the first without the multi-extent flag | Two members with that name, each with its own size and data; the later one is current; no diagnostic |
+| A file record with the multi-extent flag, then a `..` record, then a file record with the same identifier | Two members: the flag joins only the next record |
 | Three records with one identifier, flagged, not flagged, not flagged | The first two are one member; the third is a second member with the same name |
-| As above, but the first two records share one extent | The same two members; the first raises `UnsupportedFeatureError` on read (extents not back to back), the second reads |
-| Plain `FOO.;1` twice, then `FOO.;2` | `FOO` (version 2, current) and two `FOO.;1` rows, both `is_current=False`; extraction writes only `FOO` |
 | An associated-file record and a two-extent file with one identifier, the associated record first or last | Two members with that name in on-disc order, each with its own data; the later one is current |
-| Directory record `DUP`, then a file record `DUP` | `DUP/` and the file `DUP` both list, as 7-Zip lists them |
-| File record `DUP` then directory `DUP`, or two directories `DUP` | `CorruptionError` at open (pycdlib refuses the duplicate name) |
+| A directory record and a file record `DUP`, in either order, or two directories `DUP` | Both list, as 7-Zip lists them |
 | Rock Ridge image, one record with its System Use area zeroed | Listed under its ISO 9660 name; `MEMBER_HEADER_RECORD_SKIPPED` attached |
 | Rock Ridge directory `top/dddd` (holding `in`) whose `NM` spells an empty name | `top/`, `top/DDDD/`, `top/DDDD/in`; `MEMBER_HEADER_RECORD_SKIPPED` with `record="NM"` on `top/DDDD/` |
 | Rock Ridge directory whose `NM` flags are 3, 5, 6 or 7 | The image lists; that member carries `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated` |
-| Directory record pointing back at an ancestor extent | Listed once there; not descended again |
+| Directory record pointing back at an ancestor extent | `CorruptionError` at open: the tree loops |
 | Rock Ridge tree 12 directories deep | Logical tree lists in full; no `rr_moved` member |
 
 ### Requirement: Decode Rock Ridge and plain names as UTF-8 first
@@ -350,27 +307,6 @@ borrow the Joliet descriptor's volume identifier.
 | `xorriso -as mkisofs -R -J -V "Café vol"` (stores UTF-8) | `info.comment == "Café vol"` |
 | Volume identifier `caf\xe9 vol`, no `encoding=` / `encoding="cp1252"` | `info.comment == "caf\udce9 vol"` / `"café vol"`, never U+FFFD |
 
-### Requirement: Contain a System Use entry pycdlib cannot parse to its own record
-
-While the ISO backend opens an image, the System Use bytes of each record SHALL be
-filtered before `pycdlib` parses them, and only then: other code using `pycdlib` in the
-same process MUST see `pycdlib`'s own behaviour. An entry of a type `pycdlib` does not
-parse SHALL be skipped, as SUSP specifies. An entry whose header is malformed (a length
-under 4 or past the area, or a version other than 1 on a type `pycdlib` parses) SHALL end
-that record's area: the member SHALL list from the entries before it and carry
-`MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated=True` and an empty `record`. A
-symlink cut this way SHALL list with `link_target=None` and `SYMLINK_TARGET_UNAVAILABLE`.
-The other members of the image MUST NOT be affected.
-
-#### Scenario: malformed Rock Ridge entries
-
-| Case | Expected |
-| --- | --- |
-| A file whose `TF` entry has version 99 | Lists with its `PX` mode, reads, one `MEMBER_HEADER_RECORD_SKIPPED`; the other members carry nothing |
-| A symlink cut the same way (genisoimage 1.1.11 writes this for a target of about 400 bytes or more) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
-| The same image under `DiagnosticPolicy.STRICT` | Refused |
-| `pycdlib.PyCdlib().open_fp` on a zisofs image, outside archivey | `pycdlib`'s own `Unknown SUSP record` |
-
 ### Requirement: Read zisofs members
 
 A file whose Rock Ridge area carries a `ZF` entry SHALL list `size` from that entry,
@@ -399,19 +335,17 @@ An image is cut short when the file ends before the end the image declares: the 
 its primary volume descriptor's volume space (volume space size times logical block
 size), or, when the volume descriptor set itself runs past the end of the file, the end
 of the descriptor that is cut. An open that fails because a read of the image's
-structures reached the end of such a file SHALL raise `TruncatedError`. This covers the
-volume descriptors, the path tables, the ISO 9660 and Joliet directory records with
-their Rock Ridge System Use areas, and the UDF anchor, descriptors, File Entries and
-directories archivey reads at open, which for UDF counts as cut when the file ends
-before the partitions the UDF volume declares do. A path table that runs past the end of
-the file but stays inside the volume space SHALL raise `TruncatedError` too.
+structures, starting at or before that end, reached the end of such a file SHALL raise
+`TruncatedError`. This covers the volume descriptors, the ISO 9660 and Joliet directory
+records with their Rock Ridge System Use and continuation areas, and the UDF anchor,
+descriptors, File Entries and directories archivey reads at open, which for UDF counts
+as cut when the file ends before the partitions the UDF volume declares do.
 
-An open SHALL raise `CorruptionError`, not `TruncatedError`, when the failing read
-stopped inside the file (the bytes are present and do not parse), when the file holds
-the whole volume space (a structure that points past the end is a wrong pointer), and
-when a read started past the end of the volume space. A file the cut reaches still
-raises `TruncatedError` when its read reaches the cut, and a file wholly before the cut
-reads normally.
+An open SHALL raise `CorruptionError`, not `TruncatedError`, when the file holds the
+whole volume space (a structure that points past the end is a wrong pointer), and when
+a read started past the end of the volume space. A file the cut reaches still raises
+`TruncatedError` when its read reaches the cut, and a file wholly before the cut reads
+normally.
 
 Non-zero bytes in the padding of a directory block (from a zero length byte to the end
 of the logical block) SHALL NOT fail the open, in any of the image's trees. Each such
@@ -419,19 +353,18 @@ block SHALL be reported once as `ARCHIVE_TRAILING_DATA` with
 `expected_marker="directory_padding"` and the offset of its first non-zero padding
 byte, because a record whose length byte was damaged to zero would be lost there (DR-3:
 damage to structure that holds no member data is a diagnostic, refused under `STRICT`).
-A cut inside the padding stays `TruncatedError`.
 
 #### Scenario: cut and damaged images
 
 | Case | Expected |
 | --- | --- |
 | Image cut inside a volume descriptor, or at the start of the set terminator | `TruncatedError` at open |
-| Image cut inside a path table, a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
+| Image cut inside a directory record, its System Use area, or the padding after the last record of a directory | `TruncatedError` at open |
 | UDF image cut inside its volume recognition sequence, its anchor at block 256, or a File Entry or directory of its tree | `TruncatedError` at open |
 | Image cut inside file data, or (UDF) after the tree, in its last-block anchor | Opens; reading a file the cut reaches raises `TruncatedError` |
-| Full-length image: a descriptor field, a path table size past the volume space, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
+| Full-length image: a descriptor field, or a root directory extent past the volume space damaged | `CorruptionError`, not `TruncatedError` |
 | Full-length image: a non-zero byte in a directory block's padding | Opens and lists every record; `ARCHIVE_TRAILING_DATA` with `expected_marker="directory_padding"`; refused under `STRICT` |
-| Cut image that keeps its path tables, root directory extent damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
+| Cut image whose root directory extent is damaged to point past the volume space | `CorruptionError`, not `TruncatedError` |
 | Full-length UDF bridge image whose volume space size is damaged upwards | Opens and reads: nothing archivey reads lies past the file |
 
 ### Requirement: Report bytes after the end of an ISO image
@@ -472,15 +405,16 @@ checksum, so its entries are taken as written, as the volume space size is.
 
 ### Requirement: Weigh every parsed directory tree against one image-wide metadata budget
 
-`pycdlib` parses the PVD tree and a Joliet tree of an image inside `open_archive`, and
-archivey's UDF parser the UDF tree when present, and every tree is kept, so the ISO
-backend SHALL check `ListingLimits` while they parse. The bytes it weighs (directory
-records as stored, Rock Ridge continuation areas, path tables, UDF directories, File
-Entries and Indirect Entries, each UDF entry parsed once however many names lead to it)
-SHALL be one sum for the whole image, held to `max_metadata_bytes`; a tree under the
-cap SHALL NOT make an image over it open. `max_members` SHALL be counted
-per tree, because a Joliet tree repeats every file of the PVD tree. Crossing either cap
-SHALL raise `ResourceLimitError` naming the cap from `open_archive`.
+The ISO backend parses the primary tree and a Joliet tree of an image inside
+`open_archive`, and the UDF tree when present, and keeps every tree, so it SHALL check
+`ListingLimits` while they parse. The bytes it weighs (each ISO 9660 or Joliet directory
+record as stored, before more of its directory is read, Rock Ridge continuation areas
+each time one is read, UDF directories, File Entries and Indirect Entries, each UDF
+entry parsed once however many names lead to it) SHALL be one sum for the whole image,
+held to `max_metadata_bytes`; a tree under the cap SHALL NOT make an image over it open.
+`max_members` SHALL be counted per tree, because a Joliet tree repeats every file of the
+primary tree. Crossing either cap SHALL raise `ResourceLimitError` naming the cap from
+`open_archive`.
 
 The UDF parser builds every name's full path at open. It SHALL weigh each full path as
 it builds it, its text by the listing's rule for a member name (its length when ASCII,
@@ -497,9 +431,9 @@ listing would fit.
 
 | Case | Expected |
 | --- | --- |
-| PVD, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
+| Primary, Joliet and UDF trees each under `max_metadata_bytes`, together over it | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | The same image with `max_metadata_bytes` above the sum | Opens and lists |
-| A Joliet tree repeating the PVD tree's files, `max_members` equal to the listed count | Opens: members count per tree |
+| A Joliet tree repeating the primary tree's files, `max_members` equal to the listed count | Opens: members count per tree |
 | UDF chain of Indirect Entries whose blocks take the image over `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
 | Many UDF File Identifiers naming one ICB or one chain of Indirect Entries | Opens; each entry is read and weighed once |
 | UDF tree of nested directories whose full paths total more than `max_metadata_bytes` | `ResourceLimitError` naming `max_metadata_bytes` at `open_archive` |
@@ -528,3 +462,61 @@ descriptor (16 bytes).
 | A File Entry whose allocation extents continue more than 64 times, or more than 64 indirect entries in a row | `CorruptionError` at open |
 | A symlink over 64 KiB | `CorruptionError` at open |
 | Many 1 GiB allocation descriptors in a metadata partition of 200 runs | Open time grows with the runs covered, not the blocks; each run covered after the first counts against `max_metadata_bytes` |
+
+### Requirement: Parse ISO 9660, Joliet and Rock Ridge without an optional package
+
+The ISO backend SHALL parse the primary volume descriptor's tree, the first Joliet
+supplementary descriptor's tree and the Rock Ridge entries of the primary tree with
+archivey's own parser, in the zero-dependency core, at open. It SHALL read the volume
+descriptors from sector 16 until a sector that is not one, and SHALL refuse with
+`CorruptionError` an image with no primary descriptor or no terminator, a primary or
+Joliet descriptor whose version, zero fields or both-endian copies do not hold, a
+logical block size other than 512, 1024 or 2048, a directory record shorter than its
+fixed fields or running past its directory, a record whose extent or volume sequence
+number disagrees between its byte orders, and a directory tree that loops. It SHALL NOT
+read path tables to list, SHALL ignore a second primary or Joliet descriptor, and SHALL
+read a record's data length little-endian only.
+
+A tree SHALL be read as Rock Ridge when its records carry SUSP entries and an `ER` entry
+names RRIP (`RRIP_1991A` or `IEEE_P1282`). The skip count of the root's `SP` entry SHALL
+apply to every other System Use area. A `CE` chain SHALL be followed at most 32 times.
+A `CL` entry SHALL keep the walk out of its directory only in a Rock Ridge tree.
+
+#### Scenario: native parse matrix
+
+| Case | Expected |
+| --- | --- |
+| Image written by pycdlib, xorriso or genisoimage, with or without Joliet and Rock Ridge | The same records, names, modes, owners and link targets pycdlib parses |
+| Core install with no optional package | Lists and reads ISO images |
+| Path tables damaged, disagreeing, or past the end of a full-length image | Opens and lists as an intact image does |
+| Two primary or two Joliet descriptors | The first is read |
+| Records with Rock Ridge-shaped System Use bytes but no RRIP `ER` entry | Not Rock Ridge |
+| A directory record carrying a `CL` entry in a tree with no RRIP `ER` entry | Its directory is read and its children listed; an RRIP `ER` met inside it does not make the tree Rock Ridge |
+| One tree's directories that together declare more bytes than the image holds | `CorruptionError` before the directory that crosses it is read |
+| Bit flips in the descriptors and directories | Opens, or raises an `ArchiveyError`; never another exception; opens every image pycdlib opens, except one whose directory record holds an identifier longer than the record |
+
+### Requirement: Contain a malformed System Use entry to its own record
+
+A System Use entry whose header is malformed (a length under 4 or past the area, a
+version other than 1 on a SUSP or RRIP tag), or whose body does not parse (an `NM` with
+more than one of CONTINUE, CURRENT and PARENT, a `PX` that is not 36 or 44 bytes or
+whose byte orders disagree, an `SL` component with bad flags or cut short, a `TF`
+holding fewer times than its flags declare, a short `CE`, `CL` or `PL`, an `SP` without
+its check bytes), SHALL end that record's area, as SHALL a `CE` whose area runs past its
+logical block or past the end of a full-length image. The member SHALL list from the
+entries before it and carry `MEMBER_HEADER_RECORD_SKIPPED` with `list_truncated=True`
+and an empty `record`; a symlink cut this way SHALL list with `link_target=None` and
+`SYMLINK_TARGET_UNAVAILABLE`, and a name cut this way (its last `NM` entry says it
+continues) SHALL list under its ISO 9660 identifier. An entry of a tag the parser does
+not read SHALL be skipped, as SUSP specifies. The other members of the image MUST NOT be
+affected.
+
+#### Scenario: malformed Rock Ridge entries
+
+| Case | Expected |
+| --- | --- |
+| A file whose `TF` entry has version 99 | Lists with its `PX` mode, reads, one `MEMBER_HEADER_RECORD_SKIPPED`; the other members carry nothing |
+| A symlink cut the same way (genisoimage 1.1.11 writes this for a target of about 400 bytes or more) | `link_target is None`; `MEMBER_HEADER_RECORD_SKIPPED` then `SYMLINK_TARGET_UNAVAILABLE` |
+| A file whose area ends after an `NM` entry that says the name continues | Lists under its ISO 9660 identifier, `MEMBER_HEADER_RECORD_SKIPPED` |
+| A `CE` naming 8 MiB at the start of a block | That record's continuation is not read, nothing is allocated for it; the image opens |
+| The same images under `DiagnosticPolicy.STRICT` | Refused |
