@@ -226,6 +226,24 @@ def test_a_garbled_member_over_the_ratio_is_refused_before_any_full_check(
     assert full_checks == []
 
 
+@pytest.mark.parametrize("name", ["garbled_m1.arj", "garbled_m4.arj"])
+def test_the_full_checks_draw_the_decoded_byte_budget(name: str) -> None:
+    """Each candidate's full check decodes the member, and those bytes count toward
+    the nest's cap as the caller's own read does: one read fits, two do not."""
+    size = 15_995  # words.txt
+    limits = archivey.DecoderLimits(max_nest_decoded_bytes=size + 100)
+    config = archivey.ArchiveyConfig(decoder_limits=limits)
+    with open_archive(_FIXTURES / name, password="secret", config=config) as reader:
+        assert len(reader.read("words.txt")) == size
+    with (
+        open_archive(
+            _FIXTURES / name, password=["wrong", "secret"], config=config
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes"),
+    ):
+        reader.read("words.txt")
+
+
 def test_extract_all_asks_the_provider_once(tmp_path: Path) -> None:
     """The CRC-32 confirms the first member's password, so it is known-good and the
     second member reads with no prompt."""

@@ -786,6 +786,12 @@ class ReaderState:
                         "callback). Callbacks must not close the reader that "
                         "triggered them."
                     )
+                # Before either wait below: from inside a password provider (its
+                # thread or a copied context), waiting for the operation that waits
+                # on the provider, or for a closer that waits on that operation,
+                # never ends.
+                for token in (*self._passes_locked(), *self._workers):
+                    self.refuse_wait_on_provider(token.thread.ident)
                 # Another closer is draining, or close already finished.
                 if self._closing or self.lifecycle is not LifecycleState.OPEN:
                     while self.lifecycle is LifecycleState.OPEN and self._closing:
@@ -817,8 +823,6 @@ class ReaderState:
                         "Cannot close the archive reader while an open()/get()/read() call "
                         "is still in progress."
                     )
-                for token in (*self._passes_locked(), *self._workers):
-                    self.refuse_wait_on_provider(token.thread.ident)
                 self._closing = True
                 try:
                     if self._workers:

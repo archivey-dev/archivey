@@ -33,7 +33,7 @@ import io
 import struct
 import zlib
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, BinaryIO, NamedTuple, Protocol
+from typing import TYPE_CHECKING, BinaryIO, NamedTuple, Protocol, cast
 
 from archivey.diagnostics import (
     ArchiveEofContext,
@@ -673,14 +673,22 @@ class ArjReader(_Headers, IndexedReader[_Location]):
 
         A decoder failure over the member's whole stored bytes is the password's: a
         wrong key feeds the decoder noise. A source that ends or fails inside them is
-        not, and that error propagates.
+        not, and that error propagates. The decoded bytes count and draw as the member
+        stream's do, so a limit they cross raises ``ResourceLimitError``, which ends the
+        search.
         """
         key = _garble_key(password, locator.modifier)
+        hook = self._context._track_decoded
+
+        def track(stream: io.RawIOBase) -> BinaryIO:
+            # A raw stream is a binary file; only the static types differ.
+            data = cast("BinaryIO", stream)
+            return data if hook is None else hook(data)
+
         crc = size = 0
         if locator.method == _METHOD_STORED:
-            with _Degarbled(
-                self._payload.view(locator.offset, locator.stored), key
-            ) as data:
+            raw = _Degarbled(self._payload.view(locator.offset, locator.stored), key)
+            with raw, track(raw) as data:
                 while chunk := data.read(_DATA_CHUNK):
                     crc = zlib.crc32(chunk, crc)
                     size += len(chunk)
@@ -691,8 +699,8 @@ class ArjReader(_Headers, IndexedReader[_Location]):
         else:
             stream = _ArjStream(self._payload, locator, member.size or 0, key)
             try:
-                with stream:
-                    while chunk := stream.read(_DATA_CHUNK):
+                with stream, track(stream) as decoded:
+                    while chunk := decoded.read(_DATA_CHUNK):
                         crc = zlib.crc32(chunk, crc)
                         size += len(chunk)
             except CorruptionError:

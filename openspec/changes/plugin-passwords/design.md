@@ -423,11 +423,13 @@ Requests met there are resolved too, under these rules:
   stream's `read`) never asks: there the saved winners and the static candidates are
   tried, and if none unlocks a request in the chain the read raises the D2 exhaustion
   error for it.
-- **The verdict follows the replacement.** A respawn keeps the whole new `MemberData`,
-  not only its stream: the replacement stream's verification proof takes the new
-  `unlocked` verdict (and its `digests` and `checked`), so a replacement unlocked as
-  `INCONCLUSIVE` after a `CONFIRMED` original is checked as `INCONCLUSIVE` from then on,
-  and the reverse.
+- **The verdict follows the replacement.** The replacement stream's watch takes the
+  new `unlocked` verdict, from a respawn's `MemberData` or a data walk's span, so a
+  replacement unlocked as `INCONCLUSIVE` after a `CONFIRMED` original is checked as
+  `INCONCLUSIVE` from then on, and the reverse. Its checks (`digests`, `checked`,
+  `bounded`; a span's `checked`) must match the first open's, because the verifier over
+  the caller's stream was built from those: a replacement that changes them is refused
+  as a plugin bug.
 
 
 Remaining limit: a provider that waits for a separate thread (not a copied context) that

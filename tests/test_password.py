@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import array
 import ast
+import contextlib
 import re
 import subprocess
 import zipfile
@@ -18,7 +19,13 @@ from archivey import PasswordRequest, open_archive
 from archivey.exceptions import ArchiveyUsageError, EncryptionError
 from archivey.internal.backends.sevenzip_reader import SevenZipReader
 from archivey.internal.measurement import enable_measurement
-from archivey.internal.password import _PasswordCandidates, wrong_password_error
+from archivey.internal.password import (
+    PasswordConfirmVerdict,
+    _PasswordCandidates,
+    wrong_password_error,
+)
+from archivey.internal.password_confirm import attempt_with_confirm
+from archivey.internal.plugin_passwords import resolve_request
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 
@@ -787,3 +794,127 @@ def test_a_lone_survivor_wins_unsettled_with_no_provider() -> None:
     )
     assert result == "probe passed"
     assert settled == []
+
+
+# The built-in loop (``attempt_with_confirm``) and the plugin one
+# (``plugin_passwords.resolve_request``) share their candidate order, promotion and
+# survivor rules. The plugin loop adds what only it needs (the provider's answers
+# settled by ``full_check``, a saved winner, callback guards), so those cases are not
+# here.
+_V = PasswordConfirmVerdict
+_PARITY_CASES = {
+    "first confirmed wins": ([b"a", b"b", b"c"], (), {b"b": _V.CONFIRMED}, {}, True),
+    "lone survivor, unchecked": ([b"a", b"b"], (), {b"a": _V.INCONCLUSIVE}, {}, True),
+    "survivors settled in order": (
+        [b"a", b"b", b"c"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"c": _V.INCONCLUSIVE},
+        {b"a": _V.REJECTED, b"c": _V.CONFIRMED},
+        True,
+    ),
+    "settled inconclusive, first kept": (
+        [b"a", b"b"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        True,
+    ),
+    "all rejected": ([b"a", b"b"], (), {}, {}, True),
+    "survivors all fail the full check": (
+        [b"a", b"b"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        {},
+        True,
+    ),
+    "known-good first": ([b"a", b"k"], (b"k",), {b"k": _V.CONFIRMED}, {}, True),
+    "no full check, first survivor": (
+        [b"a", b"b"],
+        (),
+        {b"a": _V.INCONCLUSIVE, b"b": _V.INCONCLUSIVE},
+        {},
+        False,
+    ),
+    "provider after a rechecked lone survivor": (
+        None,
+        (b"earlier",),
+        {b"earlier": _V.INCONCLUSIVE, b"right": _V.CONFIRMED},
+        {},
+        True,
+    ),
+}
+
+
+def _parity_run(
+    driver: str,
+    listed: list[bytes] | None,
+    known: tuple[bytes, ...],
+    probes: dict[bytes, PasswordConfirmVerdict],
+    fulls: dict[bytes, PasswordConfirmVerdict],
+    has_full: bool,
+) -> tuple[object, list[str], list[bytes]]:
+    calls: list[str] = []
+    candidates = _PasswordCandidates.from_input(
+        listed if listed is not None else (lambda request: b"right")
+    )
+    for password in known:
+        candidates.record_success(password)
+
+    def verdict(kind: str, table: dict[bytes, PasswordConfirmVerdict], pw: bytes):
+        calls.append(f"{kind}:{pw.decode()}")
+        return table.get(pw, _V.REJECTED)
+
+    outcome: object
+    if driver == "builtin":
+
+        def as_builtin(kind: str, table: dict[bytes, PasswordConfirmVerdict]):
+            def run(pw: bytes) -> tuple[bytes, PasswordConfirmVerdict]:
+                found = verdict(kind, table, pw)
+                if found is _V.REJECTED:
+                    raise wrong_password_error("Wrong password for the unit")
+                return pw, found
+
+            return run
+
+        try:
+            outcome = attempt_with_confirm(
+                candidates,
+                None,
+                as_builtin("check", probes),
+                as_builtin("full", fulls) if has_full else None,
+            )
+        except EncryptionError:
+            outcome = "EncryptionError"
+    else:
+
+        def as_plugin(kind: str, table: dict[bytes, PasswordConfirmVerdict]):
+            def run(pw: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+                found = verdict(kind, table, pw)
+                return (None if found is _V.REJECTED else pw), found
+
+            return run
+
+        try:
+            resolution = resolve_request(
+                what="the unit",
+                check=as_plugin("check", probes),
+                full_check=as_plugin("full", fulls) if has_full else None,
+                member=None,
+                passwords=candidates,
+                run=lambda fn: fn(),
+                unguarded=contextlib.nullcontext,
+                allow_provider=True,
+                saved=None,
+                owner="Parity",
+            )
+            outcome = (resolution.unlocked, resolution.verdict)
+        except EncryptionError:
+            outcome = "EncryptionError"
+    return outcome, calls, list(candidates.iter_candidates())
+
+
+@pytest.mark.parametrize("case", list(_PARITY_CASES))
+def test_builtin_and_plugin_loops_choose_alike(case: str) -> None:
+    builtin = _parity_run("builtin", *_PARITY_CASES[case])
+    plugin = _parity_run("plugin", *_PARITY_CASES[case])
+    assert plugin == builtin

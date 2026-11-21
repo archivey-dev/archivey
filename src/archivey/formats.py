@@ -682,7 +682,7 @@ class _SpanningCheck(Protocol):
     """A check over the data of several members, which a built-in reader runs itself
     (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
 
-    def cover(self, member: ArchiveMember) -> None: ...
+    def cover(self, member: ArchiveMember, *, proves_data: bool = True) -> None: ...
 
     def passed(self) -> None: ...
 
@@ -709,6 +709,12 @@ class ReaderContext:
     # reader that decodes past members itself (CAB's folder skip). Internal, set by
     # the adapter; not for plugins.
     _nest: NestDraws | None = None
+    # ``_track_decoded(stream)`` counts and draws ``stream``'s bytes as a member
+    # stream's are (the measurement counter, the nest's decoded-byte cap, and the
+    # listing's while listing work runs), for a built-in reader that decodes a member
+    # outside its stream (ARJ's password full check). Internal, set by the adapter;
+    # not for plugins.
+    _track_decoded: Callable[[BinaryIO], BinaryIO] | None = None
 
     def __init__(
         self,

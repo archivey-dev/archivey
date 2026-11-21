@@ -344,6 +344,7 @@ class _PluginAdapter(BaseArchiveReader):
             charge_key_derivation=self._charge_key_derivation,
         )
         context._nest = self._nest
+        context._track_decoded = self._track_decompressed
         context._spanning_check = self._new_spanning_check
         context._decompress_coder = self._decompress_coder
         self._reader = self._open_reader(context)
@@ -1302,6 +1303,8 @@ class _PluginAdapter(BaseArchiveReader):
             with self._translated_errors(), self._handle_guard():
                 self._reader.close()
         finally:
+            # A closed reader opens nothing again, and keeps no password it won.
+            self._saved_winners.clear()
             if self._shared is not None:
                 self._shared.close()
 
@@ -1546,6 +1549,36 @@ class IndexedReaderAdapter(_PluginAdapter):
         for start, end in ranges[:MAX_PENDING_HINTS]:
             self._will_read(start, end)
 
+    def _check_reopened(
+        self, member: ArchiveMember, first: MemberData, again: MemberData
+    ) -> None:
+        """Refuse a replacement open whose ``MemberData`` describes its checks
+        differently from the first open's: the verifier over the caller's stream was
+        built from the first one's, and the replacement must deliver what it
+        checks."""
+        changed = [
+            field
+            for field, before, after in (
+                # A digest's hasher factory may be a new callable each open.
+                (
+                    "digests",
+                    [(d.name, d.expected) for d in first.digests],
+                    [(d.name, d.expected) for d in again.digests],
+                ),
+                ("checked", bool(first.checked), bool(again.checked)),
+                ("bounded", bool(first.bounded), bool(again.bounded)),
+            )
+            if before != after
+        ]
+        if changed:
+            raise _plugin_bug(
+                ValueError(
+                    f"{type(self._reader).__name__}.open_member() gave "
+                    f"{quoted(member.name)} different {', '.join(changed)} when opened "
+                    "again: each open of a member must describe its data the same way"
+                )
+            )
+
     @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
         data, stream = self._plugin_member_data(member)
@@ -1570,9 +1603,14 @@ class IndexedReaderAdapter(_PluginAdapter):
                     again, again_stream = self._plugin_member_data(
                         member, allow_provider=False
                     )
-                    verdict[0] = _checked_verdict(
-                        again.unlocked, type(self._reader).__name__
-                    )
+                    try:
+                        verdict[0] = _checked_verdict(
+                            again.unlocked, type(self._reader).__name__
+                        )
+                        self._check_reopened(member, data, again)
+                    except BaseException:
+                        again_stream.close()
+                        raise
                     return again_stream
 
                 stream = RespawnStream(
@@ -1677,27 +1715,37 @@ class SpanningCheck:
     it, and :meth:`passed` or :meth:`failed` once the check ran. Until it passes, a
     covered file's ``verifiable`` is ``CHECKSUM``, as for a ``.tar.gz`` trailer; a
     pass raises every covered file to ``CHECKSUM``, read or not, and a failure makes
-    each one a failure of ``verify_all()``. A walk that stops before the check runs
+    each one a failure of ``verify_all()``. A file covered with ``proves_data=False``
+    is only a failure on a failure. A walk that stops before the check runs
     leaves the covered files as failures too (``_note_spanning_unreachable``).
     """
 
-    __slots__ = ("_adapter", "_covers", "_key")
+    __slots__ = ("_adapter", "_covers", "_key", "_proves")
 
     def __init__(self, adapter: _PluginAdapter, key: object) -> None:
         self._adapter = adapter
         self._key = key
         self._covers: list[ArchiveMember] = []
+        self._proves: list[ArchiveMember] = []
 
-    def cover(self, member: ArchiveMember) -> None:
-        """Count ``member`` as covered, if it is a file: other members have no data."""
+    def cover(self, member: ArchiveMember, *, proves_data: bool = True) -> None:
+        """Count ``member`` as covered, if it is a file: other members have no data.
+
+        ``proves_data=False`` is for a check over bytes the member's data is decoded
+        from by a key no check confirmed (an encrypted payload's digest over its
+        ciphertext): a failure still makes the member a failure of ``verify_all()``,
+        but a pass does not check its data, so it neither sets nor raises the
+        member's level."""
         if member.is_file:
-            mark_spanning_checksum(member)
             self._covers.append(member)
+            if proves_data:
+                mark_spanning_checksum(member)
+                self._proves.append(member)
 
     def passed(self) -> None:
-        """The check matched: every covered file is checked."""
+        """The check matched: every covered file it proves is checked."""
         self._adapter._spanning_check_ran(self._key)
-        for member in self._covers:
+        for member in self._proves:
             raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def failed(self, message: str) -> SpanningCheckError:
@@ -1982,6 +2030,7 @@ class _Decoded:
         "prefix",
         "size",
         "stream",
+        "unlocked",
     )
 
     def __init__(
@@ -1991,9 +2040,12 @@ class _Decoded:
         index: int,
         size: int | None,
         name: str,
+        unlocked: PasswordConfirmVerdict | None = None,
     ) -> None:
         self.stream = stream
         self.checked = checked
+        # The span's ``MemberSpan.unlocked``, from the walk that yielded this data.
+        self.unlocked = unlocked
         self.index = index
         self.size = size
         self.name = name
@@ -2855,12 +2907,14 @@ class SequentialReaderAdapter(_PluginAdapter):
         custom: CustomDigests | None = None
         if span.digests:
             expected, custom = self._member_digests(member, span.digests, "walk")
+        unlocked = _checked_verdict(span.unlocked, name)
         decoded: _Decoded | None = None
         if data is not None:
             stream = self._decoded_stream(data, index, layer)
-            decoded = _Decoded(stream, span.checked, index, member.size, member.name)
+            decoded = _Decoded(
+                stream, span.checked, index, member.size, member.name, unlocked
+            )
         forward = layer.forward
-        unlocked = _checked_verdict(span.unlocked, name)
         if unlocked is PasswordConfirmVerdict.CONFIRMED and member.is_encrypted:
             # The walk unlocked the member's data with a confirmed password.
             member._verified = max(member._verified, Verification.UNLOCKED)
@@ -2933,15 +2987,16 @@ class SequentialReaderAdapter(_PluginAdapter):
                 # Only the open made here may ask the provider: a reopen once the
                 # stream is handed off is a replacement open inside its read.
                 handed_off = False
+                verdict = [record.unlocked]
 
                 def reopen(start: int) -> BinaryIO:
                     return self._decoded_by_walk(
-                        decoded, start, allow_provider=not handed_off
+                        decoded, start, allow_provider=not handed_off, verdict=verdict
                     )
 
                 stream = self._walk_handoff_locked(window, reopen)
                 handed_off = True
-            return self._decoded_parts(member, record, decoded, stream)
+            return self._decoded_parts(member, record, decoded, stream, verdict=verdict)
         shared = record.layer.shared
         assert shared is not None
 
@@ -2976,14 +3031,19 @@ class SequentialReaderAdapter(_PluginAdapter):
         decoded = record.decoded
         if decoded is not None:
             rewind: RewindWarning | None = None
+            # The verdict of the walk whose data the caller reads: each walk to the
+            # member gives its own.
+            verdict = [record.unlocked]
             if not self._streaming:
-                stream = self._decoded_by_walk(decoded, 0)
+                stream = self._decoded_by_walk(decoded, 0, verdict=verdict)
                 if self._seek_declared():
                     # The caller asked for seekable members: a forward seek reads
                     # through, and a backward one walks again to the member.
                     stream = RespawnStream(
                         # A replacement open: it never asks the provider.
-                        lambda: self._decoded_by_walk(decoded, 0, allow_provider=False),
+                        lambda: self._decoded_by_walk(
+                            decoded, 0, allow_provider=False, verdict=verdict
+                        ),
                         stream,
                         size=member.size,
                         what=f"{self._format.display_name} member data",
@@ -3002,7 +3062,9 @@ class SequentialReaderAdapter(_PluginAdapter):
                     f"the data of {quoted(member.name)} is no longer readable: the "
                     "pass has moved on"
                 )
-            return self._decoded_parts(member, record, decoded, stream, rewind)
+            return self._decoded_parts(
+                member, record, decoded, stream, rewind, verdict=verdict
+            )
         if self._streaming:
             forward = self._forward
             if forward is not record.layer.forward or forward.offset != record.offset:
@@ -3050,14 +3112,20 @@ class SequentialReaderAdapter(_PluginAdapter):
         )
 
     def _decoded_by_walk(
-        self, decoded: _Decoded, start: int, *, allow_provider: bool = True
+        self,
+        decoded: _Decoded,
+        start: int,
+        *,
+        allow_provider: bool = True,
+        verdict: list[PasswordConfirmVerdict | None] | None = None,
     ) -> BinaryIO:
         """``decoded``'s data from ``start``, reached by a walk of its own (random
         access): the idle one, when it is not past the member yet, or one from the
         start of the archive. The members before it are read past, as the listing
         walk does: their decoded data drained, their stored data skipped. With
         ``allow_provider=False`` (a replacement open) a request the walk yields gets
-        its saved winner only."""
+        its saved winner only. ``verdict[0]``, when given, becomes the ``unlocked``
+        this walk's span gave the data: the watch over the caller's stream reads it."""
         with self._data_walk_lock:
             data_walk, self._idle_data_walk = self._idle_data_walk, None
         if data_walk is not None and data_walk.next_index > decoded.index:
@@ -3087,6 +3155,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             )
             data_walk.current = target
             data_walk.next_index = decoded.index + 1
+            if verdict is not None:
+                verdict[0] = target.unlocked
             if start:
                 # Data that ends before ``start`` is short: the reader of the
                 # handed-off stream finds it so (TruncatedError).
@@ -3151,6 +3221,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     index,
                     decoded.size,
                     decoded.name,
+                    _checked_verdict(span.unlocked, type(self._reader).__name__),
                 )
             # A member on the way, read past under the name it is listed by.
             name = _listed_name(span)
@@ -3222,6 +3293,17 @@ class SequentialReaderAdapter(_PluginAdapter):
                     "yield the same members in the same order each time"
                 )
             )
+        if bool(span.checked) != decoded.checked:
+            # The verifier over the caller's stream was built from the first walk's
+            # word, and a replacement must deliver what it checks.
+            raise _plugin_bug(
+                ValueError(
+                    f"{type(self._reader).__name__}.walk() yielded {found!r} with "
+                    f"checked={span.checked!r} when walked again, not "
+                    f"{decoded.checked!r}: a walk must describe each member's data the "
+                    "same way each time"
+                )
+            )
 
     def _plugin_locked(self, stream: BinaryIO) -> BinaryIO:
         """``stream``, which reads the plugin's, under the handle lock when one is
@@ -3253,14 +3335,17 @@ class SequentialReaderAdapter(_PluginAdapter):
         decoded: _Decoded,
         stream: BinaryIO,
         rewind: RewindWarning | None = None,
+        *,
+        verdict: list[PasswordConfirmVerdict | None] | None = None,
     ) -> MemberStreamParts:
-        """``member``'s parts over ``stream``, its decoded data."""
+        """``member``'s parts over ``stream``, its decoded data. ``verdict`` is the
+        cell the walks to the member fill with their span's ``unlocked``."""
         expected = record.expected if record.expected is not None else member.hashes
+        if verdict is None:
+            verdict = [record.unlocked]
         digest_error: Callable[[CorruptionError], ArchiveyError] | None = None
-        if record.unlocked is not None:
-            stream, digest_error = self._watch_unlocked(
-                stream, member, [record.unlocked]
-            )
+        if verdict[0] is not None or record.unlocked is not None:
+            stream, digest_error = self._watch_unlocked(stream, member, verdict)
         return self._member_parts(
             stream,
             member.name,

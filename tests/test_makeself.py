@@ -755,6 +755,19 @@ def test_openssl_members_are_marked_encrypted() -> None:
 
 
 @_requires("cryptography")
+def test_a_digest_over_ciphertext_does_not_check_the_decrypted_files() -> None:
+    """The payload's MD5 and CRC cover the encrypted bytes. They report damage there,
+    but only the right key makes the decrypted files right, and nothing but the TAR
+    header tested it, so the files stay below ``CHECKSUM``."""
+    with open_archive(DATA / "openssl-2.4.0.run", password="secret") as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert files
+        assert all(m.verifiable is not Verification.CHECKSUM for m in files)
+        assert reader.verify_all().failures == ()
+        assert all(m.verified is not Verification.CHECKSUM for m in files)
+
+
+@_requires("cryptography")
 def test_a_later_walk_reuses_the_provider_answer() -> None:
     asked: list[int] = []
 

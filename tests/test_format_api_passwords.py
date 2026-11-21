@@ -45,6 +45,7 @@ from archivey.formats import (
     IndexedReader,
     Magic,
     MemberData,
+    MemberDigest,
     MemberRecord,
     MemberSpan,
     NeedsPassword,
@@ -156,6 +157,8 @@ class ToyXReader(IndexedReader[_Locator]):
     calls: ClassVar[Calls] = Calls()
     listing_unlocked: ClassVar[PasswordConfirmVerdict | None] = None
     archive_encrypted: ClassVar[bool] = False
+    # What ``then`` says of the data's own checks (``MemberData.checked``).
+    then_checked: ClassVar[bool] = False
 
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
@@ -226,6 +229,7 @@ class ToyXReader(IndexedReader[_Locator]):
             return MemberData(
                 _XorStream(self._source.view(locator.offset, locator.size), key),
                 unlocked=verdict,
+                checked=self.then_checked,
             )
 
         view.close()
@@ -262,6 +266,7 @@ def toyx() -> Iterator[type[ToyXReader]]:
     ToyXReader.rounds = 0
     ToyXReader.listing_unlocked = None
     ToyXReader.archive_encrypted = False
+    ToyXReader.then_checked = False
 
 
 def _write(tmp_path: Path, data: bytes, name: str = "t.toyx") -> Path:
@@ -467,6 +472,68 @@ def test_copied_context_close_from_provider_raises(
         assert reader.read("a.txt") == _SECRET
     assert len(outcome) == 1
     assert isinstance(outcome[0], ArchiveyUsageError)
+
+
+def test_copied_context_close_raises_while_another_close_drains(
+    toyx: type[ToyXReader], tmp_path: Path
+) -> None:
+    """An independent close() is already waiting for the worker whose provider is
+    running: a close() from that provider's copied context must raise, not wait
+    behind that closer, which waits for the provider."""
+    outcome: list[BaseException | None] = []
+    box: list[Any] = []
+    closers: list[threading.Thread] = []
+
+    def close_in_helper() -> None:
+        try:
+            box[0].close()
+            outcome.append(None)
+        except BaseException as exc:  # noqa: BLE001 - recorded for the test
+            outcome.append(exc)
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        closer = threading.Thread(target=box[0].close)
+        closers.append(closer)
+        closer.start()
+        state = box[0]._state
+        deadline = time.monotonic() + 10
+        while not state._closing and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert state._closing, "the independent close() never started draining"
+        context = contextvars.copy_context()
+        helper = threading.Thread(target=context.run, args=(close_in_helper,))
+        helper.start()
+        helper.join(timeout=10)
+        assert not helper.is_alive(), "close() waited behind the draining closer"
+        return b"right"
+
+    with open_archive(
+        _one(tmp_path), password=provider, concurrent_operations=True
+    ) as reader:
+        box.append(reader)
+        reader.members()
+        assert reader.read("a.txt") == _SECRET
+    for closer in closers:
+        closer.join(timeout=10)
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], ArchiveyUsageError)
+
+
+@pytest.mark.parametrize("name", ["t.toyx", "t.toyw"])
+def test_a_closed_reader_keeps_no_saved_winner(
+    toyx: type[ToyXReader], toyw: None, tmp_path: Path, name: str
+) -> None:
+    if name == "t.toyx":
+        path = _one(tmp_path)
+        member = "a.txt"
+    else:
+        path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), name)
+        member = "a"
+    reader = open_archive(path, password=["no", "right", "pw"])
+    with reader:
+        reader.read(member)
+        assert reader._saved_winners
+    assert reader._saved_winners == {}
 
 
 def test_two_threads_share_one_provider_turn(
@@ -685,6 +752,11 @@ class ToyWReader(SequentialReader):
     reject_all: ClassVar[bool] = False
     # Charge metadata once the walk has its key: a step that needs the walk's state.
     charge_after_unlock: ClassVar[bool] = False
+    # The verdict every walk after the first gives its spans, when set.
+    rewalk_unlocked: ClassVar[PasswordConfirmVerdict | None] = None
+    # A CRC-32 each span states for its data, when set.
+    span_crc: ClassVar[bytes | None] = None
+    walks: ClassVar[int] = 0
 
     def __init__(self, context: ReaderContext) -> None:
         self._context = context
@@ -700,6 +772,12 @@ class ToyWReader(SequentialReader):
             return _key(password), CONFIRMED
 
         key, verdict = yield NeedsPassword("the TOYW archive", check)
+        ToyWReader.walks += 1
+        if self.rewalk_unlocked is not None and ToyWReader.walks > 1:
+            verdict = self.rewalk_unlocked
+        digests = (
+            (MemberDigest("crc32", self.span_crc),) if self.span_crc is not None else ()
+        )
         if self.charge_after_unlock:
             self._context.charge_metadata(10, what="header")
         pos = 0
@@ -719,7 +797,9 @@ class ToyWReader(SequentialReader):
             member = ArchiveMember(
                 type=MemberType.FILE, name=name, size=size, is_encrypted=True
             )
-            yield MemberSpan(member, data=io.BytesIO(read(size)), unlocked=verdict)
+            yield MemberSpan(
+                member, data=io.BytesIO(read(size)), unlocked=verdict, digests=digests
+            )
 
     def archive_info(self) -> ReaderArchiveInfo:
         return ReaderArchiveInfo(is_encrypted=True)
@@ -742,6 +822,9 @@ def toyw() -> Iterator[None]:
         yield
     ToyWReader.reject_all = False
     ToyWReader.charge_after_unlock = False
+    ToyWReader.rewalk_unlocked = None
+    ToyWReader.span_crc = None
+    ToyWReader.walks = 0
 
 
 def test_walk_request_resolves(toyw: None, tmp_path: Path) -> None:
@@ -1045,6 +1128,60 @@ def test_indexed_respawn_with_a_failing_saved_winner_does_not_ask(
             stream.seek(0)
             stream.read()
     assert asked == [1]
+
+
+def test_a_data_walk_uses_its_own_verdict(toyw: None, tmp_path: Path) -> None:
+    """The listing walk confirmed the password and a later walk to the member did
+    not: a checksum failure under that walk's data is the password-or-damage error,
+    not plain damage."""
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    ToyWReader.rewalk_unlocked = INCONCLUSIVE
+    ToyWReader.span_crc = b"\0\0\0\0"
+    with open_archive(path, password="pw") as reader:
+        reader.members()
+        with pytest.raises(EncryptionError) as raised:
+            reader.read("a")
+    assert is_unverified_data_error(raised.value)
+
+
+def test_an_indexed_respawn_must_describe_its_checks_the_same(
+    toyx: type[ToyXReader], tmp_path: Path
+) -> None:
+    with (
+        open_archive(_one(tmp_path), password="right", seekable_members=True) as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.read() == _SECRET
+        toyx.then_checked = True
+        with pytest.raises(ValueError, match="different checked when opened again"):
+            stream.seek(0)
+            stream.read()
+
+
+def test_a_rewalk_must_describe_its_checks_the_same(
+    toyw: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    original = ToyWReader.walk
+
+    def walk(self: ToyWReader, stream: ForwardStream) -> Iterator[Any]:
+        first = ToyWReader.walks == 0
+        gen = original(self, stream)
+        sent = None
+        while True:
+            try:
+                item = gen.send(sent)
+            except StopIteration:
+                return
+            if isinstance(item, MemberSpan) and not first:
+                item = item._replace(checked=True)
+            sent = yield item
+
+    monkeypatch.setattr(ToyWReader, "walk", walk)
+    with open_archive(path, password="pw") as reader:
+        reader.members()
+        with pytest.raises(ValueError, match="checked=True when walked again"):
+            reader.read("a")
 
 
 def test_sequential_respawn_with_a_failing_saved_winner_does_not_ask(

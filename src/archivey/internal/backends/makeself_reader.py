@@ -270,7 +270,14 @@ class MakeselfReader(SequentialReader):
             )
             for span in self._context.open_nested(data, inner):
                 if check is not None:
-                    check.cover(span.member)
+                    # The digests cover the stored bytes: with them intact, the
+                    # decrypted files are right only under the right key, which a
+                    # CONFIRMED unlock alone proves.
+                    check.cover(
+                        span.member,
+                        proves_data=unlocked
+                        in (None, PasswordConfirmVerdict.CONFIRMED),
+                    )
                 if unlocked is not None:
                     span.member.is_encrypted = True
                     span = span._replace(unlocked=unlocked)

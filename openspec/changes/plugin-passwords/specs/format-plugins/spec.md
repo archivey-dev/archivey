@@ -137,10 +137,12 @@ rewalk), it SHALL try first the saved winner of each request, keyed by the plugi
 plus the request's index in that call's chain. archivey SHALL call the provider only on
 a first open of a member (the caller's `open()`, a data walk it starts, the first open
 of a lazy `stream_members()` or extraction handle), never on a replacement open of an
-already unlocked stream, and SHALL give a respawned stream the new `MemberData.unlocked`
-verdict. When resolution fails for a yielded request, archivey SHALL close the generator
-and the error SHALL end the walk. Two workers needing the provider at once SHALL be
-served one after the other.
+already unlocked stream, and SHALL give a replacement stream the new `unlocked` verdict
+(a respawn's `MemberData`, a data walk's span). A replacement whose `digests`, `checked`
+or `bounded` differ from the first open's SHALL be refused as a plugin bug. When
+resolution fails for a yielded request, archivey SHALL close the generator and the error
+SHALL end the walk. Two workers needing the provider at once SHALL be served one after
+the other.
 
 #### Scenario: concurrency
 
