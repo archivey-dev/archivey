@@ -10,6 +10,7 @@ reader that Part B adds, checks every run codec and layout option.
 from __future__ import annotations
 
 import bz2
+import functools
 import hashlib
 import lzma
 import os
@@ -424,14 +425,50 @@ def _fsck(tmp_path: Path, volume: bytes) -> list[str]:
         check=False,
         timeout=300,
     )
+    output = result.stdout + result.stderr
+    if result.returncode == 0 and "appears to be OK" in output:
+        return []
+    # A failure, or a run that never got to its verdict: the problem lines, or the
+    # whole output when fsck printed only its banner (a volume it cannot recognise).
     problems = [
         line.strip()
-        for line in result.stdout.splitlines()
-        if not line.startswith("**")
+        for line in output.splitlines()
+        if line.strip()
+        and not line.startswith("**")
         and "Executing fsck_hfs" not in line
         and "volume name" not in line
     ]
-    return problems if result.returncode else []
+    return problems or [
+        f"fsck.hfsplus exited {result.returncode}",
+        *output.splitlines(),
+    ]
+
+
+@functools.cache
+def _fsck_reads_journaled_volumes(tmp: str) -> bool:
+    """Whether this fsck.hfsplus passes a journaled volume its own mkfs.hfsplus made.
+    hfsprogs 540.1.linux3-6 does not: on a little-endian machine its journal check
+    misreads the volume header and keeps that block held, so the volume header check
+    then fails with EDEADLK on every journaled volume ("Volume header needs minor
+    repair (1, 0)"). 540.1.linux3-5 passes them."""
+    mkfs = shutil.which("mkfs.hfsplus")
+    if mkfs is None:
+        return True
+    path = Path(tmp) / "mkfs-journaled.img"
+    path.write_bytes(bytes(16 << 20))
+    subprocess.run(
+        ["mkfs.hfsplus", "-J", "-v", "Ref", str(path)],
+        capture_output=True,
+        check=True,
+        timeout=120,
+    )
+    result = subprocess.run(
+        ["fsck.hfsplus", "-n", "-f", str(path)],
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    return result.returncode == 0
 
 
 @needs_fsck
@@ -441,7 +478,10 @@ def _fsck(tmp_path: Path, volume: bytes) -> list[str]:
         {},
         {"hfsx": True},
         {"hfsx": True, "case_sensitive": False},
-        {"journaled": True},
+        {"journal": "clean"},
+        {"journal": "pending"},
+        {"journal": "need-init"},
+        {"journal": "external"},
         {"node_size": 8192},
         {"block_size": 512},
         {"block_size": 2048},
@@ -451,18 +491,79 @@ def _fsck(tmp_path: Path, volume: bytes) -> list[str]:
         "hfsplus",
         "hfsx",
         "hfsx-folding",
-        "journaled",
+        "journal-clean",
+        "journal-pending",
+        "journal-need-init",
+        "journal-external",
         "node8k",
         "block512",
         "block2k",
         "block64k",
     ],
 )
-def test_hfsplus_passes_fsck(tmp_path: Path, options: dict) -> None:
+def test_hfsplus_passes_fsck(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, options: dict
+) -> None:
+    # fsck_hfs looks at a journal only to say whether it needs replay, and says
+    # nothing in a read-only check; the journal layout is checked below.
+    if "journal" in options and not _fsck_reads_journaled_volumes(
+        str(tmp_path_factory.getbasetemp())
+    ):
+        pytest.skip("this fsck.hfsplus fails every journaled volume, its own included")
     hfs = d.write_hfsplus(
         _rich_tree(), name="Fixture", attributes_in_fork=("user.big",), **options
     )
     assert _fsck(tmp_path, hfs.volume) == []
+
+
+@needs_fsck
+def test_fsck_helper_fails_a_volume_fsck_cannot_read(tmp_path: Path) -> None:
+    good = d.write_hfsplus(_rich_tree()[:3], attributes_in_fork=("user.big",))
+    assert _fsck(tmp_path, good.volume) == []
+    assert _fsck(tmp_path, bytes(len(good.volume)))
+
+    def no_headers(volume: bytearray, _hfs: d.Hfs) -> None:
+        volume[1024:1536] = bytes(512)
+        volume[-1024:-512] = bytes(512)
+
+    broken = d.write_hfsplus(
+        _rich_tree()[:3], attributes_in_fork=("user.big",), patch_volume=no_headers
+    )
+    assert _fsck(tmp_path, broken.volume)
+
+
+@pytest.mark.parametrize("state", d.JOURNAL_STATES)
+def test_hfsplus_journal_layout(state: str) -> None:
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"x")], journal=state)
+    v, bs = hfs.volume, hfs.block_size
+    attributes, last_mounted, info_block = struct.unpack_from(">I4sI", v, 1028)
+    assert attributes & 0x2000
+    assert last_mounted == b"HFSJ"
+    assert info_block == hfs.forks[".journal_info_block"][0][0]
+    flags, _device, offset, size = struct.unpack_from(">I32sQQ", v, info_block * bs)
+    assert flags == {"clean": 1, "pending": 1, "need-init": 5, "external": 2}[state]
+    assert offset == hfs.forks[".journal"][0][0] * bs
+    assert size == d.JOURNAL_SIZE
+    header = bytearray(v[offset : offset + 44])
+    magic, endian, start, end, jsize, blhdr, cksum, jhdr = struct.unpack(
+        "<IIQQQIII", header
+    )
+    assert (magic, endian, jsize, jhdr) == (0x4A4E4C78, 0x12345678, d.JOURNAL_SIZE, 512)
+    struct.pack_into("<I", header, 36, 0)
+    assert cksum == d._journal_checksum(bytes(header))
+    assert (start != end) == (state == "pending")
+    if state == "pending":  # one block list header, with a valid checksum
+        bl = bytearray(v[offset + start : offset + end])
+        assert len(bl) == blhdr
+        bl_cksum = struct.unpack_from("<I", bl, 8)[0]
+        struct.pack_into("<I", bl, 8, 0)
+        assert bl_cksum == d._journal_checksum(bytes(bl[:16]))
+
+
+def test_journal_checksum_matches_apple() -> None:
+    # vfs_journal.c calc_checksum, worked by hand: 0 -> (0 << 8) ^ 1 = 0x1 ->
+    # (0x1 << 8) ^ (0x1 + 2) = 0x103, returned inverted.
+    assert d._journal_checksum(b"\x01\x02") == 0xFFFFFEFC
 
 
 @needs_fsck

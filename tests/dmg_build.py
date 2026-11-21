@@ -24,8 +24,9 @@ import stat
 import struct
 import uuid
 import zlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 SECTOR = 512
 
@@ -677,8 +678,9 @@ def hfs_time(unix: int) -> int:
 @dataclass
 class Node:
     """One entry of the tree to write. ``path`` is ``/``-separated from the volume
-    root; a name may carry a ``/`` by writing ``:`` (HFS+ stores ``/`` in names as the
-    Finder shows ``:``) through ``raw_name``."""
+    root, so a ``/`` in ``path`` is always a separator. To store a ``/`` in a name, pass
+    the name's UTF-16BE units in ``raw_name``; the POSIX view (mount, 7-Zip) shows that
+    stored ``/`` as ``:``."""
 
     path: str
     kind: str = "file"  # file, dir, symlink, hardlink, fifo, chardev
@@ -940,6 +942,54 @@ def _pack_node(
         struct.pack_into(">H", node, size - 2 * (i + 1), off)
 
 
+JOURNAL_STATES = ("clean", "pending", "need-init", "external")
+JOURNAL_SIZE = 512 * 1024
+_JHDR_SIZE = 512  # the journal header's sector
+_BLHDR_SIZE = 4096  # one block list header
+
+
+def _journal_checksum(data: bytes) -> int:
+    """``calc_checksum`` of Apple's ``vfs_journal.c``, on a 32-bit int."""
+    cksum = 0
+    for b in data:
+        cksum = ((cksum << 8) ^ (cksum + b)) & 0xFFFFFFFF
+    return ~cksum & 0xFFFFFFFF
+
+
+def _write_journal(
+    volume: bytearray, state: str, *, info_at: int, journal_at: int
+) -> None:
+    """The journal info block (big-endian, TN1150) and the journal header (written
+    little-endian, as on an Intel Mac; ``endian`` says which)."""
+    flags = {"clean": 1, "pending": 1, "need-init": 1 | 4, "external": 2}[state]
+    struct.pack_into(
+        ">I32sQQ", volume, info_at, flags, bytes(32), journal_at, JOURNAL_SIZE
+    )
+    start = end = _JHDR_SIZE
+    if state == "pending":
+        # One transaction of one block list header that lists no blocks.
+        end = start + _BLHDR_SIZE
+        blhdr = bytearray(_BLHDR_SIZE)
+        struct.pack_into("<HHII", blhdr, 0, _BLHDR_SIZE // 16 - 1, 1, _BLHDR_SIZE, 0)
+        struct.pack_into("<I", blhdr, 8, _journal_checksum(bytes(blhdr[:16])))
+        volume[journal_at + start : journal_at + end] = blhdr
+    header = bytearray(
+        struct.pack(
+            "<IIQQQIII",
+            0x4A4E4C78,  # "JNLx"
+            0x12345678,
+            start,
+            end,
+            JOURNAL_SIZE,
+            _BLHDR_SIZE,
+            0,
+            _JHDR_SIZE,
+        )
+    )
+    struct.pack_into("<I", header, 36, _journal_checksum(bytes(header)))
+    volume[journal_at : journal_at + len(header)] = header
+
+
 def write_hfsplus(
     nodes: Sequence[Node],
     *,
@@ -949,7 +999,7 @@ def write_hfsplus(
     case_sensitive: bool | None = None,
     node_size: int = 4096,
     spare_blocks: int = 16,
-    journaled: bool = False,
+    journal: str | None = None,
     dirty: bool = False,
     patch_catalog: Callable[[list[CatalogRecord]], None] | None = None,
     patch_catalog_nodes: Callable[[list[bytearray]], None] | None = None,
@@ -970,7 +1020,20 @@ def write_hfsplus(
     sorted and packed, ``patch_catalog_nodes`` edits the packed nodes (a leaf loop, bad
     record offsets), ``patch_header`` the volume header, and ``patch_volume`` the whole
     volume once it is laid out.
+
+    ``journal`` writes a journaled volume, with ``.journal_info_block`` and ``.journal``
+    in the root as macOS makes them, in one of the states of design §6.1: ``"clean"``
+    (an empty journal), ``"pending"`` (transactions not yet replayed), ``"need-init"``
+    or ``"external"`` (the journal info flags say so).
     """
+    if journal not in (None, *JOURNAL_STATES):
+        raise ValueError(f"journal must be one of {JOURNAL_STATES}")
+    if journal:
+        nodes = [
+            *nodes,
+            Node(".journal_info_block", data=bytes(block_size)),
+            Node(".journal", data=bytes(JOURNAL_SIZE)),
+        ]
     if case_sensitive is None:
         case_sensitive = hfsx
     now = hfs_time(1_700_000_000)
@@ -1117,12 +1180,15 @@ def write_hfsplus(
         cnid: int, n: Node | None, valence: int, finder: bytes = bytes(16)
     ) -> bytearray:
         t = hfs_time(n.mtime) if n else now
+        # HFSX keeps each folder's count of direct subfolders (kHFSHasFolderCountMask
+        # and the field TN1150 calls reserved2); fsck_hfs requires it there.
+        flags, folder_count = (0x0010, subfolders.get(cnid, 0)) if hfsx else (0, 0)
         return bytearray(
-            struct.pack(">hHII5I", FOLDER, 0, valence, cnid, t, t, t, t, 0)
+            struct.pack(">hHII5I", FOLDER, flags, valence, cnid, t, t, t, t, 0)
             + bsd(n, stat.S_IFDIR | 0o755)
             + finder
             + bytes(16)
-            + struct.pack(">II", 0, 0)
+            + struct.pack(">II", 0, folder_count)
         )
 
     def file_record(
@@ -1167,17 +1233,17 @@ def write_hfsplus(
     def name_of(path: str, n: Node | None) -> bytes:
         if n is not None and n.raw_name is not None:
             return n.raw_name
-        return _utf16(
-            path.rpartition("/")[2].replace(":", "/")
-            if False
-            else path.rpartition("/")[2]
-        )
+        return _utf16(path.rpartition("/")[2])
 
+    subfolders: dict[int, int] = {}
     for path, cnid in cnids.items():
         if path:
             children[parent_of(path)] = children.get(parent_of(path), 0) + 1
+            if kinds[path] == "dir":
+                subfolders[parent_of(path)] = subfolders.get(parent_of(path), 0) + 1
     if has_links:
         children[ROOT_FOLDER] = children.get(ROOT_FOLDER, 0) + 1
+        subfolders[ROOT_FOLDER] = subfolders.get(ROOT_FOLDER, 0) + 1
         children[private_id] = len(links)
 
     root_name = _utf16(name)
@@ -1349,21 +1415,12 @@ def write_hfsplus(
     )
 
     # ── extents overflow ──
+    # HFSPlusExtentKey order (TN1150): fileID, then forkType, then startBlock.
     ext_pairs = []
-    for cnid, fork_type, start_block, group in sorted(
-        overflow, key=lambda o: (o[1], o[0], o[2])
-    ):
+    for cnid, fork_type, start_block, group in sorted(overflow):
         key = struct.pack(">HBBII", 10, fork_type, 0, cnid, start_block)
         body = b"".join(struct.pack(">II", s, c) for s, c in group).ljust(64, b"\0")
         ext_pairs.append((key, body))
-    ext_pairs.sort(key=lambda kv: struct.unpack_from(">BxII", kv[0], 2))
-    ext_pairs.sort(
-        key=lambda kv: (
-            struct.unpack_from(">I", kv[0], 4)[0],
-            kv[0][2],
-            struct.unpack_from(">I", kv[0], 8)[0],
-        )
-    )
     extents_file, _ = _btree(
         ext_pairs,
         node_size,
@@ -1439,8 +1496,16 @@ def write_hfsplus(
     attributes = 0x00000100  # kHFSVolumeUnmountedMask
     if dirty:
         attributes &= ~0x100
-    if journaled:
-        attributes |= 0x2000
+    journal_info_block = 0
+    if journal:
+        attributes |= 0x2000  # kHFSVolumeJournaledMask
+        journal_info_block = forks[".journal_info_block"][0][0]
+        _write_journal(
+            volume,
+            journal,
+            info_at=journal_info_block * block_size,
+            journal_at=forks[".journal"][0][0] * block_size,
+        )
     vh = bytearray(512)
     struct.pack_into(
         ">2sHIII4IIIIIIIIIIIQ",
@@ -1449,8 +1514,8 @@ def write_hfsplus(
         b"HX" if hfsx else b"H+",
         5 if hfsx else 4,
         attributes,
-        0x31302E30,  # "10.0"
-        0,
+        0x4846534A if journal else 0x31302E30,  # "HFSJ" or "10.0"
+        journal_info_block,
         now,
         now,
         0,
@@ -1497,8 +1562,8 @@ def dmg_of(
     *,
     layout: str = "gpt",
     codec: int = ZLIB,
-    hfs_options: dict | None = None,
-    **udif_options: object,
+    hfs_options: Mapping[str, Any] | None = None,
+    **udif_options: Any,
 ) -> bytes:
     """A whole ``.dmg``: an HFS+ volume of ``nodes`` in a GPT (or ``apm``, or ``none``)
     disk in a UDIF image."""
@@ -1513,4 +1578,4 @@ def dmg_of(
         disk = write_bare(part)
     return write_udif(
         disk.segments, tables=disk.tables, codec=codec, **udif_options
-    ).image  # type: ignore[arg-type]
+    ).image
