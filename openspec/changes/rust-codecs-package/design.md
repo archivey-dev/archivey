@@ -96,11 +96,11 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 
 | Kernel | `KERNELS` key | Python name | Constructor or call |
 | --- | --- | --- | --- |
-| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits)`; `reset()` at a CAB folder start |
-| Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None)`; `header_params`, `clear_offsets` |
+| LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)`; `reset(output_size=None)` at a CAB folder start |
+| Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
 | LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` |
 | ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
-| BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc)`, four readable binary streams |
+| BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc, *, out_size)`, four readable binary streams |
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | RISC-V filter | `"riscv"` | `filters.RiscvDecoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | CRC-16/ARC | `"crc16_arc"` | `crc16_arc`, `Crc16Arc` | `(data, value=0) -> int`; `Crc16Arc(data=b"")` |
@@ -109,9 +109,33 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 - ZipCrypto is a cipher, so its object is a `Decryptor` with `decrypt()`, not a
   decompressor. It has `copy()`, `getstate()` and `from_state()` (the header and 12
   bytes of keys) like the streaming decoders, and `total_in` (bytes decrypted).
+- LZX output comes in frames of 32 KiB, and only the last frame is shorter. The frame
+  length sets where the input realigns and where the Intel E8 scan stops, so the kernel
+  must know it whatever `max_length` the caller asks for. The caller gives the folder's
+  declared output size with `output_size=` or, when the CAB reader learns it later,
+  with `set_output_size(n)` before the last frame starts. The kernel decodes one whole
+  frame into an internal buffer of at most 32 KiB and returns it in `max_length`
+  slices. `eof` turns true when `total_out` reaches the output size. Without an output
+  size, every frame is 32 KiB and `eof` stays false. This is how `cab_reader.py` calls
+  `decode_frame(frame)` today.
+- Unix `compress` has no end marker: the stream ends where its source ends. An empty
+  `decompress(b"")` only drains buffered output, as for `LZMADecompressor`, so LZW has
+  `flush(max_length=-1)` to say that the input has ended. `flush()` returns the
+  remaining output (called again while it returns bytes, if capped), then sets `eof`
+  and `truncation`: `None`, or the message of the Python twin's `truncation` (padding
+  owed, nonzero leftover bits). Truncation is reported, not raised, so the bytes before
+  it are kept; archivey decides what to raise, as it does with the twin today.
 - BCJ2 reads four input streams, so it cannot take one `data` argument. It pulls from
   four objects with `read(n)` and gives output through `read(max_length)` with `eof`.
-  Its state holds `total_in` for each of the four streams.
+  `out_size` is the declared output size (`unpack_size` in the 7z pipeline) and is
+  required: `eof` turns true after exactly `out_size` bytes. An input that ends before
+  that raises `TruncatedDataError` naming the stream, and bytes left in `main`, `call`
+  or `jump` after the last output byte raise `CorruptDataError`, as
+  `Bcj2DecoderStream` does. Nothing is allocated from `out_size`. Its state holds
+  `total_in` for each of the four streams and none of their buffered bytes. BCJ2 has no
+  `copy()`, because two copies would share the four read cursors. It is restored with
+  `bcj2.Decompressor.from_state(state, main, call, jump, rc)`, each new stream placed
+  at its saved `total_in`.
 - The branch filters are streaming objects, not functions: an instruction can span two
   calls, so each keeps the cut-off bytes until the next `decode()` or `flush()`.
 
@@ -124,7 +148,7 @@ Two kinds of decoder (question 4):
   required and exact; output that ends short or would run past it is
   `CorruptDataError`. There is no state, and a seek point is the block's offset.
 
-Seeking (question 4b). Every streaming object has:
+Seeking (question 4b). Every streaming object has (BCJ2 without `copy()`, as above):
 
 ```python
 snap = d.copy()                         # in-memory copy, like zlib's
@@ -210,11 +234,7 @@ until the next codecs release turns the kernel back on.
 
   ```toml
   codecs = [
-    "archivey-codecs>=0.1,<1; platform_python_implementation == 'CPython'"
-    " and (sys_platform == 'linux' or sys_platform == 'darwin' or sys_platform == 'win32')"
-    " and (platform_machine == 'x86_64' or platform_machine == 'AMD64'"
-    " or platform_machine == 'aarch64' or platform_machine == 'arm64'"
-    " or platform_machine == 'ARM64')",
+    "archivey-codecs>=0.1,<1; platform_python_implementation == 'CPython' and (sys_platform == 'linux' or sys_platform == 'darwin' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'ARM64')",
   ]
   ```
 

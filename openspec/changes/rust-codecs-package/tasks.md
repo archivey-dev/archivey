@@ -10,7 +10,10 @@
 - [ ] 1.5 `tests/test_api.py` (no archivey import); parity tests updated
 - [ ] 1.6 CRC-16/ARC (D2) with parity tests against `lha_reader.crc16`
 - [ ] 1.7 `copy()`, `getstate()` / `from_state()`, `total_in` / `total_out` on every
-  streaming decoder (D3), with resume-equals-straight-decode tests at random points
+  streaming decoder (D3; BCJ2 without `copy()`, restored with four new streams); LZX
+  `output_size`, LZW `flush()` / `truncation`, BCJ2 `out_size`, with parity tests for a
+  short E8 last frame read in 1-byte slices, LZW truncation, and BCJ2 early end and
+  leftover bytes; with resume-equals-straight-decode tests at random points
 
 ## 2. archivey hook (maintainer merges: public names)
 
