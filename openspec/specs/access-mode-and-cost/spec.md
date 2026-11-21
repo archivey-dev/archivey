@@ -42,12 +42,14 @@ availability check, because there the missing package is a real step on the way.
 Eager seek-point building is not exposed.
 
 Every source `open_archive` and `open_stream` take SHALL cross one boundary, which
-returns one `ArchiveSource`; standalone `detect_format` does not cross it. Every
-consumer of the raw source SHALL receive one of three things: the `ArchiveSource`; a
-wrapper over it that preserves the four guarantees below (a view that clamps its reads
-and does not close its inner); or, for a parser that opens a path itself, the
-`ArchiveSource`'s path. The `ArchiveSource` SHALL carry every source-level guarantee
-itself, whatever the caller passed — a path, a stream, or a volume list:
+returns one `ArchiveSource`; standalone `detect_format` does not cross it, except for an
+`fsspec.core.OpenFile` source (`fsspec-integration`), which it reads through the same
+boundary and remote fetch planner, because an `OpenFile` has no file or stream of its
+own to read. Every consumer of the raw source SHALL receive one of three things: the
+`ArchiveSource`; a wrapper over it that preserves the four guarantees below (a view that
+clamps its reads and does not close its inner); or, for a parser that opens a path
+itself, the `ArchiveSource`'s path. The `ArchiveSource` SHALL carry every source-level
+guarantee itself, whatever the caller passed — a path, a stream, or a volume list:
 
 | Guarantee | What `ArchiveSource` SHALL do |
 | --- | --- |
@@ -64,7 +66,15 @@ How full-count is supplied differs by source, and the difference is read-ahead:
 | Seekable stream that is already buffered (a `BytesIO`, an `open()` handle) | **None.** It is already full-count; `fileno()` still forwards |
 | Seekable stream, not already buffered | A fixed-size read buffer. Bounded, and recoverable by seeking |
 | Non-seekable stream that is already `io.BufferedReader` / `io.BufferedRandom` | **Only the detection prefix**, when detection ran, as for any non-seekable source. Past it the caller's buffer, not a second one, supplies full-count, and its read-ahead is the caller's. The caller's `peek` is not used for detection: it returns at most one buffer's worth, less than the detection window can need |
+| `fsspec.core.OpenFile` | **The remote fetch planner** (`fsspec-integration`): range reads through the file system, one bounded window pool per reader that every volume and member stream shares. fsspec's own file cache is not used, and no file object is opened |
 | Non-seekable stream, not already a CPython buffer | **Only the detection prefix**, when detection ran, filled by `peek` and drained by the first reads. Past it, missing bytes are re-asked for, so a `read(n)` takes exactly `n` from the source. Codec layers above it may still buffer |
+
+For an `OpenFile`, the size is `fs.size(path)`, read once at the boundary, and it is a
+**fact** that clamps reads. That differs from the integer `size` a caller's stream may
+carry, which stays a hint for reporting only: the `OpenFile`'s size comes from the store
+that serves every later byte rather than from an attribute the caller set, and a later
+change to the object is the change check's to catch (`fsspec-integration` §"A changed
+remote object is caught or reported"), not the clamp's.
 
 The detection prefix holds only what detection peeked: `DETECTION_LIMIT` bytes, 32 774
 when the ISO probe triggers, up to 1 MiB for the inner-TAR probe
@@ -110,6 +120,7 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | Either mode on non-seekable source, backend needs seek, its optional package missing (a plugin that needs seek and a package that is not installed) | The same seekability error, not `PackageNotInstalledError` |
 | `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `streaming=True` hint follows once the package is installed |
 | Non-seekable source refused by either refusal rule (needs seek in either mode, or `streaming=False` on a front-to-back format), with `password=` for a format with no encryption (ISO, TAR) | `PASSWORD_ARGUMENT_UNUSED` (and `ENCODING_ARGUMENT_UNUSED` likewise) is emitted before the refusal, the same for both rules. The availability refusal (`.tar.lz4` without `lz4`) emits neither: `PackageNotInstalledError` is raised before the argument diagnostics run |
+| `fsspec.core.OpenFile` source, either mode, and `detect_format` on one | Every byte comes through the remote fetch planner's range reads; `fs.size(path)` is read once and clamps reads; the caller's file system is not closed |
 | Seekable stream source, either mode | Full-count `read(n)` from the `ArchiveSource`: a source that is not already buffered gets a fixed-size read buffer (bounded readahead only), and one that already is (a `BytesIO`, an `open()` handle) gets no readahead. Never materialized to memory or disk |
 | Non-seekable stream source, `streaming=True` | The `ArchiveSource` gives full-count `read(n)` with no read-ahead beyond the detection prefix: `seekable()` stays `False`; reads drain the prefix first, and once it is drained (or when an explicit `format=` meant it was never filled) a `read(n)` on *that stream* takes exactly `n` bytes from the source. Codec layers above the boundary read differently: a codec over a non-seekable source reads what has arrived (`arrived_view`), one source read per feed, so an end-to-end `read(20)` on a compressed non-seekable open makes one source read per decoder feed, each for up to one feed (64 KiB, more for a large sized read), and decodes what it returns. A short return is not the end of the source; only an empty one is |
 | Non-seekable stream that is already `io.BufferedReader` | No second full-count buffer is added: the caller's buffer supplies full-count. The detection prefix sits in front of it when detection ran, and is drained first. `fileno()` forwards through the `ArchiveSource` |

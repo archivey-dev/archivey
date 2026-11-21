@@ -27,9 +27,10 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `PASSWORD_ARGUMENT_UNUSED` | `UnusedArgumentContext`: `kind="unused_argument"`, `archive_name`, `argument="password"`, `format`, `reason` |
 | `SCAN_DIRECTORY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="directory"` |
 | `SCAN_ENTRY_VANISHED` | `ScanRaceContext`: `kind="scan_race"`, `archive_name`, `relative_path`, `entry_kind="entry"` |
-| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","zip64_end_of_central_directory"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
-| `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
+| `ARCHIVE_EOF_MARKER_MISSING` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"two_zero_blocks","second_zero_block","end_of_archive_block","end_of_central_directory","zip64_end_of_central_directory","end_of_archive_byte","end_of_archive_header"}`, `expected_bytes`, `observed_bytes`, `observed_kind` |
+| `ARCHIVE_TRAILING_DATA` | `ArchiveEofContext`: `kind="archive_eof"`, `archive_name`, `format`, `expected_marker` ∈ `{"zeros_to_eof","end_of_stream","directory_padding"}`, `expected_bytes=0`, `observed_bytes`, `observed_kind="nonzero"` |
 | `ARCHIVE_UNLISTED_DATA` | `UnlistedDataContext`: `kind="unlisted_data"`, `archive_name`, `format`, `member_name`, `member_id` (the name and id the pass gave the entry before dropping it), `offset` (of its local header), `compressed_size` |
+| `ARCHIVE_UNREAD_SESSION` | `UnreadSessionContext`: `kind="unread_session"`, `archive_name`, `format="iso"`, `sector` (the image sector that holds the other volume's primary volume descriptor; for a `.cue` sheet that hides a session, the address by the sector headers of that session's primary volume descriptor). Emitted at open by a raw CD image read from its first track without its `.cue` sheet, when the data sectors after the listed volume hold another ISO 9660 volume that the sector addresses do not place in a readable later session; and by a `.cue` sheet, when the sector addresses of a data track after the chosen one start a later session that holds a volume the sheet-less reading lists |
 | `MEMBER_TIMESTAMP_INVALID` | `MemberTimestampContext`: `kind="member_timestamp"`, `archive_name`, `member_name`, `member_id`, `field` ∈ `{"modified","accessed","created","ctime"}` (the `ArchiveMember` attribute the value would have filled, in every format), `source`, `value_repr` |
 | `MEMBER_HEADER_RECORD_SKIPPED` | `MemberHeaderRecordContext`: `kind="member_header_record"`, `archive_name`, `member_name`, `member_id`, `record`, `record_id`, `reason`, `list_truncated` |
 | `SYMLINK_TARGET_UNAVAILABLE` | `SymlinkTargetContext`: `kind="symlink_target"`, `archive_name`, `member_name`, `member_id`, `reason` |
@@ -38,14 +39,19 @@ context SHALL be `json.dumps`-safe without a custom encoder.
 | `MEMBER_PATH_REFUSED` | `PathRefusedContext`: `kind="path_refused"`, `archive_name`, `member_name`, `member_id`, `policy` (the `ArchiveyFileSystem`'s `ExtractionPolicy` value), `reason` (the refusal message of the extraction check) |
 | `MEMBER_DIRECTORY_DATA_IGNORED` | `DirectoryDataContext`: `kind="directory_data"`, `archive_name`, `member_name`, `member_id`, `size` (declared; 0 when none is declared and the body is larger than an empty one of its method), `compressed_size` |
 | `MEMBER_LINK_DATA_IGNORED` | `LinkDataContext`: `kind="link_data"`, `archive_name`, `member_name`, `member_id`, `size` (declared) |
+| `MEMBER_HEADER_AMBIGUOUS` | `HeaderAmbiguityContext`: `kind="header_ambiguity"`, `archive_name`, `member_name`, `member_id`, `ambiguity` (`"both_families"`, `"repeated"`, `"global_member_field"`, `"nul_in_value"`, `"global_replaced"`, `"mixed_chain"`, `"global_in_chain"`, `"empty_value"`, `"leading_zero"`, `"field_tail"`, `"size_on_no_data"`, `"signed_checksum"`, `"magic_version"` or `"newline_in_value"` for a TAR header; `"copies_differ"` for an RPM symlink; `"zip64_unused"` for a ZIP central directory entry), `field` (the PAX keyword, or the header field for `"field_tail"`, `"chksum"` for `"signed_checksum"`, `"version"` for `"magic_version"`, `"x size"`, `"g size"`, `"L size"` or `"K size"` for an extended header's own size field; `"path"` or `"linkpath"` for a GNU long name or long link header, `"x"` for a repeated `x` header and for `"mixed_chain"`, `"g"` for `"global_in_chain"`; `"FILELINKTOS"` for `"copies_differ"`; `"uncompressed size"`, `"compressed size"` or `"local header offset"` for `"zip64_unused"`), `more_fields` (how many other fields the same shape holds for on the member; one report covers them) |
 | `MEMBER_SPECIAL_FILE_HAS_DATA` | `SpecialFileDataContext`: `kind="special_file_data"`, `archive_name`, `member_name`, `member_id`, `special_file_type` ∈ `{"fifo","char_device","block_device","socket","unknown"}`, `size` |
-| `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_CRC_USED` | `LocalHeaderContext`: `kind="local_header"`, `archive_name`, `member_name`, `member_id`, `field` (`"name"`, `"method"` and `"crc32"` in that order), `local_raw_name_base64` (the local header's name bytes, `field="name"` only), `local_method` and `central_method` (`field="method"` only), `local_crc32` (`field="crc32"` only) |
+| `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_CRC_USED`, `MEMBER_LOCAL_OFFSET_SHIFTED` | `LocalHeaderContext`: `kind="local_header"`, `archive_name`, `member_name`, `member_id`, `field` (`"name"`, `"method"`, `"crc32"` and `"offset"` in that order), `local_raw_name_base64` (the local header's name bytes, `field="name"` only), `local_method` and `central_method` (`field="method"` only), `local_crc32` (`field="crc32"` only), `local_offset` and `central_offset` (`field="offset"` only: where the header is and where the directory's position puts it, both absolute positions in the file) |
 | `ARCHIVE_OFFSET_WRAPPED` | `OffsetWrapContext`: `kind="offset_wrap"`, `archive_name`, `format`, `member_name`, `member_id` (empty and `None` for the directory), `record` ∈ `{"local_header","central_directory"}`, `stored_offset`, `corrected_offset` |
 | `MEMBER_SIZE_WRAPPED` | `SizeWrapContext`: `kind="size_wrap"`, `archive_name`, `format`, `member_name`, `member_id`, `stored_compressed_size`, `compressed_size`, `stored_size`, `size` (`None` when only a read can tell) |
-| `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the TAR typeflag byte as a one-character string, the byte read as Latin-1), `size` (the member's `size`; `None` for an `OTHER` member) |
+| `MEMBER_TYPE_UNKNOWN` | `UnknownMemberTypeContext`: `kind="unknown_member_type"`, `archive_name`, `member_name`, `member_id`, `stored_type` (the TAR typeflag byte as a one-character string, the byte read as Latin-1; for a RAR5 redirect, the type number in decimal), `size` (the member's `size`; `None` for an `OTHER` member) |
+| `MEMBER_NAME_DUPLICATE` | `NameDuplicateContext`: `kind="name_duplicate"`, `archive_name`, `member_name`, `member_id`, `earlier_member_id` (the latest earlier member under the name, or under it with or without a final `/`), `earlier_type` and `member_type` (`MemberType` values). Emitted at listing, in every format, when a current member has the name of an earlier current one and the two are not both directories. Names are compared as the listing presents them: a ZIP read from a pipe compares the central directory's names, once it has read the directory |
+| `MEMBER_NAME_DUPLICATE_UNEXPECTED` | `UnexpectedNameDuplicateContext`: `kind="name_duplicate_unexpected"`, `archive_name`, `member_name`, `member_id`, `format` (the format whose layout has no way to repeat a name, `"cab"`). Emitted at listing by a format with no append, update or file versions, when a member has the name, normalized, of an earlier one; the same member also reports `MEMBER_NAME_DUPLICATE`. CAB emits it; another format with no way to repeat a name may adopt it |
+| `MEMBER_READERS_DISAGREE` | `ReaderDisagreementContext`: `kind="reader_disagreement"`, `archive_name`, `member_name`, `member_id`, `shape` (`"file_named_as_directory"`, `"link_name_on_file"` (the header's field or a PAX `linkpath` on a regular file), `"star_prefix"` or `"gnu_prefix_bytes"` for a TAR header; `"hardlink_to_symlink"` in every format with hard links; `"nul_in_name"` in every format; `"directory_attribute_without_slash"` for a ZIP entry; `"file_only_in_joliet"`, `"file_only_in_iso9660"` or `"file_only_in_udf"` for a file an ISO image's Joliet, plain ISO 9660 or UDF tree holds and its listed tree does not, with `member_name` its path in that tree and `member_id` `None`) |
 | `ENCRYPTED_MEMBER_UNVERIFIED` | `EncryptedVerificationContext`: `kind="encrypted_verification"`, `archive_name`, `member_name`, `member_id`, `check`, `reason` |
 | `SEEK_INDEX_DEGRADED` | `SeekIndexContext`: `kind="seek_index"`, `archive_name`, `member_name`, `member_id`, `codec`, `scan`, `error_type` |
 | `STREAM_REWIND_REDECOMPRESSES` | `StreamRewindContext`: `kind="stream_rewind"`, `archive_name`, `member_name`, `member_id`, `codec`, `from_offset`, `to_offset`, `accelerator` |
+| `SOLID_OPEN_REDECOMPRESSES` | `SolidReopenContext`: `kind="solid_reopen"`, `archive_name`, `member_name`, `member_id`, `bytes_again` |
 
 (`str | None` / `int | None` as in the typed variants.) `DiagnosticContext` is
 exactly this union — no backend-defined variants. `observed_kind` ∈
@@ -67,11 +73,16 @@ directory's (`observed_bytes` the record's offset, `expected_bytes` 0), or
 the record to the end of the file); `"zip64_end_of_central_directory"` for a ZIP64 end
 record a locator announces that is missing or does not match it, the classic record
 used instead (`observed_kind="absent"`, `observed_bytes` the locator's offset,
-`expected_bytes` 0);
+`expected_bytes` 0); `"end_of_archive_byte"` for an LHA archive that ends without the
+zero byte after its last header (`format="lha"`, `observed_kind="absent"`,
+`expected_bytes` 1, `observed_bytes` 0); `"end_of_archive_header"` for an ARJ
+archive that ends without its 4-byte end header (`format="arj"`,
+`observed_kind="absent"`, `expected_bytes` 4, `observed_bytes` 0);
 `"zeros_to_eof"` for the trailing-bytes check after an archive's end (a TAR
 trailer, a 7z next header or last packed stream, whichever is later, a RAR
-end-of-archive block, an ISO image's volume space and partitions, or a ZIP end record
-and its declared comment), whose `format`
+end-of-archive block, an ISO image's volume space and partitions, a ZIP end record
+and its declared comment, or an LHA end byte or ARJ end header, after either of which
+0x1A also counts as padding), whose `format`
 names the archive format and whose `observed_bytes` is the offset of the first non-zero
 byte past that end;
 `"end_of_stream"` for bytes after a compressed stream's end, whose `format` is the
@@ -89,8 +100,8 @@ different events: the extension code keys on `detected_by="extension"` **and an 
 listing or a decode failure** (see `error-handling`, *A decode failure on an
 extension-only format names its provenance*); the probe code keys on **probe-only
 provenance** — `detected_by="content_probe"` with nothing corroborating the claim (no
-matching extension, no inner-TAR upgrade) — **and a decode failure**. A probe-only read
-failure MUST NOT double-report under the extension code.
+matching extension, no inner-TAR upgrade, no self-checking header) — **and a decode
+failure**. A probe-only read failure MUST NOT double-report under the extension code.
 
 **Confidence is not part of that trigger.** The probe code fires on a probe-only failure at
 *any* `DetectionConfidence`, so an LZMA Alone hit (always `PROBABLE`) and a compressed-first
@@ -142,6 +153,8 @@ returned bytes, since nothing unchecked was delivered.
 | Non-zero byte within 1 MiB past an ISO image's volume space and listed partitions | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="iso"` |
 | Non-zero byte past a ZIP end record and its declared comment | `ARCHIVE_TRAILING_DATA` with `expected_marker="zeros_to_eof"` and `format="zip"` |
 | A ZIP read from a pipe holds a local entry its central directory does not list | `ARCHIVE_UNLISTED_DATA` naming the entry; the entry is dropped from the listing, as the seekable read never sees it |
+| A raw CD image read without its `.cue` sheet whose sector addresses place no readable later session holds another ISO 9660 volume in the data sectors after the listed one, within 1 MiB | `ARCHIVE_UNREAD_SESSION` naming the volume's sector, and no `ARCHIVE_TRAILING_DATA` for those sectors; the listing is the first track's |
+| A raw CD image read without its `.cue` sheet whose sector addresses place a later session with a volume | That session is listed; no `ARCHIVE_UNREAD_SESSION` |
 | Non-zero bytes after a single-file codec's stream | `ARCHIVE_TRAILING_DATA` with `expected_marker="end_of_stream"` and the codec name as `format` |
 | Probe-only single-file read raises, uncorroborated `GUESS` | `PROBE_FORMAT_UNCONFIRMED` with `chosen_by="content_probe"` |
 | Probe-only single-file read raises, uncorroborated **`PROBABLE`** (compressed-first Brotli) | `PROBE_FORMAT_UNCONFIRMED` too — **changed**; confidence is not the trigger |
@@ -194,7 +207,7 @@ the archive's own bytes or metadata as anomalous:
 
 | In `ARCHIVE_INTEGRITY_CODES` | Excluded |
 | --- | --- |
-| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS` | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `SOURCE_CHANGE_UNDETECTABLE` (it describes the transport an `fsspec` source arrives through, not the archive's bytes, and holds for every read from such a store), `MEMBER_PATH_REFUSED` (an extraction policy's choice for the `archivey://` tree, not a finding about the bytes) |
+| `MEMBER_NAME_NORMALIZED`, `MEMBER_NAME_ENCODING_INFERRED`, `MEMBER_NAME_BIDI_CONTROL`, `MEMBER_NAME_ZERO_WIDTH_CHARACTER`, `EXTENSION_FORMAT_UNCONFIRMED`, `SCAN_DIRECTORY_VANISHED`, `SCAN_ENTRY_VANISHED`, `ARCHIVE_EOF_MARKER_MISSING`, `ARCHIVE_TRAILING_DATA`, `ARCHIVE_UNLISTED_DATA`, `ARCHIVE_UNREAD_SESSION` (another reading of the file lists another filesystem), `MEMBER_TIMESTAMP_INVALID`, `MEMBER_HEADER_RECORD_SKIPPED`, `SYMLINK_TARGET_UNAVAILABLE`, `DIGEST_UNVERIFIABLE`, `MEMBER_DIRECTORY_DATA_IGNORED`, `MEMBER_LINK_DATA_IGNORED`, `MEMBER_HEADER_AMBIGUOUS`, `SEEK_INDEX_DEGRADED`, `MEMBER_LOCAL_NAME_DIFFERS`, `MEMBER_LOCAL_METHOD_DIFFERS`, `MEMBER_LOCAL_OFFSET_SHIFTED`, `MEMBER_NAME_DUPLICATE_UNEXPECTED` (no writer of the format makes the shape) | `EMPTY_ARCHIVE` (an empty archive is legitimate), `EXPLICIT_FORMAT_LISTED_EMPTY`, `ENCODING_ARGUMENT_UNUSED`, `PASSWORD_ARGUMENT_UNUSED`, `STREAM_REWIND_REDECOMPRESSES`, `SOLID_OPEN_REDECOMPRESSES`, `PROBE_FORMAT_UNCONFIRMED`, `ENCRYPTED_MEMBER_UNVERIFIED`, `MEMBER_SELECTOR_UNMATCHED`, `MEMBER_SPECIAL_FILE_HAS_DATA`, `MEMBER_NAME_INVISIBLE_CHARACTER`, `FORMAT_EXTENSION_CONFLICT` (the name is wrong, not the bytes), `MEMBER_LOCAL_CRC_USED` (Adobe AIR writes it; the data is checked against the local CRC-32), `ARCHIVE_OFFSET_WRAPPED` and `MEMBER_SIZE_WRAPPED` (macOS writes the shape by default), `MEMBER_TYPE_UNKNOWN` (GNU tar extracts the member as a file), `MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` (real archives have the shapes, read as the format's tool reads them), `SOURCE_CHANGE_UNDETECTABLE` (it describes the transport an `fsspec` source arrives through, not the archive's bytes, and holds for every read from such a store), `MEMBER_PATH_REFUSED` (an extraction policy's choice for the `archivey://` tree, not a finding about the bytes) |
 
 Each exclusion is deliberate, and the reason SHALL be recorded so the boundary is not
 rediscovered: `EMPTY_ARCHIVE` because an empty archive is legitimate and this spec
@@ -203,40 +216,46 @@ forbids treating zero members as an error; `ENCODING_ARGUMENT_UNUSED` and
 speculatively passes a password to every call would otherwise raise on every
 unencrypted archive; `EXPLICIT_FORMAT_LISTED_EMPTY` because `format=` is an override
 and an override that halts the caller is not an override;
-`STREAM_REWIND_REDECOMPRESSES` because it reports the caller's access pattern rather
-than the archive, and is most useful as a deliberately targeted tripwire;
-`ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller abandoning the stream
-before EOF (extract never fires it), and putting it in `STRICT` would turn a ZipCrypto
-peek into `DiagnosticRaisedError` (revisit when `stream.verified` lands and this code
-is retired); and
-`PROBE_FORMAT_UNCONFIRMED` because a probe-only identification is an advisory about
-what the file *is* (its bytes did pass that format's content check), not a finding
-about the archive's own bytes, and the code only ever accompanies a read that has
-already failed with a typed error, so `STRICT` would have nothing further to stop
-(the emit keeps that typed error through `escalate_as` when a policy does resolve the
-code to RAISE, so the exclusion is not what protects it);
-`MEMBER_SPECIAL_FILE_HAS_DATA` because a documented writer option produces the
-shape it reports (Info-ZIP's `zip -FI` stores a named pipe's content under the FIFO
-mode) and every official extractor writes the bytes out, so the member is well-formed
-and `STRICT` refusing it would hide data rather than damage;
-`MEMBER_NAME_INVISIBLE_CHARACTER` because a zero-width joiner is part of ordinary emoji
-sequences and a non-joiner of Persian and Indic spelling, so `STRICT` would refuse
-archives of legitimately named files; `ARCHIVE_OFFSET_WRAPPED` because macOS Archive
-Utility writes a ZIP past 4 GiB with its offsets cut to 32 bits by default and reads
-it back, and each correction is kept only when a local header with the member's name
-is there, with the CRC-32 still checked, so `STRICT` would refuse an ordinary Mac
-archive; `MEMBER_SIZE_WRAPPED` for the same archives with a member past 4 GiB or a
-deflated member over about 4 MB compressed in an archive of any length, whose sizes
-are corrected only where the layout or deflate's ratio forces a value, with the length
-and CRC-32 checked on a read; `MEMBER_TYPE_UNKNOWN` because GNU tar extracts a TAR
-member of a typeflag it does not know as a regular file, with a warning, and archivey
-lists its data as a `FILE`, so nothing is hidden and `STRICT` would refuse an archive
-the reference tool extracts; and `FORMAT_EXTENSION_CONFLICT` because it
-reports the file's name, which lies outside the archive, not the archive's bytes: the
-bytes win and the archive reads in full, so `STRICT` would refuse a well-formed tarball
-saved as `b.gz`. The code is still recorded, and a caller who wants the refusal adds it
-to `raise_on`. Its sibling `MEMBER_NAME_ZERO_WIDTH_CHARACTER` is **in** the set: U+200B,
-U+2060 and U+FEFF have no use inside a filename.
+`STREAM_REWIND_REDECOMPRESSES` and `SOLID_OPEN_REDECOMPRESSES` because they report the
+caller's access pattern rather than the archive, and are most useful as deliberately
+targeted tripwires; `ENCRYPTED_MEMBER_UNVERIFIED` because the trigger is the caller
+abandoning the stream before EOF (extract never fires it), and putting it in `STRICT`
+would turn a ZipCrypto peek into `DiagnosticRaisedError` (revisit when `stream.verified`
+lands and this code is retired); and `PROBE_FORMAT_UNCONFIRMED` because a probe-only
+identification is an advisory about what the file *is* (its bytes did pass that format's
+content check), not a finding about the archive's own bytes, and the code only ever
+accompanies a read that has already failed with a typed error, so `STRICT` would have
+nothing further to stop (the emit keeps that typed error through `escalate_as` when a
+policy does resolve the code to RAISE, so the exclusion is not what protects it);
+`MEMBER_SPECIAL_FILE_HAS_DATA` because a documented writer option produces the shape it
+reports (Info-ZIP's `zip -FI` stores a named pipe's content under the FIFO mode) and
+every official extractor writes the bytes out, so the member is well-formed and `STRICT`
+refusing it would hide data rather than damage; `MEMBER_NAME_INVISIBLE_CHARACTER`
+because a zero-width joiner is part of ordinary emoji sequences and a non-joiner of
+Persian and Indic spelling, so `STRICT` would refuse archives of legitimately named
+files; `ARCHIVE_OFFSET_WRAPPED` because macOS Archive Utility writes a ZIP past 4 GiB
+with its offsets cut to 32 bits by default and reads it back, and each correction is
+kept only when a local header with the member's name is there, with the CRC-32 still
+checked, so `STRICT` would refuse an ordinary Mac archive; `MEMBER_SIZE_WRAPPED` for the
+same archives with a member past 4 GiB or a deflated member over about 4 MB compressed
+in an archive of any length, whose sizes are corrected only where the layout or
+deflate's ratio forces a value, with the length and CRC-32 checked on a read;
+`MEMBER_TYPE_UNKNOWN` because GNU tar extracts a TAR member of a typeflag it does not
+know as a regular file, with a warning, and archivey lists its data as a `FILE`, so
+nothing is hidden and `STRICT` would refuse an archive the reference tool extracts;
+`MEMBER_NAME_DUPLICATE` and `MEMBER_READERS_DISAGREE` because real archives have those
+shapes (`tar -r` appends, cabal sdists, v7 directories, star and GNU incremental
+headers) and archivey reads them as the format's own tool does, so `STRICT` would refuse
+archives that tool extracts: they are for a caller who checks an archive another tool
+will extract, through `DiagnosticPolicy(raise_on=...)` or `PEDANTIC`; and
+`FORMAT_EXTENSION_CONFLICT` because it reports the file's name, which lies outside the
+archive, not the archive's bytes: the bytes win and the archive reads in full, so
+`STRICT` would refuse a well-formed tarball saved as `b.gz`. The code is still recorded,
+and a caller who wants the refusal adds it to `raise_on`. Its sibling
+`MEMBER_NAME_ZERO_WIDTH_CHARACTER` is **in** the set: U+200B, U+2060 and U+FEFF have no
+use inside a filename. `MEMBER_NAME_DUPLICATE_UNEXPECTED`, the sibling of
+`MEMBER_NAME_DUPLICATE`, is **in** the set: only a format with no way to repeat a name
+reports it, so no writer of that format makes the shape (maintainer, 2026-11-11).
 `EXTENSION_FORMAT_UNCONFIRMED`, its sibling, is **in** the set because it also fires
 on a successful open: an extension-only empty listing, where no byte confirmed the
 format at all, is exactly the case a `STRICT` caller wants stopped.
