@@ -171,7 +171,7 @@ provider at once SHALL be served one after the other.
 | `open_member` chain: header request then data request, each won by a different provider answer; then seek to zero, provider has no more answers | Both saved winners reused; replacement stream reads |
 | Fresh reader, provider only, ARJ garbled member read through `stream_members()` | Provider asked on the handle's first `read()`; member reads |
 | Same pass, caller skips two garbled members and reads a third | Provider asked only for the third |
-| `extract_all()` with provider only, ARJ garbled members | Each garbled member asks once; extraction succeeds |
+| `extract_all()` with provider only, two ARJ garbled members sharing one key, each over 4 bytes (CRC-32 confirms) | Provider called once, for the first; the confirmed password is promoted and the second reads with no prompt; both extract |
 
 #### Scenario: ARJ trial decode failures
 
