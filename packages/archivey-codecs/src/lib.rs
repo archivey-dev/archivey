@@ -286,10 +286,11 @@ impl LzwState {
         nine_bit_widens: Option<bool>,
     ) -> PyResult<Self> {
         // The width sizes the dictionary, allocated at once: refuse what no header
-        // can hold (the Python twin asserts both are given together).
-        if max_width.is_some() != block_mode.is_some() {
+        // can hold. As in the Python twin, `max_width` needs `block_mode`, and a lone
+        // `block_mode` is ignored (the header is read from the stream).
+        if max_width.is_some() && block_mode.is_none() {
             return Err(PyValueError::new_err(
-                "give max_width and block_mode together, or neither",
+                "give block_mode with max_width (a stream without its header)",
             ));
         }
         if let Some(w) = max_width {
