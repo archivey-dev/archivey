@@ -1050,8 +1050,6 @@ impl LzxDecompressor {
         self.taken - self.inner.unread_input().len() as u64
     }
 
-    /// At the end: 1 when the pad byte the stream owes is in the input (the kernel's
-    /// unread bytes or the queue), else 0.
     /// The output is complete, but the stream still owes the pad byte of an odd
     /// uncompressed block and no input holds it yet: the stream does not end until
     /// it arrives, or until `flush()` says it never will.
@@ -1063,6 +1061,8 @@ impl LzxDecompressor {
             && self.queued() == 0
     }
 
+    /// At the end: 1 when the pad byte the stream owes is in the input (the kernel's
+    /// unread bytes or the queue), else 0.
     fn pad_byte(&self) -> usize {
         let available = self.inner.unread_input().len() + self.queued();
         usize::from(self.inner.owes_pad_byte() && available > 0)
