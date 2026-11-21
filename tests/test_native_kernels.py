@@ -39,6 +39,11 @@ from archivey.internal.streams.codecs.lzma_filter_decoder import (
     PythonBranch,
     branch_maker,
 )
+from archivey.internal.streams.codecs.lzo_decoder import (
+    LzoError,
+    lzo1x_decompress_python,
+    lzo1x_decompressor,
+)
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
@@ -52,6 +57,13 @@ from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
 EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
 OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-codecs"}))
 RISCV_7Z = Path(__file__).parent / "fixtures" / "sevenzip" / "riscv_lzma2.7z"
+# 12 000 lines of text in lzop blocks, as tests/fixtures/external/lzop/README says.
+LZOP_TEXT = Path(__file__).parent / "fixtures" / "external" / "lzop" / "text.txt.lzo"
+# Python's LZO1X decoder: compress-utils, tried after archivey-codecs, is off too.
+PYTHON_LZO = ArchiveyConfig(
+    formats=FormatPolicy(exclude_libraries={"archivey-codecs", "compress_utils"})
+)
+LZOP_DATA = b"".join(b"line %d of the lzop fixture\n" % i for i in range(12000))
 
 
 class PanicException(BaseException):
@@ -155,6 +167,29 @@ class _FakeLzw:
         return b""
 
 
+class _FakeLzo1x:
+    """Stands in for ``archivey_codecs.lzo1x``: Python's decoder, with the kernel's
+    exact-size contract, recorded. With ``panic`` set, decoding raises the fake
+    panic."""
+
+    calls: ClassVar[list[int]] = []
+    panic: ClassVar[bool] = False
+    error: ClassVar[type[Exception]] = ValueError
+
+    @classmethod
+    def decompress(cls, data: bytes, out_size: int) -> bytes:
+        cls.calls.append(out_size)
+        if cls.panic:
+            raise PanicException("slice index out of range")
+        try:
+            out = lzo1x_decompress_python(data, out_size)
+        except LzoError as exc:
+            raise cls.error(str(exc)) from None
+        if len(out) != out_size:
+            raise cls.error(f"the block decodes to {len(out)} bytes, not {out_size}")
+        return out
+
+
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
     """Install a fake ``archivey_codecs`` whose ``KERNELS`` is ``kernels``."""
 
@@ -170,12 +205,18 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
     monkeypatch.setattr(_FakeBranch, "calls", 0)
     monkeypatch.setattr(_FakeDecryptor, "panic_header", False)
     monkeypatch.setattr(_FakeDecryptor, "calls", 0)
+    monkeypatch.setattr(_FakeLzo1x, "calls", [])
+    monkeypatch.setattr(_FakeLzo1x, "panic", False)
+    codec_error = type("CodecError", (ValueError,), {})
+    monkeypatch.setattr(_FakeLzo1x, "error", codec_error)
     module = types.SimpleNamespace(
         KERNELS=kernels,
         crc16_arc=crc16_arc,
         zipcrypto=types.SimpleNamespace(Decryptor=_FakeDecryptor),
         filters=types.SimpleNamespace(Arm64Decoder=_FakeArm64, RiscvDecoder=_FakeRiscv),
         lzw=types.SimpleNamespace(Decompressor=_FakeLzw),
+        lzo1x=_FakeLzo1x,
+        CodecError=codec_error,
         TruncatedDataError=type("TruncatedDataError", (ValueError,), {}),
         CorruptDataError=type("CorruptDataError", (ValueError,), {}),
         UnsupportedDataError=type("UnsupportedDataError", (ValueError,), {}),
@@ -452,6 +493,64 @@ def test_a_panic_in_a_z_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> N
         ) as stream:
             assert stream.read() == data
         assert _FakeLzw.built == 0
+
+
+# ``ab`` and one long match of distance 2: 1000 bytes from a few.
+_LZO_BLOCK = bytes([19]) + b"ab" + b"\x20" + bytes(3) + bytes([200, 4, 0]) + b"\x11\0\0"
+
+
+def test_lzo_uses_the_kernel_unless_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        deps,
+        "compress_utils",
+        deps.LazyOptional(OptionalLibrary.COMPRESS_UTILS, present=False),
+    )
+    _fake(monkeypatch, lzo1x=1)
+    for excluded, natives, used in (
+        (frozenset(), IN_PROCESS, True),
+        (EXCLUDED, IN_PROCESS, False),
+        (frozenset(), ISOLATED, False),
+    ):
+        _FakeLzo1x.calls = []
+        decode = lzo1x_decompressor(excluded, natives)
+        assert decode(_LZO_BLOCK, 1000) == lzo1x_decompress_python(_LZO_BLOCK, 1000)
+        assert bool(_FakeLzo1x.calls) is used
+        assert (decode is lzo1x_decompress_python) is not used
+    _fake(monkeypatch, lzo1x=0)
+    assert lzo1x_decompressor(frozenset(), IN_PROCESS) is lzo1x_decompress_python
+
+
+def test_an_lzo_block_shorter_than_its_limit_is_decoded_at_its_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SquashFS block gives only the most it can decode to: the kernel refuses
+    any other size, so the block is decoded again at the size it named."""
+    _fake(monkeypatch, lzo1x=1)
+    decode = lzo1x_decompressor(frozenset(), IN_PROCESS)
+    assert decode(_LZO_BLOCK, 4096) == lzo1x_decompress_python(_LZO_BLOCK, 4096)
+    assert _FakeLzo1x.calls == [4096, 1000]
+    with pytest.raises(LzoError, match="decodes to more than 999 bytes"):
+        decode(_LZO_BLOCK, 999)
+
+
+def test_a_panic_in_an_lzo_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, lzo1x=1)
+    _FakeLzo1x.panic = True
+    decode = lzo1x_decompressor(frozenset(), IN_PROCESS)
+    with pytest.raises(CorruptionError, match="LZO1X decoder failed") as info:
+        decode(_LZO_BLOCK, 1000)
+    assert isinstance(info.value.__cause__, PanicException)
+    with (
+        pytest.raises(CorruptionError, match="LZO1X decoder failed"),
+        open_stream(LZOP_TEXT) as stream,
+    ):
+        stream.read()
+    _FakeLzo1x.calls = []
+    with open_stream(LZOP_TEXT, config=OFF) as stream:
+        assert stream.read() == LZOP_DATA
+    assert _FakeLzo1x.calls == []
 
 
 def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
@@ -781,3 +880,58 @@ def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
         if first_flush == ("ok", True) and second_flush[0] != "ok":
             inside_flush += 1
     assert inside_flush > 0
+
+
+@needs_codecs
+def test_lzo_kernel_matches_python_on_damaged_blocks() -> None:
+    """Every damaged or cut block gives the same bytes or the same error message
+    as the Python decoder, at an exact size and at a larger SquashFS-style one."""
+    kernel = lzo1x_decompressor(frozenset(), IN_PROCESS)
+    assert kernel is not lzo1x_decompress_python
+    rng = random.Random(7)
+    for _ in range(3000):
+        bad = bytearray(_LZO_BLOCK)
+        for _ in range(rng.randint(1, 3)):
+            bad[rng.randrange(len(bad))] = rng.randrange(256)
+        if rng.random() < 0.3:
+            bad = bad[: rng.randrange(len(bad))]
+        for limit in (1000, 1050, 0):
+            results = []
+            for decode in (kernel, lzo1x_decompress_python):
+                try:
+                    results.append(("ok", decode(bytes(bad), limit)))
+                except LzoError as exc:
+                    results.append(("error", str(exc)))
+            assert results[0] == results[1], bytes(bad).hex()
+
+
+@needs_codecs
+@pytest.mark.parametrize("damage", [None, 60, 400, -20])
+def test_lzop_uses_the_kernel_and_reads_the_same(damage: int | None) -> None:
+    data = LZOP_DATA
+    raw = bytearray(LZOP_TEXT.read_bytes())
+    if damage is not None:
+        raw[damage] ^= 0x55
+    results = []
+    for config in (None, PYTHON_LZO):
+        try:
+            with open_stream(io.BytesIO(bytes(raw)), config=config) as stream:
+                results.append(("ok", stream.read()))
+        except (CorruptionError, TruncatedError) as exc:
+            results.append((type(exc).__name__, str(exc)))
+    assert results[0] == results[1]
+    assert (results[0] == ("ok", data)) is (damage is None)
+
+
+@needs_codecs
+@pytest.mark.parametrize("name", ["lzo.sqfs", "lzo1x-1.sqfs"])
+def test_squashfs_lzo_uses_the_kernel_and_reads_the_same(name: str) -> None:
+    path = Path(__file__).parent / "fixtures" / "squashfs" / name
+    results = []
+    for config in (None, PYTHON_LZO):
+        with open_archive(path, config=config) as reader:
+            results.append(
+                {m.name: reader.read(m) for m in reader.members() if m.is_file}
+            )
+    assert results[0] == results[1]
+    assert results[0]

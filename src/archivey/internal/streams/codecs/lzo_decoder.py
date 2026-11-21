@@ -37,6 +37,7 @@ from archivey.exceptions import (
     ResourceUnavailableError,
     UnsupportedFeatureError,
 )
+from archivey.internal import native
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import DecoderChildImportError
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, Natives
@@ -140,15 +141,62 @@ def _compress_utils(
     return decompress
 
 
+# archivey-codecs' refusal of a block that decodes to fewer bytes than asked for: its
+# ``lzo1x.decompress`` takes the exact size, and a container may give only the most a
+# block can decode to (a SquashFS block), so the block is decoded again at its size.
+_SHORT_BLOCK = re.compile(r"the block decodes to (\d+) bytes, not \d+")
+
+
+def _archivey_codecs(
+    excluded: frozenset[OptionalLibrary],
+    natives: Natives,
+    usage: ResourceUsageRecorder | None,
+) -> Callable[[bytes, int], bytes] | None:
+    """archivey-codecs' LZO1X kernel when :mod:`archivey.internal.native` allows it,
+    with :func:`lzo1x_decompress_python`'s contract: at most ``limit`` bytes, and
+    :class:`LzoError` with the same message on damage.
+
+    Under ``NATIVE_DECODERS`` it is not used until the decoder child can run it."""
+    if natives.isolated:
+        return None
+    module = native.kernels("lzo1x", excluded)
+    if module is None:
+        return None
+    kernel = module.lzo1x.decompress
+    errors = (module.CodecError,)
+    if usage is not None:
+        usage.note_backend("library", OptionalLibrary.ARCHIVEY_CODECS.value, "lzo")
+
+    def decompress(data: bytes, limit: int) -> bytes:
+        with native.panic_to_corruption("LZO1X"):
+            try:
+                return kernel(data, out_size=limit)
+            except errors as exc:
+                short = _SHORT_BLOCK.fullmatch(str(exc))
+                if short is None:
+                    raise LzoError(str(exc)) from None
+            # A valid block, shorter than ``limit``: decode it at its own size.
+            try:
+                return kernel(data, out_size=int(short[1]))
+            except errors as exc:
+                raise LzoError(str(exc)) from None
+
+    return decompress
+
+
 def lzo1x_decompressor(
     excluded: frozenset[OptionalLibrary] = frozenset(),
     natives: Natives = IN_PROCESS,
     usage: ResourceUsageRecorder | None = None,
 ) -> Callable[[bytes, int], bytes]:
-    """The LZO1X block decoder to use: compress-utils when present, allowed and built
-    with LZO1X, else :func:`lzo1x_decompress_python`, which is Python and so runs in
-    this process whatever ``natives`` says. ``usage`` records ``compress_utils`` when
-    it decodes."""
+    """The LZO1X block decoder to use, in this order (design question 11):
+    archivey-codecs when installed and allowed; compress-utils when present, allowed
+    and built with LZO1X; else :func:`lzo1x_decompress_python`, which is Python and so
+    runs in this process whatever ``natives`` says. ``usage`` records the package that
+    decodes."""
+    kernel = _archivey_codecs(excluded, natives, usage)
+    if kernel is not None:
+        return kernel
     package = _compress_utils(excluded, natives, usage)
     if package is None:
         return lzo1x_decompress_python
