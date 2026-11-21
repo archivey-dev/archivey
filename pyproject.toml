@@ -197,6 +197,11 @@ dev = [
     # pycdlib writes the ISO images the tests read, and is the oracle the native ISO
     # parser is compared with (tests/test_iso9660_parser.py). archivey does not import it.
     "pycdlib>=1.22.0",
+    # lzfse (Apple's reference C decoder) writes the LZFSE and LZVN streams
+    # tests/test_lzfse_decoder.py decodes, and is the oracle the Python decoder is
+    # compared with; it runs only in a subprocess there, because importing it re-enables
+    # the GIL on free-threaded builds. archivey does not import it.
+    "lzfse>=0.4.2",
     # ncompress is a test-only LZW *compressor* used to generate .Z fixtures for the
     # native unix-compress decoder (core; decode-only).
     "ncompress>=1.0.0",
