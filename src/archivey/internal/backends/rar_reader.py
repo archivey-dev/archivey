@@ -820,6 +820,18 @@ def _unrar_dictionary_costs(archive: RarArchive) -> list[_DictionaryCost]:
     return costs
 
 
+def _copy_source(member: ArchiveMember) -> ArchiveMember | None:
+    """The member a RAR5 file copy reads its bytes from, or ``None`` for any other
+    member. A copy of a copy is refused when it is read (``_open_file_copy``)."""
+    raw = member._raw
+    if not isinstance(raw, RarMemberInfo) or not raw.is_file_copy():
+        return None
+    source = member.link_target_member
+    if source is None or not isinstance(source._raw, RarMemberInfo):
+        return None
+    return None if source._raw.is_file_copy() else source
+
+
 def _unchecked_after_damage(raw: RarMemberInfo) -> bool:
     """Whether ``raw`` is a payload with no digest after a damaged header the walk
     followed in a solid archive (``RarMemberInfo.after_damaged_header``)."""
@@ -4958,9 +4970,12 @@ class RarReader(BaseArchiveReader):
     @override
     def _reports_member_read(self, member: ArchiveMember) -> bool:
         raw = member._raw
-        return isinstance(raw, RarMemberInfo) and (
-            raw.header_damaged or _unchecked_after_damage(raw)
-        )
+        if not isinstance(raw, RarMemberInfo):
+            return False
+        if raw.header_damaged or _unchecked_after_damage(raw):
+            return True
+        source = _copy_source(member)
+        return source is not None and self._reports_member_read(source)
 
     @override
     def _report_member_read(self, member: ArchiveMember) -> None:
@@ -4976,6 +4991,10 @@ class RarReader(BaseArchiveReader):
         """
         raw = member._raw
         assert isinstance(raw, RarMemberInfo)
+        source = _copy_source(member)
+        if source is not None and self._reports_member_read(source):
+            # A file copy reads its source's bytes (_open_file_copy).
+            self._report_member_read(source)
         if _unchecked_after_damage(raw):
             self._report_unchecked_after_damage(member, raw)
         if raw.damaged_header is None:

@@ -1629,6 +1629,8 @@ FILE header damaged unless stated.
 | The third header's data CRC field damaged | Six listed; the third's read raises `CorruptionError` from its digest |
 | The third header's size vint damaged so that the next position fails its CRC | Two listed; `CorruptionError` after them (`unrar`: the same two, "Unexpected end of archive") |
 | RAR 1.5-4, the damaged size lands on a header that passes CRC16 while the one after it does not | Two listed; no resume; `CorruptionError` after them |
+| RAR 1.5-4, the third header's HEAD_SIZE damaged to point at the fifth member's real header | Five listed, the fourth (intact) skipped, as `unrar lb` 7.00 and `lsar` list it; `CorruptionError` after them. The check proves the landing is a header, not the next one |
+| Hundreds of damaged headers followed | The `CorruptionError` message names the first four and counts the rest |
 | RAR5, the same, the header after the landing header damaged and unresumable | The landing header's member listed too (one confirming header) |
 | The last bytes of the third and fourth FILE headers flipped (a chain of two) | Six listed, the third and fourth with `MEMBER_HEADER_DAMAGED` (`unrar lb` and `lsar`: six) |
 | The last bytes of the third and fifth FILE headers flipped | Six listed, two flagged |

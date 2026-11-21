@@ -4711,6 +4711,10 @@ class BaseArchiveReader(ArchiveReader):
             judged: list[SolidRun] = []
 
             def before_open(target: ArchiveMember) -> None:
+                if target is not member and self._reports_member_read(target):
+                    # A link reads its target's data: what that read reports
+                    # holds for it too.
+                    self._report_member_read(target)
                 run = self._solid_run(target)
                 if run is not None:
                     self._note_solid_open(target, run)

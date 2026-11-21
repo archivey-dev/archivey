@@ -336,6 +336,14 @@ SERVICE and its fields must parse in full: one that reads as MAIN, ENDARC, RAR5 
 or anything else stops the walk, as before. Nothing searches the bytes; that is the
 opt-in salvage mode's job.
 
+The check proves the landing is a header, not that it is the *next* one. A damaged size
+that points at a real later header passes it, and the intact members between are
+skipped with nothing to say so: in `basic_nonsolid__rar4.rar`, HEAD_SIZE 127 (was 53) on
+the third header lands on `subdir/`, and `implicit_subdir/file3.txt` drops out. `unrar
+lb` 7.00 and `lsar` list the same five, since they take the next position from the same
+sizes. The pass still ends in `CorruptionError`. The damage text names the first four
+followed headers and counts the rest.
+
 A damaged FILE header is listed with the fields it holds (`RarMemberInfo.damaged_header`
 records where it is), as `unrar` lists it. Its data is still checked by the CRC it
 holds. Its name, type, mode, times and flags are checked by nothing, so every read of
@@ -1494,6 +1502,7 @@ RAR-specific only. General extraction and name hazards are §2.4.
 
 | What you see | Where it lives | More |
 | --- | --- | --- |
+| Past a damaged header, an intact member can be missing from the listing | **format** | A damaged size that points at a real later header passes the check, and the members between are skipped, as `unrar` skips them (§1). The pass ends in `CorruptionError`; only salvage mode, which searches, can find them |
 | Listing an archive works on a machine where reading it fails | **format** | The compressor is proprietary and its reference tool is non-free, so no distribution installs it by default and no pip extra can ship it (§1, §3). `PackageNotInstalledError` names it and names the lookalikes that will not be accepted |
 | `seekable_members=True` on a sequential solid pass is still a pipe | **archivey** | Random `open()` of an `unrar`-backed member respawns the process on a backward seek, the same reopen the other backends use. `stream_members()` is never seekable by design: those handles are a single-pass decode, and seeking would break it. The `seekable_members=True` you declared still holds — it promises what random `open()` can do |
 | Reading one member of a solid archive out of order decodes the whole archive, and doing it twice decodes it twice | **format** / **archivey** | No per-block boundaries to resume from (§1), and nothing caches the decode (§2.4). `AccessCost.SOLID` is the signal |

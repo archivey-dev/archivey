@@ -283,9 +283,16 @@ def test_a_damaged_service_header_is_reported_and_skipped() -> None:
 
 
 @pytest.mark.parametrize("fixture", _FIXTURE_FILES)
-def test_a_damaged_size_field_stops_the_walk_as_before(fixture: str) -> None:
-    """A size that points nowhere a header passes is not followed: the walk stops at
-    the damaged header, as it did before, with the two members before it."""
+def test_a_damaged_size_field_is_followed_where_it_points(fixture: str) -> None:
+    """The walk follows a damaged size wherever it points, as ``unrar`` does: the
+    check proves the landing is a header, not that it is the *next* one.
+
+    RAR5: the damaged header-size vint points where no header passes, so the walk
+    stops at the damaged header with the two members before it. RAR 1.5-4: HEAD_SIZE
+    127 (was 53) lands on the real header of ``subdir/``, which and the one after it
+    pass, so ``implicit_subdir/file3.txt``, intact, is skipped. ``unrar lb`` 7.00 and
+    ``lsar`` list the same five (``test_unrar_lists_a_size_jump_as_archivey_does``).
+    """
     data = (_FIXTURES / fixture).read_bytes()
     offset, _ = _headers(data)[2]
     # RAR5: the header-size vint at byte 4; RAR 1.5-4: HEAD_SIZE's low byte at 5.
@@ -293,9 +300,33 @@ def test_a_damaged_size_field_stops_the_walk_as_before(fixture: str) -> None:
     damaged = _flip(data, size_byte, value=0x7F)
     archive = _parse(damaged)
     assert archive.damaged is not None
+    names = [m.filename for m in archive.members]
     if fixture.endswith("__.rar"):
-        assert [m.filename for m in archive.members] == _NAMES[:2]
+        assert names == _NAMES[:2]
         assert "no later member of that volume is listed" in archive.damaged
+    else:
+        assert names == [*_NAMES[:3], *_NAMES[4:]]
+
+
+@requires_binary("unrar")
+def test_unrar_lists_a_size_jump_as_archivey_does(tmp_path: Path) -> None:
+    data = (_FIXTURES / "basic_nonsolid__rar4.rar").read_bytes()
+    offset, _ = _headers(data)[2]
+    path = tmp_path / "jump.rar"
+    path.write_bytes(_flip(data, offset + 5, value=0x7F))
+    listed = subprocess.run(
+        ["unrar", "lb", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    unrar_names = [
+        line.replace("\\", "/") for line in listed.stdout.splitlines() if line
+    ]
+    with open_archive(path) as reader:
+        names = [m.name.rstrip("/") for m in reader.members_report().members]
+    assert names == unrar_names
 
 
 @pytest.mark.parametrize("fixture", _FIXTURE_FILES)
@@ -397,6 +428,108 @@ def test_nine_damaged_headers_in_a_row_stop_the_walk() -> None:
     assert archive.damaged is not None
 
 
+# RAR 1.5-4 archives built by hand (CRC16 headers), for the two-header rule.
+
+
+def _rar3_stored(name: str, data: bytes, *, pack_size: int | None = None) -> bytes:
+    """A stored RAR 1.5-4 FILE header and its data. ``pack_size`` overrides the
+    PACK_SIZE field after the CRC16 is computed over the true one, as damage to it
+    would."""
+    encoded = name.encode()
+
+    def body(size: int) -> bytes:
+        fixed = struct.pack(
+            "<LLBLLBBHL",
+            size,
+            len(data),
+            3,  # host OS: Unix
+            zlib.crc32(data) & 0xFFFFFFFF,
+            0x21 << 9 | 1 << 5,
+            29,
+            0x30,  # stored
+            len(encoded),
+            0o100644,
+        )
+        return (
+            struct.pack("<BHH", 0x74, 0x8000, 7 + len(fixed) + len(encoded))
+            + fixed
+            + encoded
+        )
+
+    crc = struct.pack("<H", zlib.crc32(body(len(data))) & 0xFFFF)
+    return crc + body(len(data) if pack_size is None else pack_size) + data
+
+
+def _rar3_start() -> bytes:
+    main = struct.pack("<BHH", 0x73, 0, 13) + bytes(6)
+    return b"Rar!\x1a\x07\x00" + struct.pack("<H", zlib.crc32(main) & 0xFFFF) + main
+
+
+def _rar3_end() -> bytes:
+    end = struct.pack("<BHH", 0x7B, 0x4000, 7)
+    return struct.pack("<H", zlib.crc32(end) & 0xFFFF) + end
+
+
+def _rar3_landing(after: bytes) -> bytes:
+    """``a.txt``, then ``b.bin`` whose damaged PACK_SIZE points at a header inside its
+    own data that passes its CRC16 (``fake``, no data), with ``after`` behind it."""
+    data = b"x" * 10 + _rar3_stored("fake", b"") + after
+    return (
+        _rar3_start()
+        + _rar3_stored("a.txt", b"a")
+        + _rar3_stored("b.bin", data, pack_size=10)
+    )
+
+
+def test_rar4_one_passing_header_is_not_enough() -> None:
+    """RAR 1.5-4's header CRC is 16 bits, so the header a damaged size lands on must
+    be followed by a second one that passes (or the clean end). Here the second is
+    other bytes, so the walk stops at the damaged header. Fails if
+    ``_Rar3Walk._second_confirms`` always confirms."""
+    archive = _parse(_rar3_landing(b"y" * 64) + _rar3_end())
+    assert [m.filename for m in archive.members] == ["a.txt"]
+    assert archive.damaged is not None
+
+
+@pytest.mark.parametrize("tail", ["eof", "end_block"])
+def test_rar4_a_landing_followed_by_the_clean_end_is_followed(tail: str) -> None:
+    """The volume's end, or an intact end block with only zeros after it, stands in
+    for the second header."""
+    after = b"" if tail == "eof" else _rar3_end() + bytes(16)
+    archive = _parse(_rar3_landing(after))
+    assert [m.filename for m in archive.members] == ["a.txt", "b.bin", "fake"]
+    assert [m.header_damaged for m in archive.members] == [False, True, False]
+
+
+def test_rar4_nine_damaged_headers_in_a_row_stop_the_walk() -> None:
+    """The chain cap is 8 in RAR 1.5-4 too. Fails if ``_MAX_DAMAGED_HEADER_CHAIN``
+    is raised."""
+    files = [_rar3_stored(f"m{i:02}.txt", b"x" * i) for i in range(12)]
+    data = _rar3_start() + b"".join(files) + _rar3_end()
+    eight = data
+    for i in range(1, 9):
+        eight = _damage_name(eight, f"m{i:02}.txt")
+    assert len(_parse(eight).members) == 12
+    assert [m.header_damaged for m in _parse(eight).members].count(True) == 8
+    nine = _damage_name(eight, "m09.txt")
+    assert [m.filename for m in _parse(nine).members] == ["m00.txt"]
+
+
+def test_the_damage_message_stays_short() -> None:
+    """The first damage is named in full, the next few after it, and the rest are
+    counted, so a crafted archive cannot make the error grow with its size."""
+    files = [_stored(f"m{i:04}.txt", b"x") for i in range(400)]
+    data = _archive(*files)
+    for i in range(1, 400, 2):
+        data = _damage_name(data, f"m{i:04}.txt")
+    archive = _parse(data)
+    assert len(archive.members) == 400
+    assert archive.damaged is not None
+    assert len(archive.damaged) < 2000
+    assert "196 more damaged headers were followed" in archive.damaged
+
+
+@requires_binary("unrar")
 def test_a_pipe_follows_a_damaged_header_while_it_holds_the_span() -> None:
     small = _damage_name(
         _archive(
@@ -415,6 +548,7 @@ def test_a_pipe_follows_a_damaged_header_while_it_holds_the_span() -> None:
     assert isinstance(error, CorruptionError)
 
 
+@requires_binary("unrar")
 def test_a_pipe_stops_at_a_damaged_header_past_its_held_bytes() -> None:
     """A pipe keeps only its last ``KEEP_BYTES`` for a seek back, so a damaged member
     longer than that cannot be confirmed there: the walk stops, and says that a file
@@ -501,7 +635,10 @@ def test_unrar_lists_what_archivey_lists(
         check=False,
     )
     assert listed.returncode == 3
-    unrar_names = [line for line in listed.stdout.splitlines() if line]
+    # unrar on Windows prints its native separator.
+    unrar_names = [
+        line.replace("\\", "/") for line in listed.stdout.splitlines() if line
+    ]
     with open_archive(path) as reader:
         names = [m.name.rstrip("/") for m in reader.members_report().members]
     assert names == unrar_names
@@ -567,3 +704,41 @@ def test_archivey_test_reads_every_member_then_fails(
     assert "4 OK, 1 failed" in text
     assert "listed from a header that failed its CRC" in text
     assert "header CRC mismatch" in text
+
+
+@requires_binary("rar")
+@requires_binary("unrar")
+def test_a_file_copy_of_a_damaged_member_reports_the_damage(tmp_path: Path) -> None:
+    """A RAR5 file copy reads its source's bytes, so its read reports the source's
+    damaged header too, and ``STRICT`` refuses it as it refuses the source."""
+    work = tmp_path / "in"
+    work.mkdir()
+    content = b"the same bytes in both files\n" * 20
+    (work / "a_source.txt").write_bytes(content)
+    (work / "b_copy.txt").write_bytes(content)
+    archive = tmp_path / "copies.rar"
+    subprocess.run(
+        ["rar", "a", "-idq", "-ma5", "-oi:1", "-ep", str(archive)]
+        + [str(work / "a_source.txt"), str(work / "b_copy.txt")],
+        check=True,
+        timeout=60,
+    )
+    data = archive.read_bytes()
+    # The last byte of the source's header, in its time record: the name the copy
+    # names stays intact.
+    damaged = _flip(data, _last_byte(data, 0))
+    strict = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    with open_archive(io.BytesIO(damaged), config=strict) as reader:
+        members = {m.name: m for m in reader.members_report().members}
+        copy = members["b_copy.txt"]
+        assert copy.link_target == "a_source.txt" or copy.link_target_member is not None
+        with pytest.raises(DiagnosticRaisedError):
+            reader.open(copy)
+    with open_archive(io.BytesIO(damaged)) as reader:
+        copy = next(
+            m for m in reader.members_report().members if m.name == "b_copy.txt"
+        )
+        with reader.open(copy) as stream:
+            assert stream.read() == content
+        codes = [d.code for d in reader.diagnostics.retained]
+    assert codes.count(DiagnosticCode.MEMBER_HEADER_DAMAGED) == 1

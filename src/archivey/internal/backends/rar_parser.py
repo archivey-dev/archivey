@@ -40,6 +40,7 @@ import hashlib
 import hmac
 import io
 import itertools
+import re
 import struct
 import zlib
 from collections.abc import Iterator, Sequence
@@ -1642,10 +1643,27 @@ def _followed_damaged_header(exc: CorruptionError, start: int) -> str:
     )
 
 
+# How many damages ``RarArchive.damaged`` names before it only counts the rest, so a
+# crafted archive of thousands of damaged headers cannot grow the error with its size.
+_NAMED_DAMAGES = 4
+_MORE_DAMAGES = re.compile(r"; and (\d+) more damaged headers? (?:was|were) followed$")
+
+
 def _add_damage(current: str | None, text: str) -> str:
-    """``RarArchive.damaged`` with ``text`` added: the first damage leads, and a later
-    one, past a followed header, is named after it."""
-    return text if current is None else f"{current}; also {text}"
+    """``RarArchive.damaged`` with ``text`` added: the first damage leads, a later one,
+    past a followed header, is named after it, and past :data:`_NAMED_DAMAGES` of them
+    the rest are only counted."""
+    if current is None:
+        return text
+    more = _MORE_DAMAGES.search(current)
+    if more is not None:
+        count = int(more.group(1)) + 1
+        return (
+            f"{current[: more.start()]}; and {count} more damaged headers were followed"
+        )
+    if current.count("; also ") + 1 >= _NAMED_DAMAGES:
+        return f"{current}; and 1 more damaged header was followed"
+    return f"{current}; also {text}"
 
 
 def _solid_damage_after(
@@ -4507,11 +4525,13 @@ class _Rar5Walk:
         """The damaged headers to list or skip, from ``first`` on, when their own
         sizes lead to a header that passes its CRC; otherwise ``None`` or ``[]``.
 
-        As ``unrar`` does, each damaged header's next position is its data offset
-        plus its data size, read from the damaged bytes. Unlike ``unrar``, the walk
-        goes there only when the header there passes its CRC and its type may follow
-        ``MAIN`` (``FILE``, ``SERVICE`` or ``ENDARC``): a damaged size then lands on
-        bytes that pass a CRC32 by chance with odds 2⁻³². A header at that position
+        As ``unrar`` does, each damaged header's next position is its data offset plus
+        its data size, read from the damaged bytes. Unlike ``unrar``, the walk goes
+        there only when the header there passes its CRC and its type may follow ``MAIN``
+        (``FILE``, ``SERVICE`` or ``ENDARC``): a damaged size then lands on bytes that
+        pass a CRC32 by chance with odds 2⁻³². That proves the landing is a header, not
+        the *next* one: a size that points at a real later header passes, and the
+        members between are skipped, as ``unrar`` skips them. A header at that position
         that is itself damaged is followed the same way, up to
         :data:`_MAX_DAMAGED_HEADER_CHAIN` in a row. Each damaged header must be a
         ``FILE`` or ``SERVICE`` whose fields parse in full. Encrypted headers are not
