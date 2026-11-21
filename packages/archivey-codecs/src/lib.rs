@@ -20,7 +20,7 @@ use kernels::{bcj2, crc16, filters, lzo, lzw, lzx, state, zipcrypto};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyEOFError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyInt};
 use pyo3::{PyTraverseError, PyVisit};
 
 pyo3::create_exception!(
@@ -193,15 +193,29 @@ fn crc16_update(py: Python<'_>, crc: u16, data: &Bound<'_, PyAny>) -> PyResult<u
     }
 }
 
-/// CRC-16/ARC of `data`, continuing from `value`, like `zlib.crc32`.
+/// CRC-16/ARC of `data`, continuing from `value`, like `zlib.crc32`. Unlike
+/// `zlib.crc32`, `value` must be in 0 to 0xFFFF: an int outside it raises `ValueError`.
 #[pyfunction]
-#[pyo3(signature = (data, value = 0, /))]
-fn crc16_arc(py: Python<'_>, data: &Bound<'_, PyAny>, value: i64) -> PyResult<u32> {
-    // A CRC-16 has 16 bits: unlike zlib.crc32, a value outside them is refused rather
-    // than masked, since it can only be a caller's mistake.
-    let value = u16::try_from(value).map_err(|_| {
-        PyValueError::new_err(format!("CRC-16 value {value} is outside 0 to 0xFFFF"))
-    })?;
+#[pyo3(signature = (data, value = None, /))]
+fn crc16_arc(
+    py: Python<'_>,
+    data: &Bound<'_, PyAny>,
+    value: Option<&Bound<'_, PyAny>>,
+) -> PyResult<u32> {
+    let Some(value) = value else {
+        return Ok(u32::from(crc16_update(py, 0, data)?));
+    };
+    // A CRC-16 has 16 bits: a value outside them is refused rather than masked, since
+    // it can only be a caller's mistake. Any int is compared, however large.
+    let value = match value.extract::<u16>() {
+        Ok(v) => v,
+        Err(_) if value.is_instance_of::<PyInt>() => {
+            return Err(PyValueError::new_err(format!(
+                "CRC-16 value {value} is outside 0 to 0xFFFF"
+            )));
+        }
+        Err(e) => return Err(e),
+    };
     Ok(u32::from(crc16_update(py, value, data)?))
 }
 
@@ -659,9 +673,11 @@ impl LzwDecompressor {
         block_mode: Option<bool>,
         nine_bit_widens: Option<bool>,
     ) -> PyResult<Self> {
-        if max_width.is_some() != block_mode.is_some() {
+        // As in the Python twin, `max_width` needs `block_mode`, and a lone
+        // `block_mode` is ignored (the header is read from the stream).
+        if max_width.is_some() && block_mode.is_none() {
             return Err(PyValueError::new_err(
-                "give max_width and block_mode together (a stream without its header), or neither",
+                "give block_mode with max_width (a stream without its header)",
             ));
         }
         if let Some(w) = max_width {
@@ -703,10 +719,19 @@ impl LzwDecompressor {
             // A feed with no room decodes at most one entry: mostly it queues the input.
             let slice: &[u8] = &data;
             let inner = &mut self.inner;
-            let (out, units) = py.detach(|| inner.feed(slice, 0)).map_err(to_py0)?;
-            self.held.extend_from_slice(&out);
-            self.note_units(units);
+            let got = py.detach(|| inner.feed(slice, 0));
+            // The kernel queues the input whether or not it then fails.
             self.fed += data.len() as u64;
+            match got {
+                Ok((out, units)) => {
+                    self.held.extend_from_slice(&out);
+                    self.note_units(units);
+                }
+                // Output decoded before the error comes first; the kernel raises the
+                // same error again on the call after it.
+                Err(_) if self.held_len() > 0 => {}
+                Err(e) => return Err(to_py0(e)),
+            }
         }
         let first = std::mem::take(&mut self.clear_offsets);
         let out = self.produce(py, max_length)?;
@@ -883,9 +908,11 @@ fn lzx_error(err: DecodeError<NeedMore>) -> PyErr {
 ///
 /// Output comes in frames of 32 KiB, the last one shorter: the kernel decodes a whole
 /// frame once its input has arrived, and returns it in `max_length` slices. A frame
-/// that the input given so far does not cover is undone and tried again when more
-/// arrives. `flush()` marks the end of the input, after which the kernel reads up to
-/// two zero bytes past it, as libmspack's lzxd does.
+/// is tried only once the queued input is about twice what the last frame used (a
+/// frame the input does not cover is undone and tried again later), so output lags
+/// the input by up to two frames: call `flush()` at the end of the input for the
+/// rest, even when the input given covers it. After `flush()` the kernel reads up to
+/// two zero bytes past the input, as libmspack's lzxd does.
 #[pyclass(module = "archivey_codecs.lzx", name = "Decompressor")]
 #[derive(Clone)]
 struct LzxDecompressor {

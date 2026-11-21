@@ -420,24 +420,133 @@ def bcj2_rust(streams: tuple[bytes, ...], size: int, rng: random.Random):
     return bytes(out), ("ok", None)
 
 
-def test_bcj2_parity() -> None:
-    rng = random.Random(8)
-    for case in range(max(20, SEEDS // 5)):
-        size = rng.randint(0, 200_000)
-        main = bytes(
-            rng.choice(b"\xe8\xe9\x0f\x85\x80")
+class _RangeEncoder:
+    """LZMA's range encoder, with the probability model BCJ2 decodes with."""
+
+    def __init__(self) -> None:
+        self.low, self.range, self.cache, self.cache_size = 0, 0xFFFFFFFF, 0, 1
+        self.out = bytearray()
+        self.probs = [1024] * 258
+
+    def _shift_low(self) -> None:
+        if self.low < 0xFF000000 or self.low > 0xFFFFFFFF:
+            carry, temp = self.low >> 32, self.cache
+            while True:
+                self.out.append((temp + carry) & 0xFF)
+                temp = 0xFF
+                self.cache_size -= 1
+                if self.cache_size == 0:
+                    break
+            self.cache = (self.low >> 24) & 0xFF
+        self.cache_size += 1
+        self.low = (self.low & 0x00FFFFFF) << 8
+
+    def bit(self, context: int, bit: bool) -> None:
+        p = self.probs[context]
+        bound = (self.range >> 11) * p
+        if bit:
+            self.low += bound
+            self.range -= bound
+            self.probs[context] = p - (p >> 5)
+        else:
+            self.range = bound
+            self.probs[context] = p + ((2048 - p) >> 5)
+        while self.range < 1 << 24:
+            self.range <<= 8
+            self._shift_low()
+
+    def finish(self) -> bytes:
+        for _ in range(5):
+            self._shift_low()
+        return bytes(self.out)
+
+
+def bcj2_encode(rng: random.Random, size: int) -> tuple[bytes, ...]:
+    """Valid BCJ2 streams for ``size`` bytes of x86-looking output, with random
+    convert decisions and targets: the four streams end where the decoder stops."""
+    main, call, jump = bytearray(), bytearray(), bytearray()
+    enc = _RangeEncoder()
+    out_len, prev = 0, 0
+    while out_len < size:
+        b = (
+            rng.choice(b"\xe8\xe9\x0f\x85")
             if rng.random() < 0.2
             else rng.randrange(256)
-            for _ in range(size)
         )
-        call = rng.randbytes(rng.randint(0, 4000) * 4 + rng.choice((0, 0, 1, 3)))
-        jump = rng.randbytes(rng.randint(0, 4000) * 4)
-        rc = b"\0" + rng.randbytes(rng.randint(0, 20_000))
-        if case % 4 == 0:
-            rc = rng.randbytes(rng.randint(0, 6))
-        out_size = rng.choice((size, size + 1000, max(0, size - 50), size * 2))
-        streams = (main, call, jump, rc)
-        assert bcj2_rust(streams, out_size, rng) == bcj2_python(streams, out_size), case
+        main.append(b)
+        out_len += 1
+        candidate = b in (0xE8, 0xE9) or (b & 0xF0 == 0x80 and prev == 0x0F)
+        if not candidate or out_len == size:
+            prev = b
+            continue
+        context = prev if b == 0xE8 else 256 if b == 0xE9 else 257
+        convert = rng.random() < 0.5
+        enc.bit(context, convert)
+        if not convert:
+            prev = b
+            continue
+        target = rng.getrandbits(32)
+        dest = (target - (out_len + 4)) & 0xFFFFFFFF
+        (call if b == 0xE8 else jump).extend(target.to_bytes(4, "big"))
+        out_len = min(size, out_len + 4)
+        prev = dest >> 24
+    return bytes(main), bytes(call), bytes(jump), enc.finish()
+
+
+def test_bcj2_parity() -> None:
+    rng = random.Random(8)
+    clean = 0
+    for case in range(max(20, SEEDS // 5)):
+        size = rng.randint(0, 200_000)
+        if case % 2 == 0:
+            # Valid streams, then one of: untouched, a stream cut short, a stream
+            # with bytes added, or a changed range coder byte.
+            streams = list(bcj2_encode(rng, size))
+            out_size = size
+            which, how = rng.randrange(4), rng.randrange(4)
+            s = streams[which]
+            if how == 1 and s:
+                streams[which] = s[: rng.randrange(len(s))]
+            elif how == 2:
+                streams[which] = s + rng.randbytes(rng.randint(1, 5))
+            elif how == 3 and len(streams[3]) > 5:
+                k = rng.randrange(5, len(streams[3]))
+                rc = bytearray(streams[3])
+                rc[k] ^= 1 << rng.randrange(8)
+                streams[3] = bytes(rc)
+            streams = tuple(streams)
+        else:
+            main = bytes(
+                rng.choice(b"\xe8\xe9\x0f\x85\x80")
+                if rng.random() < 0.2
+                else rng.randrange(256)
+                for _ in range(size)
+            )
+            call = rng.randbytes(rng.randint(0, 4000) * 4 + rng.choice((0, 0, 1, 3)))
+            jump = rng.randbytes(rng.randint(0, 4000) * 4)
+            rc = b"\0" + rng.randbytes(rng.randint(0, 20_000))
+            if case % 4 == 1:
+                rc = rng.randbytes(rng.randint(0, 6))
+            elif case % 4 == 3:
+                # A start 7-Zip refuses: a non-zero first byte, five bytes or more.
+                rc = bytes([rng.randint(1, 255)]) + rng.randbytes(rng.randint(4, 50))
+            out_size = rng.choice((size, size + 1000, max(0, size - 50), size * 2))
+            streams = (main, call, jump, rc)
+        py = bcj2_python(streams, out_size)
+        clean += py[1] == ("ok", None)
+        assert bcj2_rust(streams, out_size, rng) == py, case
+    # The success path (all four streams used up exactly) must be compared too.
+    assert clean >= 3, clean
+
+
+def test_bcj2_clean_decode_matches() -> None:
+    """Valid streams decode to the same bytes on both sides, the first bit of the
+    range coder a convert (the start 7-Zip writes when the first branch converts)."""
+    rc_convert = b"\x00" + b"\xff" * 3 + b"\xfe"
+    streams = (b"\xe8", (0x12345678).to_bytes(4, "big"), b"", rc_convert)
+    py = bcj2_python(streams, 5)
+    assert py[1] == ("ok", None)
+    assert bcj2_rust(streams, 5, random.Random(0)) == py
 
 
 # ── Unix compress (.Z) LZW ─────────────────────────────────────────────────────────
@@ -666,5 +775,14 @@ def test_callback_cycles_are_collected() -> None:
 def test_lzw_width_is_checked() -> None:
     with pytest.raises(ValueError, match="outside 9 to 16"):
         archivey_codecs.lzw.Decompressor(max_width=30, block_mode=True)
-    with pytest.raises(ValueError, match="together"):
+    with pytest.raises(ValueError, match="give block_mode with max_width"):
         archivey_codecs.lzw.Decompressor(max_width=12)
+    # As in the Python twin, a lone block_mode is ignored: the header decides.
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
+
+    header = b"\x1f\x9d\x90"  # 16 bits, block mode
+    py = LzwState(block_mode=False)
+    py.feed(header)
+    rs = archivey_codecs.lzw.Decompressor(block_mode=False)
+    rs.decompress(header)
+    assert py.header_params == rs.header_params == (16, True)
