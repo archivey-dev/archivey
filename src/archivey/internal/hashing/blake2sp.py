@@ -33,31 +33,47 @@ class Blake2sp:
         self._finalized = False
         self._digest: bytes | None = None
 
-    def update(self, data: bytes, /) -> None:
+    def update(self, data: bytes | bytearray | memoryview, /) -> None:
         if self._finalized:
             raise ValueError("cannot update() a finalized Blake2sp hasher")
         if not data:
             return
+        # Walk a view by offset: slicing ``data`` would copy the rest of it at every
+        # stride, so one large update() would be quadratic in its size. The cast makes
+        # the offsets count bytes for any buffer, whatever its item size. Every view is
+        # released before returning, so the caller can resize its buffer at once (on
+        # PyPy a dropped view lives until the next collection).
+        with memoryview(data) as raw, raw.cast("B") as view:
+            self._absorb(view)
+
+    def _absorb(self, view: memoryview) -> None:
+        pos = 0
+        end = len(view)
         # Fill residual buffer to a full PARALLELISM*BLOCK stride, then process.
         if self._buf:
             need = _BUF_SIZE - len(self._buf)
-            if len(data) < need:
-                self._buf.extend(data)
+            if end < need:
+                self._buf.extend(view)
                 return
-            self._buf.extend(data[:need])
-            self._process_full_buffer(self._buf)
+            with view[:need] as head:
+                self._buf.extend(head)
+            with memoryview(self._buf) as full:
+                self._process_full_buffer(full)
             self._buf.clear()
-            data = data[need:]
-        while len(data) >= _BUF_SIZE:
-            self._process_full_buffer(data[:_BUF_SIZE])
-            data = data[_BUF_SIZE:]
-        if data:
-            self._buf.extend(data)
+            pos = need
+        while end - pos >= _BUF_SIZE:
+            with view[pos : pos + _BUF_SIZE] as stride:
+                self._process_full_buffer(stride)
+            pos += _BUF_SIZE
+        if pos < end:
+            with view[pos:] as tail:
+                self._buf.extend(tail)
 
-    def _process_full_buffer(self, buf: bytes | bytearray) -> None:
+    def _process_full_buffer(self, buf: memoryview) -> None:
         for i in range(PARALLELISM_DEGREE):
             start = i * _BLOCK_SIZE
-            self._leaves[i].update(buf[start : start + _BLOCK_SIZE])
+            with buf[start : start + _BLOCK_SIZE] as block:
+                self._leaves[i].update(block)
 
     def digest(self) -> bytes:
         if self._digest is not None:

@@ -1,0 +1,32 @@
+== apfs-UDBZ.dmg
+0000000    B   Z   h   1   1   A   Y   &                                
+== apfs-UDRO.dmg
+0000000   \0  \0  \0  \0  \0  \0  \0  \0                                
+== apfs-UDRW.dmg
+0000000   \0  \0  \0  \0  \0  \0  \0  \0                                
+== apfs-UDZO-AES-128.dmg
+0000000    e   n   c   r   c   d   s   a                                
+== apfs-UDZO-AES-256.dmg
+0000000    e   n   c   r   c   d   s   a                                
+== apfs-UDZO.dmg
+0000000    x 001   c   ` 030 005   C   8                                
+== apfs-ULFO.dmg
+0000000    b   v   x   n  \0 002  \0  \0                                
+== apfs-ULMO.dmg
+0000000  375   7   z   X   Z  \0  \0  \0                                
+== hfs-UDBZ.dmg
+0000000    B   Z   h   1   1   A   Y   &                                
+== hfs-UDRO.dmg
+0000000   \0  \0  \0  \0  \0  \0  \0  \0                                
+== hfs-UDRW.dmg
+0000000   \0  \0  \0  \0  \0  \0  \0  \0                                
+== hfs-UDZO-AES-128.dmg
+0000000    e   n   c   r   c   d   s   a                                
+== hfs-UDZO-AES-256.dmg
+0000000    e   n   c   r   c   d   s   a                                
+== hfs-UDZO.dmg
+0000000    x 001   c   ` 030 005   C   8                                
+== hfs-ULFO.dmg
+0000000    b   v   x   n  \0 002  \0  \0                                
+== hfs-ULMO.dmg
+0000000  375   7   z   X   Z  \0  \0  \0                                
