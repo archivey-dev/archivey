@@ -18,22 +18,39 @@
 ## B. UDIF, partitions and HFS+
 
 - [x] B.1 Test writers in `tests/dmg_build.py`: UDIF, GPT, APM, HFS+ (may be its own PR)
-- [ ] B.2 `udif.py` rewrite: `koly`, property list, run tables, `UdifSource`;
+- [x] B.2 `udif.py` rewrite: `koly`, property list, run tables, `UdifSource`;
   stored-length and run-count bounds checked before any read or allocation (design §4.2,
   §4.3)
-- [ ] B.3 `disk_partitions.py`: GPT, APM, none; one disk index; signature decides
+- [x] B.3 `disk_partitions.py`: GPT, APM, none; one disk index; signature decides
   (design §5); volume top-level names
-- [ ] B.4 `hfsplus.py`: volume header, journal state (§6.1), forks, B-trees, catalog,
+- [x] B.4 `hfsplus.py`: volume header, journal state (§6.1), forks, B-trees, catalog,
   hard links, decmpfs, attributes
-- [ ] B.5 `dmg_reader.py`: handler, reader, detection signatures kept through
+- [x] B.5 `dmg_reader.py`: handler, reader, detection signatures kept through
   `register_builtin_format`, `SEEKABLE`
-- [ ] B.6 APFS-only and encrypted images refused by name until parts E and G
-- [ ] B.7 Committed `hdiutil` fixtures and their README entry; fixture script
-- [ ] B.8 7-Zip oracle tests with the listed differences; fuzz target
-- [ ] B.9 Handbook page `dev-docs/formats/dmg.md`, threat-model row, remove
+- [x] B.6 APFS-only and encrypted images refused by name until parts E and G
+- [x] B.7 Committed `hdiutil` fixtures and their README entry; fixture script
+- [x] B.8 7-Zip oracle tests with the listed differences; fuzz target
+- [x] B.9 Handbook page `dev-docs/formats/dmg.md`, threat-model row, remove
   recognised-only special cases
-- [ ] B.10 External corpus run over the 54-URL list, which gave the 41 measured images
-  (maintainer, before merge)
+- [x] B.10 External corpus run over the 54-URL list, which gave the 41 measured images
+  (maintainer, before merge): `scripts/investigations/dmg_corpus.py`. Run 2026-11-21
+  with 7-Zip 23.01: 48 of the 54 URLs downloaded; 40 images extract the same files as
+  7-Zip, 6 are APFS (refused by name), and 2 use xz runs, which that 7-Zip cannot
+  decode (archivey lists 1 and 509 files from them)
+
+## M. macOS CI check with Apple's own tools
+
+The macOS runners have `hdiutil` and `fsck_hfs`, the tools that write and read DMGs
+on a Mac. A workflow on a macOS runner checks archivey against them. Like the other side
+workflows, it runs after a merge to `main` and on a schedule, never on pull requests,
+and the maintainer merges the PR that adds it (it adds triggers).
+
+- [ ] M.1 Writer images through Apple's tools (early: it checks `tests/dmg_build.py`):
+  each builder image passes `hdiutil verify` and `hdiutil attach -readonly`, the mounted
+  volume holds the files the writer put there, and each HFS+ volume passes `fsck_hfs -n`
+- [ ] M.2 Reader against fresh `hdiutil` images (with B.8): `hdiutil create` in every
+  format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO; HFS+, HFSX, APFS from Part E), then
+  archivey's listing and file hashes match the mounted volume's
 
 ## C. User docs
 
