@@ -18,8 +18,10 @@ from pathlib import Path
 
 import pytest
 
+import archivey
 from archivey import (
     ArchiveFormat,
+    ArchiveMember,
     CompressionAlgorithm,
     CreateSystem,
     MemberType,
@@ -31,10 +33,12 @@ from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
     EncryptionError,
+    ResourceLimitError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.backends.arj_reader import ArjReader
 from archivey.internal.password import is_unverified_data_error
 from tests.pe_build import elf_file, pe_file
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
@@ -192,6 +196,31 @@ def test_every_listed_password_wrong() -> None:
     ):
         reader.read("words.txt")
     assert is_unverified_data_error(caught.value)
+
+
+def test_a_garbled_member_over_the_ratio_is_refused_before_any_full_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full check decodes outside the member handle's ratio guard, once per
+    candidate, so the recorded sizes are checked before it runs."""
+    full_checks: list[str] = []
+    original = ArjReader._full_check
+
+    def counting(self: ArjReader, member: ArchiveMember, *args: object) -> object:
+        full_checks.append(member.name)
+        return original(self, member, *args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArjReader, "_full_check", counting)
+    limits = archivey.DecoderLimits(max_ratio=2, ratio_activation_threshold=0)
+    config = archivey.ArchiveyConfig(decoder_limits=limits)
+    with (
+        open_archive(
+            _FIXTURES / "garbled_m1.arj", password=["secret", "other"], config=config
+        ) as reader,
+        pytest.raises(ResourceLimitError, match="max_ratio=2:1"),
+    ):
+        reader.read("words.txt")  # 15,995 bytes from 6,080
+    assert full_checks == []
 
 
 def test_extract_all_asks_the_provider_once(tmp_path: Path) -> None:

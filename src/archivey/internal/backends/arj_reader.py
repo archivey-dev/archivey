@@ -43,6 +43,7 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
 )
@@ -622,6 +623,7 @@ class ArjReader(_Headers, IndexedReader[_Location]):
                 f"(encryption version {self._main.modifier}); archivey reads only "
                 "the original garble"
             )
+        self._check_ratio(member, locator)
 
         def check(password: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
             if not password:
@@ -642,6 +644,27 @@ class ArjReader(_Headers, IndexedReader[_Location]):
         return NeedsPassword(
             quoted(member.name), check, full_check=full_check, member=member, then=then
         )
+
+    def _check_ratio(self, member: ArchiveMember, locator: _Location) -> None:
+        """Refuse a garbled member whose recorded sizes break the ratio limit.
+
+        The full check decodes the member to its header's size once per candidate
+        password, outside the member handle and so outside its ratio guard. That size
+        bounds each decode, so this check, the one archivey makes from recorded sizes
+        before an extraction, bounds them all before any of them runs."""
+        limits = self._context.config.decoder_limits
+        size = member.size or 0
+        if limits.max_ratio is None or not locator.stored:
+            return
+        if size > max(
+            limits.ratio_activation_threshold, limits.max_ratio * locator.stored
+        ):
+            raise ResourceLimitError(
+                f"Decompression ratio {size / locator.stored:.0f}:1 exceeds limit "
+                f"max_ratio={limits.max_ratio:.0f}:1 (from recorded sizes: {size} "
+                f"bytes from {locator.stored} compressed)",
+                member_name=member.name,
+            )
 
     def _full_check(
         self, member: ArchiveMember, locator: _Location, password: bytes
@@ -706,7 +729,8 @@ class _ArjStream(io.RawIOBase):
         *,
         unconfirmed: str | None = None,
     ) -> None:
-        """``key`` (``_garble_key``) degarbles them before they are decoded.
+        """``key`` (``_garble_key``), when set, degarbles the member's stored bytes
+        before they are decoded.
 
         ``unconfirmed`` names a member whose password no check confirmed: a decoder
         failure over its stored bytes then raises the wrong-password-or-damage
