@@ -34,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 #: The hidden line that carries a report's failed jobs, as a JSON list. JSON escapes a
@@ -142,8 +143,13 @@ def decide(
     run_url: str,
     issue: dict | None,
     jobs: list[str],
+    lost: Sequence[str] = (),
 ) -> Action:
-    """The action for one finished run, given the open issue (None when there is none)."""
+    """The action for one finished run, given the open issue (None when there is none).
+
+    ``lost`` names jobs no runner took. They are listed under their own heading and
+    left out of the marker, so **new** keeps meaning newly failing.
+    """
     line = f"`{conclusion}` on {sha[:12]}: {run_url}"
     if conclusion == "success":
         if issue is not None and event == "schedule":
@@ -151,6 +157,11 @@ def decide(
         return Action("none")
     previous = previous_jobs(issue) if issue is not None else None
     block, new = jobs_block(jobs, previous)
+    if lost:
+        block += (
+            "\n\nJobs no runner took (cancelled before any step, in this run and the "
+            "previous one):\n" + "\n".join(f"- `{job}`" for job in lost)
+        )
     if issue is not None:
         noun = "job" if new == 1 else "jobs"
         lead = f"New failure in {new} {noun}" if new else "Still failing"
@@ -184,8 +195,10 @@ def _run_jobs(run_id: str) -> list[dict]:
 def _previous_run_lost(workflow: str, run_id: str) -> bool:
     """Whether the previous scheduled or post-merge run on `main` also lost a job.
 
-    Its newest attempt counts, so a green rerun clears it. True when the runs cannot be
-    read: a report that might be noise is better than a gap nobody sees.
+    Its newest attempt counts, so a green rerun clears it. A cancelled or skipped run is
+    passed over, as the alert passes over such runs: a superseded run's queued jobs
+    also end cancelled with no steps. True when the runs or the previous run's jobs
+    cannot be read: a report that might be noise is better than a gap nobody sees.
     """
     try:
         runs = json.loads(
@@ -199,19 +212,26 @@ def _previous_run_lost(workflow: str, run_id: str) -> bool:
                 "--limit",
                 "20",
                 "--json",
-                "databaseId,event,status",
+                "databaseId,event,status,conclusion",
             )
         )
-    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        previous = next(
+            (
+                str(run["databaseId"])
+                for run in runs
+                if str(run.get("databaseId")) != run_id
+                and run.get("status") == "completed"
+                and run.get("conclusion") not in ("cancelled", "skipped")
+                and run.get("event") in ("schedule", "push")
+            ),
+            None,
+        )
+        if previous is None:
+            return False
+        data = json.loads(_gh("run", "view", previous, "--json", "jobs"))
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
         return True
-    for run in runs:
-        if (
-            str(run.get("databaseId")) != run_id
-            and run.get("status") == "completed"
-            and run.get("event") in ("schedule", "push")
-        ):
-            return bool(lost_jobs(_run_jobs(str(run["databaseId"]))))
-    return False
+    return bool(lost_jobs(data.get("jobs") or []))
 
 
 def main() -> int:
@@ -241,7 +261,7 @@ def main() -> int:
     if lost and not _previous_run_lost(workflow, env["RUN_ID"]):
         print(f"none: {name} (no runner took {', '.join(lost)}; no job failed)")
         return 0
-    jobs = failed_jobs(run_jobs) or lost
+    jobs = failed_jobs(run_jobs)
     action = decide(
         workflow=workflow,
         conclusion=conclusion,
@@ -250,6 +270,7 @@ def main() -> int:
         run_url=env["RUN_URL"],
         issue=issue,
         jobs=jobs,
+        lost=lost,
     )
     if action.kind == "close":
         _gh(

@@ -170,11 +170,16 @@ elif args[:2] == ["issue", "view"]:
     print(os.environ["GH_ISSUE"])
 elif args[:2] == ["run", "list"]:
     print(json.dumps([
+        {"databaseId": 6, "event": "push", "status": "in_progress"},
         {"databaseId": 5, "event": "push", "status": "completed"},
         {"databaseId": 4, "event": "workflow_dispatch", "status": "completed"},
+        {"databaseId": 2, "event": "push", "status": "completed",
+         "conclusion": "cancelled"},
         {"databaseId": 3, "event": "schedule", "status": "completed"},
     ]))
 elif args[:2] == ["run", "view"]:
+    if args[2] != "5" and os.environ.get("GH_PREVIOUS_FAILS"):
+        sys.exit(1)
     key = "GH_JOBS" if args[2] == "5" else "GH_PREVIOUS_JOBS"
     print(os.environ.get(key) or json.dumps(
         {"jobs": [{"name": "pypy3.11", "conclusion": "failure"}]}))
@@ -220,7 +225,15 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     # A second one in a row reports, naming the lost job.
     calls = run(lost, lost)
     assert calls[-1][:3] == ["issue", "comment", "7"]
-    assert "`macos`" in calls[-1][-1]
+    body = calls[-1][-1]
+    assert "Jobs no runner took" in body
+    assert "- `macos`" in body
+    # Lost jobs stay out of the failed list and its marker.
+    assert "Failed jobs" not in body
+    # A previous run whose jobs cannot be read counts as lost: report.
+    env["GH_PREVIOUS_FAILS"] = "1"
+    calls = run(lost, green)
+    assert calls[-1][:3] == ["issue", "comment", "7"]
 
 
 @pytest.mark.parametrize("odd", ["name\twith\ttab", "line\nbreak", "ends --> here"])
