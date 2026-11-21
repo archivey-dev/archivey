@@ -4188,7 +4188,9 @@ class ZipReader(BaseArchiveReader):
             except BaseException:
                 raw.close()
                 raise
-            keys, check = keys_after_header(password, header)
+            keys, check = keys_after_header(
+                password, header, self._stream_config.excluded_libraries
+            )
             if check != check_byte:
                 raw.close()
                 raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
@@ -4557,12 +4559,15 @@ class ZipReader(BaseArchiveReader):
         # The same validated view every member open reads through: the local
         # header's name, data offset and overlap are checked before any pass runs.
         # One view serves the header read and every CRC pass; each pass rewinds it.
+        excluded = self._stream_config.excluded_libraries
         raw = self._open_raw_payload(loc, member)
         try:
             header = self._read_zipcrypto_header(raw, loc, member.name)
 
             def weak_ok(password: bytes) -> bool:
-                return password_matches_check_byte(password, header, check_byte)
+                return password_matches_check_byte(
+                    password, header, check_byte, excluded
+                )
 
             def disambiguate(survivors: list[bytes]) -> bytes | None:
                 nonlocal ambiguous_failure
@@ -4572,7 +4577,9 @@ class ZipReader(BaseArchiveReader):
                 # every survivor's plaintext CRC-32 in constant memory.
                 try:
                     raw.seek(ZIPCRYPTO_HEADER_LEN)  # every pass starts at the body
-                    crcs = parallel_plaintext_crc32(survivors, header, raw)
+                    crcs = parallel_plaintext_crc32(
+                        survivors, header, raw, excluded=excluded
+                    )
                     covered = raw.tell() - ZIPCRYPTO_HEADER_LEN
                 except _ZIP_MEMBER_READ_ERRORS as exc:
                     self._reraise_member_error(exc, member.name)
