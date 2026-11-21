@@ -520,7 +520,7 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 | Type | Data | Notes |
 | --- | --- | --- |
 | 1 | uncompressed, inline | |
-| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip. |
+| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip; without the marker the file is `UnsupportedFeatureError` at read, since no sample shows it is damage. |
 | 3 | zlib, inline (first byte `0x?F` = stored) | |
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |

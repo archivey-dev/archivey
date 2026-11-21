@@ -32,8 +32,11 @@
 - [x] B.8 7-Zip oracle tests with the listed differences; fuzz target
 - [x] B.9 Handbook page `dev-docs/formats/dmg.md`, threat-model row, remove
   recognised-only special cases
-- [ ] B.10 External corpus run over the 54-URL list, which gave the 41 measured images
-  (maintainer, before merge): `scripts/dev/dmg_corpus.py`
+- [x] B.10 External corpus run over the 54-URL list, which gave the 41 measured images
+  (maintainer, before merge): `scripts/investigations/dmg_corpus.py`. Run 2026-11-21
+  with 7-Zip 23.01: 48 of the 54 URLs downloaded; 40 images extract the same files as
+  7-Zip, 6 are APFS (refused by name), and 2 use xz runs, which that 7-Zip cannot
+  decode (archivey lists 1 and 509 files from them)
 
 ## M. macOS CI check with Apple's own tools
 

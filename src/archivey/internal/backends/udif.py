@@ -599,6 +599,11 @@ class UdifImage:
                 raise UnsupportedFeatureError(f"{refusal}.")
         raw = self._read_file(self._offset[index], length, self._where(index))
         self._spend(decoded)
+        # Every miss counts toward the listing's cap: the cache holds a few runs, so a
+        # catalog spread over more runs than that decodes some of them again and again.
+        draw = self._context._listing_draw
+        if draw is not None:
+            draw(decoded)
         try:
             if in_house is not None:
                 data = in_house[1](raw, decoded + 1)
@@ -702,7 +707,7 @@ class UdifSource(ReaderSource):
         def view(offset: int, n: int | None) -> BinaryIO:
             span = length - offset if n is None else min(n, length - offset)
             raw = _DiskView(read_at, offset, max(0, span))
-            return io.BufferedReader(raw, buffer_size=64 << 10)  # type: ignore[return-value]
+            return io.BufferedReader(raw, buffer_size=64 << 10)
 
         super().__init__(view, length, None, read_at)
 

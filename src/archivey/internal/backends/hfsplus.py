@@ -83,9 +83,10 @@ XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
 _DECMPFS_KEEP = DECMPFS_CHUNK + 64
-# Most nesting a path may have: deeper is damage (a valid path is at most 1024 bytes,
-# so 512 levels of one-character names).
-_MAX_DEPTH = 1024
+# Most folders a parent chain may hold before it counts as damage: a support limit,
+# well past any tree a Mac addresses by path (``PATH_MAX`` is 1024 bytes, so at most
+# 512 levels of one-character names), and it bounds the walk of a chain that loops.
+MAX_DEPTH = 1024
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -695,22 +696,27 @@ def catalog_entries(volume: HfsVolume) -> Iterator[Entry]:
 
 
 def folder_path(
-    folders: dict[int, tuple[int, str]], cache: dict[int, str | None], cnid: int
+    folders: dict[int, tuple[int, str]],
+    cache: dict[int, str | None],
+    cnid: int,
+    looped: set[int],
 ) -> str | None:
     """The path of folder ``cnid`` below the root (``""`` for the root), or ``None``
-    when its chain does not reach the root (a folder the first pass did not find).
-    A chain that comes back to a folder raises ``CorruptionError``."""
+    when its chain does not reach the root: a folder the first pass did not find, or a
+    chain that comes back to a folder or is deeper than the cap. For the last two, the
+    folder's cnid goes in ``looped``, so the walk lists the other members and raises at
+    its end."""
     if cnid in cache:
         return cache[cnid]
     chain: list[int] = []
     seen: set[int] = set()
     at = cnid
     while at not in cache:
-        if at in seen or len(chain) > _MAX_DEPTH:
-            raise CorruptionError(
-                f"the HFS+ folder {cnid}'s parent chain loops or is deeper than "
-                f"{_MAX_DEPTH}"
-            )
+        if at in seen or len(chain) > MAX_DEPTH:
+            for each in chain:
+                cache[each] = None
+            looped.add(cnid)
+            return None
         seen.add(at)
         found = folders.get(at)
         if found is None:
@@ -966,8 +972,15 @@ def _decode_chunk(
         if kind in (1, 10):
             out = data
         elif kind == 9:
+            # 7-Zip (``HfsHandler.cpp``) reads type 9 only after a 0xCC byte and
+            # refuses it without; no macOS sample shows what Apple writes or accepts
+            # (design §6.6). Without the marker the file is not known to be damaged,
+            # only not read the way 7-Zip reads it.
             if data[:1] != b"\xcc":
-                raise CorruptionError("type 9 data does not start with its 0xCC marker")
+                raise UnsupportedFeatureError(
+                    f"the compressed file {cnid} stores type 9 data without the 0xCC "
+                    "byte 7-Zip reads it after; archivey does not read it"
+                )
             out = data[1:]
         elif kind in (3, 4):
             if data[:1] and data[0] & 0x0F == 0x0F:

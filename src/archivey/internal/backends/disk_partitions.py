@@ -115,9 +115,13 @@ def _blkx_no_content(name: str) -> bool:
 class _GptRefused(Exception):
     """Why one GPT copy cannot be used."""
 
-    def __init__(self, reason: str, *, oversized: bool = False) -> None:
+    def __init__(
+        self, reason: str, *, oversized: bool = False, no_signature: bool = False
+    ) -> None:
         super().__init__(reason)
         self.oversized = oversized
+        # No header at all, as on a disk with no GPT: not a damaged copy.
+        self.no_signature = no_signature
 
 
 def _gpt_copy(image: UdifImage, header_sector: int) -> list[Candidate]:
@@ -126,7 +130,7 @@ def _gpt_copy(image: UdifImage, header_sector: int) -> list[Candidate]:
     sectors = image.sector_count
     raw = image.read(header_sector * SECTOR, SECTOR)
     if len(raw) < _GPT_HEADER.size or raw[:8] != _GPT_SIGNATURE:
-        raise _GptRefused("no GPT header signature")
+        raise _GptRefused("no GPT header signature", no_signature=True)
     (_, _, header_size, header_crc, _, my_lba, _, first_usable, last_usable, _,
      entries_lba, entry_count, entry_size, entries_crc) = _GPT_HEADER.unpack_from(raw)  # fmt: skip
     if not _GPT_HEADER.size <= header_size <= SECTOR:
@@ -199,7 +203,7 @@ def _gpt(image: UdifImage, report: Report) -> list[Candidate] | None:
     try:
         return _gpt_copy(image, 1)
     except _GptRefused as primary:
-        if str(primary) == "no GPT header signature":
+        if primary.no_signature:
             backup_sector = image.sector_count - 1
             if image.read(backup_sector * SECTOR, 8) != _GPT_SIGNATURE:
                 return None

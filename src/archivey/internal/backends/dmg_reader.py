@@ -364,6 +364,7 @@ class _VolumeWalk:
         self._catalog = catalog
         self._paths: dict[int, str | None] = {hfsplus.ROOT_FOLDER: ""}
         self._hidden: dict[int, bool] = {hfsplus.ROOT_FOLDER: False}
+        self._looped: set[int] = set()
         orphans = 0
         try:
             for entry in hfsplus.catalog_entries(volume):
@@ -376,7 +377,14 @@ class _VolumeWalk:
                 yield made
         except ArchiveyError as exc:
             failure = exc
-        if failure is None and orphans:
+        if failure is None and self._looped:
+            first = min(self._looped)
+            failure = CorruptionError(
+                f"the HFS+ folder {first}'s parent chain loops or is deeper than "
+                f"{hfsplus.MAX_DEPTH}, so {orphans} records of the catalog are not "
+                "listed"
+            )
+        elif failure is None and orphans:
             failure = CorruptionError(
                 f"{orphans} records of the HFS+ catalog are in folders the catalog "
                 "does not hold"
@@ -409,7 +417,9 @@ class _VolumeWalk:
             return self._folder_member(entry, self._top)
         if folder and entry.cnid in self._catalog.hidden:
             return None
-        parent = hfsplus.folder_path(self._catalog.folders, self._paths, entry.parent)
+        parent = hfsplus.folder_path(
+            self._catalog.folders, self._paths, entry.parent, self._looped
+        )
         if parent is None:
             return _ORPHAN
         if self._is_hidden(entry.parent):

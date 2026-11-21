@@ -552,6 +552,59 @@ def test_a_catalog_leaf_loop_delivers_the_members_before_it() -> None:
     assert len(seen) < 120
 
 
+def test_a_folder_parent_loop_delivers_the_other_members() -> None:
+    """A folder whose parent chain loops cannot be placed: the members in it are left
+    out, the others are listed, and the error comes at the end (DR-2)."""
+    nodes = [
+        d.Node("a/s/x", data=b"x"),
+        d.Node("m/one", data=b"1"),
+        d.Node("z/two", data=b"2"),
+        d.Node("top", data=b"t"),
+    ]
+
+    def loop(records: list[d.CatalogRecord]) -> None:
+        def folder(name: str) -> d.CatalogRecord:
+            raw = name.encode("utf-16-be")
+            return next(
+                r
+                for r in records
+                if r.name == raw and struct.unpack_from(">h", r.body)[0] == 1
+            )
+
+        # Folder ``a`` now sits in its own child ``s``.
+        folder("a").parent = struct.unpack_from(">I", folder("s").body, 8)[0]
+
+    seen: list[str] = []
+    with (
+        _open(_image(nodes, hfs_options={"patch_catalog": loop})) as reader,
+        pytest.raises(CorruptionError, match="parent chain loops"),
+    ):
+        for member in reader:
+            seen.append(member.name)
+    assert {"m/one", "z/two", "top"} <= set(seen)
+    assert not any(name.startswith("a/") for name in seen)
+
+
+def test_type_9_without_its_marker_is_unsupported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sample shows type 9 data without the 0xCC byte, so it is not called damage."""
+    real = d._decmpfs
+
+    def no_marker(kind: int, data: bytes) -> tuple[bytes, bytes]:
+        value, fork = real(kind, data)
+        return (value[:16] + value[17:], fork) if kind == 9 else (value, fork)
+
+    monkeypatch.setattr(d, "_decmpfs", no_marker)
+    image = _image(
+        [d.Node("t9", data=b"plain", compression=9), d.Node("ok", data=b"1")]
+    )
+    with _open(image) as reader:
+        assert reader.read("ok") == b"1"
+        with pytest.raises(UnsupportedFeatureError, match="0xCC"):
+            reader.read("t9")
+
+
 # ── Limits and UDIF structure ────────────────────────────────────────────────────────
 
 
