@@ -45,6 +45,7 @@ from archivey.internal.config import (
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.hashing import crc32_digest
 from archivey.internal.streams import codecs as codecs_module, crypto
+from archivey.internal.streams.callers_source import mark_callers_source
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -56,7 +57,6 @@ from archivey.internal.streams.codecs import (
     stream_codec,
     stream_codecs,
 )
-from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.stored_codec import StoredCodec
 from archivey.internal.streams.codecs.unix_compress_decoder import (
     _MAX_ENTRY_TAIL,

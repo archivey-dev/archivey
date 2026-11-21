@@ -44,13 +44,13 @@ from archivey.internal.excluded_libraries import (
 )
 from archivey.internal.overrides import override
 from archivey.internal.streams.archive_stream import RewindWarning
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.child_process import mark_no_verdict
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
 )
-from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.rapidgzip_child import (
     RapidgzipChildStartError,
     RapidgzipChildStream,

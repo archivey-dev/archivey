@@ -204,6 +204,7 @@ from archivey.internal.streams.archive_stream import (
     MemberStreamParts,
     RewindWarning,
 )
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs import (
     Codec,
     CodecParams,
@@ -1742,10 +1743,14 @@ class ZipReader(BaseArchiveReader):
                 # End records that cannot be used (a damaged ZIP64 record after a
                 # saturated classic one, a directory that would start before the
                 # file): the members are what the local headers hold, as from a pipe.
+                if from_source_callback(exc):
+                    raise
                 if self._list_after_bad_end_records(exc, walked):
                     return
                 raise
         except ArchiveyError as exc:
+            if from_source_callback(exc):
+                raise  # the caller's own (``on_source_read``): not rewritten
             if isinstance(exc, CorruptionError):
                 # The type is kept (a cut archive stays TruncatedError); the prefix says
                 # where it failed.

@@ -30,6 +30,7 @@ from archivey.internal.streams.archive_stream import (
     ExceptionTranslator,
     RewindWarning,
 )
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.base import (
     BZIP2_HEADER,
@@ -43,7 +44,6 @@ from archivey.internal.streams.codecs.bzip2_blocks import (
     Bzip2BlockStart,
     rotate_combined,
 )
-from archivey.internal.streams.codecs.callers_source import from_callers_source
 from archivey.internal.streams.codecs.framed_decoder import (
     BLOCKS_ONLY,
     StreamIndex,

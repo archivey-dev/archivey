@@ -80,6 +80,7 @@ from archivey.internal.backends.rar_unrar import (
 )
 from archivey.internal.external.cli import terminate_process
 from archivey.internal.logs import backends as logger
+from archivey.internal.read_progress import mark_archivey_thread
 from archivey.internal.resource_usage import ResourceUsageRecorder
 
 # RAR5 MAIN archive flags and ENDARC flag (``headers5.hpp``).
@@ -514,6 +515,7 @@ class VolumeFeeder:
         return volume_name(self._volumes.count + 1).encode("ascii")
 
     def _run(self) -> None:
+        mark_archivey_thread()  # ``on_source_read`` reports wait for a caller's thread
         proc = self._proc
         # A buffered reader (``Popen`` with a buffer size), so ``read1`` returns
         # what the pipe holds without waiting for more.

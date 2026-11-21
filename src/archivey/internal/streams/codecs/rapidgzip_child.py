@@ -53,6 +53,7 @@ from archivey.exceptions import (
     exception_detail,
 )
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import mark_callers_source
 from archivey.internal.streams.child_process import (
     REAP_TIMEOUT,
     describe_exit,
@@ -65,7 +66,6 @@ from archivey.internal.streams.child_process import (
     unavailable_reason,
 )
 from archivey.internal.streams.codecs import deps
-from archivey.internal.streams.codecs.callers_source import mark_callers_source
 from archivey.internal.streams.codecs.decoder_worker import (
     RAPIDGZIP_ARG,
     parse_error_payload,
