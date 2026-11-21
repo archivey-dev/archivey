@@ -433,6 +433,13 @@ class _PassData:
     # The overrun found by the caller's read that returned the bytes up to the declared
     # size (``_read_chunk(trim=True)``): the next read raises it.
     _overrun: CorruptionError | None = None
+    # ``PartialDataRecovery.ALL`` on the caller's handle (``return_failed_chunks``).
+    _returns_failed = False
+
+    def return_failed_chunks(self) -> None:
+        """Have the caller's read that runs past the declared size return the bytes up
+        to it and raise on the next read, as the verifier does at ``ALL``."""
+        self._returns_failed = True
 
     def __init__(
         self,
@@ -1154,7 +1161,7 @@ class _PassData:
             if overrun is not None:
                 self._overrun = None
                 raise overrun
-            chunk = self._read_chunk(n, trim=True)
+            chunk = self._read_chunk(n, trim=self._returns_failed)
             if not chunk and not self.done:
                 self._finish(raise_mismatch=True)
         except ArchiveyError as exc:
@@ -1185,10 +1192,9 @@ class _PassData:
         """Up to ``n`` decoded bytes, or ``b""`` once the codec or the data ends.
 
         A chunk that runs past the declared size raises ``CorruptionError``. With
-        ``trim`` (the caller's read), it returns the bytes up to the declared size
-        first, when there are any, and keeps the error for the next read: the pass
-        checks the CRC only on the read after the data, so a member longer than its
-        declared size gives its declared bytes, as a CRC failure gives all of them."""
+        ``trim`` (the caller's read at ``PartialDataRecovery.ALL``), it returns the
+        bytes up to the declared size first, when there are any, and keeps the error
+        for the next read, as the file read's verifier does at that level."""
         if self.done or n == 0:
             return b""
         assert n > 0, "callers ask for a number of bytes"
@@ -2781,12 +2787,15 @@ class ZipForwardReader(ZipReader):
             )
         # A codec member's bytes are drawn as they decode (``_PassData._read_chunk``),
         # read or drained; a STORED member's, decoded by nothing, as the caller reads.
-        return self._member_parts(
+        parts = self._member_parts(
             stream,
             member.name,
             size=member.size,
             draw_budget=current._method() == 0,
         )
+        # The pass checks the declared size itself, below the handle's verifier.
+        parts.return_failed = current.return_failed_chunks
+        return parts
 
     @override
     def _ensure_link_target(self, member: ArchiveMember) -> None:

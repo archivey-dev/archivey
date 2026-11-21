@@ -217,7 +217,9 @@ class MemberStreamParts:
     building or adopting them closes it. ``translate`` is a codec's translator, asked
     before the reader's, or ``None``. ``stamp`` is the reader's, called with the
     member's name. ``seekable`` is ``None`` to settle it on first use. The fields from
-    ``collector`` on are ``build_member_verifier``'s arguments.
+    ``collector`` on are ``build_member_verifier``'s arguments. ``return_failed`` is
+    set after construction by a backend that checks the member's data itself, below
+    the verifier: the handle calls it under ``return_failed_chunks``.
     """
 
     __slots__ = (
@@ -233,6 +235,7 @@ class MemberStreamParts:
         "fill_size",
         "inner",
         "member_name",
+        "return_failed",
         "rewind_warning",
         "seekable",
         "size",
@@ -281,6 +284,7 @@ class MemberStreamParts:
         self.fill_size = fill_size
         self.custom_digests = custom_digests
         self.bounded = bounded
+        self.return_failed: Callable[[], None] | None = None
 
     def build_verifier(self) -> MemberVerifier | None:
         """The member's verifier, or ``None`` when there is nothing to check.
@@ -408,6 +412,9 @@ class ArchiveStreamImpl(ArchiveStream):
     # The error a ``read()`` under ``return_failed_chunks`` met after it had bytes to
     # return: the next read raises it, and a seek drops it.
     _pending_failure: ArchiveyError | None = None
+    # A backend's own check below the verifier, told to return failed chunks too
+    # (``MemberStreamParts.return_failed``).
+    _failed_hook: Callable[[], None] | None = None
 
     def __init__(
         self,
@@ -689,6 +696,8 @@ class ArchiveStreamImpl(ArchiveStream):
             assert self._verifier is None, "adopting would discard a verifier"
             if self._verifier is None:
                 self._verifier = verifier
+        if parts.return_failed is not None:
+            self._failed_hook = parts.return_failed
         if parts.translate is not None:
             self._translate = compose_translators(parts.translate, self._translate)
         if parts.member_name != self._member_name:
@@ -738,6 +747,9 @@ class ArchiveStreamImpl(ArchiveStream):
         verifier = self._verifier
         if verifier is not None:
             verifier.returns_failed_chunk = True
+        hook = self._failed_hook
+        if hook is not None:
+            hook()
 
     def _fail_open(self, e: Exception) -> NoReturn:
         """``_fail`` for a lazy open, remembering the error for a retry to raise."""
@@ -783,6 +795,8 @@ class ArchiveStreamImpl(ArchiveStream):
             self._member_name = nested._member_name
         if self._rewind_warning is None and nested._rewind_warning is not None:
             self._rewind_warning = nested._rewind_warning
+        if self._failed_hook is None:
+            self._failed_hook = nested._failed_hook
         # Adopt fused verification from the nested stream (a lazy outer has none).
         if self._verifier is None and nested._verifier is not None:
             self._verifier = nested._verifier

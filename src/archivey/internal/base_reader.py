@@ -2104,7 +2104,7 @@ class BaseArchiveReader(ArchiveReader):
         member_name = parts.member_name
         translate = parts.translate
         try:
-            return ArchiveStreamImpl(
+            stream = ArchiveStreamImpl(
                 # ``seekable=None``: settled on first use
                 # (``ArchiveStreamImpl._seek_allowed``).
                 _Opened(parts.inner, settle_seekable=parts.seekable is None),
@@ -2134,6 +2134,8 @@ class BaseArchiveReader(ArchiveReader):
             with contextlib.suppress(Exception):
                 parts.inner.close()
             raise
+        stream._failed_hook = parts.return_failed
+        return stream
 
     def _open_member_handle(self, member: ArchiveMember) -> ArchiveStreamImpl:
         """``_open_member`` as an open handle, for code that reads the member itself."""

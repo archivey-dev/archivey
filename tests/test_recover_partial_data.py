@@ -12,6 +12,7 @@ import gzip
 import io
 import lzma
 import random
+import struct
 import tarfile
 import zipfile
 from collections.abc import Iterator
@@ -323,3 +324,35 @@ def test_reader_read_raises_at_all() -> None:
             with pytest.raises(CorruptionError):
                 archive.read("bad.bin")
             assert archive.read("good.txt") == b"good"
+
+
+def _zip_longer_than_declared() -> bytes:
+    """A STORED ZIP whose ``big.bin`` holds 1 024 000 bytes and declares 1000 in both
+    headers, then ``good.txt``."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", bytes(range(256)) * 4000)
+        zf.writestr("good.txt", b"good")
+    data = bytearray(buf.getvalue())
+    struct.pack_into("<I", data, 22, 1000)
+    struct.pack_into("<I", data, data.index(b"PK\x01\x02") + 24, 1000)
+    return bytes(data)
+
+
+@pytest.mark.parametrize("how", _SOURCES)
+def test_an_overrun_read_returns_its_declared_bytes_only_at_all(how: str) -> None:
+    """A read past a member's declared size raises at the default level and returns
+    nothing; at ALL it returns the declared bytes and the next read raises. From a
+    pipe the pass checks the size itself, below the handle's verifier."""
+    data = _zip_longer_than_declared()
+    expected = (bytes(range(256)) * 4)[:1000]
+    for config in (ArchiveyConfig(), _ALL):
+        with _open(data, how, config) as archive:
+            for member, stream in archive.stream_members():
+                if member.name != "big.bin":
+                    continue
+                if config is _ALL:
+                    assert stream.read(4096) == expected
+                with pytest.raises(CorruptionError):
+                    stream.read(4096)
+                break
