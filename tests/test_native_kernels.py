@@ -19,6 +19,7 @@ import pytest
 from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
+    ArchiveyError,
     CorruptionError,
     EncryptionError,
     FormatPolicy,
@@ -49,6 +50,7 @@ from archivey.internal.streams.codecs.unix_compress_decoder import (
     LzwState,
     UnixCompressDecoder,
 )
+from tests.cab_util import CabFile, CabFolder, LzxEncoder, write_cab
 from tests.conftest import requires
 from tests.lha_util import Member, archive
 from tests.streams_util import make_unix_compress
@@ -935,3 +937,120 @@ def test_squashfs_lzo_uses_the_kernel_and_reads_the_same(name: str) -> None:
             )
     assert results[0] == results[1]
     assert results[0]
+
+
+# ── LZX (CAB) ─────────────────────────────────────────────────────────────────────────
+
+
+def _cab_results(raw: bytes, config: ArchiveyConfig | None, order: list[str]) -> list:
+    """Each member read in ``order``: its bytes, or the error it raised."""
+    results: list = []
+    try:
+        reader = open_archive(io.BytesIO(raw), config=config)
+    except ArchiveyError as exc:
+        return [(type(exc).__name__, str(exc))]
+    with reader:
+        for name in order:
+            try:
+                results.append(reader.read(name))
+            except ArchiveyError as exc:
+                results.append((type(exc).__name__, str(exc)))
+    return results
+
+
+def _lzx_cabs() -> list[tuple[str, bytes, list[str]]]:
+    """Cabinets of one LZX folder each: windows, block types, E8, with and without
+    block checksums, blocks shorter and longer than a frame."""
+    rng = random.Random(23)
+    text = b"".join(b"line %d of the cabinet\n" % i for i in range(9000))
+    code = bytes(rng.choice([0xE8, 0x00, 0x01, 0xFF, 0x90]) for _ in range(70000))
+    files = [
+        CabFile("a.txt", text),
+        CabFile("b.bin", rng.randbytes(40000)),
+        CabFile("c.exe", code),
+    ]
+    names = [f.name for f in files]
+    cabs = []
+    for window, blocks, e8, checksums in (
+        (15, ("verbatim",), 0, True),
+        (16, ("aligned", "uncompressed"), 0, False),
+        (17, ("verbatim", "uncompressed", "aligned"), 12_000_000, True),
+        (21, ("verbatim",), 12_000_000, False),
+    ):
+        encoder = LzxEncoder(
+            window_bits=window, blocks=blocks, block_size=20001, e8_file_size=e8
+        )
+        folder = CabFolder("lzx", window, encoder, checksums=checksums)
+        cabs.append((f"lzx-{window}", write_cab(files, [folder]), names))
+    return cabs
+
+
+@needs_codecs
+def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
+    """Every member of clean, damaged and cut cabinets gives the same bytes or the
+    same error with the kernel as with the Python decoder, in order and backwards.
+    A damaged block whose checksum fails raises from the frame that needs it, though
+    the kernel was given that block earlier."""
+    assert native.lzx(frozenset(), isolated=False) is not None
+    rng = random.Random(29)
+    for _, raw, names in _lzx_cabs():
+        start = raw.index(b"a.txt\0") + 32  # past the file table, into the blocks
+        variants = [raw, raw[: len(raw) // 2], raw[: len(raw) - 3]]
+        for _ in range(25):
+            bad = bytearray(raw)
+            for _ in range(rng.randint(1, 3)):
+                bad[rng.randrange(start, len(bad))] ^= rng.randrange(1, 256)
+            variants.append(bytes(bad))
+        for variant in variants:
+            for order in (names, names[::-1]):
+                assert _cab_results(variant, None, order) == _cab_results(
+                    variant, OFF, order
+                )
+
+
+def test_cab_lzx_kernel_is_not_used_when_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, lzx=1)
+    assert native.lzx(frozenset(), isolated=False) is not None
+    assert native.lzx(EXCLUDED, isolated=False) is None
+    assert native.lzx(frozenset(), isolated=True) is None
+    _fake(monkeypatch, lzx=0)
+    assert native.lzx(frozenset(), isolated=False) is None
+
+
+class _FakeLzx:
+    """Stands in for ``archivey_codecs.lzx.Decompressor``: panics on any call."""
+
+    built: ClassVar[int] = 0
+
+    def __init__(self, window_bits: int, *, output_size: int | None = None) -> None:
+        type(self).built += 1
+
+    needs_input = True
+    eof = False
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        raise PanicException("index out of bounds")
+
+    flush = decompress
+
+
+def test_a_panic_in_a_cab_lzx_read_is_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _fake(monkeypatch, lzx=1)
+    module.lzx = types.SimpleNamespace(Decompressor=_FakeLzx)
+    monkeypatch.setattr(_FakeLzx, "built", 0)
+    _, raw, names = _lzx_cabs()[0]
+    with open_archive(io.BytesIO(raw)) as reader:
+        with pytest.raises(CorruptionError, match="LZX decoder failed") as info:
+            reader.read(names[0])
+        assert isinstance(info.value.__cause__, PanicException)
+    assert _FakeLzx.built
+    isolated = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    for config in (OFF, isolated):
+        _FakeLzx.built = 0
+        with open_archive(io.BytesIO(raw), config=config) as reader:
+            assert reader.read(names[0]).startswith(b"line 0 ")
+        assert _FakeLzx.built == 0

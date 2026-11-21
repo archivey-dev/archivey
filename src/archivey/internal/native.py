@@ -14,7 +14,7 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X), the call's ``process_isolation``
+- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X, LZX), the call's ``process_isolation``
   is not ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python
   twin keeps that setting's promise that no native decoder runs in this process.
 
@@ -44,6 +44,7 @@ MIN_REVISIONS: dict[str, int] = {
     "crc16_arc": 1,
     "lzo1x": 1,
     "lzw": 1,
+    "lzx": 1,
     "riscv": 1,
     "zipcrypto": 1,
 }
@@ -439,5 +440,176 @@ def lzw(
                 nine_bit_widens=nine_bit_widens,
             )
         return NativeLzw(module, d, header_in_stream=max_width is None)
+
+    return new
+
+
+# ── LZX ───────────────────────────────────────────────────────────────────────────────
+
+
+class NativeLzx:
+    """archivey-codecs' LZX decoder in the shape of the Python ``LzxDecoder``:
+    :meth:`decode_frame` returns the next frame, pulling input through ``more`` (the
+    next data block, or ``None`` after the last) and pushing it into the kernel.
+
+    The kernel tries a frame only once about twice the last frame's input is queued,
+    so it asks for blocks the Python decoder has not pulled yet. ``more`` raises for
+    a damaged block (its checksum fails), so an error from it is held back: the
+    Python decoder raises it only from the frame that first reads that block. From
+    then on each frame is decoded on a restored copy given zero bytes past the input,
+    and kept only if the copy read none of them (:meth:`_from_held`).
+    """
+
+    __slots__ = (
+        "_d",
+        "_ended",
+        "_held",
+        "_input",
+        "_input_at",
+        "_latch",
+        "_module",
+        "_more",
+    )
+
+    def __init__(
+        self,
+        module: ModuleType,
+        window_bits: int,
+        more: Callable[[], bytes | None],
+        output_size: int | None,
+    ) -> None:
+        self._module = module
+        self._latch = Latch("LZX")
+        with codec_errors(module, "LZX"):
+            self._d = module.lzx.Decompressor(window_bits, output_size=output_size)
+        self._more = more
+        # The input from ``_input_at`` on: what the kernel holds but a saved state
+        # leaves out, so that a restored copy can be given it again.
+        self._input = bytearray()
+        self._input_at = 0
+        self._ended = False  # ``more`` returned ``None`` and the kernel was flushed
+        self._held: Exception | None = None  # what ``more`` raised
+
+    @property
+    def _fed(self) -> int:
+        return self._input_at + len(self._input)
+
+    def decode_frame(self, frame_size: int) -> bytes:
+        """The next frame: ``frame_size`` bytes, 32 KiB except the last, as the
+        kernel's ``output_size`` sets them."""
+        with self._latch.guard(), codec_errors(self._module, "LZX"):
+            while True:
+                if self._held is not None:
+                    return self._from_held(frame_size)
+                d = self._d
+                out = (
+                    d.flush(frame_size)
+                    if self._ended
+                    else (d.decompress(b"", frame_size))
+                )
+                if out:
+                    self._trim()
+                    return out
+                if self._ended or d.eof:
+                    # The Python decoder's refusal of a frame past its input's end.
+                    raise TruncatedError("LZX stream ends before its output")
+                try:
+                    data = self._more()
+                except Exception as exc:  # noqa: BLE001 - raised when a frame reads it
+                    self._held = exc
+                    continue
+                if data is None:
+                    self._ended = True
+                    continue
+                self._input += data
+                out = d.decompress(data, frame_size)
+                if out:
+                    self._trim()
+                    return out
+
+    def _trim(self) -> None:
+        """Drop the input a saved state of the kernel already covers."""
+        drop = self._d.total_in - self._input_at
+        if drop > 0:
+            del self._input[:drop]
+            self._input_at += drop
+
+    def _restored(self, state: object) -> _LzxDecompressor:
+        """A decoder from ``state``, given the input after it that it lacks."""
+        d = self._module.lzx.Decompressor.from_state(state)
+        d.decompress(bytes(self._input[d.total_in - self._input_at :]), 0)
+        return d
+
+    def _from_held(self, frame_size: int) -> bytes:
+        """The next frame once ``more`` has raised. A restored copy is given the
+        input and zero bytes past it, as many as a frame can read: it decodes the
+        frame then, as the kernel waits for more input otherwise. When the copy read
+        none of the zero bytes, the Python decoder would not have pulled the damaged
+        block for this frame either, and the frame is kept. Else that block's error
+        raises, as the Python decoder raises it."""
+        assert self._held is not None
+        held = self._held
+        trial = self._restored(self._d.getstate())
+        try:
+            out = trial.decompress(_LZX_PROBE, frame_size)
+        except self._module.TruncatedDataError:
+            raise held from None
+        except self._module.CodecError as exc:
+            if not self._fails_inside_input(exc):
+                raise held from None
+            raise  # damage inside the input given, which the Python decoder meets too
+        if not out or trial.total_in > self._fed:
+            raise held
+        # Kept: the decoder goes on from after this frame, without the zero bytes.
+        self._d = self._restored(trial.getstate())
+        self._trim()
+        return out
+
+    def _fails_inside_input(self, error: Exception) -> bool:
+        """Whether ``error``, met by a copy given zero bytes past the input, comes
+        from the input itself: a copy given ``0xFF`` bytes instead meets the same
+        error. An error the probe bytes caused depends on what they are."""
+        other = self._restored(self._d.getstate())
+        try:
+            other.decompress(_LZX_OTHER_PROBE, 0)
+        except self._module.CodecError as exc:
+            return type(exc) is type(error) and str(exc) == str(error)
+        return False
+
+
+class _LzxDecompressor(Protocol):
+    """The part of ``archivey_codecs.lzx.Decompressor`` :class:`NativeLzx` uses."""
+
+    eof: bool
+    total_in: int
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes: ...
+    def flush(self, max_length: int = -1) -> bytes: ...
+    def getstate(self) -> object: ...
+
+
+# Zero bytes past the input for a restored copy: more than the two frames' input the
+# kernel waits for before it tries a frame (an uncompressed frame is 32 KiB and its
+# block header), so the copy decodes the next frame from them.
+_LZX_PROBE = bytes(1 << 17)
+_LZX_OTHER_PROBE = b"\xff" * (1 << 17)
+
+
+def lzx(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[int, Callable[[], bytes | None], int | None], NativeLzx] | None:
+    """A constructor of :class:`NativeLzx` taking ``(window_bits, more,
+    output_size)``, or ``None`` to use the Python ``LzxDecoder``. ``isolated`` as
+    for :func:`branch_filter`."""
+    if isolated:
+        return None
+    module = kernels("lzx", excluded)
+    if module is None:
+        return None
+
+    def new(
+        window_bits: int, more: Callable[[], bytes | None], output_size: int | None
+    ) -> NativeLzx:
+        return NativeLzx(module, window_bits, more, output_size)
 
     return new

@@ -15,7 +15,7 @@ SquashFS and ar are.
 | Source | A file or a stream that can seek. Not a pipe: the file table points at folders anywhere in the file |
 | Listing cost | From the index (the `CFFILE` table) |
 | Access cost | `SOLID` when any folder is compressed, else `DIRECT` |
-| Core dependencies | None. MSZIP through stdlib `zlib`; LZX through `internal/streams/codecs/lzx_decoder.py`, archivey's own, in Python |
+| Core dependencies | None. MSZIP through stdlib `zlib`; LZX through `internal/streams/codecs/lzx_decoder.py`, archivey's own, in Python, or `archivey-codecs`' port of it when installed |
 | Encryption | None in the format |
 | Name encoding | Bytes. UTF-8 first, then `encoding=`, then escaped, as in every format. The `_A_NAME_IS_UTF` attribute adds nothing: valid UTF-8 already wins |
 | Checksums | A 32-bit XOR checksum per data block, over its stored bytes and two size fields; 0 means none |
@@ -167,6 +167,16 @@ can still be refused. Stored bytes may read the two zero bytes too: in a folder 
 block checksums, an uncompressed block up to 2 bytes short decodes with zeros for the
 missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at about
 5-10 MB/s.
+
+When `archivey-codecs` is installed and allowed, its Rust port of this decoder runs
+instead (`native.NativeLzx`), with the same output and errors; not yet under
+`NATIVE_DECODERS`. The kernel takes input pushed to it, and tries a frame only once
+about two frames' input is queued, so it is given blocks the Python decoder has not
+pulled yet. A block whose checksum fails is therefore held back: the Python decoder
+raises its error only from the frame that first reads it. Until then each frame is
+decoded on a restored copy given zero bytes past the input, and kept only if the copy
+read none of them. `tests/test_native_kernels.py` compares the two on clean, cut and
+damaged cabinets, and `tests/test_cab.py` runs with each decoder.
 
 ## 3. Tests
 

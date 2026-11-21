@@ -33,8 +33,9 @@ from archivey import (
 )
 from archivey.diagnostics import UnexpectedNameDuplicateContext
 from archivey.exceptions import DiagnosticRaisedError
+from archivey.internal import native
 from archivey.internal.backends import cab_reader
-from archivey.internal.streams.codecs import lzx_decoder
+from archivey.internal.streams.codecs import deps, lzx_decoder
 from archivey.internal.streams.codecs.lzx_decoder import LzxDecoder
 from tests.cab_util import (
     FRAME,
@@ -96,6 +97,25 @@ LZX_CASES = {
     "lzx-no-runs": CabFolder("lzx", 16, LzxEncoder(window_bits=16, use_runs=False)),
 }
 CASES = {"stored": CabFolder("none"), "mszip": CabFolder("mszip"), **LZX_CASES}
+
+
+@pytest.fixture(
+    autouse=True,
+    params=[
+        "python",
+        pytest.param(
+            "archivey-codecs",
+            marks=pytest.mark.skipif(
+                not deps.archivey_codecs.available(), reason="needs archivey-codecs"
+            ),
+        ),
+    ],
+)
+def lzx_kernel(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Every test with each LZX decoder: archivey's own, and archivey-codecs'."""
+    if request.param == "python":
+        monkeypatch.setattr(native, "lzx", lambda *_a, **_k: None)
+    return request.param
 
 
 def _cab(folder: CabFolder, files: list[CabFile] = FILES) -> bytes:
@@ -206,14 +226,18 @@ def test_members_read_in_order_decode_each_frame_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
-    real = LzxDecoder.decode_frame
+    python = LzxDecoder.decode_frame
+    kernel = native.NativeLzx.decode_frame
 
-    def counting(self: LzxDecoder, size: int) -> bytes:
+    def counting(self: LzxDecoder | native.NativeLzx, size: int) -> bytes:
         nonlocal calls
         calls += 1
-        return real(self, size)
+        if isinstance(self, LzxDecoder):
+            return python(self, size)
+        return kernel(self, size)
 
     monkeypatch.setattr(LzxDecoder, "decode_frame", counting)
+    monkeypatch.setattr(native.NativeLzx, "decode_frame", counting)
     raw = _case("lzx-16")
     with open_archive(io.BytesIO(raw)) as reader:
         for name in NAMES:
@@ -471,12 +495,15 @@ def test_a_refused_block_fails_only_the_members_that_reach_it(
 
 def test_an_empty_member_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = 0
-    real = LzxDecoder.decode_frame
+    python = LzxDecoder.decode_frame
+    kernel = native.NativeLzx.decode_frame
 
-    def counting(self: LzxDecoder, size: int) -> bytes:
+    def counting(self: LzxDecoder | native.NativeLzx, size: int) -> bytes:
         nonlocal calls
         calls += 1
-        return real(self, size)
+        if isinstance(self, LzxDecoder):
+            return python(self, size)
+        return kernel(self, size)
 
     monkeypatch.setattr(LzxDecoder, "decode_frame", counting)
     files = [CabFile("a", TEXT), CabFile("empty", b"")]
