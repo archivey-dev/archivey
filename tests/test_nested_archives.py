@@ -287,7 +287,7 @@ def _walk(
         return
     if forward_only and fmt == "zip" and config.use_rapidgzip is AcceleratorMode.ON:
         with (
-            archivey.open_archive(source, streaming=True, config=config) as reader,
+            archivey.open_archive(source, pipe=True, config=config) as reader,
             pytest.raises(StreamNotSeekableError, match="use_rapidgzip"),
         ):
             for _member, stream in reader.stream_members():
