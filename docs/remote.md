@@ -162,8 +162,10 @@ with archivey.open_archive(fsspec.open("s3://bucket/data.zip"), config=config) a
     archive.members()
 ```
 
-The callback runs on your thread, between two reads of the answer, so raising an exception there
-stops a slow download. The [command-line tool](cli.md) uses it to show a status line.
+The callback runs on your thread, so raising an exception there stops the read. Over HTTP it also
+runs between two reads of an answer, which stops a slow download partway. On other stores, such as
+S3, the request in progress finishes first, and the exception stops the read before the next one.
+The [command-line tool](cli.md) uses the callback to show a status line.
 
 ## What archivey takes from an `OpenFile`
 

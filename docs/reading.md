@@ -202,8 +202,8 @@ Use it when the archive doesn't record its members' sizes in advance. A `.tar.xz
 so `ExtractionProgress.total_bytes_estimated` is `None` and `on_progress` can't give a
 percentage, but a pass over its members reads the file from start to end. `position` is where the
 latest read ended. It goes back when a format reads out of order: a ZIP reads its index at the
-end first, and a `.tar.xz` reads its last bytes when it is opened. `bytes_read` counts every byte
-read, a part read twice included, so it can pass `size`.
+end first, and a `.tar.xz` reads its last bytes when it is opened, so the example's first line
+says 100%. `bytes_read` counts every byte read, a part read twice included, so it can pass `size`.
 
 The callback runs inside the read that called it, on your thread. To stop a slow read, raise an
 exception there: the call to archivey that read raises it unchanged, and so does every later read
