@@ -4190,12 +4190,13 @@ class ZipReader(BaseArchiveReader):
             raw = self._open_raw_payload(loc, member)
             try:
                 header = self._read_zipcrypto_header(raw, loc, member.name)
+                # The key state may be archivey-codecs', which can fail too.
+                keys, check = keys_after_header(
+                    password, header, self._stream_config.excluded_libraries
+                )
             except BaseException:
                 raw.close()
                 raise
-            keys, check = keys_after_header(
-                password, header, self._stream_config.excluded_libraries
-            )
             if check != check_byte:
                 raw.close()
                 raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)

@@ -64,11 +64,14 @@ class _FakeDecryptor:
     """Stands in for ``archivey_codecs.zipcrypto.Decryptor``: Python's keys, recorded.
 
     With ``panic`` set, decrypting member data (anything but the 12-byte header)
-    raises the fake panic.
+    raises the fake panic; with ``panic_header`` set, decrypting the header does.
+    ``calls`` counts ``decrypt`` and ``copy`` calls.
     """
 
     built: ClassVar[list[bytes]] = []
     panic: ClassVar[bool] = False
+    panic_header: ClassVar[bool] = False
+    calls: ClassVar[int] = 0
 
     def __init__(self, password: bytes, keys: zipcrypto.ZipCryptoKeys | None = None):
         if keys is None:
@@ -78,10 +81,13 @@ class _FakeDecryptor:
         self._keys = keys
 
     def copy(self) -> _FakeDecryptor:
+        type(self).calls += 1
         return _FakeDecryptor(self._password, self._keys.copy())
 
     def decrypt(self, data: bytes) -> bytes:
-        if self.panic and len(data) != zipcrypto.ZIPCRYPTO_HEADER_LEN:
+        type(self).calls += 1
+        header = len(data) == zipcrypto.ZIPCRYPTO_HEADER_LEN
+        if self.panic_header if header else self.panic:
             raise PanicException("index out of bounds")
         return self._keys.decrypt(data)
 
@@ -93,17 +99,20 @@ class _FakeBranch:
     decode_with: ClassVar[object] = None
     built: ClassVar[list[int]] = []
     panic: ClassVar[bool] = False
+    calls: ClassVar[int] = 0
 
     def __init__(self, start_offset: int = 0) -> None:
         type(self).built.append(start_offset)
         self._python = PythonBranch(self.decode_with, start_offset)  # type: ignore[arg-type]
 
     def decode(self, data: bytes) -> bytes:
+        type(self).calls += 1
         if self.panic:
             raise PanicException("attempt to subtract with overflow")
         return self._python.decode(data)
 
     def flush(self) -> bytes:
+        type(self).calls += 1
         return self._python.flush()
 
 
@@ -130,8 +139,15 @@ class _FakeLzw:
     def __init__(self, **kwargs: object) -> None:
         type(self).built += 1
 
+    calls: ClassVar[int] = 0
+
     def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        type(self).calls += 1
         raise PanicException("index out of bounds")
+
+    def flush(self, max_length: int = -1) -> bytes:
+        type(self).calls += 1
+        return b""
 
 
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
@@ -145,6 +161,10 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
     monkeypatch.setattr(_FakeBranch, "built", [])
     monkeypatch.setattr(_FakeBranch, "panic", False)
     monkeypatch.setattr(_FakeLzw, "built", 0)
+    monkeypatch.setattr(_FakeLzw, "calls", 0)
+    monkeypatch.setattr(_FakeBranch, "calls", 0)
+    monkeypatch.setattr(_FakeDecryptor, "panic_header", False)
+    monkeypatch.setattr(_FakeDecryptor, "calls", 0)
     module = types.SimpleNamespace(
         KERNELS=kernels,
         crc16_arc=crc16_arc,
@@ -330,6 +350,25 @@ def test_an_old_branch_kernel_is_not_used(monkeypatch: pytest.MonkeyPatch) -> No
     assert branch_maker(0x03, 0, excluded=frozenset(), natives=IN_PROCESS) is None
 
 
+def test_a_branch_filter_refuses_every_call_after_a_panic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, arm64=1)
+    make = branch_maker(FILTER_ARM64, 0, excluded=frozenset(), natives=IN_PROCESS)
+    assert make is not None
+    branch = make()
+    assert branch.decode(b"\x00" * 8) == b"\x00" * 8
+    _FakeBranch.panic = True
+    with pytest.raises(CorruptionError, match="ARM64 decoder failed") as info:
+        branch.decode(b"\x00" * 8)
+    calls = _FakeBranch.calls
+    for again in (branch.flush, lambda: branch.decode(b"\x00" * 8)):
+        with pytest.raises(CorruptionError) as repeat:
+            again()
+        assert repeat.value is info.value
+    assert _FakeBranch.calls == calls
+
+
 def test_a_7z_riscv_read_uses_the_kernel_unless_switched_off_or_isolated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -371,6 +410,23 @@ def test_lzw_uses_the_kernel_unless_switched_off_or_isolated(
     assert native.lzw(frozenset(), isolated=False) is None
 
 
+def test_an_lzw_state_refuses_every_call_after_a_panic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, lzw=1)
+    make = native.lzw(frozenset(), isolated=False)
+    assert make is not None
+    state = make()
+    with pytest.raises(CorruptionError, match="LZW decoder failed") as info:
+        state.feed(b"\x1f\x9d\x90abc")
+    assert _FakeLzw.calls == 1
+    for again in (state.flush, lambda: state.feed(b"more")):
+        with pytest.raises(CorruptionError) as repeat:
+            again()
+        assert repeat.value is info.value
+    assert _FakeLzw.calls == 1
+
+
 @requires("ncompress")
 def test_a_panic_in_a_z_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake(monkeypatch, lzw=1)
@@ -391,6 +447,56 @@ def test_a_panic_in_a_z_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> N
         ) as stream:
             assert stream.read() == data
         assert _FakeLzw.built == 0
+
+
+def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a panic the kernel's state may be half updated: the wrapper raises the
+    same error again and never calls the kernel object."""
+    _fake(monkeypatch, zipcrypto=1)
+    keys = zipcrypto.new_keys(b"pw")
+    _FakeDecryptor.panic = True
+    with pytest.raises(CorruptionError, match="ZipCrypto decoder failed") as info:
+        keys.decrypt(b"x" * 100)
+    calls = _FakeDecryptor.calls
+    for again in (lambda: keys.decrypt(b"x" * 100), keys.copy):
+        with pytest.raises(CorruptionError) as repeat:
+            again()
+        assert repeat.value is info.value
+    assert _FakeDecryptor.calls == calls
+    # Errors other than a panic leave the state usable.
+    _FakeDecryptor.panic = False
+    other = zipcrypto.new_keys(b"pw")
+    with pytest.raises(TypeError):
+        other.decrypt(None)  # type: ignore[arg-type]
+    assert other.decrypt(b"abc") == zipcrypto.ZipCryptoKeys(b"pw").decrypt(b"abc")
+
+
+def test_a_panic_on_the_zipcrypto_header_closes_the_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from archivey.internal.backends.zip_reader import ZipReader
+
+    _fake(monkeypatch, zipcrypto=1)
+    _FakeDecryptor.panic_header = True
+    opened: list[io.IOBase] = []
+    original = ZipReader._open_raw_payload
+
+    def track(self: ZipReader, loc: object, member: object) -> object:
+        raw = original(self, loc, member)  # type: ignore[arg-type]
+        opened.append(raw)  # type: ignore[arg-type]
+        return raw
+
+    monkeypatch.setattr(ZipReader, "_open_raw_payload", track)
+    raw = build_zipcrypto_zip(b"pw", b"a.txt", b"x" * 5000)
+    with (
+        pytest.raises(CorruptionError, match="ZipCrypto decoder failed"),
+        open_archive(io.BytesIO(raw), password=b"pw") as reader,
+    ):
+        reader.read("a.txt")
+    assert opened
+    assert all(stream.closed for stream in opened)
 
 
 def test_only_a_panic_cause_keeps_corruption_from_the_password_check() -> None:
