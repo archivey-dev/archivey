@@ -329,6 +329,18 @@ def test_lzx_damage_raises_again() -> None:
             d.decompress(_LZX_BAD)
 
 
+def test_lzx_error_in_says_how_far_the_failed_frame_read() -> None:
+    """The bad block header is in the first word after the 1-bit E8 flag: the frame
+    fails having read two words, and padding past the input does not count."""
+    d = lzx.Decompressor(15, output_size=100)
+    assert d.error_in is None
+    with pytest.raises(archivey_codecs.CorruptDataError):
+        d.decompress(_LZX_BAD + bytes(100_000))
+    assert d.error_in is not None
+    assert 2 <= d.error_in <= 8
+    assert d.total_in == 0  # the failed frame is undone
+
+
 def test_lzx_window_range() -> None:
     with pytest.raises(archivey_codecs.CorruptDataError, match="window"):
         lzx.Decompressor(14)

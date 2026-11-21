@@ -506,11 +506,13 @@ def test_an_empty_member_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
         return kernel(self, size)
 
     monkeypatch.setattr(LzxDecoder, "decode_frame", counting)
+    monkeypatch.setattr(native.NativeLzx, "decode_frame", counting)
     files = [CabFile("a", TEXT), CabFile("empty", b"")]
     with open_archive(io.BytesIO(_cab(CabFolder("lzx"), files))) as reader:
         assert reader.read("empty") == b""
         assert calls == 0
         assert reader.read("a") == TEXT
+        assert calls > 0  # each decoder's frames are counted
 
 
 def test_the_lzx_window_counts_against_max_decoder_memory() -> None:

@@ -543,19 +543,26 @@ class NativeLzx:
     def _from_held(self, frame_size: int) -> bytes:
         """The next frame once ``more`` has raised. A restored copy is given the
         input and zero bytes past it, as many as a frame can read: it decodes the
-        frame then, as the kernel waits for more input otherwise. When the copy read
-        none of the zero bytes, the Python decoder would not have pulled the damaged
-        block for this frame either, and the frame is kept. Else that block's error
-        raises, as the Python decoder raises it."""
+        frame then, as the kernel waits for more input otherwise. The Python decoder
+        pulls the next block when it needs a word past the input given, so the copy
+        decides as it would:
+
+        - the frame decoded, and the copy read no further than the input given: the
+          frame is kept;
+        - the frame failed before the copy read past the input given (the kernel's
+          ``error_in``): the Python decoder meets the same damage, so its error
+          raises;
+        - otherwise the Python decoder would have pulled the damaged block first,
+          so that block's error raises.
+        """
         assert self._held is not None
         held = self._held
         trial = self._restored(self._d.getstate())
         try:
             out = trial.decompress(_LZX_PROBE, frame_size)
-        except self._module.TruncatedDataError:
-            raise held from None
-        except self._module.CodecError as exc:
-            if not self._fails_inside_input(exc):
+        except self._module.CodecError:
+            reached = trial.error_in
+            if reached is None or reached > self._fed:
                 raise held from None
             raise  # damage inside the input given, which the Python decoder meets too
         if not out or trial.total_in > self._fed:
@@ -565,23 +572,13 @@ class NativeLzx:
         self._trim()
         return out
 
-    def _fails_inside_input(self, error: Exception) -> bool:
-        """Whether ``error``, met by a copy given zero bytes past the input, comes
-        from the input itself: a copy given ``0xFF`` bytes instead meets the same
-        error. An error the probe bytes caused depends on what they are."""
-        other = self._restored(self._d.getstate())
-        try:
-            other.decompress(_LZX_OTHER_PROBE, 0)
-        except self._module.CodecError as exc:
-            return type(exc) is type(error) and str(exc) == str(error)
-        return False
-
 
 class _LzxDecompressor(Protocol):
     """The part of ``archivey_codecs.lzx.Decompressor`` :class:`NativeLzx` uses."""
 
     eof: bool
     total_in: int
+    error_in: int | None
 
     def decompress(self, data: bytes, max_length: int = -1) -> bytes: ...
     def flush(self, max_length: int = -1) -> bytes: ...
@@ -592,7 +589,6 @@ class _LzxDecompressor(Protocol):
 # kernel waits for before it tries a frame (an uncompressed frame is 32 KiB and its
 # block header), so the copy decodes the next frame from them.
 _LZX_PROBE = bytes(1 << 17)
-_LZX_OTHER_PROBE = b"\xff" * (1 << 17)
 
 
 def lzx(
