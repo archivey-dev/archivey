@@ -2290,8 +2290,9 @@ class SourceProgress:
 
     A local file or stream reports about once per MiB read
     (``ArchiveyConfig.source_read_step``), or for every read. A URL source
-    (an ``fsspec.core.OpenFile``) reports before and after each range request, and only
-    then are the ``request_*`` fields and :attr:`requests` set.
+    (an ``fsspec.core.OpenFile``) reports before and after each range request, and over
+    HTTP about once per MiB of the answer as it comes in; only then are the
+    ``request_*`` fields and :attr:`requests` set.
     """
 
     name: str | None
@@ -2304,7 +2305,8 @@ class SourceProgress:
 
     bytes_read: int
     """Bytes taken from the file so far. A part read twice counts twice, so this may
-    pass :attr:`size`. For a URL source, the bytes the requests returned."""
+    pass :attr:`size`. For a URL source, the bytes the requests returned, the current
+    request's so far included."""
 
     position: int
     """Where in the file the latest read ended. It moves backward when a format reads
