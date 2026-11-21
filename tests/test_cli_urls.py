@@ -1084,6 +1084,23 @@ def test_http_a_body_longer_than_its_declared_span_is_refused(
         src.close()
 
 
+def test_http_a_206_body_shorter_than_declared_is_refused(
+    http_base: str, reporting: None
+) -> None:
+    # The body ends 10 000 bytes in, not on a chunk boundary: the short last chunk is
+    # the body's end, so the reported arm makes no report for it (the teardown checks
+    # that each report inside an answer comes after whole chunks).
+    _Handler.files["/big.bin"] = bytes(range(256)) * 1024
+    _Handler.body_206[0] = b"x" * 10_000
+    src = _range_source(f"{http_base}/big.bin")
+    try:
+        src.seek(100_000)
+        with pytest.raises(OSError, match="sent 10000"):
+            src.read(20_000)
+    finally:
+        src.close()
+
+
 def test_http_a_valid_short_range_is_continued(http_base: str, reporting: None) -> None:
     # The server answers each range with at most 4 KiB, as RFC 9110 allows: a read
     # longer than that asks for the rest from where each answer stopped.

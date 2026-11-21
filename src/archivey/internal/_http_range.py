@@ -267,9 +267,11 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
                 if not chunk:
                     break
                 out += chunk
-                if len(out) < body.complete:
-                    # On the caller's thread, between two reads of the body. Not
-                    # once the body is complete: the request's end report follows.
+                if len(chunk) == n and len(out) < body.complete:
+                    # On the thread that sent the request, between two reads of the
+                    # body. Not once the body is complete, nor after a short chunk,
+                    # which is its end: the request's end report or its error
+                    # follows.
                     on_received(len(out))
         except BaseException as exc:
             sync(fs.loop, finish, body, exc)
