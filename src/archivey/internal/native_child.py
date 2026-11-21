@@ -26,6 +26,7 @@ from archivey.internal import logs
 from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.decoder_child import (
     DecoderChild,
+    DecoderChildImportError,
     DecoderChildStartError,
     decoder_child_unavailable_reason,
     isolation_error,
@@ -58,6 +59,9 @@ class ChildUnsupportedDataError(ChildCodecError):
 
 
 _ERRORS: dict[tuple[str, str], type[Exception]] = {
+    # ``_codecs`` is the ``__module__`` PyO3 gives the exceptions the extension module
+    # creates (``create_exception!(_codecs, ...)`` in lib.rs), not the package's name;
+    # ``test_the_packages_errors_have_the_module_the_child_matches`` checks it.
     ("_codecs", "CodecError"): ChildCodecError,
     ("_codecs", "CorruptDataError"): ChildCorruptDataError,
     ("_codecs", "TruncatedDataError"): ChildTruncatedDataError,
@@ -237,12 +241,20 @@ _table: list[dict[str, int]] = []
 
 def open_kernels(excluded: frozenset[OptionalLibrary]) -> ChildCodecs | None:
     """archivey-codecs in decoder children, or ``None`` when the call's policy turns it
-    off (``excluded``), it is not installed, or no child can start or import it."""
+    off (``excluded``), it is not installed, or no child can start or import it.
+
+    A failure is remembered for the rest of the process, whatever its cause (no
+    interpreter, a refused start, an import that fails in the child): without that,
+    every stream built would start a child only to see it fail, one per CAB folder or
+    SquashFS block. An import failure is recorded on ``deps.archivey_codecs`` and logged
+    once at WARNING, as for compress-utils; the others once at DEBUG."""
     if OptionalLibrary.ARCHIVEY_CODECS in excluded:
         return None
     if not deps.archivey_codecs.available():
         return None
     if not _table:
+        if _failed or deps.archivey_codecs.child_import_failed:
+            return None
         table = _read_table()
         if table is None:
             return None
@@ -259,6 +271,10 @@ def _read_table() -> dict[str, int] | None:
         return None
     try:
         child = DecoderChild(_CODEC, known=_ERRORS)
+    except DecoderChildImportError as exc:
+        _failed.append(str(exc))
+        deps.archivey_codecs.failed_in_child(exc)
+        return None
     except DecoderChildStartError as exc:
         _no_child(str(exc))
         return None
@@ -276,14 +292,12 @@ def _read_table() -> dict[str, int] | None:
     return cast("dict[str, int]", table)
 
 
-# Whether :func:`_no_child` has logged, so that it logs once per process.
-_logged: list[bool] = []
+# Why no child could run archivey-codecs, once one failed (see :func:`open_kernels`).
+_failed: list[str] = []
 
 
 def _no_child(reason: str) -> None:
-    if _logged:
-        return
-    _logged.append(True)
+    _failed.append(reason)
     logs.streams.debug(
         "archivey-codecs cannot run in a decoder process (%s), so archivey uses its "
         "Python decoders",

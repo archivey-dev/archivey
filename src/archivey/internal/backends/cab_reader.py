@@ -659,8 +659,12 @@ class CabReader(IndexedReader[_Location]):
         return _FolderStream(self, index, folder, table, 0)
 
     def _park(self, stream: _FolderStream) -> None:
+        # Two members open at once (``concurrent_operations``) can both park: the one
+        # replaced gives back its decoder child now.
         with self._lock:
-            self._parked = stream
+            old, self._parked = self._parked, stream
+        if old is not None and old is not stream:
+            old.release()
 
     @override
     def close(self) -> None:

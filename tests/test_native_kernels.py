@@ -6,6 +6,7 @@ installed. The read tests use the real package and skip without it.
 
 from __future__ import annotations
 
+import gc
 import io
 import logging
 import random
@@ -1542,32 +1543,93 @@ def test_no_child_means_the_python_twin(
     how: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """When no child can run archivey-codecs, the Python twin decodes in this
-    process: it is not native, so NATIVE_DECODERS' promise holds."""
+    process: it is not native, so NATIVE_DECODERS' promise holds. The failure is
+    remembered, so later streams start no child to see it fail again."""
     _fake(monkeypatch, lzw=1)
     monkeypatch.setattr(native_child, "_table", [])
-    monkeypatch.setattr(native_child, "_logged", [])
-    if how == "no child":
-        monkeypatch.setattr(
-            native_child, "decoder_child_unavailable_reason", lambda _: "frozen"
-        )
-    else:
-        error = (
-            DecoderChildStartError
-            if how == "start fails"
-            else decoder_child.DecoderChildImportError
-        )
+    monkeypatch.setattr(native_child, "_failed", [])
+    asked: list[str] = []
 
-        def refuse(*args: object, **kwargs: object) -> NoReturn:
-            raise error("cannot start the decoder process: no")
+    def unavailable(name: str) -> str | None:
+        asked.append(name)
+        return "frozen" if how == "no child" else None
 
-        monkeypatch.setattr(native_child, "DecoderChild", refuse)
-    with caplog.at_level(logging.DEBUG, logger="archivey"):
-        assert native.lzw(frozenset(), isolated=True) is None
-        assert native.lzw(frozenset(), isolated=True) is None
-    assert (
-        sum("cannot run in a decoder process" in r.message for r in caplog.records) == 1
+    monkeypatch.setattr(native_child, "decoder_child_unavailable_reason", unavailable)
+    starts = []
+    error = (
+        DecoderChildStartError
+        if how == "start fails"
+        else decoder_child.DecoderChildImportError
     )
+
+    def refuse(*args: object, **kwargs: object) -> NoReturn:
+        starts.append(args)
+        raise error("cannot start the decoder process: no")
+
+    monkeypatch.setattr(native_child, "DecoderChild", refuse)
+    with caplog.at_level(logging.DEBUG, logger="archivey"):
+        for _ in range(3):
+            assert native.lzw(frozenset(), isolated=True) is None
+    assert len(asked) == 1
+    assert len(starts) == (0 if how == "no child" else 1)
+    logged = "cannot be imported" if how == "import fails" else "cannot run in a"
+    assert sum(logged in r.message for r in caplog.records) == 1
+    assert deps.archivey_codecs.child_import_failed is (how == "import fails")
     assert _FakeLzw.built == 0
+
+
+@needs_codecs
+def test_the_packages_errors_have_the_module_the_child_matches() -> None:
+    """The child's errors are rebuilt by their module and name
+    (``native_child._ERRORS``): PyO3 sets that module to ``_codecs``."""
+    import archivey_codecs
+
+    for name in (
+        "CodecError",
+        "CorruptDataError",
+        "TruncatedDataError",
+        "UnsupportedDataError",
+    ):
+        kind = getattr(archivey_codecs, name)
+        assert (kind.__module__, kind.__qualname__) in native_child._ERRORS
+
+
+@needs_codecs
+def test_cab_members_open_at_once_give_their_children_back(
+    child_builds: list[str],
+) -> None:
+    """Two LZX folders' members open together both park when they close: the one
+    replaced gives back its decoder child at once (the leak oracle checks)."""
+    text = b"".join(b"line %d\n" % i for i in range(9000))
+    folders = [
+        CabFolder("lzx", 15, LzxEncoder(window_bits=15)),
+        CabFolder("lzx", 15, LzxEncoder(window_bits=15)),
+    ]
+    raw = write_cab(
+        [CabFile("a", text, folder=0), CabFile("b", text, folder=1)], folders
+    )
+    config = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    gc_was = gc.isenabled()
+    gc.disable()
+    try:
+        with open_archive(
+            io.BytesIO(raw), config=config, concurrent_operations=True
+        ) as reader:
+            first, second = reader.open("a"), reader.open("b")
+            assert first.read() == second.read() == text
+            first.close()
+            second.close()
+            leased = [
+                child
+                for child in gc.get_objects()
+                if isinstance(child, decoder_child.DecoderChild)
+                and child._lease.process is not None
+            ]
+            assert len(leased) == 1  # the parked one, given back at close
+    finally:
+        if gc_was:
+            gc.enable()
+    assert child_builds.count("lzx.Decompressor") == 2
 
 
 def test_an_excluded_package_starts_no_child(monkeypatch: pytest.MonkeyPatch) -> None:
