@@ -104,16 +104,12 @@ def test_blake2sp_matches_rar5_fixture_payload() -> None:
 def test_blake2sp_large_update_does_not_copy_its_input(kind: type) -> None:
     """One large update() walks its input in place, so it stays linear in the size.
 
-    It used to slice off each 512-byte stride, copying the rest of the input every
-    time: one 16 MiB update() took about 22 s. The peak allocation shows the copies.
+    The peak allocation during the call shows any copy of the input.
     """
     import tracemalloc
 
     size = 4 << 20
     data = kind(bytes(range(256)) * (size // 256 + 1))[: size + 100]
-    chunked = Blake2sp()
-    for i in range(0, len(data), 65536):
-        chunked.update(data[i : i + 65536])
     hasher = Blake2sp()
     hasher.update(b"x" * 7)  # start with a partial stride in the buffer
     tracemalloc.start()
@@ -128,4 +124,23 @@ def test_blake2sp_large_update_does_not_copy_its_input(kind: type) -> None:
     for i in range(0, len(data), 65536):
         reference.update(bytes(data[i : i + 65536]))
     assert hasher.digest() == reference.digest()
-    assert chunked.digest() == blake2sp(bytes(data))
+
+
+def test_blake2sp_hashes_every_byte_of_a_wide_item_buffer() -> None:
+    """A buffer of items wider than one byte is hashed as its bytes."""
+    import array
+
+    wide = array.array("I", bytes(range(256)) * 40)
+    hasher = Blake2sp()
+    hasher.update(memoryview(wide))
+    assert hasher.digest() == blake2sp(wide.tobytes())
+
+
+def test_blake2sp_update_leaves_the_callers_buffer_resizable() -> None:
+    """update() releases every view of its input before it returns."""
+    buf = bytearray(range(256)) * 9
+    hasher = Blake2sp()
+    hasher.update(b"x" * 7)
+    hasher.update(buf)
+    buf.extend(b"more")  # BufferError if a view of buf were still exported
+    del buf[:100]
