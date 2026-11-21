@@ -130,6 +130,9 @@ def run_info(
     streaming = not remote and is_read_once(archive)
     # A status line while the open reads the file, cleared before the first line.
     progress = make_progress_callback(hide_progress=hide_progress, stream=err)
+    if progress is not None:
+        # Every stderr line, log lines included, clears the status line first.
+        err = progress.guard(err)
     try:
         try:
             opened = open_archive(

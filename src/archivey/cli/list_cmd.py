@@ -41,6 +41,9 @@ def run_list(
     # A status line while the listing reads the file (a .tar.gz is read to its end,
     # a URL request by request), cleared before the first line is printed.
     progress = make_progress_callback(hide_progress=hide_progress, stream=err)
+    if progress is not None:
+        # Every stderr line, log lines included, clears the status line first.
+        err = progress.guard(err)
 
     with open_for_cli(
         archive,

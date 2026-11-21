@@ -14,8 +14,9 @@ of event:
 
 For a URL the line also counts the range requests and the bytes they fetched.
 
-``test`` and ``extract`` print their stderr lines through :meth:`ProgressCallback.guard`,
-which clears the line before each one, so no line is glued onto a bar.
+Every verb prints its stderr lines, and the CLI's log lines, through
+:meth:`ProgressCallback.guard`, which clears the line before each one, so no line is
+glued onto a bar.
 """
 
 from __future__ import annotations

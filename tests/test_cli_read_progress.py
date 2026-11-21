@@ -296,12 +296,14 @@ def _shown_lines(err: str) -> list[str]:
         (["test", "-v", "{dirs}"], "skip top/"),
         (["test", "-v", "{dups}"], "INFO: "),
         (["extract", "{path}", "-d", "{out}"], "1 extracted"),
+        (["list", "-v", "{dups}"], "INFO: "),
     ],
     ids=[
         "extract-no-match",
         "test-verbose-dirs-first",
         "test-library-log-line",
         "extract-summary",
+        "list-library-log-line",
     ],
 )
 def test_no_line_is_printed_onto_the_status_line(
@@ -319,7 +321,7 @@ def test_no_line_is_printed_onto_the_status_line(
         # Shown on the command's own stderr, as on a terminal.
         return ProgressCallback(tqdm.tqdm, kwargs["stream"])
 
-    for module in (test_cmd, extract_cmd):
+    for module in (test_cmd, extract_cmd, list_cmd):
         monkeypatch.setattr(module, "make_progress_callback", make)
     names = {
         "path": str(_tar_gz(tmp_path)),

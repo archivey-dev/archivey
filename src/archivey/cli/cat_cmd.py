@@ -91,6 +91,9 @@ def run_cat(
                 code=EXIT_USAGE,
             )
     progress = make_progress_callback(hide_progress=hide_progress, stream=err)
+    if progress is not None:
+        # Every stderr line, log lines included, clears the status line first.
+        err = progress.guard(err)
     if outer:
         return _cat_outer(
             archive, sink=sink, stdin=stdin, config=config, progress=progress
