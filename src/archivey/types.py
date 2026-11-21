@@ -907,7 +907,7 @@ class CompressionAlgorithm(Enum):
     """Snappy, the method of a ``.sz`` file (``StreamFormat.SNAPPY``)."""
     LZFSE = "lzfse"
     """Apple's LZFSE, as macOS disk images (``ULFO``) store their data. A stream may
-    hold LZVN blocks too, so excluding :attr:`LZVN` excludes LZFSE as well."""
+    hold LZVN blocks too, so excluding ``LZVN`` excludes LZFSE as well."""
     LZVN = "lzvn"
     """Apple's LZVN with no LZFSE framing, as HFS+ and APFS transparent compression
     stores a file (decmpfs types 7 and 8)."""
