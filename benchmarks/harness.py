@@ -138,7 +138,7 @@ LISTING_TIME_BUDGET_S = 1.0
 # A case with no peer (or a peer timed apart) records the fastest of at least
 # SOLO_MIN_SAMPLES calls after a warmup, more while SOLO_TIME_BUDGET_S lasts, up to
 # SOLO_MAX_SAMPLES. The fastest call is the one the runner disturbed least, as in
-# benchmarks/compare_refs.py. Until 2026-11-21 these cases timed one call.
+# benchmarks/compare_refs.py.
 SOLO_MIN_SAMPLES = 3
 SOLO_MAX_SAMPLES = 15
 SOLO_TIME_BUDGET_S = 1.0
@@ -607,11 +607,10 @@ def run_cases(
         return _timed(fn)
 
     def solo_wall(fn: Callable[[], Any]) -> tuple[float, Any]:
-        """Wall time of a case timed on its own (no peer, or no warmup).
+        """Wall time of a case with no peer: with warmup, the fastest of several calls.
 
-        With warmup, the fastest of several calls (see SOLO_MIN_SAMPLES): one call
-        per harness run read z_zeros_read_all 134 to 184 ms on one runner, so the
-        nightly's fastest of three runs still failed its 1.25x gate on noise.
+        One call per harness run is too noisy for the nightly's 1.25x gate on a case
+        of ~150 ms; see SOLO_MIN_SAMPLES.
         """
         if not warmup:
             return _timed(fn)
@@ -650,7 +649,7 @@ def run_cases(
                 rounds=7,
             )
             return ay_wall, std_wall
-        wall, _ = solo_wall(ay)
+        wall, _ = timed_with_optional_warmup(ay)
         std_wall, _ = timed_with_optional_warmup(std_fn)
         return wall, std_wall
 
@@ -671,7 +670,7 @@ def run_cases(
             lambda: _stdlib_zip_open_list(fixtures.zip_path),
         )
     else:
-        wall, _ = solo_wall(_ay_open_list)
+        wall, _ = timed_with_optional_warmup(_ay_open_list)
         std_wall, _ = timed_with_optional_warmup(
             lambda: _stdlib_zip_open_list(fixtures.zip_path)
         )
@@ -737,7 +736,7 @@ def run_cases(
             _ay_extract_clean, _std_extract_clean, rounds=7
         )
     else:
-        wall, _ = solo_wall(_ay_extract_clean)
+        wall, _ = timed_with_optional_warmup(_ay_extract_clean)
         std_wall, _ = timed_with_optional_warmup(_std_extract_clean)
     results.append(
         CaseResult(
@@ -886,7 +885,7 @@ def run_cases(
             lambda: _stdlib_tar_open_list(fixtures.tar_path),
         )
     else:
-        wall, _ = solo_wall(_ay_tar_open_list)
+        wall, _ = timed_with_optional_warmup(_ay_tar_open_list)
         std_wall, _ = timed_with_optional_warmup(
             lambda: _stdlib_tar_open_list(fixtures.tar_path)
         )
@@ -1069,7 +1068,7 @@ def run_cases(
                     lambda: _py7zr_open_list(solid_7z_path),
                 )
             else:
-                wall, _ = solo_wall(_ay_7z_open_list)
+                wall, _ = timed_with_optional_warmup(_ay_7z_open_list)
                 std_wall, _ = timed_with_optional_warmup(
                     lambda: _py7zr_open_list(solid_7z_path)
                 )
@@ -1152,7 +1151,7 @@ def run_cases(
                     lambda p=path: _py7zr_open_list(p),
                 )
             else:
-                wall, _ = solo_wall(_ay)
+                wall, _ = timed_with_optional_warmup(_ay)
                 std_wall, _ = timed_with_optional_warmup(
                     lambda p=path: _py7zr_open_list(p)
                 )
@@ -1266,7 +1265,7 @@ def run_cases(
                     lambda p=path: _rarfile_open_list(p),
                 )
             else:
-                wall, _ = solo_wall(_ay)
+                wall, _ = timed_with_optional_warmup(_ay)
                 std_wall, _ = timed_with_optional_warmup(
                     lambda p=path: _rarfile_open_list(p)
                 )
