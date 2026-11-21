@@ -34,5 +34,5 @@
 
 - [x] 2.1 makeself: yield `NeedsPassword` + `charge_key_derivation`; mark payload
   members `is_encrypted`; drop `ReaderContext._passwords`
-- [ ] 2.2 ARJ: decrypt garbled members (`INCONCLUSIVE` + `full_check` on the CRC-32)
+- [x] 2.2 ARJ: decrypt garbled members (`INCONCLUSIVE` + `full_check` on the CRC-32)
 - [ ] 2.3 DMG spec §6B: return `NeedsPassword` from the handler's `open`

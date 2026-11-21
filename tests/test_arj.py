@@ -23,16 +23,19 @@ from archivey import (
     CompressionAlgorithm,
     CreateSystem,
     MemberType,
+    PasswordRequest,
     detect_format,
     open_archive,
 )
 from archivey.diagnostics import DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
+    EncryptionError,
     StreamNotSeekableError,
     TruncatedError,
     UnsupportedFeatureError,
 )
+from archivey.internal.password import is_unverified_data_error
 from tests.pe_build import elf_file, pe_file
 from tests.streams_util import NonSeekableBytesIO, ShortReadBytesIO
 
@@ -143,12 +146,109 @@ def test_commons_compress_archives(name: str, system: CreateSystem, hour: int) -
             assert reader.read(member).startswith(b"<?xml")
 
 
-def test_a_garbled_member_is_listed_and_refused() -> None:
-    with open_archive(_FIXTURES / "garbled.arj") as reader:
+def test_a_garbled_member_reads_with_the_password() -> None:
+    with open_archive(_FIXTURES / "garbled.arj", password="secret") as reader:
         (member,) = reader.members()
         assert member.is_encrypted
-        with pytest.raises(UnsupportedFeatureError, match="garbled"):
-            reader.read(member)
+        assert not reader.info.is_encrypted  # the listing is not garbled
+        data = reader.read(member)
+    assert hashlib.sha256(data).hexdigest() == _CONTENTS["small.txt"][1]
+
+
+def test_a_garbled_member_needs_a_password() -> None:
+    with (
+        open_archive(_FIXTURES / "garbled.arj") as reader,
+        pytest.raises(EncryptionError, match="pass password= to read it"),
+    ):
+        reader.read(reader.members()[0])
+
+
+@pytest.mark.parametrize("name", ["garbled_m1.arj", "garbled_m4.arj"])
+def test_garbled_members_of_each_method(name: str) -> None:
+    with open_archive(_FIXTURES / name, password=["wrong", "secret"]) as reader:
+        got = {m.name: reader.read(m) for m in reader.members()}
+    assert {n: hashlib.sha256(d).hexdigest() for n, d in got.items()} == {
+        n: _CONTENTS[n][1] for n in ("words.txt", "small.txt")
+    }
+
+
+@pytest.mark.parametrize("name", ["garbled_m1.arj", "garbled_m4.arj"])
+def test_a_lone_wrong_password_names_both_causes(name: str) -> None:
+    """One password and no provider: nothing is checked before the read, so the
+    decoder or the CRC-32 is what fails, and the error names both causes."""
+    with open_archive(_FIXTURES / name, password="wrong") as reader:
+        for member in reader.members():
+            with pytest.raises(EncryptionError) as caught:
+                reader.read(member)
+            assert is_unverified_data_error(caught.value)
+
+
+def test_every_listed_password_wrong() -> None:
+    with (
+        open_archive(_FIXTURES / "garbled_m1.arj", password=["a", "b"]) as reader,
+        pytest.raises(
+            EncryptionError, match="Wrong password for 'words.txt'"
+        ) as caught,
+    ):
+        reader.read("words.txt")
+    assert is_unverified_data_error(caught.value)
+
+
+def test_extract_all_asks_the_provider_once(tmp_path: Path) -> None:
+    """The CRC-32 confirms the first member's password, so it is known-good and the
+    second member reads with no prompt."""
+    asked: list[str] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        assert request.member is not None
+        asked.append(request.member.name)
+        return {1: b"wrong", 2: b"secret"}.get(request.attempt)
+
+    with open_archive(_FIXTURES / "garbled_m1.arj", password=provider) as reader:
+        reader.extract_all(tmp_path)
+    assert len(asked) == 2  # the first member: a wrong answer, then the right one
+    assert len(set(asked)) == 1
+    for name in ("words.txt", "small.txt"):
+        digest = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+        assert digest == _CONTENTS[name][1]
+
+
+def test_skipped_garbled_members_never_prompt() -> None:
+    asked: list[str] = []
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        assert request.member is not None
+        asked.append(request.member.name)
+        return b"secret"
+
+    with open_archive(_FIXTURES / "garbled_m1.arj", password=provider) as reader:
+        for member, stream in reader.stream_members():
+            if member.name == "small.txt" and stream is not None:
+                assert stream.read() == b"hello arj\n"
+    assert asked == ["small.txt"]
+
+
+def test_a_cut_garbled_member_is_truncated_not_a_wrong_password() -> None:
+    """The listing sees a member cut short, so no password is tried on it."""
+    data = (_FIXTURES / "garbled_m1.arj").read_bytes()
+    with (
+        open_archive(io.BytesIO(data[:3000]), password=["a", "secret"]) as reader,
+        pytest.raises(TruncatedError, match="ends inside the data"),
+    ):
+        reader.members()
+
+
+def test_the_gost_cipher_is_refused() -> None:
+    data = bytearray((_FIXTURES / "garbled.arj").read_bytes())
+    # The main header's byte 7, the encryption version; then its CRC-32 again.
+    (size,) = struct.unpack_from("<H", data, 2)
+    data[4 + 7] = 2
+    struct.pack_into("<I", data, 4 + size, zlib.crc32(data[4 : 4 + size]))
+    with (
+        open_archive(io.BytesIO(bytes(data)), password="secret") as reader,
+        pytest.raises(UnsupportedFeatureError, match="GOST"),
+    ):
+        reader.read(reader.members()[0])
 
 
 def test_detection_by_content() -> None:

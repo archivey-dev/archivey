@@ -21,8 +21,10 @@ hard link and the earlier member it names, a FIFO or a device.
 The methods are 0 (stored), 1 to 3 (LHA's static-Huffman stream with a 26 624-byte
 dictionary, :mod:`~archivey.internal.streams.codecs.lzh_decoder`) and 4 (a plain LZ77,
 :mod:`~archivey.internal.streams.codecs.arj_fast_decoder`). Garbled (password-protected)
-members and members split across volumes are listed and refused when read. The
-handbook page is ``dev-docs/formats/arj.md``.
+members are read with ``password=``: the original garble XORs each stored byte with the
+password, so only the member's CRC-32 tells a wrong one. ARJ's later GOST cipher, and
+members split across volumes, are listed and refused when read. The handbook page is
+``dev-docs/formats/arj.md``.
 """
 
 from __future__ import annotations
@@ -51,12 +53,15 @@ from archivey.formats import (
     MemberData,
     MemberDigest,
     MemberRecord,
+    NeedsPassword,
+    PasswordConfirmVerdict,
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.password import unverified_data_error
 from archivey.internal.sfx import (
     HitOutcome,
     PeekSource,
@@ -159,6 +164,8 @@ class _Location(NamedTuple):
     method: int
     crc: int
     flags: int
+    modifier: int
+    """The garble's password modifier, the header's byte 7."""
 
 
 class _Header:
@@ -176,6 +183,7 @@ class _Header:
         "method",
         "mode",
         "modified",
+        "modifier",
         "name",
         "offset",
         "size",
@@ -190,6 +198,7 @@ class _Header:
         self.method = 0
         self.file_type = 0
         self.modified = 0
+        self.modifier = 0
         self.accessed = 0
         self.created = 0
         self.stored = 0
@@ -278,7 +287,7 @@ class _Headers:
             header.flags,
             header.method,
             header.file_type,
-            _password_modifier,
+            header.modifier,
             header.modified,
             header.stored,
             header.size,
@@ -397,7 +406,12 @@ class ArjReader(_Headers, IndexedReader[_Location]):
             yield MemberRecord(
                 member,
                 _Location(
-                    header.end, header.stored, header.method, header.crc, header.flags
+                    header.end,
+                    header.stored,
+                    header.method,
+                    header.crc,
+                    header.flags,
+                    header.modifier,
                 ),
             )
             pos = header.end + header.stored
@@ -539,12 +553,9 @@ class ArjReader(_Headers, IndexedReader[_Location]):
     # ── Data ─────────────────────────────────────────────────────────────────────────
 
     @override
-    def open_member(self, member: ArchiveMember, locator: _Location) -> MemberData:
-        if locator.flags & _FLAG_GARBLED:
-            raise UnsupportedFeatureError(
-                f"{quoted(member.name)} is garbled (password-protected); archivey "
-                "does not decrypt ARJ members"
-            )
+    def open_member(
+        self, member: ArchiveMember, locator: _Location
+    ) -> MemberData | NeedsPassword[bytes, MemberData]:
         if locator.flags & (_FLAG_VOLUME | _FLAG_EXTFILE):
             raise UnsupportedFeatureError(
                 f"{quoted(member.name)} is split across ARJ volumes, which archivey "
@@ -552,18 +563,125 @@ class ArjReader(_Headers, IndexedReader[_Location]):
             )
         digests = (MemberDigest("crc32", locator.crc.to_bytes(4, "big")),)
         method = locator.method
-        if method == _METHOD_STORED:
-            return MemberData(
-                self._payload.view(locator.offset, locator.stored), digests=digests
-            )
-        if method not in _METHODS_LZH and method != _METHOD_FAST:
+        if method != _METHOD_STORED and (
+            method not in _METHODS_LZH and method != _METHOD_FAST
+        ):
             raise UnsupportedFeatureError(
                 f"{quoted(member.name)} uses ARJ method {method}, which archivey does "
                 "not read"
             )
+        if locator.flags & _FLAG_GARBLED:
+            return self._garbled(member, locator, digests)
+        return self._member_data(member, locator, digests, None)
+
+    def _member_data(
+        self,
+        member: ArchiveMember,
+        locator: _Location,
+        digests: tuple[MemberDigest, ...],
+        key: bytes | None,
+        unlocked: PasswordConfirmVerdict | None = None,
+    ) -> MemberData:
+        """The member's data, degarbled with ``key`` (``_garble_key``) when set."""
+        if locator.method == _METHOD_STORED:
+            view = self._payload.view(locator.offset, locator.stored)
+            return MemberData(
+                view if key is None else _Degarbled(view, key),
+                digests=digests,
+                unlocked=unlocked,
+            )
         span = ((locator.offset, locator.offset + locator.stored),)
-        stream = _ArjStream(self._payload, locator, member.size or 0)
-        return MemberData(stream, digests=digests, bounded=True, ranges=span)
+        stream = _ArjStream(
+            self._payload,
+            locator,
+            member.size or 0,
+            key,
+            unconfirmed=quoted(member.name)
+            if unlocked is PasswordConfirmVerdict.INCONCLUSIVE
+            else None,
+        )
+        return MemberData(
+            stream, digests=digests, unlocked=unlocked, bounded=True, ranges=span
+        )
+
+    def _garbled(
+        self,
+        member: ArchiveMember,
+        locator: _Location,
+        digests: tuple[MemberDigest, ...],
+    ) -> NeedsPassword[bytes, MemberData]:
+        """A garbled member: ask for the password, and degarble with it.
+
+        The garble XORs each stored byte with a password byte plus the header's
+        modifier, so nothing tells a wrong password before the member's CRC-32: the
+        check passes every password, and the full check decodes the member to it.
+        """
+        if self._main.modifier >= _ENCRYPTION_GOST:
+            raise UnsupportedFeatureError(
+                f"{quoted(member.name)} is encrypted with ARJ's GOST cipher "
+                f"(encryption version {self._main.modifier}); archivey reads only "
+                "the original garble"
+            )
+
+        def check(password: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+            if not password:
+                return None, PasswordConfirmVerdict.REJECTED
+            return password, PasswordConfirmVerdict.INCONCLUSIVE
+
+        def full_check(
+            password: bytes,
+        ) -> tuple[bytes | None, PasswordConfirmVerdict]:
+            if not password:
+                return None, PasswordConfirmVerdict.REJECTED
+            return self._full_check(member, locator, password)
+
+        def then(password: bytes, verdict: PasswordConfirmVerdict) -> MemberData:
+            key = _garble_key(password, locator.modifier)
+            return self._member_data(member, locator, digests, key, verdict)
+
+        return NeedsPassword(
+            quoted(member.name), check, full_check=full_check, member=member, then=then
+        )
+
+    def _full_check(
+        self, member: ArchiveMember, locator: _Location, password: bytes
+    ) -> tuple[bytes | None, PasswordConfirmVerdict]:
+        """Decode the member under ``password`` to its CRC-32, in bounded chunks.
+
+        A decoder failure over the member's whole stored bytes is the password's: a
+        wrong key feeds the decoder noise. A source that ends or fails inside them is
+        not, and that error propagates.
+        """
+        key = _garble_key(password, locator.modifier)
+        crc = size = 0
+        if locator.method == _METHOD_STORED:
+            with _Degarbled(
+                self._payload.view(locator.offset, locator.stored), key
+            ) as data:
+                while chunk := data.read(_DATA_CHUNK):
+                    crc = zlib.crc32(chunk, crc)
+                    size += len(chunk)
+            if size < locator.stored:
+                raise TruncatedError(
+                    f"{quoted(member.name)}: the file ends inside its stored data"
+                )
+        else:
+            stream = _ArjStream(self._payload, locator, member.size or 0, key)
+            try:
+                with stream:
+                    while chunk := stream.read(_DATA_CHUNK):
+                        crc = zlib.crc32(chunk, crc)
+                        size += len(chunk)
+            except CorruptionError:
+                if stream._source_failed:
+                    raise
+                return None, PasswordConfirmVerdict.REJECTED
+        if crc != locator.crc:
+            return None, PasswordConfirmVerdict.REJECTED
+        # Below 4 bytes a CRC-32 is weaker than the strength rule asks.
+        if size < 4:
+            return password, PasswordConfirmVerdict.INCONCLUSIVE
+        return password, PasswordConfirmVerdict.CONFIRMED
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
@@ -579,8 +697,27 @@ class _ArjStream(io.RawIOBase):
 
     _view: BinaryIO | None = None  # close() reads it, even after a failed __init__
 
-    def __init__(self, source: ReaderSource, locator: _Location, size: int) -> None:
+    def __init__(
+        self,
+        source: ReaderSource,
+        locator: _Location,
+        size: int,
+        key: bytes | None = None,
+        *,
+        unconfirmed: str | None = None,
+    ) -> None:
+        """``key`` (``_garble_key``) degarbles them before they are decoded.
+
+        ``unconfirmed`` names a member whose password no check confirmed: a decoder
+        failure over its stored bytes then raises the wrong-password-or-damage
+        ``EncryptionError``, as a ZIP member's does. A source that fails or ends inside
+        them raises its own error."""
         self._view = source.view(locator.offset, locator.stored)
+        self._key = key
+        self._pos = 0
+        self._stored = locator.stored
+        self._unconfirmed = unconfirmed
+        self._source_failed = False
         self._decoder: LzhDecoder | ArjFastDecoder
         if locator.method == _METHOD_FAST:
             self._decoder = ArjFastDecoder(size, self._more)
@@ -589,8 +726,19 @@ class _ArjStream(io.RawIOBase):
 
     def _more(self) -> bytes | None:
         assert self._view is not None
-        data = self._view.read(_DATA_CHUNK)
-        return data or None
+        try:
+            data = self._view.read(_DATA_CHUNK)
+        except BaseException:
+            self._source_failed = True
+            raise
+        if not data:
+            if self._pos < self._stored:
+                self._source_failed = True  # the source ends inside the member
+            return None
+        if self._key is not None:
+            data = _degarble(data, self._key, self._pos)
+        self._pos += len(data)
+        return data
 
     @override
     def readable(self) -> bool:
@@ -601,7 +749,15 @@ class _ArjStream(io.RawIOBase):
         with memoryview(b) as outer, outer.cast("B") as view:
             if not len(view):
                 return 0
-            data = self._decoder.read(len(view))
+            try:
+                data = self._decoder.read(len(view))
+            except CorruptionError as exc:
+                if self._unconfirmed is None or self._source_failed:
+                    raise
+                raise unverified_data_error(
+                    f"{self._unconfirmed} could not be decoded: the password may be "
+                    "wrong, or the data damaged"
+                ) from exc
             view[: len(data)] = data
             return len(data)
 
@@ -609,6 +765,65 @@ class _ArjStream(io.RawIOBase):
     def close(self) -> None:
         if self._view is not None:
             self._view.close()
+        super().close()
+
+
+# ── Garbled members ──────────────────────────────────────────────────────────────
+
+# The main header's byte 7 is the encryption version: 0 and 1 are the original garble,
+# 2 and later ARJ's GOST 28147-89 cipher (ARJCRYPT).
+_ENCRYPTION_GOST = 2
+
+
+def _garble_key(password: bytes, modifier: int) -> bytes:
+    """The bytes the garble XORs with, repeating: each password byte plus the header's
+    modifier, modulo 256."""
+    return bytes((byte + modifier) & 0xFF for byte in password)
+
+
+def _degarble(data: bytes, key: bytes, pos: int) -> bytes:
+    """``data``, the stored bytes from offset ``pos`` of the member, degarbled."""
+    start = pos % len(key)
+    repeats = (start + len(data)) // len(key) + 1
+    stream = (key * repeats)[start : start + len(data)]
+    value = int.from_bytes(data, "little") ^ int.from_bytes(stream, "little")
+    return value.to_bytes(len(data), "little")
+
+
+class _Degarbled(io.RawIOBase):
+    """A stored member's bytes degarbled, seekable when its view is."""
+
+    def __init__(self, view: BinaryIO, key: bytes) -> None:
+        self._view = view
+        self._key = key
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def seekable(self) -> bool:
+        return self._view.seekable()
+
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        return self._view.seek(offset, whence)
+
+    @override
+    def tell(self) -> int:
+        return self._view.tell()
+
+    @override
+    def readinto(self, b: WriteableBuffer, /) -> int:
+        with memoryview(b) as outer, outer.cast("B") as view:
+            pos = self._view.tell()
+            data = self._view.read(len(view))
+            view[: len(data)] = _degarble(data, self._key, pos)
+            return len(data)
+
+    @override
+    def close(self) -> None:
+        self._view.close()
         super().close()
 
 
@@ -665,6 +880,8 @@ class ArjHandler(IndexedFormatHandler):
     # open, where anything else fails as CorruptionError.
     magic = (Magic(0, _MAGIC),)
     uses_encoding = True
+    # Garbled members take password= (``ArjReader._garbled``).
+    supports_password = True
     non_seekable_reason = "archivey finds each member by seeking past the one before"
 
     @override
