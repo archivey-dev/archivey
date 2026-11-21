@@ -1,12 +1,27 @@
-"""Lazy tqdm progress helper (tqdm ships in the ``[recommended]`` extra)."""
+"""Lazy tqdm progress helper (tqdm ships in the ``[recommended]`` extra).
+
+One :class:`ProgressCallback` per command shows one line on stderr. It takes two kinds
+of event:
+
+- :class:`~archivey.ExtractionProgress` from ``test`` and ``extract``: output bytes
+  against the selected members' total.
+- :class:`~archivey.SourceProgress` from ``ArchiveyConfig.on_source_read``
+  (:meth:`ProgressCallback.source_read`), for every verb: how far the archive's own file
+  has been read. Before the first member (and in ``list``, ``info`` and ``cat``) it is
+  a status line that appears only after :data:`STATUS_DELAY` seconds and is cleared at
+  the end. In ``test`` and ``extract``, when the output total is unknown (a
+  ``.tar.xz`` has no index), the bar shows the position in the file instead.
+
+For a URL the line also counts the range requests and the bytes they fetched.
+"""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Protocol, TextIO
+from typing import Protocol, TextIO, cast
 
-from archivey import ExtractionProgress
+from archivey import ExtractionProgress, SourceProgress
 from archivey.cli.format import escape_member_name
 
 
@@ -21,6 +36,15 @@ class _TqdmBar(Protocol):
     def close(self) -> None: ...
 
 
+STATUS_DELAY = 0.5
+"""Seconds a read of the archive's file runs before its status line appears: a quick
+command shows nothing."""
+
+
+class _TqdmPostfix(Protocol):
+    def set_postfix_str(self, s: str = "", refresh: bool = True) -> None: ...
+
+
 class ProgressCallback:
     """Callable progress sink that owns a tqdm bar and can be closed explicitly."""
 
@@ -28,15 +52,84 @@ class ProgressCallback:
         self._bar_factory = bar_factory
         self._display = display
         self._bar: _TqdmBar | None = None
+        # The status line of the archive's own file, shown until the first member.
+        self._status: _TqdmBar | None = None
+        # The latest report of the file the command opened (``nest_level`` 0).
+        self._source: SourceProgress | None = None
+        # Whether the member bar counts the position in the file (output total unknown).
+        self._by_position = False
+        self._closed = False
+
+    def source_read(self, progress: SourceProgress) -> None:
+        """``ArchiveyConfig.on_source_read``: archivey read more of the archive's file."""
+        if progress.nest_level != 0 or self._closed:
+            # A nested archive's reads are part of a member's: the member bar shows them.
+            return
+        self._source = progress
+        bar = self._bar
+        if bar is not None:
+            if self._by_position:
+                self._show_position(bar, progress)
+            return
+        status = self._status
+        if status is None:
+            status = self._bar_factory(
+                total=progress.size,
+                unit="B",
+                unit_scale=True,
+                unit_divisor=1024,
+                file=self._display,
+                leave=False,
+                desc="reading",
+                delay=STATUS_DELAY,
+                dynamic_ncols=True,
+                disable=False,
+            )
+            self._status = status
+        self._show_position(status, progress)
+
+    def _show_position(self, bar: _TqdmBar, progress: SourceProgress) -> None:
+        """Show where in the file the latest read ended; for a URL, its requests."""
+        position = progress.position
+        if progress.size is not None:
+            position = min(position, progress.size)
+            if bar.total != progress.size:
+                bar.total = progress.size
+        delta = position - int(bar.n)
+        if progress.requests is not None and hasattr(bar, "set_postfix_str"):
+            # No refresh here: a refresh shows the status line before its delay, and
+            # tqdm then leaves it on screen at close. ``update`` shows it.
+            cast("_TqdmPostfix", bar).set_postfix_str(_fetched(progress), refresh=False)
+        if delta:
+            # ``update`` with a negative step moves back: ZIP reads its directory at
+            # the end first, then the members from the start.
+            bar.update(delta)
+
+    def clear_status(self) -> None:
+        """Clear the status line before a line is printed; it comes back with the
+        next read after :data:`STATUS_DELAY`."""
+        status = self._status
+        if status is not None:
+            self._status = None
+            status.close()
 
     def __call__(self, progress: ExtractionProgress) -> None:
+        if self._closed:
+            return
         total = progress.total_bytes_estimated
+        source = self._source
         bar = self._bar
         if bar is None:
+            self.clear_status()
+            # The output total is unknown (no index), but the file's size is: the bar
+            # counts the position in the file, which a start-to-end read moves along.
+            self._by_position = (
+                total is None and source is not None and source.size is not None
+            )
             # mininterval=0 / miniters=1: small archives finish in one callback; the
             # default 0.1s throttle would hide the bar entirely.
             bar = self._bar_factory(
-                total=total,
+                total=source.size if self._by_position and source else total,
                 unit="B",
                 unit_scale=True,
                 unit_divisor=1024,
@@ -52,13 +145,22 @@ class ProgressCallback:
         safe_name = escape_member_name(progress.member.name)
         if bar.desc != safe_name:
             bar.set_description(safe_name, refresh=False)
-        if total is not None and bar.total != total:
-            bar.total = total
-        delta = progress.bytes_written - int(bar.n)
-        if delta > 0:
-            bar.update(delta)
-        else:
+        if self._by_position:
+            assert source is not None
+            self._show_position(bar, source)
             bar.refresh()
+        else:
+            if total is not None and bar.total != total:
+                bar.total = total
+            if source is not None and source.requests is not None:
+                cast("_TqdmPostfix", bar).set_postfix_str(
+                    _fetched(source), refresh=False
+                )
+            delta = progress.bytes_written - int(bar.n)
+            if delta > 0:
+                bar.update(delta)
+            else:
+                bar.refresh()
         if (
             progress.members_total is not None
             and progress.members_done >= progress.members_total
@@ -66,10 +168,30 @@ class ProgressCallback:
             self.close()
 
     def close(self) -> None:
+        """Close the bar; later events show nothing."""
+        self._closed = True
+        self.clear_status()
         bar = self._bar
         if bar is not None:
             bar.close()
             self._bar = None
+
+
+def _fetched(progress: SourceProgress) -> str:
+    """``3 requests, 1.2 MiB fetched``: what a URL source's requests brought."""
+    count = progress.requests or 0
+    noun = "request" if count == 1 else "requests"
+    return f"{count} {noun}, {_size(progress.bytes_read)} fetched"
+
+
+def _size(n: int) -> str:
+    """``n`` bytes in the binary units tqdm's bar shows (``1.2 MiB``)."""
+    value = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    raise AssertionError("unreachable")
 
 
 def _display_stream(preferred: TextIO) -> TextIO | None:
