@@ -6,16 +6,16 @@ tried in this order: ``archivey-codecs`` (a Rust port of archivey's Python decod
 when it is installed and allowed; ``compress-utils`` (its LZO1X decoder is derived
 from lzokay) when it is installed and built with LZO1X, which is a build option
 (``is_available``); and archivey's decoder in Python (:func:`lzo1x_decompress_python`).
-The Python one
-follows ``lzo1x_decompress_safe`` in the Linux kernel (``lib/lzo/lzo1x_decompress_safe.c``),
-without the LZO-RLE extension, which neither lzop nor SquashFS writes.
+The Python one follows ``lzo1x_decompress_safe`` in the Linux kernel
+(``lib/lzo/lzo1x_decompress_safe.c``), without the LZO-RLE extension, which neither
+lzop nor SquashFS writes.
 
 Every read is checked: a run of literals or a match that would pass the end of the
 input, write past the limit or copy from before the start of the output raises
 :class:`LzoError`, and so do input left after the end marker and an end marker of a
 length other than 3, which no writer produces. liblzo2, and so ``lzop``, accepts any
-length there; the kernel and all three decoders archivey uses refuse it. compress-utils
-and the Python decoder agree on every block measured
+length there; the Linux kernel and all three decoders archivey uses refuse it.
+compress-utils and the Python decoder agree on every block measured
 (``dev-docs/investigations/lzo-compress-utils-vs-python-lzo.md``); archivey-codecs
 gives the Python decoder's bytes and messages (``tests/test_native_kernels.py``).
 
