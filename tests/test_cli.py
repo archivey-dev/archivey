@@ -1381,6 +1381,9 @@ def test_progress_callback_on_tty_updates_bar(monkeypatch: pytest.MonkeyPatch) -
     def _fake_tqdm(**kwargs: object) -> _FakeBar:
         return _FakeBar(**kwargs)
 
+    # tqdm's class method, which the CLI calls to give it a thread lock.
+    _fake_tqdm.set_lock = lambda lock: None  # type: ignore[attr-defined]
+
     # Inject a fake tqdm so this runs in core-only (no real tqdm installed).
     fake_mod = types.ModuleType("tqdm")
     fake_mod.tqdm = _fake_tqdm  # type: ignore[attr-defined]

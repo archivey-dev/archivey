@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import os
 import tarfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,18 @@ from archivey.cli import cat_cmd, extract_cmd, info_cmd, list_cmd, test_cmd
 from archivey.cli.main import main
 from archivey.cli.progress import STATUS_DELAY, ProgressCallback
 from archivey.types import ArchiveMember, MemberType
+
+
+@pytest.fixture(autouse=True)
+def _thread_lock_for_tqdm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lock :func:`make_progress_callback` gives tqdm, for the tests that make
+    real bars themselves: tqdm's default lock starts a helper process on Python
+    3.14+, which the leak oracle reports."""
+    try:
+        import tqdm
+    except ImportError:
+        return
+    monkeypatch.setattr(tqdm.tqdm, "_lock", threading.RLock(), raising=False)
 
 
 class _FakeBar:

@@ -21,6 +21,7 @@ which clears the line before each one, so no line is glued onto a bar.
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Callable
 from typing import Any, Protocol, TextIO, cast
 
@@ -285,4 +286,8 @@ def make_progress_callback(
     except ImportError:
         return None
 
+    # The bars are drawn by this process alone. tqdm's default lock is a
+    # multiprocessing lock, which on Python 3.14+ starts a helper process (about
+    # 14 ms) at the first bar.
+    tqdm.set_lock(threading.RLock())
     return ProgressCallback(tqdm, display)
