@@ -295,3 +295,21 @@ Info-ZIP `unzip` is built without it, so these are the only bytes from a real wr
   from before the start of the output.
 
 The crate's comment on `reduce_zero_reduced.bin` gives the commands that made them.
+
+## `dmg_hdiutil/`
+
+Disk images that `hdiutil` on macOS 26.7.1 wrote. The content is our own test files, so
+there is no licence question.
+
+- `hfs-ULFO.dmg`: LZFSE (UDIF format `ULFO`), an HFS+ volume, made with
+  `openspec/changes/dmg-reader/resources/make-dmg-fixtures.sh`.
+- `apfs-ULFO.dmg`: the same files on an APFS volume.
+- `hfs-UDCO.dmg`: ADC (UDIF format `UDCO`, Disk Copy's compression from about 1999 to
+  2002), an HFS+ volume holding `repeat.txt` (300,000 bytes of the line
+  `hello adc fixture`; SHA-256 `f49602b2…01a02`) and `hello.txt` (`hello dmg`;
+  SHA-256 `c6ced9f7…677de`). The maintainer made it with
+  `hdiutil create -srcfolder <dir> -fs HFS+ -volname ADC -format UDCO`.
+
+For now the decoder tests (`tests/test_lzfse_decoder.py`) use them: each partition's
+runs must decode to the CRC-32 the image stores, and the LZFSE images hold both `bvx2`
+and `bvxn` blocks. The DMG reader adds the other `hdiutil` images and the macOS listings here.

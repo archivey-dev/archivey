@@ -905,6 +905,14 @@ class CompressionAlgorithm(Enum):
     (``StreamFormat.BZIP3``). Not the same as ``BZIP2``."""
     SNAPPY = "snappy"
     """Snappy, the method of a ``.sz`` file (``StreamFormat.SNAPPY``)."""
+    LZFSE = "lzfse"
+    """Apple's LZFSE, as macOS disk images (``ULFO``) store their data. A stream may
+    hold LZVN blocks too, so excluding ``LZVN`` excludes LZFSE as well."""
+    LZVN = "lzvn"
+    """Apple's LZVN with no LZFSE framing, as HFS+ and APFS transparent compression
+    stores a file (decmpfs types 7 and 8)."""
+    ADC = "adc"
+    """Apple Data Compression, a small LZ77 that old disk images (``UDCO``) use."""
     UNKNOWN = "unknown"
     """A method archivey does not recognise. Listing still works."""
 

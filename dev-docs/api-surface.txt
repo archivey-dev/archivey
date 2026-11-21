@@ -247,6 +247,9 @@ value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.LZW = 'lzw'
 value archivey.CompressionAlgorithm.BZIP3 = 'bzip3'
 value archivey.CompressionAlgorithm.SNAPPY = 'snappy'
+value archivey.CompressionAlgorithm.LZFSE = 'lzfse'
+value archivey.CompressionAlgorithm.LZVN = 'lzvn'
+value archivey.CompressionAlgorithm.ADC = 'adc'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
 init archivey.CompressionMethod(algo: CompressionAlgorithm, level: int | None = None, properties: bytes | None = None) -> None
