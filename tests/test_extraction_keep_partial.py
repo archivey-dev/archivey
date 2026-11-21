@@ -27,6 +27,7 @@ from archivey import (
 from archivey.exceptions import ArchiveyError, ResourceLimitError, TruncatedError
 from archivey.internal.extraction import _CHUNK
 from tests.extract_util import open_and_extract
+from tests.streams_util import NonSeekableBytesIO
 
 
 @contextmanager
@@ -35,6 +36,19 @@ def warnings_ignored() -> Iterator[None]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         yield
+
+
+# How the archive is opened: from a file (random access), from a file with
+# ``streaming=True`` (a forward pass), and from a pipe (non-seekable: a ZIP is staged
+# and placed once its central directory is read).
+_MODES = ["file", "streaming", "pipe"]
+
+
+def _source(src: Path, mode: str) -> tuple[object, bool]:
+    """The source to open ``src`` from in ``mode``, and its ``streaming=``."""
+    if mode == "pipe":
+        return NonSeekableBytesIO(src.read_bytes()), True
+    return src, mode == "streaming"
 
 
 # Not a multiple of the copy chunk, and more than one chunk, so a cut lands
@@ -70,14 +84,13 @@ def _cut_tar_gz(path: Path) -> Path:
     return path
 
 
-@pytest.mark.parametrize("streaming", [False, True])
-def test_keep_partial_keeps_a_file_whose_check_fails(
-    tmp_path: Path, streaming: bool
-) -> None:
+@pytest.mark.parametrize("mode", _MODES)
+def test_keep_partial_keeps_a_file_whose_check_fails(tmp_path: Path, mode: str) -> None:
     src = _zip_with_damaged_data(tmp_path / "a.zip")
     dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
     report = open_and_extract(
-        src, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
     )
     by_name = {r.member.name: r for r in report.results}
     bad = by_name["bad.bin"]
@@ -85,9 +98,10 @@ def test_keep_partial_keeps_a_file_whose_check_fails(
     assert isinstance(bad.error, ArchiveyError)
     assert bad.path == dest / "bad.bin"
     kept = (dest / "bad.bin").read_bytes()
-    # The read that meets the failed check raises instead of returning its bytes, so
-    # the file holds what the reads before it gave: at most one copy chunk less.
-    assert len(_PAYLOAD) - _CHUNK <= len(kept) < len(_PAYLOAD)
+    # Where the read that meets the failed check raises instead of returning its
+    # bytes, the file holds what the reads before it gave: at most one copy chunk
+    # less. A ZIP from a pipe checks after its last read, so it keeps every byte.
+    assert len(_PAYLOAD) - _CHUNK <= len(kept) <= len(_PAYLOAD)
     assert kept[:100] == _PAYLOAD[:100]
     assert kept[100] != _PAYLOAD[100]
     assert by_name["good.txt"].status is ExtractionStatus.EXTRACTED
@@ -96,13 +110,12 @@ def test_keep_partial_keeps_a_file_whose_check_fails(
     assert not list(dest.rglob(".archivey-tmp-*"))
 
 
-@pytest.mark.parametrize("streaming", [False, True])
-def test_continue_still_removes_the_partial_file(
-    tmp_path: Path, streaming: bool
-) -> None:
+@pytest.mark.parametrize("mode", _MODES)
+def test_continue_still_removes_the_partial_file(tmp_path: Path, mode: str) -> None:
     src = _zip_with_damaged_data(tmp_path / "a.zip")
     dest = tmp_path / "out"
-    report = open_and_extract(src, dest, streaming=streaming, on_error="continue")
+    source, streaming = _source(src, mode)
+    report = open_and_extract(source, dest, streaming=streaming, on_error="continue")
     bad = next(r for r in report.results if r.member.name == "bad.bin")
     assert bad.status is ExtractionStatus.FAILED
     assert bad.path is None
@@ -119,9 +132,11 @@ def test_keep_partial_keeps_the_bytes_before_a_cut(
     dest = tmp_path / "out"
     with (
         open_archive(src, streaming=streaming) as reader,
-        pytest.raises(TruncatedError),
+        pytest.raises(TruncatedError) as raised,
     ):
         reader.extract_all(dest, on_error="keep_partial")
+    # No report is returned, so the error names the partial file.
+    assert any(str(dest / "big.bin") in note for note in raised.value.__notes__)
     kept = (dest / "big.bin").read_bytes()
     assert 0 < len(kept) < len(_PAYLOAD)
     assert _PAYLOAD.startswith(kept)
@@ -200,9 +215,9 @@ def test_keep_partial_keeps_nothing_for_a_limit(tmp_path: Path) -> None:
     assert not [p for p in dest.rglob("*") if p.is_file()]
 
 
-@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mode", _MODES)
 def test_a_later_copy_of_the_name_replaces_a_kept_partial_file(
-    tmp_path: Path, streaming: bool
+    tmp_path: Path, mode: str
 ) -> None:
     # The damaged copy is not current, so random access never writes it; a forward
     # pass that wrote it takes it back. Either way only the later copy stays.
@@ -218,11 +233,43 @@ def test_a_later_copy_of_the_name_replaces_a_kept_partial_file(
     src = tmp_path / "dup.zip"
     src.write_bytes(bytes(data))
     dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
     report = open_and_extract(
-        src, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
+        source, dest, streaming=streaming, on_error=OnError.KEEP_PARTIAL
     )
     assert (dest / "x.bin").read_bytes() == b"second"
     statuses = [r.status for r in report.results]
     assert statuses[-1] is ExtractionStatus.EXTRACTED
     assert all(r.path is None for r in report.results[:-1])
     assert not list(dest.rglob(".archivey-tmp-*"))
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_a_later_member_replaces_a_kept_partial_file(tmp_path: Path, mode: str) -> None:
+    # ``A.bin`` and ``a.bin`` collide on every OS. Under REPLACE the second lands
+    # over the first's partial file, and the first stays FAILED, with no path.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("A.bin", _PAYLOAD)
+        zf.writestr("a.bin", b"second")
+    data = bytearray(buf.getvalue())
+    data[data.find(_PAYLOAD[:4096]) + 100] ^= 0xFF
+    src = tmp_path / "case.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        on_error=OnError.KEEP_PARTIAL,
+        overwrite=OverwritePolicy.REPLACE,
+    )
+    first, second = report.results
+    assert first.status is ExtractionStatus.FAILED
+    assert first.path is None
+    assert first.requested_path == dest / "A.bin"
+    assert second.status is ExtractionStatus.EXTRACTED
+    assert second.path is not None
+    assert second.path.read_bytes() == b"second"
+    assert [p.name for p in dest.iterdir()] == [second.path.name]

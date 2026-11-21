@@ -390,14 +390,9 @@ class _PartialThenError(io.RawIOBase):
     _file: io.BufferedReader | None = None
 
     def __init__(self, partial: Path, error: ArchiveyError | OSError) -> None:
-        self._error = error
         super().__init__()
-        try:
-            self._file = open(long_path(partial), "rb")  # noqa: SIM115
-        except OSError:
-            # The staged bytes are out of reach: the member fails as if none had
-            # been staged, keeping nothing.
-            self._file = None
+        self._partial = partial
+        self._error = error
 
     @override
     def readable(self) -> bool:
@@ -405,7 +400,11 @@ class _PartialThenError(io.RawIOBase):
 
     @override
     def readinto(self, b: WriteableBuffer, /) -> int:
-        n = self._file.readinto(b) if self._file is not None else 0
+        # Opened on the first read, inside the member's write, so a failure to open
+        # it is that member's failure, handled as any read failure is.
+        if self._file is None:
+            self._file = open(long_path(self._partial), "rb")  # noqa: SIM115
+        n = self._file.readinto(b)
         if not n:
             raise self._error
         return n
@@ -1228,7 +1227,11 @@ class ExtractionCoordinator:
             # destination. Nothing partial exists for the triggering member — every
             # trigger fires before its write begins, and FILE writes land atomically
             # in any case.
+            self._note_kept_partials(abort.error)
             raise abort.error from None
+        except Exception as exc:
+            self._note_kept_partials(exc)
+            raise
         finally:
             # Also when the run stops early; first, while the destination root is
             # still writable (its own deferred metadata comes last).
@@ -2889,8 +2892,31 @@ class ExtractionCoordinator:
         if isinstance(exc, ArchiveyError) and spelled_from is not None:
             _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)
         error, status = self._classify(exc, member.name)
-        self._stop_or_log(exc, error, status, kind=member.type.value, name=member.name)
+        # ``KEEP_PARTIAL`` never stops on a failure, and a refusal keeps nothing, so
+        # this is logged rather than passed to ``_stop_or_log``.
+        assert status is ExtractionStatus.FAILED
+        logger.warning(
+            "Kept the partial file of %s %r at %r: %s",
+            member.type.value,
+            member.name,
+            str(self._shown(kept.path)),
+            error,
+        )
         return ExtractionResult(member, kept.path, status, error)
+
+    def _note_kept_partials(self, exc: BaseException) -> None:
+        """Name on ``exc``, the error the run raises with no report, each partial file
+        ``OnError.KEEP_PARTIAL`` kept before it, so a caller can find them."""
+        kept = [
+            r.path
+            for r in self._state.results
+            if r.status is ExtractionStatus.FAILED and r.path is not None
+        ]
+        if kept:
+            exc.add_note(
+                "Partial files kept for failed members: "
+                + ", ".join(repr(str(self._shown(path))) for path in kept)
+            )
 
     def _classify(
         self, exc: ArchiveyError | OSError, member_name: str
@@ -3366,6 +3392,10 @@ class ExtractionCoordinator:
         member that was yielded as a link and turned out a file; the file this run
         wrote for a RAR file copy's source (``_open_written_source``); or else
         ``stream``, or the staged file of a pass that stages its members.
+
+        Under ``OnError.KEEP_PARTIAL``, a copy that fails part-way returns a ``FAILED``
+        result whose ``path`` is the partial file kept (``_PartialKept``); every
+        other failure raises.
         """
         state = self._state
         declined = self._make_room(original, transformed, dest_path, atomic=True)

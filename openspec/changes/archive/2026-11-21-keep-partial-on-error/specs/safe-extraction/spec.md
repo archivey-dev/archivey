@@ -30,7 +30,9 @@ resource limit or a diagnostic that halts, in a dry run, when the landing itself
 or for a HARDLINK (written, linked or copied from its source). A kept file SHALL NOT be a
 source for later hard links or file copies. From a ZIP read from a non-seekable source,
 the bytes staged before the failure SHALL be kept until placement, where the member
-lands with them as from a file.
+lands with them as from a file. When the run raises with no report (the same damage ends the
+listing, an abort, a halting error), a note on the raised error SHALL name each file
+kept before it.
 
 Under `STOP`, a genuine member failure raises immediately and is not converted to a
 continued result. Logging-handler and diagnostic-callback exceptions propagate
@@ -59,7 +61,7 @@ unexpected programming exceptions are always-stop and are not swallowed.
 | A member under a non-directory already in `dest` before the run (`d/f` over the caller's file `d`) | `d` meets `OverwritePolicy` as an explicit `d/` entry would (see the overwrite requirement); under `ERROR` a per-member `ExtractionError`, not a raw `OSError` |
 | Cumulative bytes/live ratio/max entries exceed limit under any `OnError` | `ResourceLimitError` propagates and halts; no later member processed |
 | Corrupt member under `KEEP_PARTIAL` | `FAILED` result with the error and `path`; the bytes given before the failure stay at `path`; later members continue |
-| Cut member (truncated `.tar.gz`) under `KEEP_PARTIAL`, either access mode | The member's prefix stays at its path; the walk then raises the damage, as under `CONTINUE` |
+| Cut member (truncated `.tar.gz`) under `KEEP_PARTIAL`, either access mode | The member's prefix stays at its path; the walk then raises the damage, as under `CONTINUE`, with a note naming the kept file |
 | Corrupt member under `KEEP_PARTIAL` whose existing destination `OverwritePolicy.ERROR` refuses | `FAILED`, `path=None`; the existing entry is untouched |
 | Member over `DecoderLimits.max_ratio` under `KEEP_PARTIAL` | `FAILED` with `ResourceLimitError`; nothing kept |
 | Corrupt member under `KEEP_PARTIAL`, dry run | `FAILED`, `path=None`; nothing written |

@@ -302,11 +302,12 @@ disk, even with `on_error="stop"`.
 
 To keep what a damaged file holds, as `unrar x -kb`, 7-Zip and GNU tar do, pass
 `on_error="keep_partial"`. The file gets the bytes written before the failure, and its result in the
-report is `FAILED`, with the error and the file's `path`. A CRC or size check fails on the last read
-of the member's data, so the bytes of that read aren't in the file. The file gets a modification
-time of now and archivey's own file mode, not the ones the archive stores, so it doesn't pass for
-the real one. A member that fails before any byte is written leaves nothing, and so does one that
-goes over a limit.
+report is `FAILED`, with the error and the file's `path`. A CRC or size check can fail on the last
+read of the member's data, and then the bytes of that read aren't in the file. The file gets a
+modification time of now and archivey's own file mode, not the ones the archive stores, so it
+doesn't pass for the real one. Under `overwrite="replace"`, the partial file replaces an entry
+already at its name, as a complete one would. A member that fails before any byte is written leaves
+nothing, and so does one that goes over a limit.
 
 Going over the total size or entry count in `limits`, or the whole
 archive expanding too much, stops the extraction even with `on_error="continue"`, since it's a sign
@@ -314,7 +315,8 @@ that the whole archive is hostile. A single member that expands too much fails l
 member.
 
 If the damage is in the list of members itself, such as a TAR, RAR or ZIP cut short, the members
-before it are written and the call then raises, whatever `on_error` says, and returns no report. If
+before it are written and the call then raises, whatever `on_error` says, and returns no report.
+Under `on_error="keep_partial"`, a note on that error names each partial file the run kept. If
 a ZIP's central directory is damaged, archivey also finds the members after the damage from the
 header in front of each one's data, and writes those too before it raises. A damaged 7z index fails
 `open_archive` before anything is written.
