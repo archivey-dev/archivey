@@ -24,7 +24,8 @@
       `OpenFile` with the seam's constants. `threads` stays reported, not gated: the
       threads race, so its count moves between runs; the per-fetch bound it checks
       (pool / 8) is a unit test. `bytes_needed` is not recorded yet.
-- [ ] 1.5 `benchmarks/remote_http.py`: the same cases over a local range server and
+- [ ] 1.5 (not done; tracked internally since the archive, 2026-11-21)
+  `benchmarks/remote_http.py`: the same cases over a local range server and
       `HTTPFileSystem`; fail when its request counts differ from 1.3's. Off the PR path.
 
 ## 2. `OpenFile` sources and the fetch planner
@@ -146,9 +147,11 @@
 
 ## 7. Later, each on its own evidence
 
-- [ ] 7.1 RAR sparse spool investigation (design D6): measure what `unrar` reads, with
+- [ ] 7.1 (not done; tracked internally since the archive, 2026-11-21) RAR sparse spool
+  investigation (design D6): measure what `unrar` reads, with
       the garbage-filled-holes test, before any code.
-- [ ] 7.2 A changed remote object, tiers 1 and 2 (design D7): version pinning and
+- [ ] 7.2 (not done; tracked internally since the archive, 2026-11-21) A changed remote
+  object, tiers 1 and 2 (design D7): version pinning and
       `If-Match`, per file system.
 - [x] 7.3 CLI URL arguments (maintainer, 2026-10-25: yes; design §Decisions 2), as its
       own OpenSpec change with a `cli` delta.

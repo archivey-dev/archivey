@@ -33,7 +33,8 @@ ArchiveyError(Exception)
 │   ├── CorruptionError
 │   │   └── TruncatedError
 │   ├── EncryptionError
-│   └── LinkTargetNotFoundError
+│   ├── LinkTargetNotFoundError
+│   └── SourceChangedError
 ├── ExtractionError
 │   ├── FilterRejectionError
 │   ├── NameCollisionError            raised only under abort_on=
@@ -77,6 +78,7 @@ resuming may complete, and SHALL tell callers to catch `CorruptionError` to hand
 | `UnsupportedFeatureError` | The archive uses, or its header appears to use, a recognized feature Archivey does not implement (unsupported ZIP method, unknown 7z coder, a 7z coder graph that is not a tree of chains, a raw CD sector image), or the archive or backend cannot serve a valid request (writing any format, a RAR password with a line break for `unrar`). An unknown method, codec or version id read from a header with no checksum (such as a ZIP method) may instead mean that header is damaged; Archivey cannot tell the two apart and SHALL report it as `UnsupportedFeatureError`, with a message that says a damaged header reads the same way. |
 | `PackageNotInstalledError` | A package or external tool the format or member needs is absent: at open for a format whose backend or single codec is missing (`.lz4` without `lz4`), at read for one member's codec. |
 | `ResourceLimitError` | A configured resource limit was exceeded (`ListingLimits` materialization caps, `ExtractionLimits` bomb guards, a `DecoderLimits` cap on archive-declared decoder memory or key-derivation work, or `SpoolLimits`). |
+| `SourceChangedError` | A `ReadError` subclass: the remote object an `fsspec.core.OpenFile` source names changed while archivey was reading it (a version or `ETag` mismatch, or a different total size; `fsspec-integration`). Raised at open or at any later read. It is not damage, so not a `CorruptionError`, and the caller acts differently: reopen and retry. |
 | `ResourceUnavailableError` | A `ResourceLimitError` subclass: the system did not give a resource and no configured limit was exceeded. A decoder child or helper program ended by SIGKILL, a decoder that `process_isolation` runs only in a child when none can start, a PPMd child that cannot allocate its model, a volume file that cannot be opened because the process is out of file descriptors (`EMFILE` / `ENFILE`, the `OSError` as its cause). The caller acts differently (retry with more memory or file descriptors, or where processes can start), and catching `ResourceLimitError` still catches it. |
 
 #### Scenario: archive exception matrix
@@ -89,6 +91,7 @@ resuming may complete, and SHALL tell callers to catch `CorruptionError` to hand
 | Recognized archive with a damaged header, opened | `CorruptionError` or `TruncatedError` from `open_archive()`; not an `OpenError`. A method, codec or version id damaged to an unknown value in a header with no checksum is the exception (next row) |
 | gzip member whose compression-method byte is damaged to 7, opened | `UnsupportedFeatureError` from `open_archive()`; its message says a damaged header reads the same way |
 | Member data that ends early, read | `TruncatedError`; caught by `except CorruptionError` and by `except ReadError` |
+| Remote object replaced with a shorter one mid-read, read past its new end | `SourceChangedError`; caught by `except ReadError`, not by `except CorruptionError` |
 
 ### Requirement: Caller misuse remains outside ArchiveyError
 

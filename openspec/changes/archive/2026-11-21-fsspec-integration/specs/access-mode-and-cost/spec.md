@@ -13,7 +13,8 @@ Non-seekable sources are never given random access: with `streaming=False` the
 library fails fast at open when the format needs seek (it does not buffer the
 source into memory or a temp file). `streaming=True` is the fix for pipes and
 sockets **only where the backend reads front to back** (TAR, ZIP, the single-file
-compressors). A format that needs seek in either mode (ISO, 7z, RAR) SHALL be
+compressors, and RAR with RARLAB `unrar` 7.00 or later, whose refusal otherwise names
+that program). A format that needs seek in either mode (ISO, 7z) SHALL be
 refused with one message naming a seekable source as the fix, in both modes, rather
 than proposing a `streaming=True` retry the same call would then refuse. That refusal
 SHALL come before the format's availability check: a pipe cannot be read even with the
@@ -26,12 +27,11 @@ Every source `open_archive` and `open_stream` take SHALL cross one boundary, whi
 returns one `ArchiveSource`; standalone `detect_format` does not cross it, except for an
 `fsspec.core.OpenFile` source (`fsspec-integration`), which it reads through the same
 boundary and remote fetch planner, because an `OpenFile` has no file or stream of its own
-to read. Every consumer
-of the raw source SHALL receive one of three things: the `ArchiveSource`; a wrapper over
-it that preserves the four guarantees below (a view that clamps its reads and does not
-close its inner); or, for a parser that opens a path itself, the `ArchiveSource`'s path.
-The `ArchiveSource` SHALL carry every source-level guarantee itself, whatever the caller
-passed — a path, a stream, or a volume list:
+to read. Every consumer of the raw source SHALL receive one of three things: the
+`ArchiveSource`; a wrapper over it that preserves the four guarantees below (a view that
+clamps its reads and does not close its inner); or, for a parser that opens a path
+itself, the `ArchiveSource`'s path. The `ArchiveSource` SHALL carry every source-level
+guarantee itself, whatever the caller passed — a path, a stream, or a volume list:
 
 | Guarantee | What `ArchiveSource` SHALL do |
 | --- | --- |
@@ -99,7 +99,7 @@ never handed past the boundary, so no wrapper a backend adds can reach it except
 | `streaming=True` on `.tar.gz` | No full-archive index scan; members as stream is read |
 | `streaming=False` on non-seekable source, backend reads front to back | Error at open (before member data) naming `streaming=True` — library does not buffer |
 | Either mode on non-seekable source, backend needs seek | Same error and same message in both modes, naming a seekable source (buffer to disk or a `BytesIO`) — library does not buffer |
-| Either mode on non-seekable source, backend needs seek, its optional package missing (ISO without `pycdlib`) | The same seekability error, not `PackageNotInstalledError` |
+| Either mode on non-seekable source, backend needs seek, its optional package missing (a plugin that needs seek and a package that is not installed) | The same seekability error, not `PackageNotInstalledError` |
 | `streaming=False` on non-seekable source, backend reads front to back, its codec package missing (`.tar.lz4` without `lz4`) | `PackageNotInstalledError` first; the `streaming=True` hint follows once the package is installed |
 | Non-seekable source refused by either refusal rule (needs seek in either mode, or `streaming=False` on a front-to-back format), with `password=` for a format with no encryption (ISO, TAR) | `PASSWORD_ARGUMENT_UNUSED` (and `ENCODING_ARGUMENT_UNUSED` likewise) is emitted before the refusal, the same for both rules. The availability refusal (`.tar.lz4` without `lz4`) emits neither: `PackageNotInstalledError` is raised before the argument diagnostics run |
 | `fsspec.core.OpenFile` source, either mode, and `detect_format` on one | Every byte comes through the remote fetch planner's range reads; `fs.size(path)` is read once and clamps reads; the caller's file system is not closed |

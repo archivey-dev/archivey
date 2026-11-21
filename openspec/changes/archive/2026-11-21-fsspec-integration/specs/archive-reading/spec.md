@@ -107,16 +107,17 @@ The system SHALL define these complete frozen schemas:
 @dataclass(frozen=True)
 class ExtractionLimits:
     max_extracted_bytes: int | None = 2 * 2**30
-    max_ratio: float | None = 1000.0
-    ratio_activation_threshold: int = 5 * 2**20
+    max_ratio: float | None = <unset>  # deprecated: DecoderLimits.max_ratio
+    ratio_activation_threshold: int = <unset>  # deprecated
     max_entries: int | None = 262_144
-    live_ratio_activation_threshold: int = 256 * 2**20
+    live_ratio_activation_threshold: int = <unset>  # deprecated
     UNLIMITED: ClassVar["ExtractionLimits"]
 
 @dataclass(frozen=True)
 class ListingLimits:
     max_members: int | None = 262_144
     max_metadata_bytes: int | None = 64 * 2**20
+    max_decoded_bytes: int | None = 4 * 2**30
     UNLIMITED: ClassVar["ListingLimits"]
 
 @dataclass(frozen=True)
@@ -124,6 +125,10 @@ class DecoderLimits:
     max_decoder_memory: int | None = 2 * 2**30
     max_key_derivation_rounds: int | None = 2**25
     max_ppmd_held_input: int | None = 16 * 2**20
+    max_ratio: float | None = 800.0
+    ratio_activation_threshold: int = 5 * 2**20
+    live_ratio_activation_threshold: int = 256 * 2**20
+    max_nest_decoded_bytes: int | None = None
     UNLIMITED: ClassVar["DecoderLimits"]
 
 @dataclass(frozen=True)
@@ -166,66 +171,65 @@ mappings and the dataclasses SHALL be defensively immutable. `config=None` →
 immutable library default. No mutable global/context-local diagnostic policy or
 callback.
 
-A reader carries its open config, all of it, for its lifetime. Reader methods
-SHALL NOT take a `config=`: `extract_all(limits=...)` is the one per-call
-override, and it replaces only the extraction limits for that call.
-`decoder_limits` SHALL bound the working memory a codec allocates on the
-strength of a number the archive declares, and SHALL be enforced before that
-allocation is made. `max_key_derivation_rounds` SHALL bound the total
-password-to-key hashing rounds one reader runs, counted as the archive declares
-them (RAR5 `2**kdf_count` PBKDF2 rounds plus the `+16`/`+32` offsets, 7z
-`2**NumCyclesPower`, RAR3 its fixed `2**18`), summed over the derivations that
-actually run: a key the reader already derived for the same password, salt and
-cost SHALL cost nothing, and every candidate password tried SHALL count. The
-check SHALL run before the derivation that would cross the cap, and SHALL raise
-`ResourceLimitError`, which SHALL NOT be treated as a wrong password by
-candidate iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and
-`NATIVE_DECODERS`, every PPMd member SHALL decode in a child process (`compressed-streams`,
-"Native decoders run where process_isolation puts them"), where a crash of the native
-decoder (a fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL
-surface as `CorruptionError`. A child killed by SIGKILL, or one that dies allocating the
-member's model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
+A reader carries its open config, all of it, for its lifetime. Reader methods SHALL NOT
+take a `config=`: `extract_all(limits=...)` is the one per-call override, and it
+replaces only the extraction limits for that call. The limits apply per reader except
+where "Limits apply per nest" sums them over a nest: `max_nest_decoded_bytes`
+(`safe-extraction`, "A nest's decoded bytes are held to one total"), `max_members` and
+`max_ratio` also hold the nest to one total, read from the outermost reader's config.
+`decoder_limits` SHALL bound the working memory a codec allocates on the strength of a
+number the archive declares, and SHALL be enforced before that allocation is made.
+`max_key_derivation_rounds` SHALL bound the total password-to-key hashing rounds one
+reader runs, counted as the archive declares them (RAR5 `2**kdf_count` PBKDF2 rounds
+plus the `+16`/`+32` offsets, 7z `2**NumCyclesPower`, RAR3 its fixed `2**18`), summed
+over the derivations that actually run: a key the reader already derived for the same
+password, salt and cost SHALL cost nothing, and every candidate password tried SHALL
+count. The check SHALL run before the derivation that would cross the cap, and SHALL
+raise `ResourceLimitError`, which SHALL NOT be treated as a wrong password by candidate
+iteration. Under `process_isolation=KNOWN_CRASHES` (the default) and `NATIVE_DECODERS`,
+every PPMd member SHALL decode in a child process (`compressed-streams`, "Native
+decoders run where process_isolation puts them"), where a crash of the native decoder (a
+fault signal such as SIGSEGV, or the Windows status for the same fault) SHALL surface as
+`CorruptionError`. A child killed by SIGKILL, or one that dies allocating the member's
+model, SHALL raise `ResourceUnavailableError`, as SHALL a member where no child process
 can be started. A child that ends any other way (another signal, a plain exit status)
-SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input`
-SHALL bound the compressed bytes of one PPMd member the process holds to hand to pyppmd
-whole, in the child or, under `process_isolation=NONE`, in-process; a larger member, and
-one whose size is known only once it has been read (a ZIP member with bit 3 set, read from
-a non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
-whose size is known.
-`process_isolation` SHALL be converted from the member or its name at construction, as
-the accelerator fields are. `process_isolation=NONE` together with `use_rapidgzip=ON` or
-`use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` at construction: rapidgzip runs
-only in a child process.
-Per-call `limits` still beat `config.extraction_limits`, then reader/library default.
-Other per-call operational args stay outside `ArchiveyConfig`.
-`detection_budget` SHALL bound what format detection spends, for `detect_format` and for
-every detection `open_archive` and `open_stream` run (see `detection-cost`): the
-auto-detection itself, and under `format=` the stub-volume check and the rescan that
-confirms an empty listing. It is annotated as a `DetectionBudget`, like the accelerator
-fields beside it: a preset member or its name is converted at construction, so the field
-always holds a budget.
-`always_probe_content` SHALL decide whether `detect_format` and `open_archive` run every
-content probe or only the probe of the format the source's extension names
-(`format-detection`); `open_stream` SHALL run every probe whatever it holds. Like the other
-switches it SHALL be a real `bool`.
-`spool_limits` SHALL bound the bytes one reader writes to temporary storage as a copy of
-its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled across a
-volume set and across attempts: a copy refused once SHALL stay refused for that reader
-without writing again. The same limit SHALL bound the decoded member data a declared
-strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid pass),
-counted while the data is on disk: kept data SHALL count from its first written byte
-until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
+SHALL raise `ReadError`, which is not a verdict on the data. `max_ppmd_held_input` SHALL
+bound the compressed bytes of one PPMd member the process holds to hand to pyppmd whole,
+in the child or, under `process_isolation=NONE`, in-process; a larger member, and one
+whose size is known only once it has been read (a ZIP member with bit 3 set, read from a
+non-seekable source), SHALL be fed to pyppmd in pieces. `None` SHALL hold every member
+whose size is known. `process_isolation` SHALL be converted from the member or its name
+at construction, as the accelerator fields are. `process_isolation=NONE` together with
+`use_rapidgzip=ON` or `use_indexed_bzip2=ON` SHALL raise `ArchiveyUsageError` (also a
+`ValueError`) at construction: rapidgzip runs only in a child process. Per-call `limits`
+still beat `config.extraction_limits`, then reader/library default. Other per-call
+operational args stay outside `ArchiveyConfig`. `detection_budget` SHALL bound what
+format detection spends, for `detect_format` and for every detection `open_archive` and
+`open_stream` run (see `detection-cost`): the auto-detection itself, and under `format=`
+the stub-volume check and the rescan that confirms an empty listing. It is annotated as
+a `DetectionBudget`, like the accelerator fields beside it: a preset member or its name
+is converted at construction, so the field always holds a budget. `always_probe_content`
+SHALL decide whether `detect_format` and `open_archive` run every content probe or only
+the probe of the format the source's extension names (`format-detection`); `open_stream`
+SHALL run every probe whatever it holds. Like the other switches it SHALL be a real
+`bool`. `spool_limits` SHALL bound the bytes one reader writes to temporary storage as a
+copy of its source (today, `format-rar`'s copy of a stream source for `unrar`), totalled
+across a volume set and across attempts: a copy refused once SHALL stay refused for that
+reader without writing again. The same limit SHALL bound the decoded member data a
+declared strategy keeps on disk (today, `format-rar`'s kept file-copy sources in a solid
+pass), counted while the data is on disk: kept data SHALL count from its first written
+byte until it is deleted, and SHALL NOT count after that. A keep over the limit SHALL be
 declined, not refused: the read falls back to decoding again. `None` SHALL disable the
 guard; `SpoolLimits.UNLIMITED` sets it to `None`. A copy over the limit SHALL raise
-`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when the
-size is known, and otherwise before the written total passes the limit, with the partial
-copy removed. A path source that is read in place is not copied and SHALL NOT be refused
-by it; a path source that has to be copied (`format-rar`: a prefixed archive read with
-`unar`, or explicit volume files that cannot be linked side by side) is bounded like a
-stream source.
-`read_link_targets` SHALL decide whether the reader reads, on its own, a symlink target
-the format stores as member data (see "Link targets stored as member data are read only
-when configured"); like `listing_limits`, it holds for the reader's lifetime.
+`ResourceLimitError`, naming `SpoolLimits.max_bytes`, before any byte is written when
+the size is known, and otherwise before the written total passes the limit, with the
+partial copy removed. A path source that is read in place is not copied and SHALL NOT be
+refused by it; a path source that has to be copied (`format-rar`: a prefixed archive
+read with `unar`, or explicit volume files that cannot be linked side by side) is
+bounded like a stream source. `read_link_targets` SHALL decide whether the reader reads,
+on its own, a symlink target the format stores as member data (see "Link targets stored
+as member data are read only when configured"); like `listing_limits`, it holds for the
+reader's lifetime.
 
 `on_diagnostic` runs synchronously after count/retention/logging updates. Snapshot
 reads from a callback are allowed. Starting another operation on the same
@@ -236,6 +240,9 @@ Callbacks hold no Archivey collector/reader/stream/backend/registry lock
 (`diagnostics` / `reader-concurrency`).
 
 #### Scenario: config matrix
+
+- **WHEN** a call is made as each row says
+- **THEN** it behaves as the row's Expected column says
 
 | Case | Expected |
 | --- | --- |
