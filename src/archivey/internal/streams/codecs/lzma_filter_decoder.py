@@ -294,7 +294,7 @@ def FilterStream(
     collector: DiagnosticCollector | None = None,
     owns_inner: bool = False,
     natives: Natives = IN_PROCESS,
-    excluded: frozenset[OptionalLibrary] = frozenset(),
+    excluded: frozenset[OptionalLibrary],
 ) -> DecompressorStream:
     """Apply a filter-only stage — BCJ branch filter or Delta (forward-only).
 
