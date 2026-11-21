@@ -58,7 +58,9 @@ def test_complete_listing_is_ok(tmp_path: Path) -> None:
 def test_listing_cut_short_is_not_ok_and_raises_its_error(tmp_path: Path) -> None:
     archive = _tar(tmp_path / "a.tar", ["a.txt", "b.txt"])
     data = bytearray(archive.read_bytes())
-    data[512 + 512 + 148 : 512 + 512 + 156] = b"00000000"  # second header's checksum
+    # The second header's checksum, and its size so the walk cannot follow it.
+    data[512 + 512 + 124 : 512 + 512 + 136] = b"XXXXXXXXXXXX"
+    data[512 + 512 + 148 : 512 + 512 + 156] = b"00000000"
     archive.write_bytes(bytes(data))
     with open_archive(archive) as reader:
         report = reader.members_report()
