@@ -312,8 +312,7 @@ the provider returned `None` after the static candidates, and the missing-passwo
 message says so.
 
 Alternative: release the locks around an in-place provider call. Rejected for the
-reasons above (round 2 of the Codex review: listing lock, materialization wait, reopen
-marker).
+reasons above (listing lock, materialization wait, reopen marker).
 
 ## Risks / Trade-offs
 
