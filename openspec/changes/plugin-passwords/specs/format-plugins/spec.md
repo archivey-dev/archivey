@@ -111,16 +111,19 @@ before returning when the total would pass the cap, leaving the total unchanged.
 | Cap `None` | Never raises |
 | A nested archive inside the plugin's archive | Its own reader and budget |
 
-### Requirement: The provider is called only at the reader's public boundary
+### Requirement: The provider is called outside plugin calls where the step can repeat
 
-`unlock` SHALL NOT call the password provider inside a plugin call. When it needs a new
-provider answer it SHALL end the plugin call, and archivey SHALL call the provider with
-no archivey lock held and no listing in progress, then repeat the public operation,
-which tries the new answer. A provider that reenters the same reader from its own thread
-or a copied context SHALL get `ArchiveyUsageError` before any lock or listing wait, and
-two workers needing the provider at once SHALL be served one after the other. A
-sequential walk that already yielded a member SHALL call the provider in place, with the
-handle guard released, as the built-in streaming readers do.
+Where nothing has reached the caller yet (the handler's `open`, `open_member` before its
+stream is returned, an indexed listing before its first member is published), `unlock`
+SHALL NOT call the password provider inside the plugin call: it SHALL end the call, and
+archivey SHALL call the provider with no archivey lock held, then repeat that step, which
+tries the new answer. A walk that already yielded a member SHALL call the provider in
+place, with the handle guard released, as the built-in streaming readers do. A provider
+that reenters the same reader from its own thread or a copied context SHALL get
+`ArchiveyUsageError` before any lock or listing wait where the step repeats, and two
+workers needing the provider at once SHALL be served one after the other. Retry state
+SHALL be keyed by an internal identity of the unit within the pending step, not by
+`what` or `member`.
 
 #### Scenario: concurrency and repeats
 
