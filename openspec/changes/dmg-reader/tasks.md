@@ -19,9 +19,10 @@
 - [ ] B.2 `udif.py` rewrite: `koly`, property list, run tables, `UdifSource`;
   stored-length and run-count bounds checked before any read or allocation (design §4.2,
   §4.3)
-- [ ] B.3 `disk_partitions.py`: GPT, APM, none
-- [ ] B.4 `hfsplus.py`: volume header, forks, B-trees, catalog, hard links, decmpfs,
-  attributes
+- [ ] B.3 `disk_partitions.py`: GPT, APM, none; one disk index; signature decides
+  (design §5); volume top-level names
+- [ ] B.4 `hfsplus.py`: volume header, journal state (§6.1), forks, B-trees, catalog,
+  hard links, decmpfs, attributes
 - [ ] B.5 `dmg_reader.py`: handler, reader, detection signatures kept through
   `register_builtin_format`, `SEEKABLE`
 - [ ] B.6 APFS-only and encrypted images refused by name until parts E and G

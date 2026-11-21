@@ -77,9 +77,9 @@ runs first, so an uncompressed image whose disk is an ISO 9660 filesystem (`CD00
 32 769) SHALL be reported as `ISO` and read as one; the trailer is not consulted. The
 `.dmg` suffix SHALL NOT select the format: a file named `.dmg` with none of these
 signatures (a raw `hdiutil` UDRW disk, a renamed ZIP) is detected by its own bytes, as
-today. `format_availability(DMG)` SHALL be `FULL` with no optional package, except that
-the encrypted images need `cryptography` (named in `missing` as a partial verdict when
-it is absent).
+today. `format_availability(DMG)` SHALL be `FULL` with no optional package, with or
+without `cryptography`, as for encrypted members of other formats; opening an encrypted
+image without it SHALL raise `PackageNotInstalledError`.
 
 #### Scenario: DMG detection matrix
 

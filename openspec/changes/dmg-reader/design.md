@@ -115,7 +115,7 @@ the PR body which defaults you implemented.
 | D1 | Listing when an image holds more than one readable filesystem | **Ruled by the maintainer 2026-11-21: this default.** One filesystem (every image seen so far): its files at the archive root, volume name in `archive_info().extra`. Several: each volume's files under a top-level directory named after the volume (as macOS mounts them). Do not read only the first and warn: that hides files (DR-1). |
 | D2 | Extended attributes and resource forks | **Ruled by the maintainer 2026-11-21: this default.** List names (and values up to 1 KiB) in `ArchiveMember.extra`, as TAR's pax xattrs are; do not write them on extract. Resource fork size goes in `extra` too. Docs note: code signatures of non-Mach-O files inside an `.app` (`com.apple.cs.*` xattrs) will not verify after extraction. |
 | D3 | LZFSE decoder | **Ruled by the maintainer 2026-11-21:** we already have a working pure-Python LZFSE/LZVN decoder (the prototype), so Part A ports it and it is always available. Part A0 evaluates the `lzfse` PyPI package (MIT, Apple's reference C, about 45x faster); if it passes, it becomes the optional fast path (Part H). In general the maintainer prefers an established package as an extra, and an extra being required is acceptable; our own decoder is kept here only because it exists already. |
-| D4 | UDIF checksums | **Ruled by the maintainer 2026-11-21: this default.** Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, which lifts members to `CHECKSUM` after a full in-order read or `verify_all()`. Never check it at open (it needs a full decode, DR-15b). |
+| D4 | UDIF checksums | **Ruled by the maintainer 2026-11-21: this default.** Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, a separate partition pass that `verify_all()` runs (§7.2), which lifts members to `CHECKSUM`. Never check it at open (it needs a full decode, DR-15b). |
 | D5 | Several APFS volumes in one container (a container can hold up to 100) | **Ruled by the maintainer 2026-11-21: this default.** Same as D1: one volume at the root; several, each under its volume name. Volumes with a system role (Preboot, Recovery, VM, Update) are listed like any other; DMGs seen so far hold one data volume. |
 | D6 | Encrypted image, password checks | **Ruled by the maintainer 2026-11-21: this default** (the whole image, listing included, is under one key, so the password is tried once, at open, as for a header-encrypted RAR or 7z). The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: `EncryptionError` from `wrong_password_error`, as makeself does. |
 | D7 | APFS metadata checksums (Fletcher-64 on every object) | **Ruled by the maintainer 2026-11-21:** always checked. In regular mode a block whose checksum fails is never used: the walk skips it (a bad leaf loses its records, a bad index node its subtree, a bad object-map node every object it maps), lists every member whose records are all intact, then raises `CorruptionError` at the end of the listing (DR-2). A member whose extents were partly in a skipped block lists but raises on read. Salvage mode (planned separately) will use bad blocks anyway, with a diagnostic, and show orphaned files. Metadata integrity only: it does not change `verifiable`. |
@@ -172,27 +172,34 @@ The last 512 bytes of the file (an old layout puts it at offset 0, with data-for
 | magic `koly`, version 4, header size 512 | Required; anything else is not UDIF (detection already checks these 12 bytes). |
 | flags | Ignore. |
 | running data fork offset | Ignore. |
-| data fork offset, length | Must lie inside the file. Runs are relative to the data fork offset (see 4.3). |
+| data fork offset, length | Must lie inside the file. Stored runs are located from the data fork offset (formula in 4.3). |
 | resource fork offset, length | Ignore (old images only). |
 | segment number, segment count, segment id | Segment count > 1: refuse ("segmented DMG"). |
 | data checksum (type u32, bits u32, 128 bytes) | Type 2, 32 bits = CRC-32 of the data fork bytes (D4: checked from Part F). |
 | XML offset, XML length | Required. Length 0: refuse ("DMG without a property list"). Must lie inside the file. |
 | master checksum (type, bits, 128 bytes) | CRC-32 of the partition checksums; checked from Part F if cheap. |
 | image variant u32, sector count u64 | Sector count = virtual disk size / 512. Bound it (see 4.4). |
+| code signature offset u64, length u64 (at `koly + 0x128`, inside what the struct above calls the 120 reserved bytes; 7-Zip `DmgHandler.cpp` reads it there) | Optional (both 0 when absent). A signed image keeps its code-signature blob here. Not verified. In range: allowed, and `dmg.code_signature` is `True` in `archive_info().extra`. Outside the file or overlapping another structure: a diagnostic (no existing code fits; Part B adds one, e.g. `ARCHIVE_SIGNATURE_RANGE_INVALID`, to `DiagnosticCodeStr`), the blob is ignored, and the image is read. |
 
-Bytes between the end of the property list and the `koly` block, or after the `koly`
-block when it is at offset 0, are not expected; report `ARCHIVE_TRAILING_DATA` if found
-(DR-3). The data fork, the property list and the `koly` block must not overlap.
+The image's extent is the union of the declared, validated ranges: data fork, property
+list, code-signature blob (when valid) and the `koly` block, wherever each one is (for a
+`koly` block at offset 0 the data and the property list follow it). Bytes of the file
+outside that union are reported as `ARCHIVE_TRAILING_DATA` (DR-3), never refused. The
+data fork, the property list, the blob and the `koly` block must not overlap (the blob
+excepted as above: an overlapping blob is ignored, not an error). Test: the builder
+writes a signed layout (a blob between the property list and the `koly` block, and with
+`koly` at offset 0), and the corpus run (9.5) asserts no `ARCHIVE_TRAILING_DATA` on the
+signed real images.
 
 ### 4.2 The property list
 
 Check the plist length from the `koly` block before reading any byte of it: over 64 MiB
 is `ResourceLimitError`, and a range outside the file is `CorruptionError`. Then charge
-that length with `charge_metadata` and read it in one `read_exact` (read it at open only
-if that is cheap, else lazily at first listing, per DR-15b). The parsed objects are
-dropped once the run tables are built; only the compact tables of §4.3 are kept. Parse
-with stdlib `plistlib.loads` (it refuses entity declarations, so no billion-laughs).
-Wrap parse errors as `CorruptionError`.
+that length with `charge_metadata` and read it in one `read_exact` (always at open: it
+is bounded and nothing about the image can be known without it; see §7 for the whole
+open-time envelope). The parsed objects are dropped once the run tables are built; only
+the compact tables of §4.3 are kept. Parse with stdlib `plistlib.loads` (it refuses
+entity declarations, so no billion-laughs). Wrap parse errors as `CorruptionError`.
 
 Structure: `resource-fork` → `blkx` → list of dicts, each with `Name` (or `CFName`),
 `ID`, `Attributes`, and `Data` (bytes: one `mish` table). Other keys (`plst`, `cSum`,
@@ -204,9 +211,13 @@ Header, 204 bytes, `>4sIQQQII24sII128sI`: magic `mish`, version 1, first sector,
 sector count, data offset, buffers needed, block descriptors, reserved, checksum type,
 checksum bits, checksum (128 bytes), number of runs. Then that many runs of 40 bytes,
 `>IIQQQQ`: type, comment, sector (relative to the table's first sector), sector count,
-compressed offset (relative to the data fork offset, plus the table's data offset; the
-prototype treats it as absolute file offset when the data fork starts at 0, which is the
-common case; follow 7-Zip `DmgHandler.cpp` for the exact base), compressed length.
+compressed offset, compressed length. A run's stored bytes are the half-open file range
+`[start, start + compressed length)` with `start = data fork offset + mish data offset +
+compressed offset` (7-Zip `DmgHandler.cpp` adds the same three, plus the image's start
+in the file, which is 0 here). That range must lie inside
+`[data fork offset, data fork offset + data fork length)`; outside is `CorruptionError`.
+The prototype only ever saw a data fork offset of 0 and a mish data offset of 0, so the
+builder must add a vector with both non-zero.
 
 Run types:
 
@@ -243,8 +254,17 @@ is `CorruptionError` naming the run's sector and file offset; offsets in message
 from the start of the file, a standing rule). A cut-off run is `TruncatedError`.
 `ReaderContext.decompress` applies `DecoderLimits`, the ratio guard and process
 isolation. For the in-house decoders (LZFSE, ADC), pass `max_length = count * 512 + 1`
-so output is bounded, and honour `config.formats` codec refusals the same way squashfs
-does for LZ4.
+so output is bounded.
+
+Codec policy granularity: zlib, bzip2 and xz runs go through `ReaderContext.decompress`,
+so `config.formats` codec refusals apply to them as to every format. LZFSE, LZVN and ADC
+have no `CompressionAlgorithm` value, and this plan adds none: they are internal to the
+DMG reader and cannot be refused one by one; refusing `ArchiveFormat.DMG` refuses them.
+The handbook page states this. A public `CompressionAlgorithm.LZFSE` (and a policy
+entry) is a public name, so it is the maintainer's call; Part H, which adds
+`OptionalLibrary.LZFSE`, is the place to decide it. Members do not report a codec chain
+or a `compressed_size` (runs are shared across files, as in SquashFS);
+`dmg.run_codecs` in `archive_info().extra` reports them at archive level.
 
 **Checks on the run table** (each failure is `CorruptionError` at open or first
 listing). Before any run is parsed: the header's run count must satisfy
@@ -281,12 +301,23 @@ and make the slot count a constant.
 
 ## 5. Layer 2: partition selection
 
-1. Each `blkx` entry is one partition, named like `disk image (Apple_HFS : 4)`,
+**Which evidence decides.** All `mish` tables together form one index of the virtual
+disk (sector ranges to runs); two tables whose sector ranges overlap are
+`CorruptionError` before the index is built. Bytes of the disk always come from that
+index. Candidate partition ranges come from the first of these that is valid: (a) the
+partition map read from the disk (GPT with a good header CRC in the primary or the
+backup header, or an APM), (b) the `blkx` tables' own sector ranges when there is no map
+or the map is damaged (a diagnostic says which), (c) the whole disk. Each candidate is
+probed, and the filesystem signature (step 3) alone decides what is read. `blkx` names
+(`Apple_HFS`, `Apple_APFS`) and GPT/APM type values only describe: a disagreement with
+the signature is a diagnostic, never a reason to skip or read a partition. So a GPT
+HFS+ entry with a matching header and an unrecognised `blkx` name is read.
+
+1. Each `blkx` entry is normally one partition, named like `disk image (Apple_HFS : 4)`,
    `Protective Master Boot Record (MBR : 0)`, `GPT Header (Primary GPT Header : 1)`,
    ` (Apple_Free : 3)`. The fixtures show the full GPT set.
-2. Pick partitions whose name contains `Apple_HFS` or `Apple_HFSX` (HFS+), and note
-   those with `Apple_APFS` (read by §6A from Part E). Cross-check against the decoded
-   partition map:
+2. The names show what to expect: `Apple_HFS` or `Apple_HFSX` (HFS+), `Apple_APFS`
+   (read by §6A from Part E). The partition maps:
    - GPT: `EFI PART` at sector 1; partition entries; HFS+ type GUID
      `48465300-0000-11AA-AA11-00306543ECAC`, APFS
      `7C3457EF-0000-11AA-AA11-00306543ECAC`. Verify the header CRC; a mismatch is a
@@ -303,10 +334,23 @@ and make the slot count a constant.
    naming the partition names found. A hybrid image with an ISO 9660 or other partition
    beside HFS+/APFS lists only the HFS+/APFS volumes and reports the other partition
    (`ARCHIVE_UNLISTED_DATA`), as nothing we have seen does this.
-5. If the map and the `mish` names disagree on where a partition starts, trust the
-   `mish` table's sector range (it is what 7-Zip uses) and report a diagnostic.
+5. If a valid map and a `blkx` table disagree on where a partition starts, the map's
+   range is probed (the bytes come from the disk index either way) and a diagnostic is
+   reported. Tests: a GPT image whose `blkx` names are unrecognised; a damaged GPT
+   (both headers bad) that falls back to the `blkx` ranges; two `mish` tables that
+   overlap.
 
-Several HFS+ partitions: D1.
+Several HFS+ partitions: D1. Top-level names (D1, D5), in partition order and then
+volume order inside a container: the volume name with `/` as `:`; an empty name, `.`
+or `..` becomes `Untitled`; a name already taken (exact match, then case-insensitive
+match, so the tree also extracts on a case-insensitive file system) gets ` 1`, ` 2`, ...
+appended, the first number that gives a free name, as macOS does under `/Volumes`.
+The names are fixed before any member is listed, so ordering is stable. The original
+labels are in `archive_info().extra["dmg.volumes"]` in the same order. Hard links never
+cross volumes; their targets carry the volume's top-level name. Test: an image with two
+volumes named `Data`, each holding `readme.txt` and a hard link, lists `Data/...` and
+`Data 1/...`, in partition order, with each link pointing back inside its own
+volume.
 
 ---
 
@@ -322,6 +366,24 @@ in practice; refuse others), `totalBlocks` (× blockSize must fit in the partiti
 `journalInfoBlock`, and five fork records (allocation, extents, catalog, attributes,
 startup), each `logicalSize`, `totalBlocks` and 8 extents (`startBlock`, `blockCount`).
 An HFS wrapper (signature `BD` at 1024, embedded HFS+ volume) is rare: refuse by name.
+
+**Journal state** (TN1150 "Journal": an implementation must replay a journal with
+pending transactions or not mount the volume). If the volume is journaled (attributes
+bit 13), read the journal info block at `journalInfoBlock`, then the journal header:
+
+- `kJIJournalNeedInitMask` set: the journal is empty; read the volume.
+- `kJIJournalOnOtherDeviceMask` set (external journal): its state cannot be checked;
+  `UnsupportedFeatureError("HFS+ volume with an external journal")` at open.
+- Journal in the volume (`kJIJournalInFSMask`): header magic `JNLx` and endian mark
+  checked (bad is `CorruptionError`); `start == end` means clean, read the volume;
+  `start != end` means pending transactions:
+  `UnsupportedFeatureError("HFS+ volume with an unreplayed journal")` at open. Replay
+  is later work (§12). A volume that `hdiutil` or a clean unmount wrote is clean.
+
+Tests: the builder writes each case (clean, need-init, pending, external). The pending
+case is checked independently with `fsck.hfsplus -n` from `hfsprogs` (Linux, apt),
+which reports a journal that needs replay, so the builder's layout is not only checked
+against itself.
 
 ### 6.2 Forks and extents
 
@@ -350,13 +412,21 @@ Members:
 | --- | --- |
 | folder | `DIRECTORY` |
 | file, normal | `FILE`, size = data fork `logicalSize` (or decmpfs size, 6.6) |
-| file, `fileType` `slnk` creator `rhap` | `SYMLINK`, target = data fork bytes (UTF-8, cap 1024 bytes as PATH_MAX; longer is `CorruptionError`) |
+| file whose BSD mode is `S_IFLNK`, or whose `fileType` is `slnk` with creator `rhap` | `SYMLINK`, target = data fork bytes (UTF-8, cap 1024 bytes as PATH_MAX; longer is `CorruptionError`) |
 | file, `fileType` `hlnk` creator `hfs+` | file hard link (6.5) |
 | file, `fileType` `fdrp` creator `MACS` | directory hard link: `UnsupportedFeatureError` for that member (no fixture exists; DR-21a). Other members stay readable. |
 | file with BSD mode of a FIFO, socket, char/block device | `OTHER` (standing ruling: device, FIFO, socket = OTHER) |
 
-Paths: build from parent links (folder thread records). Depth cap and loop check (a
-parent chain that revisits a CNID is `CorruptionError`; prototype `build_paths`).
+Type precedence: a non-zero BSD mode decides the type (`S_IFLNK`, `S_IFREG`, devices,
+FIFOs, sockets), as the prototype does; TN1150 says macOS writes both the mode and the
+Finder `slnk`/`rhap` tags. When the mode is 0 (not set), the Finder tags decide. When
+both are set and disagree, the mode wins and a diagnostic is reported. Test: a
+mode-only symlink (Finder info zero) lists as `SYMLINK`.
+
+Paths: build from each catalog key's parent CNID and the folder records' own CNIDs, as
+the prototype does (`build_paths`). Folder thread records are a separate cross-check: a
+thread that disagrees is a diagnostic. Depth cap and loop check (a parent chain that
+revisits a CNID is `CorruptionError`).
 
 Names: decode UTF-16BE. A `/` in a stored name becomes `:` (the POSIX view macOS mounts
 and 7-Zip show). Keep the decomposed Unicode form as stored (do not NFC-compose; that is
@@ -407,9 +477,27 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 | 12 | LZFSE in resource fork | |
 | other | | `UnsupportedFeatureError` at that member's read |
 
-Decode block by block through `block_stream` (64 KiB blocks), not whole-file in memory
-like the prototype. Each block's decoded length must be exactly 64 KiB (last block: the
-remainder); the total must equal the header size. zlib blocks go through
+Inline types (1, 3, 7, 9, 11): the payload is the attribute's bytes after the 16-byte
+header, one chunk. It decodes with output capped at the declared size + 1, and the
+decoded length must equal the declared size exactly (else `CorruptionError`). A
+declared size over 64 KiB for an inline type is `CorruptionError` (inline data is one
+chunk).
+
+Resource-fork types (4, 8, 10, 12): the fork holds `n = ceil(size / 64 KiB)` chunks,
+located by the type's table (type 4: the resource-map layout, a 256-byte resource fork
+header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
+12: `n + 1` little-endian u32 offsets; type 10: fixed 64 KiB chunks). The table must
+have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
+chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. Decode chunk
+by chunk through `block_stream`, not the whole file in memory like the prototype.
+
+Missing pieces: a file with `UF_COMPRESSED` but no `com.apple.decmpfs` attribute, a
+fork type whose resource fork is missing or empty, and an attribute shorter than its
+header all list the member, and its read raises `CorruptionError`; never an empty file
+that reads successfully. A `com.apple.decmpfs` attribute without `UF_COMPRESSED` is
+ignored, as macOS does: the data fork is read, and the attribute lists in `extra`.
+Tests: each inline type; a resource-fork file whose last chunk is short; a flagged file
+with no attribute; a fork type with no resource fork. zlib blocks go through
 `ReaderContext.decompress(..., StreamFormat.ZLIB)`. Member size is the decmpfs size; the
 data fork is empty for these files. Hide `com.apple.decmpfs` and the resource fork of a
 compressed file from the D2 listing (they are implementation, not content).
@@ -445,15 +533,29 @@ Physical address 0 and addresses at or past the container block count are
 
 1. Block 0 is a copy of the container superblock (`NXSB` at offset 32). Read the block
    size and the checkpoint descriptor area (`nx_xp_desc_blocks`, `nx_xp_desc_base`).
-2. Scan the checkpoint descriptor area for valid `NXSB` objects (right type, checksum
-   good) and take the one with the highest xid (prototype `_latest_superblock`). Bound
-   the area (refuse > 65,536 blocks); a non-contiguous area (high bit of
-   `desc_blocks` set) is `UnsupportedFeatureError` (never seen in a DMG).
+2. Scan the checkpoint descriptor area for `NXSB` objects with the right type and a good
+   checksum, and take the newest usable one, by xid (prototype `_latest_superblock`,
+   which checks only the superblock). Usable means the checkpoint is complete: the
+   `nx_xp_desc_len` blocks that end at it (from `nx_xp_desc_index`, wrapping in the
+   ring) are its checkpoint-map objects (type checkpoint map), each with a good checksum
+   and the same xid, and the last one has `CHECKPOINT_MAP_LAST`. An incomplete
+   checkpoint is skipped for the next older one, with a diagnostic. The reader needs no
+   ephemeral object (space manager, reaper), so it does not read them. Damage in
+   physical objects reached from a complete checkpoint (object maps, trees) never
+   triggers this fallback: it is D7 damage (§6A.6). Test: a newest superblock with a
+   good checksum but a missing checkpoint-map block, beside a complete older checkpoint:
+   the older one is read. Bound the area (refuse > 65,536 blocks); a non-contiguous area
+   (high bit of `desc_blocks` set) is `UnsupportedFeatureError` (never seen in a DMG).
 3. Refuse Fusion containers (`incompatible_features & 0x100`).
 4. Load the container object map (`nx_omap_oid`): an `omap_phys_t` whose B-tree maps
-   (oid, xid) to physical address. Keep the newest entry per oid with xid ≤ the
-   superblock's xid, drop deleted entries (flag 1). An entry with the encrypted flag (4)
-   is part of an encrypted volume: refuse that volume.
+   (oid, xid) to physical address. Lookup of an oid at transaction `x`: take the entry
+   with the highest xid ≤ `x`, tombstones (`OMAP_VAL_DELETED`, flag 1) included. If that
+   winning entry is a tombstone, the object is absent; tombstones are never filtered out
+   before the choice (the bundled prototype `apfs.py` filters them first, which is
+   wrong: a live entry at xid 10 and a deletion at 11 would resolve to the old address
+   at 11). The encrypted flag (4) is read from the winning live entry only; set there,
+   the object is part of an encrypted volume: refuse that volume. Test: lookups at xid
+   10 and 11 on both sides of a deletion.
 5. Volumes: the non-zero oids in `nx_fs_oid[100]`, each looked up in the container omap,
    each an `apfs_superblock_t` (`APSB`).
 
@@ -601,9 +703,15 @@ merged when this was written; follow the merged version if it differs):
 - `cdsaencr` in the last 8 bytes: v1 (pre-10.5). Recognise, refuse by name.
 
 Both map to `ArchiveFormat.DMG`. Add them as an offset-0 magic and a trailer signature
-next to the `koly` ones. Until Part G lands, `DmgHandler.open` refuses both with
-`UnsupportedFeatureError("The file is an encrypted DMG disk image. Reading encrypted
-DMGs is not supported yet.")` (DR-4: not corrupt, archivey just cannot read it).
+next to the `koly` ones, in Part B (not G), so the named refusal works from Part B on.
+Detector precedence stays as today (far magic, then the `koly` trailer). The `encrcdsa`
+check uses the head bytes detection already reads, and `cdsaencr` the last 8 bytes of
+the same single 512-byte tail read, so the detection-cost receipt for the trailer tier
+(`openspec/specs/detection-cost`, one 512-byte tail read on a cheap-seek source) is
+unchanged; a test asserts that receipt. Until Part G lands, `DmgHandler.open` refuses
+both with
+`UnsupportedFeatureError("The file is an encrypted DMG disk image. Reading encrypted DMGs is not supported yet.")`
+(DR-4: not corrupt, archivey just cannot read it).
 
 ### 6B.2 The v2 header (verify against the fixtures)
 
@@ -674,9 +782,18 @@ class DmgHandler(IndexedFormatHandler):
 DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
 ```
 
-- `open()`: read the `koly` block, refuse encrypted/segmented images, parse the property
-  list and run tables (bounded), build `UdifSource`, select the partition(s), read the
-  HFS+ volume header. Nothing proportional to the image (no catalog walk) at open.
+- `open()`: a fixed envelope, nothing proportional to the image. It reads: the `koly`
+  block; the property list (≤ 64 MiB, §4.2) and its run tables; the partition map
+  (GPT header and entry array, at most 128 entries of 128 bytes; or APM, at most 64
+  entries); and for each candidate partition, its first 4 KiB (the HFS+ volume header
+  and, when journaled, the journal info block and journal header; the APFS block 0
+  container superblock). Errors raised at open: encrypted (before Part G) and segmented
+  refusals; `koly`, plist and run-table errors (§4); partition-map errors that leave no
+  candidate; no filesystem found; APFS-only before Part E; HFS+ volume header errors,
+  HFS wrapper, journal refusals (§6.1). Everything else is at first listing: the
+  catalog and other B-trees, the APFS checkpoint scan, object maps and volume
+  superblocks (so APFS volume names, and D1/D5 top-level names for APFS, are fixed at
+  first listing). Work past this envelope at open is a bug, not a deferral.
 - `iter_members()`: walk the catalog, yield `MemberRecord`s. Respect `max_members` the
   way squashfs does.
 - `open_member()`: `MemberData(stream, bounded=True)` over the data fork extents (a
@@ -692,7 +809,9 @@ DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
   and, for APFS, `dmg.apfs_volumes` (names).
 - `archivey --version -v` must show DMG as readable (check the output test in
   `tests/test_cli.py::test_version_verbose_lists_formats`). The format needs no optional
-  package (AES needs `cryptography`, Part G).
+  package: `format_availability(DMG)` is `FULL` without `cryptography`, as the
+  backend-registry rule says for encrypted members of other formats; opening an
+  encrypted image without it raises `PackageNotInstalledError` (Part G).
 
 ### 7.1 Error map
 
@@ -711,6 +830,39 @@ DmgReadBackend = register_builtin_format(DmgHandler, MAGIC=..., TRAILER=...)
 Damage in one file's extents or decmpfs data must not stop listing or other members
 (DR-2). Damage in a run that holds catalog nodes stops the listing at that point:
 deliver the members found before it, then raise.
+
+
+### 7.2 Partition CRC pass (Part F)
+
+The CRC covers disk bytes that no member stream reads (filesystem metadata, free
+blocks, slack), and member streams overlap (hard links, clones, decmpfs), so member
+reads are not a proxy for it. Part F therefore runs a separate pass:
+
+- **Coverage:** for each `blkx` table with a CRC-32 (`checksum type 2`, 32 bits), every
+  run of that table except "ignore" runs, zero-fill included, decoded in sector order,
+  CRC over the decoded bytes. One run in memory at a time (bounded by §4.4).
+- **`verifiable`:** at listing, a file member is `CHECKSUM` when every partition its
+  data lies in has a table CRC; else `LENGTH`. Directories and links as for other
+  formats.
+- **Trigger:** `verify_all()` only. An ordinary in-order read of members does not run
+  it and does not raise members to `CHECKSUM` (it does not cover every run). The pass
+  runs once per reader; its result is kept, so a second `verify_all()` does not decode
+  again. No retry: decoding is deterministic.
+- **Result:** match: `verified` reaches `CHECKSUM` for the members of that partition
+  whose own reads passed. Mismatch: a `SpanningCheckError` that fails every member the
+  partition covers; `verified` stays below `CHECKSUM`. A decode error during the pass
+  fails those members the same way, naming the run.
+- **Hook:** today's spanning-check hook (`archivey.formats`) publishes a result for
+  members but does not schedule reads of disk ranges. Part F adds a reader-driven pass
+  to it (the reader decodes its own ranges when `verify_all()` asks), as part of the
+  plugin interface; that is why the maintainer merges it.
+- **Tests:** `verify_all()` on a fixture raises every file to `CHECKSUM`; a flipped byte
+  in a run that only holds free space or catalog nodes (no member reads it) is caught by
+  `verify_all()`; a flipped byte in a zlib run that still decodes fails the partition's
+  members.
+
+The data-fork CRC-32 and the master checksum in the `koly` block are checked in the same
+pass when present.
 
 ---
 
@@ -927,12 +1079,12 @@ the order after B is flexible except where noted.
 | --- | --- | --- | --- |
 | **A0. Evaluate the `lzfse` package** | An investigation PR (results under `dev-docs/investigations/`, scripts under `scripts/investigations/`, like the compress-utils LZO evaluation). Check: wheels for CPython 3.11 to 3.15, free-threaded 3.14t/3.15t, PyPy, Linux (glibc and musl), macOS (arm64 and x86) and Windows; licence and maintenance; whether a call can cap its output (a declared size must not drive the allocation); whether raw LZVN blocks (decmpfs types 7 and 8) can be decoded, directly or by wrapping them in a `bvxn` block header; behaviour under a fuzz run (no crash, hang or over-cap output, in a child process per DR-20); child-process cost per 1 MiB run; agreement with the prototype on the fixtures and random inputs. Ends with a recommendation on whether Part H uses it as the accelerator. | none | maintainer decides |
 | **A. Decoders** | `lzfse_decoder.py` (LZFSE + LZVN) and `adc_decoder.py`, pure Python, §9.4 tests. No reader. | none | agent |
-| **B. UDIF + partitions + HFS+** | §3 to §7 for HFS+: `udif.py` rewrite, `disk_partitions.py`, `hfsplus.py`, `dmg_reader.py`, detection kept, encrypted and APFS refused by name, HFS+ fixtures, `tests/dmg_build.py` (UDIF, GPT, APM, HFS+ writers), 7-Zip oracle tests, fuzz target, handbook page, threat-model row, OpenSpec change. The big one: the test builders may go first as their own PR. | A | maintainer (new readable format, needs-minor) |
+| **B. UDIF + partitions + HFS+** | §3 to §7 for HFS+: `udif.py` rewrite, `disk_partitions.py`, `hfsplus.py`, `dmg_reader.py`, detection kept, the `encrcdsa`/`cdsaencr` signatures registered (§6B.1), encrypted and APFS refused by name, HFS+ fixtures, `tests/dmg_build.py` (UDIF, GPT, APM, HFS+ writers), 7-Zip oracle tests, fuzz target, handbook page, threat-model row, OpenSpec change. The big one: the test builders may go first as their own PR. | A | maintainer (new readable format, needs-minor) |
 | **C. User docs** | `docs/formats.md` §Disk images, the formats table, `--version -v` wording. Written in the maintainer's docs session (DR-22b). | B | maintainer |
 | **D. Hidden-content and edge polish** | Anything Part B's review defers: journal hiding cases, directory hard links if a fixture appears, xattr value caps, extra checks found by the corpus run. May be empty. | B | agent |
 | **E. APFS** | §6A: `apfs.py`, the reader using it, `write_apfs` builder, APFS fixtures, D5 multi-volume listing, Fletcher-64, refusals (encrypted volume, sealed, Fusion), fuzz target, handbook page section. | B | maintainer (new filesystem; davi decision D5) |
-| **F. Partition CRC-32 spanning check** | D4: mark members `verifiable = CHECKSUM` from listing; run the CRC over every run except "ignore" runs, zero-fill included, during an in-order full read or `verify_all()`; mismatch is a `SpanningCheckError` covering the partition's members. Follow `dev-docs/topics/verification.md` §2.5 (7z folder CRC is the model). Data-fork CRC-32 and the master checksum too, if cheap. | B | maintainer (changes a verification guarantee) |
-| **G. Encrypted images** | §6B: detection signatures, `dmg_crypto.py`, TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
+| **F. Partition CRC-32 spanning check** | D4, as a partition pass (details in §7.2). | B | maintainer (changes a verification guarantee) |
+| **G. Encrypted images** | §6B: `dmg_crypto.py`, TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
 | **H. LZFSE accelerator** | D3: optional `lzfse` package in a child process through `Natives`, like LZO's `compress-utils` path (`lzo_decoder.py` `_compress_utils`): `OptionalLibrary.LZFSE`, an extra in `pyproject.toml` (copy how `bzip3` and `compress-utils` extras are declared), `exclude_libraries` support, `--version -v` "faster with" line, tests that both decoders agree on every fixture, `--all-configs` run. | A (useful after B) | maintainer (new public name and dependency) |
 
 Each part's PR body says which part of this plan it implements and lists any place it
@@ -947,6 +1099,7 @@ departs from the plan, with the reason.
 - `cdsaencr` v1 encrypted images, certificate-encrypted images.
 - Segmented images, sparse images and bundles, NDIF, resource-fork-only images.
 - Raw `.dmg` disk images without `koly` (UDRW), raw GPT/HFS+/APFS disk images.
+- Replaying an HFS+ journal with pending transactions (refused by name today, §6.1).
 - Writing xattrs on extract (a cross-format feature).
 - An LZFSE kernel in the parked Rust core.
 
