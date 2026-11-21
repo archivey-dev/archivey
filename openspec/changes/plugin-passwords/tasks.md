@@ -20,7 +20,9 @@
 - [ ] 1.6b Tests (D8): reentry during first-touch listing and during a paused walk;
   another thread waiting on a paused walk; interleaved nested-member reopen while
   another thread waits on the provider; `open_member` and `then` called once per
-  request; generator closed on failure; ARJ short source vs wrong-key exhaustion
+  request; generator closed on failure; copied-context `close()` during a returned
+  request; a request reached below listing finalization; two overlapping requests on one
+  shared handle; ARJ short source vs wrong-key exhaustion
 - [ ] 1.7 Docs: `adding-a-format.md` passwords section, `formats.py` docstring (docs
   session)
 

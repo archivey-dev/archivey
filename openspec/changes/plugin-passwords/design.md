@@ -336,21 +336,44 @@ Inside a plugin call archivey holds locks and per-call state: the handle guard a
 the materialization owner around `iter_members` and `walk`, and adapter scratch state
 such as the nested-reopen marker around `open_member`. Because the plugin hands over a
 request instead of calling in (D1), archivey resolves it at a point where it chooses
-what is held:
+what is held. Two rules decide it:
 
-- **A returned request** (`open`, `open_member`): the plugin call has finished.
-  archivey leaves the handle guard and the per-call scratch state, runs the loop and
-  any provider call with no archivey lock held, then calls `then` under the same guard
-  and scratch state as the original call. `then` uses only what its closure captured
-  and the reader's own state, as `open_member` already must under `CONCURRENT`, since
-  another thread may use the reader while the provider runs.
+1. **Plugin code runs under the plugin's guards.** `check`, `full_check` and `then` are
+   plugin code: ARJ's full check decodes a stream, and a third-party plugin may run them
+   on a shared library handle. archivey enters the same scoped handle guard and adapter
+   state as the call that handed over the request (the handle guard for `open_member`,
+   the walk's own state for a yielded request) around each callback, and leaves it after
+   each one. Two overlapping requests on one shared handle are therefore serialized
+   like any two member opens.
+2. **Only the provider runs with no archivey lock held**, as the reader-concurrency
+   contract states ("at most one provider call per reader, with no Archivey lock
+   held"). Before each provider call archivey leaves every guard and physical lock it
+   took for the request, including outer ones on the same stack, and takes them again
+   after the answer, before the next callback.
+
+Logical ownership is kept apart from the physical locks:
+
+- **A returned request** (`open`, `open_member`) is owned by the worker that runs it,
+  and that worker stays registered as active while the provider runs. `then` uses only
+  what its closure captured and the reader's own state, as `open_member` already must
+  under `CONCURRENT`.
 - **A yielded request** (`walk`, `iter_members`): the generator is paused at its
-  `yield`, so no plugin frame is running. The walk keeps its listing lock and
-  materialization ownership (no other thread may advance it), and archivey marks it as
-  waiting on the provider and releases the handle guard. Every call that would wait for
-  that walk checks the mark first: from the provider's own thread or a context copied
-  from it, it raises `ArchiveyUsageError` at once instead of waiting; from any other
-  thread it waits until the provider has answered, as it waits for the walk today.
+  `yield`. archivey records the walk as paused on the provider (its listing ownership
+  and materialization ownership stay with the paused walk, so no other thread may
+  advance it) and releases the listing lock and the handle guard.
+- **A request reached below an outer archivey frame** that holds a lock, such as
+  listing finalization, which holds the listing lock while it reads link targets
+  (`_finalize_and_publish`): that frame's lock is released for the provider call and
+  replaced by the same ownership record, so its state stays reserved for it.
+
+Every same-reader entry that would wait on a request's owner checks the provider context
+first: listing and iteration (`members()`, `iter_members()`, the materialization wait),
+`open()` and `read()` of members that need the listing, `stream_members()`, `close()`
+(its wait for active workers), and link-target reads. From the provider's own thread or
+a context copied from it (the existing `_PROVIDER_CALL` check), each raises
+`ArchiveyUsageError` at once instead of waiting. From any other thread it waits on the
+ownership record until the provider has answered, as it waits for the walk or the worker
+today.
 
 In both cases the request object is the unit. Its rejected answers and the provider's
 attempt count for it live on the request and end with it, so no identity by call order
@@ -369,8 +392,8 @@ A plugin hands over requests from `open`, `iter_members`, `walk` and `open_membe
 `read`.
 
 Remaining limit: a provider that waits for a separate thread (not a copied context) that
-needs the same paused walk waits forever. That is the provider's own deadlock, the same
-as a provider that waits for any lock its own caller holds, and the docs say so.
+needs the same request's owner waits forever. That is the provider's own deadlock, the
+same as a provider that waits for any lock its own caller holds, and the docs say so.
 
 ## Risks / Trade-offs
 

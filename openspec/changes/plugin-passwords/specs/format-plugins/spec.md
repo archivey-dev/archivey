@@ -119,17 +119,20 @@ before returning when the total would pass the cap, leaving the total unchanged.
 
 ### Requirement: The provider runs while no plugin code is in progress
 
-archivey SHALL resolve a returned request after the plugin call has finished, with no
-archivey lock or per-call adapter state held, and SHALL call `then` under the same guard
-and state as the original call. archivey SHALL resolve a yielded request while the
-generator is paused, keeping the walk's ownership, marking the walk as waiting on the
-provider and releasing the handle guard; a call from the provider's own thread or a
-context copied from it that would wait for that walk SHALL raise `ArchiveyUsageError` at
-once, and a call from any other thread SHALL wait for the answer. No plugin call SHALL
-be repeated to try a provider answer. Retry state SHALL live on the request. When
-resolution fails for a yielded request, archivey SHALL close the generator and the error
-SHALL end the walk. Two workers needing the provider at once SHALL be served one after
-the other.
+archivey SHALL run `check`, `full_check` and `then` under the same scoped handle guard
+and adapter state as the plugin call that handed over the request, entered and left
+around each callback. Only the provider SHALL run with no archivey lock held: before
+each provider call archivey SHALL leave every guard and physical lock it holds for the
+request, including an outer frame's (listing finalization reading link targets), and
+SHALL keep the request's ownership as a record instead: the active worker for a returned
+request, the paused walk for a yielded one. Every same-reader entry that would wait on
+that owner (listing, iteration, member `open()`, `stream_members()`, `close()`,
+link-target reads) SHALL raise `ArchiveyUsageError` at once when called from the
+provider's own thread or a context copied from it, and SHALL wait for the answer when
+called from any other thread. No plugin call SHALL be repeated to try a provider answer.
+Retry state SHALL live on the request. When resolution fails for a yielded request,
+archivey SHALL close the generator and the error SHALL end the walk. Two workers needing
+the provider at once SHALL be served one after the other.
 
 #### Scenario: concurrency
 
@@ -145,6 +148,10 @@ the other.
 | makeself payload 2: every password wrong | Generator closed; wrong-password `EncryptionError` ends the walk |
 | Another thread calls `reader.members()` while the walk waits on the provider | Waits, then gets the full list |
 | DMG `open` returns a request | Handler `open` called once; `then` returns the reader |
+| Provider calls `reader.close()` from a copied context while an `open_member` request waits on it | `ArchiveyUsageError` in the helper, no deadlock |
+| Listing finalization reads an encrypted link target whose request needs the provider | Listing lock released for the provider call; provider's own-context `reader.members()` raises `ArchiveyUsageError`; another thread's waits |
+| Toy plugin with one shared handle, two overlapping requests, `full_check` decoding on the handle | Callbacks serialized by the handle guard; provider runs with the guard released |
+| Provider's own thread calls `reader.read(member)` during a paused walk | `ArchiveyUsageError`, no deadlock |
 
 #### Scenario: ARJ trial decode failures
 
