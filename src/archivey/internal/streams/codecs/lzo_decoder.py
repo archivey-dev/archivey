@@ -151,12 +151,9 @@ def _archivey_codecs(
 ) -> Callable[[bytes, int], bytes] | None:
     """archivey-codecs' LZO1X kernel when :mod:`archivey.internal.native` allows it,
     with :func:`lzo1x_decompress_python`'s contract: at most ``limit`` bytes, and
-    :class:`LzoError` with the same message on damage.
-
-    Under ``NATIVE_DECODERS`` it is not used until the decoder child can run it."""
-    if natives.isolated:
-        return None
-    module = native.kernels("lzo1x", excluded)
+    :class:`LzoError` with the same message on damage. Under ``NATIVE_DECODERS`` each
+    block decodes in a decoder child (:mod:`archivey.internal.native_child`)."""
+    module = native.decoding_kernels("lzo1x", excluded, isolated=natives.isolated)
     if module is None:
         return None
     kernel = module.lzo1x.decompress

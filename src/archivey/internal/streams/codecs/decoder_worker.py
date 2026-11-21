@@ -2,10 +2,10 @@
 
 A native decoder can take the whole process down on hostile input, and no ``try`` can
 catch that. ``ArchiveyConfig.process_isolation`` decides which decoders run in a child
-process instead: pyppmd and rapidgzip by default, every native
-decoder under ``NATIVE_DECODERS``. The child runs this file as a script
-(``python -P decoder_worker.py``), owns one decoder object at a time, and answers one
-request at a time; the parent keeps all the decoding logic.
+process instead: pyppmd and rapidgzip by default, every native decoder under
+``NATIVE_DECODERS``, archivey-codecs' decoding kernels included. The child runs this
+file as a script (``python -P decoder_worker.py``), owns one decoder object at a time,
+and answers one request at a time; the parent keeps all the decoding logic.
 
 rapidgzip's child runs this file too (``python -P decoder_worker.py rapidgzip
 [bzip2]``), which loads ``rapidgzip_worker.py`` by path and hands it this module, so
@@ -42,7 +42,9 @@ Child to parent, one per request (two per ``OPEN``):
   then the output bytes. The state holds ``eof``, ``needs_input``, brotli's
   ``is_finished`` and ``can_accept_more_data``, a ``result`` that is not bytes, and the
   lengths (not the bytes) of ``unused_data`` and ``unconsumed_tail``: both are the end
-  of input the parent sent, so the parent rebuilds them from its copy.
+  of input the parent sent, so the parent rebuilds them from its copy. For
+  archivey-codecs it also holds a ``report`` of the kernel's attributes
+  (:class:`_Codecs`).
 - ``ERR``: payload ``ERROR_SEPARATOR``-joined module, qualified type name, errno (or
   empty) and message, UTF-8. See :func:`error_payload`.
 
@@ -325,6 +327,89 @@ def _load_ppmd8() -> Callable[..., Any]:
     return importlib.import_module("pyppmd").Ppmd8Decoder
 
 
+class KernelPanic(Exception):
+    """A Rust panic in an archivey-codecs kernel. PyO3 raises ``PanicException``, a
+    ``BaseException`` that ``_serve`` would not report, so :class:`_Codecs` raises this
+    instead, and the parent rebuilds it as a panic (``native_child.ChildPanic``)."""
+
+
+def _kernel_call(function: Callable[..., Any], args: Any, kwargs: Any) -> Any:
+    try:
+        return function(*args, **kwargs)
+    except Exception:
+        raise
+    except BaseException as exc:
+        if type(exc).__name__ == "PanicException":
+            raise KernelPanic(str(exc)) from None
+        raise
+
+
+class _Codecs:
+    """archivey-codecs' decoding kernels, one kernel object at a time.
+
+    ``build`` makes the object from its dotted name in the package (such as
+    ``"lzw.Decompressor"`` or ``"lzx.Decompressor.from_state"``); every other ``CALL``
+    runs that object's method of the same name. :meth:`report` goes with each reply
+    (``_state``): the attributes the parent's wrappers read after each call, so that
+    reading one costs no round trip.
+    """
+
+    # The kernel attributes reported with each reply, where the kernel has them.
+    REPORTED = (
+        "total_in",
+        "total_out",
+        "error_in",
+        "truncation",
+        "header_params",
+        "nine_bit_widens",
+        "clear_offsets",
+    )
+
+    def __init__(self, module: Any) -> None:
+        self._module = module
+        self._kernel: Any = None
+
+    def kernels(self) -> dict[str, int]:
+        """The package's ``KERNELS`` table."""
+        return dict(self._module.KERNELS)
+
+    def build(self, name: str, args: list[Any], kwargs: dict[str, Any]) -> None:
+        self._kernel = None
+        target = self._module
+        for part in name.split("."):
+            target = getattr(target, part)
+        self._kernel = _kernel_call(target, args, kwargs)
+
+    def lzo1x(self, block: bytes, max_size: int) -> bytes:
+        """One LZO1X block: the package's ``lzo1x.decompress``."""
+        decompress = self._module.lzo1x.decompress
+        return _kernel_call(decompress, (block,), {"max_size": max_size})
+
+    def report(self) -> dict[str, object]:
+        report: dict[str, object] = {}
+        for name in self.REPORTED:
+            value = getattr(self._kernel, name, _MISSING)
+            if value is not _MISSING:
+                report[name] = value
+        return report
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        value = getattr(self._kernel, name)
+        if not callable(value):
+            return value
+        return lambda *args, **kwargs: _kernel_call(value, args, kwargs)
+
+
+_MISSING = object()
+
+
+def _load_archivey_codecs() -> Callable[..., Any]:
+    module = importlib.import_module("archivey_codecs")
+    return lambda: _Codecs(module)
+
+
 LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
     "zlib": _load_zlib,
     "bz2": _load_bz2,
@@ -339,6 +424,7 @@ LOADERS: dict[str, Callable[[], Callable[..., Any]]] = {
     "snappy": _load_snappy,
     "ppmd7": _load_ppmd7,
     "ppmd8": _load_ppmd8,
+    "archivey_codecs": _load_archivey_codecs,
 }
 
 # Codecs whose decoder's ``unused_data`` is not part of the state, because reading it
@@ -375,6 +461,8 @@ def _state(codec: str, decoder: object, result: object) -> dict[str, object]:
             state[name] = bool(method())
     if result is not None and not isinstance(result, bytes):
         state["result"] = result
+    if isinstance(decoder, _Codecs):
+        state["report"] = decoder.report()
     return state
 
 
