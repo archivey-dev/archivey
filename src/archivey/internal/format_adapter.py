@@ -3381,8 +3381,8 @@ def _extensions(
 
 
 # The built-in containers a plugin can replace (``FormatPolicy(replace=)``): the ones an
-# indexed plugin can read. TAR, ar, CPIO and RAW_STREAM read in one pass, DIRECTORY is
-# not a file, and DMG is recognised only to be refused.
+# indexed plugin can read. TAR, ar, CPIO and RAW_STREAM read in one pass, and DIRECTORY
+# is not a file.
 REPLACEABLE_CONTAINERS = frozenset(
     {
         ContainerFormat.ZIP,
@@ -3394,6 +3394,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.CAB,
         ContainerFormat.LHA,
         ContainerFormat.ARJ,
+        ContainerFormat.DMG,
     }
 )
 

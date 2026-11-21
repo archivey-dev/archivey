@@ -137,7 +137,9 @@ class DiagnosticCode(StrEnum):
     directory block after its last record."""
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
-    is left out of the listing, as a read from a file never sees it."""
+    is left out of the listing, as a read from a file never sees it. Or a DMG disk
+    image holds a partition beside the HFS+ volumes it lists whose contents archivey
+    does not read (an APFS container, an HFS volume, or no filesystem it knows)."""
     ARCHIVE_UNREAD_SESSION = "archive_unread_session"
     """A CD image holds a session its listing does not read, which another reading
     of the same file does. A raw image (a ``.bin``) read without its ``.cue`` sheet
@@ -146,6 +148,15 @@ class DiagnosticCode(StrEnum):
     sheet beside it may choose the other volume. Or a ``.cue`` sheet chose a session,
     but the sector addresses of a later data track start another one: the listing
     follows the sheet, and the image read without it lists that session."""
+    ARCHIVE_STRUCTURE_INCONSISTENT = "archive_structure_inconsistent"
+    """A disk image's structures are damaged or disagree with each other in a way the
+    read works around, and the context's ``structure`` says which: a UDIF code signature
+    outside the file (ignored), a primary GPT that fails its checks (the backup is
+    read), a partition map that fails its checks (the run tables' ranges are read), a
+    partition map or run table name that disagrees with the filesystem the partition
+    holds (the filesystem decides), an HFS+ file whose mode and Finder type disagree on
+    whether it is a symlink (the mode decides). The listing comes from what the
+    read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_DAMAGED = "member_header_damaged"
@@ -312,6 +323,8 @@ DiagnosticCodeStr = Literal[
     "archive-unlisted-data",
     "archive_unread_session",
     "archive-unread-session",
+    "archive_structure_inconsistent",
+    "archive-structure-inconsistent",
     "member_timestamp_invalid",
     "member-timestamp-invalid",
     "member_header_damaged",
@@ -632,6 +645,11 @@ class UnlistedDataContext(_JsonSafeContext):
     seekable read never sees it. ``member_name`` and ``member_id`` are what the pass
     gave it before then; ``offset`` is where its local header starts and
     ``compressed_size`` the bytes of data after it.
+
+    A DMG disk image (``format`` ``"dmg"``) reports a partition it does not list:
+    ``member_name`` is the partition's name (its partition map entry, or its run
+    table), ``member_id`` is ``None``, ``offset`` is where the partition starts on
+    the image's disk and ``compressed_size`` is its length in bytes.
     """
 
     kind: Literal["unlisted_data"] = "unlisted_data"
@@ -660,6 +678,38 @@ class UnreadSessionContext(_JsonSafeContext):
     archive_name: str | None = None
     format: str = ""
     sector: int = 0
+
+
+@dataclass(frozen=True)
+class ArchiveStructureContext(_JsonSafeContext):
+    """A structure of a disk image that is damaged or disagrees with another, which
+    the read worked around (``ARCHIVE_STRUCTURE_INCONSISTENT``).
+
+    ``format`` is ``"dmg"``. ``structure`` names it:
+
+    - ``"code_signature"``: the UDIF code signature's range is outside the file or
+      overlaps another structure. It is ignored; ``offset`` is where it says it starts.
+    - ``"gpt_primary"``: the primary GPT header or its entry array fails its CRC or
+      its geometry, and the backup at the disk's last sector is read; ``offset`` is
+      the primary header's disk offset.
+    - ``"partition_map"``: neither GPT copy (or the Apple partition map) can be used,
+      or it is larger than archivey reads, so the partitions come from the run
+      tables' sector ranges; ``offset`` is the map's disk offset.
+    - ``"partition_name"``: a run table's name or a partition map's type says one
+      filesystem and the partition holds another, or none; the filesystem decides.
+      ``offset`` is the partition's disk offset.
+    - ``"partition_start"``: the partition map and the run tables place a partition
+      at different sectors; the map's range is read. ``offset`` is the map's start.
+    - ``"member_type"``: an HFS+ file's BSD mode and its Finder type and creator
+      disagree on whether it is a symlink; the mode decides. Reported on the member;
+      ``offset`` is the file's catalog id.
+    """
+
+    kind: Literal["archive_structure"] = "archive_structure"
+    archive_name: str | None = None
+    format: str = ""
+    structure: str = ""
+    offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -1311,6 +1361,7 @@ DiagnosticContext = (
     | DetectionDecoderLimitContext
     | ScanRaceContext
     | ArchiveEofContext
+    | ArchiveStructureContext
     | UnlistedDataContext
     | UnreadSessionContext
     | MemberTimestampContext
@@ -1359,6 +1410,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.ARCHIVE_TRAILING_DATA: "archive_eof",
         DiagnosticCode.ARCHIVE_UNLISTED_DATA: "unlisted_data",
         DiagnosticCode.ARCHIVE_UNREAD_SESSION: "unread_session",
+        DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT: "archive_structure",
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID: "member_timestamp",
         DiagnosticCode.MEMBER_HEADER_DAMAGED: "member_header_damage",
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED: "member_header_record",
@@ -1402,6 +1454,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
         DiagnosticCode.ARCHIVE_TRAILING_DATA,
         DiagnosticCode.ARCHIVE_UNLISTED_DATA,
         DiagnosticCode.ARCHIVE_UNREAD_SESSION,
+        DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
         DiagnosticCode.MEMBER_TIMESTAMP_INVALID,
         DiagnosticCode.MEMBER_HEADER_DAMAGED,
         DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED,
@@ -2042,6 +2095,7 @@ def format_path_name(path: str | Path | None) -> str | None:
 __all__ = [
     "ARCHIVE_INTEGRITY_CODES",
     "ArchiveEofContext",
+    "ArchiveStructureContext",
     "DetectionDecoderLimitContext",
     "Diagnostic",
     "DiagnosticCode",

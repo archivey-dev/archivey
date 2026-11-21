@@ -1,113 +1,125 @@
-# UDIF (`.dmg`)
+# DMG (UDIF disk images)
 
-Current maintainer truth for Apple's UDIF disk image. archivey recognises one and
-refuses it. Nothing reads the blocks. Detection's trailer step is on
-[`topics/detection.md`](../topics/detection.md) §2.4. This page is the format.
+Current maintainer truth for Apple's disk images. archivey reads UDIF images that hold
+HFS+ or HFSX volumes; APFS volumes and encrypted images are recognised and refused by
+name until the plan's parts E and G land (`openspec/changes/dmg-reader/`). Detection's
+trailer step is on [`topics/detection.md`](../topics/detection.md) §2.4. This page is
+the format.
 
 ## At a glance
 
 | | |
 | --- | --- |
-| Read | No. Recognised, then `UnsupportedFeatureError` |
+| Read | Yes: UDIF (`koly` version 4) with every run codec (zero fill, raw, ignore, ADC, zlib, bzip2, LZFSE, xz), GPT, Apple partition map or no map, HFS+ and HFSX |
 | Write | **Not shipped** |
-| Source | The trailer is read on a cheap seek. A pipe is not rewound (§2.1) |
-| Listing cost | None. Open refuses before a reader exists |
-| Core dependencies | None. Recognition uses no optional library |
-| Refuses | Every image it recognises as UDIF |
-| `format=` | `format=DMG` raises the same error. `format=` naming a compressor reads that stream and does not look for the trailer |
+| Source | Seekable only (`required_source` is `SEEKABLE`): the run tables are at the end of the image and the filesystem metadata anywhere in the disk. A pipe is refused, or spooled by the caller |
+| Listing cost | The open reads the `koly` block, the property list and its run tables, the partition map, a 4 KiB probe of each partition, and each HFS+ volume header (plus two 512-byte journal reads); the first listing walks each catalog twice and the attributes tree once |
+| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python; zlib, bzip2 and xz through `ReaderContext.decompress` |
+| Refuses | Encrypted images (`encrcdsa`, `cdsaencr`), APFS-only images, segmented images, images with no property list, HFS wrappers, HFS+ volumes whose journal may hold changes, unknown run types (at read), directory hard links (at read) |
+| `format=` | `format="dmg"` opens a file as UDIF; one with no `koly` block is `CorruptionError` |
 
-**Two things a reader might expect and will not find.** The files inside the image.
-And a signature inside the first compressed block that would identify the container:
-that block is disk sectors (§1).
+The `.dmg` suffix is not registered: many files with that name are raw disks
+(`hdiutil` UDRW) or renamed zips. The `koly` block is the claim.
 
 ## 1. Shape
 
-What `hdiutil` writes is three regions. On a current image the signature is the last one.
+Three layers, one module each:
 
 ```
-data fork     runs of the virtual disk, each compressed or stored on its own
-XML plist     the blkx map: which file range is which sectors, and which codec
-last 512 B    the koly block. magic, version 4, header size 512, big-endian
+udif.py             koly block (last 512 bytes, or the first in an old layout)
+                    -> XML property list -> blkx: one mish table per piece of the disk
+                    -> runs: (type, first sector, sectors, stored offset, stored length)
+disk_partitions.py  the virtual disk: GPT (primary, then backup), Apple partition map,
+                    or the run tables' own sector ranges; each range probed
+hfsplus.py          HFS+ volume: header at 1024, forks of 8 extents plus the extents
+                    overflow tree, catalog and attributes B-trees, hard-link inodes in
+                    the private folder, decmpfs transparent compression
 ```
 
-The `koly` block is what 7-Zip checks: the 12 bytes `koly`, then version 4, then a
-header size of 512. It records where the data fork and the property list sit.
-The property list holds one `mish` table per partition. Each run in that table is
-40 bytes: a type, a start sector, a sector count, and the offset and length of the
-bytes in the file. The sector count is shifted 9 bits, so the decompressed length
-is a whole number of 512-byte sectors.
+`dmg_reader.py` ties them: `DmgReader` opens the image and each volume, and lists the
+catalogs.
 
-A bzip2 run (type `0x80000006`) and an xz run (type `0x80000008`) are ordinary
-streams of those codecs. Decompressing one yields the sectors it covers, not
-another UDIF structure. The `mish` table that names the run is in the property
-list, after the data fork. The stream carries no container signature. When the
-run covers sector 0, the sectors are the start of whatever disk was imaged:
-
-- an Apple partition map starts with `ER` (a Driver Descriptor Map)
-- a GPT disk starts with a protective MBR, and `EFI PART` is one sector later
-- a raw HFS+ volume often has zeros in the boot blocks and `H+` or `HX` at offset 1024
-- a raw APFS container starts with `NXSB`
-
-Those bytes name the disk. A `.bz2` of a raw disk begins the same way, so they
-do not identify UDIF. The first stored run is also often a zero-fill, which
-stores nothing, or it starts later than sector 0. The images in the backup scan
-that opened as zlib wrote 512 bytes because that first run was one sector (§3).
-
-`koly` at offset 0 is a rare old layout. 7-Zip's opener says a usual image has
-the block at the end, and an old image has it at the beginning. It treats the
-block as front-placed when the data-fork offset inside it is 512, so the runs
-start immediately after the block. A current image, including an uncompressed
-one (`Copy`, type 1, what `hdiutil` calls UDRW), keeps the block at the end.
-An uncompressed image starts with disk sectors. The literal `koly` bytes at
-offset 0 are that old layout.
+A run's stored bytes start at the data fork offset plus the table's data offset plus
+the run's own offset. A raw run stores exactly its sectors; a compressed run decodes to
+exactly its sectors. Zero-fill and ignore runs store nothing and read as zeros, and so
+do sectors no table covers.
 
 ## 2. The pipeline here
 
 ### 2.1 Identify
 
-Offset 0 is ordinary near magic. The block at the end is the trailer step
-([`detection.md`](../topics/detection.md) §2.4). The step runs after far magic,
-so an uncompressed image of an ISO 9660 disk — `CD001` at byte 32 769 — is
-reported as `ISO` and read as one. The trailer is not consulted once far magic
-has matched.
-
-It runs before the content probes, so a zlib first block is the image. A
-bzip2 or xz header is near magic, and the trailer lists both in `preempts`, so
-that hit is replaced before the inner-TAR probe. The `.dmg` suffix is not
-registered.
-
-A remote source (an fsspec `OpenFile`) reads the block at one range request, and so
-does a stored ZIP entry or an uncompressed TAR member, whose seek is a slice
-(`seeks_to_end_are_cheap`). A pipe and an `ArchiveStream` that would re-decode to
-reach its end are not seeked to the end. A short image is still
-refused, because the far-magic peek has already read through to the block. A
-longer zlib-first image on a pipe opens as zlib.
+Unchanged from the recognised-only era: the 12 bytes `koly`, version 4, header size
+512 at offset 0, or at the start of the last 512 bytes as a trailer that outranks the
+bzip2 or xz stream an image's first run is. Far magic runs first, so an uncompressed
+image of an ISO 9660 disk is `ISO`. Two more signatures name encrypted images:
+`encrcdsa` at offset 0 (v2) and `cdsaencr` in the last 8 bytes (v1). The trailer step
+reads the longest trailer once and matches the shorter ones against its end, so its
+receipt is still one 512-byte tail read.
 
 ### 2.2 Open and list
 
-`open_archive` raises `UnsupportedFeatureError` with the text in
-`UDIF_UNSUPPORTED_MESSAGE`, and the exception carries `archive_name`.
-`reader_for_format` raises the same text for a caller that reaches it, but it
-takes no archive name, which is why the open path raises first. The open path
-does not test for DMG: it raises for any format whose backend sets
-`READ_IMPLEMENTED` false, with the text from the registry's
-`unread_format_message`. `UdifBackend.open_read` raises the same text with the
-archive name for a caller that reaches the backend directly. That is the
-backend's own code: a recognised-only backend must write that refusal itself.
+The open is a fixed amount of work (design §7), bounded on top by an open budget: the
+physical bytes read plus the bytes decoded between the property list and the end of the
+open stay within 64 MiB (`udif.OPEN_BUDGET`), else `ResourceLimitError`.
 
-`format_availability` is `NONE` with an empty `missing`. `archivey --version -v`
-prints `dmg: none — recognised, not readable`. `required_source` is
-`FORWARD_ONLY`: nothing reads the image, and `SEEKABLE` would tell the
-published spool recipe to copy the file first.
+1. `koly` block: segmented images and images with no property list are refused by
+   name; the data fork, property list and `koly` block must lie inside the file and not
+   overlap. A code signature outside the file or overlapping another structure is
+   `ARCHIVE_STRUCTURE_INCONSISTENT` (`structure="code_signature"`) and ignored. Non-zero
+   bytes no structure covers are `ARCHIVE_TRAILING_DATA`.
+2. Property list: at most 64 MiB, checked before a byte is read. Each `mish` table is
+   checked (signature, version, run count against the `Data` length, every run inside
+   the table and the data fork, a compressed run's stored length at most twice its
+   decoded size plus 64 KiB, a decoded size at most 16 MiB) before its runs are kept,
+   as packed arrays charged against `max_metadata_bytes`. Overlapping tables are
+   `CorruptionError`.
+3. Partitions: a GPT whose header and entry array pass their CRCs and whose geometry is
+   sound (primary, else the backup at the last sector), else an Apple partition map
+   whose entries all agree, else the run tables' ranges, else the whole disk. At most
+   128 candidates. Each is probed: `H+`/`HX` at 1024 is HFS+/HFSX, `BD` an HFS volume,
+   `NXSB` at 32 APFS. Names (GPT type, APM type, run table name) only describe; a
+   disagreement is `ARCHIVE_STRUCTURE_INCONSISTENT`.
+4. No HFS+ volume: an HFS wrapper or an APFS container is refused by name, anything
+   else names the partitions found. Beside HFS+, another partition with contents is
+   `ARCHIVE_UNLISTED_DATA`.
+5. Each HFS+ volume header is checked (block size, total blocks inside the partition),
+   and a journaled volume's journal state: a pending or external journal is refused.
+
+The first listing, per volume (`_VolumeWalk`):
+
+- pass 1 (`read_catalog`): every folder's parent and name, the hard-link inodes in
+  `\0\0\0\0HFS+ Private Data`, and the hidden folders, charged to
+  `max_metadata_bytes`;
+- the attributes tree (`read_attributes`), names and values up to 1 KiB kept (the
+  decmpfs header whole), charged;
+- pass 2 (`catalog_entries`): one member per folder and file record, in catalog order
+  (parent id, then name), skipping the hidden folders' contents and the journal files.
+
+Type precedence: hard-link Finder markers first (`hlnk`/`hfs+` file link,
+`fdrp`/`MACS` directory link), then a non-zero BSD mode, then the Finder `slnk`/`rhap`
+tags. The first path to an inode is the `FILE`; later ones are `HARDLINK` to it. With
+several volumes, each volume's members sit under a top-level directory named after the
+volume (D1), with `Untitled` and ` 1`, ` 2`, ... suffixes as macOS names mount points.
+
+Damage in a catalog node stops that volume's listing: the members before it are
+delivered, the other volumes are listed, then the error is raised.
 
 ### 2.3 Member data
 
-Refused before a reader exists.
+A file's data fork is a `block_stream` of 1 MiB pieces over its extents; each piece
+reads the virtual disk through `UdifSource`, which decodes the runs it covers (eight
+decoded runs are cached). A compressed file (`UF_COMPRESSED` and `com.apple.decmpfs`)
+decodes its 64 KiB chunks one at a time from the inline attribute or the resource fork.
+Every member read counts in the archive-wide ratio, whatever runs serve the bytes.
+
+Member-local refusals raise at read, and the other members stay readable: a missing
+hard-link inode, a compressed flag without its attribute, an extent past the volume, a
+directory hard link, an unknown decmpfs type, an unknown run type.
 
 ### 2.4 Extract
 
-Same refusal. `format=` naming zlib, bzip2 or xz does not detect, and reads
-that first stream.
+Through the shared extraction path. Extended attributes and resource forks are listed in
+`extra` (D2) and not written.
 
 ### 2.5 Write
 
@@ -115,79 +127,74 @@ Not shipped.
 
 ## 3. In the wild
 
-`hdiutil` writes compressed runs as zlib (`UDZO`), bzip2 (`UDBZ`) or LZFSE
-(`ULFO`), or stores them (`UDRW`). xz is run type `0x80000008` in 7-Zip. This
-page does not name an `hdiutil` spelling for it.
-
-A backup scan that prompted recognition found 138 `.dmg` files archivey opened
-as the first compressed block. 111 of them extracted as 512 bytes and reported
-success: one sector, then the rest of the image treated as trailing data.
-
-7-Zip calls the front-placed `koly` block rare and old. The scan's images had
-the block at the end. This repo has not measured a current producer that still
-writes it at offset 0.
+`hdiutil` writes UDZO (zlib), UDBZ (bzip2), ULFO (LZFSE), ULMO (xz), UDRO (raw) and, in
+old images, UDCO (ADC). UDRW is a raw disk with no `koly` block, which is not UDIF and
+is not read (a raw GPT disk reader would reuse `disk_partitions.py` and `hfsplus.py`).
+Every image measured holds one HFS+ or one APFS volume in a GPT; two of the 41 corpus
+images had no partition map. `hdiutil` marks every file with `com.apple.provenance`.
 
 ## 4. Threat surface
 
-No format-specific row in [`threat-model.md`](../threat-model.md). The failure
-this recognition stops was a wrong format: the first run decoded as a complete
-zlib, bzip2 or xz member. There is no UDIF parser.
+The row in [`threat-model.md`](../threat-model.md). In short: every range and count is
+checked before it is used (§2.2); zero-fill runs make large disks from tiny files, so
+member reads are bounded by the archive-wide ratio and the extraction limits; the
+in-house ADC, LZFSE and LZVN decoders are bounded by their output length; B-tree leaf
+chains, folder parent chains and overflow extents are loop-checked; the open is bounded
+by the open budget. The fuzz target is `dmg` in `tests/atheris_fuzz/`.
 
 ## 5. Sharp edges
 
 | What you see | Where | More |
 | --- | --- | --- |
-| A `.dmg` used to extract as a few hundred bytes and report success | **archivey** | The first run is a real compressed stream (§1). Recognition refuses it |
-| An uncompressed image of an ISO 9660 disk lists as an ISO | **archivey** | Far magic wins (§2.1). Reading that ISO is the behaviour recorded in §6 |
-| `format=zlib` on a zlib-first image extracts the first run | **archivey** | `format=` skips detection (§2.4) |
-| A long image on a pipe opens as its first block | **format** | The trailer is at the end, and a pipe is not rewound (§2.1) |
-| `dmg: none` with no install hint | **archivey** | Known, and nothing to install. The verbose version line says so (§2.2) |
+| A `.dmg` that opens as a zip or not at all | **format** | No `koly` block: a raw disk (UDRW) or another format renamed (§3) |
+| `UnsupportedFeatureError: APFS disk images are not supported yet` | **archivey** | APFS is part E of the plan |
+| `encrypted DMG disk image` | **archivey** | Encryption is part G of the plan |
+| A hard link lists as `HARDLINK`, not two files | **archivey** | Links point backward (§2.2); 7-Zip writes both as empty files |
+| `com.apple.provenance` on every member's `extra["dmg.xattrs"]` | **format** | `hdiutil` adds it |
+| A name with `:` | **format** | HFS+ stores `/` in names; the Mac and 7-Zip show it as `:` |
 
 ## 6. Decisions
 
-- **Refuse, and do not read the blocks.** The scan's failure was the false
-  extract. A reader is a separate feature.
-- **Do not decompress the first run to look for a disk signature.** The bytes
-  are the disk, a compressed raw disk has the same bytes, and the `koly` block
-  already identifies the file without a decode (§1).
-- **Leave far magic ahead of the trailer.** An ISO 9660 payload is read as an
-  ISO. Moving the trailer first would refuse those images and would read the
-  tail of every ISO. That alternative has not been taken.
-- **`required_source` is `FORWARD_ONLY`.** The spool recipe copies when the
-  answer is `SEEKABLE`. The copy would end in the same refusal.
-- **The open path raises, rather than the registry alone.** The registry raise
-  has no archive name. The tests assert the refusal has one.
+The plan's decisions D1 to D8 are in `openspec/changes/dmg-reader/design.md` §2.
+Choices made in Part B that the plan left open:
+
+- **One generic diagnostic for structure disagreements.**
+  `ARCHIVE_STRUCTURE_INCONSISTENT` with `ArchiveStructureContext.structure` naming
+  which, rather than a code per case.
+- **The catalog walk is two passes**, so folder paths and hard-link inodes are known
+  before any member is made; a damaged node returns what pass 1 found, so pass 2 can
+  deliver the members before it.
+- **Folder thread records are not cross-checked yet** (deferred to Part D).
+- **Run tables are bounded against `max_metadata_bytes` at open by the reader**, because
+  `charge_metadata` is for listing only.
 
 ## 7. Open questions
 
-- Whether any current tool still writes `koly` at offset 0. 7-Zip still accepts
-  it. A sample would say if the near-magic row is dead.
-- Encrypted images (an `encrcdsa` header is described at offset 0) and
-  LZFSE-first images were not in the measured scan. A seekable file whose last
-  512 bytes are still the `koly` block is refused either way. Whether those
-  producers keep that block is unchecked.
+- decmpfs type 10 (raw in the resource fork) has no real sample; it is read with the
+  type 8 offset table.
+- Journal replay (a volume with pending transactions is refused).
+- Whether any current tool still writes `koly` at offset 0.
 
 ## 8. Verify
 
 ```bash
-./scripts/test.sh tests/test_udif.py tests/test_detection_workspace.py \
-    tests/test_cli.py::test_version_verbose_lists_formats \
-    tests/test_registry.py::test_required_source_is_declared_for_every_known_format
+./scripts/test.sh tests/test_dmg.py tests/test_udif.py tests/test_dmg_build.py \
+    tests/test_detection_workspace.py tests/test_lzfse_decoder.py
 ```
 
 | Claim |
 | --- |
-| A zlib, bzip2 or xz first run with a `koly` trailer is `DMG`, and open refuses it (§2.1, §2.2) |
-| `CD001` at 32 769 with a `koly` trailer is `ISO` (§2.1) |
-| A pipe longer than the far window is not rewound (§2.1) |
-| `format_availability` is `NONE` with nothing missing, and `required_source` is `FORWARD_ONLY` (§2.2) |
-| `reader_for_format(DMG)` raises the same text without an archive name (§2.2) |
-| `--version -v` says recognised, not readable (§2.2) |
+| Every unencrypted HFS+ `hdiutil` fixture lists and reads as macOS mounts it (`test_an_hdiutil_image_lists_and_reads_as_macos_mounts_it`) |
+| Every run codec and partition layout reads (`test_every_codec_and_layout_reads`) |
+| Encrypted and APFS images are refused by name |
+| 7-Zip extracts the same bytes, with the listed differences (`test_7zip_*`) |
+| Damage fails the member it touches, and a damaged catalog node delivers the members before it |
 
 ## 9. References
 
-- 7-Zip `CPP/7zip/Archive/DmgHandler.cpp`. `IsKoly` is the 12 bytes. `Open2` says a
-  usual image has the block at the end, an old image has it at the start, and the
-  block is front-placed when the data-fork offset is 512. The run types run from
-  `METHOD_ZLIB` through `METHOD_XZ`. The sector shift is `UnpPos = sector << 9`.
+- Apple TN1150, "HFS Plus Volume Format".
+- 7-Zip `CPP/7zip/Archive/DmgHandler.cpp`, `HfsHandler.cpp`, `ApmHandler.cpp`,
+  `GptHandler.cpp`.
+- UEFI 2.10 §5 (GPT).
+- The plan: `openspec/changes/dmg-reader/`.
 - User docs: `docs/formats.md` §Disk images.
