@@ -251,19 +251,3 @@ format whose `support` is NONE lists none.
 - **THEN** the answer is NONE and its `missing` names `acme_zipcrypt`
 - **AND** opening a ZIP file with `cfg` raises `PackageNotInstalledError`, and `P.open`
   is not called
-
-#### Scenario: The supported list does not filter by the format policy
-
-- **WHEN** a caller asks `list_supported_formats(config=cfg)` with
-  `cfg.formats == FormatPolicy(only={ContainerFormat.ZIP})` and 7z readable
-- **THEN** the list holds `ArchiveFormat.SEVEN_Z`
-- **AND** `cfg.formats.allows(ArchiveFormat.SEVEN_Z)` is false
-
-#### Scenario: Availability answers for the replacement
-
-- **WHEN** a caller asks `format_availability(ArchiveFormat.ZIP, config=cfg)` with
-  `cfg.formats == FormatPolicy(replace={ContainerFormat.ZIP: P})`,
-  `P.requires == ("acme_zipcrypt",)` and `acme_zipcrypt` not installed
-- **THEN** the answer is NONE and its `missing` names `acme_zipcrypt`
-- **AND** opening a ZIP file with `cfg` raises `PackageNotInstalledError`, and `P.open`
-  is not called
