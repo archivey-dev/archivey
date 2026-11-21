@@ -282,13 +282,20 @@ def test_a_stop_holds_for_every_later_read(tmp_path: Path) -> None:
     with open_archive(path, config=config) as r, r.open("data.bin") as stream:
         assert stream.read(10) == data[:10]
         armed = True
-        raised = 0
+        # The first stop comes with the first report after arming. How many reads
+        # that takes depends on how far the child has read ahead, so read until it
+        # comes (the member is 16 MiB: four reads reach its end).
         for _ in range(5):
             try:
                 stream.read(4 << 20)
             except _Stop:
-                raised += 1
-        assert raised >= 4
+                break
+        else:
+            pytest.fail("no report after arming raised the stop")
+        # Every later read raises it again, even with no new report and at the end.
+        for _ in range(3):
+            with pytest.raises(_Stop):
+                stream.read(4 << 20)
 
 
 def _read_after_close(path: Path, config: ArchiveyConfig, what: str) -> Exception:
