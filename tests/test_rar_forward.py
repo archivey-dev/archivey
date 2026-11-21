@@ -48,6 +48,7 @@ from tests.conftest import (
     requires_unrar_cli,
     unrar_reads_from_pipes,
 )
+from tests.streams_util import open_mode
 from tests.test_audit_rar_iso_dir import (
     _rar3_build,
     _rar3_parse,
@@ -224,7 +225,7 @@ def _pass(source: BinaryIO, password: str | None, **kwargs: object) -> list[obje
     out: list[object] = []
     try:
         with open_archive(
-            source, streaming=True, password=password, **kwargs
+            source, **open_mode(source, streaming=True), password=password, **kwargs
         ) as reader:
             for member, stream in reader.stream_members():
                 fields = (
@@ -308,7 +309,10 @@ def test_a_pipe_pass_that_reads_some_members_lists_them_all(
         out: list[object] = []
         try:
             with open_archive(
-                source, streaming=True, password=password, **kwargs
+                source,
+                **open_mode(source, streaming=True),
+                password=password,
+                **kwargs,
             ) as reader:
                 for index, (member, stream) in enumerate(reader.stream_members()):
                     entry: list[object] = [member.name, member.uname]
@@ -555,7 +559,7 @@ def test_closing_does_not_wait_for_a_source_that_stopped_sending(
     source = _StallingStream(data, int(len(data) * 0.8))
     buffered = io.BufferedReader(source)
     try:
-        reader = open_archive(buffered, streaming=True, config=_config(4000))
+        reader = open_archive(buffered, pipe=True, config=_config(4000))
         it = reader.stream_members()
         for _ in range(2):
             _member, stream = next(it)
@@ -617,7 +621,7 @@ def test_a_failed_source_read_raises_its_own_error(
 
     with (
         open_archive(
-            io.BufferedReader(_Failing()), streaming=True, config=_config(limit)
+            io.BufferedReader(_Failing()), pipe=True, config=_config(limit)
         ) as reader,
         pytest.raises(ConnectionResetError, match="peer reset"),
     ):
