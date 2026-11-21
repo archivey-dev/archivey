@@ -726,7 +726,34 @@ def test_survivors_the_full_check_all_rejects_exhaust_the_list() -> None:
 
 
 def test_provider_answers_are_not_gathered() -> None:
-    """The provider is lazy: its first answer that survives the probe wins."""
+    """The provider is lazy: it is asked one answer at a time, and its first answer
+    that survives the probe and the full check wins."""
+    asked: list[int] = []
+    settled: list[bytes] = []
+
+    def provider(request: PasswordRequest) -> str | None:
+        asked.append(request.attempt)
+        return ["a", "b"][request.attempt - 1] if request.attempt <= 2 else None
+
+    def settle(password: bytes, _result: object) -> tuple[bytes, str]:
+        settled.append(password)
+        return (password, "settled")
+
+    candidates = _PasswordCandidates.from_input(provider)
+    result = candidates.attempt(
+        None,
+        _verdict_decrypt({b"a": "inconclusive", b"b": "confirmed"}, []),
+        settled=_is_confirmed,
+        settle=settle,
+    )
+    assert result == (b"a", "settled")
+    assert asked == [1]
+    assert settled == [b"a"]
+
+
+def test_a_provider_answer_the_full_check_rejects_asks_again() -> None:
+    """Built-in and plugin requests alike: an unconfirmed provider answer goes
+    through the full check, and a rejected one leads to the next provider call."""
     asked: list[int] = []
 
     def provider(request: PasswordRequest) -> str | None:
@@ -736,12 +763,12 @@ def test_provider_answers_are_not_gathered() -> None:
     candidates = _PasswordCandidates.from_input(provider)
     result = candidates.attempt(
         None,
-        _verdict_decrypt({b"a": "inconclusive", b"b": "confirmed"}, []),
+        _verdict_decrypt({b"a": "inconclusive", b"b": "inconclusive"}, []),
         settled=_is_confirmed,
-        settle=lambda _password, _result: pytest.fail("provider answers not settled"),
+        settle=_settle_only(b"b"),
     )
-    assert result == (b"a", "inconclusive")
-    assert asked == [1]
+    assert result == "confirmed"
+    assert asked == [1, 2]
 
 
 def _settle_only(right: bytes) -> Callable[[bytes, str], str]:
@@ -771,8 +798,8 @@ def test_a_lone_survivor_is_settled_when_a_provider_can_answer() -> None:
         settled=lambda result: result == "confirmed",
         settle=_settle_only(b"right"),
     )
-    # The provider's answer is accepted on its probe, as before.
-    assert result == "probe passed"
+    # The provider's answer goes through the full check too, and passes it.
+    assert result == "confirmed"
     assert asked == [1]
 
 
@@ -796,11 +823,11 @@ def test_a_lone_survivor_wins_unsettled_with_no_provider() -> None:
     assert settled == []
 
 
-# The built-in loop (``attempt_with_confirm``) and the plugin one
-# (``plugin_passwords.resolve_request``) share their candidate order, promotion and
-# survivor rules. The plugin loop adds what only it needs (the provider's answers
-# settled by ``full_check``, a saved winner, callback guards), so those cases are not
-# here.
+# Both entry points, the built-in ``attempt_with_confirm`` and the plugin
+# ``plugin_passwords.resolve_request``, run ``_PasswordCandidates.attempt``: these cases
+# check that the plugin adapter's verdict mapping keeps its candidate order, promotion
+# and survivor rules. What only a plugin request has (a saved winner, callback guards)
+# is tested in ``test_format_api_passwords.py``.
 _V = PasswordConfirmVerdict
 _PARITY_CASES = {
     "first confirmed wins": ([b"a", b"b", b"c"], (), {b"b": _V.CONFIRMED}, {}, True),

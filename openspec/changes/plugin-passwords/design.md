@@ -214,7 +214,9 @@ built-ins keep their path, where a probe's wrong-password `EncryptionError` mean
 ### D3. How several passwords are decided
 
 The loop is the one the built-in readers run (`_PasswordCandidates.attempt` with
-`settled`/`settle`):
+`settled`/`settle`); `plugin_passwords.resolve_request` only adapts the plugin's
+`(data, verdict)` callbacks to it and builds the errors (maintainer decision, 11-21:
+one loop, not two). The steps below hold for built-in units and plugin requests alike:
 
 1. Each static candidate in order goes through `check`. The first `CONFIRMED` wins at
    once, so no expensive derivation runs for the candidates after it. `REJECTED` is
@@ -229,11 +231,14 @@ The loop is the one the built-in readers run (`_PasswordCandidates.attempt` with
    wins; `REJECTED` is dropped. If none confirms (or there is no `full_check`), the
    first still `INCONCLUSIVE` wins.
 4. With none left, the provider is asked, one answer at a time. An answer `check` calls
-   `INCONCLUSIVE` goes through `full_check` when the plugin gives one; `REJECTED` from
+   `INCONCLUSIVE` goes through `full_check` when there is one; `REJECTED` from
    either asks the provider again. The first `CONFIRMED` answer wins, and an
    `INCONCLUSIVE` one wins only when there is no `full_check` (or it also came back
    `INCONCLUSIVE`), since a person at a prompt answers one at a time and there is
-   nothing to compare it with.
+   nothing to compare it with. Before the merge into one loop the built-in readers
+   accepted an `INCONCLUSIVE` provider answer without its full check; they now run it
+   too, which costs one more decode of that unit only when a provider answered and the
+   bounded check could not confirm the answer.
 
 A password that wins as `INCONCLUSIVE` is not promoted to be tried first for later units
 (unless it was the only password given), and a checksum failure of that member's data
@@ -481,3 +486,6 @@ same as a provider that waits for any lock its own caller holds, and the docs sa
     provider-context waits refused, rather than released with ownership records only?
     RULED keep them held (davi 11-21, card). The `reader-concurrency` delta amends "no
     Archivey lock held" to match.
+13. D3: one password loop for built-in units and plugin requests, as the archive-reading
+    spec requires, instead of a second loop kept in step by tests? RULED one loop (davi
+    11-21, card).
