@@ -967,7 +967,15 @@ pass when present.
 
 - Zero-fill runs make a large disk from a tiny file; files whose extents point at
   zero-fill read as zeros. Output is bounded by member sizes and archivey's extraction
-  limits; check the behaviour matches SquashFS's sparse blocks
+  limits, and every member read, on `open()` and on extraction, counts in the
+  archive-wide ratio (`ReadRatioTally`, `DecoderLimits.max_ratio` times the image's
+  size, default 800), exactly as ISO members do (`dev-docs/formats/iso.md`), whatever
+  runs serve the bytes: zero fill, raw, or the in-house LZFSE/LZVN/ADC decoders, which
+  do not pass through `ReaderContext.decompress`'s per-stream guard. So a 1 TiB file of
+  zero fill in a 64 KiB image stops at about 50 MiB with `ResourceLimitError`;
+  extraction also has `ExtractionLimits.max_extracted_bytes`. Only the partition CRC
+  pass (§7.2) reads disk ranges outside member streams, which is why it folds zero fill
+  instead; check the behaviour matches SquashFS's sparse blocks
   (`tests/fixtures/squashfs/large-sparse.sqfs` test in `tests/test_squashfs.py`).
 - Many files sharing the same blocks (like overlapping ZIP entries).
 - Loops: B-tree leaf chain, parent chains, overflow extents, APFS directory records

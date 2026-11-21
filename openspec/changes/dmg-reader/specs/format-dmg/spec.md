@@ -22,21 +22,24 @@ that overlap or leave their table's sector range, and stored ranges outside the 
 fork SHALL raise `CorruptionError`; a file that ends inside a run or the property list
 SHALL raise `TruncatedError`. An unknown run type, and a compressed run that declares
 more than 16 MiB decoded, SHALL raise `UnsupportedFeatureError` from the read that needs
-it, leaving other members readable. The format SHALL require a seekable source. A run's
-stored range SHALL be `data fork offset + mish data offset + compressed offset` for its
-compressed length, inside the data fork. A code-signature blob declared in the `koly`
-block SHALL be allowed and not verified; file bytes outside the declared structures
-SHALL be reported as trailing data. Opening SHALL read only a fixed envelope: the `koly`
-block, the property list and run tables, the partition map (a GPT entry array of at most
-64 KiB, or an Apple Partition Map of at most 64 entries, each size checked from its
-header before the read; a larger valid map SHALL be reported and the `blkx` ranges used
-instead), and for each of at most 128 candidate partitions (a 129th candidate from any
-source SHALL raise `ResourceLimitError` at open, so no volume is silently skipped) a 4
-KiB probe, the HFS+ volume header and, when journaled, the journal info block and
-journal header (512 bytes each), or the APFS block 0 at its declared size (at most 64
-KiB). Beyond the property list, the physical bytes read and the bytes decoded at open
-SHALL together stay within 64 MiB; more SHALL raise `ResourceLimitError` at open. No
-work SHALL be proportional to the image.
+it, leaving other members readable. Every member read, on `open()` and on extraction,
+SHALL count in the archive-wide ratio (`DecoderLimits.max_ratio` times the image's
+size), as for ISO, whatever runs serve it, zero fill and the in-house decoders included.
+The format SHALL require a seekable source. A run's stored range SHALL be
+`data fork offset + mish data offset + compressed offset` for its compressed length,
+inside the data fork. A code-signature blob declared in the `koly` block SHALL be
+allowed and not verified; file bytes outside the declared structures SHALL be reported
+as trailing data. Opening SHALL read only a fixed envelope: the `koly` block, the
+property list and run tables, the partition map (a GPT entry array of at most 64 KiB, or
+an Apple Partition Map of at most 64 entries, each size checked from its header before
+the read; a larger valid map SHALL be reported and the `blkx` ranges used instead), and
+for each of at most 128 candidate partitions (a 129th candidate from any source SHALL
+raise `ResourceLimitError` at open, so no volume is silently skipped) a 4 KiB probe, the
+HFS+ volume header and, when journaled, the journal info block and journal header (512
+bytes each), or the APFS block 0 at its declared size (at most 64 KiB). Beyond the
+property list, the physical bytes read and the bytes decoded at open SHALL together stay
+within 64 MiB; more SHALL raise `ResourceLimitError` at open. No work SHALL be
+proportional to the image.
 
 #### Scenario: UDIF runs
 
@@ -51,6 +54,7 @@ work SHALL be proportional to the image.
 | Segment count over 1 | `UnsupportedFeatureError` naming segmented images |
 | Data fork offset and mish data offset both non-zero | Runs read from their sum plus the run offset |
 | A signed image (code-signature blob before the `koly` block) | Read; no trailing-data report |
+| A 64 KiB image with one 1 TiB file whose extents lie on a zero-fill run | `open()` read and extraction stop at the archive-wide ratio with `ResourceLimitError`; listing is unaffected |
 | 128 candidates each probing a different maximal compressed run | `ResourceLimitError` at open once the 64 MiB open budget is spent |
 | A GPT entry array over 64 KiB | Diagnostic; candidates from the `blkx` ranges |
 | An APM whose map count is far above 64 | No entry beyond the cap read; diagnostic; candidates from the `blkx` ranges |
