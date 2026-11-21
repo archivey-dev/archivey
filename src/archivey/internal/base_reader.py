@@ -4388,7 +4388,7 @@ class BaseArchiveReader(ArchiveReader):
                 # one read (the TAR walk reads ahead): a failing call that lost its
                 # bytes would take whole members before the damage with it. So it
                 # recovers them whatever the caller set.
-                recover_partial_data=True,
+                redecode_before_damage=True,
                 source_origin=source.payload_origin,
             ),
             stamp=lambda exc: self._stamp_error_context(exc),
