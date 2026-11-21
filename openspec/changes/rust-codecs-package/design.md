@@ -107,8 +107,8 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 | LZFSE/LZVN (later) | `"lzfse"` | `lzfse.decompress` | `(chunk, *, out_size)` |
 
 - ZipCrypto is a cipher, so its object is a `Decryptor` with `decrypt()`, not a
-  decompressor. It has `copy()`, `getstate()` and `from_state()` (12 bytes) like the
-  streaming decoders, and `total_in` (bytes decrypted).
+  decompressor. It has `copy()`, `getstate()` and `from_state()` (the header and 12
+  bytes of keys) like the streaming decoders, and `total_in` (bytes decrypted).
 - BCJ2 reads four input streams, so it cannot take one `data` argument. It pulls from
   four objects with `read(n)` and gives output through `read(max_length)` with `eof`.
   Its state holds `total_in` for each of the four streams.
@@ -146,7 +146,7 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
   values, so its counters keep counting from the stream's start.
 - Sizes: LZX up to its 2 MiB window (cheap to copy, too big to keep at every point;
   archivey's `MAX_SNAPSHOT_BYTES` cap applies), LZW a few hundred KB at most,
-  ZipCrypto 12 bytes, filters tens of bytes.
+  ZipCrypto the header and 12 bytes of keys, filters tens of bytes.
 
 - Streaming decoders follow `bz2.BZ2Decompressor` and `lzma.LZMADecompressor`
   (question 4): the `max_length` and `needs_input` contract is the one that bounds

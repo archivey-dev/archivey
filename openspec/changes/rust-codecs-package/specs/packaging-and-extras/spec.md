@@ -173,8 +173,9 @@ RISC-V and LZFSE) SHALL run in archivey's decoder child process, as other native
 decoders do; CRC-16/ARC and ZipCrypto SHALL run in the caller's process under every
 setting, as checksums and AES decryption do. A kernel panic in the child SHALL reach the
 caller as `CorruptionError`. When no child process can start under `NATIVE_DECODERS`,
-archivey SHALL use the Python decoder in the caller's process for that kernel, as if
-`ARCHIVEY_CODECS` were excluded.
+archivey SHALL choose a decoder as if `ARCHIVEY_CODECS` were excluded: the Python
+decoder in the caller's process, except for LZO, which goes to compress-utils when it is
+installed, as today.
 
 #### Scenario: accelerator selection
 
@@ -189,6 +190,7 @@ archivey SHALL use the Python decoder in the caller's process for that kernel, a
 | `ProcessIsolation.NATIVE_DECODERS`, a CAB with LZX | Rust LZX in the decoder child; same bytes and errors as in-process |
 | `ProcessIsolation.NATIVE_DECODERS`, a kernel panics in the child | `CorruptionError` in the caller |
 | `ProcessIsolation.NATIVE_DECODERS`, no child can start, a CAB with LZX | Python LZX in the caller's process; same bytes as without the package |
+| `ProcessIsolation.NATIVE_DECODERS`, no child can start, an `.lzo` file, compress-utils installed | `ResourceUnavailableError`, as without the package |
 | `ProcessIsolation.NATIVE_DECODERS`, a ZipCrypto member | Rust ZipCrypto in the caller's process, as AES decryption |
 | A kernel panics on a crafted input | `CorruptionError` from the read; the next read on that decoder raises the same |
 | A damaged CAB read with and without the package | Same bytes before the error; same error type and message |

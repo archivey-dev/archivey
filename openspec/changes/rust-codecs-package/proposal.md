@@ -43,8 +43,10 @@ use too.
   with, because every kernel is tested against its Python twin and a kernel older than
   archivey needs is not used; a newer revision gives a later archivey's fixed results.
   A kernel panic reaches the caller as `CorruptionError`.
-- Isolation: under `ProcessIsolation.NATIVE_DECODERS` the kernels run in archivey's
-  decoder child, like the other native decoders (ruled, design.md question 13).
+- Isolation: under `ProcessIsolation.NATIVE_DECODERS` the decoding kernels run in
+  archivey's decoder child, like the other native decoders (ruled, design.md question
+  13); CRC-16/ARC and ZipCrypto stay in the caller's process, like checksums and AES; if
+  no child can start, archivey chooses a decoder as if the package were excluded.
 - Maintenance: a fix to a twinned Python decoder is made in Rust in the same PR (the
   "change it twice" rule, enforced by the parity job).
 - Releases: davi creates `codecs-v*` releases in the GitHub web UI, unticking "Set as

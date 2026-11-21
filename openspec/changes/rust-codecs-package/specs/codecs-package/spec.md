@@ -35,7 +35,7 @@ with the GIL held.
 | `crc16_arc(b, crc16_arc(a))` | Equals `crc16_arc(a + b)` |
 | `Crc16Arc(a).digest()` | `crc16_arc(a).to_bytes(2, "big")` |
 
-### Requirement: Streaming decoders follow lzma.LZMADecompressor
+### Requirement: Streaming objects and block functions have fixed shapes
 
 Each streaming object SHALL have one of three shapes. A decompressor (LZX, LZW) SHALL
 have `decompress(data, max_length=-1) -> bytes` and the attributes `eof`, `needs_input`
@@ -90,7 +90,7 @@ functions have no state; a seek point is the block's offset.
 | Save at any call boundary, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
 | BCJ2 saved mid-stream, resumed with each stream from its own `total_in` | Output equals the straight decode from `total_out` |
 | An ARM64 filter saved with 2 bytes held back | The resumed filter returns those 2 bytes first; output equals the straight decode |
-| ZipCrypto saved after `n` bytes | `getstate()` is 12 bytes; decrypting from offset `n` equals the straight decrypt |
+| ZipCrypto saved after `n` bytes | `getstate()` holds the three 32-bit keys after the kernel name and revision; decrypting from offset `n` equals the straight decrypt |
 | `copy()` then decode on both | Both produce the same output; neither affects the other |
 | A state from LZW revision 1 given to revision 2 | `UnsupportedDataError` |
 | A state from the LZX kernel given to `lzw.Decompressor.from_state` | `UnsupportedDataError` |
