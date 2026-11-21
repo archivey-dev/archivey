@@ -849,6 +849,9 @@ struct LzxDecompressor {
     /// The queued input when the last frame ran out of it; the frame is tried again
     /// once the queue has grown enough, so feeding small pieces stays linear.
     starved_at: Option<usize>,
+    /// Input the last frame used: a frame is not tried before the queue holds about
+    /// twice that, since a try that runs out of input is a wasted decode.
+    last_used: usize,
     /// Bytes the kernel took from the queue.
     taken: u64,
     total_out: u64,
@@ -866,6 +869,7 @@ impl LzxDecompressor {
             ended: false,
             finished: false,
             starved_at: Some(0),
+            last_used: 0,
             taken: 0,
             total_out: 0,
         })
@@ -921,12 +925,20 @@ impl LzxDecompressor {
                 break;
             };
             let queued = self.queued();
-            if let (false, Some(at)) = (self.ended, self.starved_at) {
-                if queued < at.saturating_mul(2).max(1) && queued < at + 64 * 1024 {
+            if !self.ended {
+                let waiting = match self.starved_at {
+                    Some(at) => queued < at.saturating_mul(2).max(1) && queued < at + 64 * 1024,
+                    None => false,
+                };
+                // The look-ahead of a frame's last symbols reaches into the next
+                // block, so a queue the size of one frame's input usually runs out.
+                if waiting || queued < self.last_used.saturating_mul(2) {
+                    self.starved_at.get_or_insert(queued);
                     break;
                 }
             }
             let ended = self.ended;
+            let before = self.total_in();
             let (inner, data) = (&mut self.inner, &self.pending[self.cursor..]);
             let (got, used) = py.detach(|| {
                 let point = inner.checkpoint();
@@ -952,6 +964,7 @@ impl LzxDecompressor {
                     self.out = bytes;
                     self.out_pos = 0;
                     self.starved_at = None;
+                    self.last_used = (self.total_in() - before) as usize;
                 }
                 Err(DecodeError::Source(NeedMore)) => {
                     self.starved_at = Some(queued);
@@ -1083,6 +1096,7 @@ impl LzxDecompressor {
             ended: false,
             finished: false,
             starved_at: Some(0),
+            last_used: 0,
             taken: total_in,
         })
     }
