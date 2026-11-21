@@ -25,6 +25,7 @@ from archivey import (
     open_archive,
 )
 from archivey.exceptions import ArchiveyError, ResourceLimitError, TruncatedError
+from archivey.terminal import display_path
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
 
@@ -134,7 +135,8 @@ def test_keep_partial_keeps_the_bytes_before_a_cut(
     ):
         reader.extract_all(dest, on_error="keep_partial")
     # No report is returned, so the error names the partial file.
-    assert any(str(dest / "big.bin") in note for note in raised.value.__notes__)
+    kept_at = repr(display_path(dest / "big.bin"))
+    assert any(kept_at in note for note in raised.value.__notes__)
     kept = (dest / "big.bin").read_bytes()
     assert 0 < len(kept) < len(_PAYLOAD)
     assert _PAYLOAD.startswith(kept)

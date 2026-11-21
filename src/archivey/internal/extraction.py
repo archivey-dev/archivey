@@ -2916,7 +2916,7 @@ class ExtractionCoordinator:
             "Kept the partial file of %s %r at %r: %s",
             member.type.value,
             member.name,
-            str(self._shown(kept.path)),
+            display_path(self._shown(kept.path)),
             error,
         )
         return ExtractionResult(member, kept.path, status, error)
@@ -2932,7 +2932,7 @@ class ExtractionCoordinator:
         if kept:
             exc.add_note(
                 "Partial files kept for failed members: "
-                + ", ".join(repr(str(self._shown(path))) for path in kept)
+                + ", ".join(repr(display_path(self._shown(path))) for path in kept)
             )
 
     def _classify(
