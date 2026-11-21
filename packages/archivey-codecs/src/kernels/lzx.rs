@@ -5,6 +5,7 @@
 //! this port raises a `Corrupt` error instead; see the parity notes in the report.
 
 use crate::kernels::error::{DecodeError, Result};
+use crate::kernels::state::{self, Reader};
 
 pub const FRAME_SIZE: usize = 32768;
 pub const MIN_WINDOW_BITS: u32 = 15;
@@ -16,6 +17,7 @@ const ALIGNED_SYMBOLS: usize = 8;
 const LENGTH_SYMBOLS: usize = 249;
 const PRIMARY_LENGTHS: usize = 7;
 const MIN_MATCH: usize = 2;
+const MAX_MATCH: usize = 257;
 const MAIN_MAX: usize = NUM_CHARS + 290 * 8;
 const LENGTH_MAX: usize = LENGTH_SYMBOLS + 1;
 const RUN_SLACK: usize = 64;
@@ -183,7 +185,16 @@ pub trait Input {
     fn more(&mut self) -> std::result::Result<Option<Vec<u8>>, Self::Error>;
 }
 
+/// What `LzxDecoder::rollback` restores.
+pub struct Checkpoint {
+    saved: LzxDecoder,
+    start: usize,
+    region: Vec<u8>,
+}
+
+#[derive(Clone)]
 pub struct LzxDecoder {
+    window_bits: u32,
     window_size: usize,
     window: Vec<u8>,
     main_symbols: usize,
@@ -197,6 +208,7 @@ pub struct LzxDecoder {
     since_symbol: u32,
     main_lengths: Vec<u8>,
     length_lengths: Vec<u8>,
+    aligned_lengths: [u8; ALIGNED_SYMBOLS],
     main_table: Option<Tree>,
     length_table: Option<Tree>,
     aligned_table: Option<Tree>,
@@ -230,6 +242,7 @@ impl LzxDecoder {
         }
         let window_size = 1usize << window_bits;
         Ok(LzxDecoder {
+            window_bits,
             window_size,
             window: vec![0; window_size],
             main_symbols: NUM_CHARS + (POSITION_SLOTS[(window_bits - 15) as usize] << 3),
@@ -241,6 +254,7 @@ impl LzxDecoder {
             since_symbol: MAX_CODE,
             main_lengths: vec![0; MAIN_MAX + RUN_SLACK],
             length_lengths: vec![0; LENGTH_MAX + RUN_SLACK],
+            aligned_lengths: [0; ALIGNED_SYMBOLS],
             main_table: None,
             length_table: None,
             aligned_table: None,
@@ -257,6 +271,157 @@ impl LzxDecoder {
             offset: 0,
             frame: 0,
         })
+    }
+
+    pub fn window_bits(&self) -> u32 {
+        self.window_bits
+    }
+
+    /// Output bytes decoded so far: the sum of the frames' sizes.
+    pub fn decoded(&self) -> u64 {
+        self.offset
+    }
+
+    /// Input the decoder took from its source but has not read yet (the zero padding
+    /// after the end of the input left out).
+    pub fn unread_input(&self) -> &[u8] {
+        let end = self.buf.len().saturating_sub(self.padding).max(self.pos);
+        &self.buf[self.pos..end]
+    }
+
+    /// Whether the decoder has read zero padding past the end of its input.
+    pub fn padded(&self) -> bool {
+        self.padding > 0
+    }
+
+    /// A copy of everything `decode_frame` can change, to undo a frame that ran out of
+    /// input. The window is the big part, and a frame writes only its own region of it
+    /// (plus one match's overrun before the frame check refuses it), so only that
+    /// region is kept.
+    pub fn checkpoint(&mut self) -> Checkpoint {
+        let window = std::mem::take(&mut self.window);
+        let saved = self.clone();
+        self.window = window;
+        let start = self.window_pos;
+        let end = (start + FRAME_SIZE + 2 * MAX_MATCH).min(self.window_size);
+        Checkpoint {
+            saved,
+            start,
+            region: self.window[start..end].to_vec(),
+        }
+    }
+
+    pub fn rollback(&mut self, point: Checkpoint) {
+        let mut window = std::mem::take(&mut self.window);
+        window[point.start..point.start + point.region.len()].copy_from_slice(&point.region);
+        *self = point.saved;
+        self.window = window;
+    }
+
+    /// The decoder's state between two frames (design D3): everything it consumed,
+    /// none of the input it holds unread. Call only between frames, before the end of
+    /// the input was reached.
+    pub fn save(&self, out: &mut Vec<u8>) {
+        debug_assert_eq!(self.padding, 0);
+        out.push(self.window_bits as u8);
+        out.extend_from_slice(&self.window);
+        // The last bytes read: `align_for_raw` steps back over the bytes still in the
+        // bit buffer.
+        state::put_bytes(out, &self.buf[self.pos - self.pos.min(8)..self.pos]);
+        state::put_u64(out, self.bits);
+        out.push(self.nbits as u8);
+        out.push(self.since_symbol as u8);
+        out.extend_from_slice(&self.main_lengths);
+        out.extend_from_slice(&self.length_lengths);
+        out.extend_from_slice(&self.aligned_lengths);
+        out.push(
+            u8::from(self.main_table.is_some())
+                | u8::from(self.length_table.is_some()) << 1
+                | u8::from(self.aligned_table.is_some()) << 2,
+        );
+        state::put_u64(out, self.r0);
+        state::put_u64(out, self.r1);
+        state::put_u64(out, self.r2);
+        out.push(u8::from(self.header_read));
+        state::put_u32(out, self.intel_size);
+        out.push(u8::from(self.intel_started));
+        out.push(self.block_type as u8);
+        state::put_u32(out, self.block_length as u32);
+        state::put_u32(out, self.block_remaining as u32);
+        state::put_u64(out, self.offset);
+        state::put_u64(out, self.frame);
+    }
+
+    /// Rebuild a decoder from `save`'s bytes, checking them as `decode_frame` checks
+    /// its input: nothing out of range is accepted, and nothing larger than the
+    /// largest window is allocated.
+    pub fn load(r: &mut Reader<'_>) -> Result<Self> {
+        let window_bits = u32::from(r.u8()?);
+        if !(MIN_WINDOW_BITS..=MAX_WINDOW_BITS).contains(&window_bits) {
+            return r.bad(format!("a window of 2**{window_bits} bytes"));
+        }
+        let mut d = LzxDecoder::new(window_bits)?;
+        d.window.copy_from_slice(r.take(d.window_size)?);
+        d.buf = r.bytes(8)?.to_vec();
+        d.pos = d.buf.len();
+        d.bits = r.u64()?;
+        d.nbits = u32::from(r.u8()?);
+        d.since_symbol = u32::from(r.u8()?);
+        if d.nbits > 64 || d.since_symbol > MAX_CODE || (d.nbits / 8) as usize > d.pos {
+            return r.bad("a bit buffer out of range");
+        }
+        let main_len = d.main_lengths.len();
+        d.main_lengths.copy_from_slice(r.take(main_len)?);
+        let length_len = d.length_lengths.len();
+        d.length_lengths.copy_from_slice(r.take(length_len)?);
+        d.aligned_lengths.copy_from_slice(r.take(ALIGNED_SYMBOLS)?);
+        let trees = r.u8()?;
+        if trees > 7 {
+            return r.bad(format!("tree flags {trees}"));
+        }
+        let rebuild = |present: bool, tree: Result<Option<Tree>>| -> Result<Option<Tree>> {
+            match (present, tree?) {
+                (false, _) => Ok(None),
+                (true, Some(t)) => Ok(Some(t)),
+                (true, None) => r.bad("an empty tree"),
+            }
+        };
+        d.main_table = rebuild(
+            trees & 1 != 0,
+            build_table(&d.main_lengths, MAIN_MAX, "main", trees & 1 == 0),
+        )?;
+        d.length_table = rebuild(
+            trees & 2 != 0,
+            build_table(&d.length_lengths, LENGTH_MAX, "length", true),
+        )?;
+        d.aligned_table = rebuild(
+            trees & 4 != 0,
+            build_table(
+                &d.aligned_lengths,
+                ALIGNED_SYMBOLS,
+                "aligned",
+                trees & 4 == 0,
+            ),
+        )?;
+        d.r0 = r.u64()?;
+        d.r1 = r.u64()?;
+        d.r2 = r.u64()?;
+        d.header_read = r.bool()?;
+        d.intel_size = r.u32()?;
+        d.intel_started = r.bool()?;
+        d.block_type = u32::from(r.u8()?);
+        d.block_length = r.u32()? as usize;
+        d.block_remaining = r.u32()? as usize;
+        if d.block_type > UNCOMPRESSED
+            || d.block_length >= 1 << 24
+            || d.block_remaining > d.block_length
+        {
+            return r.bad("a block header out of range");
+        }
+        d.offset = r.u64()?;
+        d.frame = r.u64()?;
+        d.window_pos = (d.offset % d.window_size as u64) as usize;
+        Ok(d)
     }
 
     // ── Input ───────────────────────────────────────────────────────────────────
@@ -478,6 +643,7 @@ impl LzxDecoder {
                 *a = self.read_bits(3, input)? as u8;
             }
             self.aligned_table = build_table(&aligned, ALIGNED_SYMBOLS, "aligned", false)?;
+            self.aligned_lengths = aligned;
         }
         if block_type == VERBATIM || block_type == ALIGNED {
             self.read_lengths(true, 0, NUM_CHARS, input)?;

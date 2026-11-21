@@ -31,6 +31,10 @@ def best(fn, repeat=3):
     return min(times)
 
 
+def filtered(decoder, buf: bytes) -> bytes:
+    return decoder.decode(buf) + decoder.flush()
+
+
 def row(name, size, py, rs, extra=""):
     mb = size / 1e6
     print(
@@ -65,7 +69,7 @@ def main() -> None:
         for i in range(0, len(text), 131072)
     ]
     py = best(lambda: [lzo1x_decompress_python(b, 131072) for b in blocks], 1)
-    rs = best(lambda: [n.lzo1x_decompress(b, 131072) for b in blocks])
+    rs = best(lambda: [n.lzo1x.decompress(b, out_size=131072) for b in blocks])
     c = best(lambda: [lzo.decompress(b, False, 131072) for b in blocks])
     row(
         "LZO1X (128 KiB blocks)",
@@ -78,7 +82,7 @@ def main() -> None:
     # ZipCrypto.
     data = text[: 8 << 20]
     py = best(lambda: ZipCryptoKeys(b"secret").decrypt(data), 1)
-    rs = best(lambda: n.ZipCryptoKeys(b"secret").decrypt(data))
+    rs = best(lambda: n.zipcrypto.Decryptor(b"secret").decrypt(data))
     row("ZipCrypto decrypt", len(data), py, rs)
 
     # Branch filters on an executable and on text (few candidates).
@@ -95,7 +99,7 @@ def main() -> None:
     )
     for label, buf in (("x86 binary", exe), ("dense candidates", hot), ("text", text)):
         py = best(lambda: arm64_decode(buf, 0), 2)
-        rs = best(lambda: n.arm64_decode(buf, 0))
+        rs = best(lambda: filtered(n.filters.Arm64Decoder(), buf))
         row(f"ARM64 filter, {label}", len(buf), py, rs)
     hot = bytes(
         rng.choice(b"\xef\x17\x97") if rng.random() < 0.25 else rng.randrange(256)
@@ -103,7 +107,7 @@ def main() -> None:
     )
     for label, buf in (("x86 binary", exe), ("dense candidates", hot), ("text", text)):
         py = best(lambda: riscv_decode(buf, 0), 2)
-        rs = best(lambda: n.riscv_decode(buf, 0))
+        rs = best(lambda: filtered(n.filters.RiscvDecoder(), buf))
         row(f"RISC-V filter, {label}", len(buf), py, rs)
 
     # LZX: a stream from the test suite's encoder (Python, so kept small).
@@ -116,14 +120,18 @@ def main() -> None:
         frames = LzxEncoder(window_bits=21, blocks=layout).encode(sample)
         sizes = [min(FRAME, len(sample) - i) for i in range(0, len(sample), FRAME)]
 
-        def run(cls):
+        def run_py():
             it = iter(frames)
-            d = cls(21, lambda: next(it, None))
-            out = b"".join(d.decode_frame(s) for s in sizes)
+            d = LzxDecoder(21, lambda: next(it, None))
+            assert b"".join(d.decode_frame(s) for s in sizes) == sample
+
+        def run_rs():
+            d = n.lzx.Decompressor(21, output_size=len(sample))
+            out = b"".join(d.decompress(f) for f in frames) + d.flush()
             assert out == sample
 
-        py = best(lambda: run(LzxDecoder), 1)
-        rs = best(lambda: run(n.LzxDecoder))
+        py = best(run_py, 1)
+        rs = best(run_rs)
         row(label, len(sample), py, rs)
 
 
