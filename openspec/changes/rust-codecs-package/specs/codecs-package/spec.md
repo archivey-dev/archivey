@@ -43,10 +43,13 @@ and `unused_data`, with the meaning `lzma.LZMADecompressor` gives them, and SHAL
 return at most `max_length` bytes when it is not negative. The LZX decompressor SHALL
 take the declared output size (`output_size=` or `set_output_size(n)` before the last
 frame), SHALL decode whole frames of 32 KiB with only the last one shorter, whatever
-`max_length` is, and SHALL set `eof` when `total_out` reaches it. The LZW decompressor
-SHALL have `flush(max_length=-1)`, which marks the end of input, returns the remaining
-output and then sets `eof` and `truncation` (`None` or a message); it SHALL NOT raise
-for a truncation it can only suspect, so the bytes before it are kept. The pull decoder
+`max_length` is, and SHALL set `eof` when `total_out` reaches it. LZX and LZW SHALL have
+`flush(max_length=-1)`, which marks the end of input and returns the remaining output;
+before it, input that ends inside a frame or code only means more input is needed. LZX's
+`flush()` SHALL finish the last frame with the Python twin's zero padding and SHALL
+raise `TruncatedDataError` when the frame still cannot finish. LZW's `flush()` SHALL
+then set `eof` and `truncation` (`None` or a message), and SHALL NOT raise for a
+truncation it can only suspect, so the bytes before it are kept. The pull decoder
 (BCJ2) SHALL take the declared output size as the required `out_size`, SHALL read from
 its four input streams with `read(n)` and SHALL have `read(max_length=-1) -> bytes` and
 `eof`, returning at most `max_length` bytes when it is not negative and setting `eof`
@@ -66,7 +69,10 @@ more than `out_size` bytes. Every allocation SHALL be bounded by a constructor a
 | --- | --- |
 | `decompress(data, max_length=10)` on a stream with more output | At most 10 bytes; `needs_input` is false |
 | The stream's end reached | `eof` true; bytes after it in `unused_data` |
-| A CAB with Intel E8 translation and a short last frame, read with `max_length=1` | Same bytes as one `decompress()` call and as the Python twin |
+| A CAB with Intel E8 translation and a short last frame, read with `max_length=1` | Same bytes as one `decompress()` call and as the Python twin; `eof` false until the last byte is returned |
+| LZX last frame split across two `decompress()` calls | After the first, `needs_input` true and no error; after the second and `flush()`, the frame as the twin decodes it |
+| LZX input that stops at that same split, then `flush()` | The twin's output and its terminal error (`TruncatedDataError`) |
+| LZX with no output size (incomplete block table), `flush()` inside a frame | `TruncatedDataError`, as the twin |
 | LZW `decompress(b"")` before the source ends | Buffered output only; `eof` false |
 | LZW `flush()` after a clean stream | The rest of the output; `eof` true; `truncation` is `None` |
 | LZW `flush()` with padding still owed | The bytes before the cut; `truncation` names the owed padding; no exception |
@@ -90,10 +96,11 @@ Each streaming object SHALL have `copy()`, `getstate() -> bytes` and a class met
 its four read cursors) and SHALL be restored with
 `from_state(state, main, call, jump, rc)`, each new stream placed at its saved count,
 and SHALL count its input and output: a decompressor and a filter have `total_in` (input
-bytes consumed) and `total_out` (output bytes produced); BCJ2 has `total_in` as a tuple
-of four counts, one per input stream, and `total_out`; ZipCrypto has `total_in` only,
-since its output length equals its input length. `getstate()` SHALL hold everything the
-object consumed, including bits of a partly read byte and a filter's held-back bytes,
+bytes consumed) and `total_out` (output bytes returned to the caller, not decoded output
+still held); BCJ2 has `total_in` as a tuple of four counts, one per input stream, and
+`total_out`; ZipCrypto has `total_in` only, since its output length equals its input
+length. `getstate()` SHALL hold everything the object consumed, including bits of a
+partly read byte, a filter's held-back bytes and decoded output not yet returned,
 and SHALL NOT hold input that the object holds but has not used. An object made by
 `from_state` and fed each input from its `total_in` offset SHALL produce exactly the
 output a straight decode produces from offset `total_out` (for ZipCrypto, from offset
@@ -109,6 +116,7 @@ block's offset.
 | BCJ2 saved mid-stream, restored with four new streams each at its own `total_in` | Output equals the straight decode from `total_out` |
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |
+| An LZX decoder saved after returning 1 byte of a 12-byte last frame | `total_out` counts that 1 byte; the restored decoder returns the other 11, then `eof` |
 | An ARM64 filter saved with 2 bytes held back | The resumed filter returns those 2 bytes first; output equals the straight decode |
 | ZipCrypto saved after `n` bytes | `getstate()` holds the three 32-bit keys after the kernel name and revision; decrypting from offset `n` equals the straight decrypt |
 | `copy()` then decode on both | Both produce the same output; neither affects the other |

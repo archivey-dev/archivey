@@ -22,9 +22,11 @@ hashes with a `hashlib`-like interface.
 - A stdlib-shaped API: hash objects like `hashlib` (`update`, `digest`, `hexdigest`,
   `copy`; CRC-16/ARC in 0.1), streaming decoders like `lzma.LZMADecompressor`
   (`decompress(data, max_length)`, `eof`, `needs_input`, `unused_data`) that can be
-  copied and saved for seeking (`copy`, `getstate`, `from_state`, `total_in`,
-  `total_out`), one-shot block decoders with an exact output size, and one error family
-  under `CodecError(ValueError)`.
+  saved for seeking (`getstate`, `from_state`, `total_in`, `total_out`) and copied with
+  `copy` (all but BCJ2, which reads four streams and is restored with new ones); LZX and
+  LZW take an explicit end of input (`flush()`), LZX the folder's output size and BCJ2
+  the declared `out_size`, one-shot block decoders with an exact output size, and one
+  error family under `CodecError(ValueError)`.
 - archivey uses it only as an optional accelerator. A per-kernel revision table
   (`archivey_codecs.KERNELS`) replaces the prototype's single `ABI_VERSION`: archivey
   uses a kernel only at the revision it needs or newer, and falls back to its Python

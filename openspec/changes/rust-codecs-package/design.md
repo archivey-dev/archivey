@@ -115,9 +115,18 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   declared output size with `output_size=` or, when the CAB reader learns it later,
   with `set_output_size(n)` before the last frame starts. The kernel decodes one whole
   frame into an internal buffer of at most 32 KiB and returns it in `max_length`
-  slices. `eof` turns true when `total_out` reaches the output size. Without an output
-  size, every frame is 32 KiB and `eof` stays false. This is how `cab_reader.py` calls
-  `decode_frame(frame)` today.
+  slices. `eof` turns true when `total_out`, the bytes returned so far, reaches the
+  output size. Without an output size, every frame is 32 KiB and `eof` stays false.
+  This is how `cab_reader.py` calls `decode_frame(frame)` today.
+- LZX also needs to know when the compressed input has ended, which an output size
+  does not say: the CAB reader's `_lzx_more()` returns `None` after the last data
+  block, and only then does the Python twin read zero padding past the end (at most
+  `_MAX_PADDING` bytes) for its last lookahead. Before that, a frame that the input does
+  not yet cover waits for more input (`needs_input` true). LZX therefore has
+  `flush(max_length=-1)`, like LZW: it marks the end of input, finishes the frame with
+  the twin's zero padding, and returns the rest. A frame that still cannot finish then
+  raises `TruncatedDataError`, as the twin's `TruncatedError`. This also covers a
+  folder whose output size is unknown (an incomplete block table).
 - Unix `compress` has no end marker: the stream ends where its source ends. An empty
   `decompress(b"")` only drains buffered output, as for `LZMADecompressor`, so LZW has
   `flush(max_length=-1)` to say that the input has ended. `flush()` returns the
@@ -160,7 +169,10 @@ f.seek(stream_start + point[1])         # feed input from total_in; output resum
 
 - `total_in` counts input bytes consumed, `total_out` output bytes produced.
 - `getstate()` returns bytes holding what the decoder consumed, including the bits of a
-  partly read byte, and never the input it holds but has not used.
+  partly read byte and any decoded output not yet returned (at most one LZX frame, 32
+  KiB), and never the input it holds but has not used. `total_out` counts the bytes
+  returned to the caller, not the bytes decoded into a buffer, as BCJ2's Python twin
+  counts its position today (`_produced - len(_pending)`).
 - The state starts with the kernel's name and revision; `from_state` refuses any other
   with `UnsupportedDataError`, so a stale seek index cannot decode wrong bytes.
 - `from_state` checks a state's contents as it checks input: a window size over the
@@ -365,4 +377,5 @@ All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless note
     in-process; raised by review round 1).
 14. D3: keep LZX, LZW and BCJ2 in 0.1 with the framing and end-of-input API (LZX
     `output_size`, LZW `flush()`, BCJ2 `out_size` and restore without `copy()`)?
-    RULED: yes, all three in 0.1 (card; raised by review round 4).
+    RULED: yes, all three in 0.1 (card; raised by review round 4). Review round 5 added
+    LZX `flush()` for the end of input, within the same ruling.
