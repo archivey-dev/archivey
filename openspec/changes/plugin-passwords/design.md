@@ -232,7 +232,7 @@ A replacement plugin for ZIP, 7z or RAR whose handler sets `supports_password` g
 caller's `password=` through `unlock`, as any plugin does. The sentence in
 `adding-a-format.md` saying a replaced ZIP cannot read encrypted members goes.
 
-### D7. The verdict travels with the data it covers (open question 7)
+### D7. The verdict travels with the data it covers (RULED: davi 11-21, card)
 
 Call order proves nothing: makeself unlocks one payload at a time and may walk again, a
 replaced RAR can confirm its encrypted headers and still meet member data under another
@@ -293,7 +293,7 @@ before any lock is taken.
 - A plugin can still decrypt without `unlock` by reading the password some other way
   (an environment variable). Nothing stops that, and nothing needs to.
 
-## Open questions (1-6 ruled by the maintainer 2026-11-21; 7 open)
+## Open questions (all ruled by the maintainer, 2026-11-21)
 
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi
    11-21).
@@ -308,4 +308,4 @@ before any lock is taken.
 6. Order: this API PR first, then makeself, ARJ and DMG on it? RULED yes (davi 11-21,
    card).
 7. D7: the new public field `unlocked: PasswordConfirmVerdict | None` on `MemberRecord`,
-   `MemberSpan` and `MemberData`? (Recommended: yes; Codex review C2, C3.) OPEN.
+   `MemberSpan` and `MemberData`? RULED yes (davi 11-21, card).

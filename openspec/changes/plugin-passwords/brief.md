@@ -1,7 +1,7 @@
 # plugin-passwords — let a plugin format read encrypted members
 
-**Status:** Design. The maintainer ruled open questions 1-6 on 2026-11-21 (design.md
-§Open questions); question 7 (the `unlocked` field) is open. No code until the
+**Status:** Design. The maintainer ruled open questions 1-7 on 2026-11-21 (design.md
+§Open questions); question 7 (the `unlocked` field) too. No code until the
 maintainer has reviewed and merged this design. Additive: no current call changes.
 Target: 0.6.0 (before DMG encryption).
 
@@ -34,7 +34,7 @@ it.
 - `ReaderArchiveInfo.is_encrypted`, and members listed with `is_encrypted=True`, report
   encryption the way the built-in readers do.
 - The verdict travels with the data it covers: `unlocked` on `MemberRecord`,
-  `MemberSpan` and `MemberData` (design.md D7, open).
+  `MemberSpan` and `MemberData` (design.md D7).
 
 **After it lands:** makeself moves off `_passwords` (and starts marking its encrypted
 members), ARJ reads garbled members, and the DMG spec §6B uses `unlock` instead of the
