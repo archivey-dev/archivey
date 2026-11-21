@@ -151,7 +151,7 @@ ZipCrypto, so the link-target report says `password_or_damage`.
 dropped, the rest wait", and new levels can be added to an enum later. A numeric score
 would ask every plugin to calibrate numbers nothing compares across formats.
 
-### D4. Key derivation: `ReaderContext.charge_key_derivation(rounds)`
+### D4. Key derivation: `ReaderContext.charge_key_derivation(rounds)` (RULED: davi 11-21)
 
 Charges `rounds` to the open archive's `DecoderLimits.max_key_derivation_rounds` (shared
 with every other derivation on that archive and visible in resource usage) and raises
@@ -204,7 +204,7 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
    enum and its levels; built-ins and plugins share it), with an optional
    `full_check` to decide between several unconfirmed passwords? RULED yes (davi 11-21).
 3. D2: archivey writes both messages? RULED yes (davi 11-21, card).
-4. D4: `charge_key_derivation(rounds)` on the context? (Recommended: yes.)
+4. D4: `charge_key_derivation(rounds)` on the context? RULED yes (davi 11-21, card).
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
    `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`, `CONFIRMED`).
 6. Order: this API PR first, then makeself, ARJ and DMG on it? (Recommended: yes.)
