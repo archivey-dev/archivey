@@ -73,7 +73,7 @@ fn riscv_decode<'py>(py: Python<'py>, data: &[u8], pc: u64) -> Bound<'py, PyByte
     PyBytes::new(py, &out)
 }
 
-#[pyclass(module = "archivey_codecs._codecs")]
+#[pyclass(module = "archivey_codecs._codecs", skip_from_py_object)]
 #[derive(Clone)]
 struct ZipCryptoKeys {
     keys: zipcrypto::Keys,
