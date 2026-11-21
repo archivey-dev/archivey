@@ -462,4 +462,7 @@ same as a provider that waits for any lock its own caller holds, and the docs sa
 9. D1/D8: instead of calling `context.unlock`, the plugin returns or yields a request
    and archivey calls back with the key? RULED yes (davi 11-21, card).
 10. D1: the request's name, `NeedsPassword`. RULED yes (davi 11-21, card).
+11. D8: a member's first lazy open (first `read()` of a `stream_members()` or
+    extraction handle) may ask the provider, like `open()`; replacement opens never do?
+    RULED yes (davi 11-21, card).
     (`PasswordRequest` is already the provider's argument type.)

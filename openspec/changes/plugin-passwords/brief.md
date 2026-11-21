@@ -1,6 +1,6 @@
 # plugin-passwords — let a plugin format read encrypted members
 
-**Status:** Design. The maintainer ruled open questions 1-10 on 2026-11-21 (design.md
+**Status:** Design. The maintainer ruled open questions 1-11 on 2026-11-21 (design.md
 §Open questions). No code until the maintainer
 has reviewed and merged this design. Additive: no current call changes. Target: 0.6.0
 (before DMG encryption).
