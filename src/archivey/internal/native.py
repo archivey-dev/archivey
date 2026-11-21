@@ -116,19 +116,14 @@ def codec_errors(module: ModuleType, kernel: str) -> Generator[None]:
     as ``CorruptionError``. The kernels raise with their Python twin's message, so the
     error a caller sees is the one the twin raises."""
     try:
-        yield
+        with panic_to_corruption(kernel):
+            yield
     except module.TruncatedDataError as exc:
         raise TruncatedError(str(exc)) from None
     except module.CorruptDataError as exc:
         raise CorruptionError(str(exc)) from None
     except module.UnsupportedDataError as exc:
         raise UnsupportedFeatureError(str(exc)) from None
-    except BaseException as exc:
-        if is_panic(exc):
-            raise CorruptionError(
-                f"archivey-codecs' {kernel} decoder failed on this data: {exc}"
-            ) from exc
-        raise
 
 
 class Latch:
@@ -347,7 +342,7 @@ class NativeLzw:
     before it, and the error raises from the next call.
     """
 
-    __slots__ = ("_at", "_d", "_finished", "_latch", "_module", "_raise_after")
+    __slots__ = ("_at", "_d", "_finished", "_flushed", "_latch", "_module")
 
     def __init__(
         self, module: ModuleType, decoder: _LzwDecompressor, *, header_in_stream: bool
@@ -356,7 +351,7 @@ class NativeLzw:
         self._d = decoder
         self._latch = Latch("LZW")
         self._finished = False
-        self._raise_after: BaseException | None = None
+        self._flushed = False
         # The last CLEAR's (input, output) offset: the kernel counts the header in
         # the input when it reads one from the stream, and the units start after it.
         self._at = (_LZW_HEADER if header_in_stream else 0, 0)
@@ -387,8 +382,6 @@ class NativeLzw:
         return units
 
     def _call(self, call: Callable[[], bytes]) -> tuple[bytes, list[tuple[int, int]]]:
-        if self._raise_after is not None:
-            raise self._raise_after
         with self._latch.guard(), codec_errors(self._module, "LZW"):
             out = call()
             units = self._units()
@@ -399,21 +392,16 @@ class NativeLzw:
     ) -> tuple[bytes, list[tuple[int, int]]]:
         if self._finished:
             return b"", []
+        if self._flushed:
+            # A flush() that raised: the kernel raises the same error again.
+            return self._call(lambda: self._d.flush(max_length))
         return self._call(lambda: self._d.decompress(data, max_length))
 
     def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
+        # A bad code after the output returned here raises from the next call: the
+        # kernel keeps the error and raises it again.
+        self._flushed = True
         out, units = self._call(self._d.flush)
-        if not self._d.eof:
-            # A bad code after the output just returned: the kernel raises it from
-            # the next call, which this one makes so that it raises from this
-            # decoder's next call, as the Python decoder's does.
-            try:
-                more, more_units = self._call(self._d.flush)
-            except (CorruptionError, UnsupportedFeatureError) as exc:
-                self._raise_after = exc
-            else:
-                out += more
-                units += more_units
         self._finished = True
         return out, units
 

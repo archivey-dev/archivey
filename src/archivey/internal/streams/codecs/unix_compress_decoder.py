@@ -795,8 +795,8 @@ def UnixCompressDecompressorStream(
     *,
     collector: DiagnosticCollector | None = None,
     seekable: bool = True,
-    excluded: frozenset[OptionalLibrary] = frozenset(),
-    isolated: bool = False,
+    excluded: frozenset[OptionalLibrary],
+    isolated: bool,
 ) -> DecompressorStream:
     """Seekable unix-compress stream: CLEAR → :class:`SeekPoint` when indexing is on.
 

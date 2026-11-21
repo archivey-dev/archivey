@@ -26,6 +26,7 @@ from archivey import (
     ProcessIsolation,
     StreamFormat,
     TruncatedError,
+    UnsupportedFeatureError,
     open_archive,
     open_stream,
 )
@@ -642,16 +643,22 @@ def test_z_uses_the_kernel_and_reads_the_same(piece: int) -> None:
     assert isinstance(make(), native.NativeLzw)
     data = (bytes(range(256)) * 50 + b"text " * 30000) * 3
     raw = make_unix_compress(data)
-    cases = [raw, raw[:-7], raw[:2], raw[:3]]
-    for at in (len(raw) // 3, len(raw) // 2, len(raw) - 40):
-        bad = bytearray(raw)
-        bad[at] ^= 0x5A
-        cases.append(bytes(bad))
-    for case in cases:
-        if piece == 1:
-            case = case[:1500]
+    # 1-byte reads are slow, so they read the first 1500 bytes, damaged inside them.
+    window = 1500 if piece == 1 else len(raw)
+    base = raw[:window]
+    cases = [base, base[:-7], raw[:2], raw[:3]]
+    damaged = []
+    for at in (300, 500, 1100):
+        bad = bytearray(base)
+        bad[at] ^= 0xFF
+        damaged.append(bytes(bad))
+    for case in cases + damaged:
         assert _read_z(case, None, piece) == _read_z(case, OFF, piece)
-    assert _read_z(raw, None, piece)[0] == data
+    for case in damaged:
+        # Each damaged case reaches a bad code, so the error path is compared.
+        assert _read_z(case, OFF, piece)[1] == "CorruptionError"
+    if piece != 1:
+        assert _read_z(raw, None, piece)[0] == data
 
 
 @needs_codecs
@@ -720,3 +727,57 @@ def test_z_clear_points_match_and_restart_with_the_kernel() -> None:
             got += restarted.feed(b"").data
         got += restarted.flush().data
         assert got == data[point.decompressed_offset :]
+
+
+def _drive_lzw(state: object, data: bytes, cap: int) -> tuple:
+    """Feed all of ``data`` with output capped at ``cap``, then call ``flush()``
+    twice and ``feed()`` once more: the bytes, the CLEAR units, each call's
+    error, and which calls returned output."""
+    out = bytearray()
+    units: list = []
+    events: list = []
+
+    def call(step: object) -> bool:
+        try:
+            got, more = step()  # type: ignore[operator]
+        except (CorruptionError, UnsupportedFeatureError) as exc:
+            events.append((type(exc).__name__, str(exc)))
+            return False
+        out.extend(got)
+        units.extend(more)
+        events.append(("ok", bool(got)))
+        return True
+
+    # One capped feed leaves most of the stream for flush().
+    call(lambda: state.feed(data, cap))  # type: ignore[attr-defined]
+    for step in (state.flush, state.flush, lambda: state.feed(b"x")):  # type: ignore[attr-defined]
+        call(step)
+    errors = [e for e in events if e[0] != "ok"]
+    return bytes(out), units, errors, events[-3:]
+
+
+@needs_codecs
+@requires("ncompress")
+def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
+    """A bad code met by ``flush()`` after some output: ``flush()`` returns that
+    output and the next call raises, as ``LzwState`` does."""
+    make = native.lzw(frozenset(), isolated=False)
+    assert make is not None
+    rng = random.Random(11)
+    inside_flush = 0
+    for _ in range(200):
+        data = b"".join(
+            rng.choice((b"abc", b"hello ", bytes([rng.randrange(256)])))
+            for _ in range(rng.randint(50, 3000))
+        )
+        bad = bytearray(make_unix_compress(data))
+        for _ in range(rng.randint(1, 3)):
+            bad[rng.randrange(3, len(bad))] ^= rng.randrange(1, 256)
+        cap = rng.choice((1, 50, 1000))
+        rust = _drive_lzw(make(), bytes(bad), cap)
+        python = _drive_lzw(LzwState(), bytes(bad), cap)
+        assert rust[:3] == python[:3]
+        first_flush, second_flush, _ = rust[3]
+        if first_flush == ("ok", True) and second_flush[0] != "ok":
+            inside_flush += 1
+    assert inside_flush > 0
