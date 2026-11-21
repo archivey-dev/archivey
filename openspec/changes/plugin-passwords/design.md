@@ -211,5 +211,6 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 3. D2: archivey writes both messages? RULED yes (davi 11-21, card).
 4. D4: `charge_key_derivation(rounds)` on the context? RULED yes (davi 11-21, card).
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
-   `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`, `CONFIRMED`).
+   `charge_key_derivation`, `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`,
+   `CONFIRMED`). RULED keep all (davi 11-21, card).
 6. Order: this API PR first, then makeself, ARJ and DMG on it? (Recommended: yes.)
