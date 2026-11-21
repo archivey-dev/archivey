@@ -447,7 +447,8 @@ value archivey.ExtractionStatus.LINK_TARGET_UNAVAILABLE = 'link_target_unavailab
 class archivey.FilterRejectionError(ExtractionError)
 init archivey.FilterRejectionError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False, report: ExtractionReport | None = None) -> None
 class archivey.FormatAvailability()
-init archivey.FormatAvailability(format: ArchiveFormat, support: FormatSupport, missing: tuple[MissingComponent, ...] = (), required_source: StreamCapability = StreamCapability.SEEKABLE) -> None
+init archivey.FormatAvailability(format: ArchiveFormat, support: FormatSupport, missing: tuple[MissingComponent, ...] = (), required_source: StreamCapability = StreamCapability.SEEKABLE, faster_with: tuple[MissingComponent, ...] = ()) -> None
+field archivey.FormatAvailability.faster_with: tuple[MissingComponent, ...] = ()
 field archivey.FormatAvailability.format: ArchiveFormat
 field archivey.FormatAvailability.missing: tuple[MissingComponent, ...] = ()
 field archivey.FormatAvailability.required_source: StreamCapability = StreamCapability.SEEKABLE

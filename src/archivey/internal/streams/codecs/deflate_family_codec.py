@@ -5,7 +5,7 @@ rapidgzip in a child process.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import BinaryIO, ClassVar
+from typing import TYPE_CHECKING, BinaryIO, ClassVar
 
 from archivey.exceptions import (
     ArchiveyError,
@@ -18,6 +18,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
     compose_translators,
 )
+from archivey.internal.streams.codecs import speedups
 from archivey.internal.streams.codecs.base import (
     CodecParams,
     CodecSource,
@@ -29,7 +30,6 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _open_rapidgzip,
     _rapidgzip_enabled,
     _rapidgzip_present,
-    _rapidgzip_requirement,
     _rapidgzip_rewind_warning,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
@@ -37,12 +37,17 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _translate_child_or_stdlib,
     _warn_if_auto_without_child,
     _wrap_accelerated_length,
+    rapidgzip_requirement,
 )
 from archivey.internal.streams.codecs.stdlib_takeover import (
     _accelerator_backstop_source,
     _SourceViews,
     _StdlibOnAcceleratorError,
 )
+from archivey.types import MissingComponent, OptionalLibrary
+
+if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
 
 
 class _DeflateFamilyCodec(StreamCodec):
@@ -61,6 +66,12 @@ class _DeflateFamilyCodec(StreamCodec):
     # DEFLATE or zlib stream looking for a concatenated member, and an AES pad after it
     # would look like a second member.
     _bounds_source: ClassVar[bool] = True
+
+    @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
+    ) -> tuple[MissingComponent, ...]:
+        return speedups.missing_rapidgzip(excluded, config.use_rapidgzip, config)
 
     @override
     def open(
@@ -101,7 +112,7 @@ class _DeflateFamilyCodec(StreamCodec):
         if not _rapidgzip_enabled(config, available=present):
             return False
         if not present:
-            requirement = _rapidgzip_requirement(config.excluded_libraries)
+            requirement = rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
                 requirement.message(f"{label} random access"), missing=(requirement,)
             )

@@ -13,6 +13,7 @@ from archivey.exceptions import (
 )
 from archivey.internal.config import StreamConfig, check_decoder_memory
 from archivey.internal.overrides import override
+from archivey.internal.streams.codecs import speedups
 from archivey.internal.streams.codecs.base import (
     Codec,
     CodecParams,
@@ -31,9 +32,17 @@ from archivey.internal.streams.codecs.lzo_decoder import (
 )
 from archivey.internal.streams.decompressor_stream import DecompressorStream
 from archivey.internal.timestamps import unix_to_datetime
-from archivey.types import ArchiveFormat, ArchiveMember, MagicSignature, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    ArchiveMember,
+    MagicSignature,
+    MissingComponent,
+    OptionalLibrary,
+    StreamFormat,
+)
 
 if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
     from archivey.formats import Decompressor
 
 # lzop's F_CS_MASK and F_CS_LATIN1.
@@ -79,6 +88,13 @@ class LzopCodec(StreamCodec):
     codec = Codec.LZOP
     stream_format = StreamFormat.LZOP
     magic = (MagicSignature(0, LZOP_MAGIC, ArchiveFormat.LZOP),)
+
+    @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
+    ) -> tuple[MissingComponent, ...]:
+        del config
+        return speedups.missing_lzo_native(excluded)
 
     # The default stream_start reads a further file after the first's end block, as
     # ``lzop -d`` does.
@@ -140,6 +156,13 @@ class Lzo1xCodec(StreamCodec):
     """
 
     codec = Codec.LZO
+
+    @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
+    ) -> tuple[MissingComponent, ...]:
+        del config
+        return speedups.missing_lzo_native(excluded)
 
     @override
     def open(

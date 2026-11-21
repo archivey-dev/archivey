@@ -714,6 +714,19 @@ class FormatAvailability:
     what a format with no registered backend at all reports.
     """
 
+    faster_with: tuple[MissingComponent, ...] = ()
+    """Optional packages that are not installed and would make reading this format
+    faster. Without them archivey reads the same data, more slowly: it decodes LZO and
+    Snappy in Python, and gzip, zlib, DEFLATE and bzip2 without parallel decoding.
+
+    Never changes ``support``. Empty when the format cannot be read, and when every
+    package that would speed it up is installed. A package that ``config.formats``
+    turns off, or that archivey does not use on this interpreter, is listed with its
+    ``reason``, as in ``missing``. A package the ``config`` would not use even when
+    installed is left out: rapidgzip under ``use_rapidgzip`` / ``use_indexed_bzip2``
+    ``OFF``, or under ``ProcessIsolation.NONE``.
+    """
+
 
 class MagicSignature(NamedTuple):
     """Exact magic-byte match declared by a backend/codec descriptor (not end-user API).

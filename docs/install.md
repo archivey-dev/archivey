@@ -6,7 +6,7 @@ Optional packages, grouped as extras, add the rest:
 ```bash
 pip install archivey                 # no dependencies
 pip install "archivey[recommended]"  # every format and compression method that installs everywhere
-pip install "archivey[seekable]"     # faster seeking and reading in large gzip, bzip2 and DEFLATE data
+pip install "archivey[seekable]"     # large gzip, bzip2 and DEFLATE data decoded in parallel
 pip install "archivey[all]"          # recommended and seekable together
 pip install "archivey[bzip3]"        # .bz3 files; not part of [recommended] or [all]
 ```
@@ -15,8 +15,9 @@ If you only want the `archivey` command, `uvx archivey-cli` runs it with everyth
 `[recommended]` adds, without installing anything for good, and `pipx install archivey-cli`
 installs it. `archivey-cli` is a separate package that holds no code: it depends on
 `archivey[recommended]` at the same version, plus `fsspec` and `aiohttp` so the command reads
-HTTP and HTTPS URLs. `uvx archivey` works too, but it runs the base
-package only, because an extra must be named to be installed.
+HTTP and HTTPS URLs. Where they install from a ready-made wheel, it also adds what `[bzip3]` and
+`[seekable]` add. `uvx archivey` works too, but it runs the base package only, because an extra
+must be named to be installed.
 
 If you use a free-threaded Python build, [Free-threaded Python](#free-threaded-python) has the extra
 to use instead. There's no extra per format, because ZIP, 7z and TAR share their compression
@@ -27,7 +28,7 @@ methods.
 | `archivey` | ZIP, TAR and 7z with their common compression methods, ISO images, and directories. gzip, bzip2, xz, LZMA, zlib, lzip and `.Z` files, alone or inside a TAR, and Zstandard too on Python 3.14 and later. RAR archives can be listed, and their uncompressed, unencrypted files read. |
 | `[recommended]` adds | LZ4, Brotli and Zstandard files (Zstandard only before Python 3.14). PPMd, Deflate64 and Zstandard inside 7z and ZIP, and Brotli and LZ4 inside 7z. AES decryption for 7z, RAR and WinZip AES ZIP files. Faster LZO decoding for `.lzo` files and SquashFS images, and faster Snappy `.sz` reads, on CPython except on Intel macOS (on Intel macOS, only Snappy's faster CRC check). Progress bars in the command-line tool. |
 | `[bzip3]` adds | `.bz3` files, alone or inside a TAR ([bzip3](#bzip3)). |
-| `[seekable]` adds | No new format. Faster seeking inside large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, when you open with `seekable_members=True`. On Linux and macOS, also faster reading of large DEFLATE data that compresses 3:1 or less, without that option. |
+| `[seekable]` adds | No new format. Large gzip, zlib and bzip2 data, and large DEFLATE members in ZIP and 7z, decoded in parallel. Seeking works without it, and is faster with it when you open with `seekable_members=True`. Without that option, reading is faster with it for large bzip2 data on two or more CPUs, and on Linux and macOS for large DEFLATE data that compresses 3:1 or less. |
 
 Compressed RAR files, and a few encrypted ones, also need an outside program, which no extra can
 install. The next section covers it.
@@ -118,6 +119,11 @@ version, whatever `rar_decompressor` says; pass `check_programs=False` to run no
 isn't counted, because only encrypted members need it. Pass the `config=` you open with to count
 the packages its `FormatPolicy(exclude_libraries=)` or `only_libraries=` turns off as missing.
 
+Its `faster_with` lists the packages that would only make reading faster: without compress-utils,
+archivey decodes LZO and Snappy in Python, and without rapidgzip it decodes gzip, zlib, DEFLATE
+and bzip2 without parallel decoding. `archivey --version -v` prints the same answers for the whole
+install, with the command that installs each missing package.
+
 ## Python versions and platforms
 
 Archivey needs Python 3.11 or later. Every release is tested on Linux with CPython 3.11 to 3.15
@@ -165,9 +171,9 @@ copies one. That has two effects:
 
 If you read data that needs lz4, pyppmd or inflate64, the error says why archivey doesn't use the
 package, in place of an install hint, and so do `format_availability()` and
-`archivey --version -v`. rapidgzip only speeds things up, so neither lists it, and you see its
-reason only if you ask for it outright by setting `use_rapidgzip` or `use_indexed_bzip2` to
-`AcceleratorMode.ON`.
+`archivey --version -v`. rapidgzip only speeds things up, so `format_availability()` lists it in
+`faster_with` with that reason, and so does `archivey --version -v`. Setting `use_rapidgzip` or
+`use_indexed_bzip2` to `AcceleratorMode.ON` raises an error with the same reason.
 
 If you use PyPy, close member streams and passes yourself, with a `with` block or `close()`. On
 CPython, one that nothing refers to any more is closed at once. PyPy closes it only at a later

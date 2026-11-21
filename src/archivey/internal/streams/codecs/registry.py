@@ -89,6 +89,7 @@ from archivey.types import (
 )
 
 if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
     from archivey.internal.diagnostics_collector import DiagnosticCollector
 
 
@@ -203,6 +204,17 @@ def codec_requirement(
     with ``excluded`` reports it (:meth:`StreamCodec.requirement_under`)."""
     sc = _BY_CODEC.get(codec)
     return sc.requirement_under(excluded) if sc is not None else None
+
+
+def codec_missing_speedups(
+    codec: CodecId,
+    excluded: frozenset[OptionalLibrary],
+    config: ArchiveyConfig,
+) -> tuple[MissingComponent, ...]:
+    """The absent packages ``codec`` would decode faster with under ``config``
+    (:meth:`StreamCodec.missing_speedups`); ``()`` for a codec with none."""
+    sc = _BY_CODEC.get(codec)
+    return sc.missing_speedups(excluded, config) if sc is not None else ()
 
 
 def is_codec_available(

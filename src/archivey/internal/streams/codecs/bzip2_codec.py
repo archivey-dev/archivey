@@ -9,7 +9,7 @@ import itertools
 import os
 import re
 from collections.abc import Callable
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from archivey.config import INDEXED_BZIP2_AUTO_MIN_COMPRESSED_SIZE, ProcessIsolation
 from archivey.exceptions import (
@@ -31,7 +31,7 @@ from archivey.internal.streams.archive_stream import (
     RewindWarning,
 )
 from archivey.internal.streams.callers_source import from_callers_source
-from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs import deps, speedups
 from archivey.internal.streams.codecs.base import (
     BZIP2_HEADER,
     Codec,
@@ -60,13 +60,13 @@ from archivey.internal.streams.codecs.rapidgzip_select import (
     _bound_rapidgzip_source,
     _open_rapidgzip,
     _rapidgzip_present,
-    _rapidgzip_requirement,
     _rapidgzip_unused_reason,
     _refuse_forward_only_accelerator,
     _require_rapidgzip_child,
     _StdlibSeekContract,
     _translate_rapidgzip_shared,
     _warn_child_fallback,
+    rapidgzip_requirement,
 )
 from archivey.internal.streams.codecs.script_payload import check_bzip2
 from archivey.internal.streams.codecs.stdlib_takeover import (
@@ -85,7 +85,16 @@ from archivey.internal.streams.decompressor_stream import (
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools import DelegatingStream
 from archivey.internal.streams.streamtools.slice import file_region
-from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    MagicSignature,
+    MissingComponent,
+    OptionalLibrary,
+    StreamFormat,
+)
+
+if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
 
 
 def _bzip2_wanted(config: StreamConfig, *, available: bool) -> bool:
@@ -880,6 +889,12 @@ class Bzip2Codec(StreamCodec):
     script_payload_check = staticmethod(check_bzip2)
 
     @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
+    ) -> tuple[MissingComponent, ...]:
+        return speedups.missing_rapidgzip(excluded, config.use_indexed_bzip2, config)
+
+    @override
     def prepare_config(self, source: CodecSource, config: StreamConfig) -> StreamConfig:
         """Note a source that is a file on disk (``source_is_file``), for the
         sequential rule; asked only when its other gates pass, so a member open that
@@ -956,7 +971,7 @@ class Bzip2Codec(StreamCodec):
         if _bzip2_uses_accelerator(config):
             return True
         if config.use_indexed_bzip2 is AcceleratorMode.ON:
-            requirement = _rapidgzip_requirement(config.excluded_libraries)
+            requirement = rapidgzip_requirement(config.excluded_libraries)
             raise PackageNotInstalledError(
                 requirement.message("bzip2 random access"), missing=(requirement,)
             )

@@ -76,7 +76,7 @@ from archivey.types import MissingComponent, OptionalLibrary
 # The DEFLATE-family codecs are stdlib-backed, so they declare no ``requirement`` — rapidgzip
 # is an *accelerator* they only demand when random access was explicitly requested. It still
 # needs one install hint, shared with the rewind diagnostic that suggests the same package.
-def _rapidgzip_requirement(
+def rapidgzip_requirement(
     excluded: frozenset[OptionalLibrary] = NO_EXCLUSIONS,
 ) -> MissingComponent:
     """rapidgzip as a missing component, with the reason archivey does not use it on this
@@ -86,7 +86,7 @@ def _rapidgzip_requirement(
         MissingComponent(
             OptionalLibrary.RAPIDGZIP,
             "pip install archivey[seekable]",
-            ("random-access",),
+            ("parallel decoding",),
             reason=deps.unused_reason(OptionalLibrary.RAPIDGZIP),
         ),
         excluded,

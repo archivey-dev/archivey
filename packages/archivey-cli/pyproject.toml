@@ -14,7 +14,7 @@ build-backend = "hatchling.build"
 [project]
 name = "archivey-cli"
 version = "0.5.2.dev0"
-description = "The archivey command-line tool, with archivey's recommended optional packages"
+description = "The archivey command-line tool, with archivey's recommended optional packages and its parallel decoders"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -42,6 +42,18 @@ dependencies = [
     # extra for them; other stores (s3fs, gcsfs, adlfs) stay the user's to install.
     "fsspec>=2024.0.0",
     "aiohttp>=3.9.0",
+    # The root's [bzip3] and [seekable], only where they install from a wheel, so that
+    # `uvx archivey-cli` reads .bz3 and decodes large gzip and bzip2 in parallel without
+    # ever compiling. Elsewhere the CLI installs without them, and `--version -v` says
+    # how to add them. The floors match the root extras
+    # (tests/test_cli_companion_package.py checks).
+    # bzip3 0.1.10 has CPython 3.11 to 3.14 wheels for Linux x86-64, aarch64 and
+    # riscv64 (glibc and musl) and for Windows, and no sdist. Its libbzip3 is LGPL-3.
+    "bzip3>=0.1.10; platform_python_implementation == 'CPython' and python_version < '3.15' and (sys_platform == 'win32' or (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64' or platform_machine == 'riscv64')))",
+    # rapidgzip 0.16.0 has CPython 3.11 to 3.14 wheels for Linux x86-64, aarch64 and
+    # i686, macOS 13+ (arm64 and x86-64) and Windows x86-64 (not 3.14t there, which
+    # builds from its sdist). Under PyPy archivey does not use it.
+    "rapidgzip>=0.16.0; platform_python_implementation == 'CPython' and python_version < '3.15' and (sys_platform == 'darwin' or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64' or platform_machine == 'i686')))",
 ]
 
 [project.urls]

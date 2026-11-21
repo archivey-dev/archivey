@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from archivey.exceptions import ArchiveyError, CorruptionError
 from archivey.internal.config import StreamConfig
 from archivey.internal.overrides import override
+from archivey.internal.streams.codecs import speedups
 from archivey.internal.streams.codecs.base import Codec, CodecParams, StreamCodec
 from archivey.internal.streams.codecs.framed_decoder import BLOCKS_ONLY, StreamIndex
 from archivey.internal.streams.codecs.snappy_framed import (
@@ -21,9 +22,16 @@ from archivey.internal.streams.codecs.snappy_framed import (
     SnappyFramedDecompressor,
     chunk_decoder,
 )
-from archivey.types import ArchiveFormat, MagicSignature, StreamFormat
+from archivey.types import (
+    ArchiveFormat,
+    MagicSignature,
+    MissingComponent,
+    OptionalLibrary,
+    StreamFormat,
+)
 
 if TYPE_CHECKING:
+    from archivey.config import ArchiveyConfig
     from archivey.formats import Decompressor
 
 
@@ -38,6 +46,13 @@ class SnappyCodec(StreamCodec):
     # A repeated stream identifier is a chunk of the same stream, so the decompressor
     # reads concatenated streams itself, to the end of the input.
     concatenated = False
+
+    @override
+    def missing_speedups(
+        self, excluded: frozenset[OptionalLibrary], config: ArchiveyConfig
+    ) -> tuple[MissingComponent, ...]:
+        del config
+        return speedups.missing_snappy_native(excluded)
 
     @override
     def decompressor(self, params: CodecParams, config: StreamConfig) -> Decompressor:
