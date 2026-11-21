@@ -7,14 +7,13 @@ the registry. Do not remove the side-effect imports below.
 
 Module map. These are written against ``BaseArchiveReader`` and register with
 ``register_reader``. A reading backend usually has a ``*ReadBackend`` (registry /
-``open_read``) and a ``*Reader``; ``udif`` only refuses. The extra modules on a bullet
+``open_read``) and a ``*Reader``. The extra modules on a bullet
 are that reader's helpers:
 
 - :mod:`.zip_reader` / ``zip_parser`` — ZIP (native central-directory parser;
   codecs/crypto for member data); ``zip_local_walk`` / ``zip_forward_reader`` read a
   ZIP front to back from a source that cannot seek
 - :mod:`.tar_reader` — TAR / compressed TAR (native :mod:`.tar_parser`)
-- :mod:`.udif` — UDIF disk images (``.dmg``); recognised and refused, not read
 - :mod:`.directory_reader` — filesystem directory as a pseudo-archive
 - :mod:`.single_file_reader` — bare ``.gz`` / ``.xz`` / … as a one-member archive
 - :mod:`.sevenzip_methods` / ``sevenzip_parser`` / ``sevenzip_pipeline`` /
@@ -42,6 +41,8 @@ added from outside would be: a ``*Handler`` declares the format and opens a
 - :mod:`.lha_reader` — LHA (header levels 0-3; stored, ``-lh1-``, ``-lh4-`` to
   ``-lh7-``, ``-lhx-``, ``-lk7-``, ``-lzs-``, ``-lz5-``)
 - :mod:`.arj_reader` — ARJ (methods 0 to 4)
+- :mod:`.dmg_reader` — Apple disk images (``.dmg``): UDIF (:mod:`.udif`), the
+  partition map (:mod:`.disk_partitions`) and HFS+ volumes (:mod:`.hfsplus`)
 
 Format-specific helpers that are not readers live here too, next to the parser they share
 logic with: the scan-hit validators :mod:`.zip_detect`, :mod:`.sevenzip_detect` and
@@ -68,6 +69,7 @@ from archivey.internal.backends import (
     cab_reader as _cab_reader,  # noqa: F401
     cpio_reader as _cpio_reader,  # noqa: F401
     directory_reader as _directory_reader,  # noqa: F401
+    dmg_reader as _dmg_reader,  # noqa: F401
     iso_reader as _iso_reader,  # noqa: F401
     lha_reader as _lha_reader,  # noqa: F401
     makeself_reader as _makeself_reader,  # noqa: F401
@@ -78,7 +80,6 @@ from archivey.internal.backends import (
     single_file_reader as _single_file_reader,  # noqa: F401
     squashfs_reader as _squashfs_reader,  # noqa: F401
     tar_reader as _tar_reader,  # noqa: F401
-    udif as _udif,  # noqa: F401
     xar_reader as _xar_reader,  # noqa: F401
     zip_reader as _zip_reader,  # noqa: F401
 )
