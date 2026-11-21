@@ -422,9 +422,12 @@ class _PasswordCandidates:
     ) -> _T:
         """Try passwords in order; consult the provider after static candidates fail.
 
-        This is the one password loop: the built-in readers call it directly or
-        through ``attempt_with_confirm``, and a plugin's ``NeedsPassword`` request
-        through ``resolve_request``.
+        This is the password loop: the built-in readers call it directly or through
+        ``attempt_with_confirm``, and a plugin's ``NeedsPassword`` request through
+        ``resolve_request``. The one exception is ZIP's STORED ZipCrypto members
+        (``ZipReader._open_stored_confirmed``): their survivors share one CRC pass, so
+        that reader runs its own loop over ``iter_provider_answers``, with the same
+        rules (every provider answer is checked against the member's CRC-32).
 
         ``decrypt`` must return a non-``None`` value on success: ``attempt`` uses
         ``None`` as its "wrong password, try the next candidate" sentinel, so a
