@@ -12,9 +12,10 @@ Every error is a :class:`CodecError`, a :class:`ValueError`. :data:`KERNELS` giv
 each kernel's revision, raised whenever its output, errors or saved state change.
 """
 
-from archivey_codecs import filters, lzo1x, lzw, zipcrypto
+from types import MappingProxyType
+
+from archivey_codecs import _codecs, filters, lzo1x, lzw, zipcrypto
 from archivey_codecs._codecs import (
-    KERNELS,
     CodecError,
     CorruptDataError,
     Crc16Arc,
@@ -22,6 +23,9 @@ from archivey_codecs._codecs import (
     UnsupportedDataError,
     crc16_arc,
 )
+
+# Read-only: archivey decides from this table whether to use a kernel.
+KERNELS = MappingProxyType(dict(_codecs.KERNELS))
 
 __all__ = [
     "KERNELS",

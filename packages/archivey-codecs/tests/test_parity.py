@@ -1,4 +1,3 @@
-# ruff: noqa: B023 - every lambda here runs at once, inside its loop iteration
 """Differential tests: every Rust kernel against the pure-Python decoder it replaces.
 
 Same input, same output bytes; on damage, the same error kind and the same message.
@@ -388,76 +387,85 @@ def pack_lzw(
     return bytes(out)
 
 
-class RustLzw:
-    """``lzw.Decompressor`` behind the Python twin's ``LzwState`` calls, so one
-    runner logs both."""
+def lzw_python(data: bytes, rng: random.Random, kwargs: dict):
+    """The Python twin fed ``data`` in random chunks with random budgets: all output
+    before the first error, the error, the end report and the CLEAR offsets (its
+    segment sizes summed from the stream's start)."""
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
 
-    def __init__(self, **kwargs: object) -> None:
-        self._d = archivey_codecs.lzw.Decompressor(**kwargs)
-
-    def feed(self, data: bytes, max_length: int) -> tuple[bytes, list]:
-        out = self._d.decompress(memoryview(data), max_length)
-        return out, self._d.clear_offsets
-
-    def flush(self) -> tuple[bytes, list]:
-        out = self._d.flush()
-        assert self._d.eof
-        return out, self._d.clear_offsets
-
-    def is_finished(self) -> bool:
-        return self._d.eof
-
-    @property
-    def needs_input(self) -> bool:
-        return self._d.needs_input
-
-    @property
-    def header_params(self) -> tuple[int, bool] | None:
-        return self._d.header_params
-
-    @property
-    def nine_bit_widens(self) -> bool | None:
-        return self._d.nine_bit_widens
-
-    @property
-    def truncated(self) -> bool:
-        return self._d.truncation is not None
-
-    @property
-    def truncation(self) -> str | None:
-        return self._d.truncation
-
-
-def lzw_run(make: Callable, data: bytes, rng: random.Random, kwargs: dict) -> list:
-    """Feed ``data`` in random chunks with random budgets; record every result."""
+    out = bytearray()
+    offsets: list[tuple[int, int]] = []
     try:
-        state = make(**kwargs)
+        state = LzwState(**kwargs)
     except Exception as exc:  # noqa: BLE001
-        return [("init", type(exc).__name__)]
-    log: list[object] = []
-    pos = 0
-    errors = 0
-    while pos < len(data) and errors < 2:
-        step = rng.randint(0, 3000)
-        budget = rng.choice((-1, -1, 0, 1, 100, 5000))
-        got = outcome(lambda: state.feed(data[pos : pos + step], budget))
-        log.append((got, state.needs_input, state.header_params, state.nine_bit_widens))
-        pos += step
-        if got[0] != "ok":
-            errors += 1
-    for _ in range(3):
-        if errors >= 2:
-            break
-        got = outcome(lambda: state.feed(b"", rng.choice((-1, 10))))
-        log.append(got)
-    got = outcome(state.flush)
-    log.append((got, state.truncated, state.truncation, state.is_finished()))
-    return log
+        return ("init", type(exc).__name__)
+    at = [0, 0]
+
+    def note(units: list) -> None:
+        if at == [0, 0] and not kwargs and state.header_params is not None:
+            at[0] = 3
+        for decomp, comp in units:
+            at[0] += comp
+            at[1] += decomp
+            offsets.append(tuple(at))
+
+    end: tuple = ("ok", None)
+    try:
+        pos = 0
+        while pos < len(data):
+            step = rng.randint(0, 3000)
+            got, units = state.feed(data[pos : pos + step], rng.choice((-1, 0, 100)))
+            out += got
+            note(units)
+            pos += step
+        for _ in range(3):
+            got, units = state.feed(b"", -1)
+            out += got
+            note(units)
+        got, units = state.flush()
+        out += got
+        note(units)
+    except Exception as exc:  # noqa: BLE001
+        end = outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return (bytes(out), end, state.truncation, state.header_params, offsets)
+
+
+def lzw_rust(data: bytes, rng: random.Random, kwargs: dict):
+    """``lzw.Decompressor`` fed the same way, with random ``max_length`` caps that
+    every call must keep."""
+    out = bytearray()
+    offsets: list[tuple[int, int]] = []
+    try:
+        d = archivey_codecs.lzw.Decompressor(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        return ("init", type(exc).__name__)
+
+    def take(got: bytes, cap: int) -> None:
+        assert cap < 0 or len(got) <= cap
+        out.extend(got)
+        offsets.extend(d.clear_offsets)
+
+    end: tuple = ("ok", None)
+    try:
+        pos = 0
+        while pos < len(data):
+            step = rng.randint(0, 3000)
+            cap = rng.choice((-1, 0, 1, 100, 5000))
+            take(d.decompress(memoryview(data[pos : pos + step]), cap), cap)
+            pos += step
+            assert d.total_in <= pos
+        while not d.needs_input:
+            cap = rng.choice((-1, 1, 7000))
+            take(d.decompress(b"", cap), cap)
+        while not d.eof:
+            cap = rng.choice((-1, 1, 7000))
+            take(d.flush(cap), cap)
+    except Exception as exc:  # noqa: BLE001
+        end = outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return (bytes(out), end, d.truncation, d.header_params, offsets)
 
 
 def test_lzw_parity() -> None:
-    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
-
     rng = random.Random(7)
     cases = []
     try:
@@ -494,8 +502,15 @@ def test_lzw_parity() -> None:
                     continue
                 d = d[3:]
             seed = rng.random()
-            py = lzw_run(LzwState, d, random.Random(seed), kwargs)
-            rs = lzw_run(RustLzw, d, random.Random(seed), kwargs)
+            py = lzw_python(d, random.Random(seed), kwargs)
+            rs = lzw_rust(d, random.Random(seed), kwargs)
+            if py[0] != "init" and py[1][0] != "ok":
+                # A step that fails drops its own CLEARs (both decoders), so on
+                # damage which CLEARs are reported depends on how input is split: one
+                # list is a prefix of the other.
+                short, long = sorted((py[4], rs[4]), key=len)
+                assert long[: len(short)] == short, (case, variant)
+                py, rs = py[:4], rs[:4]
             assert py == rs, (case, variant)
 
 
