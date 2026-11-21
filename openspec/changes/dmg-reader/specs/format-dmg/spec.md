@@ -101,11 +101,13 @@ rules SHALL apply on HFS+ and on APFS.
 
 The system SHALL read an APFS container from the newest valid checkpoint superblock,
 resolve objects through the container and volume object maps, and check the Fletcher-64
-checksum of every object it reads, raising `CorruptionError` on a mismatch. It SHALL
-list the live filesystem tree of each volume (not snapshots), with types from the inode
-mode, symlink targets from `com.apple.fs.symlink`, hard links as for HFS+, sparse
-extents and holes as zeros, and names as stored. Encrypted volumes, sealed volumes and
-Fusion containers SHALL raise `UnsupportedFeatureError` naming the feature.
+checksum of every object it reads. An object whose checksum fails SHALL NOT be used: the
+walk SHALL skip it, list every member whose records are all intact, and then raise
+`CorruptionError`. It SHALL list the live filesystem tree of each volume (not
+snapshots), with types from the inode mode, symlink targets from `com.apple.fs.symlink`,
+hard links as for HFS+, sparse extents and holes as zeros, and names as stored.
+Encrypted volumes, sealed volumes and Fusion containers SHALL raise
+`UnsupportedFeatureError` naming the feature.
 
 #### Scenario: APFS
 
@@ -113,7 +115,7 @@ Fusion containers SHALL raise `UnsupportedFeatureError` naming the feature.
 | --- | --- |
 | The `hdiutil` APFS fixtures, each codec | The same tree and hashes as the HFS+ fixtures |
 | A newer checkpoint with a bad checksum | The older valid one is read |
-| One flipped byte in a directory node | `CorruptionError` |
+| One flipped byte in a leaf of the filesystem tree | Every member outside that leaf lists, then `CorruptionError` |
 | An encrypted volume | `UnsupportedFeatureError` |
 
 ### Requirement: Open a password-encrypted DMG

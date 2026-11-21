@@ -7,8 +7,8 @@
 
 ## A. Decoders
 
-- [ ] A.1 Per A0: `lzfse_decoder.py`: LZFSE (`bvx1`, `bvx2`, `bvxn`, `bvx-`, `bvx$`) and
-  LZVN, bounded output
+- [ ] A.1 `lzfse_decoder.py` (ported from the prototype): LZFSE (`bvx1`, `bvx2`, `bvxn`,
+  `bvx-`, `bvx$`) and LZVN, bounded output
 - [ ] A.2 `adc_decoder.py`
 - [ ] A.3 Tests: real runs from the fixtures, agreement with the `lzfse` package when
   installed, damage and truncation

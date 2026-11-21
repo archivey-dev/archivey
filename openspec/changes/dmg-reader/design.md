@@ -2,8 +2,8 @@
 
 This design is the implementation plan written for the implementer, kept here so the
 plan can be reviewed before any code. The prototype and the `hdiutil` fixtures it names
-are outside the repo; the maintainer supplies them. Decisions D1 to D7 (§2) are
-recommended defaults until the maintainer rules on each.
+are outside the repo; the maintainer supplies them. Decisions D1 to D7 (§2) were
+ruled by the maintainer on 2026-11-21.
 
 
 Written 2026-11-21 for an implementer who works on github.com/archivey-dev/archivey and
@@ -105,20 +105,20 @@ thing, or leave as today):
 
 ---
 
-## 2. Decisions not yet ruled by the maintainer
+## 2. Decisions (ruled by the maintainer, 2026-11-21)
 
-Build with the recommended default. Each is isolated enough to change later. Mention in
+All seven are ruled. Build them as written. Mention in
 the PR body which defaults you implemented.
 
 | # | Question | Recommended default |
 | --- | --- | --- |
 | D1 | Listing when an image holds more than one readable filesystem | **Ruled by the maintainer 2026-11-21: this default.** One filesystem (every image seen so far): its files at the archive root, volume name in `archive_info().extra`. Several: each volume's files under a top-level directory named after the volume (as macOS mounts them). Do not read only the first and warn: that hides files (DR-1). |
 | D2 | Extended attributes and resource forks | **Ruled by the maintainer 2026-11-21: this default.** List names (and values up to 1 KiB) in `ArchiveMember.extra`, as TAR's pax xattrs are; do not write them on extract. Resource fork size goes in `extra` too. Docs note: code signatures of non-Mach-O files inside an `.app` (`com.apple.cs.*` xattrs) will not verify after extraction. |
-| D3 | LZFSE decoder | **Open, settled by Part A0 (maintainer, 2026-11-21).** Part A0 evaluates the `lzfse` PyPI package (MIT, Apple's reference C, about 45x faster than Python) against archivey's constraints. If it passes and the maintainer accepts that LZFSE images need an optional package, it is the only LZFSE decoder. If not, Part A ports the prototype's pure-Python LZFSE/LZVN decoder, and the package may still become the optional fast path (Part H). |
-| D4 | UDIF checksums | Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, which lifts members to `CHECKSUM` after a full in-order read or `verify_all()`. Never check it at open (it needs a full decode, DR-15b). |
-| D5 | Several APFS volumes in one container (a container can hold up to 100) | Same as D1: one volume at the root; several, each under its volume name. Volumes with a system role (Preboot, Recovery, VM, Update) are listed like any other; DMGs seen so far hold one data volume. |
-| D6 | Encrypted image, password checks | The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: `EncryptionError` from `wrong_password_error`, as makeself does. |
-| D7 | APFS metadata checksums (Fletcher-64 on every object) | Always checked; a mismatch is `CorruptionError` for that object. This is metadata integrity only, so it does not change `verifiable`. |
+| D3 | LZFSE decoder | **Ruled by the maintainer 2026-11-21:** we already have a working pure-Python LZFSE/LZVN decoder (the prototype), so Part A ports it and it is always available. Part A0 evaluates the `lzfse` PyPI package (MIT, Apple's reference C, about 45x faster); if it passes, it becomes the optional fast path (Part H). In general the maintainer prefers an established package as an extra, and an extra being required is acceptable; our own decoder is kept here only because it exists already. |
+| D4 | UDIF checksums | **Ruled by the maintainer 2026-11-21: this default.** Parts B to E: members are `verifiable = LENGTH`, like ISO and SquashFS (no per-file checksum in HFS+ or APFS file data). Part F adds the per-partition CRC-32 as a spanning check, which lifts members to `CHECKSUM` after a full in-order read or `verify_all()`. Never check it at open (it needs a full decode, DR-15b). |
+| D5 | Several APFS volumes in one container (a container can hold up to 100) | **Ruled by the maintainer 2026-11-21: this default.** Same as D1: one volume at the root; several, each under its volume name. Volumes with a system role (Preboot, Recovery, VM, Update) are listed like any other; DMGs seen so far hold one data volume. |
+| D6 | Encrypted image, password checks | **Ruled by the maintainer 2026-11-21: this default** (the whole image, listing included, is under one key, so the password is tried once, at open, as for a header-encrypted RAR or 7z). The key unwrap is a strong password check (3DES-CBC with PKCS#7 padding, then the decrypted `koly` block): a member of an encrypted image is `UNLOCKED` at open. No password: `EncryptionError` at open ("pass password="). Wrong: `EncryptionError` from `wrong_password_error`, as makeself does. |
+| D7 | APFS metadata checksums (Fletcher-64 on every object) | **Ruled by the maintainer 2026-11-21:** always checked. In regular mode a block whose checksum fails is never used: the walk skips it (a bad leaf loses its records, a bad index node its subtree, a bad object-map node every object it maps), lists every member whose records are all intact, then raises `CorruptionError` at the end of the listing (DR-2). A member whose extents were partly in a skipped block lists but raises on read. Salvage mode (planned separately) will use bad blocks anyway, with a diagnostic, and show orphaned files. Metadata integrity only: it does not change `verifiable`. |
 
 ---
 
@@ -416,9 +416,11 @@ from 4096 to 65536).
 ### 6A.1 Objects and checksums
 
 Every object starts with `obj_phys_t` (`<QQQII`: Fletcher-64 checksum, oid, xid, type,
-subtype). Check the checksum on every object read (D7; prototype `fletcher64`). Type in
-the low 16 bits; check the expected type at every read. Physical address 0 and addresses
-at or past the container block count are `CorruptionError`.
+subtype). Check the checksum on every object read (D7; prototype `fletcher64`); a
+failing block is skipped and remembered, and the listing raises `CorruptionError` after
+every intact member. Type in the low 16 bits; check the expected type at every read.
+Physical address 0 and addresses at or past the container block count are
+`CorruptionError`.
 
 ### 6A.2 Container
 
@@ -455,7 +457,9 @@ entries and the key/value sizes from `btree_info_t`. Child pointers in the files
 tree are virtual oids resolved through the volume omap; object-map trees use physical
 addresses. Checks: every record inside the node; key count fits the TOC; depth ≤ 32; a
 node visited twice is `CorruptionError`; total nodes bounded by the container block
-count. Walk in key order; the filesystem tree is sorted by (oid, type, name/offset).
+count. A child node that fails its checksum is skipped (D7) and the walk goes on with
+its siblings. Walk in key order; the filesystem tree is sorted by (oid, type,
+name/offset).
 
 ### 6A.5 Filesystem records
 
@@ -846,12 +850,12 @@ benchmark only if the repo's benchmark gate expects one for new formats (check
 
 One plan, built in parts. Each part is one PR unless noted, merges on its own, and
 leaves `main` with every test green and every DMG either read correctly or refused by
-name. Part A0 decides how LZFSE is decoded; Parts B to E depend on A; the order after B
-is flexible except where noted.
+name. Part A0 decides whether Part H uses the `lzfse` package; Parts B to E depend on A;
+the order after B is flexible except where noted.
 
 | Part | Contents | Depends on | Who merges |
 | --- | --- | --- | --- |
-| **A0. Evaluate the `lzfse` package** | An investigation PR (results under `dev-docs/investigations/`, scripts under `scripts/investigations/`, like the compress-utils LZO evaluation). Check: wheels for CPython 3.11 to 3.15, free-threaded 3.14t/3.15t, PyPy, Linux (glibc and musl), macOS (arm64 and x86) and Windows; licence and maintenance; whether a call can cap its output (a declared size must not drive the allocation); whether raw LZVN blocks (decmpfs types 7 and 8) can be decoded, directly or by wrapping them in a `bvxn` block header; behaviour under a fuzz run (no crash, hang or over-cap output, in a child process per DR-20); child-process cost per 1 MiB run; agreement with the prototype on the fixtures and random inputs. Ends with a recommendation for the maintainer: library only, Python only, or Python plus the library as an accelerator. | none | maintainer decides |
+| **A0. Evaluate the `lzfse` package** | An investigation PR (results under `dev-docs/investigations/`, scripts under `scripts/investigations/`, like the compress-utils LZO evaluation). Check: wheels for CPython 3.11 to 3.15, free-threaded 3.14t/3.15t, PyPy, Linux (glibc and musl), macOS (arm64 and x86) and Windows; licence and maintenance; whether a call can cap its output (a declared size must not drive the allocation); whether raw LZVN blocks (decmpfs types 7 and 8) can be decoded, directly or by wrapping them in a `bvxn` block header; behaviour under a fuzz run (no crash, hang or over-cap output, in a child process per DR-20); child-process cost per 1 MiB run; agreement with the prototype on the fixtures and random inputs. Ends with a recommendation on whether Part H uses it as the accelerator. | none | maintainer decides |
 | **A. Decoders** | `lzfse_decoder.py` (LZFSE + LZVN) and `adc_decoder.py`, pure Python, §9.4 tests. No reader. | none | agent |
 | **B. UDIF + partitions + HFS+** | §3 to §7 for HFS+: `udif.py` rewrite, `disk_partitions.py`, `hfsplus.py`, `dmg_reader.py`, detection kept, encrypted and APFS refused by name, HFS+ fixtures, `tests/dmg_build.py` (UDIF, GPT, APM, HFS+ writers), 7-Zip oracle tests, fuzz target, handbook page, threat-model row, OpenSpec change. The big one: the test builders may go first as their own PR. | A | maintainer (new readable format, needs-minor) |
 | **C. User docs** | `docs/formats.md` §Disk images, the formats table, `--version -v` wording. Written in the maintainer's docs session (DR-22b). | B | maintainer |
