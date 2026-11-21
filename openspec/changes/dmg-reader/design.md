@@ -512,12 +512,13 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 
 | Type | Data | Notes |
 | --- | --- | --- |
-| 1, 9 | uncompressed, inline | |
+| 1 | uncompressed, inline | |
+| 9 | uncompressed, inline, after a `0xCC` marker byte | 7-Zip (`HfsHandler.cpp`) reads type 9 only with the marker and refuses it without; the prototype ignores the marker. Follow 7-Zip. |
 | 3 | zlib, inline (first byte `0x?F` = stored) | |
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |
 | 8 | LZVN in resource fork (offset table, 64 KiB blocks) | **The fixture `compressed.txt` is type 8** (360,000 bytes), so this path has real data |
-| 10 | raw in resource fork | |
+| 10 | raw in resource fork | No tool here reads it (7-Zip refuses it), so the table layout is unconfirmed: the prototype and the test writer use the type 8 offset table. Check on a real file before relying on it. |
 | 11 | LZFSE inline (`0xFF` = stored) | |
 | 12 | LZFSE in resource fork | |
 | other | | `UnsupportedFeatureError` at that member's read |
@@ -531,7 +532,7 @@ chunk).
 Resource-fork types (4, 8, 10, 12): the fork holds `n = ceil(size / 64 KiB)` chunks,
 located by the type's table (type 4: the resource-map layout, a 256-byte resource fork
 header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
-12: `n + 1` little-endian u32 offsets; type 10: fixed 64 KiB chunks). The table must
+12, and as the prototype reads it type 10: `n + 1` little-endian u32 offsets). The table must
 have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
 chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. Decode chunk
 by chunk through `block_stream`, not the whole file in memory like the prototype.
