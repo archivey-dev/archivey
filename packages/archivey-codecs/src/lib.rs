@@ -743,7 +743,11 @@ impl LzwDecompressor {
         }
         let data = input(data)?;
         self.clear_offsets.clear();
-        if !data.is_empty() && self.held_len() > 0 {
+        if self.inner.is_finished() {
+            // Restored after the final pass of a capped `flush()`: the kernel takes no
+            // more input, so the input given again is not counted, and `total_in`
+            // stays where the original's ended.
+        } else if !data.is_empty() && self.held_len() > 0 {
             // Output from an earlier call is still owed: queue the input and decode no
             // more until it drains, so `held` never holds more than one entry (the
             // bound `from_state` checks).
@@ -1036,6 +1040,17 @@ impl LzxDecompressor {
 
     /// At the end: 1 when the pad byte the stream owes is in the input (the kernel's
     /// unread bytes or the queue), else 0.
+    /// The output is complete, but the stream still owes the pad byte of an odd
+    /// uncompressed block and no input holds it yet: the stream does not end until
+    /// it arrives, or until `flush()` says it never will.
+    fn pad_pending(&self) -> bool {
+        !self.ended
+            && !self.split_at_end
+            && self.inner.owes_pad_byte()
+            && self.inner.unread_input().is_empty()
+            && self.queued() == 0
+    }
+
     fn pad_byte(&self) -> usize {
         let available = self.inner.unread_input().len() + self.queued();
         usize::from(self.inner.owes_pad_byte() && available > 0)
@@ -1261,12 +1276,14 @@ impl LzxDecompressor {
 
     #[getter]
     fn eof(&self) -> bool {
-        self.drained() && self.at_end()
+        self.drained() && self.at_end() && !self.pad_pending()
     }
 
     #[getter]
     fn needs_input(&self) -> bool {
-        !self.ended && self.drained() && !self.at_end() && self.starved_at.is_some()
+        !self.ended
+            && self.drained()
+            && (!self.at_end() && self.starved_at.is_some() || self.at_end() && self.pad_pending())
     }
 
     /// After `eof`, the input that follows the stream.
