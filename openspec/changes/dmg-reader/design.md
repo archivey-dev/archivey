@@ -186,11 +186,13 @@ block when it is at offset 0, are not expected; report `ARCHIVE_TRAILING_DATA` i
 
 ### 4.2 The property list
 
-Read the XML at once (bounded: refuse > 64 MiB with `ResourceLimitError`, and charge it
-with `charge_metadata` if it is kept during the walk; read it at open only if that is
-cheap, else lazily at first listing, per DR-15b). Parse with stdlib `plistlib.loads`
-(it refuses entity declarations, so no billion-laughs). Wrap parse errors as
-`CorruptionError`.
+Check the plist length from the `koly` block before reading any byte of it: over 64 MiB
+is `ResourceLimitError`, and a range outside the file is `CorruptionError`. Then charge
+that length with `charge_metadata` and read it in one `read_exact` (read it at open only
+if that is cheap, else lazily at first listing, per DR-15b). The parsed objects are
+dropped once the run tables are built; only the compact tables of §4.3 are kept. Parse
+with stdlib `plistlib.loads` (it refuses entity declarations, so no billion-laughs).
+Wrap parse errors as `CorruptionError`.
 
 Structure: `resource-fork` → `blkx` → list of dicts, each with `Name` (or `CFName`),
 `ID`, `Attributes`, and `Data` (bytes: one `mish` table). Other keys (`plst`, `cSum`,
@@ -222,10 +224,22 @@ Run types:
 | `0xFFFFFFFF` | terminator | ends the table; runs after it are an error |
 | other | | `UnsupportedFeatureError` naming the type in hex, raised when a read needs that run (DR-2: other members stay readable) |
 
-Use the same block-decode pattern as `SquashfsReader._block_decoder`: read the run's
-stored bytes in one `read_exact`, decode from memory, read until the decoder ends, and
-require the decoded length to equal `count * 512` exactly (shorter or longer is
-`CorruptionError` naming the run's sector and file offset; offsets in messages count
+**Bounds before any byte of a run is read or allocated.** Let `decoded = count * 512`.
+A compressed run whose `decoded` exceeds 16 MiB is `UnsupportedFeatureError` (§4.4). A
+raw run whose stored length is not exactly `decoded` is `CorruptionError`. A compressed
+run whose stored length exceeds `decoded + decoded // 16 + 64 KiB` is `CorruptionError`:
+no codec here expands incompressible input by more than about 1 % plus a small header
+(zlib stored blocks, bzip2, xz, LZFSE raw blocks, ADC literals), so a larger stored
+length is damage, and the largest read for one run is about 17.1 MiB. These checks
+run when the run table is parsed, so a bad run is known before any decode; the error is
+raised from the read that needs the run (other members stay readable).
+
+Then use the same block-decode pattern as `SquashfsReader._block_decoder`: read the
+run's stored bytes in one `read_exact` (bounded by the check above), decode from memory,
+pull from the decoder with `read(decoded + 1 - len(data))` until it ends or more than
+`decoded` bytes have come out (so no pull can return more than `decoded + 1` bytes in
+total), and require the decoded length to equal `count * 512` exactly (shorter or longer
+is `CorruptionError` naming the run's sector and file offset; offsets in messages count
 from the start of the file, a standing rule). A cut-off run is `TruncatedError`.
 `ReaderContext.decompress` applies `DecoderLimits`, the ratio guard and process
 isolation. For the in-house decoders (LZFSE, ADC), pass `max_length = count * 512 + 1`
@@ -233,7 +247,12 @@ so output is bounded, and honour `config.formats` codec refusals the same way sq
 does for LZ4.
 
 **Checks on the run table** (each failure is `CorruptionError` at open or first
-listing): runs sorted by sector and not overlapping; every run inside the table's sector
+listing). Before any run is parsed: the header's run count must satisfy
+`204 + 40 * runs <= len(Data)` (the `Data` bytes are already bounded by the plist
+check), and the total run count over all tables is charged with `charge_metadata` before
+the descriptors are kept. Keep the runs as compact arrays (`array('Q')` per field, or
+one packed `bytes` searched with `struct.unpack_from`), never one Python object per run.
+Then: runs sorted by sector and not overlapping; every run inside the table's sector
 range; every table inside the disk's sector count; compressed ranges inside the data
 fork; sector count per run bounded (see 4.4). Gaps between runs read as zeros (7-Zip
 does the same; hdiutil leaves none). Two runs whose stored bytes overlap are allowed (no
@@ -496,9 +515,12 @@ an APFS name; one that does is `CorruptionError` for that entry.
   same as §6.5).
 - File data: the extents of the data stream (private id), sorted by logical address.
   Gaps and physical block 0 are zeros (sparse; mark the member sparse like SquashFS
-  does). Overlapping extents are `CorruptionError` at that member's read. Bytes past
-  the dstream size are ignored; a stream shorter than the size reads as zeros to the
-  size (APFS allows a sparse tail). Clones share extents: just read them.
+  does). Overlapping extents are `CorruptionError` at that member's read. Bytes past the
+  dstream size are ignored; a stream shorter than the size reads as zeros to the size
+  (APFS allows a sparse tail). Zeros are served only where the records show a hole: a
+  gap, or a range of the stream past its last extent, that falls inside a damaged key
+  range (below) is `CorruptionError` at that member's read, never zeros. Clones share
+  extents: just read them.
 - decmpfs compression: `UF_COMPRESSED` BSD flag plus `com.apple.decmpfs` xattr, with
   the resource fork in the `com.apple.ResourceFork` xattr (usually a stream xattr). Same
   types and decoding as §6.6; share that code (DR-23a).
@@ -509,6 +531,27 @@ an APFS name; one that does is `CorruptionError` for that entry.
   `com.apple.ResourceFork` of a compressed file.
 - An extent whose crypto id is non-zero on an unencrypted volume: `CorruptionError` for
   that member.
+
+**Damaged key ranges (D7).** A skipped node is not the same as a missing record. When
+a node fails its checksum, or cannot be read, the walk records the key range it covered,
+taken from the parent index node, which was verified: from the parent record's key to
+the next sibling record's key, or to the parent's own upper bound for the last child (a
+bad root makes the whole tree's range damaged). A bad object-map node records its range
+of oids the same way. Every later lookup checks these ranges:
+
+- Extents of a data stream: the key range `(stream id, 8, *)`. If any part of it
+  overlaps a damaged range, the member lists, and its read raises `CorruptionError`
+  naming the damaged node's address at the first byte the extents can no longer show,
+  instead of serving zeros.
+- Inode, xattrs and directory records of an object: `(oid, 3..9, *)`. If they overlap a
+  damaged range, the member is not listed (its type and size cannot be trusted), and
+  the end-of-listing `CorruptionError` counts it.
+- An oid looked up in the object map that falls into a damaged oid range is
+  `CorruptionError` ("mapped by a damaged object-map node"), not "not found".
+
+Keys outside every damaged range are trusted as complete, so a valid sparse file still
+reads zeros in its holes. The ranges are few (one per bad node) and kept as a sorted
+list.
 
 Data stream reads go through `block_stream` over `UdifSource`, block by block, never the
 whole file in memory.
@@ -840,6 +883,20 @@ links), libyal `libfshfs`/`libfsapfs` (no xz runs in `libmodi`).
   updated to `SEEKABLE`.
 - APFS (Part E): every fixture; plain and hashed keys; a stale checkpoint is skipped for
   the newest valid one; every refusal in §6A; Fletcher-64 damage on each object kind.
+- APFS damaged key ranges (Part E): a filesystem tree of three leaves from `write_apfs`
+  holding a sparse file A (a hole between two extents, leaf 1), a file B whose extents
+  sit in leaf 2, and a file C (leaf 3); leaf 2's checksum is broken. Expected: A reads
+  with zeros in its hole; B lists and its read raises `CorruptionError` (not zeros); C
+  reads normally; the listing ends with `CorruptionError`. The same with a damaged
+  object-map leaf: lookups of the oids it mapped raise `CorruptionError`.
+- UDIF bounds, through a source that counts the bytes requested from it: a plist length
+  over 64 MiB raises `ResourceLimitError` with no byte of the plist requested; a run
+  whose stored length is over the cap raises `CorruptionError` with no byte of the run
+  requested; a run whose decoder yields more than `count * 512` bytes raises
+  `CorruptionError` after at most `count * 512 + 1` decoded bytes; a `mish` table that
+  declares more runs than its `Data` holds raises `CorruptionError` before any run is
+  kept; a member read never requests more bytes than the capped stored
+  lengths of the runs it covers.
 - Encryption (Part G): both key sizes open with `password="archivey"`; no password;
   wrong password; several candidates where only the last is right; iteration count over
   the budget; `cryptography` excluded through `exclude_libraries`; members report

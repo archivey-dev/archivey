@@ -4,20 +4,25 @@
 
 The system SHALL read a UDIF image (`ArchiveFormat.DMG`) through its `koly` block, its
 XML property list and its `mish` run tables, and serve the virtual disk they describe.
-The property list SHALL be parsed with `plistlib` and refused over 64 MiB with
-`ResourceLimitError`. Runs of type zero fill, raw, ignore (free space), ADC, zlib,
-bzip2, LZFSE and xz SHALL be read; a comment run SHALL be skipped and the terminator
-SHALL end the table. Each compressed run SHALL decode to exactly its sector count × 512
-bytes, through `ReaderContext.decompress` for zlib, bzip2 and xz and through archivey's
-own pure-Python decoders for LZFSE, LZVN and ADC, whose output is bounded by the run's
-size. A run that decodes to another length, runs that overlap or leave their table's
-sector range, and stored ranges outside the data fork SHALL raise `CorruptionError`; a
-file that ends inside a run or the property list SHALL raise `TruncatedError`. An
-unknown run type, and a compressed run that declares more than 16 MiB decoded, SHALL
-raise `UnsupportedFeatureError` from the read that needs it, leaving other members
-readable. The format SHALL require a seekable source. Opening SHALL read only the `koly`
-block, the property list and the filesystem's first header: no work proportional to the
-image.
+The property list's length SHALL be checked before any byte of it is read: over 64 MiB
+SHALL raise `ResourceLimitError`. It SHALL then be parsed with `plistlib`. A `mish`
+table whose run count does not fit its data SHALL raise `CorruptionError`, and the runs
+SHALL be charged as metadata before they are kept. Runs of type zero fill, raw, ignore
+(free space), ADC, zlib, bzip2, LZFSE and xz SHALL be read; a comment run SHALL be
+skipped and the terminator SHALL end the table. Each compressed run SHALL decode to
+exactly its sector count × 512 bytes. Before any byte of a run is read, a raw run whose
+stored length is not its decoded size, and a compressed run whose stored length exceeds
+its decoded size plus 1/16 plus 64 KiB, SHALL raise `CorruptionError`; no decoder pull
+SHALL return more than the decoded size plus one byte. Runs SHALL be decoded through
+`ReaderContext.decompress` for zlib, bzip2 and xz and through archivey's own pure-Python
+decoders for LZFSE, LZVN and ADC, whose output is bounded by the run's size. A run that
+decodes to another length, runs that overlap or leave their table's sector range, and
+stored ranges outside the data fork SHALL raise `CorruptionError`; a file that ends
+inside a run or the property list SHALL raise `TruncatedError`. An unknown run type, and
+a compressed run that declares more than 16 MiB decoded, SHALL raise
+`UnsupportedFeatureError` from the read that needs it, leaving other members readable.
+The format SHALL require a seekable source. Opening SHALL read only the `koly` block,
+the property list and the filesystem's first header: no work proportional to the image.
 
 #### Scenario: UDIF runs
 
@@ -30,6 +35,10 @@ image.
 | A listing | Decodes only the runs that hold filesystem metadata |
 | A pipe | Refused or spooled as for `SEEKABLE` formats |
 | Segment count over 1 | `UnsupportedFeatureError` naming segmented images |
+| A plist length over 64 MiB | `ResourceLimitError`; no byte of the plist requested from the source |
+| A compressed run whose stored length is over the cap | `CorruptionError`; no byte of the run requested |
+| A run whose decoder yields more than its decoded size | `CorruptionError` after at most the decoded size plus one byte |
+| A `mish` table that declares more runs than its data holds | `CorruptionError` before any run is kept |
 
 ### Requirement: Pick the filesystem partitions of a disk image
 
@@ -105,8 +114,12 @@ checksum of every object it reads. An object whose checksum fails SHALL NOT be u
 walk SHALL skip it, list every member whose records are all intact, and then raise
 `CorruptionError`. It SHALL list the live filesystem tree of each volume (not
 snapshots), with types from the inode mode, symlink targets from `com.apple.fs.symlink`,
-hard links as for HFS+, sparse extents and holes as zeros, and names as stored.
-Encrypted volumes, sealed volumes and Fusion containers SHALL raise
+hard links as for HFS+, sparse extents and holes as zeros, and names as stored. A node
+or object-map node that is skipped SHALL mark the key range its verified parent gives it
+as damaged: a member whose inode, xattr or directory records fall in a damaged range
+SHALL NOT be listed, and a read that needs extents or an object-map entry in a damaged
+range SHALL raise `CorruptionError`, never serve zeros. Holes outside damaged ranges
+SHALL read as zeros. Encrypted volumes, sealed volumes and Fusion containers SHALL raise
 `UnsupportedFeatureError` naming the feature.
 
 #### Scenario: APFS
@@ -116,6 +129,8 @@ Encrypted volumes, sealed volumes and Fusion containers SHALL raise
 | The `hdiutil` APFS fixtures, each codec | The same tree and hashes as the HFS+ fixtures |
 | A newer checkpoint with a bad checksum | The older valid one is read |
 | One flipped byte in a leaf of the filesystem tree | Every member outside that leaf lists, then `CorruptionError` |
+| Three filesystem-tree leaves, the middle one damaged: a sparse file in leaf 1, a file whose extents are in leaf 2, a file in leaf 3 | The sparse file reads zeros in its hole; the second file lists and its read raises `CorruptionError`; the third reads normally; the listing ends with `CorruptionError` |
+| A damaged object-map leaf | Lookups of the oids it mapped raise `CorruptionError` |
 | An encrypted volume | `UnsupportedFeatureError` |
 
 ### Requirement: Open a password-encrypted DMG

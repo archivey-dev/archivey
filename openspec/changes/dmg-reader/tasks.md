@@ -16,7 +16,9 @@
 ## B. UDIF, partitions and HFS+
 
 - [ ] B.1 Test writers in `tests/dmg_build.py`: UDIF, GPT, APM, HFS+ (may be its own PR)
-- [ ] B.2 `udif.py` rewrite: `koly`, property list, run tables, `UdifSource`
+- [ ] B.2 `udif.py` rewrite: `koly`, property list, run tables, `UdifSource`;
+  stored-length and run-count bounds checked before any read or allocation (design §4.2,
+  §4.3)
 - [ ] B.3 `disk_partitions.py`: GPT, APM, none
 - [ ] B.4 `hfsplus.py`: volume header, forks, B-trees, catalog, hard links, decmpfs,
   attributes
@@ -40,7 +42,8 @@
 
 ## E. APFS
 
-- [ ] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records
+- [ ] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
+  damaged key ranges of skipped nodes (design §6A.6)
 - [ ] E.2 Reader integration; several volumes per container
 - [ ] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
 - [ ] E.4 Handbook page section
