@@ -180,6 +180,39 @@ thread. That is usually the thread that drops the last reference to it, but for 
 in a reference cycle it is the thread where the garbage collector happens to run. Close streams and passes yourself, or use `with`, to keep every call on your own
 threads. Archivey never calls your code from a thread it started.
 
+## Showing progress
+
+To show how far archivey has read the archive's own file, set `on_source_read`. Archivey calls it
+with a `SourceProgress` as it reads: about once per MiB for a file on disk or a stream, and for a
+URL around each range request ([Remote archives](remote.md#watching-the-requests)).
+
+```python
+import archivey
+
+def show(progress: archivey.SourceProgress) -> None:
+    if progress.nest_level == 0 and progress.size:
+        print(f"{progress.position / progress.size:.0%} of {progress.name}")
+
+config = archivey.ArchiveyConfig(on_source_read=show)
+with archivey.open_archive("backup.tar.xz", config=config) as archive:
+    archive.extract_all("out")
+```
+
+Use it when the archive doesn't record its members' sizes in advance. A `.tar.xz` has no index,
+so `ExtractionProgress.total_bytes_estimated` is `None` and `on_progress` can't give a
+percentage, but a pass over its members reads the file from start to end. `position` is where the
+latest read ended. It goes back when a format reads out of order: a ZIP reads its index at the
+end first, and a `.tar.xz` reads its last bytes when it is opened, so the example's first line
+says 100%. `bytes_read` counts every byte read, a part read twice included, so it can pass `size`.
+
+The callback runs inside the read that called it, on your thread. To stop a slow read, raise an
+exception there: the call to archivey that read raises it unchanged, and so does every later read
+of the file, also in an `extract_all(on_error="continue")`. An archive opened from a member with
+`parent=` reports to the same callback with `nest_level` 1, so keep level 0 for the file you
+opened. `ArchiveyConfig(source_read_step=0)` calls it for every read, and `read_start` to
+`position` is then the part of the file that read took. With `on_source_read` unset, nothing is
+counted.
+
 ## The same result everywhere
 
 With the `seekable` extra installed, archivey reads large DEFLATE data, and bzip2 data opened with
