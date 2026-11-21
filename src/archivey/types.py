@@ -562,7 +562,8 @@ class OptionalLibrary(StrEnum):
     ARCHIVEY_CODECS = "archivey_codecs"
     """``archivey-codecs``: Rust versions of decoders archivey otherwise runs in
     Python (so far the CRC-16 of LHA archives and traditional ZIP encryption). They
-    give the same bytes and the same errors, faster."""
+    give the same bytes and the same errors, faster. The package is not on PyPI
+    yet; until it is installed, this switch changes nothing."""
 
 
 OptionalLibraryStr = Literal[

@@ -10,6 +10,7 @@ import io
 import logging
 import types
 import zipfile
+from typing import ClassVar
 
 import pytest
 
@@ -17,6 +18,7 @@ from archivey import (
     ArchiveFormat,
     ArchiveyConfig,
     CorruptionError,
+    EncryptionError,
     FormatPolicy,
     OptionalLibrary,
     open_archive,
@@ -38,13 +40,45 @@ class PanicException(BaseException):
 PanicException.__module__ = "pyo3_runtime"
 
 
+class _FakeDecryptor:
+    """Stands in for ``archivey_codecs.zipcrypto.Decryptor``: Python's keys, recorded.
+
+    With ``panic`` set, decrypting member data (anything but the 12-byte header)
+    raises the fake panic.
+    """
+
+    built: ClassVar[list[bytes]] = []
+    panic: ClassVar[bool] = False
+
+    def __init__(self, password: bytes, keys: zipcrypto.ZipCryptoKeys | None = None):
+        if keys is None:
+            type(self).built.append(password)
+            keys = zipcrypto.ZipCryptoKeys(password)
+        self._password = password
+        self._keys = keys
+
+    def copy(self) -> _FakeDecryptor:
+        return _FakeDecryptor(self._password, self._keys.copy())
+
+    def decrypt(self, data: bytes) -> bytes:
+        if self.panic and len(data) != zipcrypto.ZIPCRYPTO_HEADER_LEN:
+            raise PanicException("index out of bounds")
+        return self._keys.decrypt(data)
+
+
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
     """Install a fake ``archivey_codecs`` whose ``KERNELS`` is ``kernels``."""
 
     def crc16_arc(data: bytes, value: int = 0) -> int:
         raise PanicException("index out of bounds")
 
-    module = types.SimpleNamespace(KERNELS=kernels, crc16_arc=crc16_arc)
+    monkeypatch.setattr(_FakeDecryptor, "built", [])
+    monkeypatch.setattr(_FakeDecryptor, "panic", False)
+    module = types.SimpleNamespace(
+        KERNELS=kernels,
+        crc16_arc=crc16_arc,
+        zipcrypto=types.SimpleNamespace(Decryptor=_FakeDecryptor),
+    )
     package = deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=True)
     package._module = module  # type: ignore[assignment]
     monkeypatch.setattr(deps, "archivey_codecs", package)
@@ -110,6 +144,77 @@ def test_a_panic_in_an_lha_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -
     # The switch turns the kernel off: the Python CRC reads the same archive.
     with open_archive(io.BytesIO(raw), format=ArchiveFormat.LHA, config=OFF) as reader:
         assert reader.read("a.txt") == b"hello"
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+@pytest.mark.parametrize(
+    "compression", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED], ids=["stored", "deflate"]
+)
+def test_zip_readers_use_the_kernel_unless_switched_off(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool, compression: int
+) -> None:
+    _fake(monkeypatch, zipcrypto=1)
+    data = b"secret data " * 500
+    raw = build_zipcrypto_zip(b"pw", b"a.txt", data, compression=compression)
+
+    def read(config: ArchiveyConfig | None) -> bytes:
+        with open_archive(
+            io.BytesIO(raw), password=b"pw", config=config, streaming=streaming
+        ) as reader:
+            if streaming:
+                for member, stream in reader.stream_members():
+                    assert stream is not None
+                    return stream.read()
+            return reader.read("a.txt")
+        raise AssertionError("no member")
+
+    assert read(None) == data
+    assert _FakeDecryptor.built
+    _FakeDecryptor.built.clear()
+    assert read(OFF) == data
+    assert _FakeDecryptor.built == []
+
+
+def test_zip_candidate_passwords_use_the_kernel_unless_switched_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, zipcrypto=1)
+    raw = build_stored_zipcrypto_zip([(b"right", b"a.txt", b"payload " * 1000)])
+    for config, used in ((None, True), (OFF, False)):
+        _FakeDecryptor.built.clear()
+        with open_archive(
+            io.BytesIO(raw), password=[b"wrong1", b"right"], config=config
+        ) as reader:
+            assert reader.read("a.txt") == b"payload " * 1000
+        assert bool(_FakeDecryptor.built) is used
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["seekable", "streaming"])
+def test_a_panic_in_a_zipcrypto_read_is_corruption(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    """A panic while decrypting member data is a ``CorruptionError``, which the reader
+    then handles as any damaged ZipCrypto member: with only a one-byte password check,
+    it may also mean a wrong password, so the read raises ``EncryptionError``."""
+    _fake(monkeypatch, zipcrypto=1)
+    _FakeDecryptor.panic = True
+    raw = build_zipcrypto_zip(
+        b"pw", b"a.txt", b"x" * 5000, compression=zipfile.ZIP_DEFLATED
+    )
+    with (
+        pytest.raises(EncryptionError) as info,
+        open_archive(io.BytesIO(raw), password=b"pw", streaming=streaming) as reader,
+    ):
+        for _member, stream in reader.stream_members():
+            assert stream is not None
+            stream.read()
+    corruption = info.value.__cause__
+    assert isinstance(corruption, CorruptionError)
+    assert "ZipCrypto decoder failed" in str(corruption)
+    assert isinstance(corruption.__cause__, PanicException)
+    # The switch turns the kernel off: Python's keys read the same archive.
+    with open_archive(io.BytesIO(raw), password=b"pw", config=OFF) as reader:
+        assert reader.read("a.txt") == b"x" * 5000
 
 
 def test_other_exceptions_pass_unchanged() -> None:
