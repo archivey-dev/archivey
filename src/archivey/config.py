@@ -1075,9 +1075,10 @@ class ArchiveyConfig:
     archive's own file, or ``None``.
 
     A local file or stream reports about once per MiB read. A URL source (an
-    ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
-    reads count. It runs on the thread that read, and an exception it raises propagates
-    out of that read: raising is how a caller stops a slow read. Every later read of the
+    ``fsspec.core.OpenFile``) reports before and after each range request, and over
+    HTTP about once per MiB of the answer as it comes in. Detection's reads count. It
+    runs on the thread that read, and an exception it raises propagates out of that
+    read: raising is how a caller stops a slow read. Every later read of the
     file raises it again, and ``extract_all(on_error="continue")`` stops on it rather
     than counting it as one member's failure. A read on a thread archivey started (the
     RAR volume feeder) does not call it: the latest such report is kept and delivered on
@@ -1101,7 +1102,8 @@ class ArchiveyConfig:
     (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
     <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
     a log of every region of the file read. A URL source reports every request
-    whatever this is.
+    whatever this is; over HTTP a request also reports about once per MiB of its
+    answer, a gap this step does not set.
     """
 
     if TYPE_CHECKING:
