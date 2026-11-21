@@ -268,7 +268,9 @@ than with a diagnostic on every member.
   `MEMBER_HEADER_DAMAGED` on every read; its data is still checked by its own digest.
   Nothing wrong is silent, so this rule holds. Exception to the ruling above: a damaged
   RAR5 header whose encryption flag reads "not encrypted" lists the member as plaintext,
-  and its read then fails its CRC (`formats/rar.md` §1, `salvage-step-1`).
+  and its read then fails its CRC (`formats/rar.md` §1, `salvage-step-1`). TAR follows
+  the same rule (`salvage-step-2-tar`): it has no member digest, so only the member's
+  size is confirmed, by the intact header it points at; the read's diagnostic says so.
 - `created` never holds a change time in any format (DR-5).
 - Streams raise rather than clamp an over-long read (CONTRIBUTING §Coding standards).
 - A ZIP central entry whose name, extra or comment runs past the directory, swallows

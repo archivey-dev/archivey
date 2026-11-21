@@ -151,11 +151,13 @@ class DiagnosticCode(StrEnum):
     MEMBER_HEADER_DAMAGED = "member_header_damaged"
     """A member's header failed its checksum, and the member is listed from the
     fields its damaged bytes hold, as the format's own tool lists it, because the
-    header after it confirmed where the damaged header's sizes point. The member's
-    data is still checked against its own digest, so damage to its sizes or digest
-    makes its read fail; its name, type, mode, times and flags are checked by
-    nothing and may be wrong. Reported when the member is read, never at listing,
-    and the archive's listing still ends in :class:`~archivey.CorruptionError`."""
+    header after it confirmed where the damaged header's sizes point. Where the
+    format has a member digest (RAR), the member's data is still checked against
+    it, so damage to its sizes or digest makes its read fail; where it has none
+    (TAR), only the size is confirmed, by that next header. Its name, type, mode,
+    times and flags are checked by nothing and may be wrong. Reported when the
+    member is read, never at listing, and the archive's listing still ends in
+    :class:`~archivey.CorruptionError`."""
     MEMBER_HEADER_RECORD_SKIPPED = "member_header_record_skipped"
     """An optional record in a member's header could not be read and was dropped, so
     the field it would fill is left unset rather than wrong. RAR also reports two

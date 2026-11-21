@@ -815,7 +815,9 @@ def test_corrupt_final_header_streaming_raises_corruption() -> None:
 
 def _tar_rejected_header_then_zero_block(tail: list[str]) -> bytes:
     """Members ``a`` and ``b``, then one 1-byte member per name in ``tail``; ``b``'s
-    header checksum is wrong, so tarfile rejects it.
+    header checksum is wrong, so tarfile rejects it, and so is its size field, so the
+    walk cannot follow it either (``tests/test_tar_damaged_header_resume.py`` follows
+    one whose size is intact).
 
     ``b``'s data starts with a whole zero block, as a disk image or many binaries do.
     The block after the rejected header is therefore zero, which is what a good
@@ -832,6 +834,7 @@ def _tar_rejected_header_then_zero_block(tail: list[str]) -> bytes:
             t.addfile(info, io.BytesIO(data))
     data = bytearray(buf.getvalue())
     data[1024 + 148 : 1024 + 156] = b"0000000\0"
+    data[1024 + 124 : 1024 + 136] = b"XXXXXXXXXXXX"
     return bytes(data)
 
 
