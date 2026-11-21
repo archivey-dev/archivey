@@ -31,7 +31,8 @@ UNCOMPRESSED = b"bvx-"
 V1 = b"bvx1"
 V2 = b"bvx2"
 LZVN = b"bvxn"
-V1_HEADER = 4 + 4 * 6 + 4 + 8 + 4 + 6 + 2 * (20 + 20 + 64 + 256)  # 770 bytes
+# sizeof(lzfse_compressed_block_header_v1): 770 bytes of fields, padded to 4-byte alignment
+V1_HEADER = 772
 
 
 class BadStream(ValueError):
