@@ -302,6 +302,8 @@ class _ForwardPass:
 
     def __init__(self, reader: RarForwardReader) -> None:
         self._reader = reader
+        #: The archive's source, which the feeder thread reads.
+        self.source = reader._source
         self.queue: queue.SimpleQueue[ForwardMember | _End] = queue.SimpleQueue()
         self._held: ForwardMember | None = None
         #: The members the walk released before it read the header after them
@@ -521,7 +523,16 @@ class _ForwardUnrarStream(_RollingUnrarStream):
         **kwargs: bool,
     ) -> None:
         self._fpass = fpass
-        super().__init__(stdout, proc, feeder, volumes, release, **kwargs)
+        source = fpass.source
+        super().__init__(
+            stdout,
+            proc,
+            feeder,
+            volumes,
+            release,
+            on_read=None if source is None else source.flush_progress,
+            **kwargs,
+        )
 
     @override
     def _raise_for_returncode(self, rc: int) -> None:

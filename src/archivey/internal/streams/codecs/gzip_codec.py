@@ -22,6 +22,7 @@ from archivey.internal.config import StreamConfig
 from archivey.internal.hashing import crc32_combine
 from archivey.internal.overrides import override
 from archivey.internal.source import seeks_to_end_are_cheap
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs.base import (
     GZIP_MAGIC,
     GZIP_WBITS,
@@ -539,7 +540,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
         size = (self._pos % (1 << 32)).to_bytes(4, "little")
         try:
             first, end, window = self._trailer_window()
-        except OSError:
+        except OSError as exc:
+            if from_source_callback(exc):
+                raise
             return True  # cannot look -> do not invent a mismatch
         at = window.find(crc)
         if at < 0 or window.find(crc, at + 1) >= 0:
@@ -634,7 +637,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
         assert length is not None
         try:
             first, end, window = self._trailer_window()
-        except OSError:
+        except OSError as exc:
+            if from_source_callback(exc):
+                raise
             return True  # cannot look -> do not invent a mismatch
         if length - end >= 8 and self._empty_member_ends_the_data(end):
             return True
@@ -730,7 +735,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
             with self._views.view() as f:
                 f.seek(start)
                 data = f.read(stop - start)
-        except OSError:
+        except OSError as exc:
+            if from_source_callback(exc):
+                raise
             return True  # cannot look -> do not invent a mismatch
         magic = GZIP_MAGIC + b"\x08"
         at = data.rfind(magic)
@@ -773,7 +780,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
             with self._views.view() as f:
                 f.seek(start)
                 tail = f.read(length - start)
-        except OSError:
+        except OSError as exc:
+            if from_source_callback(exc):
+                raise
             return False
         magic = GZIP_MAGIC + b"\x08"
         at = tail.find(magic)
@@ -802,7 +811,9 @@ class _GzipTruncationCheckStream(DelegatingStream):
         try:
             with self._views.view() as f:
                 return gzip_has_additional_member(f, self._natives)
-        except OSError:
+        except OSError as exc:
+            if from_source_callback(exc):
+                raise
             return True  # cannot rule out a second member -> do not raise
 
 

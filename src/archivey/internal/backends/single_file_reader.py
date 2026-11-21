@@ -61,6 +61,7 @@ from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.source import ArchiveSource, seeks_to_end_are_cheap
 from archivey.internal.streams.archive_stream import MemberStreamParts
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs import (
     Codec,
     MetadataContext,
@@ -308,10 +309,11 @@ class SingleFileReader(BaseArchiveReader):
         # - Non-seekable: one forward pass; a second open fails loudly once consumed.
         self._shared: SharedSource | None = None
         self._pending_parts: MemberStreamParts | None = None
-        if self._seekable and (source.path is None or self._measure):
+        if self._seekable and (source.codec_path is None or self._measure):
             # A stream source always shares its one handle, handing out views. A path
             # source normally hands the path to the codec (independent FDs) and shares
-            # only under measurement, so the source's seeks are visible.
+            # only under measurement, so the source's seeks are visible, and while
+            # ``on_source_read`` reports its reads (``codec_path`` is then ``None``).
             self._shared = SharedSource(source, wrap_handle=self._seek_handle_wrapper())
         if not self._seekable:
             # Non-seekable: validation probes a copy when detection's peek holds the
@@ -441,8 +443,10 @@ class SingleFileReader(BaseArchiveReader):
         """
         src = self._source
         assert src is not None
-        if src.path is not None:
-            with open(src.path, "rb") as f:
+        # ``codec_path``: while ``on_source_read`` reports reads, they go through the
+        # source (the seekable branch below).
+        if src.codec_path is not None:
+            with open(src.codec_path, "rb") as f:
                 return fn(self._track_source_seeks(f))
         if not src.seekable():
             return None
@@ -472,7 +476,9 @@ class SingleFileReader(BaseArchiveReader):
             return None
         try:
             return self._on_seekable_source(fn)
-        except OSError:
+        except OSError as exc:
+            if from_source_callback(exc):
+                raise
             return None
 
     def _probe_compressed_size(self) -> int | None:
@@ -641,7 +647,9 @@ class SingleFileReader(BaseArchiveReader):
             try:
                 backend = resolve_codec(self._codec, config)
                 stream = backend.open(SlicingStream(f, start=0))
-            except (ArchiveyError, OSError, ValueError):
+            except (ArchiveyError, OSError, ValueError) as exc:
+                if from_source_callback(exc):
+                    raise
                 return None
             try:
                 if not isinstance(stream, DecompressorStream):

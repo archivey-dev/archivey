@@ -101,6 +101,7 @@ from archivey.internal.logs import extraction as logger
 from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.win32_errors import (
     ERROR_FILENAME_EXCED_RANGE,
     ERROR_INVALID_NAME,
@@ -2734,6 +2735,10 @@ class ExtractionCoordinator:
         except (AlwaysStopResourceLimitError, DiagnosticRaisedError):
             raise
         except (ArchiveyError, OSError) as exc:
+            if from_source_callback(exc):
+                # The caller's own exception (``on_source_read`` raised): a stop,
+                # never one member's failure.
+                raise
             spelled_from = current.spelled_from
             if isinstance(exc, ArchiveyError) and spelled_from is not None:
                 _report_stored_spelling(exc, disk_spelled(spelled_from), spelled_from)

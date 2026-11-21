@@ -1731,12 +1731,23 @@ class _RollingUnrarStream(_UnrarOwnedStream):
         feeder: VolumeFeeder,
         volumes: RollingVolumes,
         release: Callable[[], None],
+        on_read: Callable[[], None] | None = None,
         **kwargs: bool,
     ) -> None:
         self._feeder = feeder
         self._volumes = volumes
         self._release = release
+        # Only the feeder thread reads the archive's source here, so each read of
+        # the output delivers the ``on_source_read`` report that came due there.
+        self._on_read = on_read
         super().__init__(stdout, proc, **kwargs)
+
+    @override
+    def read(self, n: int = -1, /) -> bytes:
+        data = super().read(n)
+        if self._on_read is not None:
+            self._on_read()
+        return data
 
     @property
     def feeder(self) -> VolumeFeeder:
@@ -6390,6 +6401,7 @@ class RarReader(BaseArchiveReader):
             feeder,
             volumes,
             release,
+            on_read=None if self._source is None else self._source.flush_progress,
             named_member=named_member,
             has_verifiable_hash=has_hash,
             encrypted=encrypted,

@@ -1125,6 +1125,7 @@ class IndexedReaderAdapter(_PluginAdapter):
         # (the ISO reader reads a path table for them) that change nothing.
         if source.is_lone_remote:
             plugin_source._will_read = self._will_read
+        plugin_source._progress_reporter = source.progress_reporter
         plugin = self._plugin
         assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():

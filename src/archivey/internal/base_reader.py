@@ -217,6 +217,7 @@ from archivey.internal.streams.archive_stream import (
     as_closed_source_error,
     compose_translators,
 )
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.counting import (
     CountingReader,
     OutputCountingStream,
@@ -1241,6 +1242,10 @@ class BaseArchiveReader(ArchiveReader):
         ``EncryptionError`` (ZIP's password errors carry their own message and must
         not be reattributed).
         """
+        if from_source_callback(exc):
+            # The caller's own, such as from ``on_source_read``: not stamped, even
+            # when it is an ``ArchiveyError``.
+            raise exc
         if isinstance(exc, ArchiveyError):
             self._stamp_error_context(exc, member_name)
             raise exc
@@ -2325,6 +2330,8 @@ class BaseArchiveReader(ArchiveReader):
                         try:
                             self._resolve_link_target(member)
                         except UNREADABLE_LINK_TARGET_ERRORS as exc:
+                            if from_source_callback(exc):
+                                raise
                             self._report_unreadable_link_target(member, exc)
                             continue
                         if member.link_target is not None:
@@ -4344,8 +4351,8 @@ class BaseArchiveReader(ArchiveReader):
 
         codec = codec_for_stream_format(stream_format)
         codec_source: str | BinaryIO
-        if source.path is not None:
-            codec_source = str(source.path)
+        if source.codec_path is not None:
+            codec_source = str(source.codec_path)
         else:
             codec_source = self._codec_input(source, track_seeks=True)
         decoded = open_codec_stream(
@@ -5012,6 +5019,8 @@ class BaseArchiveReader(ArchiveReader):
                 except DiagnosticRaisedError:
                     raise
                 except ArchiveyError as e:
+                    if from_source_callback(e):
+                        raise
                     failures.append((m, e))
                     if isinstance(e, SpanningCheckError):
                         spanning.append(e)

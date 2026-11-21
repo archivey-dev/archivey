@@ -157,6 +157,7 @@ from archivey.internal.sfx import (
     pe_layout,
 )
 from archivey.internal.source import ArchiveSource
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.codecs.brotli_framing import (
     BrotliBlock,
     parse_metablock,
@@ -767,10 +768,11 @@ def _decode_inner_head(
         # over the probe's limit, an xz filter chain it cannot decode raw, or an
         # allocation refused. "Can't tell", and the receipt says so.
         unavailable = True
-    except (ArchiveyError, OSError, ValueError):
+    except (ArchiveyError, OSError, ValueError) as exc:
+        if from_source_callback(exc):
+            raise  # the caller's ``on_source_read`` stopped the read
         # Not decodable as this codec, or truncated before a full block: no inner
         # container.
-        pass
     except Exception:
         # A plugin decoder that raises what its translate_exception does not map is no
         # inner container, as a plugin probe that raises is no match

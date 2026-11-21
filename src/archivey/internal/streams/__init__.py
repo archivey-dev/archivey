@@ -66,4 +66,6 @@ Package map:
 - :mod:`.crypto` — AES decrypt stages (``[recommended]``). Key derivation stays with
   each format's backend.
 - :mod:`.counting` — measurement wrappers (bytes / seeks).
+- :mod:`.callers_source` — the mark on an exception raised by the caller's own source
+  or callback, which every error translator passes on unchanged.
 """
