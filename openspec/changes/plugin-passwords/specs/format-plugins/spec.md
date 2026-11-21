@@ -37,7 +37,10 @@ callable SHALL stay uncalled and unreported.
 | Static `["a", "b"]`, `a` `INCONCLUSIVE`, `b` `REJECTED` | `a`'s data; `full_check` not called |
 | Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check`: `a` `REJECTED`, `b` `CONFIRMED` | `(b's data, CONFIRMED)` |
 | Static `["a", "b"]`, both `INCONCLUSIVE`, `full_check` `INCONCLUSIVE` for both | `(a's data, INCONCLUSIVE)` (fallback to the first survivor) |
-| `a` `REJECTED` at `check`, `b` reaches `full_check` and its CRC fails | Unverified-data `EncryptionError` (password or damage) |
+| No static candidates; provider answers `a` (`REJECTED` at `check`), then `b` (`INCONCLUSIVE`, `full_check` CRC fails), then `None` | Unverified-data `EncryptionError` (password or damage) |
+| Two member-less `unlock("encrypted payload", ...)` calls in one walk, needing different keys | Each has its own rejected set and provider attempt count |
+| Listing recreated, same unit unlocked again on a fresh member object | Same unit: answers already rejected for it are skipped |
+| ARJ trial: source ends early inside a decoder pull | `TruncatedError` propagates (source-side), next password not tried |
 | Static `["a", "b"]`, both `INCONCLUSIVE`, no `full_check` | `a`'s data; `a` is not promoted |
 | Provider answers wrong then right, `check` always `INCONCLUSIVE`, `full_check` given | Second answer's data; `full_check` rejected the first |
 | Handler without `supports_password` calls `unlock` | `ArchiveyUsageError` |
@@ -116,7 +119,8 @@ no archivey lock held and no listing in progress, then repeat the public operati
 which tries the new answer. A provider that reenters the same reader from its own thread
 or a copied context SHALL get `ArchiveyUsageError` before any lock or listing wait, and
 two workers needing the provider at once SHALL be served one after the other. A
-sequential walk that cannot be repeated SHALL get no provider answers.
+sequential walk that already yielded a member SHALL call the provider in place, with the
+handle guard released, as the built-in streaming readers do.
 
 #### Scenario: concurrency and repeats
 
@@ -128,7 +132,8 @@ sequential walk that cannot be repeated SHALL get no provider answers.
 | Two threads open two encrypted members, provider sleeps | Provider called once at a time; both members read |
 | Thread A waits on the provider for a nested member while thread B reopens another nested member | Both read; neither sees the other's reopen state |
 | Provider answers wrong then right for one `open_member` | `open_member` called three times; rounds charged once per answer |
-| Sequential walk over a pipe with no spool, provider given | Provider not called; missing-password `EncryptionError` |
+| makeself on a pipe, payload 2 needs a provider answer after payload 1's members were yielded | Provider called in place; payload 1 is not yielded again |
+| DMG `open` needs a provider answer | Handler `open` repeated; no reader returned before |
 
 #### Scenario: ARJ trial decode failures
 

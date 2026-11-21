@@ -119,18 +119,22 @@ def check(password):
 
 def full_check(password):
     crc, size = 0, 0
-    with open_packed_span(member) as packed:     # a short source read raises
-        decoder = degarble_and_decode(packed, password)  # TruncatedError here: propagates
-        try:
-            while chunk := decoder.read(64 * 1024):   # bounded memory, never the
-                crc = zlib.crc32(chunk, crc)          # whole member
-                size += len(chunk)
-        except CorruptionError:                  # from the decoder over a complete span,
-            return None, PasswordConfirmVerdict.REJECTED  # TruncatedError included:
-                                                 # a wrong key, not a cut
+    packed = ExactSource(source.view(start, stored))  # counts bytes; records a short read
+    decoder = degarble_and_decode(packed, password)
+    try:
+        while chunk := decoder.read(64 * 1024):       # bounded memory, never the
+            crc = zlib.crc32(chunk, crc)              # whole member
+            size += len(chunk)
+    except CorruptionError:
+        if packed.source_failed:                      # the source itself ended or failed
+            raise                                     # inside a pull: propagate
+        return None, PasswordConfirmVerdict.REJECTED  # the decoder over complete input
+                                                      # (TruncatedError too): a wrong key
+    if packed.consumed != stored:                     # decoder stopped early: wrong key
+        return None, PasswordConfirmVerdict.REJECTED
     if crc != stored_crc:
         return None, PasswordConfirmVerdict.REJECTED
-    if size < 4:                                 # below the strength rule
+    if size < 4:                                      # below the strength rule
         return password, PasswordConfirmVerdict.INCONCLUSIVE
     return password, PasswordConfirmVerdict.CONFIRMED
 
@@ -142,6 +146,10 @@ The plugin decides which of its own failures depend on the password (return `REJ
 and lets the rest propagate (source errors, a short read of the source itself, resource
 limits). It tells them apart by where the error arose, not by class: `TruncatedError` is
 a `CorruptionError`, and a decoder fed a complete span under a wrong key can raise it.
+`ExactSource` is a small plugin-side wrapper over the view: it counts the bytes the
+decoder pulls and sets `source_failed` when the view itself raises or returns short
+before the declared extent, so a source failure inside a decoder pull is told apart
+from the decoder's own error without pre-reading the span.
 `full_check` decodes the whole member in bounded chunks (never holding it in memory, as
 the built-in full check does), and the caller's read decodes it again; both are charged
 where the decode limits measure them. It exists only where the plugin can replay the
@@ -298,8 +306,13 @@ provider call leaves the others held, and releasing all of them would let anothe
 change state the suspended call still uses. So `unlock` never calls the provider itself:
 
 1. Inside the plugin call, `unlock` tries only what needs no provider call: the static
-   candidates, and provider answers already given for this unit (by `what` and
-   `member`), skipping any already rejected for it.
+   candidates, and provider answers already given for this unit, skipping any already
+   rejected for it. The unit is identified internally, not by `what` (display text) or
+   `member` (which may be `None`, or a fresh object after a recreated listing): it is
+   the n-th `unlock` call of the pending public operation, which a repeat reaches in the
+   same order because plugin calls are deterministic over the same source. Retry state
+   lives with the pending operation and ends with it; known-good promotion across units
+   stays per reader, as today.
 2. When it would need a new provider answer, it raises an internal signal (not an
    `ArchiveyError`, not visible to the plugin's `translate_exception`). The plugin call
    unwinds, and every lock and per-call state goes with it.
@@ -308,25 +321,38 @@ change state the suspended call still uses. So `unlock` never calls the provider
    provider call: the existing reentry check (own thread or copied context raises
    `ArchiveyUsageError`) and the existing one-at-a-time serialization, both before any
    lock or listing wait.
-4. archivey then repeats the public operation from the start. The new answer is now in
-   step 1's set, so the repeated call reaches the same `unlock` and tries it.
+4. archivey then repeats the step that raised it, which tries the new answer.
 
-Cost: each new provider answer repeats the plugin's work up to that `unlock`. For
-`open_member` that is a header read; for a first-touch listing it is the walk up to the
-encrypted unit (a makeself payload), and for DMG the image header at `open`. Provider
-answers are typed by a person or read from a keyring, so they are few; static candidates
-never cause a repeat. Key derivation already charged for a rejected answer is not
-charged again (the answer is skipped), and a plugin's own key cache survives the repeat.
+**Which steps repeat** (the boundary is "before anything was handed to the caller"):
+
+| Plugin call | Repeated step | Visible effects before the repeat |
+| --- | --- | --- |
+| `FormatHandler.open` (DMG whole-image unlock) | The handler open | None: the reader is not returned yet |
+| `IndexedReader.open_member` | That member open | None: no stream returned yet |
+| `iter_members` (indexed listing) | The listing, before its first member is published | None while no member is published |
+| `walk` / `iter_members` after a member was yielded | Not repeated (see below) | Members, bytes, files written by extraction |
+
+Cost: each new provider answer repeats that step up to the `unlock`: a header read for a
+member, the image header for DMG. Static candidates never cause a repeat. Key derivation
+already charged for a rejected answer is not charged again (the answer is skipped), and
+a plugin's own key cache survives the repeat.
+
+**A walk that has already yielded members** (makeself payload 2, after payload 1's
+members went to `stream_members()` or extraction) cannot be repeated: archivey poisons a
+failed streaming walk on purpose because the prefix is out. There `unlock` calls the
+provider in place, as makeself and the built-in streaming readers do today, with the
+handle guard released, and the walk lock still held. The known limit is the one those
+readers have now: a provider that waits on a copied-context worker calling into the same
+reader during the walk can block. This keeps makeself's provider on a pipe working.
+Open question 8.
 
 The plugin may call `unlock` from `open`, `iter_members`, `walk` and `open_member`, and
 from nowhere else (not from inside a stream's `read`). Its calls must be repeatable
-(they already are: archivey rewalks and reopens today). A sequential walk that cannot be
-repeated (a pipe with no spool) gets no provider answers: `unlock` there behaves as if
-the provider returned `None` after the static candidates, and the missing-password
-message says so.
+(they already are: archivey rewalks and reopens today).
 
-Alternative: release the locks around an in-place provider call. Rejected for the
-reasons above (listing lock, materialization wait, reopen marker).
+Alternative: release the locks around an in-place provider call everywhere. Rejected for
+the reasons above (listing lock, materialization wait, reopen marker), except in the
+walk case, where no repeat is possible.
 
 ## Risks / Trade-offs
 
@@ -338,7 +364,7 @@ reasons above (listing lock, materialization wait, reopen marker).
 - A plugin can still decrypt without `unlock` by reading the password some other way
   (an environment variable). Nothing stops that, and nothing needs to.
 
-## Open questions (all ruled by the maintainer, 2026-11-21)
+## Open questions (1-7 ruled by the maintainer 2026-11-21; 8 open)
 
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi
    11-21).
@@ -354,3 +380,6 @@ reasons above (listing lock, materialization wait, reopen marker).
    card).
 7. D7: the new public field `unlocked: PasswordConfirmVerdict | None` on `MemberRecord`,
    `MemberSpan` and `MemberData`? RULED yes (davi 11-21, card).
+8. D8: a walk that already yielded members calls the provider in place, as makeself and
+   the built-in streaming readers do today (with the same copied-context limit), instead
+   of giving it no provider answers? (Recommended: yes; Codex review C14.) OPEN.

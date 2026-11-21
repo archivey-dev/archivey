@@ -12,8 +12,8 @@ private user. A plugin replacing ZIP, 7z or RAR cannot read an encrypted member 
 - New public names in `archivey.formats`, ruled by the maintainer on 2026-11-21:
   `FormatHandler.supports_password`, `ReaderContext.unlock()` (returns
   `(data, PasswordConfirmVerdict)`), `PasswordConfirmVerdict` (the built-in enum, made
-  public), `ReaderContext.charge_key_derivation()`, `ReaderArchiveInfo.is_encrypted`, and
-  `unlocked` on `MemberRecord`, `MemberSpan` and `MemberData`.
+  public), `ReaderContext.charge_key_derivation()`, `ReaderArchiveInfo.is_encrypted`,
+  and `unlocked` on `MemberRecord`, `MemberSpan` and `MemberData`.
 - The password provider is called only at the reader's public boundary, never inside a
   plugin call; a new provider answer repeats the operation (design.md D8).
 - The adapter passes the caller's `password=` to every plugin whose handler sets
