@@ -21,6 +21,7 @@ from archivey_codecs import (
     Crc16Arc,
     TruncatedDataError,
     UnsupportedDataError,
+    bcj2,
     crc16_arc,
     filters,
     lzo1x,
@@ -462,3 +463,208 @@ def test_lzw_error_on_new_input_returns_held_output_first() -> None:
         else:
             raise AssertionError(cut)
         assert got == expected, cut
+
+
+# ── Saved states: refusals ─────────────────────────────────────────────────────────
+
+
+def _patched(state: bytes, at: int, value: bytes) -> bytes:
+    return state[:at] + value + state[at + len(value) :]
+
+
+def _u32(v: int) -> bytes:
+    return v.to_bytes(4, "little")
+
+
+def _u64(v: int) -> bytes:
+    return v.to_bytes(8, "little")
+
+
+# BCJ2 streams with no branch candidate: the output is ``main``, and the range coder
+# reads only its 5 start bytes.
+_BCJ2_MAIN = bytes(range(0x10, 0x70)) * 3000  # 288,000 bytes, no E8, E9 or 0F 8x
+_BCJ2_RC = b"\0" * 5
+
+
+def _bcj2(main: bytes = _BCJ2_MAIN, rc: bytes = _BCJ2_RC) -> bcj2.Decompressor:
+    return bcj2.Decompressor(
+        io.BytesIO(main), io.BytesIO(), io.BytesIO(), io.BytesIO(rc), out_size=len(main)
+    )
+
+
+def _bcj2_restore(state: bytes, at: tuple[int, ...] = (0, 0, 0, 0)):
+    streams = [io.BytesIO(s) for s in (_BCJ2_MAIN, b"", b"", _BCJ2_RC)]
+    for f, pos in zip(streams, at, strict=True):
+        f.seek(pos)
+    return bcj2.Decompressor.from_state(state, *streams)
+
+
+# The BCJ2 state: header (9 bytes), 258 probabilities, prev, range, code (flag and
+# value), out_pos; then out_size, checked, the pending output, total_in x 4.
+_P0 = 9
+_RANGE = _P0 + 516 + 1
+_CODE = _RANGE + 4 + 1
+_OUT_POS = _CODE + 4
+_OUT_SIZE = _OUT_POS + 8
+_CHECKED = _OUT_SIZE + 8
+_PENDING = _CHECKED + 1
+
+
+def test_bcj2_state_refusals() -> None:
+    d = _bcj2()
+    d.read(1000)
+    state = d.getstate()
+    assert state[_CODE - 1] == 1  # the range coder has started
+    cases = [
+        # Bcj2::load's probability check.
+        (_patched(state, _P0, b"\0\0"), "a probability of 0"),
+        (_patched(state, _P0 + 2, (2048).to_bytes(2, "little")), "probability of 2048"),
+        # Bcj2::load's code < range check.
+        (_patched(state, _CODE, state[_RANGE : _RANGE + 4]), "not below its range"),
+        # from_state's size checks: decoded past out_size, pending past decoded, and
+        # the end check passed before the end.
+        (_patched(state, _OUT_SIZE, _u64(10)), "sizes that do not agree"),
+        (_patched(state, _OUT_POS, _u64(10)), "sizes that do not agree"),
+        (_patched(state, _CHECKED, b"\x01"), "sizes that do not agree"),
+        # The pending cap: no read leaves more than one block's output.
+        (_patched(state, _PENDING, _u32(5 * 65536 + 1)), "more than 327680"),
+        (state[:-1], "cut off"),
+        (state + b"\0", "follow"),
+    ]
+    for bad, message in cases:
+        with pytest.raises(CorruptDataError, match=message):
+            _bcj2_restore(bad)
+    other = zipcrypto.Decryptor(b"pw").getstate()
+    with pytest.raises(UnsupportedDataError):
+        _bcj2_restore(other)
+
+
+def test_bcj2_getstate_refused_after_an_error() -> None:
+    # A main stream one byte short: the bytes before the error come first.
+    d = bcj2.Decompressor(
+        io.BytesIO(b"abc"), io.BytesIO(), io.BytesIO(), io.BytesIO(_BCJ2_RC), out_size=4
+    )
+    assert d.read() == b"abc"
+    with pytest.raises(ValueError, match="after an error"):
+        d.getstate()
+    with pytest.raises(TruncatedDataError, match="main stream ended early"):
+        d.read()
+
+
+def test_bcj2_stream_returning_too_much_is_refused() -> None:
+    class Greedy(io.BytesIO):
+        def read(self, n: int | None = -1, /) -> bytes:
+            return b"x" * (n + 1)
+
+    d = bcj2.Decompressor(
+        Greedy(b"abc"), io.BytesIO(), io.BytesIO(), io.BytesIO(_BCJ2_RC), out_size=3
+    )
+    with pytest.raises(ValueError, match=r"read\(65536\) returned"):
+        d.read()
+
+
+def test_bcj2_restored_twice_reads_independently() -> None:
+    """Two decoders restored from one state, each on its own streams, read interleaved
+    past their buffers, both give the straight decode."""
+    d = _bcj2()
+    head = d.read(1000)
+    state, at = d.getstate(), d.total_in
+    a, b = _bcj2_restore(state, at), _bcj2_restore(state, at)
+    out_a, out_b = bytearray(head), bytearray(head)
+    while not (a.eof and b.eof):
+        out_a += a.read(70_000)
+        out_b += b.read(30_000)
+    assert out_a == out_b == _BCJ2_MAIN
+    assert not hasattr(bcj2.Decompressor, "copy")
+
+
+# The LZW state after ``_Z_AB`` without its flush: header (8 bytes), nine-bit setting,
+# at-fill, need-header, four segment and skip counters, the skip reason, the maximum
+# width and block mode, the dictionary size and next code, one entry (prefix, suffix),
+# the code reader; then the held output, header-in-stream, the CLEAR offsets,
+# total_in and total_out.
+_NINE_BIT = 8
+_PENDING_SKIP = 11 + 16
+_REASON = 11 + 32
+_WIDTH = _REASON + 1
+_DICT_LEN = _WIDTH + 2
+_ENTRY = _DICT_LEN + 8
+_BITS = _ENTRY + 5 + 8
+
+
+def _lzw_state() -> bytes:
+    d = lzw.Decompressor()
+    assert d.decompress(_Z_AB) == b"ab"
+    return d.getstate()
+
+
+def test_lzw_state_refusals() -> None:
+    state = _lzw_state()
+    tail = len(state) - 33  # the five fields after the held output
+    assert state[tail - 4 : tail] == _u32(0)  # nothing held
+    dict_len = int.from_bytes(state[_DICT_LEN : _DICT_LEN + 4], "little")
+    assert dict_len == 258  # one entry, 257
+    cases = [
+        (_patched(state, _NINE_BIT, b"\x03"), "a nine-bit setting of 3"),
+        (_patched(state, _PENDING_SKIP, _u64(17)), "a segment or skip out of range"),
+        (_patched(state, _REASON, b"\x02"), "a skip reason of 2"),
+        (_patched(state, _WIDTH, b"\x11"), "a maximum code width of 17"),
+        (_patched(state, _DICT_LEN, _u32(dict_len + 5)), "a dictionary size"),
+        (_patched(state, _ENTRY, _u32(300)), "points forward"),
+        (_patched(state, _BITS, b"\xff"), "a code reader out of range"),
+        # The held-output cap.
+        (_patched(state, tail - 4, _u32((1 << 16) + 1)), "more than 65536"),
+        # The CLEAR offsets must lie within the input and output so far, without
+        # overflow.
+        (_patched(state, tail + 1, _u64(1 << 40)), "offsets that do not agree"),
+        (_patched(state, tail + 9, _u64(1 << 40)), "offsets that do not agree"),
+        (state[:-1], "cut off"),
+        (state + b"\0", "follow"),
+    ]
+    for bad, message in cases:
+        with pytest.raises(CorruptDataError, match=message):
+            lzw.Decompressor.from_state(bad)
+    with pytest.raises(UnsupportedDataError):
+        lzw.Decompressor.from_state(zipcrypto.Decryptor(b"pw").getstate())
+
+
+def test_lzw_held_output_offset_check_does_not_overflow() -> None:
+    """``total_out`` plus the held output is compared without overflow: a state whose
+    ``total_out`` is near 2**64 is refused, not wrapped (or a panic in debug)."""
+    ncompress = pytest.importorskip("ncompress")
+    raw = b"a" * 5000
+    z = ncompress.compress(raw)
+    d = lzw.Decompressor()
+    d.decompress(z, 3)
+    for _ in range(40):
+        d.decompress(b"", 3)
+        state, done = d.getstate(), d.total_out
+        tail = len(state) - 33
+        held = [
+            n
+            for n in range(1, 200)
+            if state[tail - n - 4 : tail - n] == _u32(n)
+            and state[tail - n : tail] == raw[done : done + n]
+        ]
+        if held:
+            break
+    else:
+        pytest.fail("no state held output")
+    bad = _patched(state, len(state) - 8, _u64(2**64 - 1))  # total_out
+    # A wrapped sum would let any CLEAR output offset pass: 0 tests the overflow alone.
+    bad = _patched(bad, tail + 9, _u64(0))
+    with pytest.raises(CorruptDataError, match="offsets that do not agree"):
+        lzw.Decompressor.from_state(bad)
+
+
+def test_lzw_getstate_refused_after_flush_or_an_error() -> None:
+    d = lzw.Decompressor()
+    d.decompress(_Z_AB)
+    d.flush()
+    with pytest.raises(ValueError, match="after flush"):
+        d.getstate()
+    d = lzw.Decompressor()
+    with pytest.raises(CorruptDataError):
+        d.decompress(b"\x1f\x9d\x90\xff\xff\xff")
+    with pytest.raises(ValueError, match="after an error"):
+        d.getstate()

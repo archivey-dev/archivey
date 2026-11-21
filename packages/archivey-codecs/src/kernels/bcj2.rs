@@ -7,6 +7,9 @@ use crate::kernels::error::DecodeError;
 use crate::kernels::state::{self, Reader};
 
 const BLOCK: usize = 64 * 1024;
+/// The most output one `decode_block` call gives: each `main` byte of a block,
+/// and 4 bytes more for each one that is a converted branch.
+pub const MAX_BLOCK_OUTPUT: usize = 5 * BLOCK;
 const TOP: u32 = 1 << 24;
 const NUM_MOVE_BITS: u32 = 5;
 const PROB_INIT: u16 = 1024;
@@ -119,6 +122,11 @@ impl Bcj2 {
         d.prev = r.u8()?;
         d.range = r.u32()?;
         d.code = if r.bool()? { Some(r.u32()?) } else { None };
+        // The decoder keeps `code < range` (it starts with `range` all ones and refuses
+        // a `code` of all ones).
+        if d.code.is_some_and(|c| c >= d.range) {
+            return r.bad("a range coder code not below its range");
+        }
         d.out_pos = r.u64()?;
         Ok(d)
     }
