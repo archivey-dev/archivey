@@ -138,12 +138,12 @@ plus the request's index in that call's chain. archivey SHALL call the provider 
 the first unlock of a unit: a request from the handler's `open` (with `member=None`), a
 listing walk's request, or a first open of a member (the caller's `open()`, a data walk
 it starts, the first open of a lazy `stream_members()` or extraction handle). It SHALL
-never call it on a replacement open of an already unlocked stream, and SHALL give a replacement stream the new `unlocked` verdict
-(a respawn's `MemberData`, a data walk's span). A replacement whose `digests`, `checked`
-or `bounded` differ from the first open's SHALL be refused as a plugin bug. When
-resolution fails for a yielded request, archivey SHALL close the generator and the error
-SHALL end the walk. Two workers needing the provider at once SHALL be served one after
-the other.
+never call it on a replacement open of an already unlocked stream, and SHALL give a
+replacement stream the new `unlocked` verdict (a respawn's `MemberData`, a data walk's
+span). A replacement whose `digests`, `checked` or `bounded` differ from the first
+open's SHALL be refused as a plugin bug. When resolution fails for a yielded request,
+archivey SHALL close the generator and the error SHALL end the walk. Two workers needing
+the provider at once SHALL be served one after the other.
 
 #### Scenario: concurrency
 

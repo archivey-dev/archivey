@@ -9,9 +9,10 @@ member whose data fails its CRC-32 when the member is not garbled or its passwor
 `CONFIRMED`. A garbled member read under an `INCONCLUSIVE` password (one password, no
 full check) whose data fails its CRC-32 or its decoder SHALL raise the
 wrong-password-or-damage `EncryptionError` instead. It SHALL raise `TruncatedError` for
-a file that ends inside a header or a member's data, garbled or not. A member split across volumes, a method past 4, and
-a garbled member of an archive whose main header names the GOST cipher (encryption
-version 2 or later) SHALL raise `UnsupportedFeatureError` when read.
+a file that ends inside a header or a member's data, garbled or not. A member split
+across volumes, a method past 4, and a garbled member of an archive whose main header
+names the GOST cipher (encryption version 2 or later) SHALL raise
+`UnsupportedFeatureError` when read.
 
 #### Scenario: ARJ refusals
 
