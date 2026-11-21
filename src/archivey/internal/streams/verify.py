@@ -60,7 +60,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, BinaryIO, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
-from archivey.exceptions import CorruptionError, TruncatedError
+from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
 from archivey.internal.diagnostics_collector import (
     DiagnosticCollector,
     resolve_collector,
@@ -226,8 +226,13 @@ class MemberVerifier:
         fill_size: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None,
     ) -> None:
         self._expected_size = expected_size
+        # Builds the error a digest mismatch raises in place of the plain
+        # ``CorruptionError``: under a password nothing confirmed, the
+        # wrong-password-or-damage ``EncryptionError`` (a plugin's ``INCONCLUSIVE``).
+        self._digest_error = digest_error
         # The inner stream never returns a byte past ``expected_size`` (a plugin's
         # ``MemberData.bounded``), so the over-run probe is skipped. A short stream
         # still raises TruncatedError.
@@ -459,10 +464,13 @@ class MemberVerifier:
             if transform is not None:
                 computed = transform(computed)
             if computed != expected:
-                raise CorruptionError(
+                mismatch = CorruptionError(
                     f"Digest mismatch for {algorithm!r}: stored value does not match the "
                     f"decompressed content."
                 )
+                if self._digest_error is None:
+                    raise mismatch
+                raise self._digest_error(mismatch) from mismatch
 
     def _record_read(self, data: bytes) -> None:
         """Advance logical position and furthest-read position after a returning read.
@@ -969,6 +977,7 @@ def build_member_verifier(
     fill_size: bool = False,
     custom_digests: CustomDigests | None = None,
     bounded: bool = False,
+    digest_error: Callable[[CorruptionError], ArchiveyError] | None = None,
 ) -> MemberVerifier | None:
     """Return a :class:`MemberVerifier` when there is something to check, else ``None``.
 
@@ -995,6 +1004,7 @@ def build_member_verifier(
         fill_size=fills,
         custom_digests=custom_digests,
         bounded=bounded,
+        digest_error=digest_error,
     )
 
 

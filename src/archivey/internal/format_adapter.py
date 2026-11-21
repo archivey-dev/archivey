@@ -42,7 +42,7 @@ import weakref
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import fields, replace
-from typing import Any, BinaryIO, ClassVar, NoReturn, TypeVar, cast
+from typing import Any, BinaryIO, ClassVar, Literal, NoReturn, TypeVar, cast
 
 from archivey.config import ArchiveyConfig, DecoderLimits, ProcessIsolation
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
@@ -72,6 +72,8 @@ from archivey.formats import (
     MemberDigest,
     MemberRecord,
     MemberSpan,
+    NeedsPassword,
+    PasswordConfirmVerdict,
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
@@ -86,7 +88,7 @@ from archivey.internal.base_reader import (
     reject_start_offset,
 )
 from archivey.internal.bomb_tracker import DecodeRatioGuard, ReadRatioTally
-from archivey.internal.config import stream_config_from_archivey
+from archivey.internal.config import KeyDerivationBudget, stream_config_from_archivey
 from archivey.internal.dataclass_copy import copy_with
 from archivey.internal.detection import INNER_CONTAINER_PROBE_BYTES
 from archivey.internal.diagnostics_collector import DiagnosticCollector
@@ -100,8 +102,13 @@ from archivey.internal.naming import emit_member_name_normalized, normalize_memb
 from archivey.internal.nesting import MAX_NESTED_DEPTH, reading_inside
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
-from archivey.internal.password import _PasswordCandidates
+from archivey.internal.password import _PasswordCandidates, unverified_data_error
 from archivey.internal.pe_resources import ProgramResources
+from archivey.internal.plugin_passwords import (
+    PluginPasswordBug,
+    SavedWinner,
+    resolve_request,
+)
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
@@ -305,6 +312,24 @@ class _PluginAdapter(BaseArchiveReader):
         # (``_send_held_reports``), by the member's id(): each sends one, naming the
         # member as it is named when called, with the member id it is given.
         self._held_reports: dict[int, list[Callable[[int | None], None]]] = {}
+        # The caller's ``password=``, for a plugin that hands over ``NeedsPassword``
+        # requests (``_resolve``). Only a handler that supports passwords gets it.
+        self._passwords = passwords if plugin.supports_password else None
+        if self._passwords is not None:
+            self._state.provider_reentry = self._passwords.in_provider_call_on
+        # The password that won each request, by where the request came from (a
+        # member, the handler's open, the k-th request of a walk) and its place in
+        # a ``then`` chain, so a repeat of the request (a rewalk, a respawn) tries it
+        # first. Dropped at close.
+        self._saved_winners: dict[tuple[object, ...], SavedWinner] = {}
+        # How many requests each running walk has yielded, for those keys.
+        self._walk_requests: weakref.WeakKeyDictionary[Iterator[object], int] = (
+            weakref.WeakKeyDictionary()
+        )
+        # One budget for every key derivation the reader runs, built before the
+        # plugin's open so a check at open charges it too.
+        self._kdf_budget = KeyDerivationBudget(config.decoder_limits)
+        self._usage.watch_key_derivation(self._kdf_budget)
         context = ReaderContext(
             encoding=encoding,
             archive_name=archive_name,
@@ -316,6 +341,7 @@ class _PluginAdapter(BaseArchiveReader):
             charge_metadata=self._charge_metadata,
             open_nested=self._open_nested,
             usage=self._usage,
+            charge_key_derivation=self._charge_key_derivation,
         )
         context._nest = self._nest
         context._spanning_check = self._new_spanning_check
@@ -327,6 +353,145 @@ class _PluginAdapter(BaseArchiveReader):
     def _open_reader(self, context: ReaderContext) -> FormatReader:
         """Call the plugin's ``open``, and check what it returned."""
         raise NotImplementedError
+
+    def _charge_key_derivation(self, rounds: int) -> None:
+        """``ReaderContext.charge_key_derivation``: the reader's one budget."""
+        self._kdf_budget.spend(
+            rounds, what=f"{self._format.display_name} key derivation"
+        )
+
+    def _watch_unlocked(
+        self,
+        stream: BinaryIO,
+        member: ArchiveMember,
+        verdict: list[PasswordConfirmVerdict | None],
+    ) -> tuple[BinaryIO, Callable[[CorruptionError], ArchiveyError]]:
+        """``stream``, unlocked with ``verdict[0]``, watched while that verdict is
+        ``INCONCLUSIVE``: closed before its digest, it reports
+        ``ENCRYPTED_MEMBER_UNVERIFIED``, and a digest archivey checks that fails
+        raises the wrong-password-or-damage ``EncryptionError``. ``verdict`` is a
+        cell a respawn of the stream updates."""
+
+        def in_doubt() -> Literal["weak_open_check"] | None:
+            if verdict[0] is PasswordConfirmVerdict.INCONCLUSIVE:
+                return "weak_open_check"
+            return None
+
+        def digest_error(mismatch: CorruptionError) -> ArchiveyError:
+            if verdict[0] is not PasswordConfirmVerdict.INCONCLUSIVE:
+                return mismatch
+            return unverified_data_error(
+                f"{quoted(member.name)} failed its checksum: the password may be "
+                f"wrong, or the data damaged"
+            )
+
+        watched = self._watch_unverified_read(
+            stream,
+            member,
+            size=member.size,
+            check=in_doubt,
+            format_label=self._format.display_name,
+            digest="checksum",
+            why="the password was accepted on a check that could not confirm it",
+        )
+        return watched, digest_error
+
+    @contextmanager
+    def _unguarded(self) -> Generator[None]:
+        """Let go of the handle lock this thread holds while the password provider
+        runs, and take it again after: the provider may open another member."""
+        lock = self._handle_lock
+        if lock is None:
+            yield
+            return
+        lock.release()
+        try:
+            yield
+        finally:
+            lock.acquire()
+
+    def _resolve(
+        self,
+        request: NeedsPassword[Any, Any],
+        *,
+        key: tuple[object, ...],
+        run: Callable[[Callable[[], _T]], _T],
+        allow_provider: bool,
+        method: str,
+    ) -> tuple[Any, PasswordConfirmVerdict]:
+        """Resolve one request handed over by ``method``: ``(unlocked, verdict)``.
+
+        Runs under the plugin's guards; the provider runs with the handle lock let
+        go (``_unguarded``). The winner is kept under ``key`` for a repeat."""
+        owner = f"{type(self._reader if self._reader_open else self._plugin).__name__}"
+        if not self._plugin.supports_password:
+            raise _plugin_bug(
+                ArchiveyUsageError(
+                    f"{owner}.{method} handed over a NeedsPassword, but "
+                    f"{type(self._plugin).__name__}.supports_password is False"
+                )
+            )
+        if (
+            not isinstance(request.what, str)
+            or not callable(request.check)
+            or (request.full_check is not None and not callable(request.full_check))
+        ):
+            raise _plugin_bug(
+                TypeError(
+                    f"{owner}.{method} handed over a NeedsPassword whose what is not "
+                    f"a str or whose check is not callable"
+                )
+            )
+        try:
+            resolution = resolve_request(
+                what=request.what,
+                check=request.check,
+                full_check=request.full_check,
+                member=request.member,
+                passwords=self._passwords,
+                run=run,
+                unguarded=self._unguarded,
+                allow_provider=allow_provider,
+                saved=self._saved_winners.get(key),
+                owner=owner,
+            )
+        except PluginPasswordBug as exc:
+            raise _plugin_bug(TypeError(str(exc))) from None
+        self._saved_winners[key] = resolution.winner
+        return resolution.unlocked, resolution.verdict
+
+    def _resolve_returned(
+        self,
+        result: object,
+        *,
+        key: tuple[object, ...],
+        run: Callable[[Callable[[], _T]], _T],
+        allow_provider: bool,
+        method: str,
+    ) -> object:
+        """``result`` of ``method``, with every request it returned resolved: each
+        ``then`` is called with its winner, and may return another request."""
+        index = 0
+        while isinstance(result, NeedsPassword):
+            request = cast("NeedsPassword[Any, Any]", result)
+            then = request.then
+            if not callable(then):
+                raise _plugin_bug(
+                    TypeError(
+                        f"{method} returned a NeedsPassword with no then: a returned "
+                        f"request needs one"
+                    )
+                )
+            unlocked, verdict = self._resolve(
+                request,
+                key=(*key, index),
+                run=run,
+                allow_provider=allow_provider,
+                method=method,
+            )
+            result = run(functools.partial(then, unlocked, verdict))
+            index += 1
+        return result
 
     def _new_spanning_check(self, key: object) -> SpanningCheck:
         """``ReaderContext._spanning_check()``: a check over several members' data
@@ -643,13 +808,64 @@ class _PluginAdapter(BaseArchiveReader):
             with suppress(Exception), guard:
                 close()
 
-    def _walk_next(self, steps: Iterator[object], step: str = _LISTING) -> object:
+    def _walk_next(
+        self,
+        steps: Iterator[object],
+        step: str = _LISTING,
+        *,
+        allow_provider: bool = True,
+    ) -> object:
         """The next step of a walk, or ``_END`` once it ends: the listing's, during
         which a ``hold()`` is charged, or with ``step=_REWALK`` a data walk's, during
-        which it is not."""
+        which it is not.
+
+        A ``NeedsPassword`` the walk yields is resolved here and its winner sent back
+        into the walk, which goes on to its next step. The k-th request of a walk is
+        keyed by k, so a walk started over tries the same winners first. With
+        ``allow_provider=False`` (a walk stepped inside a member's read) the provider
+        is not asked."""
         self._walk_step = step
         try:
-            return next(steps, _END)
+            item = next(steps, _END)
+            while isinstance(item, NeedsPassword):
+                request = cast("NeedsPassword[Any, Any]", item)
+                if request.then is not None:
+                    raise _plugin_bug(
+                        TypeError(
+                            "a walk yielded a NeedsPassword with then: a yielded "
+                            "request gets its winner back from the yield instead"
+                        )
+                    )
+                send = getattr(steps, "send", None)
+                if send is None:
+                    raise _plugin_bug(
+                        TypeError(
+                            "a NeedsPassword was yielded by an iterator that is not a "
+                            "generator, so its winner cannot be sent back"
+                        )
+                    )
+                index = self._walk_requests.get(steps, 0)
+                self._walk_requests[steps] = index + 1
+                try:
+                    outcome = self._resolve(
+                        request,
+                        key=("walk", index, 0),
+                        run=_call,
+                        allow_provider=allow_provider,
+                        method="walk()",
+                    )
+                except BaseException:
+                    # The walk waits at its yield for a winner it will never get:
+                    # close it now, so its own cleanup runs before the error leaves.
+                    close = getattr(steps, "close", None)
+                    if close is not None:
+                        close()
+                    raise
+                try:
+                    item = send(outcome)
+                except StopIteration:
+                    item = _END
+            return item
         finally:
             self._walk_step = None
 
@@ -1038,7 +1254,7 @@ class _PluginAdapter(BaseArchiveReader):
             is_solid=self._is_solid(info),
             member_count=None,
             comment=info.comment,
-            is_encrypted=False,
+            is_encrypted=bool(info.is_encrypted),
             is_multivolume=False,
             cost=cost,
             extra=extra,
@@ -1130,6 +1346,13 @@ class IndexedReaderAdapter(_PluginAdapter):
         assert isinstance(plugin, IndexedFormatHandler)
         with self._translated_errors(), self._handle_guard():
             reader = plugin.open(plugin_source, context)
+            reader = self._resolve_returned(
+                reader,
+                key=("open",),
+                run=_call,
+                allow_provider=True,
+                method=f"{type(plugin).__name__}.open()",
+            )
         if not isinstance(reader, IndexedReader):
             self._wrong_reader(reader, "open", "an IndexedReader")
         self._indexed = reader
@@ -1216,6 +1439,13 @@ class IndexedReaderAdapter(_PluginAdapter):
                         f"{type(member).__name__}, not an ArchiveMember"
                     )
                 )
+            if (
+                _checked_verdict(record.unlocked, f"{type(self._reader).__name__}")
+                is PasswordConfirmVerdict.CONFIRMED
+                and member.is_encrypted
+            ):
+                # The listing unlocked the member's data with a confirmed password.
+                member._verified = max(member._verified, Verification.UNLOCKED)
             # A held member is counted as listed from here on, not twice.
             tracker.release_member(member)
             member._raw = record.locator
@@ -1227,21 +1457,40 @@ class IndexedReaderAdapter(_PluginAdapter):
             index += 1
             yield member
 
-    def _plugin_member_data(self, member: ArchiveMember) -> tuple[MemberData, BinaryIO]:
+    def _plugin_member_data(
+        self, member: ArchiveMember, *, allow_provider: bool = True
+    ) -> tuple[MemberData, BinaryIO]:
         """Call the plugin's ``open_member``: its data, and its stream as archivey reads
-        it, full-count and under the handle lock."""
+        it, full-count and under the handle lock.
+
+        A ``NeedsPassword`` it returns is resolved, its callbacks under the same lock
+        and reopen state as ``open_member``. ``allow_provider=False`` is for a
+        replacement open of a stream already unlocked (a respawn on a backward seek):
+        the saved winner is tried, and the provider is not asked."""
         member_id = member._member_id
         nest = (
             self._nest_members.get(member_id)
             if self._nest_members and member_id is not None
             else None
         )
-        with self._translated_errors(member.name), self._handle_guard():
-            self._reopening = None if nest is None else (*nest, member)
+        reopening = None if nest is None else (*nest, member)
+
+        def run(fn: Callable[[], _T]) -> _T:
+            self._reopening = reopening
             try:
-                data = self._indexed.open_member(member, member._raw)
+                return fn()
             finally:
                 self._reopening = None
+
+        with self._translated_errors(member.name), self._handle_guard():
+            data: object = run(lambda: self._indexed.open_member(member, member._raw))
+            data = self._resolve_returned(
+                data,
+                key=("member", member_id if member_id is not None else id(member)),
+                run=run,
+                allow_provider=allow_provider,
+                method=f"{type(self._reader).__name__}.open_member()",
+            )
         if not isinstance(data, MemberData):
             raise _plugin_bug(
                 TypeError(
@@ -1299,14 +1548,26 @@ class IndexedReaderAdapter(_PluginAdapter):
                 if data.digests
                 else (member.hashes, None)
             )
+            # The stream's own verdict, which a respawn replaces with its new one.
+            verdict = [_checked_verdict(data.unlocked, type(self._reader).__name__)]
             rewind: RewindWarning | None = None
             if self._seek_declared() and not is_seekable(stream):
                 # The caller asked for seekable members and the plugin's stream reads
                 # forward only: a forward seek reads through, and a backward one
                 # opens the member again from the start (``open_member`` once more).
                 # With no listed size, a seek from the end reads through to find it.
+                # The replacement takes its own verdict, and never asks the provider.
+                def respawn() -> BinaryIO:
+                    again, again_stream = self._plugin_member_data(
+                        member, allow_provider=False
+                    )
+                    verdict[0] = _checked_verdict(
+                        again.unlocked, type(self._reader).__name__
+                    )
+                    return again_stream
+
                 stream = RespawnStream(
-                    lambda: self._plugin_member_data(member)[1],
+                    respawn,
                     stream,
                     size=member.size,
                     what=f"{self._format.display_name} member data",
@@ -1314,6 +1575,9 @@ class IndexedReaderAdapter(_PluginAdapter):
                 rewind = RewindWarning(
                     codec_name=self._format.display_name, suggest_install=False
                 )
+            digest_error: Callable[[CorruptionError], ArchiveyError] | None = None
+            if verdict[0] is not None:
+                stream, digest_error = self._watch_unlocked(stream, member, verdict)
             return self._member_parts(
                 stream,
                 member.name,
@@ -1329,6 +1593,7 @@ class IndexedReaderAdapter(_PluginAdapter):
                 bounded=data.bounded,
                 custom_digests=custom_digests or None,
                 rewind_warning=rewind,
+                digest_error=digest_error,
             )
         except BaseException:
             stream.close()
@@ -1620,7 +1885,15 @@ class _Span:
     ``offset`` of its layer's stream, with the digests its header stored; or, for a
     member the reader decodes itself (``MemberSpan.data``), that stream (``decoded``)."""
 
-    __slots__ = ("custom", "decoded", "expected", "layer", "length", "offset")
+    __slots__ = (
+        "custom",
+        "decoded",
+        "expected",
+        "layer",
+        "length",
+        "offset",
+        "unlocked",
+    )
 
     def __init__(
         self,
@@ -1630,6 +1903,7 @@ class _Span:
         expected: Mapping[HashAlgorithm, bytes] | None,
         custom: CustomDigests | None,
         decoded: _Decoded | None = None,
+        unlocked: PasswordConfirmVerdict | None = None,
     ) -> None:
         self.layer = layer
         self.offset = offset
@@ -1637,6 +1911,9 @@ class _Span:
         self.expected = expected
         self.custom = custom
         self.decoded = decoded
+        # The span's ``MemberSpan.unlocked``: how sure the password that unlocked
+        # this member's data is, or ``None`` for data not encrypted.
+        self.unlocked = unlocked
 
 
 def _named(details: DiagnosticContext, name: str) -> DiagnosticContext:
@@ -2570,7 +2847,13 @@ class SequentialReaderAdapter(_PluginAdapter):
             stream = self._decoded_stream(data, index, layer)
             decoded = _Decoded(stream, span.checked, index, member.size, member.name)
         forward = layer.forward
-        record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
+        unlocked = _checked_verdict(span.unlocked, name)
+        if unlocked is PasswordConfirmVerdict.CONFIRMED and member.is_encrypted:
+            # The walk unlocked the member's data with a confirmed password.
+            member._verified = max(member._verified, Verification.UNLOCKED)
+        record = _Span(
+            layer, forward.offset, length, expected, custom or None, decoded, unlocked
+        )
         member._raw = record
         if (
             member.type is MemberType.SYMLINK
@@ -2942,6 +3225,11 @@ class SequentialReaderAdapter(_PluginAdapter):
     ) -> MemberStreamParts:
         """``member``'s parts over ``stream``, its decoded data."""
         expected = record.expected if record.expected is not None else member.hashes
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None
+        if record.unlocked is not None:
+            stream, digest_error = self._watch_unlocked(
+                stream, member, [record.unlocked]
+            )
         return self._member_parts(
             stream,
             member.name,
@@ -2958,6 +3246,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             rewind_warning=rewind,
             # Counted where it is decoded (``_decoded_stream``), drain included.
             track_output=False,
+            digest_error=digest_error,
         )
 
     def _span_parts(
@@ -2980,6 +3269,11 @@ class SequentialReaderAdapter(_PluginAdapter):
         is checked above the window, as it is for a plain view (``check_size``,
         ``open()``), which ends short at a cut."""
         expected = record.expected if record.expected is not None else member.hashes
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None
+        if record.unlocked is not None:
+            stream, digest_error = self._watch_unlocked(
+                stream, member, [record.unlocked]
+            )
         return self._member_parts(
             stream,
             member.name,
@@ -2994,6 +3288,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             custom_digests=record.custom,
             # A layer a codec decodes draws there, members skipped on the way too.
             draw_budget=not record.layer.drawn,
+            digest_error=digest_error,
         )
 
     @override
@@ -3104,10 +3399,32 @@ class SequentialReaderAdapter(_PluginAdapter):
 # ``translate_exception`` is not offered it (``_PluginAdapter._translate_exception``).
 _PLUGIN_BUG = "_archivey_plugin_bug"
 
+
+def _checked_verdict(value: object, owner: str) -> PasswordConfirmVerdict | None:
+    """``value`` as a ``MemberData``/``MemberRecord``/``MemberSpan.unlocked``, or a
+    plugin bug."""
+    if value is None or (
+        isinstance(value, PasswordConfirmVerdict)
+        and value is not PasswordConfirmVerdict.REJECTED
+    ):
+        return value
+    raise _plugin_bug(
+        TypeError(
+            f"{owner} gave unlocked={value!r}, not CONFIRMED, INCONCLUSIVE or None"
+        )
+    )
+
+
+def _call(fn: Callable[[], _T]) -> _T:
+    """Run a plugin callback where its guards are already held (a walk step)."""
+    return fn()
+
+
 # What ``next()`` returns at the end of a plugin's iterator, where ``None`` would hide a
 # ``None`` the plugin yields: that one reaches the type checks and is reported.
 _END = object()
 
+_T = TypeVar("_T")
 _ErrorT = TypeVar("_ErrorT", bound=Exception)
 
 
@@ -3473,6 +3790,7 @@ def _backend_class(
         "INNER_MAGIC": magic if sequential else (),
         "CONTENT_PROBES": (((fmt, prefix_probe(probe)),) if probe is not None else ()),
         "USES_ENCODING": bool(plugin.uses_encoding),
+        "SUPPORTS_PASSWORD": bool(plugin.supports_password),
         # A sequential format reads a pipe in a streaming pass, so it has no reason
         # to refuse one.
         "SUPPORTS_STREAMING_NON_SEEKABLE": sequential,

@@ -2,19 +2,19 @@
 
 - [ ] 1.1 `FormatHandler.supports_password`; `register_builtin_format` reads it instead
   of the `SUPPORTS_PASSWORD=` override
-- [ ] 1.2 `NeedsPassword` resolution for returned and yielded requests,
+- [x] 1.2 `NeedsPassword` resolution for returned and yielded requests,
   `PasswordConfirmVerdict`, `charge_key_derivation` over
   `internal/password.py` and `KeyDerivationBudget`
-- [ ] 1.3 `ReaderArchiveInfo.is_encrypted`; `unlocked` on MemberRecord, MemberSpan,
+- [x] 1.3 `ReaderArchiveInfo.is_encrypted`; `unlocked` on MemberRecord, MemberSpan,
   MemberData (D7); verification starts at `NONE` for `is_encrypted` members until an
   unlock confirms them
-- [ ] 1.4 Unconfirmed passwords: a member checksum failure becomes the unverified-data
+- [x] 1.4 Unconfirmed passwords: a member checksum failure becomes the unverified-data
   `EncryptionError`; the password is not promoted
-- [ ] 1.5 Replacement readers get `password=` when they set `supports_password`
-- [ ] 1.6 Tests: a toy XOR-with-check plugin and a toy no-check plugin in `tests/`,
+- [x] 1.5 Replacement readers get `password=` when they set `supports_password`
+- [x] 1.6 Tests: a toy XOR-with-check plugin and a toy no-check plugin in `tests/`,
   covering every row of the spec tables; provider repeats and reentry while a request is
   resolved
-- [ ] 1.6a Tests: provider reentry from `open_member` and after a stream is materialized
+- [x] 1.6a Tests: provider reentry from `open_member` and after a stream is materialized
   under `CONCURRENT`; two workers waiting on one provider; callback exceptions through
   `translate_exception`; strength-rule cases
 - [ ] 1.6b Tests (D8): reentry during first-touch listing and during a paused walk;

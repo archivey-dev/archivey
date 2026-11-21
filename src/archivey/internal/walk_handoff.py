@@ -12,8 +12,8 @@ through whether or not a walk is at it: TAR's own ``open()`` uses it as well.
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from typing import BinaryIO
 
 from archivey.exceptions import TruncatedError
@@ -44,7 +44,7 @@ class WalkHandoffStream(ReadOnlyIOStream):
         self,
         data: BinaryIO,
         reopen: Callable[[int], BinaryIO],
-        walk_lock: threading.RLock,
+        walk_lock: AbstractContextManager[object],
     ) -> None:
         # Assigned before the base __init__: close() reads them.
         self._data = data

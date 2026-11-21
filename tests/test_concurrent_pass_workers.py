@@ -986,9 +986,7 @@ def test_listing_lets_a_waiting_thread_in_between_batches(
             real_sleep(seconds)
             return
         # The draining thread must not hold the walk lock while it yields.
-        # ``RLock._is_owned`` is CPython's own ownership check, absent from the stubs.
-        lock = drains[0]._walk_lock
-        yields.append(lock._is_owned())  # pyrefly: ignore[missing-attribute]  # ty: ignore[unresolved-attribute]
+        yields.append(drains[0]._walk_lock.is_owned())
         if len(yields) == 1:
             assert got_in.wait(timeout=30), "the waiter never got the walk lock"
         real_sleep(seconds)

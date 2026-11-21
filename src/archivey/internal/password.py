@@ -18,6 +18,7 @@ import array
 import threading
 from collections.abc import Callable, Container, Iterator, Sequence as ABCSequence
 from contextvars import ContextVar
+from enum import Enum
 from typing import TypeGuard, TypeVar
 
 from archivey.config import PasswordInput, PasswordProvider, PasswordRequest
@@ -46,6 +47,25 @@ _MAX_CONSECUTIVE_OWN_REPEATS = 3
 _PROVIDER_CALL: ContextVar[object | None] = ContextVar(
     "archivey_password_provider_call", default=None
 )
+
+
+class PasswordConfirmVerdict(Enum):
+    """How sure a check is that one password is the right one.
+
+    A plugin's password check returns one (:class:`archivey.formats.NeedsPassword`),
+    and the ZIP, 7z and RAR readers' confirmation probes use the same levels.
+    ``CONFIRMED`` needs evidence at least as strong as a CRC-32 over 4 or more decoded
+    bytes (a wrong password passes it no more often than 1 time in 2**32), or a
+    cryptographic check of that strength. Anything weaker (a magic number, padding, a
+    CRC over fewer bytes) may reject a password, and otherwise is ``INCONCLUSIVE``.
+    """
+
+    #: This password is not the one: try the next.
+    REJECTED = "rejected"
+    #: The check proves this password.
+    CONFIRMED = "confirmed"
+    #: This password passed every check run so far, and could still be wrong.
+    INCONCLUSIVE = "inconclusive"
 
 
 class _PasswordCandidatesExhausted(EncryptionError):
@@ -344,6 +364,23 @@ class _PasswordCandidates:
                 f"return a str, bytes, or None."
             )
         return _to_bytes(raw)
+
+    def in_provider_call_on(self, thread_ident: int | None) -> bool:
+        """Whether this context is inside this reader's provider call, and that call
+        runs on ``thread_ident``.
+
+        A wait for an operation that thread owns (its listing, its member open) would
+        then wait for the provider that is waiting for it: the caller raises
+        ``ArchiveyUsageError`` instead. True on the provider's own thread, and on a
+        thread that carries the provider call's context.
+        """
+        if thread_ident is None:
+            return False
+        with self._provider_turn:
+            owner = self._provider_owner
+        if owner is None or owner[0] != thread_ident:
+            return False
+        return threading.get_ident() == owner[0] or _PROVIDER_CALL.get() is owner[1]
 
     def record_success(self, password: bytes) -> None:
         """Move ``password`` to the front of the known-good list, so the next unit
