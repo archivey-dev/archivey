@@ -38,23 +38,28 @@ class Blake2sp:
             raise ValueError("cannot update() a finalized Blake2sp hasher")
         if not data:
             return
+        # Walk a view by offset: slicing ``data`` itself copies the rest of it at every
+        # stride, which made one large update() quadratic in its size.
+        view = memoryview(data).cast("B")
+        pos = 0
+        end = len(view)
         # Fill residual buffer to a full PARALLELISM*BLOCK stride, then process.
         if self._buf:
             need = _BUF_SIZE - len(self._buf)
-            if len(data) < need:
-                self._buf.extend(data)
+            if end < need:
+                self._buf.extend(view)
                 return
-            self._buf.extend(data[:need])
+            self._buf.extend(view[:need])
             self._process_full_buffer(self._buf)
             self._buf.clear()
-            data = data[need:]
-        while len(data) >= _BUF_SIZE:
-            self._process_full_buffer(data[:_BUF_SIZE])
-            data = data[_BUF_SIZE:]
-        if data:
-            self._buf.extend(data)
+            pos = need
+        while end - pos >= _BUF_SIZE:
+            self._process_full_buffer(view[pos : pos + _BUF_SIZE])
+            pos += _BUF_SIZE
+        if pos < end:
+            self._buf.extend(view[pos:])
 
-    def _process_full_buffer(self, buf: bytes | bytearray) -> None:
+    def _process_full_buffer(self, buf: bytearray | memoryview) -> None:
         for i in range(PARALLELISM_DEGREE):
             start = i * _BLOCK_SIZE
             self._leaves[i].update(buf[start : start + _BLOCK_SIZE])

@@ -98,3 +98,34 @@ def test_blake2sp_matches_rar5_fixture_payload() -> None:
         member = next(m for m in archive.members() if m.is_file)
         assert member.hashes[HashAlgorithm.BLAKE2SP] == blake2sp(payload)
         assert len(member.hashes[HashAlgorithm.BLAKE2SP]) == 32
+
+
+@pytest.mark.parametrize("kind", [bytes, bytearray, memoryview])
+def test_blake2sp_large_update_does_not_copy_its_input(kind: type) -> None:
+    """One large update() walks its input in place, so it stays linear in the size.
+
+    It used to slice off each 512-byte stride, copying the rest of the input every
+    time: one 16 MiB update() took about 22 s. The peak allocation shows the copies.
+    """
+    import tracemalloc
+
+    size = 4 << 20
+    data = kind(bytes(range(256)) * (size // 256 + 1))[: size + 100]
+    chunked = Blake2sp()
+    for i in range(0, len(data), 65536):
+        chunked.update(data[i : i + 65536])
+    hasher = Blake2sp()
+    hasher.update(b"x" * 7)  # start with a partial stride in the buffer
+    tracemalloc.start()
+    try:
+        hasher.update(data)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 64 * 1024
+    reference = Blake2sp()
+    reference.update(b"x" * 7)
+    for i in range(0, len(data), 65536):
+        reference.update(bytes(data[i : i + 65536]))
+    assert hasher.digest() == reference.digest()
+    assert chunked.digest() == blake2sp(bytes(data))
