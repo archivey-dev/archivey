@@ -637,8 +637,9 @@ def _7z_extract(
     out = tmp_path / "out"
     result = run_7z(["x", "-y", f"-o{out}", str(path)], text=True)
     text = result.stdout + result.stderr
+    # 7-Zip on Windows names the file with backslashes.
     unsupported = {
-        line.split(" : ", 1)[1].strip().split("/", 1)[-1]
+        line.split(" : ", 1)[1].strip().replace("\\", "/").split("/", 1)[-1]
         for line in text.splitlines()
         if line.startswith("ERROR: Unsupported Method : ")
     }
