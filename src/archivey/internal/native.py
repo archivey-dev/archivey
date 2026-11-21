@@ -102,6 +102,32 @@ def panic_to_corruption(kernel: str) -> Generator[None]:
         raise
 
 
+class Latch:
+    """The panic a kernel object raised, so that the object refuses every later
+    call: after a panic its state may be half updated, so nothing more is asked of
+    it. Each wrapper of a stateful kernel object holds one."""
+
+    __slots__ = ("_failure", "_kernel")
+
+    def __init__(self, kernel: str) -> None:
+        self._kernel = kernel
+        self._failure: CorruptionError | None = None
+
+    @contextlib.contextmanager
+    def guard(self) -> Generator[None]:
+        """Raise the stored failure, else run the block, storing a panic in it as
+        the ``CorruptionError`` it raises."""
+        if self._failure is not None:
+            raise self._failure
+        try:
+            with panic_to_corruption(self._kernel):
+                yield
+        except CorruptionError as exc:
+            if caused_by_panic(exc):
+                self._failure = exc
+            raise
+
+
 # ── CRC-16/ARC ────────────────────────────────────────────────────────────────────────
 
 
@@ -143,17 +169,18 @@ class _Decryptor(Protocol):
 class NativeZipCrypto:
     """archivey-codecs' ZipCrypto decryptor, in the shape of ``ZipCryptoKeys``."""
 
-    __slots__ = ("_decryptor",)
+    __slots__ = ("_decryptor", "_latch")
 
     def __init__(self, decryptor: _Decryptor) -> None:
         self._decryptor = decryptor
+        self._latch = Latch("ZipCrypto")
 
     def copy(self) -> NativeZipCrypto:
-        with panic_to_corruption("ZipCrypto"):
+        with self._latch.guard():
             return NativeZipCrypto(self._decryptor.copy())
 
     def decrypt(self, data: bytes) -> bytes:
-        with panic_to_corruption("ZipCrypto"):
+        with self._latch.guard():
             return self._decryptor.decrypt(data)
 
 
@@ -201,18 +228,18 @@ class _BranchDecoder(Protocol):
 class NativeBranch:
     """archivey-codecs' ARM64 or RISC-V decoder, as a :class:`Branch`."""
 
-    __slots__ = ("_decoder", "_kernel")
+    __slots__ = ("_decoder", "_latch")
 
     def __init__(self, decoder: _BranchDecoder, kernel: str) -> None:
         self._decoder = decoder
-        self._kernel = kernel
+        self._latch = Latch(kernel)
 
     def decode(self, data: bytes) -> bytes:
-        with panic_to_corruption(self._kernel):
+        with self._latch.guard():
             return self._decoder.decode(data)
 
     def flush(self) -> bytes:
-        with panic_to_corruption(self._kernel):
+        with self._latch.guard():
             return self._decoder.flush()
 
 
