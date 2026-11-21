@@ -363,3 +363,6 @@ All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless note
     archivey's decoder child, like the other native decoders, so the setting keeps its
     promise and keeps the speed-up (card, after an earlier card had chosen Python
     in-process; raised by review round 1).
+14. D3: keep LZX, LZW and BCJ2 in 0.1 with the framing and end-of-input API (LZX
+    `output_size`, LZW `flush()`, BCJ2 `out_size` and restore without `copy()`)?
+    RULED: yes, all three in 0.1 (card; raised by review round 4).
