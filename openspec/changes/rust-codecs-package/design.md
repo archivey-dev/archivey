@@ -3,8 +3,8 @@
 Sources: draft PR #1416 (branch `claude/project-thread-dle5be`, package
 `packages/archivey-native`), its report `reports/rust-native-kernels-2026-11-09.md` in
 the project files, the 2026-11-17 compress-utils investigation, and the plan
-`plans/rust-codecs-package-2026-11-21.md`. Nothing below is ruled until §Open questions
-says so.
+`plans/rust-codecs-package-2026-11-21.md`. The maintainer ruled every open question on
+2026-11-21 (§Open questions).
 
 ## Context
 
@@ -38,11 +38,10 @@ A kernel goes in when all four hold:
 3. It is measurably slow in Python.
 4. No maintained package does it at the same speed.
 
-First release: the seven prototype kernels. Hashes (question 5): BLAKE2sp (RAR5) and
-CRC-16/ARC (LHA, ARJ), if measurement justifies them. On 2026-11-21 the Python CRC-16
-ran at about 16 MB/s, 85x slower than `zlib.crc32`; BLAKE2sp has a quadratic `update()`
-in Python today (16 MiB in one call took 22 s), which is a separate Python fix to make
-first, then measure again.
+First release: the seven prototype kernels and CRC-16/ARC (LHA, ARJ; question 5). On
+2026-11-21 the Python CRC-16 ran at about 16 MB/s, 85x slower than `zlib.crc32`.
+BLAKE2sp (RAR5) stays in Python: after PR 1709 it runs on the standard library's C
+`blake2s` in linear time, so a port would add a Rust dependency for little gain.
 
 Later, by value: LHA/ARJ static-Huffman and LHarc `-lh1-`; PPMd and Deflate64 as
 in-process decoders (new decoders, each needs the DR-20 damaged-input evaluation); the
@@ -51,12 +50,10 @@ DOS-era ZIP methods and ARJ method 4; DMG's ADC and LZFSE if DMG resumes.
 ## D2. Hash API
 
 ```python
-h = archivey_codecs.blake2sp(b"optional initial data")
-h.update(chunk); h.digest(); h.hexdigest(); h.copy()
-h.name, h.digest_size, h.block_size
-
 archivey_codecs.crc16_arc(data, value=0) -> int   # like zlib.crc32
-c = archivey_codecs.crc16_arc.new()                # hashlib-shaped object
+c = archivey_codecs.crc16_arc.new(b"optional initial data")  # hashlib-shaped
+c.update(chunk); c.digest(); c.hexdigest(); c.copy()
+c.name, c.digest_size, c.block_size
 ```
 
 - Every hash is a type with `update`, `digest`, `hexdigest`, `copy`, `name`,
@@ -78,6 +75,34 @@ d.eof, d.needs_input, d.unused_data
 archivey_codecs.lzo1x.decompress(block, out_size=n)
 archivey_codecs.filters.arm64_decode(buf, start_offset)
 ```
+
+Two kinds of decoder (question 4):
+
+- **Streaming objects** for codecs whose state carries over: LZX, LZW, BCJ2 and the
+  other 7z filters.
+- **One-shot functions** for codecs whose blocks stand alone: LZO (lzop and SquashFS
+  record each block's sizes), later DMG's ADC and LZFSE chunks. `out_size` is
+  required and exact; output that ends short or would run past it is
+  `CorruptDataError`. There is no state, and a seek point is the block's offset.
+
+Seeking (question 4b). Every streaming object has:
+
+```python
+snap = d.copy()                         # in-memory copy, like zlib's
+point = (d.getstate(), d.total_in, d.total_out)
+d2 = lzx.Decompressor.from_state(point[0])
+f.seek(stream_start + point[1])         # feed input from total_in; output resumes
+                                        # at total_out
+```
+
+- `total_in` counts input bytes consumed, `total_out` output bytes produced.
+- `getstate()` returns bytes holding what the decoder consumed, including the bits of a
+  partly read byte, and never the input it holds but has not used.
+- The state starts with the kernel's name and revision; `from_state` refuses any other
+  with `UnsupportedDataError`, so a stale seek index cannot decode wrong bytes.
+- Sizes: LZX up to its 2 MiB window (cheap to copy, too big to keep at every point;
+  archivey's `MAX_SNAPSHOT_BYTES` cap applies), LZW a few hundred KB at most,
+  ZipCrypto 12 bytes, filters tens of bytes.
 
 - Streaming decoders follow `bz2.BZ2Decompressor` and `lzma.LZMADecompressor`
   (question 4): the `max_length` and `needs_input` contract is the one that bounds
@@ -128,7 +153,8 @@ until the next codecs release turns the kernel back on.
   ```
 
   (the final marker form is checked against pip and uv in the implementation PR).
-- In `[recommended]` one archivey release after the first codecs release (question 9).
+- `archivey-cli` depends on `archivey[codecs]` from the first archivey release that
+  knows the package; `[recommended]` gains it one archivey release later (question 9).
 - `OptionalLibrary.ARCHIVEY_CODECS` (question 8), passed through every call site (the
   prototype reached only LZO), and `ARCHIVEY_CODECS=0` in the environment for tests.
 - Kernels run in-process whatever `ProcessIsolation` says.
@@ -197,27 +223,26 @@ Release when a kernel is added or its revision changes, or for a security fix.
 
 ## Open questions
 
-Recommendation first. None ruled yet.
+All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless noted).
 
-1. Go ahead with a separately versioned package, starting from #1416? Recommended: yes.
-   Alternative: keep #1416 parked.
-2. D1: name `archivey-codecs`? Recommended: yes. Alternatives: `archivey-native`, a
-   brand-free name.
-3. D6: same repo, `packages/archivey-codecs/`? Recommended: yes. Alternative: a separate
-   repo.
-4. D3: decoders in the `LZMADecompressor` shape, plus one-shot `decompress(data,
-   out_size=)` for block codecs? Recommended: yes. Alternative: `zlib.decompressobj`
-   shape.
-5. D1/D2: BLAKE2sp and CRC-16/ARC in 0.1? Recommended: yes if a measurement after the
-   Python BLAKE2sp fix still shows a real gain; otherwise in a later release. The
-   `hashlib` interface is the design either way.
-6. D2: CRC `digest()` big-endian? Recommended: yes. Alternative: little-endian, as most
-   archive formats store CRCs.
-7. D4: per-kernel revisions with a minimum per kernel in archivey, and a loose range
-   `>=0.1,<1`? Recommended: yes. Alternative: one package-wide ABI number.
-8. D5: public `OptionalLibrary.ARCHIVEY_CODECS`? Recommended: yes.
-9. D5: add the package to `[recommended]` (with markers) one archivey release after the
-   first codecs release? Recommended: yes. Alternative: `[codecs]` only.
-10. D7: free-threaded wheels in 0.1, no PyPy wheels? Recommended: yes to both.
-11. D5: LZO order archivey-codecs, then compress-utils, then Python? Recommended: yes.
-12. Name of the extra: `[codecs]`? Recommended: yes. Alternative: `[native]`.
+1. Go ahead with a separately versioned package, starting from #1416? RULED yes.
+2. D1: name `archivey-codecs`? RULED yes.
+3. D6: same repo, `packages/archivey-codecs/`? RULED yes.
+4. D3: streaming decoders in the `LZMADecompressor` shape, and one-shot
+   `decompress(block, out_size=)` functions for codecs whose blocks stand alone (LZO,
+   later ADC and LZFSE)? RULED yes (the split confirmed in the thread).
+4b. D3: `copy()`, `getstate()` / `from_state()` and `total_in` / `total_out` on every
+   streaming decoder, the state leaving out held input and `from_state` refusing another
+   revision's state? RULED yes (added during the questions, at davi's ask).
+5. D1/D2: hashes in 0.1? RULED CRC-16/ARC only (davi in words, correcting a card tap);
+   BLAKE2sp stays in Python, which PR 1709 made linear in the update size.
+6. D2: CRC `digest()` big-endian? RULED yes.
+7. D4: per-kernel revisions with a minimum per kernel in archivey, range `>=0.1,<1`?
+   RULED yes.
+8. D5: public `OptionalLibrary.ARCHIVEY_CODECS`? RULED yes.
+9. D5: `[recommended]` gains the package one archivey release after codecs 0.1? RULED
+   yes, and `archivey-cli` depends on `archivey[codecs]` from the first archivey
+   release that knows the package (davi in words).
+10. D7: free-threaded wheels in 0.1, no PyPy wheels until measured? RULED yes.
+11. D5: LZO order archivey-codecs, then compress-utils, then Python? RULED yes.
+12. Name of the extra: `[codecs]`? RULED yes.

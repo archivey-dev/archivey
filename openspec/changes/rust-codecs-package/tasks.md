@@ -8,8 +8,9 @@
   `CodecError` family; `#![forbid(unsafe_code)]` in kernel modules
 - [ ] 1.4 `KERNELS` table replacing `ABI_VERSION` (D4); stubs and `py.typed`
 - [ ] 1.5 `tests/test_api.py` (no archivey import); parity tests updated
-- [ ] 1.6 Hashes (D2), only if question 5 says so: fix the Python BLAKE2sp first,
-  measure, then port BLAKE2sp and CRC-16/ARC with parity tests
+- [ ] 1.6 CRC-16/ARC (D2) with parity tests against `lha_reader.crc16`
+- [ ] 1.7 `copy()`, `getstate()` / `from_state()`, `total_in` / `total_out` on every
+  streaming decoder (D3), with resume-equals-straight-decode tests at random points
 
 ## 2. archivey hook (maintainer merges: public names)
 
@@ -17,7 +18,7 @@
 - [ ] 2.2 `OptionalLibrary.ARCHIVEY_CODECS` passed through the CAB, ZipCrypto, filter,
   LZW and LZO sites; `ARCHIVEY_CODECS=0`
 - [ ] 2.3 `[codecs]` extra with platform markers, checked with pip and uv on PyPy and
-  an unsupported platform
+  an unsupported platform; `archivey-cli` depends on `archivey[codecs]`
 - [ ] 2.4 Tests for every row of the accelerator-selection table
 
 ## 3. CI and release
@@ -34,5 +35,4 @@
 
 - [ ] 4.1 Install page section and package README (written by Opus)
 - [ ] 4.2 First release `codecs-v0.1.0`; then `[recommended]` one archivey release later
-  if question 9 says so
 - [ ] 4.3 Archive this change

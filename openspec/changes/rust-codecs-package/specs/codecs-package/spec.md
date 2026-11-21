@@ -28,7 +28,7 @@ SHALL release the GIL for inputs above a documented size.
 
 | Case | Expected |
 | --- | --- |
-| `h = blake2sp(); h.update(a); h.update(b)` | `h.digest()` equals `blake2sp(a + b).digest()` |
+| `h = crc16_arc.new(); h.update(a); h.update(b)` | `h.digest()` equals `crc16_arc.new(a + b).digest()` |
 | `h.copy()` then more `update()` on the copy | The original's digest is unchanged |
 | `crc16_arc(b, crc16_arc(a))` | Equals `crc16_arc(a + b)` |
 | `crc16_arc.new()` fed `a`, `digest()` | `crc16_arc(a).to_bytes(2, "big")` |
@@ -53,6 +53,26 @@ allocation SHALL be bounded by a constructor argument, `max_length` or `out_size
 | A parameter the kernel does not support | `UnsupportedDataError` |
 | Two threads call one object at once | One raises `RuntimeError`; the object's state is intact |
 
+### Requirement: Streaming decoder state can be copied and saved
+
+Each streaming decoder SHALL have `copy()`, `getstate() -> bytes`, a class method
+`from_state(state)`, and the counters `total_in` (input bytes consumed) and `total_out`
+(output bytes produced). `getstate()` SHALL hold everything the decoder consumed,
+including bits of a partly read byte, and SHALL NOT hold input the decoder holds but
+has not used. A decoder made by `from_state` and fed the input from offset `total_in`
+SHALL produce exactly the output a straight decode produces from offset `total_out`.
+`from_state` SHALL refuse a state written by another kernel or another revision with
+`UnsupportedDataError`. One-shot block decoders have no state.
+
+#### Scenario: resume from a saved state
+
+| Case | Expected |
+| --- | --- |
+| Save at any call boundary, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
+| `copy()` then decode on both | Both produce the same output; neither affects the other |
+| A state from LZW revision 1 given to revision 2 | `UnsupportedDataError` |
+| A state from the LZX kernel given to `lzw.Decompressor.from_state` | `UnsupportedDataError` |
+
 ### Requirement: KERNELS reports a revision per kernel
 
 `archivey_codecs.KERNELS` SHALL map each kernel's name to an integer revision. A
@@ -66,6 +86,7 @@ release SHALL NOT remove a kernel or lower a revision within a major version.
 | --- | --- |
 | A release adds a kernel | New key; other revisions unchanged |
 | A fix changes the LZW error message | `KERNELS["lzw"]` goes up |
+| A change to the saved-state layout | That kernel's revision goes up |
 | A refactor with identical behaviour | No revision changes |
 
 ### Requirement: archivey-codecs is versioned and released on its own

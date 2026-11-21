@@ -1,7 +1,7 @@
 # rust-codecs-package — an optional Rust package for archivey's pure-Python codecs
 
-**Status:** Design only. Open questions 1-12 (design.md §Open questions) wait for the
-maintainer; each has a recommendation. No code until the maintainer has reviewed and
+**Status:** Design only. The maintainer ruled every open question on 2026-11-21
+(design.md §Open questions). No code until the maintainer has reviewed and
 merged this design. Additive: no current call changes, and archivey stays
 zero-dependency. Target: not tied to an archivey release.
 
@@ -19,9 +19,11 @@ hashes with a `hashlib`-like interface.
   from `packages/archivey-codecs/` in this repo, with its own version, changelog and
   `codecs-vX.Y.Z` tags.
 - A stdlib-shaped API: hash objects like `hashlib` (`update`, `digest`, `hexdigest`,
-  `copy`), streaming decoders like `lzma.LZMADecompressor` (`decompress(data,
-  max_length)`, `eof`, `needs_input`, `unused_data`), one-shot block decoders with an
-  output size, and one error family under `CodecError(ValueError)`.
+  `copy`; CRC-16/ARC in 0.1), streaming decoders like `lzma.LZMADecompressor`
+  (`decompress(data, max_length)`, `eof`, `needs_input`, `unused_data`) that can be
+  copied and saved for seeking (`copy`, `getstate`, `from_state`, `total_in`,
+  `total_out`), one-shot block decoders with an exact output size, and one error family
+  under `CodecError(ValueError)`.
 - archivey uses it only as an optional accelerator. A per-kernel revision table
   (`archivey_codecs.KERNELS`) replaces the prototype's single `ABI_VERSION`: archivey
   uses a kernel only at the revision it needs or newer, and falls back to its Python
@@ -29,6 +31,7 @@ hashes with a `hashlib`-like interface.
   other.
 - An `archivey[codecs]` extra with platform markers, so nobody is asked to build Rust,
   and `OptionalLibrary.ARCHIVEY_CODECS` so `exclude_libraries` turns it off.
+  `archivey-cli` uses the extra at once; `[recommended]` one archivey release later.
 - Wheels: one abi3 wheel per platform for CPython 3.11+ (8 platforms), free-threaded
   wheels per version, no PyPy, an sdist.
 
