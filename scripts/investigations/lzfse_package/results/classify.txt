@@ -10,7 +10,7 @@ disagreements by cause:
        1  ('LzfseError: block decoded to #####, header says ####', 'binding accepts', "output is a seed's data")
 binding-accepted disagreements whose output length equals the walk's declared total: {False: 915, True: 1628}
 capped call raised MemoryError under the 1 GiB limit, by input size (bytes, rounded down to 100): {0: 797, 600: 1015, 800: 1031, 1400: 1226, 1700: 1233, 1900: 1113, 2400: 1262}
-capped call returned more than the walk declared: 1078
+capped call returned more than the limit: 1078
 prototype errors other than LzfseError:
      511  struct.error: unpack_from requires a buffer of at least 8 bytes for unpacking 4 bytes at offset 4 (actual buffer size is 7)
      496  struct.error: unpack_from requires a buffer of at least 8 bytes for unpacking 4 bytes at offset 4 (actual buffer size is 4)

@@ -122,8 +122,10 @@ def binding_capped(module, src: bytes, limit: int) -> bytes:
     if total == 0:
         return b""  # the binding raises on any stream that decodes to nothing
     out = module.decompress(src)
-    if len(out) > limit:  # never seen; the walk bounds every block
-        raise AssertionError("binding returned more than the walk declared")
+    # The walk does not bound a bvx2 block's output: the fuzz reached this 1,078 times.
+    # It stays AssertionError so that results/fuzz.json keeps its keys.
+    if len(out) > limit:
+        raise AssertionError("binding returned more than the limit")
     return out
 
 

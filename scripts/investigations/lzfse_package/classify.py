@@ -90,7 +90,7 @@ def main():
         " (bytes, rounded down to 100):",
         dict(sorted(mem.items())),
     )
-    print("capped call returned more than the walk declared:", over)
+    print("capped call returned more than the limit:", over)
     print("prototype errors other than LzfseError:")
     for k, v in proto_other.most_common(8):
         print(f"  {v:6}  {k}")

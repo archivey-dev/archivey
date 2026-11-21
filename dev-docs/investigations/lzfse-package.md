@@ -24,9 +24,9 @@ remain, and archivey cannot work around either one from the outside:
   first buffer it allocates comes from a 32-bit field in the input. When that buffer
   fills, the binding doubles it and decodes again from the start, with no upper bound.
   The block headers do not bound the output either: in 1,078 fuzz cases the call
-  returned more bytes than the headers declare. An in-process call can therefore use as
-  much memory as the input asks for. A call in a child process with a memory limit is
-  safe, but it costs a copy through a pipe.
+  returned more bytes than the limit, which is at least the total the headers declare.
+  An in-process call can therefore use as much memory as the input asks for. A call in
+  a child process with a memory limit is safe, but it costs a copy through a pipe.
 - **It accepts some damaged streams that the Python decoder refuses.** The worst case
   is a block whose matches use more literals than the block decoded. Apple's code then
   copies bytes that were never decoded, so the output is zeros or literals left over
@@ -186,8 +186,11 @@ call it like this:
    unknown magic, a block past the input, a `bvx2` header outside the block limits, and
    a declared total other than the run's decoded size.
 3. **Check the output length afterwards.** It must equal the declared total. Treat
-   `lzfse.error` and `MemoryError` as damage. A correct stream needs at most twice the
-   run's size (16 MiB per run, design §4.4), so the child's memory limit can stay small.
+   `lzfse.error` and `MemoryError` as damage. A correct stream needs up to about three
+   times the run's size: the doubled buffer, then the copy into a `bytes` object. With
+   16 MiB per run (design §4.4) the child's memory limit can stay small, but it needs
+   headroom above that peak. When the copy fails, the binding replaces the `MemoryError`
+   with `lzfse.error`, so a limit that is too tight makes a correct run look damaged.
 4. **Wrap raw LZVN** in a `bvxn` block before calling, and **handle an empty stream**
    before the call.
 

@@ -118,8 +118,10 @@ def run_shard(start, count, seed, progress_path, out_path):
     seed_list = seeds()
     with open(out_path, "a") as out:
         for k in range(start, start + count):
-            with open(progress_path, "w") as p:
+            tmp = progress_path + ".tmp"
+            with open(tmp, "w") as p:
                 p.write(str(k))
+            os.replace(tmp, progress_path)  # the parent never reads a half-written file
             rnd = random.Random(f"{seed}:{k}")
             src, limit = mutate(rnd, seed_list)
             walk = verdict(lambda s=src: common.walk_blocks(s)[0])
@@ -151,8 +153,9 @@ def run_shard(start, count, seed, progress_path, out_path):
                 rec["proto_len"] = len(proto[1]) if proto[0] == "bytes" else None
                 rec["capped_len"] = len(capped[1]) if capped[0] == "bytes" else None
             out.write(json.dumps(rec) + "\n")
-    with open(progress_path, "w") as p:
+    with open(progress_path + ".tmp", "w") as p:
         p.write("done")
+    os.replace(progress_path + ".tmp", progress_path)
 
 
 def main():
