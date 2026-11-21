@@ -742,6 +742,34 @@ def test_candidates_are_tried_in_turn() -> None:
         assert _contents(reader) == FILES
 
 
+@_requires("cryptography")
+def test_openssl_members_are_marked_encrypted() -> None:
+    with open_archive(DATA / "openssl-2.7.1.run", password="secret") as reader:
+        assert reader.info.is_encrypted
+        files = [m for m in reader.members() if m.is_file]
+        assert files
+        assert all(m.is_encrypted for m in files)
+    with open_archive(DATA / "base64-2.7.1.run") as reader:
+        assert not reader.info.is_encrypted
+        assert not any(m.is_encrypted for m in reader.members())
+
+
+@_requires("cryptography")
+def test_a_later_walk_reuses_the_provider_answer() -> None:
+    asked: list[int] = []
+
+    def provider(request: archivey.PasswordRequest) -> bytes | None:
+        asked.append(request.attempt)
+        return b"secret" if len(asked) == 1 else None
+
+    with open_archive(DATA / "openssl-2.7.1.run", password=provider) as reader:
+        names = [m.name for m in reader.members() if m.is_file]
+        # Reading back to front walks the payload again for each earlier member.
+        for name in reversed(names):
+            assert reader.read(name) == FILES[name]
+    assert asked == [1]
+
+
 def _evp_md5(
     password: bytes, salt: bytes, plain: bytes, pad: bytes | None = None
 ) -> bytes:
@@ -820,7 +848,7 @@ def test_pbkdf2_is_charged_to_the_key_derivation_budget() -> None:
     config = ArchiveyConfig(
         decoder_limits=DecoderLimits(max_key_derivation_rounds=9999)
     )
-    with pytest.raises(ResourceLimitError, match="makeself openssl key derivation"):
+    with pytest.raises(ResourceLimitError, match="MAKESELF key derivation"):
         open_archive(DATA / "openssl-2.7.1.run", password="secret", config=config)
     config = ArchiveyConfig(
         decoder_limits=DecoderLimits(max_key_derivation_rounds=10000)

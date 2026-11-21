@@ -38,11 +38,10 @@ import sys
 import zlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from enum import Enum
 from typing import BinaryIO, TypeVar
 
 from archivey.internal.overrides import override
-from archivey.internal.password import _PasswordCandidates
+from archivey.internal.password import PasswordConfirmVerdict, _PasswordCandidates
 from archivey.internal.streams.codecs import Codec
 from archivey.internal.streams.resume import ask_resume_offset
 from archivey.internal.streams.streamtools.base import DelegatingStream
@@ -107,18 +106,6 @@ PASSWORD_CONFIRM_MIN_VERIFIED_BYTES = 4
 PASSWORD_CONFIRM_CHUNK_BYTES = 64 * 1024
 
 _T = TypeVar("_T")
-
-
-class PasswordConfirmVerdict(Enum):
-    """What one confirmation probe concluded about one candidate."""
-
-    #: The candidate is wrong: an anchor mismatched, the decoder objected, or the
-    #: stream ended short. Try the next one.
-    REJECTED = "rejected"
-    #: A CRC over at least 4 decoded bytes matched (a signal of at least 2⁻³²).
-    CONFIRMED = "confirmed"
-    #: The candidate survived its budget without reaching a deciding signal.
-    INCONCLUSIVE = "inconclusive"
 
 
 @dataclass(frozen=True)

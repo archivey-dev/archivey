@@ -345,11 +345,15 @@ what is held. Two rules decide it:
    the walk's own state for a yielded request) around each callback, and leaves it after
    each one. Two overlapping requests on one shared handle are therefore serialized
    like any two member opens.
-2. **Only the provider runs with no archivey lock held**, as the reader-concurrency
-   contract states ("at most one provider call per reader, with no Archivey lock
-   held"). Before each provider call archivey leaves every guard and physical lock it
-   took for the request, including outer ones on the same stack, and takes them again
-   after the answer, before the next callback.
+2. **The provider runs outside the plugin's guards.** Before each provider call
+   archivey leaves the handle guard it took for the request, and takes it again after
+   the answer, before the next callback, putting back the adapter state the step had
+   set (another thread's step may set and clear it meanwhile). The walk lock a listing
+   or a paused walk holds, and an outer frame's lock on the same stack, stay held: they
+   are the ownership record below. A wait on one of them is refused, not blocked, when
+   it comes from the provider's thread or a context copied from it
+   (`ProviderAwareRLock`, and the same check before the materialization wait and in
+   `close()`), and any other thread waits its turn, as it would for the walk.
 
 Logical ownership is kept apart from the physical locks:
 
@@ -360,11 +364,12 @@ Logical ownership is kept apart from the physical locks:
 - **A yielded request** (`walk`, `iter_members`): the generator is paused at its
   `yield`. archivey records the walk as paused on the provider (its listing ownership
   and materialization ownership stay with the paused walk, so no other thread may
-  advance it) and releases the listing lock and the handle guard.
+  advance it) and releases the handle guard. The walk lock stays held, and records
+  that ownership.
 - **A request reached below an outer archivey frame** that holds a lock, such as
   listing finalization, which holds the listing lock while it reads link targets
-  (`_finalize_and_publish`): that frame's lock is released for the provider call and
-  replaced by the same ownership record, so its state stays reserved for it.
+  (`_finalize_and_publish`): that frame's lock stays held for the provider call, and
+  is its ownership record, so its state stays reserved for it.
 
 Every same-reader entry that would wait on a request's owner checks the provider context
 first: listing and iteration (`members()`, `iter_members()`, the materialization wait),
