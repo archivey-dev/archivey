@@ -24,7 +24,7 @@
   kernel panic (a mocked kernel) that reaches the caller as `CorruptionError`
 - [ ] 2.5 `ProcessIsolation` docstrings in `src/archivey/config.py` and
   `dev-docs/threat-model.md` §2 "Parsers to decoders": name archivey-codecs and where
-  it runs (per question 13)
+  it runs (off under `NATIVE_DECODERS`, question 13)
 - [ ] 2.6 `dev-docs/library-analysis.md`: the per-codec choice and the new LZO order;
   the dependency-audit guard that checks extras against `src/` imports
 

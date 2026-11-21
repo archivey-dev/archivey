@@ -169,7 +169,7 @@ decoder object SHALL refuse every later call. `OptionalLibrary.ARCHIVEY_CODECS` 
 `FormatPolicy.exclude_libraries` SHALL turn every kernel off for that call. Under
 `ProcessIsolation.AUTO` and `OFF` the kernels SHALL run in the caller's process; under
 `NATIVE_DECODERS` archivey SHALL NOT use them, so no native decoder runs in the
-caller's process (pending question 13).
+caller's process.
 
 #### Scenario: accelerator selection
 

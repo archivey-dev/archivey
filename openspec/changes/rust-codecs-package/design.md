@@ -3,8 +3,8 @@
 Sources: draft PR #1416 (branch `claude/project-thread-dle5be`, package
 `packages/archivey-native`), its report `reports/rust-native-kernels-2026-11-09.md` in
 the project files, the 2026-11-17 compress-utils investigation, and the plan
-`plans/rust-codecs-package-2026-11-21.md`. The maintainer ruled questions 1-12 on
-2026-11-21; question 13 is open (§Open questions).
+`plans/rust-codecs-package-2026-11-21.md`. The maintainer ruled every open question on
+2026-11-21 (§Open questions).
 
 ## Context
 
@@ -236,7 +236,7 @@ until the next codecs release turns the kernel back on.
 - Isolation: the kernels run in the caller's process under `ProcessIsolation.AUTO` and
   `OFF`. Under `NATIVE_DECODERS`, which promises that no native decoder runs in the
   caller's process, archivey does not use them: LZO goes to compress-utils in a child as
-  today, and the other codecs use their Python twins in-process (proposed, question 13).
+  today, and the other codecs use their Python twins in-process (question 13).
 - LZO order: archivey-codecs, then compress-utils, then Python (question 11), because
   ours is tested against our Python twin message for message.
 
@@ -302,8 +302,7 @@ Release when a kernel is added or its revision changes, or for a security fix.
 
 ## Open questions
 
-Questions 1-12 ruled by the maintainer (davi, project thread, 2026-11-21, cards unless
-noted). Question 13 is open.
+All ruled by the maintainer (davi, project thread, 2026-11-21, cards unless noted).
 
 1. Go ahead with a separately versioned package, starting from #1416? RULED yes.
 2. D1: name `archivey-codecs`? RULED yes.
@@ -329,5 +328,5 @@ noted). Question 13 is open.
 13. D5: under `ProcessIsolation.NATIVE_DECODERS`, archivey leaves the kernels off, so
     the setting keeps its promise? Recommended: yes. Alternative: kernels in-process
     under every setting, with the `NATIVE_DECODERS` docstring and the threat model
-    changed to say archivey's own Rust kernels are trusted in-process. Open (raised by
-    review round 1).
+    changed to say archivey's own Rust kernels are trusted in-process. RULED yes (raised
+    by review round 1, card).

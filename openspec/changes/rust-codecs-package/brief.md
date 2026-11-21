@@ -1,10 +1,10 @@
 # rust-codecs-package — an optional Rust package for archivey's pure-Python codecs
 
-**Status:** Design only. The maintainer ruled questions 1-12 on 2026-11-21; question 13
-(kernels under `ProcessIsolation.NATIVE_DECODERS`) is open (design.md §Open questions).
-No code until the maintainer has reviewed and merged this design. Additive: no current
-call changes, and archivey stays zero-dependency. Target: not tied to an archivey
-release.
+**Status:** Design only. The maintainer ruled every open question on 2026-11-21,
+including 13 (kernels off under `ProcessIsolation.NATIVE_DECODERS`; design.md §Open
+questions). No code until the maintainer has reviewed and merged this design. Additive:
+no current call changes, and archivey stays zero-dependency. Target: not tied to an
+archivey release.
 
 **Why it matters:** archivey decodes several formats in pure Python: LZX (CAB), Unix
 `compress`, LZO, ZipCrypto, the BCJ2, ARM64 and RISC-V filters, and more since. The
