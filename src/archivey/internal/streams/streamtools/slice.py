@@ -31,7 +31,7 @@ import stat
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from archivey.internal.overrides import override
 from archivey.internal.streams.streamtools.base import ReadOnlyIOStream
@@ -482,6 +482,28 @@ class FileRegion:
     length: int
     checks: tuple[Callable[[], None], ...]
     owner: object
+    reports: tuple[RegionReport, ...] = ()
+
+
+@dataclass(frozen=True)
+class RegionReport:
+    """An ``on_source_read`` reporter of an ``ArchiveSource`` the region was found
+    through (``ArchiveSource.file_region_report``), and where the region starts in that
+    source's offsets. A reader of the region that read ``n`` bytes ending at ``end``
+    (counted from the region's start) calls :meth:`read`, so the source's reads are
+    reported as if it had read them itself."""
+
+    reporter: _RegionReporter
+    base: int
+
+    def read(self, end: int, n: int) -> None:
+        self.reporter.read(self.base + end, n)
+
+
+class _RegionReporter(Protocol):
+    def read(self, position: int, n: int, *, at_end: bool = False) -> None: ...
+
+    def raise_if_stopped(self) -> None: ...
 
 
 def file_region(stream: BinaryIO) -> FileRegion | None:
@@ -496,11 +518,13 @@ def file_region(stream: BinaryIO) -> FileRegion | None:
     wrappers (``SeekCountingStream``): under ``enable_measurement`` there is no region,
     and the counters see every read. A reader of the region
     (``os.pread`` on ``fd``) then sees what ``stream`` reads from its start, without
-    moving the shared handle.
+    moving the shared handle. When an ``ArchiveSource`` looked through reports its
+    reads (``on_source_read``), ``reports`` holds where the reader reports its own.
     """
     offset = 0
     remaining: int | None = None
     checks: list[Callable[[], None]] = []
+    reports: list[RegionReport] = []
     owner: object = None
     while True:
         # An archive source over a file (``ArchiveSource.file_region_inner``).
@@ -510,6 +534,13 @@ def file_region(stream: BinaryIO) -> FileRegion | None:
             if unwrapped is None:
                 return None
             checks.append(_open_check(stream))
+            report = getattr(type(stream), "file_region_report", None)
+            reporter = None if report is None else report(stream)
+            if reporter is not None:
+                # The source's reads are reported (``on_source_read``): so are the
+                # region reader's, and a stop the callback raised stops it too.
+                reports.append(RegionReport(reporter, offset))
+                checks.append(reporter.raise_if_stopped)
             if owner is None:
                 owner = stream
             stream = unwrapped
@@ -546,7 +577,12 @@ def file_region(stream: BinaryIO) -> FileRegion | None:
     # closes this file; the check makes that read fail as a read of the stream would.
     checks.append(_open_check(stream))
     return FileRegion(
-        fd, offset, length, tuple(checks), stream if owner is None else owner
+        fd,
+        offset,
+        length,
+        tuple(checks),
+        stream if owner is None else owner,
+        tuple(reports),
     )
 
 
