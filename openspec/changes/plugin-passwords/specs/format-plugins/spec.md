@@ -3,11 +3,14 @@
 ### Requirement: A plugin unlocks an encrypted unit through ReaderContext.unlock
 
 A plugin whose handler sets `supports_password = True` SHALL read the caller's
-`password=` only through `ReaderContext.unlock(what, check, *, member=None)`. archivey
-SHALL call `check` with one candidate at a time, in the order the built-in readers use
-(the password that last unlocked a unit of this archive first, then the static
-candidates, then the provider's answers, skipping any already tried for this unit), and
-SHALL return the first confirmed result. A plugin whose handler does not set
+`password=` only through `ReaderContext.unlock(what, check, *, full_check=None,
+member=None)`, where `check` and `full_check` take one password and return
+`(data, PasswordMatch)`. archivey SHALL call `check` with one candidate at a time, in the
+order the built-in readers use (the password that last unlocked a unit of this archive
+first, then the static candidates, then the provider's answers, skipping any already
+tried for this unit), SHALL return the data of the first `CONFIRMED` result, and when
+several static candidates come back `UNCONFIRMED` SHALL run `full_check` on each in order
+until one is `CONFIRMED`. A plugin whose handler does not set
 `supports_password` SHALL get `ArchiveyUsageError` from `unlock`, and a `password=`
 value given for its format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`.
 
@@ -15,19 +18,21 @@ value given for its format SHALL be reported with `PASSWORD_ARGUMENT_UNUSED`.
 
 | Case | Expected |
 | --- | --- |
-| `check` returns a value for the first candidate | That value; the password is tried first for the next unit |
+| `check` returns `(x, CONFIRMED)` for the first candidate | `x`; later candidates are not tried; the password is tried first for the next unit |
 | `password=None` | `EncryptionError`: "{what} is encrypted: pass password= to read it" |
 | Provider's first answer is `None` | Same as `password=None` |
-| `check` returns `None` for every candidate and provider answer | `EncryptionError` from the wrong-password path: "Wrong password for {what}" |
+| `check` returns `WRONG` for every candidate and provider answer | `EncryptionError` from the wrong-password path: "Wrong password for {what}" |
 | `check` raises `CorruptionError` | That `CorruptionError`; no further candidate is tried |
-| Static list `["a", "b"]`, `check` returns `unconfirmed(x)` for `a` and a value for `b` | `b`'s value |
-| Static list `["a", "b"]`, both `unconfirmed` | `a`'s value; `a` is not promoted |
+| Static list `["a", "b"]`, `a` `UNCONFIRMED`, `b` `CONFIRMED` | `b`'s data |
+| Static list `["a", "b"]`, `a` `UNCONFIRMED`, `b` `WRONG` | `a`'s data; `full_check` not called |
+| Static list `["a", "b"]`, both `UNCONFIRMED`, `full_check`: `a` `WRONG`, `b` `CONFIRMED` | `b`'s data |
+| Static list `["a", "b"]`, both `UNCONFIRMED`, no `full_check` | `a`'s data; `a` is not promoted |
 | Handler without `supports_password` calls `unlock` | `ArchiveyUsageError` |
 
 ### Requirement: Data that fails its checksum under an unconfirmed password reports both causes
 
 When a member's data was decrypted under a password that `unlock` accepted only as
-`unconfirmed`, and the member's checksum then fails, archivey SHALL raise
+`UNCONFIRMED`, and the member's checksum then fails, archivey SHALL raise
 `EncryptionError` marked as unverified data (a wrong password or damaged data), not
 `CorruptionError`.
 
@@ -56,8 +61,8 @@ the built-in readers charge.
 ### Requirement: A plugin reports encryption as built-in formats do
 
 `ReaderArchiveInfo.is_encrypted` SHALL become `ArchiveInfo.is_encrypted`. A member the
-plugin lists with `is_encrypted=True` SHALL have `verified` `NONE` until a confirmed
-`unlock` for it (or a confirmed archive-level `unlock` made before it was listed), and
+plugin lists with `is_encrypted=True` SHALL have `verified` `NONE` until a `CONFIRMED`
+`unlock` for it (or a `CONFIRMED` archive-level `unlock` made before it was listed), and
 `UNLOCKED` after it.
 
 #### Scenario: verification of encrypted members
@@ -67,7 +72,7 @@ plugin lists with `is_encrypted=True` SHALL have `verified` `NONE` until a confi
 | `is_encrypted=False` | `UNLOCKED` |
 | `is_encrypted=True`, no unlock yet | `NONE` |
 | `is_encrypted=True`, archive-level confirmed unlock at open | `UNLOCKED` |
-| `is_encrypted=True`, member unlock returned `unconfirmed` | `NONE` until its checksum passes |
+| `is_encrypted=True`, member unlock won `UNCONFIRMED` | `NONE` until its checksum passes |
 
 ### Requirement: A replacement reader receives password= when it supports passwords
 
