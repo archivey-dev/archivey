@@ -66,7 +66,12 @@ skipped. An `INCONCLUSIVE` candidate SHALL NOT be accepted while static candidat
 remain to probe: every remaining static candidate SHALL be probed with the same bounded
 plan. Then:
 
-- one survivor SHALL be accepted, `INCONCLUSIVE`;
+- one survivor SHALL be accepted, `INCONCLUSIVE`, when no provider can be asked for
+  the unit. When one can, the survivor SHALL run the full check as several do, and a
+  `REJECTED` result SHALL lead to the provider: the survivor may be a known-good password
+  from another unit, and the provider may hold this unit's own. With no provider, a lone
+  survivor means every other static candidate was rejected, so the read's own check
+  reports a wrong one and the unit is decoded once;
 - several survivors SHALL each, in candidate order, run the **full check**: the plan
   that walks to the unit's end anchor whatever the codec. The first survivor it confirms
   SHALL be accepted. When the unit has no anchor to walk to, the first survivor SHALL be
