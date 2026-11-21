@@ -10,6 +10,8 @@ plan accepts (design §9.3):
   ``[HFS+ Private Data]``; archivey lists the first path as the file.
 - 7-Zip skips absolute symlinks; archivey lists them (only files are compared).
 - 7-Zip writes extended attributes and resource forks as ``name:...`` side files.
+- 7-Zip writes a journaled volume's ``.journal`` and ``.journal_info_block``;
+  archivey does not list them.
 - 7-Zip 23.01 cannot read xz runs; archivey can. Such an image is reported as
   ``7-Zip cannot decode a run``, not compared.
 
@@ -37,6 +39,9 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[2]
 _URLS = _REPO / "openspec" / "changes" / "dmg-reader" / "resources" / "dmgurls.txt"
 _PRIVATE = "[HFS+ Private Data]"
+# A journaled volume's journal files at the root: 7-Zip writes them, archivey does not
+# list them (they are the filesystem's own, as on a mounted volume).
+_JOURNAL = {".journal", ".journal_info_block"}
 
 
 def _download(url: str, cache: Path) -> Path | None:
@@ -118,7 +123,11 @@ def _compare(
     ours: dict[str, str], empty: set[str], theirs: dict[str, str]
 ) -> list[str]:
     inodes = {v for k, v in theirs.items() if k.startswith(_PRIVATE)}
-    theirs = {k: v for k, v in theirs.items() if not k.startswith(_PRIVATE)}
+    theirs = {
+        k: v
+        for k, v in theirs.items()
+        if not k.startswith(_PRIVATE) and k not in _JOURNAL
+    }
     problems = []
     for name, digest in theirs.items():
         if name in empty:
