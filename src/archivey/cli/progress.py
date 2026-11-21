@@ -13,13 +13,16 @@ of event:
   ``.tar.xz`` has no index), the bar shows the position in the file instead.
 
 For a URL the line also counts the range requests and the bytes they fetched.
+
+``test`` and ``extract`` print their stderr lines through :meth:`ProgressCallback.guard`,
+which clears the line before each one, so no line is glued onto a bar.
 """
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Protocol, TextIO, cast
+from typing import Any, Protocol, TextIO, cast
 
 from archivey import ExtractionProgress, SourceProgress
 from archivey.cli.format import escape_member_name
@@ -31,7 +34,9 @@ class _TqdmBar(Protocol):
     desc: str | None
 
     def set_description(self, desc: str, refresh: bool = True) -> None: ...
+    def set_postfix_str(self, s: str = "", refresh: bool = True) -> None: ...
     def update(self, n: float) -> bool | None: ...
+    def clear(self) -> None: ...
     def refresh(self) -> None: ...
     def close(self) -> None: ...
 
@@ -39,10 +44,6 @@ class _TqdmBar(Protocol):
 STATUS_DELAY = 0.5
 """Seconds a read of the archive's file runs before its status line appears: a quick
 command shows nothing."""
-
-
-class _TqdmPostfix(Protocol):
-    def set_postfix_str(self, s: str = "", refresh: bool = True) -> None: ...
 
 
 class ProgressCallback:
@@ -59,6 +60,9 @@ class ProgressCallback:
         # Whether the member bar counts the position in the file (output total unknown).
         self._by_position = False
         self._closed = False
+        # Whether a line printed through :meth:`guard` is part-way written: the member
+        # bar is cleared until the line ends.
+        self._mid_line = False
 
     def source_read(self, progress: SourceProgress) -> None:
         """``ArchiveyConfig.on_source_read``: archivey read more of the archive's file."""
@@ -96,10 +100,10 @@ class ProgressCallback:
             if bar.total != progress.size:
                 bar.total = progress.size
         delta = position - int(bar.n)
-        if progress.requests is not None and hasattr(bar, "set_postfix_str"):
+        if progress.requests is not None:
             # No refresh here: a refresh shows the status line before its delay, and
             # tqdm then leaves it on screen at close. ``update`` shows it.
-            cast("_TqdmPostfix", bar).set_postfix_str(_fetched(progress), refresh=False)
+            bar.set_postfix_str(_fetched(progress), refresh=False)
         if delta:
             # ``update`` with a negative step moves back: ZIP reads its directory at
             # the end first, then the members from the start.
@@ -112,6 +116,31 @@ class ProgressCallback:
         if status is not None:
             self._status = None
             status.close()
+
+    def guard(self, stream: TextIO) -> TextIO:
+        """``stream``, which clears the status line and the member bar before each line
+        written to it and shows the bar again after. A command prints its stderr
+        lines through it, so no line is glued onto a bar. ``stream`` itself when the
+        bars are shown on another stream."""
+        if stream is not self._display:
+            return stream
+        # It forwards everything else to ``stream``.
+        return cast(
+            "TextIO", _ClearingStream(stream, self._before_write, self._after_line)
+        )
+
+    def _before_write(self) -> None:
+        if self._mid_line:
+            return
+        self._mid_line = True
+        self.clear_status()
+        if self._bar is not None:
+            self._bar.clear()
+
+    def _after_line(self) -> None:
+        self._mid_line = False
+        if self._bar is not None:
+            self._bar.refresh()
 
     def __call__(self, progress: ExtractionProgress) -> None:
         if self._closed:
@@ -153,9 +182,7 @@ class ProgressCallback:
             if total is not None and bar.total != total:
                 bar.total = total
             if source is not None and source.requests is not None:
-                cast("_TqdmPostfix", bar).set_postfix_str(
-                    _fetched(source), refresh=False
-                )
+                bar.set_postfix_str(_fetched(source), refresh=False)
             delta = progress.bytes_written - int(bar.n)
             if delta > 0:
                 bar.update(delta)
@@ -175,6 +202,33 @@ class ProgressCallback:
         if bar is not None:
             bar.close()
             self._bar = None
+
+
+class _ClearingStream:
+    """A text stream that clears the progress lines before a line is written to it
+    (:meth:`ProgressCallback.guard`). Everything else goes to the stream."""
+
+    def __init__(
+        self,
+        stream: TextIO,
+        before_write: Callable[[], None],
+        after_line: Callable[[], None],
+    ) -> None:
+        self._stream = stream
+        self._before_write = before_write
+        self._after_line = after_line
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        self._before_write()
+        written = self._stream.write(text)
+        if text.endswith("\n"):
+            self._after_line()
+        return written
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 def _fetched(progress: SourceProgress) -> str:

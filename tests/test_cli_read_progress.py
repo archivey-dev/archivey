@@ -36,6 +36,9 @@ class _FakeBar:
     def update(self, n: float) -> None:
         self.n += n
 
+    def clear(self) -> None:
+        pass
+
     def refresh(self) -> None:
         pass
 
@@ -235,3 +238,68 @@ def test_tqdm_takes_the_status_line_s_arguments() -> None:
     bar = tqdm.tqdm(total=10, file=io.StringIO(), delay=STATUS_DELAY, leave=False)
     bar.update(1)
     bar.close()
+
+
+def _dirs_first_tar_gz(tmp_path: Path) -> Path:
+    """A ``.tar.gz`` whose first entries are a directory and a link, as most tars
+    start: ``test -v`` prints their ``skip`` lines before any member's data."""
+    path = tmp_path / "dirs.tar.gz"
+    with tarfile.open(path, "w:gz", compresslevel=1) as tf:
+        top = tarfile.TarInfo("top")
+        top.type = tarfile.DIRTYPE
+        tf.addfile(top)
+        link = tarfile.TarInfo("top/link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "big.bin"
+        tf.addfile(link)
+        data = os.urandom(3 << 20)
+        info = tarfile.TarInfo("top/big.bin")
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    return path
+
+
+def _shown_lines(err: str) -> list[str]:
+    """What a terminal shows on each stderr line: the text after its last ``\\r``."""
+    return [line.rsplit("\r", 1)[-1] for line in err.split("\n")]
+
+
+@pytest.mark.parametrize(
+    ("argv", "line"),
+    [
+        (["extract", "{path}", "-d", "{out}", "nomatch*"], "warning: pattern matched"),
+        (["test", "-v", "{dirs}"], "skip top/"),
+    ],
+    ids=["extract-no-match", "test-verbose-dirs-first"],
+)
+def test_no_line_is_printed_onto_the_status_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], line: str
+) -> None:
+    """Every stderr line starts on a cleared line: the status line (shown at once
+    here, as for a read slower than its delay) never has text glued onto its end.
+    Fails if a verb prints to stderr past :meth:`ProgressCallback.guard`."""
+    tqdm = pytest.importorskip("tqdm")
+    from archivey.cli import progress as progress_mod
+
+    monkeypatch.setattr(progress_mod, "STATUS_DELAY", 0)
+
+    def make(**kwargs: Any) -> ProgressCallback:
+        # Shown on the command's own stderr, as on a terminal.
+        return ProgressCallback(tqdm.tqdm, kwargs["stream"])
+
+    for module in (test_cmd, extract_cmd):
+        monkeypatch.setattr(module, "make_progress_callback", make)
+    names = {
+        "path": str(_tar_gz(tmp_path)),
+        "dirs": str(_dirs_first_tar_gz(tmp_path)),
+        "out": str(tmp_path / "out"),
+    }
+    err = io.StringIO()
+    main([arg.format(**names) for arg in argv], out=io.StringIO(), err=err)
+    text = err.getvalue()
+    assert "reading" in text, "the status line was shown"
+    shown = _shown_lines(text)
+    assert any(s.startswith(line) for s in shown), text
+    for s in shown:
+        # A bar alone ends with its rate; a line glued onto one does not.
+        assert "B/s]" not in s or s.rstrip().endswith("]"), repr(s)

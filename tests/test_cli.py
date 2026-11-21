@@ -12,6 +12,7 @@ import time
 import zipfile
 from collections.abc import Callable, Generator
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -36,6 +37,7 @@ from archivey.cli.exit_codes import (
 from archivey.cli.extract_cmd import _report_extraction
 from archivey.cli.info_cmd import _can_reread
 from archivey.cli.main import _inject_default_list, _parse_cli_args, build_parser, main
+from archivey.cli.progress import ProgressCallback
 from archivey.diagnostics import DiagnosticSummary
 from archivey.exceptions import ArchiveyError, TruncatedError
 from archivey.internal.member_pass import MemberPassImpl
@@ -1604,7 +1606,7 @@ def test_extract_ctrl_c_mid_pass_exits_interrupted(
     """
     import archivey.cli.extract_cmd as extract_mod
 
-    class _InterruptingProgress:
+    class _InterruptingProgress(_FakeProgress):
         calls = 0
 
         def __call__(self, progress: object) -> None:
@@ -1637,7 +1639,22 @@ def test_test_closed_stderr_pipe_mid_pass_exits_broken_pipe(
     assert err.failed
 
 
-class _ProgressPipeClosed:
+class _FakeProgress(ProgressCallback):
+    """A progress callback that shows nothing: the tests below override its member
+    events. Its bars would go to a stream no command prints to."""
+
+    def __init__(self) -> None:
+        super().__init__(_no_bar, io.StringIO())
+
+    def source_read(self, progress: object) -> None:
+        pass
+
+
+def _no_bar(**_: object) -> NoReturn:
+    raise AssertionError("a fake progress callback makes no bar")
+
+
+class _ProgressPipeClosed(_FakeProgress):
     """A progress bar whose stream lost its reader: its first update raises."""
 
     calls = 0
@@ -1675,7 +1692,7 @@ def test_progress_pipe_closed_mid_pass_exits_141(
     assert err.getvalue() == ""
 
 
-class _ProgressFailsOnMemberDone:
+class _ProgressFailsOnMemberDone(_FakeProgress):
     """A progress bar whose stream fails (``EIO``) on the first member's last event."""
 
     def __call__(self, progress: ExtractionProgress) -> None:

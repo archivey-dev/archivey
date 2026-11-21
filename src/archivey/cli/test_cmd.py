@@ -78,6 +78,9 @@ def run_test(
     on_progress: ProgressCallback | None = make_progress_callback(
         hide_progress=hide_progress, stream=err
     )
+    if on_progress is not None:
+        # Every stderr line clears the status line and the bar first.
+        err = on_progress.guard(err)
     with open_for_cli(
         archive,
         password=pwd,
@@ -87,7 +90,7 @@ def run_test(
         format=fmt,
         # The reads of the archive's file: a status line until the first member, and
         # the bar's position when the members' total size is unknown.
-        progress=on_progress if isinstance(on_progress, ProgressCallback) else None,
+        progress=on_progress,
     ) as reader:
         indexed = reader.members_report_if_available()
         total_bytes: int | None = None
@@ -96,8 +99,6 @@ def run_test(
             # in damage settles nothing, but its members still give the totals. When
             # the patterns are not settled, the run's own pass offers each member to
             # them (see the end of the pass).
-            if isinstance(on_progress, ProgressCallback):
-                on_progress.clear_status()
             selected = selection.settle_from(indexed, err=err)
             if selection.settled and selection.selects_nothing:
                 return EXIT_FAIL

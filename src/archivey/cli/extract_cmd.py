@@ -1639,6 +1639,9 @@ def run_extract(
     base_progress: ProgressCallback | None = make_progress_callback(
         hide_progress=hide_progress, stream=err
     )
+    if base_progress is not None:
+        # Every stderr line clears the status line and the bar first.
+        err = base_progress.guard(err)
 
     with open_for_cli(
         archive,
@@ -1649,16 +1652,13 @@ def run_extract(
         format=fmt,
         # The reads of the archive's file: a status line until the first member, and
         # the bar's position when the members' total size is unknown.
-        progress=base_progress if isinstance(base_progress, ProgressCallback) else None,
+        progress=base_progress,
     ) as reader:
         # A complete free index settles the patterns before anything is written.
         # Without one, or with one that ends in damage, the extraction's own pass
         # offers each member to them, and they are judged after it: a separate pass
         # would decompress the archive a second time.
         indexed = reader.members_report_if_available() if pred is not None else None
-        if isinstance(base_progress, ProgressCallback):
-            # Before a pattern warning or the destination line.
-            base_progress.clear_status()
         if indexed is not None:
             selection.settle_from(indexed, err=err, dest_hint=True)
             if selection.settled and selection.selects_nothing:
@@ -1676,8 +1676,6 @@ def run_extract(
             )
             plan = resolve_smart_dest(reader, named, pred=pred)
             if plan.target != Path("."):
-                if isinstance(base_progress, ProgressCallback):
-                    base_progress.clear_status()
                 verb = "would extract" if dry_run else "extracting"
                 print(f"{verb} into {escape_path(plan.target)}/", file=err)
         target = plan.target
