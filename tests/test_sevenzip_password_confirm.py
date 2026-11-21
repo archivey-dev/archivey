@@ -21,10 +21,11 @@ from typing import BinaryIO
 
 import pytest
 
+import archivey
 import archivey.internal.backends.sevenzip_reader as sevenzip_reader_mod
 from archivey import open_archive
 from archivey.diagnostics import DiagnosticCode
-from archivey.exceptions import ArchiveyError, EncryptionError
+from archivey.exceptions import ArchiveyError, EncryptionError, ResourceLimitError
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_PREFIX_BYTES,
     PasswordConfirmPlan,
@@ -480,3 +481,24 @@ def test_input_cap_bounds_the_packed_bytes_and_running_out_is_inconclusive(
     counters.clear()
     _first_member_read(archive, _PASSWORD)
     assert counters[1].bytes_read > _SMALL_CAP
+
+
+def test_the_trial_decodes_draw_the_decoded_byte_budget(tmp_path: Path) -> None:
+    """Each candidate's trial decode counts toward the nest's cap as the caller's own
+    read does: with a wrong password tried first, a cap that one read of the member
+    fits is passed."""
+    data = _payload(64 * 1024, 3)
+    archive = _build(tmp_path, "budget", {"a.bin": data}, method="Copy", solid=True)
+
+    def config(cap: int) -> archivey.ArchiveyConfig:
+        limits = archivey.DecoderLimits(max_nest_decoded_bytes=cap)
+        return archivey.ArchiveyConfig(decoder_limits=limits)
+
+    passwords = ["wrong", _PASSWORD]
+    with open_archive(archive, password=passwords, config=config(10**8)) as reader:
+        assert reader.read("a.bin") == data
+    with (
+        open_archive(archive, password=passwords, config=config(len(data) + 100)) as r,
+        pytest.raises(ResourceLimitError, match="max_nest_decoded_bytes"),
+    ):
+        r.read("a.bin")

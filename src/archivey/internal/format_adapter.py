@@ -1623,7 +1623,9 @@ class IndexedReaderAdapter(_PluginAdapter):
                     codec_name=self._format.display_name, suggest_install=False
                 )
             digest_error: Callable[[CorruptionError], ArchiveyError] | None = None
-            if verdict[0] is not None:
+            # Watched whenever a verdict can apply: one stated now, an encrypted
+            # member, or a respawn, which may state one the first open did not.
+            if verdict[0] is not None or member.is_encrypted or rewind is not None:
                 stream, digest_error = self._watch_unlocked(stream, member, verdict)
             return self._member_parts(
                 stream,
@@ -3365,7 +3367,14 @@ class SequentialReaderAdapter(_PluginAdapter):
         if verdict is None:
             verdict = [record.unlocked]
         digest_error: Callable[[CorruptionError], ArchiveyError] | None = None
-        if verdict[0] is not None or record.unlocked is not None:
+        # Watched whenever a verdict can apply: one stated by a walk so far, an
+        # encrypted member, or a respawn, whose walk may state one the others did not.
+        if (
+            verdict[0] is not None
+            or record.unlocked is not None
+            or member.is_encrypted
+            or rewind is not None
+        ):
             stream, digest_error = self._watch_unlocked(stream, member, verdict)
         return self._member_parts(
             stream,

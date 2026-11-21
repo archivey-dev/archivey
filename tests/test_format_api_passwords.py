@@ -797,6 +797,13 @@ class ToyWReader(SequentialReader):
     rewalk_unlocked: ClassVar[PasswordConfirmVerdict | None] = None
     # A CRC-32 each span states for its data, when set.
     span_crc: ClassVar[bytes | None] = None
+    # The verdict walk ``n`` (from 1) gives its spans, when set; wins over
+    # ``rewalk_unlocked``.
+    walk_unlocked: ClassVar[Callable[[int], PasswordConfirmVerdict | None] | None] = (
+        None
+    )
+    # From this walk on (counted from 1), each member's first data byte is changed.
+    corrupt_from_walk: ClassVar[int | None] = None
     walks: ClassVar[int] = 0
 
     def __init__(self, context: ReaderContext) -> None:
@@ -816,6 +823,14 @@ class ToyWReader(SequentialReader):
         ToyWReader.walks += 1
         if self.rewalk_unlocked is not None and ToyWReader.walks > 1:
             verdict = self.rewalk_unlocked
+        # Read off the class: through ``self`` the function would be bound.
+        pick = ToyWReader.walk_unlocked
+        if pick is not None:
+            verdict = pick(ToyWReader.walks)
+        corrupt = (
+            self.corrupt_from_walk is not None
+            and ToyWReader.walks >= self.corrupt_from_walk
+        )
         digests = (
             (MemberDigest("crc32", self.span_crc),) if self.span_crc is not None else ()
         )
@@ -838,8 +853,11 @@ class ToyWReader(SequentialReader):
             member = ArchiveMember(
                 type=MemberType.FILE, name=name, size=size, is_encrypted=True
             )
+            data = read(size)
+            if corrupt and data:
+                data = bytes([data[0] ^ 0xFF]) + data[1:]
             yield MemberSpan(
-                member, data=io.BytesIO(read(size)), unlocked=verdict, digests=digests
+                member, data=io.BytesIO(data), unlocked=verdict, digests=digests
             )
 
     def archive_info(self) -> ReaderArchiveInfo:
@@ -865,6 +883,8 @@ def toyw() -> Iterator[None]:
     ToyWReader.charge_after_unlock = False
     ToyWReader.rewalk_unlocked = None
     ToyWReader.span_crc = None
+    ToyWReader.walk_unlocked = None
+    ToyWReader.corrupt_from_walk = None
     ToyWReader.walks = 0
 
 
@@ -1226,6 +1246,71 @@ def test_a_data_walk_uses_its_own_verdict(toyw: None, tmp_path: Path) -> None:
         reader.members()
         with pytest.raises(EncryptionError) as raised:
             reader.read("a")
+    assert is_unverified_data_error(raised.value)
+
+
+def test_an_indexed_respawn_that_becomes_inconclusive_is_watched(
+    toyx: type[ToyXReader], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first open states no verdict and the respawn after a backward seek says
+    ``INCONCLUSIVE``: a checksum failure under the respawn's data is the
+    password-or-damage error, not plain damage."""
+    original = ToyXReader.open_member
+    opens = 0
+
+    def open_member(self: ToyXReader, member: ArchiveMember, locator: Any) -> Any:
+        request = original(self, member, locator)
+        assert isinstance(request, NeedsPassword)
+        then = request.then
+        assert then is not None
+
+        def changed_then(key: bytes, verdict: PasswordConfirmVerdict) -> MemberData:
+            nonlocal opens
+            opens += 1
+            data = then(key, verdict)
+            if opens == 1:
+                return data._replace(unlocked=None)
+            data.stream.close()
+            wrong = _XorStream(self._source.view(locator.offset, locator.size), b"x")
+            return data._replace(stream=wrong, unlocked=INCONCLUSIVE)
+
+        return request.__class__(
+            request.what,
+            request.check,
+            full_check=request.full_check,
+            member=request.member,
+            then=changed_then,
+        )
+
+    monkeypatch.setattr(ToyXReader, "open_member", open_member)
+    with (
+        open_archive(_one(tmp_path), password="right", seekable_members=True) as reader,
+        reader.open("a.txt") as stream,
+    ):
+        assert stream.read() == _SECRET
+        stream.seek(0)
+        with pytest.raises(EncryptionError) as raised:
+            stream.read()
+    assert is_unverified_data_error(raised.value)
+
+
+def test_a_sequential_respawn_that_becomes_inconclusive_is_watched(
+    toyw: None, tmp_path: Path
+) -> None:
+    """The listing walk and the first data walk state no verdict, and the walk a
+    backward seek starts says ``INCONCLUSIVE``: its checksum failure is the
+    password-or-damage error."""
+    path = _write(tmp_path, build_toyw([("a", b"alpha")], b"pw"), "t.toyw")
+    ToyWReader.span_crc = zlib.crc32(b"alpha").to_bytes(4)
+    ToyWReader.walk_unlocked = lambda n: INCONCLUSIVE if n >= 3 else None
+    ToyWReader.corrupt_from_walk = 3
+    with open_archive(path, password="pw", seekable_members=True) as reader:
+        reader.members()
+        with reader.open("a") as stream:
+            assert stream.read() == b"alpha"
+            stream.seek(0)
+            with pytest.raises(EncryptionError) as raised:
+                stream.read()
     assert is_unverified_data_error(raised.value)
 
 

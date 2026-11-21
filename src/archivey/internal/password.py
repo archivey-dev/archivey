@@ -417,6 +417,7 @@ class _PasswordCandidates:
         settle: Callable[[bytes, _T], _T] | None = None,
         first: bytes | None = None,
         first_settles: bool = False,
+        first_competes: bool = False,
         allow_provider: bool = True,
         unguarded: Callable[[], AbstractContextManager[object]] | None = None,
     ) -> _T:
@@ -441,9 +442,13 @@ class _PasswordCandidates:
         where it would be tried first for every later unit.
 
         ``first`` is a password to try before all others: the one that won the same
-        unit before (a plugin request's saved winner). It wins on ``decrypt`` alone,
-        unless ``first_settles`` says that its earlier win needed ``settle`` too, in
-        which case it is settled again. If it fails, the loop goes on without it.
+        unit before (a plugin request's saved winner). A ``settled`` result wins at
+        once. An unsettled one wins on ``decrypt`` alone, unless ``first_settles`` says
+        that its earlier win needed ``settle`` too, in which case it is settled again;
+        that is the replacement of a stream already unlocked, which must not change
+        password. With ``first_competes`` (a fresh open of the unit) an unsettled
+        result is instead the first survivor below, so a password another unit has
+        confirmed since can still beat it. If it fails, the loop goes on without it.
 
         Without ``settled``, the first candidate ``decrypt`` accepts wins. With it, a
         result ``settled`` approves (a confirmed password) wins at once, and one it
@@ -502,16 +507,21 @@ class _PasswordCandidates:
         def needs_settle(result: _T) -> bool:
             return settle is not None and settled is not None and not settled(result)
 
+        survivors: list[tuple[bytes, _T]] = []
         if first is not None:
             result = try_password(first)
             if result is not None:
-                if not (first_settles and needs_settle(result)):
+                if settled is None or settled(result):
                     return accept(first, result)
-                full = settle_one(first, result)
-                if full is not None:
-                    return accept(first, full)
+                if first_competes:
+                    survivors.append((first, result))
+                elif not (first_settles and needs_settle(result)):
+                    return accept(first, result)
+                else:
+                    full = settle_one(first, result)
+                    if full is not None:
+                        return accept(first, full)
 
-        survivors: list[tuple[bytes, _T]] = []
         for password in self.iter_candidates():
             if password in tried:
                 continue

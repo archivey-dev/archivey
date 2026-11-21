@@ -25,7 +25,7 @@ from archivey.internal.password import (
     wrong_password_error,
 )
 from archivey.internal.password_confirm import attempt_with_confirm
-from archivey.internal.plugin_passwords import resolve_request
+from archivey.internal.plugin_passwords import SavedWinner, resolve_request
 from archivey.types import ArchiveMember, MemberType
 from tests.conftest import requires, requires_binary
 
@@ -945,3 +945,46 @@ def test_builtin_and_plugin_loops_choose_alike(case: str) -> None:
     builtin = _parity_run("builtin", *_PARITY_CASES[case])
     plugin = _parity_run("plugin", *_PARITY_CASES[case])
     assert plugin == builtin
+
+
+def _resolve_saved(
+    candidates: _PasswordCandidates,
+    probes: dict[bytes, PasswordConfirmVerdict],
+    saved: SavedWinner | None,
+    *,
+    allow_provider: bool,
+) -> tuple[object, PasswordConfirmVerdict]:
+    def check(pw: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+        found = probes.get(pw, _V.REJECTED)
+        return (None if found is _V.REJECTED else pw), found
+
+    resolution = resolve_request(
+        what="the unit",
+        check=check,
+        full_check=None,
+        member=None,
+        passwords=candidates,
+        run=lambda fn: fn(),
+        unguarded=contextlib.nullcontext,
+        allow_provider=allow_provider,
+        saved=saved,
+        owner="Saved",
+    )
+    return resolution.unlocked, resolution.verdict
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_a_weak_saved_winner_competes_only_on_a_fresh_open(fresh: bool) -> None:
+    """A unit first won ``INCONCLUSIVE`` by a provider answer; another unit has since
+    confirmed a different password. A fresh open of the first unit lets the confirmed
+    one win; a replacement of its stream keeps the password it was unlocked with."""
+    candidates = _PasswordCandidates.from_input(lambda request: None)
+    candidates.record_success(b"confirmed-elsewhere")
+    probes = {b"weak": _V.INCONCLUSIVE, b"confirmed-elsewhere": _V.CONFIRMED}
+    outcome = _resolve_saved(
+        candidates, probes, SavedWinner(b"weak", False), allow_provider=fresh
+    )
+    if fresh:
+        assert outcome == (b"confirmed-elsewhere", _V.CONFIRMED)
+    else:
+        assert outcome == (b"weak", _V.INCONCLUSIVE)

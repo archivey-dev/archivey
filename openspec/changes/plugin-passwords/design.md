@@ -421,7 +421,10 @@ Requests met there are resolved too, under these rules:
   therefore keeps both. A repeat tries the saved password first and still runs `check`
   (and `full_check` when the first resolution needed it). So a late makeself rewalk
   does not ask the provider again for payload 1, although its `INCONCLUSIVE` winner is
-  not promoted for other units (D3).
+  not promoted for other units (D3). On a fresh open (not a replacement of a stream
+  already unlocked) an unconfirmed saved winner is not taken at once: it is the first
+  survivor, and the other passwords are probed as usual, so a password another unit
+  has confirmed since can win.
 - **The provider only at a first open.** A first open of a member may ask the provider:
   the caller's `open()`, a data walk it starts, and the first open of a lazy pass handle
   from `stream_members()` or extraction, which calls `open_member` on the handle's

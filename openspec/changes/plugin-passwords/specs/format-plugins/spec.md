@@ -134,7 +134,11 @@ copied from it, and SHALL wait for the answer when called from any other thread.
 plugin call SHALL be repeated to try a provider answer. Retry state SHALL live on the
 request. When the adapter calls a hook again on its own (a data walk, a respawn, a
 rewalk), it SHALL try first the saved winner of each request, keyed by the plugin call
-plus the request's index in that call's chain. archivey SHALL call the provider only on
+plus the request's index in that call's chain. On a replacement open the saved winner
+SHALL keep the stream's password when `check` does not reject it; on a fresh open a
+saved winner that `check` does not confirm SHALL compete with the other passwords as
+the first `INCONCLUSIVE` survivor, so a password confirmed since by another unit can
+win. archivey SHALL call the provider only on
 the first unlock of a unit: a request from the handler's `open` (with `member=None`), a
 listing walk's request, or a first open of a member (the caller's `open()`, a data walk
 it starts, the first open of a lazy `stream_members()` or extraction handle). It SHALL

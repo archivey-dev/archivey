@@ -113,8 +113,10 @@ def resolve_request(
     the errors. ``run(fn)`` calls ``fn`` (a plugin callback) under the plugin's guards,
     which the caller holds; each provider call runs inside ``unguarded()``, which lets
     go of them. With ``allow_provider=False`` (a replacement open inside a read) the
-    provider is not asked. ``saved`` is the password that won the same request before:
-    it is tried first, with ``full_check`` too when that resolution needed it.
+    provider is not asked. ``saved`` is the password that won the same request before,
+    tried first: a replacement open keeps it (settling it again with ``full_check``
+    when its win needed that), and a fresh open lets an unconfirmed one compete with
+    the other passwords.
 
     Raises the "required" ``EncryptionError`` when nothing was tried, the
     wrong-password one when every password was rejected by ``check``, and the
@@ -165,6 +167,9 @@ def resolve_request(
             settle=None if full_check is None else settle,
             first=None if saved is None else saved.password,
             first_settles=saved is not None and saved.used_full_check,
+            # A replacement open keeps the password its stream was unlocked with; a
+            # fresh open lets it compete, as a password confirmed since may beat it.
+            first_competes=allow_provider,
             allow_provider=allow_provider,
             unguarded=unguarded,
         )
