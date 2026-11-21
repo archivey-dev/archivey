@@ -321,6 +321,8 @@ class _PluginAdapter(BaseArchiveReader):
         context._spanning_check = self._new_spanning_check
         context._passwords = passwords
         context._decompress_coder = self._decompress_coder
+        if self._listing_decode is not None:
+            context._listing_draw = self._listing_decode.draw
         self._reader = self._open_reader(context)
         self._reader_open = True
 
@@ -3381,8 +3383,8 @@ def _extensions(
 
 
 # The built-in containers a plugin can replace (``FormatPolicy(replace=)``): the ones an
-# indexed plugin can read. TAR, ar, CPIO and RAW_STREAM read in one pass, DIRECTORY is
-# not a file, and DMG is recognised only to be refused.
+# indexed plugin can read. TAR, ar, CPIO and RAW_STREAM read in one pass, and DIRECTORY
+# is not a file.
 REPLACEABLE_CONTAINERS = frozenset(
     {
         ContainerFormat.ZIP,
@@ -3394,6 +3396,7 @@ REPLACEABLE_CONTAINERS = frozenset(
         ContainerFormat.CAB,
         ContainerFormat.LHA,
         ContainerFormat.ARJ,
+        ContainerFormat.DMG,
     }
 )
 

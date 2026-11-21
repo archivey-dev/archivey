@@ -64,6 +64,7 @@ from tests.atheris_fuzz.seeds import (
     cpio_seeds,
     deflate64_seeds,
     detect_format_seeds,
+    dmg_seeds,
     filter_seeds,
     gzip_seeds,
     iso_seeds,
@@ -273,6 +274,20 @@ def squashfs_open_one(data: bytes) -> None:
     try:
         with open_archive(
             io.BytesIO(data), format=ArchiveFormat.SQUASHFS, config=_FUZZ_CONFIG
+        ) as arc:
+            _sample_seekable(
+                arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
+            )
+    except ArchiveyError:
+        return
+
+
+def dmg_open_one(data: bytes) -> None:
+    """List a DMG image and read the first files: the koly block, the property list
+    and run tables, the partition map, then the HFS+ catalog, attributes and forks."""
+    try:
+        with open_archive(
+            io.BytesIO(data), format=ArchiveFormat.DMG, config=_FUZZ_CONFIG
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
@@ -965,6 +980,13 @@ def iter_target_specs() -> list[dict]:
             "name": "squashfs",
             "fn": squashfs_open_one,
             "seeds": squashfs_seeds,
+            "fixup": None,
+            "per_input_timeout": stream_timeout,
+        },
+        {
+            "name": "dmg",
+            "fn": dmg_open_one,
+            "seeds": dmg_seeds,
             "fixup": None,
             "per_input_timeout": stream_timeout,
         },
