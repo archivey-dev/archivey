@@ -202,7 +202,7 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 - A plugin can still decrypt without `unlock` by reading the password some other way
   (an environment variable). Nothing stops that, and nothing needs to.
 
-## Open questions (for the maintainer, one at a time)
+## Open questions (all ruled by the maintainer, 2026-11-21)
 
 1. D1: archivey runs the loop and the plugin writes only `check`? RULED yes (davi 11-21).
 2. D1/D3: `check` returns `(data, PasswordConfirmVerdict)` (davi 11-21: reuse the built-in
@@ -213,4 +213,4 @@ caller's `password=` through `unlock`, as any plugin does. The sentence in
 5. D5: names `supports_password`, `ReaderArchiveInfo.is_encrypted`, `unlock`,
    `charge_key_derivation`, `PasswordConfirmVerdict` (`REJECTED`, `INCONCLUSIVE`,
    `CONFIRMED`). RULED keep all (davi 11-21, card).
-6. Order: this API PR first, then makeself, ARJ and DMG on it? (Recommended: yes.)
+6. Order: this API PR first, then makeself, ARJ and DMG on it? RULED yes (davi 11-21, card).
