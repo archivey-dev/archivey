@@ -103,7 +103,6 @@ from archivey.internal.long_paths import long_path, make_dirs, plain
 from archivey.internal.overrides import override
 from archivey.internal.selection import CollectionSelector
 from archivey.internal.streams.callers_source import from_source_callback
-from archivey.internal.streams.verify import MemberVerifier, keeping_withheld
 from archivey.internal.win32_errors import (
     ERROR_FILENAME_EXCED_RANGE,
     ERROR_INVALID_NAME,
@@ -1744,12 +1743,9 @@ class ExtractionCoordinator:
         state.tracker.check_recorded_size()
         path = state.staging / name
         fd = _open_new_file(path, 0o666)
-        withheld: list[bytes] = []
+        self._return_failed_chunks(stream)
         try:
-            with (
-                os.fdopen(fd, "wb") as dst,
-                self._withheld_kept(stream, withheld, keep=True),
-            ):
+            with os.fdopen(fd, "wb") as dst:
                 self._copy_to_fileobj(
                     stream,
                     dst if self._dry is None else self._dry.sink,
@@ -1760,7 +1756,6 @@ class ExtractionCoordinator:
             keep = False
             if self._keeps_partial(exc):
                 with contextlib.suppress(OSError):
-                    self._append_withheld(path, withheld)
                     keep = os.stat(long_path(path)).st_size > 0
             if not keep:
                 with contextlib.suppress(OSError):
@@ -4874,13 +4869,11 @@ class ExtractionCoordinator:
             # Write straight into the new file's fd (no close+reopen). Its 0o600 keeps
             # the content private until the chmod below.
             fd, tmp = self._new_temp_file(self._parent(dest_path))
-        withheld: list[bytes] = []
+        if keep_partial:
+            self._return_failed_chunks(stream)
         try:
             try:
-                with (
-                    os.fdopen(fd, "wb") as dst,
-                    self._withheld_kept(stream, withheld, keep=keep_partial),
-                ):
+                with os.fdopen(fd, "wb") as dst:
                     if copy_begins is not None:
                         copy_begins()
                     # A dry run reads and verifies the body like a real one; only the
@@ -4893,7 +4886,7 @@ class ExtractionCoordinator:
                     )
             except (ArchiveyError, OSError) as exc:
                 if keep_partial and self._keeps_partial(exc):
-                    self._land_partial(tmp, dest_path, member, exc, withheld)
+                    self._land_partial(tmp, dest_path, member, exc)
                 raise
             self._apply_metadata(tmp, member)
             return self._swap_into_place(tmp, dest_path, member, fresh=True)
@@ -4917,39 +4910,17 @@ class ExtractionCoordinator:
                 )
             raise
 
-    def _withheld_kept(
-        self, stream: BinaryIO | None, withheld: list[bytes], *, keep: bool
-    ) -> contextlib.AbstractContextManager[None]:
-        """Collect into ``withheld`` the chunk that a failed check of ``stream``'s own
-        member withholds from the read that meets it (``keeping_withheld``), when the
-        write may keep a partial file (``_keeps_partial``). A chunk an outer layer
-        withholds (a compressed TAR's stream) is another verifier's, and not taken."""
-        if (
-            not keep
-            or self._on_error is not OnError.KEEP_PARTIAL
-            or self._dry is not None
-        ):
-            return contextlib.nullcontext()
-
-        def sink(verifier: MemberVerifier, data: bytes) -> None:
-            if verifier is getattr(stream, "_verifier", None):
-                withheld[:] = [data]
-
-        return keeping_withheld(sink)
-
-    def _append_withheld(self, path: Path, withheld: list[bytes]) -> None:
-        """Append the chunk a failed check withheld to the partial file ``path``,
-        counted toward the limits as a written chunk is. A chunk the limits refuse is
-        left out: the file keeps what it has."""
-        if not withheld:
+    def _return_failed_chunks(self, stream: BinaryIO | None) -> None:
+        """Have ``stream`` read at ``PartialDataRecovery.ALL`` when the write may keep
+        a partial file (``_keeps_partial``): the read whose check fails returns its
+        bytes and the next read raises, so a member whose only damage is a failed check
+        keeps every byte. A stream of no member handle (a staged copy) has no
+        verifier to set."""
+        if self._on_error is not OnError.KEEP_PARTIAL or self._dry is not None:
             return
-        data = withheld.pop()
-        try:
-            self._state.tracker.count(len(data))
-        except ResourceLimitError:
-            return
-        with open(long_path(path), "ab") as f:
-            f.write(data)
+        set_level = getattr(stream, "return_failed_chunks", None)
+        if set_level is not None:
+            set_level()
 
     def _land_partial(
         self,
@@ -4957,16 +4928,12 @@ class ExtractionCoordinator:
         dest_path: Path,
         member: ArchiveMember,
         exc: ArchiveyError | OSError,
-        withheld: list[bytes],
     ) -> None:
         """Land the partial file ``tmp`` of a copy that failed with ``exc`` on
-        ``dest_path`` and raise ``_PartialKept``, for ``_write_file_atomic``. The
-        chunk the failed check withheld, if any, goes in first, so a member whose only
-        damage is a failed check keeps every byte. Returns, landing nothing, when
-        ``tmp`` is empty or the landing fails: the caller then removes ``tmp`` and
-        raises ``exc``."""
+        ``dest_path`` and raise ``_PartialKept``, for ``_write_file_atomic``. Returns,
+        landing nothing, when ``tmp`` is empty or the landing fails: the caller then
+        removes ``tmp`` and raises ``exc``."""
         try:
-            self._append_withheld(tmp, withheld)
             if os.stat(long_path(tmp)).st_size == 0:
                 return
             landed = self._swap_into_place(tmp, dest_path, member, fresh=True)

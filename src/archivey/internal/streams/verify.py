@@ -54,11 +54,9 @@ Per ADR 0014 / ``compressed-streams``:
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import zlib
-from collections.abc import Callable, Generator, Mapping
-from contextvars import ContextVar
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, BinaryIO, Protocol
 
 from archivey.diagnostics import DiagnosticCode, DigestContext
@@ -206,38 +204,6 @@ _VERIFIER_PROOFS = tuple(
 )
 
 
-# Under ``OnError.KEEP_PARTIAL``, the extraction coordinator wants the chunk a failed
-# verdict withholds, to keep it in the partial file (``keeping_withheld``).
-_withheld_sink: ContextVar[Callable[[MemberVerifier, bytes], None] | None] = ContextVar(
-    "archivey_withheld_sink", default=None
-)
-
-
-@contextlib.contextmanager
-def keeping_withheld(
-    sink: Callable[[MemberVerifier, bytes], None],
-) -> Generator[None, None, None]:
-    """Hand ``sink`` each chunk a failed verdict withholds while the block runs, with
-    the verifier that withheld it.
-
-    The read still raises and returns nothing: only ``sink`` sees the bytes. The
-    caller matches the verifier with the stream it reads, so a chunk an outer layer
-    withholds (a compressed TAR's own stream) is told apart from the member's.
-    """
-    token = _withheld_sink.set(sink)
-    try:
-        yield
-    finally:
-        _withheld_sink.reset(token)
-
-
-def _hand_withheld(verifier: MemberVerifier, data: bytes) -> None:
-    """Give ``data``, withheld by ``verifier``'s failed verdict, to the sink, if any."""
-    sink = _withheld_sink.get()
-    if sink is not None and data:
-        sink(verifier, data)
-
-
 class MemberVerifier:
     """Incremental digest/length checker over bytes read from an inner stream.
 
@@ -246,6 +212,20 @@ class MemberVerifier:
     call :meth:`read` / :meth:`note_seek` / :meth:`finish_on_close` against their
     inner handle.
     """
+
+    # ``PartialDataRecovery.ALL``: a sized read whose check fails returns its bytes,
+    # and the next read raises the check's error (``_defer``). Set by the stream that
+    # owns the verifier (``ArchiveStreamImpl.return_failed_chunks``), which reads to
+    # the end in sized steps, so a read to the end here still withholds.
+    returns_failed_chunk = False
+    # The error a read deferred under ``returns_failed_chunk``, raised by the next read.
+    _deferred: Exception | None = None
+
+    @property
+    def deferred(self) -> Exception | None:
+        """The error a read deferred under :attr:`returns_failed_chunk`, which the next
+        read raises, or ``None``."""
+        return self._deferred
 
     def __init__(
         self,
@@ -366,6 +346,7 @@ class MemberVerifier:
         self._abandoned = False
         self._end_seen = None
         self._read_through_due = None
+        self._deferred = None
 
     def _note_end_seen(self) -> None:
         """Record that a read at the read frontier found the end of a size-unknown member.
@@ -652,11 +633,23 @@ class MemberVerifier:
             self._note_end_seen()
         try:
             self._check_digests_if_complete()
-        except BaseException:
-            _hand_withheld(self, data)
+        except BaseException as exc:
+            if self._defer(exc, data):
+                return data
             del data  # withheld: the kept traceback must not pin it
             raise
         return data
+
+    def _defer(self, exc: BaseException, data: bytes) -> bool:
+        """Under :attr:`returns_failed_chunk`, keep ``exc`` for the next read to raise
+        and tell the caller to return ``data``, the bytes of the read whose check
+        failed. ``False`` when the read withholds them (the default), has none, or
+        was interrupted (an exception that is not an ``Exception``)."""
+        if not (self.returns_failed_chunk and data and isinstance(exc, Exception)):
+            return False
+        # Without its traceback: the frames it names hold the chunk returned.
+        self._deferred = exc.with_traceback(None)
+        return True
 
     def _abandon(self) -> None:
         """Stop every end-of-stream check: a decoder error is the member's verdict."""
@@ -702,8 +695,6 @@ class MemberVerifier:
             # The raise withholds these bytes, and its traceback keeps this frame
             # alive for as long as the caller keeps the error: let the body go —
             # the list and the last piece read, which can be the whole member.
-            if _withheld_sink.get() is not None:
-                _hand_withheld(self, b"".join(chunks))
             chunks.clear()
             piece = b""
             raise
@@ -723,6 +714,10 @@ class MemberVerifier:
         # read(0) is a no-op — never treat it as EOF (stdlib file / BytesIO contract).
         if n == 0:
             return b""
+        deferred = self._deferred
+        if deferred is not None:
+            self._deferred = None
+            raise deferred
         if self._read_through_due is not None:
             self._settle_read_through(inner)
         if n < 0:
@@ -746,7 +741,6 @@ class MemberVerifier:
                 try:
                     self._conclude(inner)
                 except BaseException:
-                    _hand_withheld(self, data)
                     del data  # withheld: the kept traceback must not pin it
                     raise
             return data
@@ -791,8 +785,9 @@ class MemberVerifier:
                 # Size-declared verifying event: withhold this chunk on fault.
                 try:
                     self._conclude(inner)
-                except BaseException:
-                    _hand_withheld(self, data)
+                except BaseException as exc:
+                    if self._defer(exc, data):
+                        return data
                     del data  # withheld: the kept traceback must not pin it
                     raise
             return data

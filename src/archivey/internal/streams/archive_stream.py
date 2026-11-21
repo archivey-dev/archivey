@@ -135,6 +135,9 @@ def _noop_stamp(_exc: ArchiveyError) -> None:
 
 _ARCHIVE_SOURCE_CLOSED = "Cannot read this stream: its source has been closed."
 
+# The step a ``read()`` under ``ArchiveStreamImpl.return_failed_chunks`` reads in.
+_KEEPING_STEP = 1 << 20
+
 
 def closed_source_error(member_name: str | None = None) -> ArchiveyUsageError:
     """The error for a read that found the source under it closed.
@@ -399,6 +402,12 @@ class ArchiveStreamImpl(ArchiveStream):
     _frames_pending = False
     # The codec layer's frame check ``_sync_frame_unchecked`` asks, found once.
     _frame_watch: Callable[[], bool] | None = None
+    # ``PartialDataRecovery.ALL`` (``return_failed_chunks``): the member's verifier
+    # returns the bytes of a read whose check fails, and the next read raises.
+    _returns_failed_chunks = False
+    # The error a ``read()`` under ``return_failed_chunks`` met after it had bytes to
+    # return: the next read raises it, and a seek drops it.
+    _pending_failure: ArchiveyError | None = None
 
     def __init__(
         self,
@@ -628,6 +637,9 @@ class ArchiveStreamImpl(ArchiveStream):
             # translator/stamp/rewind_warning so codec errors stay typed.
             while isinstance(opened, ArchiveStreamImpl):
                 opened = self._collapse_nested(opened)
+            if self._returns_failed_chunks:
+                # The open may have brought the verifier (``_adopt``, a collapse).
+                self.return_failed_chunks()
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             # _open_fn stays None (claimed above) so a retry raises rather than
             # re-entering a half-open backend. It raises what this open raised.
@@ -695,6 +707,37 @@ class ArchiveStreamImpl(ArchiveStream):
             self._rewind_warning = parts.rewind_warning
         self._checks_content = self._checks_content or parts.checks_content
         return inner
+
+    def _read_to_end_keeping(self) -> bytes:
+        """``read()`` under ``return_failed_chunks``: read to the end in steps, and
+        when a step raises after earlier steps gave bytes, return those bytes and keep
+        the error for the next read. A layer below that reads to its end in one call
+        (a ZIP pass from a pipe, a verifier's sized drain) would lose them with the
+        raise."""
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = self._read(_KEEPING_STEP)
+            except ArchiveyError as exc:
+                if not chunks:
+                    raise
+                # Without its traceback: the frames it names hold the bytes returned.
+                self._pending_failure = exc.with_traceback(None)
+                return b"".join(chunks)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+
+    def return_failed_chunks(self) -> None:
+        """Read at ``PartialDataRecovery.ALL``: a read whose checksum or size check
+        fails returns its bytes, and the next read raises the check's error. Set by the
+        reader for a caller's config at that level, and by extraction under
+        ``OnError.KEEP_PARTIAL``; a lazy handle passes it to the verifier its open
+        brings."""
+        self._returns_failed_chunks = True
+        verifier = self._verifier
+        if verifier is not None:
+            verifier.returns_failed_chunk = True
 
     def _fail_open(self, e: Exception) -> NoReturn:
         """``_fail`` for a lazy open, remembering the error for a retry to raise."""
@@ -885,6 +928,13 @@ class ArchiveStreamImpl(ArchiveStream):
         # fails inside a decoder after its compressed chunk has left the source, and the
         # member would then report damage on every later read, even after ``seek(0)``.
         n = check_read_size(n)
+        if self._returns_failed_chunks:
+            pending = self._pending_failure
+            if pending is not None:
+                self._pending_failure = None
+                raise pending
+            if n < 0:
+                return self._read_to_end_keeping()
         # _ensure_open is outside the try: its read-after-close ValueError is the
         # wrapper's own (plain file semantics, not translated), and a lazy open failure
         # is already routed through _fail inside it.
@@ -919,9 +969,16 @@ class ArchiveStreamImpl(ArchiveStream):
                 data = inner.read(n)
         except Exception as e:  # noqa: BLE001 - re-raised via the translator
             self._fail_unless_closed(e)
-        if verdict is None and (n < 0 or (n != 0 and not data)) and self._uninterrupted:
+        if (
+            verdict is None
+            and (n < 0 or (n != 0 and not data))
+            and self._uninterrupted
+            and (verifier is None or verifier.deferred is None)
+        ):
             # A read to the end, or one that found it, from the start with no seek
             # between: every length and end-of-data check below it ran on all of it.
+            # Not when a check failed and its error waits for the next read
+            # (``return_failed_chunks``).
             self._ended_from_start = True
         if self._level_member is not None and n != 0:
             if not data or self._reached_end(n, data):
@@ -935,9 +992,11 @@ class ArchiveStreamImpl(ArchiveStream):
             # A rewound stream reached its end: the damage is still there, and the
             # seek may have paused the check that found it (a seek back to its
             # frontier resumes it). Withhold the bytes, as the
-            # verifier does with the chunk that fails.
+            # verifier does with the chunk that fails; under ``return_failed_chunks``
+            # return them, and the next read raises the verdict.
             self._verdict_rewound = False
-            self._raise_verdict()
+            if not (self._returns_failed_chunks and data):
+                self._raise_verdict()
         return data
 
     @override
@@ -1026,6 +1085,7 @@ class ArchiveStreamImpl(ArchiveStream):
     def _seek(self, offset: int, whence: int) -> int:
         if not self._seek_allowed():
             raise io.UnsupportedOperation("seek")
+        self._pending_failure = None
         # The arguments are checked after seekability, as a buffered reader over a pipe
         # does: ``seek(1.5)`` there is UnsupportedOperation, not TypeError. On a seekable
         # member a non-integer offset or whence (``1.5``, ``None``) is ``io.BytesIO``'s

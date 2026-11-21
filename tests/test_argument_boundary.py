@@ -612,7 +612,6 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
         "read_link_targets",
         "always_probe_content",
         "discover_volumes",
-        "recover_partial_data",
     ):
         for bad in ("false", 0, 1, None):
             rows.append(
@@ -623,6 +622,17 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                     lambda b=bad, f=field_name: _with_config(archive, out(), **{f: b}),
                 )
             )
+    # The recovery level is an enum: a bool (what the field held before), a bad
+    # spelling and a number are refused.
+    for bad in (True, False, "false", 0, None):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "recover_partial_data",
+                bad,
+                lambda b=bad: _with_config(archive, out(), recover_partial_data=b),
+            )
+        )
     # Operation flags take a real bool, as the config's switches do: "false" is
     # truthy, so a flag loaded from text would switch a mode on.
     for bad in ("false", 0, 1, None):

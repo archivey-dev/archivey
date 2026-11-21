@@ -1372,9 +1372,10 @@ and proceeds.
 copied (damaged data, a check at the end of the data, a write error): its file SHALL
 land at its destination as a complete one would, under the same overwrite policy,
 holding the bytes the member's data gave before the failure, and its result SHALL be
-`FAILED` with the error and `path` set to where it landed. The chunk that a failed check
-of the member's own verifier (its CRC, digest or declared size) withholds from the read
-that meets it SHALL be written to the kept file too, so a member whose only damage is
+`FAILED` with the error and `path` set to where it landed. The member SHALL be read at
+`recover_partial_data=ALL` whatever the config says, so the read whose check of the
+member's own verifier (its CRC, digest or declared size) fails returns its bytes into
+the kept file, and so a member whose only damage is
 that check keeps every byte; a check made inside a decoder (gzip's trailer CRC) can
 still lose the decoder's last output. The kept file SHALL get none of the member's
 metadata (no stored mode, owner or times). It SHALL count as written for later members:

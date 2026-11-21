@@ -103,6 +103,7 @@ from archivey.config import (
     ArchiveyConfig,
     DecoderLimits,
     ExtractionLimits,
+    PartialDataRecovery,
 )
 from archivey.cost import CostReceipt
 from archivey.detection import FormatInfo
@@ -1414,6 +1415,7 @@ class BaseArchiveReader(ArchiveReader):
                     stream = open_member(member)
                 if stream is not None:
                     previous = stream
+                    self._apply_recovery_level(stream)
                 yield member, stream
             if after_members is not None:
                 after_members()
@@ -1979,6 +1981,15 @@ class BaseArchiveReader(ArchiveReader):
             custom_digests=custom_digests,
             bounded=bounded,
         )
+
+    def _apply_recovery_level(self, stream: ArchiveStreamImpl) -> None:
+        """Set a member handle given to the caller (``open()``, ``stream_members()``)
+        to the caller's ``recover_partial_data`` level where the handle, not the codec
+        under it, carries it out: ``ALL`` returns the bytes of a read whose check fails
+        (``ArchiveStreamImpl.return_failed_chunks``). Archivey's own reads of member
+        data (a link target) keep withholding them, since they read once and stop."""
+        if self._config.recover_partial_data is PartialDataRecovery.ALL:
+            stream.return_failed_chunks()
 
     def _member_parts(
         self,
@@ -4698,6 +4709,7 @@ class BaseArchiveReader(ArchiveReader):
                 self._hold_to_ratio(stream, _data_owner(opened[0]), counted_as=member)
                 stream._level_member = self._level_member(opened[0])
                 stream._level_refresh = self._refresh_member_levels
+                self._apply_recovery_level(stream)
                 # An eager open may have proved the password already.
                 stream._sync_member_level()
                 registered = self._register_public_stream(stream, token=reservation)

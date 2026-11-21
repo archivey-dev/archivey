@@ -304,10 +304,12 @@ To keep what a damaged file holds, as `unrar x -kb`, 7-Zip and GNU tar do, pass
 `on_error="keep_partial"`. The file gets the bytes written before the failure, and its result in the
 report is `FAILED`, with the error and the file's `path`. A file whose only damage is a wrong CRC or
 size keeps every byte, except where the decoder checks the CRC itself, as gzip does, and can lose
-its last few bytes. The file gets a modification time of now and archivey's own file mode, not the
-ones the archive stores, so it doesn't pass for the real one. Under `overwrite="replace"`, the
-partial file replaces an entry already at its name, as a complete one would. A member that fails
-before any byte is written leaves nothing, and so does one that goes over a limit.
+its last few bytes: extraction reads such a member as `recover_partial_data=PartialDataRecovery.ALL`
+does (see [Errors and diagnostics](errors-and-diagnostics.md)), whatever the config says. The file
+gets a modification time of now and archivey's own file mode, not the ones the archive stores, so it
+doesn't pass for the real one. Under `overwrite="replace"`, the partial file replaces an entry
+already at its name, as a complete one would. A member that fails before any byte is written leaves
+nothing, and so does one that goes over a limit.
 
 Going over the total size or entry count in `limits`, or the whole
 archive expanding too much, stops the extraction even with `on_error="continue"`, since it's a sign

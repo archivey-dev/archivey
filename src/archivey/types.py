@@ -2103,7 +2103,8 @@ class OnError(Enum):
     holding the bytes its data gave before the failure, as ``unrar x -kb``, 7-Zip and
     GNU tar leave it. A member whose only damage is a failed CRC or size check keeps
     every byte, unless the decoder makes that check itself (gzip's trailer CRC), which
-    can lose the last bytes it decoded. The result is
+    can lose the last bytes it decoded: the member is read as under
+    ``PartialDataRecovery.ALL``, whatever the config says. The result is
     ``FAILED`` with the error, and its ``path`` names the partial file. The file lands
     as a complete one would, so under ``OverwritePolicy.REPLACE`` it replaces an entry
     already at its name.

@@ -13,15 +13,18 @@ import io
 import lzma
 import random
 import tarfile
+import zipfile
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, open_archive
-from archivey.exceptions import ArchiveyError
+from archivey import ArchiveyConfig, PartialDataRecovery, open_archive
+from archivey.config import PartialDataRecoveryStr
+from archivey.exceptions import ArchiveyError, ArchiveyUsageError, CorruptionError
 from tests.streams_util import NonSeekableBytesIO
 
-_OFF = ArchiveyConfig(recover_partial_data=False)
+_OFF = ArchiveyConfig(recover_partial_data=PartialDataRecovery.OFF)
 
 
 def _damage(data: bytes, at: float) -> bytes:
@@ -175,7 +178,7 @@ def test_the_accelerator_fallback_keeps_the_setting(monkeypatch: Any) -> None:
     monkeypatch.setattr(DecompressorStream, "__init__", record)
     damaged = _damage(gzip.compress(_text(3_000_000, 1), mtime=0), 0.5)
     config = ArchiveyConfig(
-        use_rapidgzip=AcceleratorMode.ON, recover_partial_data=False
+        use_rapidgzip=AcceleratorMode.ON, recover_partial_data=PartialDataRecovery.OFF
     )
     with open_archive(io.BytesIO(damaged), config=config) as archive:
         stream = archive.open(archive.members()[0])
@@ -187,3 +190,125 @@ def test_the_accelerator_fallback_keeps_the_setting(monkeypatch: Any) -> None:
                 pass
     assert built, "the damage should reach the standard-library fallback"
     assert not any(s._recover for s in built)
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_a_bool_is_refused_naming_the_level_that_does_what_it_did(bad: bool) -> None:
+    """The field was a bool before it became ``PartialDataRecovery``: a bool raises,
+    naming the level that does what it did."""
+    level = "BEFORE_DAMAGE" if bad else "OFF"
+    with pytest.raises(ArchiveyUsageError, match=f"PartialDataRecovery.{level}"):
+        ArchiveyConfig(recover_partial_data=bad)
+
+
+@pytest.mark.parametrize(
+    ("spelling", "level"),
+    [
+        ("off", PartialDataRecovery.OFF),
+        ("before-damage", PartialDataRecovery.BEFORE_DAMAGE),
+        ("before_damage", PartialDataRecovery.BEFORE_DAMAGE),
+        ("all", PartialDataRecovery.ALL),
+    ],
+)
+def test_the_level_takes_its_string_spellings(
+    spelling: PartialDataRecoveryStr, level: PartialDataRecovery
+) -> None:
+    assert ArchiveyConfig(recover_partial_data=spelling).recover_partial_data is level
+
+
+_ALL = ArchiveyConfig(recover_partial_data=PartialDataRecovery.ALL)
+# More than one read of 64 KiB, and not a multiple of it.
+_CRC_PAYLOAD = _text(200_003, 3)
+
+
+def _zip_with_a_bad_crc(method: int) -> bytes:
+    """A ZIP of ``bad.bin`` whose CRC is wrong in both headers, so only the check
+    fails (the data itself decodes), then ``good.txt``."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=method) as zf:
+        zf.writestr("bad.bin", _CRC_PAYLOAD)
+        zf.writestr("good.txt", b"good")
+    data = bytearray(buf.getvalue())
+    crc = zipfile.crc32(_CRC_PAYLOAD).to_bytes(4, "little")
+    wrong = (zipfile.crc32(_CRC_PAYLOAD) ^ 1).to_bytes(4, "little")
+    count = data.count(crc)
+    assert count == 2, "the CRC is in the local header and the central directory"
+    return bytes(data.replace(crc, wrong))
+
+
+def _read_in_chunks(stream: Any, n: int) -> tuple[bytes, type[BaseException] | None]:
+    got = bytearray()
+    try:
+        while chunk := stream.read(n):
+            got += chunk
+    except ArchiveyError as exc:
+        return bytes(got), type(exc)
+    return bytes(got), None
+
+
+_SOURCES = ["file", "streaming", "pipe"]
+
+
+def _open(data: bytes, how: str, config: ArchiveyConfig) -> Any:
+    if how == "pipe":
+        return open_archive(NonSeekableBytesIO(data), config=config, streaming=True)
+    return open_archive(io.BytesIO(data), config=config, streaming=how == "streaming")
+
+
+def _bad_member(archive: Any, how: str) -> Iterator[Any]:
+    """``bad.bin``'s stream: from ``open()`` on a file, else from ``stream_members()``."""
+    if how == "file":
+        with archive.open("bad.bin") as stream:
+            yield stream
+        return
+    for member, stream in archive.stream_members():
+        if member.name == "bad.bin":
+            yield stream
+            return
+
+
+@pytest.mark.parametrize("how", _SOURCES)
+@pytest.mark.parametrize("method", [zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED])
+@pytest.mark.parametrize("n", [1 << 16, -1], ids=["sized", "to_end"])
+def test_all_returns_the_bytes_of_the_failing_read_and_the_next_read_raises(
+    how: str, method: int, n: int
+) -> None:
+    """``ALL``: reading a member whose CRC fails gives every byte, then the check's
+    error. The default raises the same error and, where the check runs as the read
+    reaches the end, keeps back the failing read's bytes (a ZIP pass from a pipe
+    checks the member only once its data has all been handed out)."""
+    data = _zip_with_a_bad_crc(method)
+    results = {}
+    for name, config in (("default", ArchiveyConfig()), ("all", _ALL)):
+        with _open(data, how, config) as archive:
+            for stream in _bad_member(archive, how):
+                results[name] = _read_in_chunks(stream, n)
+    got, error = results["all"]
+    assert got == _CRC_PAYLOAD
+    assert error is CorruptionError
+    default_got, default_error = results["default"]
+    assert default_error is CorruptionError
+    assert _CRC_PAYLOAD.startswith(default_got)
+    if how != "pipe":
+        assert len(default_got) < len(_CRC_PAYLOAD)
+
+
+def test_all_raises_once_and_a_rewind_checks_again() -> None:
+    """After the deferred error, a seek back to the start reads and checks the member
+    again, so the same bytes and the same error come back."""
+    data = _zip_with_a_bad_crc(zipfile.ZIP_DEFLATED)
+    with (
+        open_archive(io.BytesIO(data), config=_ALL, seekable_members=True) as archive,
+        archive.open("bad.bin") as stream,
+    ):
+        assert stream.read() == _CRC_PAYLOAD
+        with pytest.raises(CorruptionError):
+            stream.read()
+        stream.seek(0)
+        assert _read_in_chunks(stream, 1 << 16) == (_CRC_PAYLOAD, CorruptionError)
+
+
+def test_all_reads_an_undamaged_member_as_the_default_does() -> None:
+    data = _zip_with_a_bad_crc(zipfile.ZIP_DEFLATED)
+    with open_archive(io.BytesIO(data), config=_ALL) as archive:
+        assert archive.open("good.txt").read() == b"good"
