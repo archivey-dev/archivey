@@ -635,6 +635,45 @@ def test_bad_check_result_is_a_plugin_bug(tmp_path: Path) -> None:
             reader.read("a.txt")
 
 
+def test_a_handler_open_request_asks_the_provider_with_no_member(
+    tmp_path: Path,
+) -> None:
+    """The first unlock of the archive itself, before any member exists, may ask the
+    provider: the request has no member, and ``then`` builds the reader."""
+    asked: list[PasswordRequest] = []
+
+    class Handler(IndexedFormatHandler):
+        format = TOYX
+        extensions = (".toyx",)
+        magic = (Magic(0, _MAGIC),)
+        supports_password = True
+
+        def open(
+            self, source: ReaderSource, context: ReaderContext
+        ) -> NeedsPassword[Any, IndexedReader[Any]]:
+            def check(password: bytes) -> tuple[bytes | None, PasswordConfirmVerdict]:
+                return (
+                    (password, CONFIRMED) if password == b"right" else (None, REJECTED)
+                )
+
+            return NeedsPassword(
+                "the TOYX archive",
+                check,
+                then=lambda key, verdict: ToyXReader(source, context),
+            )
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        asked.append(request)
+        return b"right"
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(_one(tmp_path), password=provider) as reader:
+            assert [m.name for m in reader.members()] == ["a.txt"]
+    assert asked
+    assert asked[0].member is None
+
+
 def test_handler_without_supports_password(tmp_path: Path) -> None:
     class Handler(ToyXHandler):
         supports_password = False
