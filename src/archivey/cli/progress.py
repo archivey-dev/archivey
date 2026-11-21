@@ -27,6 +27,7 @@ from typing import Any, Protocol, TextIO, cast
 
 from archivey import ExtractionProgress, SourceProgress
 from archivey.cli.format import escape_member_name
+from archivey.cli.logging_config import log_lines_through
 
 
 class _TqdmBar(Protocol):
@@ -64,6 +65,8 @@ class ProgressCallback:
         # Whether a line printed through :meth:`guard` is part-way written: the member
         # bar is cleared until the line ends.
         self._mid_line = False
+        # Points the CLI's log lines back at the unguarded stream; set by guard().
+        self._restore_log: Callable[[], None] = lambda: None
 
     def source_read(self, progress: SourceProgress) -> None:
         """``ArchiveyConfig.on_source_read``: archivey read more of the archive's file."""
@@ -121,14 +124,22 @@ class ProgressCallback:
     def guard(self, stream: TextIO) -> TextIO:
         """``stream``, which clears the status line and the member bar before each line
         written to it and shows the bar again after. A command prints its stderr
-        lines through it, so no line is glued onto a bar. ``stream`` itself when the
-        bars are shown on another stream."""
+        lines through it, and the CLI's log lines go through it until :meth:`close`,
+        so no line is glued onto a bar. ``stream`` itself when the bars are shown on
+        another stream.
+
+        Writes are whole lines: a line's last write ends with ``\\n`` (``print``
+        writes the text, then the newline). A write that leaves its line open keeps
+        the bars cleared until the line ends.
+        """
         if stream is not self._display:
             return stream
         # It forwards everything else to ``stream``.
-        return cast(
+        guarded = cast(
             "TextIO", _ClearingStream(stream, self._before_write, self._after_line)
         )
+        self._restore_log = log_lines_through(stream, guarded)
+        return guarded
 
     def _before_write(self) -> None:
         if self._mid_line:
@@ -198,6 +209,7 @@ class ProgressCallback:
     def close(self) -> None:
         """Close the bar; later events show nothing."""
         self._closed = True
+        self._restore_log()
         self.clear_status()
         bar = self._bar
         if bar is not None:

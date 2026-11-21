@@ -272,6 +272,18 @@ def _dirs_first_tar_gz(tmp_path: Path) -> Path:
     return path
 
 
+def _dup_names_tar_gz(tmp_path: Path) -> Path:
+    """A ``.tar.gz`` with two members named ``dup.txt``: the library logs an INFO line
+    on the second while the member bar is on screen."""
+    path = tmp_path / "dups.tar.gz"
+    with tarfile.open(path, "w:gz", compresslevel=1) as tf:
+        for size in (3 << 20, 2 << 20):
+            info = tarfile.TarInfo("dup.txt")
+            info.size = size
+            tf.addfile(info, io.BytesIO(os.urandom(size)))
+    return path
+
+
 def _shown_lines(err: str) -> list[str]:
     """What a terminal shows on each stderr line: the text after its last ``\\r``."""
     return [line.rsplit("\r", 1)[-1] for line in err.split("\n")]
@@ -282,8 +294,15 @@ def _shown_lines(err: str) -> list[str]:
     [
         (["extract", "{path}", "-d", "{out}", "nomatch*"], "warning: pattern matched"),
         (["test", "-v", "{dirs}"], "skip top/"),
+        (["test", "-v", "{dups}"], "INFO: "),
+        (["extract", "{path}", "-d", "{out}"], "1 extracted"),
     ],
-    ids=["extract-no-match", "test-verbose-dirs-first"],
+    ids=[
+        "extract-no-match",
+        "test-verbose-dirs-first",
+        "test-library-log-line",
+        "extract-summary",
+    ],
 )
 def test_no_line_is_printed_onto_the_status_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], line: str
@@ -305,6 +324,7 @@ def test_no_line_is_printed_onto_the_status_line(
     names = {
         "path": str(_tar_gz(tmp_path)),
         "dirs": str(_dirs_first_tar_gz(tmp_path)),
+        "dups": str(_dup_names_tar_gz(tmp_path)),
         "out": str(tmp_path / "out"),
     }
     err = io.StringIO()
@@ -316,3 +336,5 @@ def test_no_line_is_printed_onto_the_status_line(
     for s in shown:
         # A bar alone ends with its rate; a line glued onto one does not.
         assert "B/s]" not in s or s.rstrip().endswith("]"), repr(s)
+    # The bars are closed before the command's last lines: none is drawn under them.
+    assert "B/s]" not in [s for s in shown if s.strip()][-1], text

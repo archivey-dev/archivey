@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TextIO
@@ -26,7 +26,7 @@ class _MemberSkipHold(logging.Filter):
     """Hold back the library's member-skip warnings while ``held`` is a list, and drop
     its solid re-open advice while ``own_opens`` is set."""
 
-    def __init__(self, handler: logging.Handler) -> None:
+    def __init__(self, handler: logging.StreamHandler[TextIO]) -> None:
         super().__init__()
         self.handler = handler
         self.held: list[logging.LogRecord] | None = None
@@ -97,6 +97,24 @@ def cli_logging(*, verbose: bool, err: TextIO) -> Generator[None, None, None]:
         root.removeHandler(handler)
         root.setLevel(old_level)
         handler.close()
+
+
+def log_lines_through(stream: TextIO, through: TextIO) -> Callable[[], None]:
+    """Send the CLI's log lines that go to ``stream`` through ``through`` instead (the
+    progress guard on it), so a log line is never glued onto a progress bar. Returns a
+    function that sends them to ``stream`` again; nothing changes when the handler
+    writes elsewhere or there is no invocation in progress."""
+    hold = _hold.get()
+    if hold is None or hold.handler.stream is not stream:
+        return lambda: None
+    handler = hold.handler
+    handler.setStream(through)
+
+    def restore() -> None:
+        if handler.stream is through:
+            handler.setStream(stream)
+
+    return restore
 
 
 @contextmanager
