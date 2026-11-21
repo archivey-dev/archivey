@@ -1646,7 +1646,9 @@ def _followed_damaged_header(exc: CorruptionError, start: int) -> str:
 # How many damages ``RarArchive.damaged`` names before it only counts the rest, so a
 # crafted archive of thousands of damaged headers cannot grow the error with its size.
 _NAMED_DAMAGES = 4
-_MORE_DAMAGES = re.compile(r"; and (\d+) more damaged headers? (?:was|were) followed$")
+_MORE_DAMAGES = re.compile(
+    r"; and ([0-9]+) more damaged headers? (?:was|were) followed\Z"
+)
 
 
 def _add_damage(current: str | None, text: str) -> str:
