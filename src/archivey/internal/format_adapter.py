@@ -2401,7 +2401,11 @@ class SequentialReaderAdapter(_PluginAdapter):
             # A walk() that is not a generator steps, and may hold, in this call.
             self._walk_step = _LISTING if walk is self._listing_walk else _REWALK
             try:
-                return iter(self._sequential.walk(forward))
+                # It may also yield NeedsPassword requests, which every step takes
+                # through ``_walk_next`` and resolves before a span is seen.
+                return cast(
+                    "Iterator[MemberSpan]", iter(self._sequential.walk(forward))
+                )
             finally:
                 self._walk_step = None
 

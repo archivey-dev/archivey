@@ -53,7 +53,7 @@ import io
 import struct
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -1146,9 +1146,16 @@ class IndexedReader(FormatReader, Generic[LocatorT]):
     archive; ``False`` when :meth:`iter_members` walks headers through the file."""
 
     @abstractmethod
-    def iter_members(self) -> Iterator[MemberRecord[LocatorT]]:
+    def iter_members(
+        self,
+    ) -> (
+        Iterator[MemberRecord[LocatorT]]
+        | Generator[MemberRecord[LocatorT] | NeedsPassword[Any, Any], Any, None]
+    ):
         """Yield every member once, in archive order. The order must be the same on a
-        second call."""
+        second call. Where the listing itself is encrypted, yield a
+        :class:`NeedsPassword` (with no ``then``) and take its winner back from the
+        yield: ``unlocked, verdict = yield NeedsPassword(...)``."""
 
     @abstractmethod
     def open_member(
@@ -1201,7 +1208,12 @@ class SequentialReader(FormatReader):
     data streams over that layer a second time."""
 
     @abstractmethod
-    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    def walk(
+        self, stream: ForwardStream
+    ) -> (
+        Iterator[MemberSpan]
+        | Generator[MemberSpan | NeedsPassword[Any, Any], Any, None]
+    ):
         """Yield every member once, and return at the end of the archive. Each span's
         data starts where the stream is when it is yielded, so the stream only moves
         forward; members usually come in archive order, but a format may need another
@@ -1212,7 +1224,10 @@ class SequentialReader(FormatReader):
         archivey may walk again from the start, with a new stream; the members and
         their order must be the same. A walk may start while an earlier one is still
         open (to reach decoded ``MemberSpan.data`` again, possibly from several
-        threads), so keep a walk's state in the generator, not on the reader."""
+        threads), so keep a walk's state in the generator, not on the reader. Where
+        what follows is encrypted, yield a :class:`NeedsPassword` (with no ``then``)
+        and take its winner back from the yield:
+        ``unlocked, verdict = yield NeedsPassword(...)``."""
 
 
 class FormatHandler(ABC):

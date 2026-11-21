@@ -1211,7 +1211,7 @@ attribute archivey.formats.IndexedFormatHandler.uses_encoding = False
 class archivey.formats.IndexedReader(FormatReader, Generic[LocatorT])
 method archivey.formats.IndexedReader.archive_info(self) -> ReaderArchiveInfo
 method archivey.formats.IndexedReader.close(self) -> None
-method archivey.formats.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]]
+method archivey.formats.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]] | Generator[MemberRecord[LocatorT] | NeedsPassword[Any, Any], Any, None]
 attribute archivey.formats.IndexedReader.member_list_upfront = True
 method archivey.formats.IndexedReader.open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData | NeedsPassword[Any, MemberData]
 method archivey.formats.IndexedReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
@@ -1298,7 +1298,7 @@ method archivey.formats.SequentialReader.close(self) -> None
 attribute archivey.formats.SequentialReader.data_on_demand = False
 attribute archivey.formats.SequentialReader.link_target_in_data = False
 method archivey.formats.SequentialReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
-method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan]
+method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan] | Generator[MemberSpan | NeedsPassword[Any, Any], Any, None]
 function archivey.formats.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None
