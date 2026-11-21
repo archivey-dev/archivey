@@ -17,7 +17,7 @@
 
 ## B. UDIF, partitions and HFS+
 
-- [ ] B.1 Test writers in `tests/dmg_build.py`: UDIF, GPT, APM, HFS+ (may be its own PR)
+- [x] B.1 Test writers in `tests/dmg_build.py`: UDIF, GPT, APM, HFS+ (may be its own PR)
 - [ ] B.2 `udif.py` rewrite: `koly`, property list, run tables, `UdifSource`;
   stored-length and run-count bounds checked before any read or allocation (design §4.2,
   §4.3)

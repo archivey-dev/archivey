@@ -5657,14 +5657,18 @@ def test_unmatched_qo_copies_are_not_reported_without_a_clean_end(
     assert [m.filename for m in cut.members] == ["a.txt", "b.txt"]
     assert cut.damaged_service_headers == []
 
-    # a.txt is not in the patched QO, so the walk reads its own header, fails its
-    # CRC and stops there: both copies are unreached.
+    # a.txt is not in the patched QO, so the walk reads its own header and fails its
+    # CRC. Its sizes are intact, so the walk follows them and lists both members,
+    # a.txt flagged; the copies are not compared with a walk that met damage.
     (a, _b) = no_qo.members
     bad_header = bytearray(data)
     bad_header[a.header_offset] ^= 0xFF
     damaged = parse_rar_archive(io.BytesIO(bytes(bad_header)), use_qo=True)
     assert damaged.damaged is not None
-    assert damaged.members == []
+    assert [(m.filename, m.header_damaged) for m in damaged.members] == [
+        ("a.txt", True),
+        ("b.txt", False),
+    ]
     assert damaged.damaged_service_headers == []
 
     # The end block is the last 8 bytes and nothing follows it, so the walk keeps

@@ -203,6 +203,7 @@ def read_stored_header(
     size: int,
     header_keys: HeaderKeys | None = None,
     excluded: frozenset[OptionalLibrary],
+    damaged: bool = False,
 ) -> StoredHeader:
     """Read the header at ``offset`` (``size`` bytes, the walk's ``header_size``) again
     and parse it.
@@ -212,7 +213,9 @@ def read_stored_header(
     the header's RAR 1.5-4 salt or RAR5 IV, as the walk records it, and
     ``header_keys`` derives the key (RAR5 with the volume's KDF count, from
     :attr:`RarArchive.rar5_header_crypt`). A header whose own CRC fails raises
-    :class:`CorruptionError`.
+    :class:`CorruptionError`, unless ``damaged``: the walk listed the member from a
+    header that failed its CRC (``RarMemberInfo.header_damaged``), and the synthetic
+    header gets a fresh CRC, so ``unrar`` decodes it as it would from the original.
     """
     if archive.has_header_encryption:
         if header_keys is None:
@@ -233,24 +236,29 @@ def read_stored_header(
         raw = _decrypt(_read_exact(read_at, offset, padded), key, iv, excluded)[:size]
     else:
         raw = _read_exact(read_at, offset, size)
-    return parse_stored_header(archive.version, raw, offset=offset)
+    return parse_stored_header(archive.version, raw, offset=offset, damaged=damaged)
 
 
-def parse_stored_header(version: int, raw: bytes, *, offset: int = 0) -> StoredHeader:
-    """Parse the fields :func:`patch_header` and the listing check need from ``raw``."""
+def parse_stored_header(
+    version: int, raw: bytes, *, offset: int = 0, damaged: bool = False
+) -> StoredHeader:
+    """Parse the fields :func:`patch_header` and the listing check need from ``raw``.
+
+    ``damaged``: do not check the header's own CRC (:func:`read_stored_header`).
+    """
     try:
         if version == 5:
-            return _fields_rar5(raw, offset)
-        return _fields_rar3(raw, offset)
+            return _fields_rar5(raw, offset, damaged)
+        return _fields_rar3(raw, offset, damaged)
     except (struct.error, IndexError) as exc:
         raise CorruptionError(
             f"The RAR header at offset {offset} is cut short"
         ) from exc
 
 
-def _fields_rar5(raw: bytes, offset: int) -> StoredHeader:
+def _fields_rar5(raw: bytes, offset: int, damaged: bool) -> StoredHeader:
     (crc,) = struct.unpack_from("<I", raw)
-    if crc != zlib.crc32(memoryview(raw)[4:]):
+    if not damaged and crc != zlib.crc32(memoryview(raw)[4:]):
         raise CorruptionError(f"RAR5 header CRC mismatch at offset {offset}")
     _, q = load_vint(raw, 4)
     kind, q = load_vint(raw, q)
@@ -283,7 +291,7 @@ def _fields_rar5(raw: bytes, offset: int) -> StoredHeader:
     )
 
 
-def _fields_rar3(raw: bytes, offset: int) -> StoredHeader:
+def _fields_rar3(raw: bytes, offset: int, damaged: bool) -> StoredHeader:
     fixed = _RAR3_FIXED.unpack_from(raw)
     crc, kind, flags, hsize, pack, unp, _host, fcrc = fixed[:8]
     if kind not in (_RAR3_FILE, _RAR3_SUB) or not flags & _RAR3_LONG_BLOCK:
@@ -291,7 +299,9 @@ def _fields_rar3(raw: bytes, offset: int) -> StoredHeader:
             f"The RAR header at offset {offset} is not a file header (type {kind:#x})"
         )
     covered = _rar3_fields_end(raw) if kind == _RAR3_FILE else len(raw)
-    if hsize != len(raw) or crc != zlib.crc32(memoryview(raw)[2:covered]) & 0xFFFF:
+    if hsize != len(raw) or (
+        not damaged and crc != zlib.crc32(memoryview(raw)[2:covered]) & 0xFFFF
+    ):
         raise CorruptionError(f"RAR header CRC mismatch at offset {offset}")
     if flags & _RAR3_FILE_LARGE:
         high_pack, high_unp = _RAR3_HIGH.unpack_from(raw, _RAR3_FIXED.size)

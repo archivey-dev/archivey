@@ -13,6 +13,10 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
   :meth:`~SourceReadReporter.request_received` after each MiB of the answer. Each
   reaches the caller. The source over a range source then reports no bytes of its own:
   the requests already counted them.
+- The rapidgzip child, given a byte range of the file under an ``ArchiveSource``
+  (``file_region``), reads it itself with ``os.pread`` and notes each read; its
+  parent reports those to the source's reporter (``RegionReport``), on the caller's
+  thread, as if the source had read them.
 
 Nothing here runs when the callback is unset: the hooks check for a reporter first.
 

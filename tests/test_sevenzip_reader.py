@@ -2685,24 +2685,42 @@ def test_comment_terminator_trim_is_one_pass_over_a_long_run_of_nuls() -> None:
     The trimmed result must still be the per-code-unit one, checked against the old
     loop over every short tail.
     """
+    import gc
     import itertools
     import sys
 
     from archivey.internal.backends.sevenzip_parser import _Cursor, _read_comment
 
     payload = "hi".encode("utf-16le") + b"\x00" * 65_536
+    cursor = _Cursor(b"\x00" + payload)
+    trim_code = _read_comment.__code__
     calls = 0
 
-    def count(frame: object, event: str, arg: object) -> None:
+    # Count only the calls _read_comment makes itself. The profile hook sees every
+    # call on this thread, so a garbage-collection pass or a finalizer left over from
+    # another test that runs inside the window would otherwise add to the count. A
+    # C call reports the calling frame; a Python call reports the callee, whose
+    # caller is f_back. Collection is also paused, so no finalizer runs in between.
+    def count(frame: types.FrameType, event: str, arg: object) -> None:
         nonlocal calls
-        if event in ("call", "c_call"):
+        if event == "c_call":
+            caller = frame
+        elif event == "call":
+            caller = frame.f_back
+        else:
+            return
+        if caller is not None and caller.f_code is trim_code:
             calls += 1
 
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
     sys.setprofile(count)
     try:
-        result = _read_comment(_Cursor(b"\x00" + payload))
+        result = _read_comment(cursor)
     finally:
         sys.setprofile(None)
+        if gc_was_enabled:
+            gc.enable()
     assert result == "hi"
     assert calls < 50, calls
 

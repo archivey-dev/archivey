@@ -262,6 +262,15 @@ than with a diagnostic on every member.
   against a surviving digest before any are returned (2026-09-22, PR 401).
 - The RAR5 encryption record stays fatal: a member shown as plaintext would be a wrong
   answer (PR 371, `formats/rar.md` §6).
+- Salvage (2026-11-07, davi): "since the goal of salvage is to salvage as much as
+  possible, a file under a wrong name is better than nothing." A member listed from a
+  header that failed its CRC, once the next header confirms its sizes, is listed with
+  `MEMBER_HEADER_DAMAGED` on every read; its data is still checked by its own digest.
+  Nothing wrong is silent, so this rule holds. Exception to the ruling above: a damaged
+  RAR5 header whose encryption flag reads "not encrypted" lists the member as plaintext,
+  and its read then fails its CRC (`formats/rar.md` §1, `salvage-step-1`). TAR follows
+  the same rule (`salvage-step-2-tar`): it has no member digest, so only the member's
+  size is confirmed, by the intact header it points at; the read's diagnostic says so.
 - `created` never holds a change time in any format (DR-5).
 - Streams raise rather than clamp an over-long read (CONTRIBUTING §Coding standards).
 - A ZIP central entry whose name, extra or comment runs past the directory, swallows
