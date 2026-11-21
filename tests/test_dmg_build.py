@@ -27,7 +27,7 @@ import pytest
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
 from tests import dmg_build as d
-from tests.conftest import run_7z
+from tests.conftest import run_7z, sevenzip_version
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -671,6 +671,11 @@ _7Z_MAY_LACK = {f"comp/t{k}.txt" for k in (10, 11, 12)} | {
 
 
 @needs_7z
+@pytest.mark.skipif(
+    (sevenzip_version() or (0, 0)) < (23, 1),
+    reason="checked with 7-Zip 23.01 and later; p7zip 17.05 (Homebrew's 7z on macOS) "
+    "opens these volumes with a Headers Error",
+)
 @pytest.mark.parametrize("layout", ["gpt", "apm", "none"])
 @pytest.mark.parametrize("codec", _CODECS, ids=hex)
 def test_7zip_reads_images(tmp_path: Path, layout: str, codec: int) -> None:
