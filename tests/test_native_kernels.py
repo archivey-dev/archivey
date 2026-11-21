@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import logging
 import random
+import struct
 import types
 import zipfile
 from collections.abc import Callable
@@ -1054,6 +1055,51 @@ def test_a_panic_in_a_cab_lzx_read_is_corruption(
         with open_archive(io.BytesIO(raw), config=config) as reader:
             assert reader.read(names[0]).startswith(b"line 0 ")
         assert _FakeLzx.built == 0
+
+
+def _cab_blocks(raw: bytes) -> list[tuple[int, int]]:
+    """Each CFDATA block of a one-folder cabinet with no reserve: where its header
+    starts, and its payload size."""
+    first, count = struct.unpack_from("<IH", raw, 36)
+    blocks, at = [], first
+    for _ in range(count):
+        stored = struct.unpack_from("<H", raw, at + 4)[0]
+        blocks.append((at, stored))
+        at += 8 + stored
+    return blocks
+
+
+@needs_codecs
+@pytest.mark.parametrize("window", [15, 21])
+def test_cab_lzx_unchecked_damage_before_a_failed_block_reads_the_same(
+    window: int,
+) -> None:
+    """A block stored with checksum 0 is not checked, so damage in it reaches the
+    decoder; the next block fails its checksum. Which error a member gets depends
+    on whether the Python decoder pulls the failed block before it meets the
+    damage, and the kernel must decide the same way."""
+    text = b"".join(b"line %d\n" % i for i in range(30000))
+    files = [CabFile("a", text[:66536]), CabFile("b", text[66536:])]
+    encoder = LzxEncoder(
+        window_bits=window, blocks=("verbatim", "uncompressed"), block_size=9000
+    )
+    raw = write_cab(files, [CabFolder("lzx", window, encoder)])
+    blocks = _cab_blocks(raw)
+    differ = 0
+    for failed in range(1, len(blocks)):
+        unchecked, size = blocks[failed - 1]
+        for back in (1, 2, 3, 5, 9, 17, 255, size // 2, size - 1):
+            if not 0 < back <= size:
+                continue
+            bad = bytearray(raw)
+            bad[unchecked : unchecked + 4] = bytes(4)
+            bad[unchecked + 8 + size - back] ^= 0x40
+            bad[blocks[failed][0]] ^= 1
+            for order in (["a", "b"], ["b", "a"]):
+                kernel = _cab_results(bytes(bad), None, order)
+                python = _cab_results(bytes(bad), OFF, order)
+                differ += kernel != python
+    assert differ == 0
 
 
 # ── BCJ2 ──────────────────────────────────────────────────────────────────────────────

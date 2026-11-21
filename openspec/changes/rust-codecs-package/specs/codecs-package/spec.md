@@ -62,8 +62,9 @@ at most the input given plus the bytes it held back from the previous call, and
 (LZO, later LZFSE) SHALL be `decompress(block, *, out_size)` and SHALL never allocate
 more than `out_size` bytes; LZO SHALL also take `max_size=` in its place, for a
 container that records only the most a block may decode to (SquashFS), returning the
-block's output and never allocating more than `max_size` bytes. Every allocation SHALL be bounded by a constructor argument,
-`max_length`, the input length or `out_size`.
+block's output and never allocating more than `max_size` bytes. Every allocation SHALL be
+bounded by a constructor argument, `max_length`, the input length, `out_size` or
+`max_size`.
 
 #### Scenario: decoder interface
 

@@ -1010,6 +1010,9 @@ struct LzxDecompressor {
     /// where the stream does, and the input after it is given again, so the words
     /// the bit buffer fetched ahead are not given back a second time.
     split_at_end: bool,
+    /// After a decode error: the input the failed frame had read when it found the
+    /// error, counted as `total_in` counts it (look-ahead words included).
+    error_in: Option<u64>,
 }
 
 impl LzxDecompressor {
@@ -1028,6 +1031,7 @@ impl LzxDecompressor {
             taken: 0,
             total_out: 0,
             split_at_end: false,
+            error_in: None,
         })
     }
 
@@ -1134,7 +1138,8 @@ impl LzxDecompressor {
             let ended = self.ended;
             let before = self.consumed();
             let (inner, data) = (&mut self.inner, &self.pending[self.cursor..]);
-            let (got, used) = py.detach(|| {
+            let taken = self.taken;
+            let (got, used, error_in) = py.detach(|| {
                 let point = inner.checkpoint();
                 let mut feed = Feed {
                     data,
@@ -1142,10 +1147,12 @@ impl LzxDecompressor {
                     ended,
                 };
                 let got = inner.decode_frame(frame, &mut feed);
+                let mut error_in = None;
                 if got.is_err() {
+                    error_in = Some(taken + feed.pos as u64 - inner.unread_input().len() as u64);
                     inner.rollback(point);
                 }
-                (got, feed.pos)
+                (got, feed.pos, error_in)
             });
             match got {
                 Ok(bytes) => {
@@ -1166,8 +1173,14 @@ impl LzxDecompressor {
                 }
                 // The frame was undone, so the next call raises the same error: give
                 // back the bytes before it first.
-                Err(_) if !result.is_empty() => break,
-                Err(e) => return Err(lzx_error(e)),
+                Err(_) if !result.is_empty() => {
+                    self.error_in = error_in;
+                    break;
+                }
+                Err(e) => {
+                    self.error_in = error_in;
+                    return Err(lzx_error(e));
+                }
             }
         }
         Ok(result)
@@ -1296,6 +1309,7 @@ impl LzxDecompressor {
             last_used: 0,
             taken: total_in,
             split_at_end,
+            error_in: None,
         })
     }
 
@@ -1340,6 +1354,13 @@ impl LzxDecompressor {
         } else {
             self.consumed()
         }
+    }
+
+    /// After a decode error: the input the frame that failed had read when it
+    /// found the error, counted as `total_in` counts it; `None` before any error.
+    #[getter]
+    fn error_in(&self) -> Option<u64> {
+        self.error_in
     }
 
     #[getter]
