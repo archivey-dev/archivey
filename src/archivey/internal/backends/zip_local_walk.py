@@ -1182,11 +1182,13 @@ class LocalHeaderWalk:
             return None
         if struct.unpack_from("<H", fixed, 6)[0] & _FLAG_DATA_DESCRIPTOR:
             return None
-        compressed, _ = local_zip64_sizes(
+        compressed, size = local_zip64_sizes(
             whole[LOCAL_HEADER_SIZE + struct.unpack_from("<H", fixed, 26)[0] :],
             *local_stored_sizes(fixed),
         )
-        if compressed is None:
+        # Either size deferred to a ZIP64 field that does not hold it would make
+        # _read_local_header raise and end the pass; the old path goes on instead.
+        if compressed is None or size is None:
             return None
         end = LOCAL_HEADER_SIZE + variable_len + compressed
         if end > _DAMAGED_HEADER_HOLD:
@@ -1194,6 +1196,8 @@ class LocalHeaderWalk:
         after = self.source.peek(end + 4)[end:]
         if after not in _AFTER_MEMBER:
             return None
+        # Swap the damaged signature for PK\3\4 in the pushback buffer on purpose,
+        # so the header parses as usual; damaged_signature records the swap.
         self.source.read(4)
         self.source.unread(fixed[:4])
         return replace(self._read_local_header(), damaged_signature=True)

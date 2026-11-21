@@ -161,3 +161,44 @@ class _Unseekable(io.RawIOBase):
 
     def flush(self) -> None:
         pass
+
+
+def test_a_damaged_header_with_a_size_no_zip64_field_holds_is_not_followed() -> None:
+    """The uncompressed size deferred to a ZIP64 field the header lacks: the header
+    is not followed, and the walk takes the old path, which still reads the members
+    after it from the bytes held for the directory."""
+    data, offsets = _build(_CONTENTS, zipfile.ZIP_STORED)
+    out = bytearray(_flip(data, offsets[2] + 1))
+    out[offsets[2] + 22 : offsets[2] + 26] = b"\xff\xff\xff\xff"
+    seen, error = _pass(bytes(out), "pipe")
+    assert [name for name, _ in seen] == [
+        "dir/file0.txt",
+        "dir/file1.txt",
+        "dir/file3.txt",
+        "dir/file4.txt",
+    ]
+    assert [content for _, content in seen] == [_CONTENTS[i] for i in (0, 1, 3, 4)]
+    assert isinstance(error, CorruptionError)
+    assert "dir/file2.txt" in str(error)
+
+
+@pytest.mark.parametrize(
+    ("size", "followed"),
+    [(KEEP_BYTES - 200, True), (KEEP_BYTES, False)],
+)
+def test_the_pipe_follows_a_damaged_header_only_within_its_hold(
+    size: int, followed: bool
+) -> None:
+    contents = [b"a" * 10, os.urandom(size), b"c" * 10]
+    data, offsets = _build(contents, zipfile.ZIP_STORED)
+    seen, error = _pass(_flip(data, offsets[1] + 1), "pipe")
+    names = [name for name, _ in seen]
+    if followed:
+        assert error is None
+        assert names == ["dir/file0.txt", "dir/file1.txt", "dir/file2.txt"]
+        assert "Bad magic number" in str(seen[1][1])
+    else:
+        assert names == ["dir/file0.txt", "dir/file2.txt"]
+        assert isinstance(error, CorruptionError)
+        assert "dir/file1.txt" in str(error)
+    assert seen[-1][1] == contents[2]
