@@ -112,6 +112,22 @@ A ZIP read from a pipe gives you its members before its index, which comes last,
 shows only once the index has been read, and iterating raises it after the last member. A member the
 index doesn't list, such as an update appended to the archive, is dropped from the list then and
 logged as `ARCHIVE_UNLISTED_DATA`, since reading the same archive from a file never sees it.
+If the signature of one member's header is damaged, reading that member fails, from a pipe as from a
+file, and the members after it read as usual.
+
+When the header of a RAR member is damaged, archivey does what `unrar` does: it takes the
+position of the next header from the damaged one, and goes on if the header there is intact. You
+get every member, the damaged one included, and then the exception. The damaged member's data is
+still checked against its checksum, but its name, times and other fields could be wrong, so each
+read of it records `MEMBER_HEADER_DAMAGED`. Under `STRICT`, reading that member raises and the
+other members can still be read. From a pipe, archivey can look ahead only 4 MiB, so if the
+damaged member is larger, the list stops there; save the archive to a file to get the rest.
+
+TAR works the same way. When a TAR header fails its checksum but still has the `ustar` magic,
+archivey takes the damaged member's size from it and goes on if the header at that position is
+intact (or if it is the end of the archive). The damaged member is listed and records
+`MEMBER_HEADER_DAMAGED` on each read. A TAR member has no checksum, so nothing checks its data:
+only its size is confirmed, by the intact header after it. The 4 MiB pipe limit applies here too.
 
 Where the format stores a checksum for each member, reading a member from start to end checks it,
 and the read that reaches the end raises if the data is damaged. If you stop early, nothing is

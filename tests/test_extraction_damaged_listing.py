@@ -41,7 +41,8 @@ def _rar_cut(fixture: str, *, rar4: bool, file_index: int) -> bytes:
 
 def _tar_with_hardlink() -> bytes:
     """``a.txt``, ``b.txt`` (a hard link to ``a.txt``), then ``c.txt`` and ``d.txt``
-    with the header of ``c.txt`` damaged: its checksum field is not a number."""
+    with the header of ``c.txt`` damaged: its checksum and size fields are not
+    numbers, so the walk cannot follow its size to ``d.txt``."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
         info = tarfile.TarInfo("a.txt")
@@ -57,6 +58,7 @@ def _tar_with_hardlink() -> bytes:
             tf.addfile(info, io.BytesIO(b"ccc"))
     data = bytearray(buf.getvalue())
     # 512 header + 512 data for a.txt, 512 header for b.txt; c.txt's header at 1536.
+    data[1536 + 124 : 1536 + 136] = b"XXXXXXXXXXXX"
     data[1536 + 148 : 1536 + 156] = b"XXXXXXXX"
     return bytes(data)
 

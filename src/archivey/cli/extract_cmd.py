@@ -1636,6 +1636,12 @@ def run_extract(
         if outer
         else None
     )
+    base_progress: ProgressCallback | None = make_progress_callback(
+        hide_progress=hide_progress, stream=err
+    )
+    if base_progress is not None:
+        # Every stderr line clears the status line and the bar first.
+        err = base_progress.guard(err)
 
     with open_for_cli(
         archive,
@@ -1644,6 +1650,9 @@ def run_extract(
         config=config,
         err=err,
         format=fmt,
+        # The reads of the archive's file: a status line until the first member, and
+        # the bar's position when the members' total size is unknown.
+        progress=base_progress,
     ) as reader:
         # A complete free index settles the patterns before anything is written.
         # Without one, or with one that ends in damage, the extraction's own pass
@@ -1671,9 +1680,6 @@ def run_extract(
                 print(f"{verb} into {escape_path(plan.target)}/", file=err)
         target = plan.target
 
-        base_progress: ProgressCallback | None = make_progress_callback(
-            hide_progress=hide_progress, stream=err
-        )
         # Under STOP, extract_all raises without returning a report — track how
         # many members were extracted / blocked before the stop via progress (Q1.5).
         members_extracted = 0
@@ -1716,6 +1722,9 @@ def run_extract(
                 # DiagnosticRaisedError). Exit 1 always on abort (Q8 Option A):
                 # exit 3 is reserved for a *completed* run with policy blocks and
                 # safe members on disk (blocks never abort under STOP).
+                if base_progress is not None:
+                    # The pass is over: the bar goes before the report lines.
+                    base_progress.close()
                 _report_stop(
                     exc,
                     extracted=members_extracted,
@@ -1724,6 +1733,10 @@ def run_extract(
                     err=err,
                 )
                 return EXIT_FAIL
+            if base_progress is not None:
+                # The pass is over: the bar goes before the report lines, so it is
+                # not drawn again under the summary.
+                base_progress.close()
             if pred is not None and not selection.settled:
                 if len(report) == 0 and selection.selects_nothing:
                     # Removed before the warning, whose -d hint looks for a directory

@@ -75,6 +75,12 @@ def run_test(
         if outer
         else None
     )
+    on_progress: ProgressCallback | None = make_progress_callback(
+        hide_progress=hide_progress, stream=err
+    )
+    if on_progress is not None:
+        # Every stderr line clears the status line and the bar first.
+        err = on_progress.guard(err)
     with open_for_cli(
         archive,
         password=pwd,
@@ -82,6 +88,9 @@ def run_test(
         config=config,
         err=err,
         format=fmt,
+        # The reads of the archive's file: a status line until the first member, and
+        # the bar's position when the members' total size is unknown.
+        progress=on_progress,
     ) as reader:
         indexed = reader.members_report_if_available()
         total_bytes: int | None = None
@@ -95,9 +104,6 @@ def run_test(
                 return EXIT_FAIL
             members_total, total_bytes = _indexed_totals(selected)
 
-        on_progress: ProgressCallback | None = make_progress_callback(
-            hide_progress=hide_progress, stream=err
-        )
         progress = _PassProgress(members_total=members_total, total_bytes=total_bytes)
         pending_links: list[ArchiveMember] = []
         untested_dirs = 0
