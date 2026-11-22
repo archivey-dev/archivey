@@ -508,7 +508,7 @@ class NativeLzx:
     as there.
     """
 
-    __slots__ = ("_d", "_ended", "_latch", "_module", "_more", "_sized")
+    __slots__ = ("_d", "_decoded", "_ended", "_latch", "_module", "_more", "_sized")
 
     # Its kernel object may be in a decoder child (``release_decoder``).
     holds_decoder_child = True
@@ -527,6 +527,7 @@ class NativeLzx:
         self._more = more
         self._ended = False  # ``more`` returned ``None`` and the kernel was flushed
         self._sized = output_size is not None
+        self._decoded = 0  # the frames returned, each one whole
 
     def decode_frame(self, frame_size: int) -> bytes:
         """The next frame: ``frame_size`` bytes, 32 KiB except the last, as the
@@ -537,9 +538,8 @@ class NativeLzx:
                 # Without an output size the kernel ends the stream where its input
                 # does, at a frame boundary. The Python decoder decodes the frame it
                 # is asked for from the zero padding instead (and fails on it), so
-                # the kernel is told this frame is wanted. Every frame is returned
-                # whole, so ``total_out`` is what the kernel decoded.
-                d.set_output_size(d.total_out + frame_size)
+                # the kernel is told this frame is wanted.
+                d.set_output_size(self._decoded + frame_size)
             while True:
                 out = (
                     d.flush(frame_size)
@@ -547,6 +547,7 @@ class NativeLzx:
                     else d.decompress(b"", frame_size)
                 )
                 if out:
+                    self._decoded += len(out)
                     return out
                 if self._ended or d.eof:
                     # The Python decoder's refusal of a frame past its input's end.
@@ -557,6 +558,7 @@ class NativeLzx:
                     continue
                 out = d.decompress(data, frame_size)
                 if out:
+                    self._decoded += len(out)
                     return out
 
     def close(self) -> None:
