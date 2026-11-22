@@ -105,6 +105,18 @@ def test_lzo_exact_size() -> None:
         lzo1x.decompress(_LZO_ABC + b"x", out_size=3)
 
 
+def test_lzo_max_size_is_a_bound() -> None:
+    """SquashFS gives only the most a block may decode to: ``max_size=`` returns
+    the block's bytes when they fit, and refuses one that decodes to more."""
+    assert lzo1x.decompress(_LZO_ABC, max_size=3) == b"abc"
+    assert lzo1x.decompress(_LZO_ABC, max_size=4096) == b"abc"
+    with pytest.raises(CorruptDataError, match="more than 2 bytes"):
+        lzo1x.decompress(_LZO_ABC, max_size=2)
+    for kwargs in ({}, {"out_size": 3, "max_size": 3}):
+        with pytest.raises(TypeError, match="exactly one of out_size= and max_size="):
+            lzo1x.decompress(_LZO_ABC, **kwargs)
+
+
 # ── Branch filters ─────────────────────────────────────────────────────────────────
 
 

@@ -14,9 +14,9 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V, LZW), the call's ``process_isolation`` is not
-  ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python twin keeps
-  that setting's promise that no native decoder runs in this process.
+- for a decoding kernel (ARM64, RISC-V, LZW, LZO1X), the call's ``process_isolation``
+  is not ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python
+  twin keeps that setting's promise that no native decoder runs in this process.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
 ``BaseException`` that passes ``except Exception``. :func:`panic_to_corruption` turns it
@@ -42,6 +42,7 @@ from archivey.types import OptionalLibrary
 MIN_REVISIONS: dict[str, int] = {
     "arm64": 1,
     "crc16_arc": 1,
+    "lzo1x": 1,
     "lzw": 1,
     "riscv": 1,
     "zipcrypto": 1,
