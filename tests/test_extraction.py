@@ -6929,7 +6929,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {written}
     # The claim the earlier FILE member left behind, keyed casefold(NFC(...)).
-    collision_map = {"readme": _Claim(written, 0, written)}
+    collision_map = {"readme": _Claim(written, 0, written, "readme")}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
     coordinator._state = _RunState(
@@ -6963,7 +6963,7 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     other = dest / "other.txt"
-    collision_map = {"other.txt": _Claim(other, 0, other)}
+    collision_map = {"other.txt": _Claim(other, 0, other, "other.txt")}
     anti = ArchiveMember(type=MemberType.ANTI, name="README")
 
     coordinator._state = _RunState(
@@ -6980,7 +6980,7 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
     coordinator._apply_anti_item(anti, pre_existing)
 
     assert pre_existing.read_bytes() == b"not ours"  # never ours to delete
-    assert collision_map == {"other.txt": _Claim(other, 0, other)}
+    assert collision_map == {"other.txt": _Claim(other, 0, other, "other.txt")}
 
 
 def test_anti_item_finds_a_case_variant_through_the_collision_map(
@@ -7002,7 +7002,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {written}
-    collision_map = {"readme": _Claim(written, 0, written)}
+    collision_map = {"readme": _Claim(written, 0, written, "readme")}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
     coordinator._state = _RunState(
@@ -7042,7 +7042,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.TRUSTED)
     written_paths = {written}
-    collision_map = {"README": _Claim(written, 0, written)}
+    collision_map = {"README": _Claim(written, 0, written, "README")}
     anti = ArchiveMember(type=MemberType.ANTI, name="readme")
 
     coordinator._state = _RunState(
@@ -7060,7 +7060,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
 
     assert written.read_bytes() == b"A"
     assert written_paths == {written}
-    assert collision_map == {"README": _Claim(written, 0, written)}
+    assert collision_map == {"README": _Claim(written, 0, written, "README")}
 
 
 def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
@@ -7083,7 +7083,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
 
     coordinator = ExtractionCoordinator(policy=ExtractionPolicy.STRICT)
     written_paths = {directory, file_}
-    collision_map = {"x": _Claim(file_, 1, file_)}
+    collision_map = {"x": _Claim(file_, 1, file_, "x")}
     anti = ArchiveMember(type=MemberType.ANTI, name="x")
 
     coordinator._state = _RunState(
@@ -7102,7 +7102,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     assert result.path == directory
     assert not directory.exists()
     assert file_.read_bytes() == b"F"
-    assert collision_map == {"x": _Claim(file_, 1, file_)}
+    assert collision_map == {"x": _Claim(file_, 1, file_, "x")}
 
 
 @pytest.mark.parametrize(
@@ -7827,3 +7827,47 @@ def test_a_run_link_made_where_a_parent_was_looked_up_before_is_refused(
     statuses = {r.member.name: r.status for r in report.results}
     assert statuses["p/x"] is ExtractionStatus.BLOCKED
     assert not (dest / "e" / "x").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks and hard links of one file")
+@pytest.mark.parametrize("overwrite", [OverwritePolicy.REPLACE, OverwritePolicy.ERROR])
+# ``e/A`` has the name ``s/A`` has, so only the key tells them apart.
+@pytest.mark.parametrize("link", ["b", "e/A"])
+def test_a_hard_link_does_not_take_the_claim_of_its_target(
+    tmp_path: Path, overwrite: OverwritePolicy, link: str
+) -> None:
+    # The link is a hard link of ``d/A``, so two claims share one inode. ``s/A``
+    # reaches ``d/A`` through the caller's symlink: it collides with ``d/A``, whose
+    # claim is under its own key, and not with the link, whatever the identity
+    # index would answer for the file.
+    dest = tmp_path / "out"
+    (dest / "d").mkdir(parents=True)
+    (dest / "e").mkdir()
+    (dest / "s").symlink_to("d")
+    archive = _tar_bytes(
+        [("file", "d/A", b"one"), ("hard", link, "d/A"), ("file", "s/A", b"two")]
+    )
+    if overwrite is OverwritePolicy.ERROR:
+        with pytest.raises(ExtractionError) as info:
+            open_and_extract(
+                io.BytesIO(archive),
+                dest,
+                policy=ExtractionPolicy.STANDARD,
+                overwrite=overwrite,
+            )
+        assert os.fspath(dest / "d" / "A") in str(info.value)
+        return
+    report = open_and_extract(
+        io.BytesIO(archive),
+        dest,
+        policy=ExtractionPolicy.STANDARD,
+        overwrite=overwrite,
+    )
+    assert [r.status for r in report.results] == [
+        ExtractionStatus.OVERWRITTEN,
+        ExtractionStatus.EXTRACTED,
+        ExtractionStatus.EXTRACTED,
+    ]
+    assert report.results[2].path == dest / "d" / "A"
+    assert (dest / "d" / "A").read_bytes() == b"two"
+    assert (dest / link).read_bytes() == b"one"

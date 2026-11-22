@@ -2606,16 +2606,24 @@ class ExtractionCoordinator:
             requested
         ):
             return requested, None, None
-        # The owner of the entry there now: the claim whose file it is, under any
-        # name the filesystem gives that file (a case variant on a case-insensitive
+        # The owner of the entry there now: the claim under the key when the entry
+        # is its file, else the claim whose file it is, under any name the
+        # filesystem gives that file (a case variant on a case-insensitive
         # filesystem, an 8.3 short name), else the claim under the key. Under TRUSTED
-        # it raises no collision (``collided`` below), but a landing over it still
-        # retires its claim, and a partial file it kept loses its path.
+        # it raises no collision (``collided`` below), but a REPLACE landing over it
+        # still retires its claim, and a partial file it kept loses its path; for
+        # anything else there the key's answer serves, and costs no ``lstat``.
         placements = self._state.placements
+        occupied = self._occupied(requested) if placements else None
         prior = placements.owner(
             requested,
             self._collision_key(requested),
-            occupied=bool(placements) and self._occupied(requested),
+            occupied=bool(occupied)
+            and (
+                self._policy is not ExtractionPolicy.TRUSTED
+                or self._overwrite is OverwritePolicy.REPLACE
+                or self._on_error is OnError.KEEP_PARTIAL
+            ),
         )
         self._current.owner = prior
         collided = (
@@ -2633,7 +2641,9 @@ class ExtractionCoordinator:
             self._check_collision_abort(original, collided, directory=prior is None)
         if self._overwrite is OverwritePolicy.RENAME:
             self._current.rename_base = requested
-            if prior is not None or self._occupied(requested):
+            if prior is not None or (
+                occupied if occupied is not None else self._occupied(requested)
+            ):
                 is_dir = transformed.type == MemberType.DIRECTORY
                 free = self._derive_free_name(requested, is_dir=is_dir)
                 return free, None, collided
