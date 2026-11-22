@@ -863,6 +863,9 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
+    # Under TRUSTED with KEEP_PARTIAL: the run's claim on the entry this member's
+    # destination already names, by any spelling (``_resolve_collision``).
+    trusted_prior: _Claim | None = None
     # The member's data as the pass staged it (``_stage_then_place``): a FILE written
     # from it lands by renaming or linking it (``_write_file_atomic``), and its bytes
     # were counted when it was staged.
@@ -2383,7 +2386,7 @@ class ExtractionCoordinator:
             # so that member's result must stop reporting it EXTRACTED. This member's
             # own result is recorded by the caller's handler.
             if self._current.removed_existing:
-                self._mark_overwritten(prior or self._trusted_kept_partial(dest_path))
+                self._mark_overwritten(prior or self._trusted_kept_partial())
             raise
 
         return self._settle_placement(
@@ -2430,8 +2433,7 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path. A
         # partial file ``OnError.KEEP_PARTIAL`` kept landed as well.
         if _wrote_at_path(result):
-            assert result.path is not None
-            self._mark_overwritten(prior or self._trusted_kept_partial(result.path))
+            self._mark_overwritten(prior or self._trusted_kept_partial())
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
@@ -2633,6 +2635,17 @@ class ExtractionCoordinator:
             # TRUSTED reports no collision event (``collided`` below), so an alias
             # found there would change nothing; the guard saves its ``lstat``.
             prior = self._alias_claim(requested)
+        if (
+            self._policy is ExtractionPolicy.TRUSTED
+            and self._on_error is OnError.KEEP_PARTIAL
+        ):
+            # TRUSTED reports no collision, but a kept partial file this member
+            # lands on must lose its path (``_trusted_kept_partial``). The identity
+            # match finds it under any name the filesystem gives it: a case
+            # variant on a case-insensitive one, or an 8.3 short name.
+            self._current.trusted_prior = (
+                prior if prior is not None else self._alias_claim(requested)
+            )
         collided = (
             prior.path
             if prior is not None and self._policy is not ExtractionPolicy.TRUSTED
@@ -4487,21 +4500,20 @@ class ExtractionCoordinator:
         unremoved.clear()
         return first
 
-    def _trusted_kept_partial(self, path: Path) -> _Claim | None:
+    def _trusted_kept_partial(self) -> _Claim | None:
         """Under TRUSTED, the claim of a partial file ``OnError.KEEP_PARTIAL`` kept at
-        the entry ``path`` reaches, by any name, or ``None``.
+        the entry this member's destination names, by any name, or ``None``.
 
         TRUSTED reports no collision, so ``_resolve_collision`` returns no prior claim
         and an earlier member keeps its result when a later one lands on its name. A
         kept partial file is different: its FAILED result must stop naming a path that
-        now holds the later member's content."""
-        if self._policy is not ExtractionPolicy.TRUSTED:
-            return None
-        # The key resolves the parent, and the physical paths compare where each name
-        # is: a name that reaches the kept file through a directory alias matches,
-        # as the exact spelling does.
-        claim = self._state.collision_map.get(self._collision_key(path))
-        if claim is None or claim.physical != self._physical_path(path):
+        now holds the later member's content. The claim is the one
+        ``_resolve_collision`` found for the entry: by key (the parent resolved, so a
+        directory alias matches) or by file identity (a case variant on a
+        case-insensitive filesystem). Two names the filesystem keeps apart find
+        nothing, and both results stand."""
+        claim = self._current.trusted_prior
+        if claim is None:
             return None
         earlier = self._state.results[claim.result_index]
         if earlier.status is not ExtractionStatus.FAILED or earlier.path is None:

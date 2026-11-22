@@ -34,6 +34,7 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.terminal import display_path
+from tests.conftest import case_sensitive
 from tests.extract_util import open_and_extract
 from tests.streams_util import NonSeekableBytesIO
 
@@ -532,3 +533,40 @@ def test_trusted_later_member_through_an_alias_clears_the_kept_path(
     assert (dest / "real" / "a.bin").read_bytes() == b"second"
     assert first.status is ExtractionStatus.FAILED
     assert first.path is None
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_trusted_case_variant_over_a_kept_partial(tmp_path: Path, mode: str) -> None:
+    # Under TRUSTED and REPLACE, ``a.bin`` after the damaged ``A.bin``. Where the
+    # filesystem folds case, it lands over the kept partial file, and the failed
+    # result loses its path. Where it keeps the names apart, both files stay and
+    # both results name their own.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("A.bin", _PAYLOAD)
+        zf.writestr("a.bin", b"second")
+    data = bytearray(buf.getvalue())
+    data[data.find(_PAYLOAD[:4096]) + 100] ^= 0xFF
+    src = tmp_path / "case.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    dest.mkdir()
+    folds = not case_sensitive(dest)
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        on_error=OnError.KEEP_PARTIAL,
+        overwrite=OverwritePolicy.REPLACE,
+        policy=ExtractionPolicy.TRUSTED,
+    )
+    first, second = report.results
+    assert first.status is ExtractionStatus.FAILED
+    assert second.status is ExtractionStatus.EXTRACTED
+    assert (dest / "a.bin").read_bytes() == b"second"
+    if folds:
+        assert first.path is None
+    else:
+        assert first.path == dest / "A.bin"
+        assert (dest / "A.bin").read_bytes()[:100] == _PAYLOAD[:100]

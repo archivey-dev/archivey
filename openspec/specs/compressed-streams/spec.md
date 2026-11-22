@@ -1091,8 +1091,11 @@ With `recover_partial_data=ALL`, recovery is as under the default (`BEFORE_DAMAG
 a member stream from `open()` or `stream_members()` SHALL also return the bytes of a
 read whose checksum or size check fails; the next read SHALL raise the error the default
 raises, and the member's verification level SHALL NOT rise. A `read()` to the end SHALL
-return every byte read before a failure and raise it on the next read. A bool for the
-field SHALL raise `ArchiveyUsageError`, naming the level that does what it did.
+return every byte read before a failure that finds the data damaged (a
+`CorruptionError`, or an error raised from one) and raise it on the next read. A
+resource limit, a raised diagnostic or the caller's `on_source_read` exception SHALL
+raise from the read that meets it, at every level. A bool for the field SHALL raise
+`ArchiveyUsageError`, naming the level that does what it did.
 
 #### Scenario: a CRC failure at ALL
 
