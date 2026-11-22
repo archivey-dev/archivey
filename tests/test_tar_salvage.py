@@ -1071,8 +1071,9 @@ def test_an_indexed_codec_tar_lists_what_the_tar_lists_and_decodes_it_once(
 ) -> None:
     """A bgzip or Seekable Zstandard tar damaged before four members bigger than
     the hold: the salvage listing lists what the plain tar lists and decodes the
-    stream no more than the default listing of the intact tar does, about once
-    (the window seeks an indexed codec, and reads any other through)."""
+    stream about once. Every found member is confirmed and no gap is recorded, so
+    there is no pass 2 and the window never jumps a restart point here (the
+    two-gap test below makes it jump)."""
     data = _big_after_damage()
     plain = _list(data, salvage=True)
     with open_archive(io.BytesIO(_indexed(kind, data)), salvage=True) as reader:
@@ -1081,6 +1082,50 @@ def test_an_indexed_codec_tar_lists_what_the_tar_lists_and_decodes_it_once(
         decoded = reader._listing_decode.drawn  # type: ignore[attr-defined]
     assert names == plain.names
     assert decoded <= len(data) + (1 << 20)
+
+
+def _two_gaps() -> bytes:
+    """``a``, a damaged block, ``liar1`` claiming 8 MiB, eight 600 kB members,
+    twelve 1 MB members, another damaged block, ``liar2`` claiming 8 MiB, eight
+    600 kB members and the end marker: pass 1 records a gap inside each liar's
+    claim, and pass 2 searches both."""
+    rng = random.Random(7)
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    def member(name: str, size: int) -> bytes:
+        return header(name, size) + rng.randbytes(size) + bytes(-size % BLOCKSIZE)
+
+    damaged = b"\x01" * BLOCKSIZE
+    out = member("a", 3) + damaged + header("liar1", 8 << 20)
+    out += b"".join(member(f"s{i}", 600_000) for i in range(8))
+    out += b"".join(member(f"m{i}", 1_000_000) for i in range(12))
+    out += damaged + header("liar2", 8 << 20)
+    out += b"".join(member(f"u{i}", 600_000) for i in range(8))
+    return out + bytes(2 * BLOCKSIZE)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["bgzf", pytest.param("seekable-zstd", marks=requires_zstd())],
+)
+def test_an_indexed_codec_tar_with_two_gaps_seeks_its_second_pass(kind: str) -> None:
+    """A bgzip or Seekable Zstandard tar with two gaps: pass 2 goes back to the
+    first gap and moves forward to the second by a seek to a restart point that
+    pass 1's decode found, so it decodes much less than a second whole pass. The
+    listing is the plain tar's (about 1.25 times the tar size; reading through
+    instead, as a5be70b3 did, decodes about twice it)."""
+    data = _two_gaps()
+    plain = _list(data, salvage=True)
+    with open_archive(io.BytesIO(_indexed(kind, data)), salvage=True) as reader:
+        names = [m.name for m in reader.members_report().members]
+        assert reader._listing_decode is not None  # type: ignore[attr-defined]
+        decoded = reader._listing_decode.drawn  # type: ignore[attr-defined]
+    assert names == plain.names
+    assert decoded < 1.4 * len(data), decoded / len(data)
 
 
 class _SeekCounting(io.BytesIO):

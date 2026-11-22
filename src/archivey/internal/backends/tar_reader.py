@@ -1401,8 +1401,11 @@ class TarReader(BaseArchiveReader):
         the normal walk reached after a confirmed found member. For a member a search
         found, the next search starts at the block after its header when nothing
         confirms it (design decision 6); ``None`` lets the normal walk go on. A
-        member the normal walk reached is followed by the normal walk either way, and
-        its next damage starts a search where that damage is.
+        member the normal walk reached is followed by the walk when the block at its
+        claimed end confirms it, or when a forward-only walk cannot see that far
+        (its size is then trusted). Otherwise it is searched inside, as a found
+        member that nothing confirms: its size points past the archive's end, or
+        the block at its claimed end is not a header.
 
         On a codec walk (the two-pass rule, design.md "Notes from the TAR PR"), the
         first pass looks at the block after a found member's data by decoding
