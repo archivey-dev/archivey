@@ -132,9 +132,10 @@ several candidates, or a provider, each one is decoded in full before the read: 
 garbled member then costs two decodes. A single password with no provider is decoded
 once, and a wrong one fails the read itself with the wrong-password-or-damage
 `EncryptionError` (decoder failures included, as for a ZIP member). The full checks
-decode outside the member handle, so its ratio guard never sees them: before the
-request goes out, `_check_ratio` refuses a member whose recorded sizes break
-`max_ratio`, with the `ResourceLimitError` an extraction's size check raises. Fixtures:
+decode outside the member handle, so its ratio guard never sees them: before the request
+goes out, `_check_ratio` refuses a member whose recorded sizes break `max_ratio`, with
+the `ResourceLimitError` an extraction's size check raises. A recorded compressed size
+of 0 skips that check: the decoder then stops on the empty input. Fixtures:
 `garbled.arj`, `garbled_m1.arj`, `garbled_m4.arj` (`tests/fixtures/external/README.md`).
 
 ## 6. Tests and fixtures

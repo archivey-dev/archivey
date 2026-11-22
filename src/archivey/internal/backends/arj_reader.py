@@ -651,7 +651,8 @@ class ArjReader(_Headers, IndexedReader[_Location]):
         The full check decodes the member to its header's size once per candidate
         password, outside the member handle and so outside its ratio guard. That size
         bounds each decode, so this check, the one archivey makes from recorded sizes
-        before an extraction, bounds them all before any of them runs."""
+        before an extraction, bounds them all before any of them runs. A recorded
+        compressed size of 0 skips it: the decoder then stops on the empty input."""
         limits = self._context.config.decoder_limits
         size = member.size or 0
         if limits.max_ratio is None or not locator.stored:

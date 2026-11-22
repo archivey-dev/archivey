@@ -537,6 +537,9 @@ def test_a_closed_reader_keeps_no_saved_winner(
         reader.read(member)
         assert reader._saved_winners
     assert reader._saved_winners == {}
+    # A sequential reader's walks keep none either.
+    listing = getattr(reader, "_listing_walk", None)
+    assert listing is None or listing.winners == {}
 
 
 def test_two_threads_share_one_provider_turn(

@@ -2131,7 +2131,7 @@ class BaseArchiveReader(ArchiveReader):
         ):
             seekable = self._seek_declared() and is_seekable(inner)
         # Positional: this runs once per member, and keywords cost more than the
-        # build itself (18 fields: about 0.9 us by keyword, 0.3 us positional, on
+        # build itself (19 fields: about 0.9 us by keyword, 0.3 us positional, on
         # CPython 3.13). The names match the parameters, in order.
         return MemberStreamParts(
             inner,

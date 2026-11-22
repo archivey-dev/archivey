@@ -1975,6 +1975,8 @@ class _Walk:
         self.winners: dict[tuple[object, ...], SavedWinner] = {}
 
     def close(self) -> None:
+        # A closed walk keeps no password it won.
+        self.winners.clear()
         views, self.views = self.views, []
         for view in reversed(views):
             view.close()
