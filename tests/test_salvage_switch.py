@@ -322,7 +322,8 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
 def test_a_reader_built_again_opens_its_own_inner_readers_as_repeats() -> None:
     """A tar inside two BOXES layers: reading a listed member walks the outer BOXES
     again, which builds the middle one again, whose own listing walk builds the
-    tar again. Neither records ``SALVAGE_UNAVAILABLE`` a second time."""
+    tar again. Neither BOXES layer records ``SALVAGE_UNAVAILABLE`` a second time,
+    and the tar, which salvages, records none."""
     from tests.test_format_api_nested import (
         _KINDS,
         BoxesHandler,
@@ -350,5 +351,5 @@ def test_a_reader_built_again_opens_its_own_inner_readers_as_repeats() -> None:
                 ]
     finally:
         del _KINDS[b"B"]
-    assert formats == ["BOXES", "BOXES", "TAR"]
-    assert seen.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 3
+    assert formats == ["BOXES", "BOXES"]
+    assert seen.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 2
