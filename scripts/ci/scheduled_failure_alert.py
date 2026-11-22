@@ -16,7 +16,8 @@ open issue per workflow, titled ``Scheduled run failing: <workflow>``:
   as a failure although no code ran. When the workflow's previous scheduled or
   post-merge run on `main` lost a job the same way, the run reports as a failure that
   names the lost jobs, so a shortage that lasts, or a job no runner can ever take, is
-  not silent. A job that failed or timed out always reports the run.
+  not silent. A job that failed, timed out, or started and was then cancelled always
+  reports the run.
 - **A green scheduled run** closes the issue. A green ``push`` run closes nothing: some
   workflows search for much less time after a merge than on their schedule.
 
@@ -82,21 +83,24 @@ def failed_jobs(jobs: list[dict]) -> list[str]:
     return sorted({j["name"] for j in jobs if j.get("conclusion") in FAILED})
 
 
+#: Job conclusions that do not make a run red.
+_FINE = frozenset({"success", "skipped", "neutral"})
+
+
+def _is_lost(job: dict) -> bool:
+    return job.get("conclusion") == "cancelled" and not job.get("steps")
+
+
 def lost_jobs(jobs: list[dict]) -> list[str]:
-    """The jobs GitHub cancelled before any step ran, when no job failed or timed out.
+    """The jobs GitHub cancelled before any step ran, when they are the run's only problem.
 
     Such a job was never taken by a runner, so nothing in the repository was checked.
-    The list is empty when a job failed or timed out: that run reports as usual.
+    The list is empty when any other job did not pass: one that failed or timed out, or
+    one that started and was then cancelled. That run reports as usual.
     """
-    if failed_jobs(jobs):
+    if not all(_is_lost(j) for j in jobs if j.get("conclusion") not in _FINE):
         return []
-    return sorted(
-        {
-            j["name"]
-            for j in jobs
-            if j.get("conclusion") == "cancelled" and not j.get("steps")
-        }
-    )
+    return sorted({j["name"] for j in jobs if _is_lost(j)})
 
 
 def previous_jobs(issue: dict) -> list[str] | None:

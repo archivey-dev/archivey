@@ -84,6 +84,20 @@ def test_a_job_no_runner_took_is_listed_as_lost() -> None:
     assert alert.lost_jobs([]) == []
 
 
+@pytest.mark.parametrize("other", ["cancelled", "startup_failure", "action_required"])
+def test_a_lost_job_does_not_hide_another_bad_job(other: str) -> None:
+    # A job that started and was then cancelled (a runner shutdown, or a
+    # timeout-minutes hit reported as cancelled) is a real problem next to a lost one.
+    lost = {"name": "macos", "conclusion": "cancelled", "steps": []}
+    bad = {"name": "ubuntu", "conclusion": other, "steps": [{"name": "x"}]}
+    passed = {"name": "win", "conclusion": "success", "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([lost, bad, passed]) == []
+    # Skipped and neutral jobs leave a lost job as the only problem.
+    skipped = {"name": "docs", "conclusion": "skipped", "steps": []}
+    neutral = {"name": "lint", "conclusion": "neutral", "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([lost, skipped, neutral, passed]) == ["macos"]
+
+
 def test_a_new_issue_lists_the_jobs_and_keeps_the_marker() -> None:
     action = report()
     assert action.kind == "create"
