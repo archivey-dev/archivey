@@ -1312,7 +1312,17 @@ impl LzxDecompressor {
         let total_in = r.u64().map_err(to_py0)?;
         r.finish().map_err(to_py0)?;
         let decoded = inner.decoded();
-        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) {
+        // A frame in progress has the size the next call asks for, or that call
+        // refuses it with an error that is not about the data.
+        let frame_agrees = inner.frame_in_progress().is_none_or(|(size, _)| {
+            let next = match output_size {
+                Some(n) => n.saturating_sub(decoded).min(lzx::FRAME_SIZE as u64) as usize,
+                None => lzx::FRAME_SIZE,
+            };
+            size == next
+        });
+        if (out.len() as u64) > decoded || output_size.is_some_and(|n| n < decoded) || !frame_agrees
+        {
             return Err(CorruptDataError::new_err(
                 "the lzx state holds sizes that do not agree",
             ));

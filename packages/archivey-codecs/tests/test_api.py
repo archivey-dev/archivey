@@ -406,6 +406,24 @@ def test_lzx_state_of_a_frame_ended_by_a_late_output_size() -> None:
     assert r.unused_data == d.unused_data
 
 
+def test_lzx_state_whose_frame_disagrees_with_its_output_size() -> None:
+    """A saved frame in progress has the size the output size gives it. A state where
+    the two differ is refused as corrupt, and not later with a ``ValueError``."""
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
+    second = bytes.fromhex("00604001") + r_regs + b"abcdefghij"
+    d = lzx.Decompressor(15, output_size=20)
+    assert d.decompress(first + second[:-5]) == b""
+    state = d.getstate()
+    assert lzx.Decompressor.from_state(state).output_size == 20
+    at = len(state) - 17  # the output size, then the eof flag and total_in
+    assert state[at - 1 : at + 8] == b"\1" + (20).to_bytes(8, "little")
+    for size in (15, 10, 21, 40):
+        bad = state[:at] + size.to_bytes(8, "little") + state[at + 8 :]
+        with pytest.raises(archivey_codecs.CorruptDataError, match="do not agree"):
+            lzx.Decompressor.from_state(bad)
+
+
 def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])
