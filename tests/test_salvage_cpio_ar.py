@@ -776,9 +776,11 @@ def test_deb_walked_on_size_past_the_layer_end_is_not_listed(tmp_path: Path) -> 
     assert f"offset {extra_at}" in str(report.error)
 
 
-def _many_candidates(tmp_path: Path, sizes: Callable[[int, int, int], int]) -> Path:
-    """A ``.cpio.gz``: ``A``, ``B`` with its magic zeroed, 40 headers that pass the
-    checks, then 4 MiB of data and the trailer. ``sizes(i, start, end)`` gives the
+def _many_candidates(
+    tmp_path: Path, sizes: Callable[[int, int, int], int], count: int
+) -> Path:
+    """A ``.cpio.gz``: ``A``, ``B`` with its magic zeroed, ``count`` headers that pass
+    the checks, then 4 MiB of data and the trailer. ``sizes(i, start, end)`` gives the
     size field of header ``i``, whose data starts at ``start``, where the 4 MiB end
     at ``end``."""
     import gzip
@@ -787,8 +789,7 @@ def _many_candidates(tmp_path: Path, sizes: Callable[[int, int, int], int]) -> P
     data = bytes(random.Random(0).choices(b"abcd", k=4 << 20))
     head = _newc("A", b"a" * 100, 1) + _zeroed_magic(_newc("B", b"b", 2))
     out = bytearray(head)
-    count = 40
-    headers = [_newc(f"fake{i:02}", b"", 10 + i) for i in range(count)]
+    headers = [_newc(f"fake{i:03}", b"", 10 + i) for i in range(count)]
     data_end = len(head) + sum(len(h) for h in headers) + len(data)
     for i, header in enumerate(headers):
         fake = bytearray(header)
@@ -798,30 +799,31 @@ def _many_candidates(tmp_path: Path, sizes: Callable[[int, int, int], int]) -> P
     return _write(tmp_path, gzip.compress(bytes(out), 6), "a.cpio.gz")
 
 
+@pytest.mark.parametrize("count", [40, 160])
 @pytest.mark.parametrize(
-    ("sizes", "budget"),
+    "sizes",
     [
-        pytest.param(lambda i, start, end: 0xFFFFFF00, 96, id="past-the-end"),
+        pytest.param(lambda i, start, end: 0xFFFFFF00, id="past-the-end"),
         pytest.param(
-            lambda i, start, end: end - 64 * (i + 1) - start,
-            320,
-            id="just-before-the-end",
+            lambda i, start, end: end - 64 * (i + 1) - start, id="just-before-the-end"
         ),
     ],
 )
-def test_cpio_gz_probes_read_the_layer_once(
-    sizes: Callable[[int, int, int], int], budget: int, tmp_path: Path
+def test_cpio_gz_salvage_decodes_the_layer_a_bounded_number_of_times(
+    sizes: Callable[[int, int, int], int], count: int, tmp_path: Path
 ) -> None:
-    """40 candidate headers whose sizes run past the 4 MiB layer, or end just
-    before its end: the probes of their data ends and of the headers after them
-    read forward through the layer once in all, not once per candidate, and the
-    pass ends in the first damage within ``budget`` MiB of decoding. With a probe
-    reading forward from the walk's position each time, the two needed about 207
-    and 527 MiB; now about 51 and 211. Just before the end, each candidate is
-    held and listed unconfirmed, and the walk skips its 4 MiB of data before it
-    searches on: that skip, not a probe, is most of the 211."""
-    path = _many_candidates(tmp_path, sizes)
-    limits = ListingLimits(max_decoded_bytes=budget << 20)
+    """Candidate headers whose sizes run past the 4 MiB layer, or end just before its
+    end: the pass ends in the first damage within 24 MiB of decoding, for 40
+    candidates as for 160. Each candidate is cheap: the probes of its data end and
+    of the header after it read forward only past what earlier probes read; the
+    search started again just after it reads a small window first, not 1 MiB; and
+    the skip past the data of a candidate listed unconfirmed waits for the walk's
+    next read, which never comes, since the walk moves back to search on. At 40
+    candidates, a probe reading forward from the walk's position each time needed
+    about 207 and 527 MiB; with that fixed, the full window and the skip needed
+    about 51 and 211 MiB; now both need about 11."""
+    path = _many_candidates(tmp_path, sizes, count)
+    limits = ListingLimits(max_decoded_bytes=24 << 20)
     with open_archive(
         path, salvage=True, config=ArchiveyConfig(listing_limits=limits)
     ) as reader:
@@ -851,3 +853,41 @@ def test_a_cpio_inside_another_archive_names_the_forward_only_reader() -> None:
         "CPIO_PBZX": "forward_only_reader",
         "CPIO_GZIP": "forward_only_reader",
     }
+
+
+def test_a_skip_left_for_later_is_paid_by_a_read_and_dropped_by_a_move() -> None:
+    """``ForwardStream._skip_later``: the offset moves at once; the bytes are skipped
+    from where the stream really is before the next read, or never, when the walk
+    moves the stream back first."""
+    from archivey.formats import ForwardStream
+
+    data = bytes(range(100))
+    at = 0
+    skips: list[tuple[int, int]] = []
+
+    def read(n: int) -> bytes:
+        nonlocal at
+        out = data[at : at + n]
+        at += len(out)
+        return out
+
+    def skip(offset: int, n: int) -> None:
+        nonlocal at
+        assert offset == at
+        skips.append((offset, n))
+        at += n
+
+    def seek(offset: int) -> None:
+        nonlocal at
+        at = offset
+
+    stream = ForwardStream(read, skip)
+    stream.read(10)
+    stream._skip_later(20)
+    assert stream.offset == 30 and skips == []
+    assert stream.read(2) == bytes([30, 31])
+    assert skips == [(10, 20)]
+    stream._skip_later(40)
+    stream._move_to(5, seek)
+    assert stream.read(1) == bytes([5])
+    assert skips == [(10, 20)]

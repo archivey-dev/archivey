@@ -279,8 +279,11 @@ class ArReader(SequentialReader):
                     searched=searched,
                 )
             yield MemberSpan(member, entry.data_length)
-            # The pad byte; a writer that leaves it off the last member is harmless.
-            stream.read(entry.size & 1)
+            if search_from is None:
+                # The pad byte; a writer that leaves it off the last member is
+                # harmless. After a member the walk cannot confirm, it moves back
+                # into the data to search on instead.
+                stream.read(entry.size & 1)
 
     def _entry(
         self,

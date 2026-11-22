@@ -370,7 +370,10 @@ class CpioReader(SequentialReader):
                     # and odc, the one carrying the data in newc and crc.
                     group.name = member.name
             yield MemberSpan(member, size, self._digests(header, member))
-            stream.skip(self._data_pad(header))
+            if search_from is None:
+                # Not after a member the walk cannot confirm: it moves back into
+                # the data to search on, and the pad is not where it reads next.
+                stream.skip(self._data_pad(header))
             if member.type is MemberType.FILE and header.nlink > 1:
                 group = groups[key]
                 for link in group.held:

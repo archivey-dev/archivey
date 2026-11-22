@@ -51,6 +51,11 @@ if TYPE_CHECKING:
 # Bytes one window of the search holds beyond the overlap. 1 MiB keeps a read large
 # enough to be cheap on a file and on a range-request source, and small enough to hold.
 WINDOW_SIZE = 1 << 20
+# The first window of each search call; each later one doubles, up to WINDOW_SIZE. A
+# walk that lists a found member it cannot confirm searches again just after it, and
+# the next header is often close: a search that started with a full window would
+# read, and on a decoded layer decode and charge, a megabyte for each such restart.
+FIRST_WINDOW_SIZE = 4 << 10
 
 # The layer name of the archive's own bytes, as opposed to a codec's decoded stream.
 ARCHIVE_LAYER = "archive"
@@ -386,6 +391,7 @@ def search_forward(
     base: int = 0,
     layer: str = ARCHIVE_LAYER,
     window_size: int = WINDOW_SIZE,
+    first_window_size: int = FIRST_WINDOW_SIZE,
 ) -> SearchResult:
     """Search ``layer`` forward from ``start`` for the next header that passes.
 
@@ -398,6 +404,11 @@ def search_forward(
     reads no further than the last header the budget lets it reach (one byte more
     when ``end`` is not known and the budget pays for every byte read, to see
     whether the layer ends there), and with no budget left it reads nothing.
+
+    The first window holds ``first_window_size`` bytes (``window_size`` when that is
+    smaller), and each later one twice the one before, up to ``window_size``: a call
+    reads about twice the bytes up to the header it finds, plus one header, not a
+    full window, so a search started again just after a header costs what it reads.
 
     The candidate positions are ``base + k * search.step``. The search starts at the
     first one at or after ``start``, or at the first one this layer's earlier
@@ -449,7 +460,8 @@ def search_forward(
         None if remaining is None else pos + remaining + search.max_header_size - 1
     )
 
-    span = window_size + search.max_header_size - 1
+    window = min(first_window_size, window_size)
+    span = window + search.max_header_size - 1
     # The bytes read so far, from ``pos``; ``buf_end`` is the layer offset after them.
     buf = b""
     buf_end = pos
@@ -521,6 +533,9 @@ def search_forward(
             state._examined(layer, pos, next_pos)
             buf = buf[next_pos - pos :]
             pos = next_pos
+            if window < window_size:
+                window = min(window * 2, window_size)
+                span = window + search.max_header_size - 1
 
         if at_end and pos >= buf_end and not budget_bound:
             _record_no_header(state, layer, region_start, buf_end)

@@ -245,9 +245,17 @@ Choices made while building PR 3, and where it departs from the decisions above:
   or ar reader inside another archive (a `.pkg` payload) records
   `SALVAGE_UNAVAILABLE`, saying it reads forward only, and reads as the default. A
   random-access `.cpio.gz` searches its decoded stream (`layer="gzip"`).
-- **A found member whose data runs past the layer's end is not listed**: reading it
-  would end the pass in `TruncatedError` instead of the first damage. A default
-  member whose size runs past the end still ends the pass there, as the default does.
+- **A member past the damage whose data runs past the layer's end is not listed**,
+  found or walked on to: reading it would end the pass in `TruncatedError` instead of
+  the first damage. A default member whose size runs past the end still ends the pass
+  there, as the default does.
+- **Many candidates cost about one pass over a decoded layer**, not one each: a
+  probe of a data end or of the next header reads forward only past what earlier
+  probes read, and stops at the end once one reached it; each `search_forward` call
+  starts with a 4 KiB window and doubles it up to 1 MiB, so a search started again
+  just after an unconfirmed member reads what it needs; and the skip past that
+  member's data waits for the walk's next read (`ForwardStream._skip_later`), which
+  the move back to search on drops.
 - **CPIO damage at the first header**: its magic still names the variant (detection
   needed it), so the search runs for that variant. Binary CPIO has no search.
 - **Lost start (reader side).** `SalvageRequest.lost_start` / `SalvageState.lost_start`

@@ -407,6 +407,8 @@ class ForwardStream:
         self._handed_off = False
         # The stream take() returned last, until the walk moves past its bytes.
         self._taken: _TakenBytes | None = None
+        # Bytes counted in ``_offset`` that are not skipped yet (``_skip_later``).
+        self._owed = 0
 
     @property
     def offset(self) -> int:
@@ -423,6 +425,7 @@ class ForwardStream:
             # Moves no bytes, so an open take() stays open.
             return b""
         self._end_take()
+        self._pay_owed()
         data = self._read_fn(n)
         self._offset += len(data)
         return data
@@ -454,6 +457,7 @@ class ForwardStream:
         if not n:
             return
         self._end_take()
+        self._pay_owed()
         self._skip_fn(self._offset, n)
         self._offset += n
 
@@ -473,6 +477,7 @@ class ForwardStream:
             raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
         self._end_take()
+        self._pay_owed()
         taken = self._taken = _TakenBytes(self, n)
         # Unbuffered, so that a read after the walk moved on raises at once rather than
         # returning what a buffer pulled in earlier.
@@ -525,6 +530,7 @@ class ForwardStream:
         """
         self._check_not_handed_off()
         self._end_take()
+        self._pay_owed()
         if self._decompress_fn is None:
             raise ArchiveyUsageError(
                 "this ForwardStream was not built by archivey and cannot decompress"
@@ -539,8 +545,28 @@ class ForwardStream:
         found); not for plugins, whose walks read forward."""
         self._check_not_handed_off()
         self._end_take()
+        # A skip not paid yet is dropped: the stream is moved from where it is.
+        self._owed = 0
         seek(offset)
         self._offset = offset
+
+    def _skip_later(self, n: int) -> None:
+        """Count ``n`` bytes as skipped, and skip them only before the next read,
+        skip, take or decompress. Internal (salvage: archivey moving past the data of
+        a member the walk found but could not confirm). The walk moves back into that
+        data with :meth:`_move_to` to search on, which drops the skip, so a decoded
+        layer does not decode the data only to seek back into it."""
+        self._check_not_handed_off()
+        self._end_take()
+        self._owed += n
+        self._offset += n
+
+    def _pay_owed(self) -> None:
+        """Skip what :meth:`_skip_later` left, from where the stream really is."""
+        owed = self._owed
+        if owed:
+            self._owed = 0
+            self._skip_fn(self._offset - owed, owed)
 
     def _check_not_handed_off(self) -> None:
         if self._handed_off:
