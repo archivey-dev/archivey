@@ -37,9 +37,9 @@ stack on step 3's switch PR (`salvage-mode`).
       the LZMA1 trial at offset 32, the header-copy check (parse to `kEnd`, pack layout
       agreement) and its tail search.
 - [ ] 3.2 A header parse that stops at `kEnd` and reports where (for the copy).
-- [ ] 3.3 Content members: names, sizes, synthetic one-coder folders, dictionary from
+- [x] 3.3 Content members: names, sizes, synthetic one-coder folders, dictionary from
       the unpacked size; feed the decoder so a failing piece keeps the bytes before it.
-- [ ] 3.4 `MEMBER_NAME_UNKNOWN`: code, `DiagnosticCodeStr`, catalogue row, API surface,
+- [x] 3.4 `MEMBER_NAME_UNKNOWN`: code, `DiagnosticCodeStr`, catalogue row, API surface,
       docstring; `"content"` method; not an integrity code.
 - [ ] 3.5 CLI `list` mark `name unknown`.
 - [ ] 3.6 Tests: cuts at 25/50/75/95 % and 100 bytes short of solid, non-solid,

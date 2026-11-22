@@ -37,6 +37,7 @@ from archivey.internal.salvage import SalvageState
 
 SALVAGE_CODES = {
     DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+    DiagnosticCode.MEMBER_NAME_UNKNOWN,
     DiagnosticCode.ARCHIVE_REGION_SKIPPED,
     DiagnosticCode.SALVAGE_UNAVAILABLE,
 }
@@ -224,6 +225,19 @@ def test_config_refuses_a_salvage_limits_that_is_not_one() -> None:
         (
             DiagnosticCode.SALVAGE_UNAVAILABLE,
             SalvageUnavailableContext(archive_name="x.zip", format="ZIP"),
+        ),
+        (
+            DiagnosticCode.MEMBER_NAME_UNKNOWN,
+            SalvageScanContext(
+                archive_name="x.7z",
+                member_name="__salvaged__/7z-stream-0001.bin",
+                member_id=0,
+                format="7z",
+                method="content",
+                offset=32,
+                confirmed=True,
+                unchecked=("name", "filters"),
+            ),
         ),
     ],
 )

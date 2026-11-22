@@ -387,6 +387,7 @@ value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree
 value archivey.DiagnosticCode.MEMBER_FOUND_BY_SCAN = 'member_found_by_scan'
 value archivey.DiagnosticCode.ARCHIVE_REGION_SKIPPED = 'archive_region_skipped'
 value archivey.DiagnosticCode.SALVAGE_UNAVAILABLE = 'salvage_unavailable'
+value archivey.DiagnosticCode.MEMBER_NAME_UNKNOWN = 'member_name_unknown'
 alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | ArchiveStructureContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderDamageContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext | SalvageScanContext | RegionSkippedContext | SalvageUnavailableContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
@@ -875,6 +876,8 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_region_skipped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-region-skipped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'salvage_unavailable'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'salvage-unavailable'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_name_unknown'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-name-unknown'
 reexport archivey.diagnostics.DiagnosticContext = archivey.DiagnosticContext
 reexport archivey.diagnostics.DiagnosticPolicy = archivey.DiagnosticPolicy
 reexport archivey.diagnostics.DiagnosticSummary = archivey.DiagnosticSummary
@@ -1065,14 +1068,14 @@ field archivey.diagnostics.RegionSkippedContext.offset: int = 0
 field archivey.diagnostics.RegionSkippedContext.reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header'
 method archivey.diagnostics.RegionSkippedContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SalvageScanContext(_JsonSafeContext)
-init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search', 'header_repair'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',)) -> None
+init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search', 'header_repair', 'content'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',)) -> None
 field archivey.diagnostics.SalvageScanContext.archive_name: str | None = None
 field archivey.diagnostics.SalvageScanContext.confirmed: bool = False
 field archivey.diagnostics.SalvageScanContext.format: str = ''
 field archivey.diagnostics.SalvageScanContext.kind: Literal['salvage_scan'] = 'salvage_scan'
 field archivey.diagnostics.SalvageScanContext.member_id: int | None = None
 field archivey.diagnostics.SalvageScanContext.member_name: str = ''
-field archivey.diagnostics.SalvageScanContext.method: Literal['header_search', 'header_repair'] = 'header_search'
+field archivey.diagnostics.SalvageScanContext.method: Literal['header_search', 'header_repair', 'content'] = 'header_search'
 field archivey.diagnostics.SalvageScanContext.offset: int = 0
 field archivey.diagnostics.SalvageScanContext.unchecked: tuple[str, ...] = ('position',)
 method archivey.diagnostics.SalvageScanContext.to_dict(self) -> dict[str, object]

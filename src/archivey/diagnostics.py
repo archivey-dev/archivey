@@ -299,6 +299,12 @@ class DiagnosticCode(StrEnum):
     SALVAGE_UNAVAILABLE = "salvage_unavailable"
     """``open_archive(salvage=True)`` opened a format that has no salvage search, so
     the archive is read as it is without ``salvage=True``. Reported once, at open."""
+    MEMBER_NAME_UNKNOWN = "member_name_unknown"
+    """archivey made up this member's name: salvage (``open_archive(salvage=True)``)
+    found its content where no header names it. The name is under ``__salvaged__/``.
+    The context (``SalvageScanContext``, ``method="content"``) says where the
+    content starts and which fields no check covers. Reported once per member, at
+    listing, in place of ``MEMBER_FOUND_BY_SCAN``. Salvage only."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -405,6 +411,8 @@ DiagnosticCodeStr = Literal[
     "archive-region-skipped",
     "salvage_unavailable",
     "salvage-unavailable",
+    "member_name_unknown",
+    "member-name-unknown",
 ]
 
 
@@ -1383,7 +1391,8 @@ class ReaderDisagreementContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SalvageScanContext(_JsonSafeContext):
-    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``).
+    """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``), or
+    content no header names (``MEMBER_NAME_UNKNOWN``).
 
     ``format`` is the archive format's name. ``method`` says how the member was
     found:
@@ -1393,10 +1402,16 @@ class SalvageScanContext(_JsonSafeContext):
       found in the packed area);
     - ``"header_repair"``: a header whose stored fields salvage corrected under a CRC,
       or used although it fails its own CRC (7z: the start header, or the end header
-      when its parse and decode check it).
+      when its parse and decode check it);
+    - ``"content"`` (``MEMBER_NAME_UNKNOWN``): content found where no header names it,
+      listed under a name archivey made (for 7z, a packed stream with no usable
+      header). ``unchecked`` then always holds ``"name"``; 7z adds ``"filters"`` (a
+      filter that followed the codec is not known) and ``"size"`` when the size is not
+      known.
 
     ``offset`` is where the member's header starts, counted from the start of its
-    layer (``RegionSkippedContext.layer``); for 7z, where the end header used starts.
+    layer (``RegionSkippedContext.layer``); for 7z, where the end header used starts,
+    and for ``"content"``, where the content starts.
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
     checks, or is the format's clean end; for 7z, when a CRC-32 confirmed the end
@@ -1416,7 +1431,7 @@ class SalvageScanContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     format: str = ""
-    method: Literal["header_search", "header_repair"] = "header_search"
+    method: Literal["header_search", "header_repair", "content"] = "header_search"
     offset: int = 0
     confirmed: bool = False
     unchecked: tuple[str, ...] = ("position",)
@@ -1556,6 +1571,7 @@ _CODE_CONTEXT_KINDS: Mapping[DiagnosticCode, str] = MappingProxyType(
         DiagnosticCode.MEMBER_FOUND_BY_SCAN: "salvage_scan",
         DiagnosticCode.ARCHIVE_REGION_SKIPPED: "region_skipped",
         DiagnosticCode.SALVAGE_UNAVAILABLE: "salvage_unavailable",
+        DiagnosticCode.MEMBER_NAME_UNKNOWN: "salvage_scan",
     }
 )
 
@@ -1591,7 +1607,7 @@ ARCHIVE_INTEGRITY_CODES: frozenset[DiagnosticCode] = frozenset(
 )
 """Codes reporting the archive's own bytes or metadata as anomalous.
 
-The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are deliberately
+The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-five codes are deliberately
 **out**, and the reasons are part of the contract rather than an oversight:
 
 - ``EMPTY_ARCHIVE`` — an empty archive is legitimate, and ``diagnostics`` forbids
@@ -1669,10 +1685,11 @@ The ``raise_on`` set of ``DiagnosticPolicy.STRICT``. Twenty-four codes are delib
   Their sibling ``MEMBER_NAME_DUPLICATE_UNEXPECTED`` is **in** the set: it reports a
   repeated name only in a format with no way to repeat one (CAB), where no writer
   makes the shape (maintainer, 2026-11-11).
-- ``MEMBER_FOUND_BY_SCAN``, ``ARCHIVE_REGION_SKIPPED`` and ``SALVAGE_UNAVAILABLE`` —
-  recorded only when the caller asked for ``salvage=True``, which lists past damage on
-  purpose. ``STRICT`` would stop the salvage listing at its first found member. The
-  damage itself still raises at the end of the listing, as without salvage.
+- ``MEMBER_FOUND_BY_SCAN``, ``MEMBER_NAME_UNKNOWN``, ``ARCHIVE_REGION_SKIPPED`` and
+  ``SALVAGE_UNAVAILABLE`` — recorded only when the caller asked for ``salvage=True``,
+  which lists past damage on purpose. ``STRICT`` would stop the salvage listing at its
+  first found member. The damage itself still raises at the end of the listing, as
+  without salvage.
 
 ``ARCHIVE_UNREAD_SESSION`` is **in** the set, as ``ARCHIVE_UNLISTED_DATA`` is: the
 listing leaves out a filesystem the file holds, which another reading of the same file

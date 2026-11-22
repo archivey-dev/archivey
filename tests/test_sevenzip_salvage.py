@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import struct
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,14 +21,27 @@ import pytest
 
 from archivey import (
     ArchiveyConfig,
+    DecoderLimits,
     DiagnosticCode,
     DiagnosticPolicy,
     SalvageLimits,
     open_archive,
 )
 from archivey.diagnostics import Diagnostic, RegionSkippedContext, SalvageScanContext
-from archivey.exceptions import ArchiveyError, CorruptionError, TruncatedError
+from archivey.exceptions import (
+    ArchiveyError,
+    CorruptionError,
+    ResourceLimitError,
+    TruncatedError,
+)
 from archivey.internal.backends.sevenzip_salvage import one_byte_candidates
+from archivey.internal.backends.sevenzip_salvage_walk import (
+    CachedReader,
+    content_name,
+    lzma2_dict_prop,
+    scan_chain,
+)
+from archivey.types import CompressionAlgorithm, Verification
 from tests.conftest import run_7z
 from tests.sevenzip_salvage_util import (
     PASSWORD,
@@ -35,6 +49,7 @@ from tests.sevenzip_salvage_util import (
     SevenZipBuilder,
     fix_start_crc,
     flip,
+    lzma2_stream,
     next_header_span,
     requires_7zip,
     source_files,
@@ -123,7 +138,13 @@ def _assert_add_only(data: bytes, salvage: _Listing) -> None:
     assert type(salvage.error) is type(error)
     assert salvage.error is not None
     assert str(error).split(" (format=")[0].rstrip(".") in str(salvage.error)
-    assert set(salvage.names) <= set(salvage.found())
+    unknown = {
+        d.context.member_name  # type: ignore[union-attr]
+        for d in salvage.of(DiagnosticCode.MEMBER_NAME_UNKNOWN)
+    }
+    assert set(salvage.names) <= set(salvage.found()) | unknown
+    # One salvage code per member, never both.
+    assert not set(salvage.found()) & unknown
 
 
 # Damage ------------------------------------------------------------------------------
@@ -365,3 +386,231 @@ def test_an_encoded_end_header_whose_decode_fails_is_not_used() -> None:
     damaged = flip(NONSOLID, start + size - 3)
     listing = _salvage(damaged)
     assert not listing.found()
+
+
+# No usable end header: the streams of the packed area (decisions 4, 6, 8) --------
+
+
+def _unknown(listing: _Listing) -> dict[str, SalvageScanContext]:
+    out: dict[str, SalvageScanContext] = {}
+    for d in listing.of(DiagnosticCode.MEMBER_NAME_UNKNOWN):
+        assert isinstance(d.context, SalvageScanContext)
+        out[d.context.member_name] = d.context
+    return out
+
+
+def _streams(data: bytes) -> list[tuple[int, int]]:
+    """``(start, end)`` of each packed stream the intact ``data`` names, in order."""
+    with open_archive(io.BytesIO(data)) as reader:
+        archive = reader._archive  # type: ignore[attr-defined]
+    return [
+        (archive.pack_pos + pos, archive.pack_pos + pos + size)
+        for pos, size in zip(archive.pack_positions, archive.pack_sizes, strict=False)
+    ]
+
+
+def _assert_content(
+    listing: _Listing, cut: int, data: bytes, files: list[bytes]
+) -> None:
+    """Each stream before ``cut`` is one content member, byte-exact; a stream the
+    cut runs through has no size, and its read gives a prefix of its bytes."""
+    streams = [s for s in _streams(data) if s[0] < cut]
+    assert listing.names == [
+        f"__salvaged__/7z-stream-{n:04d}.bin" for n in range(1, len(streams) + 1)
+    ]
+    unknown = _unknown(listing)
+    assert set(unknown) == set(listing.names)
+    assert not listing.found()
+    for (name, size, content), (start, end), expected in zip(
+        listing.members, streams, files, strict=False
+    ):
+        context = unknown[name]
+        assert (context.method, context.offset, context.confirmed) == (
+            "content",
+            start,
+            True,
+        )
+        if end <= cut:
+            assert size == len(expected)
+            assert content == expected
+            assert context.unchecked == ("name", "filters")
+        else:
+            assert size is None
+            assert content is None  # the read raised after its bytes
+            assert context.unchecked == ("name", "filters", "size")
+
+
+CUTS = {
+    "25 %": lambda d: len(d) // 4,
+    "50 %": lambda d: len(d) // 2,
+    "75 %": lambda d: len(d) * 3 // 4,
+    "95 %": lambda d: len(d) * 95 // 100,
+    "100 bytes short": lambda d: len(d) - 100,
+    "before the end header": lambda d: next_header_span(d)[0],
+}
+
+
+@pytest.mark.parametrize("cut", list(CUTS))
+def test_a_cut_non_solid_archive_lists_its_streams(cut: str) -> None:
+    at = CUTS[cut](NONSOLID)
+    damaged = NONSOLID[:at]
+    listing = _salvage(damaged)
+    _assert_content(listing, at, NONSOLID, list(FILES.values()))
+    assert isinstance(listing.error, TruncatedError)
+    assert "MEMBER_NAME_UNKNOWN" in str(listing.error)
+    _assert_add_only(damaged, listing)
+
+
+@pytest.mark.parametrize("cut", list(CUTS))
+def test_a_cut_solid_archive_lists_its_folder(cut: str) -> None:
+    at = CUTS[cut](SOLID)
+    listing = _salvage(SOLID[:at])
+    _assert_content(listing, at, SOLID, [b"".join(FILES.values())])
+
+
+def test_a_cut_stream_reads_its_bytes_then_raises_truncated() -> None:
+    at = len(NONSOLID) // 2
+    with open_archive(io.BytesIO(NONSOLID[:at]), salvage=True) as reader:
+        report = reader.members_report()
+        last = report.members[-1]
+        assert last.size is None
+        got = bytearray()
+        with pytest.raises(TruncatedError), reader.open(last) as stream:
+            while chunk := stream.read(1024):
+                got += chunk
+    expected = list(FILES.values())[len(report.members) - 1]
+    assert got and expected.startswith(bytes(got))
+
+
+def test_content_members_are_unlocked_files_with_no_metadata() -> None:
+    with open_archive(io.BytesIO(NONSOLID[: len(NONSOLID) // 2]), salvage=True) as r:
+        for member in r.members_report().members:
+            assert member.is_file
+            assert member.modified is None and member.mode is None
+            assert member.create_system is None
+            assert member.verifiable is Verification.UNLOCKED
+            assert [m.algo for m in member.compression] == [CompressionAlgorithm.LZMA2]
+
+
+def test_content_names_are_stable_across_reads() -> None:
+    damaged = NONSOLID[: len(NONSOLID) * 3 // 4]
+    assert _salvage(damaged).members == _salvage(damaged).members
+
+
+def test_content_names_take_more_digits_past_9999() -> None:
+    assert content_name(0) == "__salvaged__/7z-stream-0001.bin"
+    assert content_name(12344) == "__salvaged__/7z-stream-12345.bin"
+
+
+def test_strict_does_not_stop_a_content_listing() -> None:
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    listing = _list(NONSOLID[: len(NONSOLID) // 2], salvage=True, config=config)
+    assert listing.names and isinstance(listing.error, TruncatedError)
+
+
+def test_without_salvage_a_cut_archive_raises_at_open() -> None:
+    with pytest.raises(TruncatedError):
+        open_archive(io.BytesIO(NONSOLID[: len(NONSOLID) // 2]))
+
+
+def test_decoder_limits_hold_a_content_member() -> None:
+    """The unchanged ``DecoderLimits`` hold a content member's read: its LZMA2
+    dictionary is the smallest that holds its unpacked size, and
+    ``max_decoder_memory`` refuses one larger than it allows."""
+    data = write_7z({"zeros": bytes(4 << 20)})
+    cut = data[: next_header_span(data)[0]]
+    config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
+    with open_archive(io.BytesIO(cut), salvage=True, config=config) as reader:
+        [member] = reader.members_report().members
+        assert member.size == 4 << 20
+        assert member.compression[0].properties == bytes((lzma2_dict_prop(4 << 20),))
+        with pytest.raises(ResourceLimitError, match="max_decoder_memory"):
+            reader.read(member)
+    with open_archive(io.BytesIO(cut), salvage=True) as reader:
+        [member] = reader.members_report().members
+        assert reader.read(member) == bytes(4 << 20)
+
+
+def test_the_chain_scan_reads_chunk_headers() -> None:
+    stream = lzma2_stream(b"abc" * 50_000)
+    data = bytes(32) + stream + b"tail"
+    reader = CachedReader(lambda o, n: data[o : o + n], len(data))
+    chain = scan_chain(reader, 32, len(data))
+    assert chain is not None
+    assert (chain.status, chain.end, chain.unpacked) == (
+        "complete",
+        32 + len(stream),
+        150_000,
+    )
+    assert chain.lzma_chunks >= 1
+    cut = scan_chain(reader, 32, 32 + len(stream) - 10)
+    assert cut is not None and cut.status == "cut" and cut.declared >= cut.unpacked
+    assert scan_chain(CachedReader(lambda o, n: b"\x80" * n, 100), 0, 100) is None
+
+
+@pytest.mark.parametrize(
+    ("size", "prop"), [(1, 0), (4096, 0), (4097, 1), (1 << 20, 16)]
+)
+def test_the_dictionary_is_the_smallest_that_holds_the_stream(
+    size: int, prop: int
+) -> None:
+    assert lzma2_dict_prop(size) == prop
+
+
+@requires_7zip
+@pytest.mark.parametrize("kind", ["nonsolid", "solid", "mt", "bcj2"])
+@pytest.mark.parametrize("cut", ["50 %", "95 %"])
+def test_cut_7zip_archives_list_correct_bytes(
+    kind: str, cut: str, sevenzip_builder: SevenZipBuilder
+) -> None:
+    """Every byte a content member gives is the archive's own: a file, the files of a
+    solid folder in order, or BCJ2's main stream."""
+    archive = sevenzip_builder.build(kind)
+    files = source_files(12)
+    listing = _salvage(archive[: CUTS[cut](archive)])
+    assert listing.names
+    concat = b"".join(files.values())
+    with open_archive(io.BytesIO(archive[: CUTS[cut](archive)]), salvage=True) as r:
+        for member in r.members_report().members:
+            got = bytearray()
+            expect = (
+                pytest.raises(TruncatedError) if member.size is None else nullcontext()
+            )
+            with expect, r.open(member) as stream:
+                while chunk := stream.read(65536):
+                    got += chunk
+            if kind == "bcj2":
+                # The main stream's first bytes are the file's, before the first call.
+                assert concat.startswith(bytes(got[:64]))
+            else:
+                assert bytes(got) in concat
+
+
+@requires_7zip
+def test_an_lzma1_folder_is_one_member_of_unknown_size(
+    sevenzip_builder: SevenZipBuilder,
+) -> None:
+    archive = sevenzip_builder.build("lzma1")
+    damaged = archive[: len(archive) // 2]
+    listing = _salvage(damaged)
+    assert listing.names == ["__salvaged__/7z-stream-0001.bin"]
+    [context] = _unknown(listing).values()
+    assert context.unchecked == ("name", "filters", "size")
+    with open_archive(io.BytesIO(damaged), salvage=True) as reader:
+        [member] = reader.members_report().members
+        assert member.size is None
+        assert [m.algo for m in member.compression] == [CompressionAlgorithm.LZMA]
+        got = bytearray()
+        with pytest.raises(TruncatedError), reader.open(member) as stream:
+            while chunk := stream.read(65536):
+                got += chunk
+    assert b"".join(source_files(12).values()).startswith(bytes(got))
+
+
+@requires_7zip
+def test_aes_folders_list_nothing(sevenzip_builder: SevenZipBuilder) -> None:
+    archive = sevenzip_builder.build("aes")
+    listing = _salvage(archive[: len(archive) // 2])
+    assert listing.names == []
+    assert [r.reason for r in listing.regions()] == ["no_header"]
+    assert isinstance(listing.error, TruncatedError)

@@ -33,7 +33,7 @@ import threading
 import zlib
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import BinaryIO
 
 from archivey.config import ArchiveyConfig, ListingLimits
@@ -105,6 +105,11 @@ from archivey.internal.backends.sevenzip_salvage import (
     search_tail_crc,
     zeroed_start_candidates,
 )
+from archivey.internal.backends.sevenzip_salvage_walk import (
+    ContentStream,
+    content_archive,
+    walk_packed_area,
+)
 from archivey.internal.base_reader import (
     UNREADABLE_LINK_TARGET_ERRORS,
     BaseArchiveReader,
@@ -156,6 +161,7 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
+from archivey.internal.salvage import ARCHIVE_LAYER
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -340,15 +346,19 @@ def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
 @dataclass
 class _SalvageOutcome:
     """What salvage found where the default open failed: the archive read from an
-    end header it found (``find``), whether a CRC-32 confirmed that header, where the
-    start header puts the next header (the packed area ends there), and whether
-    ``SalvageLimits.max_search_bytes`` stopped a search."""
+    end header it found (``find``) or from the streams of the packed area
+    (``content``), whether a CRC-32 confirmed that header, where the start header
+    puts the next header when it passes or was repaired (the packed area ends
+    there), and whether ``SalvageLimits.max_search_bytes`` stopped a search."""
 
     archive: SevenZipArchive | None = None
     find: EndHeaderFind | None = None
     confirmed: bool = False
     header_start: int | None = None
     limit_reached: bool = False
+    #: The streams of the packed area listed as content members, when no end header
+    #: was usable (``__salvaged__/7z-stream-NNNN.bin``), in archive order.
+    content: list[ContentStream] | None = None
 
 
 @dataclass(frozen=True)
@@ -374,6 +384,9 @@ class _MemberRaw:
     #: Where the member's bytes start in its folder's output: the sum of the earlier
     #: members' sizes in that folder. Zero for a member with no folder.
     folder_prefix: int
+    #: How many bytes a read of a salvage content member whose size is not known may
+    #: give (``ContentStream.read_size``); ``None`` for every other member.
+    read_size: int | None = None
 
 
 def _password_to_kdf_bytes(password: bytes) -> bytes:
@@ -607,8 +620,17 @@ def _folder_position(member: ArchiveMember) -> int:
     return raw.file_in_folder
 
 
+def _count(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
 def _member_stream_size(member: ArchiveMember) -> int:
-    return member.size if member.size is not None else 0
+    if member.size is not None:
+        return member.size
+    raw = member._raw
+    if isinstance(raw, _MemberRaw) and raw.read_size is not None:
+        return raw.read_size
+    return 0
 
 
 def _member_crc(member: ArchiveMember) -> int | None:
@@ -1188,6 +1210,7 @@ class SevenZipReader(BaseArchiveReader):
         start_header = signature[12:SIGNATURE_HEADER_SIZE]
         budget = TailBudget(self._salvage_mode)
         if fields.start_header_crc_ok:
+            outcome.header_start = SIGNATURE_HEADER_SIZE + fields.next_header_offset
             find = self._reused_next_header(fields, read_at, file_size)
             if find is not None:
                 self._try_salvage_load(view, signature, find, outcome)
@@ -1205,11 +1228,45 @@ class SevenZipReader(BaseArchiveReader):
                 or search_tail_crc(start_header, read_at, file_size, budget)
             )
             if find is not None:
+                outcome.header_start = find.start
                 self._try_salvage_load(view, signature, find, outcome)
         if outcome.archive is None:
             budget.stopped(file_size)
             outcome.limit_reached = self._salvage_mode.limit_reached
+        if outcome.archive is None and not outcome.limit_reached:
+            self._walk_packed_area(signature, read_at, file_size, outcome)
         return outcome
+
+    def _walk_packed_area(
+        self,
+        signature: bytes,
+        read_at: Callable[[int, int], bytes],
+        file_size: int,
+        outcome: _SalvageOutcome,
+    ) -> None:
+        """Decision 4: with no usable end header, list each stream of the packed area
+        as a content member. The area ends where the start header puts the next
+        header, when it passes or was repaired and that is inside the file, and
+        otherwise at the end of the file."""
+        end = file_size
+        header_start = outcome.header_start
+        if header_start is not None and SIGNATURE_HEADER_SIZE <= header_start < end:
+            end = header_start
+        walk = walk_packed_area(read_at, end)
+        for offset, length in walk.skipped:
+            self._salvage_mode.record_region(
+                layer=ARCHIVE_LAYER, offset=self._origin + offset, length=length
+            )
+        if not walk.streams:
+            return
+        outcome.content = walk.streams
+        outcome.archive = content_archive(
+            walk.streams,
+            major_version=signature[6],
+            minor_version=signature[7],
+            max_decoder_memory=self._config.decoder_limits.max_decoder_memory,
+            end_offset=end,
+        )
 
     @staticmethod
     def _reused_next_header(
@@ -1240,9 +1297,7 @@ class SevenZipReader(BaseArchiveReader):
         outcome: _SalvageOutcome,
     ) -> bool:
         """Parse and decode the end header ``find``, and keep the archive in
-        ``outcome`` when it loads. ``outcome.header_start`` is set either way: the
-        start header leads there, so the packed area ends there."""
-        outcome.header_start = find.start
+        ``outcome`` when it loads."""
         info = SignatureInfo(
             signature[6], signature[7], find.data, find.start + len(find.data)
         )
@@ -1279,6 +1334,9 @@ class SevenZipReader(BaseArchiveReader):
         header the default open could not use. The default listed none of them: it
         raised at open (add-only, Q2)."""
         salvaged = self._salvaged
+        if salvaged is not None and salvaged.outcome.content is not None:
+            self._report_content_members(salvaged.outcome.content)
+            return
         if salvaged is None or salvaged.outcome.find is None:
             return
         find = salvaged.outcome.find
@@ -1312,6 +1370,56 @@ class SevenZipReader(BaseArchiveReader):
                 logger=backends_logger,
             )
 
+    def _report_content_members(self, streams: list[ContentStream]) -> None:
+        """Settle each content member and record ``MEMBER_NAME_UNKNOWN`` for it
+        (decision 8): archivey made up its name, nothing says which filter followed
+        its codec, and nothing checks its bytes (``verifiable`` is ``UNLOCKED``)."""
+        for index, (member, stream) in enumerate(
+            zip(self._members, streams, strict=True)
+        ):
+            raw = member._raw
+            assert isinstance(raw, _MemberRaw)
+            member.size = stream.size
+            member.create_system = None
+            member._verifiable = Verification.UNLOCKED
+            member._raw = replace(raw, read_size=stream.read_size)
+            unchecked: tuple[str, ...] = ("name", "filters")
+            if stream.size is None:
+                unchecked += ("size",)
+            offset = self._origin + stream.start
+            codec = "LZMA2" if stream.codec == "lzma2" else "LZMA"
+            size = (
+                f"{stream.size} bytes"
+                if stream.size is not None
+                else "of a size not known"
+                + (
+                    "; its last bytes may not be content (LZMA has no end marker)"
+                    if stream.codec == "lzma"
+                    else ""
+                )
+            )
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_NAME_UNKNOWN,
+                message=(
+                    f"7z content member {quoted(member.name)} is the {codec} stream "
+                    f"at offset {offset}, {size}, listed by salvage with no header to "
+                    "name it. Its bytes are the codec's output: a filter that "
+                    "followed it (BCJ, Delta) is not undone."
+                ),
+                context=SalvageScanContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    format=ArchiveFormat.SEVEN_Z.display_name,
+                    method="content",
+                    offset=offset,
+                    confirmed=stream.confirmed,
+                    unchecked=unchecked,
+                ),
+                member=member,
+                logger=backends_logger,
+            )
+
     def _salvage_error(self) -> ArchiveyError:
         """The error a salvaged pass ends in: the default's, saying what salvage did."""
         salvaged = self._salvaged
@@ -1319,7 +1427,13 @@ class SevenZipReader(BaseArchiveReader):
         error = salvaged.error
         outcome = salvaged.outcome
         notes: list[str] = []
-        if outcome.find is not None:
+        if outcome.content is not None:
+            notes.append(
+                "salvage found no end header it could use and listed "
+                f"{_count(len(outcome.content), 'stream')} of the packed area as "
+                "content members, flagged MEMBER_NAME_UNKNOWN"
+            )
+        elif outcome.find is not None:
             notes.append(
                 "salvage read the end header at offset "
                 f"{self._origin + outcome.find.start}, found by "
