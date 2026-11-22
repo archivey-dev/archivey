@@ -19,7 +19,7 @@ import pytest
 
 from archivey import ArchiveyConfig, open_archive
 from archivey.config import ListingLimits
-from archivey.exceptions import ArchiveyError, CorruptionError
+from archivey.exceptions import ArchiveyError, CorruptionError, UnsupportedFeatureError
 from archivey.internal.backends import zip_local_walk
 from archivey.internal.backends.rar_forward import KEEP_BYTES
 
@@ -144,6 +144,40 @@ def test_a_damaged_signature_on_a_member_with_a_data_descriptor_is_not_followed(
     assert [name for name, _ in pipe] == ["dir/file0.txt", "dir/file1.txt"]
     assert isinstance(pipe_error, CorruptionError)
     assert "no data descriptor after member #1" in str(pipe_error)
+
+
+def test_a_damaged_signature_after_a_data_descriptor_member_is_not_followed() -> None:
+    """Only the member before the damage keeps its sizes in a descriptor. The pipe
+    finds that member's end by the intact signature after its descriptor, and the
+    damaged one is not intact, so the pass stops at that member as before; a file
+    lists every member from the directory (the spec's data-descriptor limit)."""
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w", zipfile.ZIP_DEFLATED) as archive:
+        for index, content in enumerate(_CONTENTS):
+            archive._seekable = index != 1  # type: ignore[attr-defined]  # bit 3 on #1 only
+            info = zipfile.ZipInfo(f"dir/file{index}.txt", (2020, 1, 1, 0, 0, 0))
+            with archive.open(info, "w") as out:
+                out.write(content)
+        archive._seekable = True  # type: ignore[attr-defined]
+    data = raw.getvalue()
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        infos = archive.infolist()
+        assert [bool(info.flag_bits & 0x08) for info in infos] == [
+            False,
+            True,
+            False,
+            False,
+            False,
+        ]
+        offsets = [info.header_offset for info in infos]
+    damaged = _flip(data, offsets[2] + 1)
+    random, random_error = _pass(damaged, "random")
+    assert random_error is None
+    assert [name for name, _ in random] == [f"dir/file{i}.txt" for i in range(5)]
+    pipe, pipe_error = _pass(damaged, "pipe")
+    assert [name for name, _ in pipe] == ["dir/file0.txt"]
+    assert isinstance(pipe_error, UnsupportedFeatureError)
+    assert "seekable source" in str(pipe_error)
 
 
 class _Unseekable(io.RawIOBase):
