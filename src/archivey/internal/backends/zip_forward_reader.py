@@ -870,7 +870,9 @@ class _PassData:
                 member_name=member.name,
                 source_format=ArchiveFormat.ZIP,
             )
-        keys, check = keys_after_header(password, head)
+        keys, check = keys_after_header(
+            password, head, reader._stream_config.excluded_libraries
+        )
         if check != _zipcrypto_check_byte(loc):
             raise wrong_password_error(ZIP_WRONG_PASSWORD_MSG)
         # The length bounds seeks only, and nothing seeks a pass.

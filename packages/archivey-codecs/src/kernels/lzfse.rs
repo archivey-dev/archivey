@@ -204,7 +204,8 @@ pub fn lzfse_decompress(src: &[u8], max_length: usize) -> Result<Vec<u8>> {
             let block_start = out.len();
             let block_limit = block_start + n_raw as usize;
             let payload_end = start + n_payload as usize;
-            let end = lzvn(src, start, payload_end, &mut out, block_limit)?;
+            let overrun = format!("LZVN block decodes to more than its {n_raw} bytes");
+            let end = lzvn(src, start, payload_end, &mut out, block_limit, &overrun)?;
             if out.len() != block_limit {
                 let decoded = out.len() - block_start;
                 return corrupt(format!(
@@ -230,7 +231,8 @@ pub fn lzfse_decompress(src: &[u8], max_length: usize) -> Result<Vec<u8>> {
 /// end-of-stream opcode, and nothing after it, to at most `max_length` bytes.
 pub fn lzvn_decompress(src: &[u8], max_length: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    let end = lzvn(src, 0, src.len(), &mut out, max_length)?;
+    let overrun = format!("LZVN data decodes to more than {max_length} bytes");
+    let end = lzvn(src, 0, src.len(), &mut out, max_length, &overrun)?;
     if end != src.len() {
         return corrupt(format!(
             "{} bytes follow the end of the LZVN data",
@@ -248,9 +250,16 @@ const LZVN_IN_OPCODE: &str = "LZVN data ends inside an opcode";
 
 /// Decode LZVN from `src[i..n]` onto `out` up to its end-of-stream opcode; return the
 /// offset just past that opcode. `out` may already hold earlier output, which matches
-/// can reach back into, and may not grow past `limit`. `d` starts at 0, which no
-/// match may use.
-fn lzvn(src: &[u8], mut i: usize, n: usize, out: &mut Vec<u8>, limit: usize) -> Result<usize> {
+/// can reach back into, and may not grow past `limit`: past it, the error says
+/// `overrun`. `d` starts at 0, which no match may use.
+fn lzvn(
+    src: &[u8],
+    mut i: usize,
+    n: usize,
+    out: &mut Vec<u8>,
+    limit: usize,
+    overrun: &str,
+) -> Result<usize> {
     let mut d = 0usize;
     loop {
         if i >= n {
@@ -348,7 +357,7 @@ fn lzvn(src: &[u8], mut i: usize, n: usize, out: &mut Vec<u8>, limit: usize) -> 
                 return truncated("LZVN data ends inside a literal");
             }
             if out.len() + lit > limit {
-                return too_long(limit as u64);
+                return corrupt(overrun);
             }
             room(out, lit, limit);
             out.extend_from_slice(&src[i..i + lit]);
@@ -360,7 +369,7 @@ fn lzvn(src: &[u8], mut i: usize, n: usize, out: &mut Vec<u8>, limit: usize) -> 
                 return corrupt("LZVN match reaches before the start of the output");
             }
             if size + mlen > limit {
-                return too_long(limit as u64);
+                return corrupt(overrun);
             }
             room(out, mlen, limit);
             copy_match(out, d, mlen);

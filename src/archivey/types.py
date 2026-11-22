@@ -559,6 +559,11 @@ class OptionalLibrary(StrEnum):
     CRC32C = "crc32c"
     """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
     installed."""
+    ARCHIVEY_CODECS = "archivey_codecs"
+    """``archivey-codecs``: Rust versions of decoders archivey otherwise runs in
+    Python (so far the CRC-16 of LHA archives and traditional ZIP encryption). They
+    give the same bytes and the same errors, faster. The package is not on PyPI
+    yet; until it is installed, this switch changes nothing."""
 
 
 OptionalLibraryStr = Literal[
@@ -578,6 +583,8 @@ OptionalLibraryStr = Literal[
     "google_crc32c",
     "google-crc32c",
     "crc32c",
+    "archivey_codecs",
+    "archivey-codecs",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -1196,9 +1203,12 @@ class MemberExtra(dict[str, object]):
     * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
       4 volume label, 5 chapter label, 6 Unix special file.
     * ``dmg.xattrs`` (``dict[str, bytes | None]``) — DMG. The extended attributes of
-      the HFS+ file, by name, with each value up to 1 KiB; a longer value is ``None``.
-      Absent when the file has none. Extraction does not write them. A transparently
-      compressed file's ``com.apple.decmpfs`` holds its data and is not listed.
+      the HFS+ or APFS file, by name, with each value up to 1 KiB; a longer value, or
+      one APFS stores apart from the record, is ``None``. Absent when the file has
+      none. Extraction does not write them. A transparently compressed file's
+      ``com.apple.decmpfs`` holds its data and is not listed, nor are APFS's
+      ``com.apple.fs.symlink`` (the symlink target) and ``com.apple.ResourceFork``
+      (the resource fork).
     * ``dmg.resource_fork_size`` (``int``) — DMG. The size of the file's resource
       fork, when it has one; its bytes are not read. Absent on a compressed file,
       whose resource fork holds its data.
@@ -1326,7 +1336,10 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``makeself.encryption`` (``str``)
     * ``makeself.payloads`` (``int``)
     * ``makeself.signed`` (``bool``)
-    * ``dmg.filesystem`` (``str``) — ``"HFS+"`` or ``"HFSX"``, the first volume's.
+    * ``dmg.filesystem`` (``str``) — ``"HFS+"``, ``"HFSX"`` or ``"APFS"``, the first
+      volume's.
+    * ``dmg.apfs_volumes`` (``list[str]``) — the names of the APFS volumes archivey
+      lists, in container order; absent when the image holds none.
     * ``dmg.volume_name`` (``str``) — the volume's name, when the image holds one.
     * ``dmg.volumes`` (``list[str]``) — every volume's name, in partition order. With
       more than one, each volume's members are under a top-level directory named
@@ -1402,6 +1415,8 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["dmg.volume_name"], /) -> str: ...
     @overload
     def __getitem__(self, key: Literal["dmg.volumes"], /) -> list[str]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.apfs_volumes"], /) -> list[str]: ...
     @overload
     def __getitem__(self, key: Literal["dmg.partition_scheme"], /) -> str: ...
     @overload

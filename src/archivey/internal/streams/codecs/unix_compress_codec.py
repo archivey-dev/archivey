@@ -39,7 +39,11 @@ class UnixCompressCodec(StreamCodec):
         # sources; CLEAR boundaries become SeekPoints when
         # config.records_restart_points is true.
         return UnixCompressDecompressorStream(
-            source, collector=config.collector, seekable=config.records_restart_points
+            source,
+            collector=config.collector,
+            seekable=config.records_restart_points,
+            excluded=config.excluded_libraries,
+            isolated=config.natives.isolated,
         )
 
     @override

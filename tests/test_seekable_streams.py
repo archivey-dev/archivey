@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import bz2
 import dataclasses
+import functools
 import gzip
 import importlib.util
 import io
@@ -26,6 +27,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.config import AcceleratorMode, DecoderLimits, StreamConfig
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.streams.codecs import Codec, open_codec_stream
 from archivey.internal.streams.codecs.lzip_decoder import (
     LzipDecompressorStream,
@@ -2207,7 +2209,10 @@ _SEEK_INTERLEAVE_CASES = [
     ),
     pytest.param(
         _compress_unix_parts,
-        UnixCompressDecompressorStream,
+        # The kernel when archivey-codecs is installed, as a default read uses it.
+        functools.partial(
+            UnixCompressDecompressorStream, excluded=NO_EXCLUSIONS, isolated=False
+        ),
         id="unix_compress",
         marks=requires("ncompress"),
     ),

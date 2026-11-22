@@ -17,6 +17,7 @@ import pytest
 
 from archivey.exceptions import ArchiveyError
 from archivey.internal import detection
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.password_confirm import (
     PASSWORD_CONFIRM_CHUNK_BYTES,
     PASSWORD_CONFIRM_MAX_INPUT_BYTES,
@@ -379,7 +380,12 @@ def test_filters_never_reject_random_input(lzma_filter: dict[str, int]) -> None:
     for codec in (Codec.DELTA, Codec.BCJ_X86, Codec.BCJ_ARM):
         assert codec not in REJECTING_CODECS
     data = random.Random(7).randbytes(BUDGET)
-    stream = FilterStream(io.BytesIO(data), lzma_filter=lzma_filter, unpack_size=BUDGET)
+    stream = FilterStream(
+        io.BytesIO(data),
+        lzma_filter=lzma_filter,
+        unpack_size=BUDGET,
+        excluded=NO_EXCLUSIONS,
+    )
     try:
         assert len(stream.read(BUDGET)) == BUDGET
     finally:

@@ -2855,6 +2855,71 @@ def test_following_link_targets_reads_each_directory_once(
     assert walks[0] == walks[1], walks
 
 
+def _latin1_directory_link_image(hops: int) -> bytes:
+    """A Latin-1 directory beside a Joliet tree, and a symlink whose target goes into
+    it and back out ``hops`` times before naming a file in it."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(interchange_level=3, rock_ridge="1.09", joliet=3)
+    iso.add_directory("/D", rr_name="d#", joliet_path="/dé")
+    iso.add_fp(io.BytesIO(b"x"), 1, "/D/F.;1", rr_name="f", joliet_path="/dé/f")
+    iso.add_symlink("/L.;1", rr_symlink_name="l", rr_path="d#/../" * hops + "d#/f")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue().replace(b"d#", b"d\xe9")
+
+
+def test_a_link_target_through_one_directory_many_times_sorts_it_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each component of a link target that is not UTF-8 asks for its directory's
+    Joliet counterpart. Each directory's sorted entries are kept, so
+    a target such as ``d\\xe9/../d\\xe9/..`` does not sort ``d\\xe9`` once per
+    component; that made a 1 MiB image take a minute to list."""
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._sorted_children
+    calls = 0
+
+    def counting(directory: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return real(directory)
+
+    monkeypatch.setattr(iso_reader, "_sorted_children", counting)
+    sorts = []
+    for hops in (1, 30):
+        calls = 0
+        with open_archive(io.BytesIO(_latin1_directory_link_image(hops))) as ar:
+            (link,) = [m for m in ar.members() if m.link_target]
+        assert link.link_target == "dé/../" * hops + "dé/f"
+        sorts.append(calls)
+    assert sorts[0] == sorts[1], sorts
+
+
+def test_each_directory_is_sorted_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The walk, the Joliet search and link targets all ask for a directory's sorted
+    entries; the reader sorts each directory once and keeps the result. Many
+    non-UTF-8 directories whose ``CL`` placeholders point at one wide directory
+    otherwise sorted it once each."""
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._sorted_children
+    sorted_ids: list[int] = []
+
+    def counting(directory: Any) -> Any:
+        sorted_ids.append(id(directory))
+        return real(directory)
+
+    monkeypatch.setattr(iso_reader, "_sorted_children", counting)
+    with open_archive(io.BytesIO(_latin1_names_with_joliet_image())) as ar:
+        ar.members()
+    assert sorted_ids
+    assert len(sorted_ids) == len(set(sorted_ids)), sorted_ids
+
+
 def test_empty_files_sharing_an_extent_are_matched_in_linear_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

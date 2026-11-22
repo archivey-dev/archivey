@@ -167,12 +167,13 @@ def filter_chunks(data: bytes, rng: random.Random) -> list[bytes]:
 def filter_python(decode: Callable, data: bytes, pc: int, rng: random.Random) -> list:
     """archivey's own streaming filter decoder, fed the same chunks."""
     from archivey.internal.streams.codecs.lzma_filter_decoder import (
-        PythonBranchFilterDecoder,
+        BranchFilterDecoder,
+        PythonBranch,
     )
 
     state = rng.getstate()
-    decoder = PythonBranchFilterDecoder(
-        decode=decode, start_offset=pc, unpack_size=len(data)
+    decoder = BranchFilterDecoder(
+        make_branch=lambda: PythonBranch(decode, pc), unpack_size=len(data)
     )
     out = [decoder.feed(chunk).data for chunk in filter_chunks(data, rng)]
     out.append(decoder.flush().data)

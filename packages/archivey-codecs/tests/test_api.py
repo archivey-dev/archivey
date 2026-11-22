@@ -109,6 +109,18 @@ def test_lzo_exact_size() -> None:
         lzo1x.decompress(_LZO_ABC + b"x", out_size=3)
 
 
+def test_lzo_max_size_is_a_bound() -> None:
+    """SquashFS gives only the most a block may decode to: ``max_size=`` returns
+    the block's bytes when they fit, and refuses one that decodes to more."""
+    assert lzo1x.decompress(_LZO_ABC, max_size=3) == b"abc"
+    assert lzo1x.decompress(_LZO_ABC, max_size=4096) == b"abc"
+    with pytest.raises(CorruptDataError, match="more than 2 bytes"):
+        lzo1x.decompress(_LZO_ABC, max_size=2)
+    for kwargs in ({}, {"out_size": 3, "max_size": 3}):
+        with pytest.raises(TypeError, match="exactly one of out_size= and max_size="):
+            lzo1x.decompress(_LZO_ABC, **kwargs)
+
+
 # ── LZFSE and LZVN ─────────────────────────────────────────────────────────────────
 
 _LZFSE_ABC = b"bvx-\x03\0\0\0abc" + b"bvx$"
@@ -682,10 +694,10 @@ def test_bcj2_restored_twice_reads_independently() -> None:
 
 
 # The LZW state after ``_Z_AB`` without its flush: header (8 bytes), finished, the
-# truncation flag (no message), nine-bit setting, at-fill, need-header, four segment and skip counters, the skip reason, the maximum
-# width and block mode, the dictionary size and next code, one entry (prefix, suffix),
-# the code reader; then the held output, header-in-stream, the CLEAR offsets,
-# total_in and total_out.
+# truncation flag (no message), nine-bit setting, at-fill, need-header, four segment and
+# skip counters, the skip reason, the maximum width and block mode, the dictionary size
+# and next code, one entry (prefix, suffix), the code reader; then the held output,
+# header-in-stream, the CLEAR offsets, total_in and total_out.
 _NINE_BIT = 10
 _PENDING_SKIP = 13 + 16
 _REASON = 13 + 32

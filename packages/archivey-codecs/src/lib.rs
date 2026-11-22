@@ -294,24 +294,37 @@ impl Crc16Arc {
 
 // ── LZO1X ───────────────────────────────────────────────────────────────────────────
 
-/// Decode one LZO1X block whose output is exactly `out_size` bytes.
+/// Decode one LZO1X block: exactly `out_size` bytes (lzop records each block's
+/// size), or at most `max_size` (SquashFS records only the most a block may decode
+/// to). Exactly one of the two is given; neither allocates past it.
 #[pyfunction]
-#[pyo3(signature = (block, /, *, out_size))]
+#[pyo3(signature = (block, /, *, out_size = None, max_size = None))]
 fn lzo1x_decompress<'py>(
     py: Python<'py>,
     block: &Bound<'py, PyAny>,
-    out_size: usize,
+    out_size: Option<usize>,
+    max_size: Option<usize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
+    let limit = match (out_size, max_size) {
+        (Some(n), None) | (None, Some(n)) => n,
+        _ => {
+            return Err(PyTypeError::new_err(
+                "lzo1x.decompress() takes exactly one of out_size= and max_size=",
+            ))
+        }
+    };
     let data = input(block)?;
     let slice: &[u8] = &data;
     let out = py
-        .detach(|| lzo::lzo1x_decompress(slice, out_size))
+        .detach(|| lzo::lzo1x_decompress(slice, limit))
         .map_err(to_py0)?;
-    if out.len() != out_size {
-        return Err(CorruptDataError::new_err(format!(
-            "the block decodes to {} bytes, not {out_size}",
-            out.len()
-        )));
+    if let Some(n) = out_size {
+        if out.len() != n {
+            return Err(CorruptDataError::new_err(format!(
+                "the block decodes to {} bytes, not {n}",
+                out.len()
+            )));
+        }
     }
     Ok(PyBytes::new(py, &out))
 }
