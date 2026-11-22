@@ -12,8 +12,9 @@ there, and walks on. This module owns the parts that do not depend on the format
   :class:`~archivey.SalvageLimits`, the search budget and the position each layer's
   search has reached, and the ``ARCHIVE_REGION_SKIPPED`` records with their cap.
 - :func:`search_forward`, the search itself. A format gives it a
-  :class:`HeaderSearch`: a ``find_header(window, start)`` function that is pure on
-  bytes, the step between candidate positions, and the longest header it needs.
+  :class:`HeaderSearch`: a ``find_header(window, start, stop)`` function that is pure
+  on bytes and examines only candidate starts before ``stop``, the step between
+  candidate positions, and the longest header it needs.
 
 The search reads the layer in windows, examines each candidate position at most
 once per layer (its position only moves forward), and counts what it examines
