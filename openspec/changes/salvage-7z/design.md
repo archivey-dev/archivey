@@ -556,10 +556,24 @@ Where the code departs from the decisions above, or settles what they leave open
 - **No listing-time `max_ratio` check.** The read holds `DecoderLimits` as for any
   folder; the dictionary from the unpacked size makes `max_decoder_memory` the check
   that bites (tested). Task 3.6's `max_ratio` item is not done.
+- **R3 is bounded by its work, not only by the bytes it claims.** Every byte it
+  hashes counts against `max_search_bytes`, each rule hashes at most 16 times the tail,
+  and the zero-run ends are matched through one table of zero-byte CRC preimages, not
+  one CRC per end (review round 1: 10 KB of crafted tail took 10 s before). R3a, with a
+  fixed size, still hashes once per end, so a long zero run can stop it at the work
+  bound before its last ends.
+- **The header copy's decode is held to `max_metadata_bytes`** as well as to
+  `MAX_NEXT_HEADER_SIZE`, before it runs, and stops once its output passes 1 MiB and
+  128 times its input: a stream of zeros otherwise decodes to the cap from a few KB.
+- **The LZMA1 member at offset 32 is `confirmed=False`**: only its position says it is
+  a stream. Its first five bytes must be `00` then not four zeros, so an all-zero area
+  lists nothing.
 - **A broken chain at a walk position is listed only when its first LZMA chunk
   decodes**, the check decision 7 gives a searched one: random or encrypted bytes pass a
-  first chunk header often enough (the AES folders listed junk without it). It reads to
-  its last whole chunk, then raises `TruncatedError`.
+  first chunk header often enough (the AES folders listed junk without it). That first
+  LZMA chunk must end within 256 KiB of the chain's start, as for a searched one, so a
+  long run of uncompressed chunks is not read to judge it. It reads to its last whole
+  chunk, then raises `TruncatedError`.
 - **The search needs the first LZMA chunk whole, within 256 KiB of the candidate**
   (the driver's `max_header_size`). A stream whose first LZMA chunk the cut runs
   through is not found by the search; the walk still finds one at a walk position.

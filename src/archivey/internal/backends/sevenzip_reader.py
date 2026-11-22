@@ -1180,11 +1180,13 @@ class SevenZipReader(BaseArchiveReader):
     ) -> SevenZipArchive:
         """Read the archive the default open refused with ``error``, in salvage mode.
 
-        Tries the start-header and end-header repairs of
-        ``openspec/changes/salvage-7z`` (decisions 2 and 3) and reads the archive from
-        the first end header that passes. With none, the archive lists nothing. Either
-        way the open succeeds and the pass ends in ``error`` (``_iter_members``), whose
-        message then says what salvage did.
+        Tries the start-header and end-header repairs and reads the archive from the
+        first end header that passes. With no usable end header it walks the packed
+        area: a copy of the end header found there is read as the end header, and
+        otherwise the streams found there are listed as content members. Either way
+        the open succeeds and the pass ends in ``error`` (``_iter_members``), whose
+        message then says what salvage did. ``dev-docs/formats/7z.md`` §2.6 has the
+        rules.
         """
         view = self._view(0)
         try:
@@ -1249,7 +1251,7 @@ class SevenZipReader(BaseArchiveReader):
         budget: TailBudget,
         outcome: _SalvageOutcome,
     ) -> None:
-        """Decisions 4 to 8: with no usable end header, walk the packed area. A header
+        """With no usable end header, walk the packed area. A header
         copy the walk finds is read as the end header; otherwise each stream found is
         a content member. The area ends where the start header puts the next header,
         when it passes or was repaired and that is inside the file, and otherwise at
@@ -1283,13 +1285,21 @@ class SevenZipReader(BaseArchiveReader):
             tail.stopped(stop)
             return claimed
 
-        walk = walk_packed_area(read_at, end, search=search, claim=claim)
+        # A header copy is held to the listing's text limit as well as to the
+        # parser's limit on a next header, before it is decoded.
+        max_metadata = self._config.listing_limits.max_metadata_bytes
+        max_header = MAX_NEXT_HEADER_SIZE
+        if max_metadata is not None:
+            max_header = min(max_header, max_metadata)
+        walk = walk_packed_area(
+            read_at, end, search=search, claim=claim, max_header=max_header
+        )
         outcome.limit_reached = state.limit_reached
         if walk.copy is not None:
             find = EndHeaderFind(walk.copy.start, walk.copy.data, "copy", False)
             if self._try_salvage_load(view, signature, find, outcome, end_offset=end):
                 # The pack layout agrees with the walk, and the file CRCs in the copy
-                # check every read (decision 5).
+                # check every read.
                 outcome.confirmed = True
                 return
         if not walk.streams:
@@ -1309,8 +1319,9 @@ class SevenZipReader(BaseArchiveReader):
         read_at: Callable[[int, int], bytes],
         file_size: int,
     ) -> EndHeaderFind | None:
-        """Decision 3: a next header that fails its CRC, or is cut, parsed as it
-        stands. ``None`` when it passes its CRC (the default failed after it) or
+        """A next header that fails its CRC, or is cut, parsed as it stands: an
+        encoded one is then checked by its folder CRC. ``None`` when it passes its CRC
+        (the default failed after it) or
         does not parse to its ``kEnd``."""
         start = SIGNATURE_HEADER_SIZE + fields.next_header_offset
         size = fields.next_header_size
@@ -1353,7 +1364,10 @@ class SevenZipReader(BaseArchiveReader):
                 max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
                 budget=self._stage_draws,
             )
-        except (CorruptionError, TruncatedError):
+        except (CorruptionError, TruncatedError, UnsupportedFeatureError):
+            # A candidate found by a byte pattern (R4, a header copy) may be no header
+            # at all: an unknown property or coder id in it says so as often as a
+            # parse failure, and the next candidate, or the walk, comes next.
             return False
         # A CRC-32 confirmed the end header's bytes, or its decode passed the folder
         # CRC of the encoded header; a plain header found by its parse alone, or an
@@ -1368,9 +1382,11 @@ class SevenZipReader(BaseArchiveReader):
         return True
 
     def _report_salvaged_members(self) -> None:
-        """Record ``MEMBER_FOUND_BY_SCAN`` for each member salvage listed from an end
-        header the default open could not use. The default listed none of them: it
-        raised at open (add-only, Q2)."""
+        """Record a salvage code for each member salvage listed: ``MEMBER_FOUND_BY_SCAN``
+        for one listed from an end header the default open could not use, and
+        ``MEMBER_NAME_UNKNOWN`` for a content member (:meth:`_report_content_members`).
+        The default raised at open and listed nothing, so every member here is added
+        and flagged."""
         salvaged = self._salvaged
         if salvaged is not None and salvaged.outcome.content is not None:
             self._report_content_members(salvaged.outcome.content)
@@ -1410,8 +1426,8 @@ class SevenZipReader(BaseArchiveReader):
             )
 
     def _report_content_members(self, streams: list[ContentStream]) -> None:
-        """Settle each content member and record ``MEMBER_NAME_UNKNOWN`` for it
-        (decision 8): archivey made up its name, nothing says which filter followed
+        """Settle each content member and record ``MEMBER_NAME_UNKNOWN`` for it:
+        archivey made up its name, nothing says which filter followed
         its codec, and nothing checks its bytes (``verifiable`` is ``UNLOCKED``)."""
         for index, (member, stream) in enumerate(
             zip(self._members, streams, strict=True)
@@ -1667,8 +1683,8 @@ class SevenZipReader(BaseArchiveReader):
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
         if self._salvaged is not None:
-            # The default open raised; salvage lists what it found, and the pass
-            # still ends in that error (Q3).
+            # The default open raised. Salvage lists past the damage, but the
+            # damage is still the error at the end of the pass.
             self._salvage_mode.finish()
             raise self._salvage_error()
 

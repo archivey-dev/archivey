@@ -2,9 +2,8 @@
 start header no longer leads to.
 
 The default open reads the start header, checks its CRC, and reads the next header
-where it says. When that fails, a salvage reader tries the rules of
-``openspec/changes/salvage-7z`` decision 2, in order, and takes the first that
-passes:
+where it says. When that fails, a salvage reader tries these rules in order, and
+takes the first that passes (``dev-docs/formats/7z.md`` §2.6):
 
 - R1: the stored next-header offset and size, when the bytes there pass the stored
   next-header CRC (only the start header's own CRC field was damaged);
@@ -49,6 +48,11 @@ ReadAt = Callable[[int, int], bytes]
 TAIL_SEARCH = 1 << 20
 # R3 ends a span at most this far into the run of zero bytes that ends the file.
 ZERO_RUN_ENDS = 64 << 10
+# Each R3 rule may hash at most this many times the bytes of the tail it searches,
+# so that its work is linear in the tail whatever the tail holds. Each CRC call also
+# counts this many bytes, for the call itself. A real end header needs one pass.
+R3_WORK_FACTOR = 16
+_R3_CALL_COST = 64
 # The first two bytes of a plain or encoded next header R3c tries: kEncodedHeader
 # then kPackInfo, and kHeader then kArchiveProperties, kMainStreamsInfo or kFilesInfo.
 _R3C_STARTS = re.compile(rb"(?=\x17\x06|\x01[\x02\x04\x05])")
@@ -197,6 +201,18 @@ class TailBudget:
         self._claimed_from = start - want
         return self._claimed_from
 
+    def charge(self, size: int) -> bool:
+        """Count ``size`` more bytes examined (R3's CRCs) against the budget, or, when
+        it cannot pay for them, count none and mark the search short."""
+        remaining = 0 if self._state.limit_reached else self._state.remaining_bytes()
+        if remaining is not None and remaining < size:
+            if not self.short:
+                self.short = True
+                self._wanted_from = self._claimed_from or SIGNATURE_HEADER_SIZE
+            return False
+        self._state.searched_bytes += size
+        return True
+
     def stopped(self, file_size: int) -> None:
         """Record that the budget stopped the tail search, once."""
         if not self.short or self._state.limit_reached:
@@ -211,15 +227,69 @@ class TailBudget:
         )
 
 
-def _tail_ends(tail: bytes, tail_start: int, file_size: int) -> list[int]:
-    """R3's candidate ends, file offsets: the end of the file, and each offset in the
-    run of zero bytes that ends it after its first zero byte (a header ends with its
-    ``kEnd``), up to :data:`ZERO_RUN_ENDS` of that run, nearest the data first."""
-    last_nonzero = len(tail.rstrip(b"\x00"))
-    first = tail_start + last_nonzero + 1
-    if last_nonzero == len(tail):
-        return [file_size]
-    return list(range(first, min(file_size, first + ZERO_RUN_ENDS) + 1))
+def _crc_table() -> tuple[list[int], dict[int, int]]:
+    """zlib's CRC-32 table, and the index of each entry by its top byte (each top
+    byte occurs once, which makes appending a zero byte invertible)."""
+    table: list[int] = []
+    for index in range(256):
+        value = index
+        for _ in range(8):
+            value = (value >> 1) ^ 0xEDB88320 if value & 1 else value >> 1
+        table.append(value)
+    return table, {value >> 24: index for index, value in enumerate(table)}
+
+
+_CRC_TABLE, _CRC_TOP_INDEX = _crc_table()
+
+
+def _without_zero(crc: int) -> int:
+    """The CRC-32 ``c`` with ``zlib.crc32(b"\\x00", c) == crc``."""
+    after = crc ^ 0xFFFFFFFF
+    index = _CRC_TOP_INDEX[after >> 24]
+    before = (((after ^ _CRC_TABLE[index]) << 8) | index) & 0xFFFFFFFF
+    return before ^ 0xFFFFFFFF
+
+
+def _zero_preimages(crc: int, count: int) -> dict[int, int]:
+    """For ``k`` from 0 to ``count``, the CRC-32 that ``k`` zero bytes take to
+    ``crc``, mapped to ``k``: a span that ends in the file's run of zeros matches at
+    the end ``k`` bytes into the run exactly when its CRC up to the run is the value
+    mapped to ``k``. One pass for every start, in place of one CRC per end."""
+    out: dict[int, int] = {}
+    for k in range(count + 1):
+        out.setdefault(crc, k)
+        crc = _without_zero(crc)
+    return out
+
+
+class _R3Hasher:
+    """R3's CRCs, each counted against the search budget and against one rule's work
+    bound (:data:`R3_WORK_FACTOR` times the tail). ``crc`` gives ``None`` when either
+    stops the rule; :attr:`budget_out` says it was the budget."""
+
+    def __init__(self, view: memoryview, lo: int, budget: TailBudget) -> None:
+        self._view = view
+        self._lo = lo
+        self._budget = budget
+        self._limit = 0
+        self._used = 0
+        self.budget_out = False
+
+    def rule(self) -> None:
+        """Start the next rule with a fresh work bound."""
+        self._limit = R3_WORK_FACTOR * len(self._view)
+        self._used = 0
+
+    def crc(self, start: int, end: int) -> int | None:
+        size = end - start
+        cost = size + _R3_CALL_COST
+        if self.budget_out or self._used + cost > self._limit:
+            return None
+        if not self._budget.charge(size):
+            self.budget_out = True
+            return None
+        self._used += cost
+        return zlib.crc32(self._view[start - self._lo : end - self._lo])
 
 
 def search_tail_crc(
@@ -229,8 +299,14 @@ def search_tail_crc(
 
     R3a keeps the stored size and R3b the stored offset, over the last
     ``MAX_NEXT_HEADER_SIZE`` bytes; R3c keeps neither and starts only at a header's
-    first two bytes, over the last :data:`TAIL_SEARCH` bytes. Each span ends at one
-    of :func:`_tail_ends` or at the stored end when that is inside the file.
+    first two bytes, over the last :data:`TAIL_SEARCH` bytes. Each span ends at the
+    end of the file, at an offset up to :data:`ZERO_RUN_ENDS` into the run of zero
+    bytes that ends it (after its first zero, a header's ``kEnd``), or at the stored
+    end when that is inside the file; the nearest end to the data matches first.
+
+    Every byte R3 hashes counts against ``max_search_bytes``, and each rule hashes
+    at most :data:`R3_WORK_FACTOR` times the tail: a span from one start is hashed
+    once up to the zero run, whatever the count of ends in it.
     """
     offset, size, crc = _fields(start_header)
     stored_start = SIGNATURE_HEADER_SIZE + offset
@@ -246,30 +322,73 @@ def search_tail_crc(
     if lo >= file_size:
         return None
     tail = read_at(lo, file_size - lo)
-    ends = _tail_ends(tail, lo, file_size)
-    if lo < stored_end < file_size and stored_end not in ends:
-        ends.append(stored_end)
+    hasher = _R3Hasher(memoryview(tail), lo, budget)
+    # The ends: a run of zero bytes [run_lo, run_hi] of them, or the end of the
+    # file alone; and the stored end, when it is inside the file and not one of them.
+    last_nonzero = len(tail.rstrip(b"\x00"))
+    if last_nonzero == len(tail):
+        run_lo = run_hi = file_size
+        preimages: dict[int, int] = {crc: 0}
+    else:
+        run_lo = lo + last_nonzero + 1
+        run_hi = min(file_size, run_lo + ZERO_RUN_ENDS)
+        preimages = _zero_preimages(crc, run_hi - run_lo)
+    extra_end = stored_end if lo < stored_end < file_size else None
+    if extra_end is not None and run_lo <= extra_end <= run_hi:
+        extra_end = None
 
-    def crc_of(start: int, end: int) -> int:
-        return zlib.crc32(tail[start - lo : end - lo])
+    def span(start: int, end: int) -> bytes:
+        return tail[start - lo : end - lo]
+
+    def match_from(start: int) -> int | None:
+        """The nearest end whose span from ``start`` has the stored CRC, or
+        ``None`` (none, or the rule's work ran out)."""
+        if start < run_lo:
+            base = run_lo
+            value = hasher.crc(start, run_lo)
+        else:
+            base = start
+            value = 0
+        if value is not None:
+            k = preimages.get(value)
+            if k is not None and base + k <= run_hi and base + k > start:
+                return base + k
+        if (
+            extra_end is not None
+            and extra_end > start
+            and hasher.crc(start, extra_end) == crc
+        ):
+            return extra_end
+        return None
 
     if 0 < size <= MAX_NEXT_HEADER_SIZE:
+        # R3a: a fixed size, so one CRC per end. The work bound caps the ends tried.
+        hasher.rule()
+        ends = [*range(run_lo, run_hi + 1)]
+        if extra_end is not None:
+            ends.append(extra_end)
         for end in ends:
             start = end - size
-            if start >= lo and crc_of(start, end) == crc:
-                return EndHeaderFind(start, tail[start - lo : end - lo], "R3a", True)
-    if lo <= stored_start < file_size:
-        for end in ends:
-            if stored_start < end <= stored_start + MAX_NEXT_HEADER_SIZE and (
-                crc_of(stored_start, end) == crc
-            ):
-                data = tail[stored_start - lo : end - lo]
-                return EndHeaderFind(stored_start, data, "R3b", True)
+            if start < lo:
+                continue
+            value = hasher.crc(start, end)
+            if value is None:
+                break
+            if value == crc:
+                return EndHeaderFind(start, span(start, end), "R3a", True)
+    if lo <= stored_start < file_size and not hasher.budget_out:
+        hasher.rule()
+        end = match_from(stored_start)
+        if end is not None and end <= stored_start + MAX_NEXT_HEADER_SIZE:
+            return EndHeaderFind(stored_start, span(stored_start, end), "R3b", True)
     search_lo = max(lo, file_size - TAIL_SEARCH)
+    hasher.rule()
     for start in _starts_from_end(_R3C_STARTS, tail, search_lo - lo, lo):
-        for end in ends:
-            if end > start and crc_of(start, end) == crc:
-                return EndHeaderFind(start, tail[start - lo : end - lo], "R3c", True)
+        if hasher.budget_out:
+            break
+        end = match_from(start)
+        if end is not None:
+            return EndHeaderFind(start, span(start, end), "R3c", True)
     return None
 
 

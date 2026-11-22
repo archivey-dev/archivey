@@ -1,5 +1,5 @@
 """Salvage mode for 7z: the walk of the packed area when no end header is usable
-(``openspec/changes/salvage-7z`` decisions 4 to 8).
+(``dev-docs/formats/7z.md`` §2.6).
 
 7-Zip packs every folder's streams back to back from offset 32. An LZMA2 stream is a
 chain of chunks whose headers give each chunk's packed and unpacked size, ending in a
@@ -66,7 +66,7 @@ ClaimFn = Callable[[int, int], int]
 METHOD_LZMA2 = b"\x21"
 METHOD_LZMA = b"\x03\x01\x01"
 # LZMA1 as 7-Zip writes it: lc=3, lp=0, pb=2. Another property byte decodes to wrong
-# bytes with no error, so no other is tried (design, Rejected).
+# bytes with no error, so a trial of others could not tell which one is right.
 LZMA1_PROPS = 0x5D
 # The largest dictionary a 7z LZMA1 coder can declare.
 MAX_LZMA1_DICT = (1 << 32) - 1
@@ -77,7 +77,7 @@ UNKNOWN_SIZE = (1 << 62) - 1
 _READ_WINDOW = 1 << 20
 _LZMA1_PROBE_INPUT = 1 << 16
 _LZMA1_PROBE_OUTPUT = 1 << 12
-#: How far back from the area's end the header copy is searched for (decision 5).
+#: How far back from the area's end the header copy is searched for.
 TAIL_COPY_SEARCH = 1 << 20
 # The second byte of a plain header: kArchiveProperties, kAdditionalStreamsInfo,
 # kMainStreamsInfo or kFilesInfo after kHeader.
@@ -85,6 +85,11 @@ _HEADER_SECOND = frozenset((0x02, 0x03, 0x04, 0x05))
 # How much input the LZMA1 header decode takes at once; a failing piece is fed again
 # one byte at a time, so the bytes decoded before the failure are kept.
 _LZMA1_PIECE = 1 << 12
+# The header decode stops once its output passes _HEADER_RATIO_FLOOR bytes and
+# _HEADER_RATIO times the input fed in: a real 7z header does not compress that far,
+# and a stream of zeros would otherwise decode to the header cap from a few KB.
+_HEADER_RATIO = 128
+_HEADER_RATIO_FLOOR = 1 << 20
 # The most bytes from a candidate the stream search reads to judge it: its first
 # LZMA chunk must end within them (a few uncompressed chunks may come first).
 _STREAM_HEADER_SPAN = 1 << 18
@@ -276,8 +281,12 @@ def scan_chain(reader: ChunkReader, start: int, end: int) -> Chain | None:
 
 def first_lzma_chunk_decodes(reader: ChunkReader, chain: Chain) -> bool:
     """Whether the chain's first LZMA chunk, with the chunks before it, decodes
-    without error to the size their headers declare. ``False`` when it holds none."""
+    without error to the size their headers declare. ``False`` when it holds none,
+    or when it ends more than :data:`_STREAM_HEADER_SPAN` bytes into the chain:
+    a longer run of uncompressed chunks before it is not read to judge it."""
     if chain.first_lzma_end is None:
+        return False
+    if chain.first_lzma_end - chain.start > _STREAM_HEADER_SPAN:
         return False
     size = chain.first_lzma_unpacked
     decoder = lzma.LZMADecompressor(
@@ -301,11 +310,20 @@ def lzma2_dict_prop(size: int) -> int:
     return 40
 
 
+def _range_coder_start(data: bytes) -> bool:
+    """Whether ``data`` can start an LZMA1 stream: the range coder's first byte is
+    ``00``, and its next four, the code it starts from, are not all zero. Zeros
+    decode as LZMA1 without error, and zeros are what a cut or preallocated file
+    holds."""
+    return len(data) >= 5 and data[0] == 0 and data[1:5] != bytes(4)
+
+
 def lzma1_starts_at(read_at: ReadAt, offset: int, end: int) -> bool:
     """Whether an LZMA1 stream with 7-Zip's properties starts at ``offset``: its first
-    byte is ``00`` (the range coder's), and its first bytes decode without error."""
+    bytes can start a range coder (:func:`_range_coder_start`), and they decode
+    without error."""
     data = read_at(offset, min(_LZMA1_PROBE_INPUT, end - offset))
-    if not data or data[0] != 0:
+    if not _range_coder_start(data):
         return False
     decoder = lzma.LZMADecompressor(
         lzma.FORMAT_RAW,
@@ -346,8 +364,9 @@ class ContentStream:
 
 @dataclass(frozen=True)
 class HeaderCopy:
-    """A copy of the end header the walk found in the packed area (decision 5):
-    where its stream starts and its plain header bytes, to its ``kEnd``."""
+    """A copy of the end header the walk found in the packed area, which 7-Zip
+    leaves there as the encoded header's stream: where its stream starts and its
+    plain header bytes, to its ``kEnd``."""
 
     start: int
     data: bytes
@@ -444,7 +463,7 @@ def _lzma1_decoder(dict_size: int) -> lzma.LZMADecompressor:
 def _lzma1_header_start(data: bytes) -> bool:
     """Whether the LZMA1 stream that ``data`` starts decodes to a plain header's
     first two bytes (``kHeader``, then a section)."""
-    if not data or data[0] != 0:
+    if not _range_coder_start(data):
         return False
     try:
         out = _lzma1_decoder(1 << 12).decompress(data, max_length=2)
@@ -454,72 +473,106 @@ def _lzma1_header_start(data: bytes) -> bool:
 
 
 def decode_lzma1_prefix(data: bytes, max_out: int) -> bytes:
-    """Decode ``data`` as LZMA1 with 7-Zip's properties, to at most ``max_out``
-    bytes, keeping the bytes decoded before an error: LZMA1 has no end marker, so a
-    decode runs on past its stream into whatever follows."""
+    """Decode ``data`` as LZMA1 with 7-Zip's properties, keeping the bytes decoded
+    before an error: LZMA1 has no end marker, so a decode runs on past its stream
+    into whatever follows. The output is at most ``max_out`` bytes (the dictionary is
+    sized from it), and stops once it passes :data:`_HEADER_RATIO_FLOOR` bytes and
+    :data:`_HEADER_RATIO` times the input fed in."""
     dict_size = max(max_out, 1 << 12)
 
-    def feed(decoder: lzma.LZMADecompressor, piece: bytes, out: bytearray) -> None:
-        out += decoder.decompress(piece, max_length=max(0, max_out - len(out)))
+    def feed(
+        decoder: lzma.LZMADecompressor, piece: bytes, out: bytearray, fed: int
+    ) -> bool:
+        """Feed ``piece``; ``False`` when the output reached a bound."""
+        room = min(max_out, max(_HEADER_RATIO_FLOOR, _HEADER_RATIO * fed)) - len(out)
+        if room <= 0:
+            return False
+        out += decoder.decompress(piece, max_length=room)
+        # Output held back (input left that the room did not let it decode) means a
+        # bound cut it.
+        return decoder.eof or decoder.needs_input
 
     decoder = _lzma1_decoder(dict_size)
     out = bytearray()
     for at in range(0, len(data), _LZMA1_PIECE):
+        fed = min(len(data), at + _LZMA1_PIECE)
         try:
-            feed(decoder, data[at : at + _LZMA1_PIECE], out)
+            more = feed(decoder, data[at:fed], out, fed)
         except lzma.LZMAError:
             # Decode the input before the failing piece again, then the piece one
             # byte at a time, so its bytes before the failure are kept.
             decoder = _lzma1_decoder(dict_size)
             out = bytearray()
-            feed(decoder, data[:at], out)
-            for byte_at in range(at, min(at + _LZMA1_PIECE, len(data))):
+            if at:
+                feed(decoder, data[:at], out, at)
+            for byte_at in range(at, fed):
                 try:
-                    feed(decoder, data[byte_at : byte_at + 1], out)
+                    if not feed(decoder, data[byte_at : byte_at + 1], out, byte_at + 1):
+                        break
                 except lzma.LZMAError:
                     break
                 if decoder.eof:
                     break
             break
-        if len(out) >= max_out or decoder.eof:
+        if not more or decoder.eof:
             break
     return bytes(out)
 
 
+def _input_for(max_header: int) -> int:
+    """The most input a header of ``max_header`` bytes can take: LZMA grows data
+    that does not compress by under 2 %."""
+    return max_header + max_header // 32 + 64
+
+
 def _lzma1_copy(
-    read_at: ReadAt, pos: int, span: int, streams: list[ContentStream]
+    read_at: ReadAt,
+    pos: int,
+    span: int,
+    streams: list[ContentStream],
+    max_header: int,
 ) -> HeaderCopy | None:
-    decoded = decode_lzma1_prefix(read_at(pos, span), MAX_NEXT_HEADER_SIZE)
-    return _check_copy(pos, decoded, streams)
+    data = read_at(pos, min(span, _input_for(max_header)))
+    return _check_copy(pos, decode_lzma1_prefix(data, max_header), streams)
 
 
 def copy_at(
-    read_at: ReadAt, pos: int, end: int, streams: list[ContentStream]
+    read_at: ReadAt,
+    pos: int,
+    end: int,
+    streams: list[ContentStream],
+    max_header: int = MAX_NEXT_HEADER_SIZE,
 ) -> HeaderCopy | None:
     """The header copy at walk position ``pos``, when one starts there: a plain
-    header, or after offset 32 an LZMA1 stream that decodes to one (decisions 5
-    and 6). Each is held to :data:`MAX_NEXT_HEADER_SIZE`."""
-    span = min(end - pos, MAX_NEXT_HEADER_SIZE)
+    header, or after offset 32 an LZMA1 stream that decodes to one (LZMA1 is tried
+    nowhere else after offset 32: its decode cannot tell content from wrong bytes).
+    Each is held to ``max_header`` bytes."""
+    span = end - pos
     head = read_at(pos, min(span, 64))
     if (
         len(head) >= 2
         and head[0] == 0x01
         and head[1] in _HEADER_SECOND
-        and end - pos <= MAX_NEXT_HEADER_SIZE
+        and span <= max_header
     ):
         copy = _check_copy(pos, read_at(pos, span), streams)
         if copy is not None:
             return copy
     if pos > SIGNATURE_HEADER_SIZE and _lzma1_header_start(head):
-        return _lzma1_copy(read_at, pos, span, streams)
+        return _lzma1_copy(read_at, pos, span, streams, max_header)
     return None
 
 
 def tail_copy_search(
-    read_at: ReadAt, end: int, streams: list[ContentStream], claim: ClaimFn
+    read_at: ReadAt,
+    end: int,
+    streams: list[ContentStream],
+    claim: ClaimFn,
+    max_header: int = MAX_NEXT_HEADER_SIZE,
 ) -> HeaderCopy | None:
-    """Decision 5: the header copy in the area's last :data:`TAIL_COPY_SEARCH` bytes,
-    from the end backwards, for when the walk stopped before reaching it. An offset
+    """The header copy in the area's last :data:`TAIL_COPY_SEARCH` bytes, from the
+    end backwards, for when the walk stopped before reaching it (an LZMA1 or BCJ2
+    folder runs into it). Each decode is held to ``max_header`` bytes. An offset
     whose byte is ``00`` and whose LZMA1 decode starts as a plain header goes on to
     the full decode and the copy's checks. No offset inside a complete stream the
     walk found is tried: the copy lies after the packed streams."""
@@ -536,15 +589,15 @@ def tail_copy_search(
     at = len(data)
     while (at := data.rfind(b"\x00", 0, at)) >= 0:
         if _lzma1_header_start(data[at : at + 64]):
-            span = min(end - lo - at, MAX_NEXT_HEADER_SIZE)
-            copy = _lzma1_copy(read_at, lo + at, span, streams)
+            copy = _lzma1_copy(read_at, lo + at, end - lo - at, streams, max_header)
             if copy is not None:
                 return copy
     return None
 
 
 class StreamFinder:
-    """Decision 7: the stream search's finder, for the shared search driver.
+    """The finder of the search for the next LZMA2 stream, for the shared search
+    driver, where the walk cannot go on.
 
     A candidate passes when its first chunk resets the dictionary, an LZMA chunk
     within :data:`_STREAM_HEADER_SPAN` bytes of it decodes without error (a chain of
@@ -594,12 +647,13 @@ def _walk_from(
     pos: int,
     end: int,
     result: WalkResult,
+    max_header: int,
 ) -> int | None:
     """Walk from ``pos`` while a stream starts at each walk position, adding to
     ``result``. Gives where the search goes on from, or ``None`` when the walk
     reached the area's end, ran into a cut stream, or found the header copy."""
     while pos < end:
-        copy = copy_at(read_at, pos, end, result.streams)
+        copy = copy_at(read_at, pos, end, result.streams, max_header)
         if copy is not None:
             result.copy = copy
             return None
@@ -618,24 +672,34 @@ def _walk_from(
             pos = chain.end
             continue
         if pos == SIGNATURE_HEADER_SIZE and lzma1_starts_at(read_at, pos, end):
-            result.streams.append(ContentStream(pos, end, "lzma", None, UNKNOWN_SIZE))
+            # Unconfirmed: only its position says it is a stream (LZMA1 has no end
+            # marker and no chunk headers to check).
+            result.streams.append(
+                ContentStream(pos, end, "lzma", None, UNKNOWN_SIZE, confirmed=False)
+            )
             return pos + 1
         return pos
     return None
 
 
 def walk_packed_area(
-    read_at: ReadAt, end: int, *, search: SearchFn, claim: ClaimFn
+    read_at: ReadAt,
+    end: int,
+    *,
+    search: SearchFn,
+    claim: ClaimFn,
+    max_header: int = MAX_NEXT_HEADER_SIZE,
 ) -> WalkResult:
-    """Walk the packed area from offset 32 to ``end`` (decisions 4 to 7): the streams
-    at walk positions and the header copy; when the walk stops before the area's
-    end, the copy in the area's tail, then the streams the search finds."""
+    """Walk the packed area from offset 32 to ``end``: the streams at walk positions
+    and the header copy; when the walk stops before the area's end, the copy in the
+    area's tail, then the streams the search finds. A header copy is held to
+    ``max_header`` bytes, decoded or plain."""
     reader = CachedReader(read_at, end)
     result = WalkResult()
-    resume = _walk_from(reader, read_at, SIGNATURE_HEADER_SIZE, end, result)
+    resume = _walk_from(reader, read_at, SIGNATURE_HEADER_SIZE, end, result, max_header)
     if resume is None:
         return result
-    copy = tail_copy_search(read_at, end, result.streams, claim)
+    copy = tail_copy_search(read_at, end, result.streams, claim, max_header)
     if copy is not None:
         result.copy = copy
         return result
@@ -655,7 +719,7 @@ def walk_packed_area(
             resume = found + 1
             continue
         result.streams.append(stream_from_chain(chain, end))
-        resume = _walk_from(reader, read_at, chain.end, end, result)
+        resume = _walk_from(reader, read_at, chain.end, end, result, max_header)
     return result
 
 
@@ -674,8 +738,8 @@ def content_archive(
     end_offset: int,
 ) -> SevenZipArchive:
     """A synthetic archive with one folder of one coder per stream, no CRC, so each
-    content member reads through the normal folder pipeline under the unchanged
-    limits (decision 8)."""
+    content member reads through the normal folder pipeline: ``DecoderLimits`` and
+    ``ExtractionLimits`` hold it as any member."""
     folders: list[SevenZipFolder] = []
     files: list[SevenZipFileRecord] = []
     for index, stream in enumerate(streams):

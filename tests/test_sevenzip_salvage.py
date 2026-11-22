@@ -26,6 +26,7 @@ from archivey import (
     DecoderLimits,
     DiagnosticCode,
     DiagnosticPolicy,
+    ListingLimits,
     SalvageLimits,
     open_archive,
 )
@@ -36,14 +37,20 @@ from archivey.exceptions import (
     ResourceLimitError,
     TruncatedError,
 )
-from archivey.internal.backends.sevenzip_salvage import one_byte_candidates
+from archivey.internal.backends import sevenzip_salvage_walk
+from archivey.internal.backends.sevenzip_salvage import (
+    R3_WORK_FACTOR,
+    one_byte_candidates,
+)
 from archivey.internal.backends.sevenzip_salvage_walk import (
+    BytesReader,
     CachedReader,
     ContentStream,
     StreamFinder,
     content_name,
     copy_at,
     decode_lzma1_prefix,
+    first_lzma_chunk_decodes,
     lzma2_dict_prop,
     scan_chain,
 )
@@ -610,6 +617,8 @@ def test_an_lzma1_folder_is_one_member_of_unknown_size(
     assert listing.names == ["__salvaged__/7z-stream-0001.bin"]
     [context] = _unknown(listing).values()
     assert context.unchecked == ("name", "filters", "size")
+    # Only its position says it is a stream: LZMA1 has no chunk headers to check.
+    assert context.confirmed is False
     with open_archive(io.BytesIO(damaged), salvage=True) as reader:
         [member] = reader.members_report().members
         assert member.size is None
@@ -822,3 +831,132 @@ def test_the_stream_search_finds_an_lzma2_stream() -> None:
     stream = lzma2_stream(b"abc" * 50_000)
     data = rng.randbytes(1000) + stream + rng.randbytes(1000)
     assert _finder_hits(data) == [1000]
+
+
+# Bounds on salvage's own work --------------------------------------------------------
+
+
+def _r3_bait(pattern: int, zeros: int) -> bytes:
+    """A start header that fails its CRC and names an end header past the file, then
+    ``01 04`` repeated (each an R3c start), one ``ff`` and a run of zeros (each zero
+    an R3 end)."""
+    fields = struct.pack("<QQI", 1 << 40, 100, 0x12345678)
+    signature = b"7z\xbc\xaf\x27\x1c\x00\x04" + struct.pack("<I", 0xDEADBEEF)
+    return signature + fields + b"\x01\x04" * (pattern // 2) + b"\xff" + bytes(zeros)
+
+
+def _searched_bytes(data: bytes, **kwargs: object) -> tuple[int, _Listing]:
+    with open_archive(io.BytesIO(data), salvage=True, **kwargs) as reader:  # type: ignore[call-overload]
+        reader.members_report()
+        searched = reader._salvage_mode.searched_bytes  # type: ignore[attr-defined]
+    return searched, _salvage(data, **kwargs)
+
+
+@pytest.mark.parametrize(("pattern", "zeros"), [(8_000, 2_000), (64_000, 8_000)])
+def test_r3_work_is_linear_in_the_tail(pattern: int, zeros: int) -> None:
+    """Every byte R3 hashes counts against the search budget, and each of its three
+    rules hashes at most R3_WORK_FACTOR times the tail, whatever count of starts and
+    ends the tail holds. (A CRC from each start to each end was cubic: 10 KB of this
+    took 10 s.)"""
+    data = _r3_bait(pattern, zeros)
+    searched, listing = _searched_bytes(data)
+    # The CRCs are counted, beyond the tail's one claim, and they stay linear.
+    assert 2 * len(data) < searched <= (3 * R3_WORK_FACTOR + 4) * len(data)
+    assert listing.names == []
+
+
+def test_r3_stops_at_a_small_search_budget() -> None:
+    data = _r3_bait(8_000, 2_000)
+    listing = _salvage(data, limit=50_000)
+    assert "search_limit" in [r.reason for r in listing.regions()]
+    assert "max_search_bytes" in str(listing.error)
+
+
+def test_r3_finds_an_end_header_in_a_zero_run() -> None:
+    """A header followed by zero padding still matches at the first end its CRC
+    gives, through the zero-run table rather than one CRC per end."""
+    start, _ = next_header_span(NONSOLID)
+    padded = NONSOLID + bytes(5000)
+    # R1 and R2 fail (two start-header bytes changed); R3a keeps the stored size.
+    damaged = _set_field(_set_field(padded, 12, "<Q", 1 << 40), 8, "<I", 0)
+    listing = _salvage(damaged)
+    assert listing.contents == FILES
+    assert {c.offset for c in listing.found().values()} == {start}
+
+
+def _lzma1_bomb(size: int) -> bytes:
+    """An LZMA1 stream, 7-Zip's properties, of a header's first two bytes and then
+    ``size`` zero bytes: a few KB that decode to ``size``."""
+    return lzma.compress(
+        b"\x01\x04" + bytes(size),
+        format=lzma.FORMAT_RAW,
+        filters=[
+            {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20, "lc": 3, "lp": 0, "pb": 2}
+        ],
+    )
+
+
+def test_the_header_decode_stops_at_its_bounds() -> None:
+    bomb = _lzma1_bomb(8 << 20)
+    assert len(bomb) < 4096
+    assert len(decode_lzma1_prefix(bomb, 1 << 16)) == 1 << 16
+    # A ratio no real header reaches stops it near 1 MiB, under a large cap.
+    assert len(decode_lzma1_prefix(bomb, 64 << 20)) <= 1 << 20
+
+
+def test_a_header_copy_candidate_is_held_to_max_metadata_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tail search decodes a candidate to ``max_metadata_bytes`` at most, not to
+    the parser's 64 MiB limit, and the dictionary is sized from it."""
+    decoded: list[int] = []
+    real = sevenzip_salvage_walk.decode_lzma1_prefix
+
+    def counting(data: bytes, max_out: int) -> bytes:
+        out = real(data, max_out)
+        decoded.append(len(out))
+        return out
+
+    monkeypatch.setattr(sevenzip_salvage_walk, "decode_lzma1_prefix", counting)
+    data = NONSOLID[:32] + b"\xaa" * 100 + _lzma1_bomb(8 << 20) * 3
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1 << 16))
+    with open_archive(io.BytesIO(data), salvage=True, config=config) as reader:
+        assert not reader.members_report().members
+    assert decoded and max(decoded) <= 1 << 16
+
+
+def test_an_all_zero_area_lists_no_member() -> None:
+    """Zeros, what a cut or preallocated file holds, decode as LZMA1 without error:
+    they do not start a stream."""
+    listing = _salvage(NONSOLID[:32] + bytes(64 << 10))
+    assert listing.names == []
+    assert [r.reason for r in listing.regions()] == ["no_header"]
+
+
+def test_an_end_header_naming_an_unknown_coder_goes_on_to_the_walk() -> None:
+    """R4 finds the end header by its first bytes; one whose coder id is unknown is
+    no header to use, and the walk reads the header's copy instead of the open
+    raising UnsupportedFeatureError."""
+    start, _ = next_header_span(NONSOLID)
+    at = NONSOLID.index(b"\x03\x01\x01", start)
+    unknown = NONSOLID[:at] + b"\x03\x01\x7f" + NONSOLID[at + 3 :]
+    damaged = zero_start_header(unknown)
+    listing = _salvage(damaged)
+    assert listing.contents == FILES
+    assert isinstance(listing.error, CorruptionError)
+
+
+def test_a_long_lead_in_is_not_decoded_to_judge_a_chain() -> None:
+    """A broken chain at a walk position is judged by its first LZMA chunk, read with
+    the uncompressed chunks before it only up to 256 KiB."""
+    stored = b"".join(
+        (b"\x01" if i == 0 else b"\x02") + (0xFFFF).to_bytes(2, "big") + bytes(1 << 16)
+        for i in range(5)
+    )
+    lzma_chunk = lzma2_stream(b"abc" * 1000)[:-1]
+    for lead_in, decodes in [(stored[: 3 + (1 << 16)], True), (stored, False)]:
+        data = lead_in + lzma_chunk + b"\x7f"
+        reader = BytesReader(data)
+        chain = scan_chain(reader, 0, len(data))
+        assert chain is not None and chain.status == "broken"
+        assert first_lzma_chunk_decodes(reader, chain) is decodes
