@@ -25,7 +25,11 @@ from archivey.exceptions import (
     TruncatedError,
 )
 from archivey.internal.backends.rar_forward import KEEP_BYTES
-from archivey.internal.backends.rar_parser import RarArchive, parse_rar_archive
+from archivey.internal.backends.rar_parser import (
+    RarArchive,
+    parse_rar_archive,
+    parse_rar_volumes,
+)
 from tests.conftest import requires, requires_binary
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -383,8 +387,11 @@ def _block(body: bytes) -> bytes:
     return struct.pack("<I", zlib.crc32(framed)) + framed
 
 
-def _stored(name: str, data: bytes, *, crc: bool = True) -> bytes:
-    """A stored RAR5 FILE header and its data; ``crc=False`` stores no digest."""
+def _stored(
+    name: str, data: bytes, *, crc: bool = True, header_flags: int = 0x02
+) -> bytes:
+    """A stored RAR5 FILE header and its data; ``crc=False`` stores no digest.
+    ``header_flags`` are the common header flags (``0x02``: a data area)."""
     fields = (
         _vint(4 if crc else 0)  # file flags: CRC32
         + _vint(len(data))
@@ -395,7 +402,7 @@ def _stored(name: str, data: bytes, *, crc: bool = True) -> bytes:
         + _vint(len(name))
         + name.encode()
     )
-    return _block(b"\x02\x02" + _vint(len(data)) + fields) + data
+    return _block(b"\x02" + _vint(header_flags) + _vint(len(data)) + fields) + data
 
 
 def _archive(*files: bytes, solid: bool = False) -> bytes:
@@ -431,10 +438,12 @@ def test_nine_damaged_headers_in_a_row_stop_the_walk() -> None:
 # RAR 1.5-4 archives built by hand (CRC16 headers), for the two-header rule.
 
 
-def _rar3_stored(name: str, data: bytes, *, pack_size: int | None = None) -> bytes:
+def _rar3_stored(
+    name: str, data: bytes, *, pack_size: int | None = None, flags: int = 0
+) -> bytes:
     """A stored RAR 1.5-4 FILE header and its data. ``pack_size`` overrides the
     PACK_SIZE field after the CRC16 is computed over the true one, as damage to it
-    would."""
+    would. ``flags`` are added to the header flags (``0x02``: SPLIT_AFTER)."""
     encoded = name.encode()
 
     def body(size: int) -> bytes:
@@ -451,7 +460,7 @@ def _rar3_stored(name: str, data: bytes, *, pack_size: int | None = None) -> byt
             0o100644,
         )
         return (
-            struct.pack("<BHH", 0x74, 0x8000, 7 + len(fixed) + len(encoded))
+            struct.pack("<BHH", 0x74, 0x8000 | flags, 7 + len(fixed) + len(encoded))
             + fixed
             + encoded
         )
@@ -752,6 +761,11 @@ def test_a_file_copy_of_a_damaged_member_reports_the_damage(tmp_path: Path) -> N
 def _split_before_byte(data: bytes, index: int) -> tuple[int, int]:
     """Where member ``index``'s header flags hold ``SPLIT_BEFORE``, and the bit."""
     offset, _ = _headers(data)[index]
+    return _split_before_at(data, offset)
+
+
+def _split_before_at(data: bytes, offset: int) -> tuple[int, int]:
+    """:func:`_split_before_byte` for the header at ``offset``."""
     if data.startswith(b"Rar!\x1a\x07\x01\x00"):
         # CRC32, the header size vint, the type vint, then the header flags vint.
         pos = offset + 4
@@ -822,3 +836,112 @@ def _expected_set(first: Path) -> bytes:
         contents = [s.read() for _, s in reader.stream_members() if s is not None]
     assert len(contents) == 1
     return contents[0]
+
+
+@pytest.mark.parametrize("version", ["rar5", "rar4"])
+@pytest.mark.parametrize("access", ["random", "streaming"])
+def test_a_damaged_split_after_flag_before_another_member_is_ignored(
+    version: str, access: str
+) -> None:
+    """``b.txt``'s damaged header has ``SPLIT_AFTER``, and ``c.txt`` follows it in
+    the same volume, so ``b.txt`` is not continued and its flag is wrong. Every
+    member reads, and the pass ends in ``CorruptionError``. Before, the read of
+    ``b.txt`` raised ``TruncatedError`` ("continues into a volume that is missing")
+    and ended the pass after ``a.txt``."""
+    if version == "rar5":
+        data = _archive(
+            _stored("a.txt", b"a" * 5),
+            _stored("b.txt", b"b" * 6, header_flags=0x12),
+            _stored("c.txt", b"c" * 7),
+        )
+    else:
+        data = (
+            _rar3_start()
+            + _rar3_stored("a.txt", b"a" * 5)
+            + _rar3_stored("b.txt", b"b" * 6, flags=0x02)
+            + _rar3_stored("c.txt", b"c" * 7)
+            + _rar3_end()
+        )
+    damaged = _damage_name(data, "b.txt")
+    archive = _parse(damaged)
+    assert [m.split_after for m in archive.members] == [False, False, False]
+    seen, error = _read_pass(io.BytesIO(damaged), streaming=access == "streaming")
+    assert [(name, content) for name, content, _ in seen] == [
+        ("a.txt", b"a" * 5),
+        ("X.txt", b"b" * 6),
+        ("c.txt", b"c" * 7),
+    ]
+    assert isinstance(error, CorruptionError)
+
+
+@pytest.mark.parametrize("version", ["rar5", "rar4"])
+def test_a_damaged_last_split_after_flag_yields_to_the_end_block(version: str) -> None:
+    """The last member's damaged header has ``SPLIT_AFTER``, and the intact end
+    block says no volume follows. The end block's flag is checked by its CRC, so the
+    member is complete and reads."""
+    if version == "rar5":
+        data = _archive(
+            _stored("a.txt", b"a" * 5), _stored("b.txt", b"b" * 6, header_flags=0x12)
+        )
+    else:
+        data = (
+            _rar3_start()
+            + _rar3_stored("a.txt", b"a" * 5)
+            + _rar3_stored("b.txt", b"b" * 6, flags=0x02)
+            + _rar3_end()
+        )
+    damaged = _damage_name(data, "b.txt")
+    assert not _parse(damaged).members[-1].split_after
+    seen, error = _read_pass(io.BytesIO(damaged))
+    assert [(name, content) for name, content, _ in seen] == [
+        ("a.txt", b"a" * 5),
+        ("X.txt", b"b" * 6),
+    ]
+    assert isinstance(error, CorruptionError)
+
+
+def test_an_intact_split_before_flag_is_still_refused_next_to_damage() -> None:
+    """Only a damaged header's flag is cleared. An intact ``c.txt`` with
+    ``SPLIT_BEFORE`` after a damaged ``b.txt`` in the same volume is refused, as it
+    is between two intact headers."""
+    data = _archive(
+        _stored("a.txt", b"a"),
+        _stored("b.txt", b"b"),
+        _stored("c.txt", b"c", header_flags=0x0A),
+    )
+    with pytest.raises(CorruptionError, match="Mismatched RAR split continuation"):
+        _parse(data)
+    with pytest.raises(CorruptionError, match="Mismatched RAR split continuation"):
+        _parse(_damage_name(data, "b.txt"))
+
+
+# The continuation header's offset in the second volume of each set.
+_CONTINUATION_AT = {"rar5": 25, "rar4": 20}
+
+
+@pytest.mark.parametrize("clear_flag", [False, True])
+@pytest.mark.parametrize("kind", sorted(_VOLUME_SETS))
+def test_both_damaged_split_headers_merge_only_when_both_flags_agree(
+    kind: str, clear_flag: bool
+) -> None:
+    """The name is damaged in both parts of the split member. With both split flags
+    set the parts merge into one member; with the continuation's ``SPLIT_BEFORE``
+    cleared as well the flags disagree, and the parts are listed apart. Fails if
+    the both-damaged rule takes either flag alone."""
+    first, second = (
+        _flip(data, data.index(b"payload.bin") + 2)
+        for data in ((_FIXTURES / name).read_bytes() for name in _VOLUME_SETS[kind])
+    )
+    if clear_flag:
+        pos, bit = _split_before_at(second, _CONTINUATION_AT[kind])
+        assert second[pos] & bit
+        second = _flip(second, pos, value=second[pos] & ~bit)
+    archive = parse_rar_volumes([io.BytesIO(first), io.BytesIO(second)])
+    assert all(m.header_damaged for m in archive.members)
+    if clear_flag:
+        assert len(archive.members) == 2
+        assert not archive.members[0].split_after
+        assert not archive.members[1].split_before
+    else:
+        assert len(archive.members) == 1
+        assert len(archive.members[0].data_parts) == 2

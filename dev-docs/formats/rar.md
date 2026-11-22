@@ -396,15 +396,23 @@ next volume is also missing, the reader raises the usual `TruncatedError` and it
 message names the damaged header as well.
 
 *Split flags and names* (`_damaged_split_continues`). One damaged byte can set a
-followed header's `SPLIT_BEFORE` flag or change its name. The split merge used to trust
-both: `Mismatched RAR split continuation` then failed the open with nothing listed, and
-the same flag on the first volume's first member gave "Need first volume". When either
-header of a possible merge is damaged, the walk decides instead. A continuation is never
-in the volume of the part it continues, so a damaged `SPLIT_BEFORE` inside one volume,
-or on the first volume's first member, is cleared and the member is listed on its own.
-Across a volume boundary the intact header's flag decides (both damaged: both flags
-must agree), and the names are not compared. The merged member keeps its first part's
-name and its `damaged_header`, and its data is still checked by the last part's digest.
+followed header's `SPLIT_BEFORE` or `SPLIT_AFTER` flag or change its name. The split
+merge used to trust all three: `Mismatched RAR split continuation` then failed the open
+with nothing listed, the same flag on the first volume's first member gave "Need first
+volume", and a wrong `SPLIT_AFTER` ended the read pass at that member with
+`TruncatedError`. When either header of a possible merge is damaged, the walk decides
+instead. A continuation is never in the volume of the part it continues, so inside one
+volume a damaged header's `SPLIT_BEFORE` is cleared and the member is listed on its own,
+and a damaged header's `SPLIT_AFTER` is cleared when another member follows it. The same
+`SPLIT_BEFORE` on the first volume's first member is cleared, and a damaged last
+member's `SPLIT_AFTER` is cleared when the volume's intact end block says no volume
+follows (`_settle_damaged_split_after`). An intact header's flag is never cleared, so an
+intact `SPLIT_BEFORE` after a damaged member in the same volume is still refused. Across
+a volume boundary the intact header's flag decides (both damaged: both flags must
+agree), and the names are not compared. The merged member keeps its first part's name
+and its `damaged_header`, and its data is still checked by the last part's digest. With
+no end block, or a damaged one, a damaged last member's `SPLIT_AFTER` still decides
+whether the walk goes on to the next volume, as the *Volume sets* paragraph says.
 Measured with `unrar` 7.00: `SPLIT_BEFORE` set on the second header of
 `basic_nonsolid__rar4.rar` or `basic_nonsolid__.rar` lists all six members, and one
 damaged name byte in either part of `tinyvol` tests `payload.bin` OK under the first

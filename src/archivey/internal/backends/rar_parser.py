@@ -471,8 +471,9 @@ class RarMemberInfo:
     # ``split_before`` and the last part's ``split_after``: with both clear the list
     # is the whole member. ``split_before`` set means the first part is in a volume
     # outside the set; the parser refuses that only when the continuation is the
-    # first volume's first member. ``split_after`` set means the last part was not
-    # found (an end block that claimed no next volume).
+    # first volume's first member and its header is intact (a damaged header's flag is
+    # cleared there, :func:`_damaged_split_continues`). ``split_after`` set means the
+    # last part was not found (an end block that claimed no next volume).
     data_parts: list[tuple[int, int]] = field(default_factory=list)
     # The dictionary (sliding window) size the header declares, in bytes; 0 for a
     # directory (on RAR5, one that is not also a link: its flag is kept apart from
@@ -1301,7 +1302,8 @@ def _parse_rar_volume(
     ``volume_index`` is the 0-based position in that set, not a RAR format
     version: RAR3-on-disk is ``archive.version == 4``, RAR5 is ``5``.
     A ``split_before`` member on the first volume is refused ("Need first
-    volume") rather than listed as a fragment.
+    volume") rather than listed as a fragment, when its header is intact; on a
+    header that failed its CRC the flag is cleared.
     ``password_proven`` carries an earlier RAR 1.5-4 volume's proof of the header
     password into this volume's walk (:attr:`RarArchive.password_proven`).
     """
@@ -3129,6 +3131,7 @@ class _Rar3Walk:
             self.damaged = _add_damage(self.damaged, _damaged_header(exc, block.start))
             return
         self.needs_next_volume = bool(flags & _RAR3_ENDARC_NEXT_VOLUME)
+        _settle_damaged_split_after(self.members, self.needs_next_volume)
         volume_number = _rar3_end_block_volume_number(hdata, flags, header_size)
         if self.volume_index == 0 and self.is_volume and volume_number:
             # A later volume whose first member starts on its boundary: no
@@ -4149,18 +4152,25 @@ def _emit_file_member(
 
     Both header walks, the QO run and the cross-volume merge use this one rule. A
     continuation is appended only when ``members`` is empty: in a header walk that is
-    the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1.
-    A header that failed its CRC does not decide the merge alone
-    (:func:`_damaged_split_continues`). Returns ``split_after``.
+    the first member of a volume, which :func:`_parse_rar_volume` refuses on volume 1
+    when its header is intact. A header that failed its CRC does not decide the merge
+    alone (:func:`_damaged_split_continues`). Returns ``split_after``.
     """
     if members and (
         members[-1].damaged_header is not None or member.damaged_header is not None
     ):
-        if _damaged_split_continues(members[-1], member):
-            _merge_split_member(members[-1], member, check_name=False)
+        old = members[-1]
+        if _damaged_split_continues(old, member):
+            _merge_split_member(old, member, check_name=False)
             return member.split_after
-        # Not a continuation: the damaged header's SPLIT_BEFORE flag is wrong.
-        member.split_before = False
+        # Not a continuation, so a damaged header's split flag that says otherwise
+        # is wrong: ``old`` is not continued here, and ``member`` continues nothing.
+        # An intact header's SPLIT_BEFORE stays, and the merge below refuses it as
+        # it refuses it between two intact headers.
+        if old.damaged_header is not None:
+            old.split_after = False
+        if member.damaged_header is not None:
+            member.split_before = False
     if member.split_before and members:
         _merge_split_member(members[-1], member)
     else:
@@ -4183,7 +4193,7 @@ def _damaged_split_continues(old: RarMemberInfo, new: RarMemberInfo) -> bool:
     it continues, and across a volume boundary the flag of the intact header decides.
     The names are not compared, because a damaged name would fail the open. The
     merged member keeps ``damaged_header``, and its data is still checked by the last
-    part's digest.
+    part's digest. When both headers are damaged, both flags must say so.
     """
     if new.volume_index == old.volume_index:
         return False
@@ -4192,6 +4202,16 @@ def _damaged_split_continues(old: RarMemberInfo, new: RarMemberInfo) -> bool:
     if old.damaged_header is None:
         return old.split_after
     return new.split_before and old.split_after
+
+
+def _settle_damaged_split_after(members: _MemberList, next_volume: bool) -> None:
+    """Clear a damaged last member's ``SPLIT_AFTER`` when the volume's intact end
+    block says no volume follows: the end block's CRC checks that flag, and nothing
+    checks the damaged header's."""
+    if members and not next_volume:
+        last = members[-1]
+        if last.damaged_header is not None and last.split_after:
+            last.split_after = False
 
 
 def _packed_end(member: RarMemberInfo) -> int:
@@ -4734,6 +4754,7 @@ class _Rar5Walk:
         """Finish the walk at ``ENDARC``: record whether a volume follows."""
         endarc_flags = _load_vint_or_zero(block.hdata, block.pos)[0]
         self.needs_next_volume = bool(endarc_flags & _RAR5_ENDARC_NEXT_VOLUME)
+        _settle_damaged_split_after(self.members, self.needs_next_volume)
         self.end_block_seen = True
         self.trailing_at = _scan_after_end_block(
             self.source, _packed_span_end(block.data_offset, block.add_size)
