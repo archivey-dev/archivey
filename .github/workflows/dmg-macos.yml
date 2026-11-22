@@ -45,9 +45,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --python 3.12
       - name: Check images
-        run: |
-          set -o pipefail
-          uv run --no-sync python scripts/investigations/dmg_macos_check.py --out results.md
+        run: uv run --no-sync python scripts/investigations/dmg_macos_check.py --out results.md
       - name: Summary
         if: always()
         run: |
