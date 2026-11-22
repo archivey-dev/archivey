@@ -535,11 +535,15 @@ class _VolumeWalk:
         catalog, failure = hfsplus.read_catalog(volume, self._charge)
         if catalog.bad_threads:
             first = catalog.bad_threads[0]
+            count = len(catalog.bad_threads)
+            folders = (
+                "1 HFS+ folder has" if count == 1 else f"{count} HFS+ folders have"
+            )
             self._context.report(
                 DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
-                f"{len(catalog.bad_threads)} HFS+ folders have a thread record that is "
-                f"missing or names another parent or name (the first is folder "
-                f"{first}); the folder records decide the paths.",
+                f"{folders} a thread record that is missing, unreadable, or names "
+                f"another parent or name (the first is folder {first}); the folder "
+                "records decide the paths.",
                 ArchiveStructureContext(
                     format="dmg", structure="folder_thread", offset=first
                 ),

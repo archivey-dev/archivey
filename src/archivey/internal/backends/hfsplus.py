@@ -86,6 +86,10 @@ _DECMPFS_KEEP = DECMPFS_CHUNK + 64
 # What one kept extent costs in memory: a (start, count) tuple of two ints, and its
 # slots in the list and in the final tuple.
 _EXTENT_CHARGE = 96
+# The memory one kept folder thread holds besides its name: a dict slot, its int key,
+# a (parent, name) tuple, the parent int and the bytes object (about 207 bytes measured
+# with tracemalloc on CPython 3.12 for an empty name).
+_THREAD_CHARGE = 208
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -627,8 +631,9 @@ class Catalog(NamedTuple):
     folders: dict[int, tuple[int, str]]  # folder id: (parent id, name)
     inodes: dict[int, Entry]  # link id: the iNode file in the private folder
     hidden: frozenset[int]  # folder ids whose contents are not listed
-    # The folders whose thread record is missing or names another parent or name, by
-    # folder id. Paths come from the folder records; a thread only cross-checks them.
+    # The folders whose thread record is missing, unreadable, or names another parent
+    # or name, by folder id. Paths come from the folder records; a thread only
+    # cross-checks them.
     bad_threads: tuple[int, ...] = ()
 
 
@@ -653,11 +658,15 @@ def read_catalog(
                 cnid, _ = _catalog_key(key)
                 if cnid in threads:
                     continue
-                threads[cnid] = _thread_record(data)
-                charge(len(data), "the HFS+ folder threads")
+                thread = _thread_record(data)
+                charge(
+                    _THREAD_CHARGE + (len(thread[1]) if thread else 0),
+                    "the HFS+ folder threads",
+                )
+                threads[cnid] = thread
                 continue
             if data[:2] != b"\x00\x01" and data[:2] != b"\x00\x02":
-                continue  # file threads
+                continue  # file threads; pass 2 refuses an unknown type
             parent, raw = _catalog_key(key)
             if data[:2] == b"\x00\x01":
                 if len(data) < _FOLDER_RECORD:
@@ -676,6 +685,9 @@ def read_catalog(
                 charge(len(data) + len(raw), "the HFS+ hard-link inodes")
     except ArchiveyError as exc:
         failure = exc
+    # A private folder found after its inodes' records (it sorts by its parent, the
+    # root, which comes first, so only a damaged catalog does this): its inodes are
+    # read again in the second pass's order, so a link may find none.
     inodes: dict[int, Entry] = {}
     for entry in inode_records:
         if entry.name.startswith("iNode"):
@@ -683,10 +695,9 @@ def read_catalog(
                 inodes[int(entry.name[5:])] = entry
             except ValueError:
                 pass
-    # A private folder found after its inodes' records (it sorts by its parent, the
-    # root, which comes first, so only a damaged catalog does this): its inodes are
-    # read again in the second pass's order, so a link may find none.
     bad_threads: tuple[int, ...] = ()
+    # A pass stopped by a damaged node has not read the later threads, so every later
+    # folder would look like it had none: the cross-check runs on a whole pass only.
     if failure is None:
         bad_threads = tuple(
             cnid

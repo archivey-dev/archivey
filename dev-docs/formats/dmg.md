@@ -196,7 +196,7 @@ Choices made in Part B that the plan left open:
   before any member is made; a damaged node returns what pass 1 found, so pass 2 can
   deliver the members before it.
 - **Folder thread records only cross-check the paths.** The folder records decide
-  them; a thread that is missing or names another parent or name is one
+  them; a thread that is missing, unreadable, or names another parent or name is one
   `ARCHIVE_STRUCTURE_INCONSISTENT` per volume (`structure="folder_thread"`).
 - **Run tables are bounded against `max_metadata_bytes` at open by the reader**, because
   `charge_metadata` is for listing only.

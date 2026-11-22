@@ -780,10 +780,12 @@ def test_a_compressed_chunk_past_its_size_names_that_size(
         reader.read("c")
 
 
-@pytest.mark.parametrize("damage", ["renamed", "moved", "missing"])
+@pytest.mark.parametrize(
+    "damage", ["renamed", "moved", "missing", "short", "long name"]
+)
 def test_a_folder_thread_that_disagrees_is_reported(damage: str) -> None:
-    """Paths come from the folder records; a thread record that is missing or names
-    another parent or name is reported once, and the listing is the same."""
+    """Paths come from the folder records; a thread record that is missing, unreadable,
+    or names another parent or name is reported once, and the listing is the same."""
     nodes = [d.Node("a/x", data=b"x"), d.Node("b/y", data=b"y")]
 
     def patch(records: list[d.CatalogRecord]) -> None:
@@ -806,6 +808,10 @@ def test_a_folder_thread_that_disagrees_is_reported(damage: str) -> None:
             records.remove(thread)
         elif damage == "moved":
             struct.pack_into(">I", thread.body, 4, folder_id("b"))
+        elif damage == "short":
+            del thread.body[8:]
+        elif damage == "long name":
+            struct.pack_into(">H", thread.body, 8, 300)
         else:
             struct.pack_into(">H", thread.body, 10, ord("z"))
 
@@ -813,6 +819,23 @@ def test_a_folder_thread_that_disagrees_is_reported(damage: str) -> None:
         names = sorted(m.name for m in reader.members())
         assert _structures(reader) == ["folder_thread"]
     assert names == ["a/", "a/x", "b/", "b/y"]
+
+
+def test_folder_threads_are_charged_for_the_memory_they_hold() -> None:
+    """Many tiny thread records cost far more than their 10 bytes each to keep."""
+
+    def patch(records: list[d.CatalogRecord]) -> None:
+        for cnid in range(100_000, 102_000):
+            body = bytearray(struct.pack(">hhIH", 3, 0, 2, 0))
+            records.append(d.CatalogRecord(cnid, b"", body))
+
+    image = _image([d.Node("a/x", data=b"x")], hfs_options={"patch_catalog": patch})
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=256 << 10))
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        _open(image, config=config) as reader,
+    ):
+        reader.members()
 
 
 # ── Limits and UDIF structure ────────────────────────────────────────────────────────
