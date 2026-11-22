@@ -4,9 +4,11 @@ from typing import Final
 from _typeshed import ReadableBuffer as Buffer
 
 from archivey_codecs import (
+    bcj2 as bcj2,
     filters as filters,
     lzo1x as lzo1x,
     lzw as lzw,
+    lzx as lzx,
     zipcrypto as zipcrypto,
 )
 

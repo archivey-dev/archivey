@@ -4,12 +4,12 @@
   (LZO after PR 1612 first); drop `system-python.yml`
 - [x] 1.2 Rename to `packages/archivey-codecs`, import `archivey_codecs`; version in
   `Cargo.toml`; README and CHANGELOG
-- [ ] 1.3 Decoders to the `LZMADecompressor` shape (D3); one-shot block form; the
+- [x] 1.3 Decoders to the `LZMADecompressor` shape (D3); one-shot block form; the
   `CodecError` family; `#![forbid(unsafe_code)]` in kernel modules
-- [ ] 1.4 `KERNELS` table replacing `ABI_VERSION` (D4); stubs and `py.typed`
-- [ ] 1.5 `tests/test_api.py` (no archivey import); parity tests updated
-- [ ] 1.6 CRC-16/ARC (D2) with parity tests against `lha_reader.crc16`
-- [ ] 1.7 `copy()`, `getstate()` / `from_state()`, `total_in` / `total_out` on every
+- [x] 1.4 `KERNELS` table replacing `ABI_VERSION` (D4); stubs and `py.typed`
+- [x] 1.5 `tests/test_api.py` (no archivey import); parity tests updated
+- [x] 1.6 CRC-16/ARC (D2) with parity tests against `lha_reader.crc16`
+- [x] 1.7 `copy()`, `getstate()` / `from_state()`, `total_in` / `total_out` on every
   streaming decoder (D3; BCJ2 without `copy()`, restored with four new streams); LZX
   `output_size` and `flush()`, LZW `flush()` / `truncation`, BCJ2 `out_size`, with
   parity tests for a short E8 last frame read in 1-byte slices, LZW truncation, and BCJ2

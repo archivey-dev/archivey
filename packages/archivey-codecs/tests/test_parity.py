@@ -33,6 +33,7 @@ from archivey.exceptions import (
 from archivey.internal.backends.lha_reader import crc16 as lha_crc16
 from archivey.internal.backends.zipcrypto import ZipCryptoKeys
 from archivey.internal.streams.codecs.arm64_filter import arm64_decode
+from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
 from archivey.internal.streams.codecs.lzo_decoder import (
     LzoError,
     lzo1x_decompress_python,
@@ -236,20 +237,73 @@ def test_zipcrypto_parity() -> None:
 # ── LZX ────────────────────────────────────────────────────────────────────────────
 
 
-def lzx_frames(make: Callable, chunks: list[bytes], sizes: list[int], window: int):
-    """Decode every frame with ``make``'s decoder; stop at the first error."""
+def lzx_python(chunks: list[bytes], sizes: list[int], window: int):
+    """The Python decoder's output for every frame, and how it stopped."""
     feed = iter(chunks)
-    out: list[object] = []
+    out = bytearray()
     try:
-        decoder = make(window, lambda: next(feed, None))
+        decoder = LzxDecoder(window, lambda: next(feed, None))
+        for size in sizes:
+            out += decoder.decode_frame(size)
     except Exception as exc:  # noqa: BLE001
-        return [outcome(lambda e=exc: (_ for _ in ()).throw(e))]
-    for size in sizes:
-        got = outcome(lambda s=size: decoder.decode_frame(s))
-        out.append(got)
-        if got[0] != "ok":
-            break
-    return out
+        return bytes(out), outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return bytes(out), ("ok", None)
+
+
+def lzx_rust(
+    chunks: list[bytes], output_size: int, window: int, rng: random.Random
+) -> tuple[bytes, tuple[str, object]]:
+    """The push decoder's output, fed ``chunks`` in random pieces with random
+    ``max_length`` caps, saved and restored (or copied) at random points."""
+    lzx = archivey_codecs.lzx
+    out = bytearray()
+    data = b"".join(chunks)
+    try:
+        d = lzx.Decompressor(window, output_size=output_size)
+    except Exception as exc:  # noqa: BLE001
+        return b"", outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    at = 0
+
+    def step() -> None:
+        nonlocal d, at
+        cap = rng.choice((-1, -1, 1, 5000, 40_000))
+        if at < len(data) and (d.needs_input or rng.random() < 0.3):
+            n = rng.choice((1, 100, 5000, 40_000, len(data)))
+            piece, at = data[at : at + n], at + n
+            out.extend(d.decompress(piece, cap))
+        else:
+            out.extend(d.decompress(b"", cap))
+        pick = rng.random()
+        if pick < 0.1:
+            restored = lzx.Decompressor.from_state(d.getstate())
+            assert restored.total_out == d.total_out
+            assert restored.total_in == d.total_in
+            at = d.total_in
+            d = restored
+        elif pick < 0.15:
+            d = d.copy()
+
+    try:
+        for _ in range(10_000):
+            if d.eof or (at >= len(data) and d.needs_input):
+                break
+            step()
+        while not d.eof:
+            got = d.flush(rng.choice((-1, 1, 7000)))
+            out += got
+            if not got:
+                break
+            if not d.eof and rng.random() < 0.3:
+                # Saved during flush(): the restored decoder is not flushed, so it
+                # takes the input from its total_in again, then flushes on.
+                restored = lzx.Decompressor.from_state(d.getstate())
+                assert restored.total_out == d.total_out
+                assert restored.total_in == d.total_in
+                assert restored.decompress(data[restored.total_in :], 0) == b""
+                d = restored
+    except Exception as exc:  # noqa: BLE001
+        return bytes(out), outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return bytes(out), ("ok", None)
 
 
 def lzx_streams(rng: random.Random):
@@ -276,242 +330,115 @@ def lzx_streams(rng: random.Random):
         )
         frames = enc.encode(data)
         sizes = [min(FRAME, size - i) for i in range(0, size, FRAME)]
-        yield case, window, frames, sizes
+        yield case, window, frames, sizes, data
+
+
+def test_lzx_eof_counts_stop_where_the_stream_does() -> None:
+    """At ``eof``, ``total_in`` and ``unused_data`` split the input where the LZX
+    stream ends: words the bit buffer fetched ahead belong to what follows."""
+    from cab_util import LzxEncoder
+
+    rng = random.Random(11)
+    for blocks in (("verbatim",), ("aligned",), ("uncompressed",)):
+        for size in (1, 100, 5000, 40_000):
+            data = sample_data(rng, size)
+            stream = b"".join(LzxEncoder(window_bits=15, blocks=blocks).encode(data))
+            for cap in (-1, 1):
+                d = archivey_codecs.lzx.Decompressor(15, output_size=size)
+                out = bytearray(d.decompress(stream + b"appendix", cap))
+                while not d.eof:
+                    out += d.flush(cap)
+                assert out == data, (blocks, size)
+                assert d.unused_data == b"appendix", (blocks, size, d.unused_data)
+                assert d.total_in == len(stream), (blocks, size)
+                # Restored at eof, it ends where this one does, with nothing after.
+                r = archivey_codecs.lzx.Decompressor.from_state(d.getstate())
+                assert r.eof
+                assert r.total_in == len(stream)
+                assert r.unused_data == b""
+
+
+def test_lzx_owed_pad_byte_in_a_later_call() -> None:
+    """An odd final uncompressed block owes a pad byte: fed in a later call, it still
+    belongs to the stream, so the split matches the one-call decode; with no more
+    input, ``flush()`` ends the stream without it."""
+    from cab_util import LzxEncoder
+
+    stream = b"".join(
+        LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(b"hello")
+    )
+    lzx = archivey_codecs.lzx
+    whole = lzx.Decompressor(15, output_size=5)
+    assert whole.decompress(stream + b"trailer") == b"hello"
+    assert (whole.total_in, whole.unused_data) == (len(stream), b"trailer")
+    d = lzx.Decompressor(15, output_size=5)
+    assert d.decompress(stream[:-1]) == b"hello"
+    assert not d.eof
+    assert d.needs_input
+    r = lzx.Decompressor.from_state(d.getstate())
+    for dec in (d, r):
+        assert dec.decompress(stream[dec.total_in :] + b"trailer") == b""
+        assert dec.eof
+        assert (dec.total_in, dec.unused_data) == (len(stream), b"trailer")
+    cut = lzx.Decompressor(15, output_size=5)
+    assert cut.decompress(stream[:-1]) == b"hello"
+    assert cut.flush() == b""
+    assert cut.eof
+    assert (cut.total_in, cut.unused_data) == (len(stream) - 1, b"")
 
 
 def test_lzx_parity_clean_and_damaged() -> None:
-    import archivey_codecs as n
-
     rng = random.Random(5)
-    for case, window, frames, sizes in lzx_streams(rng):
-        py = lzx_frames(LzxDecoder, frames, sizes, window)
-        rs = lzx_frames(n._codecs._LzxFrameDecoder, frames, sizes, window)
-        assert py == rs, case
-        assert all(kind == "ok" for kind, _ in py), case
+    for case, window, frames, sizes, data in lzx_streams(rng):
+        py = lzx_python(frames, sizes, window)
+        rs = lzx_rust(frames, sum(sizes), window, rng)
+        assert py == (data, ("ok", None)), case
+        assert rs == py, case
         for trial in range(6):
             bad = list(frames)
             k = rng.randrange(len(bad))
             bad[k] = damage(rng, bad[k])
             if trial % 3 == 0:
                 bad = bad[: rng.randrange(len(bad) + 1)]
-            py = lzx_frames(LzxDecoder, bad, sizes, window)
-            rs = lzx_frames(n._codecs._LzxFrameDecoder, bad, sizes, window)
+            py = lzx_python(bad, sizes, window)
+            rs = lzx_rust(bad, sum(sizes), window, rng)
+            # The push decoder stops at the declared size; the Python decoder does
+            # too, so what follows the last frame is not compared.
             assert py == rs, (case, trial)
 
 
-def test_lzx_random_input() -> None:
-    import archivey_codecs as n
+def test_lzx_short_e8_last_frame_in_one_byte_slices() -> None:
+    """A short last frame with E8 translation on, fed and read one byte at a time:
+    the translation must see the frame's real length, not a full frame."""
+    from cab_util import FRAME, LzxEncoder
 
+    rng = random.Random(9)
+    size = FRAME + 700
+    data = bytes(0xE8 if i % 9 == 0 else rng.randrange(256) for i in range(size))
+    frames = LzxEncoder(window_bits=16, e8_file_size=size).encode(data)
+    stream = b"".join(frames)
+    assert lzx_python(frames, [FRAME, 700], 16) == (data, ("ok", None))
+    d = archivey_codecs.lzx.Decompressor(16, output_size=size)
+    out = bytearray()
+    for i in range(len(stream)):
+        out += d.decompress(stream[i : i + 1], 1)
+    while not d.eof:
+        got = d.flush(1)
+        if not got:
+            break
+        out += got
+    assert bytes(out) == data
+
+
+def test_lzx_random_input() -> None:
     rng = random.Random(6)
     for case in range(SEEDS):
         window = rng.randint(14, 22)
         chunks = [rng.randbytes(rng.randint(0, 3000)) for _ in range(rng.randint(0, 3))]
-        sizes = [32768] * rng.randint(1, 3) + [rng.randint(-1, 40000)]
-        py = lzx_frames(LzxDecoder, chunks, sizes, window)
-        rs = lzx_frames(n._codecs._LzxFrameDecoder, chunks, sizes, window)
+        sizes = [32768] * rng.randint(0, 3) + [rng.randint(1, 32768)]
+        py = lzx_python(chunks, sizes, window)
+        rs = lzx_rust(chunks, sum(sizes), window, rng)
         assert py == rs, case
-
-
-def test_lzx_callback_error_passes_through() -> None:
-    import archivey_codecs as n
-
-    class Boom(Exception):
-        pass
-
-    def more() -> bytes:
-        raise Boom
-
-    with pytest.raises(Boom):
-        n._codecs._LzxFrameDecoder(16, more).decode_frame(32768)
-
-
-# ── Unix compress (.Z) LZW ─────────────────────────────────────────────────────────
-
-
-def pack_lzw(
-    rng: random.Random, max_width: int, block_mode: bool, widen9: bool, n: int
-) -> bytes:
-    """A .Z stream of ``n`` random codes that a decoder can follow: valid codes, with
-    CLEARs, width increases and the writer's group padding. Not compressed data."""
-    out = bytearray([0x1F, 0x9D, (0x80 if block_mode else 0) | max_width])
-    width, next_code, prev = 9, (257 if block_mode else 256), None
-    era: list[int] = []
-
-    def flush_era(pad: bool) -> None:
-        acc = nbits = 0
-        chunk = bytearray()
-        for code in era:
-            acc |= code << nbits
-            nbits += width
-            while nbits >= 8:
-                chunk.append(acc & 0xFF)
-                acc >>= 8
-                nbits -= 8
-        if nbits:
-            chunk.append(acc & 0xFF)
-        if pad:
-            chunk += bytes(-len(chunk) % width)
-        out.extend(chunk)
-        era.clear()
-
-    for _ in range(n):
-        if block_mode and prev is not None and rng.random() < 0.002:
-            era.append(256)
-            flush_era(True)
-            width, next_code, prev = 9, 257, None
-            continue
-        if prev is None:
-            code = rng.randrange(256)
-        else:
-            code = rng.randrange(
-                min(
-                    next_code + 1,
-                    1 << width,
-                    512 if width == 10 and max_width == 9 else 1 << 16,
-                )
-            )
-            if block_mode and code == 256:
-                code = 255
-        era.append(code)
-        mask = (1 << width) - 1
-        if prev is not None and next_code <= mask:
-            next_code += 1
-        prev = code
-        if next_code > mask and width < max_width:
-            flush_era(True)
-            width += 1
-        elif max_width == 9 and widen9 and width == 9 and next_code > 511:
-            flush_era(True)
-            width = 10
-    flush_era(False)
-    return bytes(out)
-
-
-def lzw_python(data: bytes, rng: random.Random, kwargs: dict):
-    """The Python twin fed ``data`` in random chunks with random budgets: all output
-    before the first error, the error, the end report and the CLEAR offsets (its
-    segment sizes summed from the stream's start)."""
-    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
-
-    out = bytearray()
-    offsets: list[tuple[int, int]] = []
-    try:
-        state = LzwState(**kwargs)
-    except Exception as exc:  # noqa: BLE001
-        return ("init", type(exc).__name__)
-    at = [0, 0]
-
-    def note(units: list) -> None:
-        if at == [0, 0] and not kwargs and state.header_params is not None:
-            at[0] = 3
-        for decomp, comp in units:
-            at[0] += comp
-            at[1] += decomp
-            offsets.append(tuple(at))
-
-    end: tuple = ("ok", None)
-    try:
-        pos = 0
-        while pos < len(data):
-            step = rng.randint(0, 3000)
-            got, units = state.feed(data[pos : pos + step], rng.choice((-1, 0, 100)))
-            out += got
-            note(units)
-            pos += step
-        for _ in range(3):
-            got, units = state.feed(b"", -1)
-            out += got
-            note(units)
-        got, units = state.flush()
-        out += got
-        note(units)
-    except Exception as exc:  # noqa: BLE001
-        end = outcome(lambda e=exc: (_ for _ in ()).throw(e))
-    return (bytes(out), end, state.truncation, state.header_params, offsets)
-
-
-def lzw_rust(data: bytes, rng: random.Random, kwargs: dict):
-    """``lzw.Decompressor`` fed the same way, with random ``max_length`` caps that
-    every call must keep."""
-    out = bytearray()
-    offsets: list[tuple[int, int]] = []
-    try:
-        d = archivey_codecs.lzw.Decompressor(**kwargs)
-    except Exception as exc:  # noqa: BLE001
-        return ("init", type(exc).__name__)
-
-    def take(got: bytes, cap: int) -> None:
-        assert cap < 0 or len(got) <= cap
-        out.extend(got)
-        offsets.extend(d.clear_offsets)
-
-    end: tuple = ("ok", None)
-    try:
-        pos = 0
-        while pos < len(data):
-            step = rng.randint(0, 3000)
-            cap = rng.choice((-1, 0, 1, 100, 5000))
-            take(d.decompress(memoryview(data[pos : pos + step]), cap), cap)
-            pos += step
-            assert d.total_in <= pos
-        while not d.needs_input:
-            cap = rng.choice((-1, 1, 7000))
-            take(d.decompress(b"", cap), cap)
-        while not d.eof:
-            cap = rng.choice((-1, 1, 7000))
-            take(d.flush(cap), cap)
-    except Exception as exc:  # noqa: BLE001
-        end = outcome(lambda e=exc: (_ for _ in ()).throw(e))
-    return (bytes(out), end, d.truncation, d.header_params, offsets)
-
-
-def test_lzw_parity() -> None:
-    rng = random.Random(7)
-    cases = []
-    try:
-        import ncompress
-
-        for _ in range(20):
-            raw = sample_data(rng, rng.randint(0, 300_000))
-            buf = io.BytesIO()
-            ncompress.compress(io.BytesIO(raw), buf)
-            cases.append(buf.getvalue())
-    except ImportError:
-        pass
-    for _ in range(SEEDS):
-        cases.append(
-            pack_lzw(
-                rng,
-                rng.choice((9, 9, 10, 12, 16)),
-                rng.random() < 0.8,
-                rng.random() < 0.5,
-                rng.randint(0, 4000),
-            )
-        )
-    for case, data in enumerate(cases):
-        for variant in range(3):
-            d = data if variant == 0 else damage(rng, data)
-            kwargs: dict = {}
-            if variant == 2 and len(d) > 3 and rng.random() < 0.5:
-                kwargs = {
-                    "max_width": max(9, d[2] & 0x1F),
-                    "block_mode": bool(d[2] & 0x80),
-                    "nine_bit_widens": rng.choice((None, True, False)),
-                }
-                if kwargs["max_width"] > 16:
-                    continue
-                d = d[3:]
-            seed = rng.random()
-            py = lzw_python(d, random.Random(seed), kwargs)
-            rs = lzw_rust(d, random.Random(seed), kwargs)
-            if py[0] != "init" and py[1][0] != "ok":
-                # A step that fails drops its own CLEARs (both decoders), so on
-                # damage which CLEARs are reported depends on how input is split: one
-                # list is a prefix of the other.
-                short, long = sorted((py[4], rs[4]), key=len)
-                assert long[: len(short)] == short, (case, variant)
-                py, rs = py[:4], rs[:4]
-            assert py == rs, (case, variant)
 
 
 # ── BCJ2 ───────────────────────────────────────────────────────────────────────────
@@ -519,8 +446,6 @@ def test_lzw_parity() -> None:
 
 def bcj2_python(streams: tuple[bytes, ...], size: int):
     """The Python stream's output, with the bytes decoded before an error."""
-    from archivey.internal.streams.codecs.bcj2_filter import Bcj2DecoderStream
-
     stream = Bcj2DecoderStream(*(io.BytesIO(s) for s in streams), unpack_size=size)
     try:
         return stream.read(size), ("ok", None)
@@ -529,17 +454,31 @@ def bcj2_python(streams: tuple[bytes, ...], size: int):
         return partial, outcome(lambda e=exc: (_ for _ in ()).throw(e))
 
 
-def bcj2_rust(streams: tuple[bytes, ...], size: int):
-    """``Bcj2Core`` driven as the Python stream drives its own loop."""
-    core = archivey_codecs._codecs._Bcj2Core(*(io.BytesIO(s).read for s in streams))
+def bcj2_rust(streams: tuple[bytes, ...], size: int, rng: random.Random):
+    """The Rust decoder's output, read in random amounts and saved and restored (onto
+    new streams placed at ``total_in``) at random points."""
+    bcj2 = archivey_codecs.bcj2
     out = bytearray()
     try:
-        while len(out) < size:
-            out += core.decode_block(size - len(out))
-        core.check_inputs_finished()
+        d = bcj2.Decompressor(*(io.BytesIO(s) for s in streams), out_size=size)
+        for _ in range(100_000):
+            if d.eof:
+                break
+            out += d.read(rng.choice((1, 7, 4096, 70_000, -1)))
+            if rng.random() < 0.1:
+                try:
+                    state = d.getstate()
+                except ValueError:
+                    continue  # an error waits for the next read()
+                total_in, total_out = d.total_in, d.total_out
+                fresh = [io.BytesIO(s) for s in streams]
+                for f, at in zip(fresh, total_in, strict=True):
+                    f.seek(at)
+                d = bcj2.Decompressor.from_state(state, *fresh)
+                assert (d.total_in, d.total_out) == (total_in, total_out)
     except Exception as exc:  # noqa: BLE001
-        out += core.take_partial()
         return bytes(out), outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    assert d.read() == b""
     return bytes(out), ("ok", None)
 
 
@@ -657,7 +596,7 @@ def test_bcj2_parity() -> None:
             streams = (main, call, jump, rc)
         py = bcj2_python(streams, out_size)
         clean += py[1] == ("ok", None)
-        assert bcj2_rust(streams, out_size) == py, case
+        assert bcj2_rust(streams, out_size, rng) == py, case
     # The success path (all four streams used up exactly) must be compared too.
     assert clean >= 3, clean
 
@@ -669,38 +608,246 @@ def test_bcj2_clean_decode_matches() -> None:
     streams = (b"\xe8", (0x12345678).to_bytes(4, "big"), b"", rc_convert)
     py = bcj2_python(streams, 5)
     assert py[1] == ("ok", None)
-    assert bcj2_rust(streams, 5) == py
+    assert bcj2_rust(streams, 5, random.Random(0)) == py
+
+
+# ── Unix compress (.Z) LZW ─────────────────────────────────────────────────────────
+
+
+def pack_lzw(
+    rng: random.Random, max_width: int, block_mode: bool, widen9: bool, n: int
+) -> bytes:
+    """A .Z stream of ``n`` random codes that a decoder can follow: valid codes, with
+    CLEARs, width increases and the writer's group padding. Not compressed data."""
+    out = bytearray([0x1F, 0x9D, (0x80 if block_mode else 0) | max_width])
+    width, next_code, prev = 9, (257 if block_mode else 256), None
+    era: list[int] = []
+
+    def flush_era(pad: bool) -> None:
+        acc = nbits = 0
+        chunk = bytearray()
+        for code in era:
+            acc |= code << nbits
+            nbits += width
+            while nbits >= 8:
+                chunk.append(acc & 0xFF)
+                acc >>= 8
+                nbits -= 8
+        if nbits:
+            chunk.append(acc & 0xFF)
+        if pad:
+            chunk += bytes(-len(chunk) % width)
+        out.extend(chunk)
+        era.clear()
+
+    for _ in range(n):
+        if block_mode and prev is not None and rng.random() < 0.002:
+            era.append(256)
+            flush_era(True)
+            width, next_code, prev = 9, 257, None
+            continue
+        if prev is None:
+            code = rng.randrange(256)
+        else:
+            code = rng.randrange(
+                min(
+                    next_code + 1,
+                    1 << width,
+                    512 if width == 10 and max_width == 9 else 1 << 16,
+                )
+            )
+            if block_mode and code == 256:
+                code = 255
+        era.append(code)
+        mask = (1 << width) - 1
+        if prev is not None and next_code <= mask:
+            next_code += 1
+        prev = code
+        if next_code > mask and width < max_width:
+            flush_era(True)
+            width += 1
+        elif max_width == 9 and widen9 and width == 9 and next_code > 511:
+            flush_era(True)
+            width = 10
+    flush_era(False)
+    return bytes(out)
+
+
+def lzw_python(data: bytes, rng: random.Random, kwargs: dict):
+    """The Python twin fed ``data`` in random chunks with random budgets: all output
+    before the first error, the error, the end report and the CLEAR offsets (its
+    segment sizes summed from the stream's start)."""
+    from archivey.internal.streams.codecs.unix_compress_decoder import LzwState
+
+    out = bytearray()
+    offsets: list[tuple[int, int]] = []
+    try:
+        state = LzwState(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        return ("init", type(exc).__name__)
+    at = [0, 0]
+
+    def note(units: list) -> None:
+        if at == [0, 0] and not kwargs and state.header_params is not None:
+            at[0] = 3
+        for decomp, comp in units:
+            at[0] += comp
+            at[1] += decomp
+            offsets.append(tuple(at))
+
+    end: tuple = ("ok", None)
+    try:
+        pos = 0
+        while pos < len(data):
+            step = rng.randint(0, 3000)
+            got, units = state.feed(data[pos : pos + step], rng.choice((-1, 0, 100)))
+            out += got
+            note(units)
+            pos += step
+        for _ in range(3):
+            got, units = state.feed(b"", -1)
+            out += got
+            note(units)
+        got, units = state.flush()
+        out += got
+        note(units)
+    except Exception as exc:  # noqa: BLE001
+        end = outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return (bytes(out), end, state.truncation, state.header_params, offsets)
+
+
+def lzw_rust(data: bytes, rng: random.Random, kwargs: dict):
+    """``lzw.Decompressor`` fed the same way, with random ``max_length`` caps that
+    every call must keep, saved and restored (then fed from ``total_in``) at random
+    points."""
+    out = bytearray()
+    offsets: list[tuple[int, int]] = []
+    try:
+        d = archivey_codecs.lzw.Decompressor(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        return ("init", type(exc).__name__)
+
+    def take(got: bytes, cap: int) -> None:
+        assert cap < 0 or len(got) <= cap
+        out.extend(got)
+        offsets.extend(d.clear_offsets)
+
+    end: tuple = ("ok", None)
+    try:
+        pos = 0
+        while pos < len(data):
+            step = rng.randint(0, 3000)
+            cap = rng.choice((-1, 0, 1, 100, 5000))
+            take(d.decompress(memoryview(data[pos : pos + step]), cap), cap)
+            pos += step
+            assert d.total_in <= pos
+            if rng.random() < 0.1:
+                try:
+                    state = d.getstate()
+                except ValueError:
+                    continue  # an error waits for the next call
+                totals = (d.total_in, d.total_out)
+                d = archivey_codecs.lzw.Decompressor.from_state(state)
+                assert (d.total_in, d.total_out) == totals
+                pos = d.total_in
+        while not d.needs_input:
+            cap = rng.choice((-1, 1, 7000))
+            take(d.decompress(b"", cap), cap)
+        while not d.eof:
+            cap = rng.choice((-1, 1, 7000))
+            take(d.flush(cap), cap)
+    except Exception as exc:  # noqa: BLE001
+        end = outcome(lambda e=exc: (_ for _ in ()).throw(e))
+    return (bytes(out), end, d.truncation, d.header_params, offsets)
+
+
+def test_lzw_parity() -> None:
+    rng = random.Random(7)
+    cases = []
+    try:
+        import ncompress
+
+        for _ in range(20):
+            raw = sample_data(rng, rng.randint(0, 300_000))
+            buf = io.BytesIO()
+            ncompress.compress(io.BytesIO(raw), buf)
+            cases.append(buf.getvalue())
+    except ImportError:
+        pass
+    for _ in range(SEEDS):
+        cases.append(
+            pack_lzw(
+                rng,
+                rng.choice((9, 9, 10, 12, 16)),
+                rng.random() < 0.8,
+                rng.random() < 0.5,
+                rng.randint(0, 4000),
+            )
+        )
+    for case, data in enumerate(cases):
+        for variant in range(3):
+            d = data if variant == 0 else damage(rng, data)
+            kwargs: dict = {}
+            if variant == 2 and len(d) > 3 and rng.random() < 0.5:
+                kwargs = {
+                    "max_width": max(9, d[2] & 0x1F),
+                    "block_mode": bool(d[2] & 0x80),
+                    "nine_bit_widens": rng.choice((None, True, False)),
+                }
+                if kwargs["max_width"] > 16:
+                    continue
+                d = d[3:]
+            seed = rng.random()
+            py = lzw_python(d, random.Random(seed), kwargs)
+            rs = lzw_rust(d, random.Random(seed), kwargs)
+            if py[0] != "init" and py[1][0] != "ok":
+                # A step that fails drops its own CLEARs (both decoders), so on
+                # damage which CLEARs are reported depends on how input is split: one
+                # list is a prefix of the other.
+                short, long = sorted((py[4], rs[4]), key=len)
+                assert long[: len(short)] == short, (case, variant)
+                py, rs = py[:4], rs[:4]
+            assert py == rs, (case, variant)
 
 
 # ── Bindings ───────────────────────────────────────────────────────────────────────
 
 
 def test_callback_cycles_are_collected() -> None:
-    """A decoder held by the object its input callback is bound to, as the CAB reader
-    holds its LZX decoder, is freed by the garbage collector."""
-
-    class LzxHolder:
-        def __init__(self) -> None:
-            self.d = archivey_codecs._codecs._LzxFrameDecoder(21, self.more)
-
-        def more(self) -> None:
-            return None
+    """A decoder held by the object its input streams are bound to is freed by the
+    garbage collector. (The LZX decoder takes pushed input, so it holds no callback.)"""
 
     class Bcj2Holder:
         def __init__(self) -> None:
-            self.d = archivey_codecs._codecs._Bcj2Core(
-                self.read, self.read, self.read, self.read
+            self.d = archivey_codecs.bcj2.Decompressor(
+                self, self, self, self, out_size=1
             )
 
         def read(self, n: int) -> bytes:
             return b""
 
-    for make in (LzxHolder, Bcj2Holder):
+    class FailingBcj2Holder(Bcj2Holder):
+        """Its streams raise, so the decoder keeps the error, whose traceback holds
+        the frame that holds this object."""
+
+        def read(self, n: int) -> bytes:
+            raise OSError("disk gone")
+
+    def fail_once() -> weakref.ref:
+        holder = FailingBcj2Holder()
+        with pytest.raises(OSError):
+            holder.d.read()
+        return weakref.ref(holder)
+
+    for make in (Bcj2Holder,):
         holder = make()
         ref = weakref.ref(holder)
         del holder
         gc.collect()
         assert ref() is None, make
+    ref = fail_once()
+    gc.collect()
+    assert ref() is None, "a stored error kept the decoder alive"
 
 
 def test_lzw_width_is_checked() -> None:

@@ -5107,6 +5107,9 @@ class BaseArchiveReader(ArchiveReader):
                         spanning.append(e)
                         retry_next.add(id(m))
                         retry_next.update(id(c) for c in e.covers)
+        # The checks the reader runs itself over bytes no member read reaches: they
+        # pass or fail into ``_spanning_unreachable``, taken below.
+        self._run_spanning_passes(frozenset(id(m) for m, _ in failures))
         for error in self._unraised_spanning.values():
             spanning.append(error)
             retry_next.update(id(c) for c in error.covers)
@@ -5130,6 +5133,13 @@ class BaseArchiveReader(ArchiveReader):
         if spanning:
             failures = self._with_spanning_failures(failures, spanning)
         return tuple(failures)
+
+    def _run_spanning_passes(self, failed: frozenset[int]) -> None:
+        """Run the backend's own checks over several members that no member read
+        reaches (a DMG partition's CRC-32s), after ``verify_all()`` read the members;
+        ``failed`` holds the ids of the members whose read failed. Each check passes
+        (``_spanning_check_ran``) or keeps its failure for every later call
+        (``_spanning_unreachable``). The default has none."""
 
     def _awaiting_spanning_checks(self) -> set[int]:
         """The ids of the members of each check that spans members and has not passed.

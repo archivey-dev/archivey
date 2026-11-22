@@ -460,13 +460,16 @@ data its pass keeps for link targets beside it.
   decoders are bounded by the run's sectors. Each run a listing decodes, a cache miss
   included, counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
   `UdifImage._decode_run`), so a catalog spread over more runs than the cache holds
-  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4).
-  The TAR walker keeps nothing behind the member list, so nothing else is
-  held. The caps bound memory, not work: a forward-only TAR walk reads through
-  every member it skips, and a TAR walk in either mode reads the declared span of a
-  link header whose first block is zero, each for the bytes present rather than the
-  size a header declares (a member declaring more than the archive holds raises
-  `TruncatedError` at the first short read), and that ZIP walk reads through the
+  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4). `verify_all()`'s
+  partition CRC-32 pass decodes runs no member read reaches (free space, metadata); its
+  compressed and raw runs (which may share stored bytes) are held to the archive-wide
+  ratio on their own total, and its zero-fill runs cost O(log n) without their bytes
+  ([formats/dmg.md](formats/dmg.md) §2.4). The TAR walker keeps nothing behind the
+  member list, so nothing else is held. The caps bound memory, not work: a forward-only
+  TAR walk reads through every member it skips, and a TAR walk in either mode reads the
+  declared span of a link header whose first block is zero, each for the bytes present
+  rather than the size a header declares (a member declaring more than the archive holds
+  raises `TruncatedError` at the first short read), and that ZIP walk reads through the
   data of every member whose local header leaves its size to a data descriptor, up
   to one read of the file. The pipe pass also reads the entries its directory
   places in the bytes it kept after the walk stopped (a gap between members, a second archive appended). Every byte each
