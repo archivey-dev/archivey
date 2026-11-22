@@ -3083,7 +3083,10 @@ class ExtractionCoordinator:
                 state.claim_ids[cst.st_dev, cst.st_ino] = claimed
         state.unindexed_claims.clear()
         claimed = state.claim_ids.get((st.st_dev, st.st_ino))
-        if claimed is None or claimed == path:
+        # Compared as spelled: ``WindowsPath`` equality folds case, and a case
+        # variant of a claimed name is exactly what this looks for (under TRUSTED,
+        # whose key does not fold it).
+        if claimed is None or os.fspath(claimed) == os.fspath(path):
             return None
         claim = state.collision_map.get(self._claimed_key(claimed))
         if claim is None or claim.path != claimed:
