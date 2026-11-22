@@ -104,7 +104,9 @@ See [Configuration](opening.md#configuration), [Passwords](opening.md#passwords)
 ::: archivey.ListingLimits
 ::: archivey.DecoderLimits
 ::: archivey.SpoolLimits
-::: archivey.SalvageLimits ::: archivey.AcceleratorMode ::: archivey.ProcessIsolation
+::: archivey.SalvageLimits
+::: archivey.AcceleratorMode
+::: archivey.ProcessIsolation
 ::: archivey.RarDecompressor
 ::: archivey.PasswordInput
 ::: archivey.PasswordRequest
