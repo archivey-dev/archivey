@@ -306,3 +306,38 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+
+
+def test_a_reader_built_again_opens_its_own_inner_readers_as_repeats() -> None:
+    """A tar inside two BOXES layers: reading a listed member walks the outer BOXES
+    again, which builds the middle one again, whose own listing walk builds the
+    tar again. Neither records ``SALVAGE_UNAVAILABLE`` a second time."""
+    from tests.test_format_api_nested import (
+        _KINDS,
+        BoxesHandler,
+        _nest,
+        register_format,
+        registration_scope,
+    )
+
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(on_diagnostic=lambda d: seen.append(d.code))
+    _KINDS[b"B"] = BoxesHandler.format
+    try:
+        with registration_scope():
+            register_format(BoxesHandler)
+            with open_archive(
+                io.BytesIO(_nest(2)), salvage=True, config=config
+            ) as reader:
+                [member] = reader.members()
+                assert member.name == "0/0/a"
+                assert reader.read(member) == b"a"
+                formats = [
+                    d.context.format
+                    for d in reader.diagnostics.retained
+                    if isinstance(d.context, SalvageUnavailableContext)
+                ]
+    finally:
+        del _KINDS[b"B"]
+    assert formats == ["BOXES", "BOXES", "TAR"]
+    assert seen.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 3
