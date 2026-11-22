@@ -387,15 +387,15 @@ def test_lzx_state_after_a_capped_flush() -> None:
         assert d.flush() == _HELLO[max(at, 1) :]
 
 
-def test_lzx_state_after_a_failed_flush_raises_again() -> None:
+def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])
     with pytest.raises(archivey_codecs.TruncatedDataError):
         d.flush()
-    r = lzx.Decompressor.from_state(d.getstate())
-    r.decompress(_LZX_HELLO[r.total_in : -10])
     with pytest.raises(archivey_codecs.TruncatedDataError):
-        r.flush()
+        d.flush()
+    with pytest.raises(ValueError, match="after a decode error"):
+        d.getstate()
 
 
 def test_lzw_flush_keeps_its_cap(tmp_path) -> None:

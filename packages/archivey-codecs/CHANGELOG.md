@@ -13,4 +13,7 @@ archivey-codecs has its own version and its own releases, tagged `codecs-vX.Y.Z`
   private names for now.
 - `lzx.Decompressor`: LZX with the `lzma.LZMADecompressor` interface, the cabinet
   folder's output size (`output_size=`, `set_output_size()`), `flush()` for the end of
-  the input, `reset()`, `copy()`, `getstate()` and `from_state()`.
+  the input, `reset()`, `copy()`, `getstate()` and `from_state()`. It decodes as far
+  as the input given goes and keeps its place inside a frame, so it needs no input
+  before the Python decoder would ask for it. After a decode error it raises the same
+  error again, and `getstate()` is refused.

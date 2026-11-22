@@ -249,6 +249,16 @@ def lzx_python(chunks: list[bytes], sizes: list[int], window: int):
     return bytes(out), ("ok", None)
 
 
+def lzx_state(d) -> bytes | None:
+    """``d.getstate()``, or ``None`` once a decode error was found (the bytes before
+    it were returned, and the next call raises it): no state is saved then."""
+    try:
+        return d.getstate()
+    except ValueError as exc:
+        assert "after a decode error" in str(exc)
+        return None
+
+
 def lzx_rust(
     chunks: list[bytes], output_size: int, window: int, rng: random.Random
 ) -> tuple[bytes, tuple[str, object]]:
@@ -273,8 +283,8 @@ def lzx_rust(
         else:
             out.extend(d.decompress(b"", cap))
         pick = rng.random()
-        if pick < 0.1:
-            restored = lzx.Decompressor.from_state(d.getstate())
+        if pick < 0.1 and (state := lzx_state(d)) is not None:
+            restored = lzx.Decompressor.from_state(state)
             assert restored.total_out == d.total_out
             assert restored.total_in == d.total_in
             at = d.total_in
@@ -292,10 +302,10 @@ def lzx_rust(
             out += got
             if not got:
                 break
-            if not d.eof and rng.random() < 0.3:
+            if not d.eof and rng.random() < 0.3 and (state := lzx_state(d)) is not None:
                 # Saved during flush(): the restored decoder is not flushed, so it
                 # takes the input from its total_in again, then flushes on.
-                restored = lzx.Decompressor.from_state(d.getstate())
+                restored = lzx.Decompressor.from_state(state)
                 assert restored.total_out == d.total_out
                 assert restored.total_in == d.total_in
                 assert restored.decompress(data[restored.total_in :], 0) == b""
@@ -404,6 +414,56 @@ def test_lzx_parity_clean_and_damaged() -> None:
             # The push decoder stops at the declared size; the Python decoder does
             # too, so what follows the last frame is not compared.
             assert py == rs, (case, trial)
+
+
+def lzx_python_pulls(chunks: list[bytes], sizes: list[int], window: int) -> list[int]:
+    """For the Python decoder fed one chunk per ``more()``: the output it had given
+    each time it asked for a chunk."""
+    out = 0
+    asked: list[int] = []
+    feed = iter(chunks)
+
+    def more() -> bytes | None:
+        asked.append(out)
+        return next(feed, None)
+
+    decoder = LzxDecoder(window, more)
+    try:
+        for size in sizes:
+            out += len(decoder.decode_frame(size))
+    except Exception:  # noqa: BLE001, S110 - only the pulls are compared
+        pass
+    return asked
+
+
+def test_lzx_push_takes_input_when_the_python_decoder_pulls_it() -> None:
+    """Fed one chunk (one cabinet data block) at a time, the push decoder gives the
+    output the Python decoder had given when it asked for the next chunk: it needs no
+    input early, so a damaged block is fetched, and its checksum checked, exactly
+    when the Python decoder would fetch it."""
+    rng = random.Random(7)
+    for case, window, frames, sizes, _data in lzx_streams(rng):
+        for trial in range(3):
+            chunks = list(frames)
+            if trial:
+                k = rng.randrange(len(chunks))
+                chunks[k] = damage(rng, chunks[k])
+            asked = lzx_python_pulls(chunks, sizes, window)
+            d = archivey_codecs.lzx.Decompressor(window, output_size=sum(sizes))
+            out = 0
+            given = []
+            try:
+                for chunk in chunks:
+                    if not d.needs_input:
+                        break
+                    given.append(out)
+                    out += len(d.decompress(chunk))
+            except archivey_codecs.CodecError:
+                pass
+            # The push decoder is given a chunk only when it needs one; the Python
+            # decoder asks once more at the end of the input.
+            assert given == asked[: len(given)], (case, trial)
+            assert len(given) in (len(asked), len(asked) - 1), (case, trial)
 
 
 def test_lzx_random_input() -> None:
