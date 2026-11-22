@@ -441,6 +441,16 @@ def _blob_patch(offset: int, fmt: str, value: int):
             "40-byte wrapped key",
         ),
         (
+            {"patch_header": _header_patch(12, ">I", 8)},
+            UnsupportedFeatureError,
+            "8-byte block IV",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(8, ">I", 2**31))]},
+            UnsupportedFeatureError,
+            "2147483648 PBKDF2 iterations",
+        ),
+        (
             {"patch_header": _header_patch(88, ">Q", 5000)},
             ResourceLimitError,
             "5000 bytes; archivey reads at most 4096",

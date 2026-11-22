@@ -115,7 +115,8 @@ in a cache of at most 16 blocks, so a later read that starts or ends in one of t
 does not decrypt it again.
 
 Every length is checked before the bytes it names are read: the version (2), cipher
-(AES), HMAC key size (160 bits) and block size (512 or 4096) are
+(AES), block IV size (16 bytes), HMAC key size (160 bits), block size (512 or 4096)
+and PBKDF2 iteration count (at most 2^31 - 1, `hashlib`'s limit) are
 `UnsupportedFeatureError` otherwise; more than 16 key entries, or an entry over 4 KiB,
 is `ResourceLimitError`; no key entries, an entry outside the header (between the entry
 table and the encrypted data), 0 PBKDF2 iterations, a salt over 32 bytes, an IV over the

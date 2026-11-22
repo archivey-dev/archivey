@@ -72,6 +72,8 @@ _BLOCK_SIZES = (512, 4096)
 _MAX_ENTRIES = 16
 _MAX_ENTRY_SIZE = 4096
 _CACHE_BLOCKS = 16
+_IMAGE_IV_SIZE = 16
+_MAX_ITERATIONS = 2**31 - 1  # hashlib.pbkdf2_hmac's limit
 
 
 class _PasswordEntry(NamedTuple):
@@ -112,7 +114,7 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
     (
         _,
         version,
-        _iv_size,
+        iv_size,
         _mode,
         algorithm,
         key_bits,
@@ -133,6 +135,12 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
         raise UnsupportedFeatureError(
             f"the encrypted DMG image uses cipher {algorithm:#x} with a {key_bits}-bit "
             "key; only AES is supported"
+        )
+    if iv_size != _IMAGE_IV_SIZE:
+        # Each block's IV is the first 16 bytes of an HMAC-SHA1, the AES block size.
+        raise UnsupportedFeatureError(
+            f"the encrypted DMG image declares a {iv_size}-byte block IV; only "
+            f"{_IMAGE_IV_SIZE} bytes is supported"
         )
     if hmac_bits != _HMAC_KEY_SIZE * 8:
         raise UnsupportedFeatureError(
@@ -234,6 +242,14 @@ def _password_entry(source: ReaderSource, at: int, length: int) -> _PasswordEntr
         raise CorruptionError(
             f"the password key entry at byte {at} of the encrypted DMG header "
             "declares 0 PBKDF2 iterations"
+        )
+    if iterations > _MAX_ITERATIONS:
+        # hashlib takes a C int; a larger count, under a raised or no key-derivation
+        # budget, would raise OverflowError from the derivation.
+        raise UnsupportedFeatureError(
+            f"the password key entry at byte {at} of the encrypted DMG header "
+            f"declares {iterations} PBKDF2 iterations; archivey derives at most "
+            f"{_MAX_ITERATIONS}"
         )
     if algorithm == _ALG_AES and key_bits in (128, 192, 256):
         block = 16

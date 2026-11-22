@@ -199,7 +199,8 @@ iteration count when a password is tried. The image and its members SHALL report
 (`"AES-128"`, `"AES-192"`, `"AES-256"`). Every length in the encrypted header (data
 block size, key-entry count and sizes, salt, IV and wrapped-key lengths) SHALL be
 checked before any read and before a password is asked for: a data block size other than
-512 or 4096 SHALL raise `UnsupportedFeatureError`, a length past the header or its
+512 or 4096, a block IV size other than 16, or an iteration count over 2^31 - 1 SHALL
+raise `UnsupportedFeatureError`, a length past the header or its
 field, or a key-entry count or iteration count of 0, `CorruptionError`, and a count or
 size over its cap (16 key entries; 4 KiB for each key entry) `ResourceLimitError`.
 `cdsaencr` v1 images and images with no password key entry SHALL raise
