@@ -12,9 +12,11 @@ name: archivey-codecs wheels
 #
 # Wheels: one abi3 wheel (CPython 3.11 and later) per platform, plus one wheel per
 # free-threaded CPython (3.13t, 3.14t), which abi3 does not cover. maturin gets each
-# interpreter as a path: it refuses the bare name `python3.13t` ("only supported on 3.14
-# and later") but builds for that interpreter's path. On Linux the build runs in the pypa
-# manylinux_2_28 or musllinux_1_2 image, whose interpreters live in /opt/python.
+# interpreter as a path. On Linux the build runs in the pypa manylinux_2_28 or
+# musllinux_1_2 image, whose interpreters live in /opt/python; those images no longer
+# ship free-threaded 3.13, so the build installs uv's. A 3.13t wheel matters even though
+# 3.13t's free threading is experimental: no environment marker tells 3.13t from 3.13,
+# so without one `archivey[codecs]` would fall back to the sdist and need Rust.
 # Each wheel, on every platform, is installed in a clean environment with archivey from
 # this checkout and runs the package's own tests (test_api.py, test_parity.py) with
 # CODECS_REQUIRED=1, so a wheel that does not import fails instead of skipping. The abi3
@@ -108,7 +110,7 @@ jobs:
         run: |
           # Outside Linux maturin builds on the host; on Linux, in the pypa image.
           if [ "${{ runner.os }}" = Linux ]; then
-            echo "INTERPRETERS=/opt/python/cp311-cp311/bin/python /opt/python/cp313-cp313t/bin/python /opt/python/cp314-cp314t/bin/python" >> "$GITHUB_ENV"
+            echo "INTERPRETERS=/opt/python/cp311-cp311/bin/python /usr/local/bin/python3.13t /opt/python/cp314-cp314t/bin/python" >> "$GITHUB_ENV"
           else
             echo "INTERPRETERS=$(uv python find 3.11) $(uv python find 3.13t) $(uv python find 3.14t)" >> "$GITHUB_ENV"
           fi
@@ -121,6 +123,12 @@ jobs:
           # The pypa image, not maturin-action's default musl cross image: it has the
           # interpreters the paths above name.
           container: ${{ matrix.manylinux && format('quay.io/pypa/{0}_{1}', matrix.manylinux, matrix.target) || '' }}
+          # The pypa images dropped free-threaded 3.13, so it comes from uv's builds
+          # (python-build-standalone, the same ones the tests run on).
+          before-script-linux: |
+            /opt/python/cp312-cp312/bin/python -m pip install -q uv
+            /opt/python/cp312-cp312/bin/python -m uv python install 3.13t
+            ln -sf "$(/opt/python/cp312-cp312/bin/python -m uv python find 3.13t)" /usr/local/bin/python3.13t
           args: --release --locked --out ${{ github.workspace }}/dist -i ${{ env.INTERPRETERS }}
       - name: List wheels
         run: ls -l dist/
@@ -153,6 +161,9 @@ jobs:
         run: |
           # Read-only: the container cannot change the wheels the next step uploads.
           docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/w:ro -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
+            # No free-threaded 3.13 in the image: test that wheel on uv's, as built.
+            /opt/python/cp312-cp312/bin/python -m pip install -q uv
+            /opt/python/cp312-cp312/bin/python -m uv python install 3.13t
             for tag in cp311-cp311 cp314-cp314 cp313-cp313t cp314-cp314t; do
               case "$tag" in
                 *t) wheel="$(ls dist/*-"$tag"-*.whl)" ;;
@@ -160,7 +171,9 @@ jobs:
               esac
               echo "$tag: $wheel"
               rm -rf /tmp/venv
-              "/opt/python/$tag/bin/python" -m venv /tmp/venv
+              py="/opt/python/$tag/bin/python"
+              [ "$tag" != cp313-cp313t ] || py="$(/opt/python/cp312-cp312/bin/python -m uv python find 3.13t)"
+              "$py" -m venv /tmp/venv
               /tmp/venv/bin/pip install -q "$wheel" . pytest
               CODECS_REQUIRED=1 /tmp/venv/bin/python -m pytest -q -c /dev/null \
                 --rootdir=. -p no:cacheprovider "$0/tests"
