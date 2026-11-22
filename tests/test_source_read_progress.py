@@ -418,6 +418,35 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
         reader.extract_all(tmp_path / "out", on_error="continue")
 
 
+def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
+    tmp_path: Path,
+) -> None:
+    # A wrong CRC in the trailer: the decoder decodes again up to the error to keep
+    # the bytes before it. A stop raised during that second decode must still reach
+    # the caller, not the data error.
+    import gzip
+
+    data = gzip.compress(os.urandom(1 << 18) + b"a" * (1 << 20))
+    path = tmp_path / "badcrc.gz"
+    path.write_bytes(data[:-8] + b"\0\0\0\0" + data[-4:])
+
+    def extract(callback: Any) -> None:
+        config = ArchiveyConfig(
+            on_source_read=callback, source_read_step=0, use_rapidgzip="off"
+        )
+        with open_archive(path, config=config) as reader:
+            reader.extract_all(tmp_path / "out", on_error="continue")
+
+    recorder = _Recorder()
+    extract(recorder)
+    calls = len(recorder.calls)
+    assert calls > 0
+    for n in range(1, calls + 1):
+        with pytest.raises(_StopValue) as caught:
+            extract(_stop_on(n, _StopValue))
+        assert type(caught.value) is _StopValue
+
+
 @requires_unrar_cli()
 def test_a_rar_from_a_pipe_reports_what_the_feeder_thread_read() -> None:
     # The forward pass: a RAR from a pipe, under a spool limit smaller than the

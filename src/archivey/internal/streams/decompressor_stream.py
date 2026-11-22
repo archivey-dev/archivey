@@ -69,6 +69,7 @@ from archivey.internal.diagnostics_collector import (
 )
 from archivey.internal.logs import streams as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_callers_source
 from archivey.internal.streams.checked_spans import CheckedSpans
 from archivey.internal.streams.child_process import is_no_verdict
 from archivey.internal.streams.kept_errors import KeptError
@@ -281,8 +282,11 @@ def _is_data_verdict(exc: Exception) -> bool:
 
     Not a verdict: an ``OSError`` (the caller's source), a ``MemoryError``, an error
     marked by ``child_process.mark_no_verdict`` (a decoder child ended from outside,
-    most often by the out-of-memory killer, or one that could not start), and a
-    ``ReadError`` that is not a ``CorruptionError``. A ``ResourceLimitError`` is
+    most often by the out-of-memory killer, or one that could not start), a
+    ``ReadError`` that is not a ``CorruptionError``, and any exception the caller's
+    source or ``on_source_read`` raised (:func:`from_callers_source`): a stop raised
+    during the second decode of :meth:`DecompressorStream._redecode_to_error` must reach
+    the caller as itself, not give way to the data error. A ``ResourceLimitError`` is
     otherwise a verdict: inside a decode it is a ``DecoderLimits`` refusal of a size a
     header declared (``check_decoder_memory``), and those bytes are what the index
     pointed at.
@@ -295,7 +299,11 @@ def _is_data_verdict(exc: Exception) -> bool:
     ``SEEK_INDEX_DEGRADED`` with the exception's text and decodes from the start,
     where an error that is not specific to the resume raises again.
     """
-    if isinstance(exc, (OSError, MemoryError)) or is_no_verdict(exc):
+    if (
+        isinstance(exc, (OSError, MemoryError))
+        or is_no_verdict(exc)
+        or from_callers_source(exc)
+    ):
         return False
     return not isinstance(exc, ReadError) or isinstance(exc, CorruptionError)
 
@@ -312,7 +320,12 @@ def _may_recover(exc: Exception) -> bool:
     decode is the source's: reading the source again for it could fail the same way,
     or cost a second read of a remote file for nothing.
     """
-    if type(exc) is OSError and exc.errno is None and exc.args == _BZ2_DATA_ERROR:
+    if (
+        type(exc) is OSError
+        and exc.errno is None
+        and exc.args == _BZ2_DATA_ERROR
+        and not from_callers_source(exc)
+    ):
         return True
     return _is_data_verdict(exc)
 
