@@ -126,8 +126,12 @@ misreads data or crashes there (today rapidgzip, lz4, pyppmd and inflate64 under
 its `MissingComponent` carries a `reason`, and every report of that component SHALL give
 the reason in place of the install advice, since installing the package would not help.
 lz4, pyppmd and inflate64 lower format support, so both reporting channels carry them.
-rapidgzip is an accelerator and never lowers support, so it reaches only the `ON`
-refusal and the rewind report.
+rapidgzip is an accelerator and never lowers support, so it reaches the `ON` refusal,
+the rewind report, and `format_availability().faster_with` with its `reason` (which
+`archivey --version -v` prints). `format_availability` finds a package without
+importing it, so it cannot see an import failure; `archivey --version -v` SHALL import
+each package it finds and report one that fails to import as absent, with the error in
+place of the install advice.
 
 The system SHALL keep `[all]` as the conventional superset; it MUST resolve to
 `[recommended]` + `[seekable]`.
