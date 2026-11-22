@@ -417,7 +417,7 @@ class _VolumeWalk:
         if folder and entry.cnid in self._catalog.hidden:
             return None
         parent = hfsplus.folder_path(
-            self._catalog.folders, self._paths, entry.parent, self._looped
+            self._catalog.folders, self._paths, entry.parent, self._looped, self._charge
         )
         if parent is None:
             return _ORPHAN

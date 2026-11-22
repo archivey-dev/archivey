@@ -706,12 +706,16 @@ def folder_path(
     cache: dict[int, str | None],
     cnid: int,
     looped: set[int],
+    charge: Callable[[int, str], None],
 ) -> str | None:
     """The path of folder ``cnid`` below the root (``""`` for the root), or ``None``
     when its chain does not reach the root: a folder the first pass did not find, or a
     chain that comes back to a folder. For a loop, the folder's cnid goes in ``looped``,
     so the walk lists the other members and raises at its end. ``seen`` ends a loop and
-    the cache keeps the whole walk linear in the number of folders."""
+    the cache keeps the whole walk linear in the number of folders. Each path the cache
+    keeps is charged to ``max_metadata_bytes``: the paths of a chain grow with the
+    square of its depth, and the folders inside a hidden folder never become members,
+    so no member name is charged for them."""
     if cnid in cache:
         return cache[cnid]
     chain: list[int] = []
@@ -739,6 +743,7 @@ def folder_path(
             continue
         name = folders[each][1]
         base = f"{base}/{name}" if base else name
+        charge(len(base) + 32, "the HFS+ folder paths")
         cache[each] = base
     return cache[cnid]
 

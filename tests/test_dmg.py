@@ -755,6 +755,19 @@ def test_max_metadata_bytes_applies_to_the_catalog() -> None:
         reader.members()
 
 
+def test_max_metadata_bytes_applies_to_folder_paths_in_a_hidden_folder() -> None:
+    """The folders inside a hidden folder never become members, so only the charge
+    of their built paths stops a deep chain: the paths cost the square of its depth."""
+    path = ".HFS+ Private Directory Data\r/" + "/".join(["n" * 255] * 200)
+    image = _image([d.Node(path, kind="dir")], hfs_options={"node_size": 32768})
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1 << 20))
+    with (
+        pytest.raises(ResourceLimitError, match="HFS\\+ folder paths"),
+        _open(image, config=config) as reader,
+    ):
+        reader.members()
+
+
 def test_a_property_list_over_its_cap_is_refused_before_it_is_read() -> None:
     def huge(koly: bytearray) -> None:
         struct.pack_into(">Q", koly, 224, 65 << 20)

@@ -94,6 +94,9 @@ The first listing, per volume (`_VolumeWalk`):
   decmpfs header whole), charged;
 - pass 2 (`catalog_entries`): one member per folder and file record, in catalog order
   (parent id, then name), skipping the hidden folders' contents and the journal files.
+  Each folder path it builds and caches is charged to `max_metadata_bytes`, so a deep
+  chain inside a hidden folder is bounded too. A visible folder's path is charged
+  again in its member's name, because both strings are kept.
 
 Type precedence: hard-link Finder markers first (`hlnk`/`hfs+` file link,
 `fdrp`/`MACS` directory link), then a non-zero BSD mode, then the Finder `slnk`/`rhap`
