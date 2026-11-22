@@ -428,11 +428,19 @@ class _PluginAdapter(BaseArchiveReader):
         run: Callable[[Callable[[], _T]], _T],
         allow_provider: bool,
         method: str,
+        winners: dict[tuple[object, ...], SavedWinner] | None = None,
     ) -> tuple[Any, PasswordConfirmVerdict]:
         """Resolve one request handed over by ``method``: ``(unlocked, verdict)``.
 
         Runs under the plugin's guards; the provider runs with the handle lock let
-        go (``_unguarded``). The winner is kept under ``key`` for a repeat."""
+        go (``_unguarded``). The winner is kept under ``key`` for a repeat.
+
+        ``winners`` are the winners of one open's data: a member handle's, or a
+        walk's. A fresh open (``allow_provider``) records its winner there as well
+        as reader-wide. A replacement open tries the winner recorded there first,
+        and records nothing reader-wide: its data must come from the password the
+        stream it replaces read with, even when another open has since saved a
+        different one for the same request."""
         owner = f"{type(self._reader if self._reader_open else self._plugin).__name__}"
         if not self._plugin.supports_password:
             raise _plugin_bug(
@@ -452,6 +460,9 @@ class _PluginAdapter(BaseArchiveReader):
                     f"a str or whose check is not callable"
                 )
             )
+        saved = self._saved_winners.get(key)
+        if winners is not None and not allow_provider:
+            saved = winners.get(key, saved)
         try:
             resolution = resolve_request(
                 what=request.what,
@@ -462,12 +473,15 @@ class _PluginAdapter(BaseArchiveReader):
                 run=run,
                 unguarded=self._unguarded,
                 allow_provider=allow_provider,
-                saved=self._saved_winners.get(key),
+                saved=saved,
                 owner=owner,
             )
         except PluginPasswordBug as exc:
             raise _plugin_bug(TypeError(str(exc))) from None
-        self._saved_winners[key] = resolution.winner
+        if winners is not None:
+            winners[key] = resolution.winner
+        if winners is None or allow_provider:
+            self._saved_winners[key] = resolution.winner
         return resolution.unlocked, resolution.verdict
 
     def _resolve_returned(
@@ -478,9 +492,11 @@ class _PluginAdapter(BaseArchiveReader):
         run: Callable[[Callable[[], _T]], _T],
         allow_provider: bool,
         method: str,
+        winners: dict[tuple[object, ...], SavedWinner] | None = None,
     ) -> object:
         """``result`` of ``method``, with every request it returned resolved: each
-        ``then`` is called with its winner, and may return another request."""
+        ``then`` is called with its winner, and may return another request.
+        ``winners`` as ``_resolve`` takes them."""
         index = 0
         while isinstance(result, NeedsPassword):
             request = cast("NeedsPassword[Any, Any]", result)
@@ -498,6 +514,7 @@ class _PluginAdapter(BaseArchiveReader):
                 run=run,
                 allow_provider=allow_provider,
                 method=method,
+                winners=winners,
             )
             result = run(functools.partial(then, unlocked, verdict))
             index += 1
@@ -824,6 +841,7 @@ class _PluginAdapter(BaseArchiveReader):
         step: str = _LISTING,
         *,
         allow_provider: bool = True,
+        winners: dict[tuple[object, ...], SavedWinner] | None = None,
     ) -> object:
         """The next step of a walk, or ``_END`` once it ends: the listing's, during
         which a ``hold()`` is charged, or with ``step=_REWALK`` a data walk's, during
@@ -833,7 +851,8 @@ class _PluginAdapter(BaseArchiveReader):
         into the walk, which goes on to its next step. The k-th request of a walk is
         keyed by k, so a walk started over tries the same winners first. With
         ``allow_provider=False`` (a walk stepped inside a member's read) the provider
-        is not asked."""
+        is not asked. ``winners`` are the walk's own (``_Walk.winners``), as
+        ``_resolve`` takes them."""
         self._walk_step = step
         try:
             item = next(steps, _END)
@@ -863,6 +882,7 @@ class _PluginAdapter(BaseArchiveReader):
                         run=_call,
                         allow_provider=allow_provider,
                         method="walk()",
+                        winners=winners,
                     )
                 except BaseException:
                     # The walk waits at its yield for a winner it will never get:
@@ -1472,7 +1492,11 @@ class IndexedReaderAdapter(_PluginAdapter):
             yield member
 
     def _plugin_member_data(
-        self, member: ArchiveMember, *, allow_provider: bool = True
+        self,
+        member: ArchiveMember,
+        *,
+        allow_provider: bool = True,
+        winners: dict[tuple[object, ...], SavedWinner] | None = None,
     ) -> tuple[MemberData, BinaryIO]:
         """Call the plugin's ``open_member``: its data, and its stream as archivey reads
         it, full-count and under the handle lock.
@@ -1480,7 +1504,8 @@ class IndexedReaderAdapter(_PluginAdapter):
         A ``NeedsPassword`` it returns is resolved, its callbacks under the same lock
         and reopen state as ``open_member``. ``allow_provider=False`` is for a
         replacement open of a stream already unlocked (a respawn on a backward seek):
-        the saved winner is tried, and the provider is not asked."""
+        the winner in ``winners`` (the first open's) is tried, and the provider is
+        not asked."""
         member_id = member._member_id
         nest = (
             self._nest_members.get(member_id)
@@ -1504,6 +1529,7 @@ class IndexedReaderAdapter(_PluginAdapter):
                 run=run,
                 allow_provider=allow_provider,
                 method=f"{type(self._reader).__name__}.open_member()",
+                winners=winners,
             )
         if not isinstance(data, MemberData):
             raise _plugin_bug(
@@ -1583,7 +1609,9 @@ class IndexedReaderAdapter(_PluginAdapter):
 
     @override
     def _open_member(self, member: ArchiveMember) -> MemberStreamParts:
-        data, stream = self._plugin_member_data(member)
+        # The winners this handle's data was unlocked with: a respawn reuses them.
+        winners: dict[tuple[object, ...], SavedWinner] = {}
+        data, stream = self._plugin_member_data(member, winners=winners)
         # Until the parts take the stream over, a raise here (a refused digest name,
         # a hasher factory that fails) leaves archivey owing it a close.
         try:
@@ -1603,7 +1631,7 @@ class IndexedReaderAdapter(_PluginAdapter):
                 # The replacement takes its own verdict, and never asks the provider.
                 def respawn() -> BinaryIO:
                     again, again_stream = self._plugin_member_data(
-                        member, allow_provider=False
+                        member, allow_provider=False, winners=winners
                     )
                     try:
                         verdict[0] = _checked_verdict(
@@ -1905,13 +1933,17 @@ class _Walk:
     """One walk of the archive: the layer it reads now (the archive's, or the last
     stream it decompressed), and, in random access, the buffered views it opened, one
     per layer. The listing walk is one; a walk started to reach a member's decoded
-    data again (``_DataWalk``) is another, with views of its own."""
+    data again (``_DataWalk``) is another, with views of its own. Each keeps the
+    winners of the password requests it resolved (``winners``)."""
 
-    __slots__ = ("layer", "views")
+    __slots__ = ("layer", "views", "winners")
 
     def __init__(self) -> None:
         self.layer: _Layer | None = None
         self.views: list[BinaryIO] = []
+        # The password that won each request this walk resolved, by request key:
+        # the walk's data so far was unlocked with these.
+        self.winners: dict[tuple[object, ...], SavedWinner] = {}
 
     def close(self) -> None:
         views, self.views = self.views, []
@@ -2378,7 +2410,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 self._handle_guard(),
                 self._listing_work(),
             ):
-                first = self._walk_next(walk)
+                first = self._walk_next(walk, winners=self._listing_walk.winners)
             self._open_walk: tuple[Iterator[MemberSpan], object] | None = (
                 walk,
                 first,
@@ -2694,7 +2726,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             walk = self._new_walk()
             self._walk_index = 0
             with boundary, guard:
-                span = self._walk_next(walk)
+                span = self._walk_next(walk, winners=self._listing_walk.winners)
         try:
             yield from self._walk_spans(walk, span, boundary, guard)
         except BaseException:
@@ -2743,7 +2775,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     self._leave_decoded(decoded)
                 prefix += decoded.consumed
                 with boundary, guard:
-                    span = self._walk_next(walk)
+                    span = self._walk_next(walk, winners=self._listing_walk.winners)
                 continue
             with boundary, guard:
                 left = record.offset + record.length - forward.offset
@@ -2752,7 +2784,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                 assert left >= 0, (record.offset, record.length, forward.offset)
                 if left:
                     forward.skip(left)
-                span = self._walk_next(walk)
+                span = self._walk_next(walk, winners=self._listing_walk.winners)
         with boundary, guard:
             self._read_codec_end()
         self._raise_members_the_codec_checked()
@@ -3002,10 +3034,17 @@ class SequentialReaderAdapter(_PluginAdapter):
                 # stream is handed off is a replacement open inside its read.
                 handed_off = False
                 verdict = [record.unlocked]
+                # The winners the data handed out was unlocked with: the listing
+                # walk's when it reads through the walk, else the first reopen's.
+                winners = dict(self._listing_walk.winners) if window is not None else {}
 
                 def reopen(start: int) -> BinaryIO:
                     return self._decoded_by_walk(
-                        decoded, start, allow_provider=not handed_off, verdict=verdict
+                        decoded,
+                        start,
+                        allow_provider=not handed_off,
+                        verdict=verdict,
+                        winners=winners,
                     )
 
                 stream = self._walk_handoff_locked(window, reopen)
@@ -3049,14 +3088,22 @@ class SequentialReaderAdapter(_PluginAdapter):
             # member gives its own.
             verdict = [record.unlocked]
             if not self._streaming:
-                stream = self._decoded_by_walk(decoded, 0, verdict=verdict)
+                winners: dict[tuple[object, ...], SavedWinner] = {}
+                stream = self._decoded_by_walk(
+                    decoded, 0, verdict=verdict, winners=winners
+                )
                 if self._seek_declared():
                     # The caller asked for seekable members: a forward seek reads
                     # through, and a backward one walks again to the member.
                     stream = RespawnStream(
-                        # A replacement open: it never asks the provider.
+                        # A replacement open: it never asks the provider, and
+                        # unlocks with the first open's winners.
                         lambda: self._decoded_by_walk(
-                            decoded, 0, allow_provider=False, verdict=verdict
+                            decoded,
+                            0,
+                            allow_provider=False,
+                            verdict=verdict,
+                            winners=winners,
                         ),
                         stream,
                         size=member.size,
@@ -3132,6 +3179,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         *,
         allow_provider: bool = True,
         verdict: list[PasswordConfirmVerdict | None] | None = None,
+        winners: dict[tuple[object, ...], SavedWinner] | None = None,
     ) -> BinaryIO:
         """``decoded``'s data from ``start``, reached by a walk of its own (random
         access): the idle one, when it is not past the member yet, or one from the
@@ -3139,10 +3187,24 @@ class SequentialReaderAdapter(_PluginAdapter):
         walk does: their decoded data drained, their stored data skipped. With
         ``allow_provider=False`` (a replacement open) a request the walk yields gets
         its saved winner only. ``verdict[0]``, when given, becomes the ``unlocked``
-        this walk's span gave the data: the watch over the caller's stream reads it."""
+        this walk's span gave the data: the watch over the caller's stream reads it.
+
+        ``winners``, when given, are the winners of the handle's data. A fresh open
+        fills them with the walk's; a replacement open walks with them, and takes
+        the idle walk only when it unlocked what it passed with the same ones."""
         with self._data_walk_lock:
             data_walk, self._idle_data_walk = self._idle_data_walk, None
-        if data_walk is not None and data_walk.next_index > decoded.index:
+        if data_walk is not None and (
+            data_walk.next_index > decoded.index
+            or (
+                winners is not None
+                and not allow_provider
+                and any(
+                    winners.get(key, won) != won
+                    for key, won in data_walk.walk.winners.items()
+                )
+            )
+        ):
             self._close_data_walk(data_walk)
             data_walk = None
         try:
@@ -3163,6 +3225,8 @@ class SequentialReaderAdapter(_PluginAdapter):
                     data_walk = None
             if data_walk is None:
                 walk = _Walk()
+                if winners is not None and not allow_provider:
+                    walk.winners.update(winners)
                 data_walk = _DataWalk(walk, self._new_walk(walk))
             target = self._walk_to_decoded(
                 data_walk, decoded, allow_provider=allow_provider
@@ -3171,6 +3235,9 @@ class SequentialReaderAdapter(_PluginAdapter):
             data_walk.next_index = decoded.index + 1
             if verdict is not None:
                 verdict[0] = target.unlocked
+            if winners is not None and allow_provider:
+                winners.clear()
+                winners.update(data_walk.walk.winners)
             if start:
                 # Data that ends before ``start`` is short: the reader of the
                 # handed-off stream finds it so (TruncatedError).
@@ -3195,7 +3262,10 @@ class SequentialReaderAdapter(_PluginAdapter):
         while True:
             with boundary, guard:
                 span = self._walk_next(
-                    data_walk.spans, _REWALK, allow_provider=allow_provider
+                    data_walk.spans,
+                    _REWALK,
+                    allow_provider=allow_provider,
+                    winners=walk.winners,
                 )
             if span is _END:
                 raise CorruptionError(

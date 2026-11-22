@@ -424,7 +424,14 @@ Requests met there are resolved too, under these rules:
   not promoted for other units (D3). On a fresh open (not a replacement of a stream
   already unlocked) an unconfirmed saved winner is not taken at once: it is the first
   survivor, and the other passwords are probed as usual, so a password another unit
-  has confirmed since can win.
+  has confirmed since can win. That winner becomes the reader's saved winner, but a
+  stream already open keeps its own: each member handle, and each walk, records the
+  winners its data was unlocked with, and its replacement opens try those first. A
+  respawn that took the reader's latest winner instead would hand the caller bytes
+  decrypted with another password at the same offsets, and the checksum state the
+  verifier carries over would mix the two. For the same reason a replacement open
+  goes on with an idle data walk only when that walk unlocked the requests it passed
+  with the handle's winners; otherwise it walks again from the start.
 - **The provider only at a first open.** A first open of a member may ask the provider:
   the caller's `open()`, a data walk it starts, and the first open of a lazy pass handle
   from `stream_members()` or extraction, which calls `open_member` on the handle's

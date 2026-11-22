@@ -18,6 +18,7 @@ import threading
 import time
 import zlib
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, BinaryIO, ClassVar
 
@@ -1312,6 +1313,214 @@ def test_a_sequential_respawn_that_becomes_inconclusive_is_watched(
             with pytest.raises(EncryptionError) as raised:
                 stream.read()
     assert is_unverified_data_error(raised.value)
+
+
+def test_a_respawn_keeps_its_own_winner_when_another_handle_saves_a_new_one(
+    tmp_path: Path,
+) -> None:
+    """Handle A unlocks ``a.txt`` with a provider answer its check cannot reject.
+    Another member confirms a different password, and handle B, a fresh open, takes
+    it for ``a.txt``. A backward seek on A to a nonzero offset still reads with A's
+    own password: the bytes it gave before come back, not B's."""
+
+    class WeakA(ToyXReader):
+        def open_member(self, member: ArchiveMember, locator: _Locator) -> Any:
+            request = super().open_member(member, locator)
+            if member.name != "a.txt" or not isinstance(request, NeedsPassword):
+                return request
+
+            def check(password: bytes) -> Any:
+                _, verdict = request.check(password)
+                return _key(password), INCONCLUSIVE if verdict is REJECTED else verdict
+
+            return NeedsPassword(request.what, check, member=member, then=request.then)
+
+    class Handler(ToyXHandler):
+        def open(self, source: ReaderSource, context: ReaderContext) -> ToyXReader:
+            return WeakA(source, context)
+
+    path = _write(
+        tmp_path,
+        build_toyx([("a.txt", _SECRET, b"right"), ("b.txt", b"other", b"right")]),
+    )
+    answers = iter([b"wrong", b"right"])
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        return next(answers, None)
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(
+            path, password=provider, seekable_members=True, concurrent_operations=True
+        ) as reader:
+            first = reader.open("a.txt")
+            head = first.read(4)
+            assert head != _SECRET[:4]
+            assert reader.read("b.txt") == b"other"
+            with reader.open("a.txt") as second:
+                assert second.read(4) == _SECRET[:4]
+            first.seek(1)
+            assert first.read(3) == head[1:]
+            with suppress(EncryptionError):
+                first.close()
+
+
+def test_a_rewalk_keeps_its_own_winner_when_another_handle_saves_a_new_one(
+    tmp_path: Path,
+) -> None:
+    """The sequential form of the test above. Each member has a request whose check
+    cannot reject a wrong password, and confirms the right one from the second walk
+    on. Handle A unlocks ``a`` with the provider's wrong answer. A read of ``b``
+    confirms the right password, and handle B, a fresh open of ``a``, takes it. A
+    backward seek on A to a nonzero offset walks again with A's own password."""
+    walks = 0
+
+    def build(members: list[tuple[str, bytes]], password: bytes) -> bytes:
+        body = bytearray(_WMAGIC)
+        for name, data in members:
+            raw = name.encode()
+            body += struct.pack("<H", len(raw)) + raw + _tag(password)
+            body += struct.pack("<I", len(data)) + _xor(data, _key(password))
+        return bytes(body + struct.pack("<H", 0))
+
+    class PerMember(ToyWReader):
+        def walk(self, stream: ForwardStream) -> Iterator[Any]:
+            nonlocal walks
+            if stream.read_exact(len(_WMAGIC)) != _WMAGIC:
+                raise CorruptionError("not a TOYW archive")
+            walks += 1
+            listing = walks == 1
+            while True:
+                (name_len,) = struct.unpack("<H", stream.read_exact(2))
+                if not name_len:
+                    return
+                name = stream.read_exact(name_len).decode()
+                tag = stream.read_exact(4)
+                (size,) = struct.unpack("<I", stream.read_exact(4))
+
+                def check(password: bytes, tag: bytes = tag) -> Any:
+                    right = _tag(password) == tag and not listing
+                    return _key(password), CONFIRMED if right else INCONCLUSIVE
+
+                member = ArchiveMember(
+                    type=MemberType.FILE, name=name, size=size, is_encrypted=True
+                )
+                key, verdict = yield NeedsPassword(name, check, member=member)
+                data = _xor(stream.read_exact(size), key)
+                yield MemberSpan(member, data=io.BytesIO(data), unlocked=verdict)
+
+    class Handler(ToyWHandler):
+        def open_sequential(self, context: ReaderContext) -> ToyWReader:
+            return PerMember(context)
+
+    path = _write(
+        tmp_path,
+        build([("a", b"alpha data"), ("b", b"beta data")], b"right"),
+        "t.toyw",
+    )
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        # One answer for each member: ``a`` a wrong one, ``b`` the right one.
+        assert request.member is not None
+        if request.attempt > 1:
+            return None
+        return b"right" if request.member.name == "b" else b"wrong"
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(
+            path, password=provider, seekable_members=True, concurrent_operations=True
+        ) as reader:
+            reader.members()
+            first = reader.open("a")
+            head = first.read(4)
+            assert head != b"alph"
+            assert reader.read("b") == b"beta data"
+            with reader.open("a") as second:
+                assert second.read(4) == b"alph"
+            first.seek(1)
+            assert first.read(3) == head[1:]
+            with suppress(EncryptionError):
+                first.close()
+
+
+def test_a_rewalk_does_not_take_an_idle_walk_unlocked_another_way(
+    tmp_path: Path,
+) -> None:
+    """One request unlocks every member's data. Handle A on ``b`` unlocked it with
+    a wrong password the check could not reject. A fresh open of ``a``, while the
+    check rejects that password, unlocks it with the right one and leaves its walk
+    idle just past ``a``. A backward seek on A walks again from the start with A's
+    own password, rather than going on with that idle walk."""
+    strict = False
+
+    def build(members: list[tuple[str, bytes]], password: bytes) -> bytes:
+        body = bytearray(_WMAGIC + _tag(password))
+        pos = 0
+        for name, data in members:
+            raw = name.encode()
+            body += struct.pack("<H", len(raw)) + raw + struct.pack("<I", len(data))
+            body += _xor(data, _key(password), pos)
+            pos += len(data)
+        return bytes(body + struct.pack("<H", 0))
+
+    class OneKey(ToyWReader):
+        def walk(self, stream: ForwardStream) -> Iterator[Any]:
+            if stream.read_exact(len(_WMAGIC)) != _WMAGIC:
+                raise CorruptionError("not a TOYW archive")
+            tag = stream.read_exact(4)
+
+            def check(password: bytes) -> Any:
+                if _tag(password) == tag:
+                    return _key(password), CONFIRMED
+                return (None, REJECTED) if strict else (_key(password), INCONCLUSIVE)
+
+            key, verdict = yield NeedsPassword("the archive", check)
+            pos = 0
+            while True:
+                (name_len,) = struct.unpack("<H", stream.read_exact(2))
+                if not name_len:
+                    return
+                name = stream.read_exact(name_len).decode()
+                (size,) = struct.unpack("<I", stream.read_exact(4))
+                data = _xor(stream.read_exact(size), key, pos)
+                pos += size
+                member = ArchiveMember(
+                    type=MemberType.FILE, name=name, size=size, is_encrypted=True
+                )
+                yield MemberSpan(member, data=io.BytesIO(data), unlocked=verdict)
+
+    class Handler(ToyWHandler):
+        def open_sequential(self, context: ReaderContext) -> ToyWReader:
+            return OneKey(context)
+
+    path = _write(
+        tmp_path,
+        build([("a", b"alpha data"), ("b", b"beta data")], b"right"),
+        "t.toyw",
+    )
+    answers = [b"wrong", b"right"]
+
+    def provider(request: PasswordRequest) -> bytes | None:
+        return answers[request.attempt - 1] if request.attempt <= 2 else None
+
+    with registration_scope():
+        register_format(Handler)
+        with open_archive(
+            path, password=provider, seekable_members=True, concurrent_operations=True
+        ) as reader:
+            reader.members()
+            first = reader.open("b")
+            head = first.read(4)
+            assert head != b"beta"
+            strict = True
+            with reader.open("a") as second:
+                assert second.read() == b"alpha data"
+            strict = False
+            first.seek(1)
+            assert first.read(3) == head[1:]
+            with suppress(EncryptionError):
+                first.close()
 
 
 def test_an_indexed_respawn_must_describe_its_checks_the_same(

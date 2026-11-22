@@ -134,11 +134,14 @@ copied from it, and SHALL wait for the answer when called from any other thread.
 plugin call SHALL be repeated to try a provider answer. Retry state SHALL live on the
 request. When the adapter calls a hook again on its own (a data walk, a respawn, a
 rewalk), it SHALL try first the saved winner of each request, keyed by the plugin call
-plus the request's index in that call's chain. On a replacement open the saved winner
-SHALL keep the stream's password when `check` does not reject it; on a fresh open a
-saved winner that `check` does not confirm SHALL compete with the other passwords as
-the first `INCONCLUSIVE` survivor, so a password confirmed since by another unit can
-win. archivey SHALL call the provider only on
+plus the request's index in that call's chain. A replacement open SHALL try first the
+winners the stream it replaces was unlocked with, even when another open has since
+saved a different winner for the same request, and SHALL keep that password when
+`check` does not reject it; a random-access data walk left idle SHALL be taken for a
+replacement open only when it unlocked the requests it passed with those same winners.
+On a fresh open a saved winner that `check` does not confirm SHALL compete with the
+other passwords as the first `INCONCLUSIVE` survivor, so a password confirmed since by
+another unit can win. archivey SHALL call the provider only on
 the first unlock of a unit: a request from the handler's `open` (with `member=None`), a
 listing walk's request, or a first open of a member (the caller's `open()`, a data walk
 it starts, the first open of a lazy `stream_members()` or extraction handle). It SHALL
@@ -176,6 +179,7 @@ the provider at once SHALL be served one after the other.
 | Indexed member opened `INCONCLUSIVE`; backward seek respawns it and the toy plugin's `then` now reports `CONFIRMED` | The replacement stream is checked as `CONFIRMED` |
 | Same with the original `CONFIRMED` and the replacement `INCONCLUSIVE` | A digest mismatch on the replacement raises the unverified-data `EncryptionError` |
 | Respawn (replacement open) inside `read()` where the saved winner no longer unlocks the unit | D2 exhaustion error from that `read()`; provider not called |
+| Handle A unlocked a member with an `INCONCLUSIVE` provider answer; handle B, a fresh open of the same member, then won a different, confirmed password; A seeks back to a nonzero offset | A's respawn or data walk unlocks with A's own password and returns the bytes it returned before; B's winner and B's idle data walk are not used for it |
 | Reader closed, then reopened with `open_archive` | No saved winners carried over |
 | `open_member` chain: header request then data request, each won by a different provider answer; then seek to zero, provider has no more answers | Both saved winners reused; replacement stream reads |
 | Fresh reader, provider only, ARJ garbled member read through `stream_members()` | Provider asked on the handle's first `read()`; member reads |
