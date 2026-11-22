@@ -11,7 +11,10 @@ name: archivey-codecs wheels
 #   • Run workflow -> target=pypi                            -> real PyPI from the ref
 #
 # Wheels: one abi3 wheel (CPython 3.11 and later) per platform, plus one wheel per
-# free-threaded CPython (3.13t, 3.14t), which abi3 does not cover. Each wheel is
+# free-threaded CPython from 3.14t on, which abi3 does not cover. No 3.13t wheel:
+# maturin refuses free-threaded 3.13 inside the manylinux containers ("only supported on
+# 3.14 and later"), and 3.13t's free threading is experimental; 3.13t uses archivey's
+# Python decoders. Each wheel is
 # installed in a clean environment with archivey from this checkout and runs the
 # package's own tests (test_api.py, test_parity.py) with CODECS_REQUIRED=1, so a wheel
 # that does not import fails instead of skipping. musllinux wheels are tested in an
@@ -94,17 +97,17 @@ jobs:
       - name: Pythons for the build (macOS, Windows) and the tests
         if: matrix.libc != 'musl'
         run: |
-          uv python install 3.11 3.13t 3.14t
+          uv python install 3.11 3.14t
           # maturin builds on the host outside Linux, so it gets each interpreter's path.
           # On Linux it builds in the manylinux container, which has its own.
           if [ "${{ runner.os }}" = Linux ]; then
-            echo "INTERPRETERS=python3.11 python3.13t python3.14t" >> "$GITHUB_ENV"
+            echo "INTERPRETERS=python3.11 python3.14t" >> "$GITHUB_ENV"
           else
-            echo "INTERPRETERS=$(uv python find 3.11) $(uv python find 3.13t) $(uv python find 3.14t)" >> "$GITHUB_ENV"
+            echo "INTERPRETERS=$(uv python find 3.11) $(uv python find 3.14t)" >> "$GITHUB_ENV"
           fi
       - name: Interpreters for the musllinux build
         if: matrix.libc == 'musl'
-        run: echo "INTERPRETERS=python3.11 python3.13t python3.14t" >> "$GITHUB_ENV"
+        run: echo "INTERPRETERS=python3.11 python3.14t" >> "$GITHUB_ENV"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -118,7 +121,7 @@ jobs:
         if: matrix.libc != 'musl'
         run: |
           set -euo pipefail
-          for py in 3.11 3.13t 3.14t; do
+          for py in 3.11 3.14t; do
             case "$py" in
               *t) wheel="$(ls dist/*-cp${py//[.t]/}-cp${py//./}-*.whl)" ;;
               *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
