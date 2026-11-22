@@ -2875,7 +2875,7 @@ def test_a_link_target_through_one_directory_many_times_sorts_it_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each component of a link target that is not UTF-8 asks for its directory's
-    Joliet counterpart. The answer and each directory's sorted entries are kept, so
+    Joliet counterpart. Each directory's sorted entries are kept, so
     a target such as ``d\\xe9/../d\\xe9/..`` does not sort ``d\\xe9`` once per
     component; that made a 1 MiB image take a minute to list."""
     from archivey.internal.backends import iso_reader

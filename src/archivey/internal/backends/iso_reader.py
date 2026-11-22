@@ -730,13 +730,12 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         # following many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, IsoEntry]] = {}
         # Each directory's entries in identifier order (``_sorted_children``), by
-        # ``id()`` of the directory, and each Rock Ridge directory's Joliet
-        # counterpart (``_joliet_directory``), by ``id()`` of the entry. Name and link
-        # target decoding can ask about one directory many times: a link target such
-        # as ``x\xff/../x\xff/..`` asks once per component, so without these each
-        # question would sort a whole directory again.
+        # ``id()`` of the directory. Name and link target decoding can ask for one
+        # directory's entries many times: a link target such as ``x\xff/../x\xff/..``
+        # searches ``x\xff`` once per component (``_joliet_directory``), and so do
+        # many ``CL`` placeholders pointing at one directory. Without this, each
+        # search would sort the whole directory again.
         self._sorted: dict[int, list[IsoEntry]] = {}
-        self._joliet_directories: dict[int, IsoEntry | None] = {}
         # The primary tree's first directory at each extent, for Rock Ridge ``CL``
         # relocation; built on the first ``CL`` entry met (``_relocated``).
         self._entry_at_extent: dict[int, IsoEntry] | None = None
@@ -1147,15 +1146,6 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         for a non-empty file with exactly one Joliet entry at its extent, then climbs
         that entry's Joliet parents as many levels as the file sits below ``entry``.
         """
-        key = id(entry)
-        if key in self._joliet_directories:
-            return self._joliet_directories[key]
-        found = self._search_joliet_directory(entry)
-        self._joliet_directories[key] = found
-        return found
-
-    def _search_joliet_directory(self, entry: IsoEntry) -> IsoEntry | None:
-        """:meth:`_joliet_directory` without its memo."""
         assert self._joliet_files is not None
         queue = [(entry, 1)]
         visited = 0
