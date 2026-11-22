@@ -559,6 +559,11 @@ class OptionalLibrary(StrEnum):
     CRC32C = "crc32c"
     """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
     installed."""
+    ARCHIVEY_CODECS = "archivey_codecs"
+    """``archivey-codecs``: Rust versions of decoders archivey otherwise runs in
+    Python (so far the CRC-16 of LHA archives and traditional ZIP encryption). They
+    give the same bytes and the same errors, faster. The package is not on PyPI
+    yet; until it is installed, this switch changes nothing."""
 
 
 OptionalLibraryStr = Literal[
@@ -578,6 +583,8 @@ OptionalLibraryStr = Literal[
     "google_crc32c",
     "google-crc32c",
     "crc32c",
+    "archivey_codecs",
+    "archivey-codecs",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 
@@ -905,6 +912,14 @@ class CompressionAlgorithm(Enum):
     (``StreamFormat.BZIP3``). Not the same as ``BZIP2``."""
     SNAPPY = "snappy"
     """Snappy, the method of a ``.sz`` file (``StreamFormat.SNAPPY``)."""
+    LZFSE = "lzfse"
+    """Apple's LZFSE, as macOS disk images (``ULFO``) store their data. A stream may
+    hold LZVN blocks too, so excluding ``LZVN`` excludes LZFSE as well."""
+    LZVN = "lzvn"
+    """Apple's LZVN with no LZFSE framing, as HFS+ and APFS transparent compression
+    stores a file (decmpfs types 7 and 8)."""
+    ADC = "adc"
+    """Apple Data Compression, a small LZ77 that old disk images (``UDCO``) use."""
     UNKNOWN = "unknown"
     """A method archivey does not recognise. Listing still works."""
 
@@ -1187,6 +1202,16 @@ class MemberExtra(dict[str, object]):
     * ``arj.method`` (``int``) — the ARJ method, 0 (stored) to 4.
     * ``arj.file_type`` (``int``) — the ARJ file type: 0 binary, 1 text, 3 directory,
       4 volume label, 5 chapter label, 6 Unix special file.
+    * ``dmg.xattrs`` (``dict[str, bytes | None]``) — DMG. The extended attributes of
+      the HFS+ or APFS file, by name, with each value up to 1 KiB; a longer value, or
+      one APFS stores apart from the record, is ``None``. Absent when the file has
+      none. Extraction does not write them. A transparently compressed file's
+      ``com.apple.decmpfs`` holds its data and is not listed, nor are APFS's
+      ``com.apple.fs.symlink`` (the symlink target) and ``com.apple.ResourceFork``
+      (the resource fork).
+    * ``dmg.resource_fork_size`` (``int``) — DMG. The size of the file's resource
+      fork, when it has one; its bytes are not read. Absent on a compressed file,
+      whose resource fork holds its data.
     """
 
     __slots__ = ()
@@ -1264,6 +1289,10 @@ class MemberExtra(dict[str, object]):
     @overload
     def __getitem__(self, key: Literal["arj.file_type"], /) -> int: ...
     @overload
+    def __getitem__(self, key: Literal["dmg.xattrs"], /) -> dict[str, bytes | None]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.resource_fork_size"], /) -> int: ...
+    @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
     def __getitem__(self, key: str, /) -> object:
@@ -1307,6 +1336,21 @@ class ArchiveInfoExtra(dict[str, object]):
     * ``makeself.encryption`` (``str``)
     * ``makeself.payloads`` (``int``)
     * ``makeself.signed`` (``bool``)
+    * ``dmg.filesystem`` (``str``) — ``"HFS+"``, ``"HFSX"`` or ``"APFS"``, the first
+      volume's.
+    * ``dmg.apfs_volumes`` (``list[str]``) — the names of the APFS volumes archivey
+      lists, in container order; absent when the image holds none.
+    * ``dmg.volume_name`` (``str``) — the volume's name, when the image holds one.
+    * ``dmg.volumes`` (``list[str]``) — every volume's name, in partition order. With
+      more than one, each volume's members are under a top-level directory named
+      after it (``Untitled`` for an empty name, `` 1``, `` 2``, ... after a name
+      already taken, as macOS names its mount points).
+    * ``dmg.partition_scheme`` (``str``) — ``"GPT"``, ``"APM"`` or ``"none"``: where
+      the partitions were found (``"none"``: the image's run tables).
+    * ``dmg.run_codecs`` (``list[str]``) — the codecs of the runs that store bytes,
+      sorted: ``"raw"``, ``"adc"``, ``"zlib"``, ``"bzip2"``, ``"lzfse"``, ``"xz"``.
+    * ``dmg.code_signature`` (``bool``) — the image carries a code signature (not
+      checked).
     """
 
     __slots__ = ()
@@ -1365,6 +1409,20 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["makeself.payloads"], /) -> int: ...
     @overload
     def __getitem__(self, key: Literal["makeself.signed"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.filesystem"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.volume_name"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.volumes"], /) -> list[str]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.apfs_volumes"], /) -> list[str]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.partition_scheme"], /) -> str: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.run_codecs"], /) -> list[str]: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.code_signature"], /) -> bool: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override
@@ -2304,8 +2362,9 @@ class SourceProgress:
 
     A local file or stream reports about once per MiB read
     (``ArchiveyConfig.source_read_step``), or for every read. A URL source
-    (an ``fsspec.core.OpenFile``) reports before and after each range request, and only
-    then are the ``request_*`` fields and :attr:`requests` set.
+    (an ``fsspec.core.OpenFile``) reports before and after each range request, and over
+    HTTP about once per MiB of the answer as it comes in; only then are the
+    ``request_*`` fields and :attr:`requests` set.
     """
 
     name: str | None
@@ -2318,7 +2377,8 @@ class SourceProgress:
 
     bytes_read: int
     """Bytes taken from the file so far. A part read twice counts twice, so this may
-    pass :attr:`size`. For a URL source, the bytes the requests returned."""
+    pass :attr:`size`. For a URL source, the bytes the requests returned, the current
+    request's so far included."""
 
     position: int
     """Where in the file the latest read ended. It moves backward when a format reads

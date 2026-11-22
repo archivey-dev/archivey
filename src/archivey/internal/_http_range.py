@@ -8,6 +8,13 @@ answer holds the bytes asked for. Everything that spans requests stays in
 :mod:`archivey.internal.remote`: the request budget, continuing after a short answer,
 asking again after an ignored range, detecting a changed object, and the I/O counters.
 
+A request runs on fsspec's event loop thread. Without a progress hook it is one
+``sync()`` call; with one (``on_received``) the answer's body is read one ``sync()`` per
+chunk of up to :data:`CHUNK` bytes, so the hook runs between chunks on the thread that
+sent the request. When that is a caller's thread, the hook calls ``on_source_read``
+there; on a thread archivey started (the RAR volume feeder) the reporter keeps the
+latest report for the caller's next read, as for the request's other reports.
+
 fsspec and aiohttp are never imported here at import time. :func:`bounded_http_cat`
 answers ``None`` unless fsspec's HTTP module is already loaded, so a core-only install
 imports this module without them.
@@ -19,7 +26,7 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from archivey.internal.remote import display_url
 
@@ -51,8 +58,61 @@ class HttpAnswer:
     ``Content-Range``, a ``200`` in ``Content-Length``."""
 
 
-RangeRequest = Callable[[str, int, int], HttpAnswer]
-"""One request for bytes ``[start, end)`` of the object at a URL."""
+# The most one read of an answer's body asks for.
+CHUNK = 1 << 20
+
+
+class RangeRequest(Protocol):
+    """One request for bytes ``[start, end)`` of the object at a URL.
+
+    ``on_received``, when given, is called on the caller's thread with the bytes of
+    the body received so far, after each chunk of the body. What it raises ends the
+    request (the answer is closed) and propagates.
+    """
+
+    def __call__(
+        self,
+        url: str,
+        start: int,
+        end: int,
+        *,
+        on_received: Callable[[int], None] | None = None,
+    ) -> HttpAnswer: ...
+
+
+@dataclass(frozen=True)
+class _Body:
+    """An answer whose status and headers were checked and whose body is next."""
+
+    response: Any
+    context: Any
+    kind: Literal["range", "whole"]
+    limit: int
+    """The most bytes of the body to read: the declared length plus one for a
+    ``206`` (one more shows a body longer than declared), the requested end for a
+    whole object."""
+    length: int | None
+    """A ``206``'s declared length, which the body must match."""
+    total: int | None
+
+    @property
+    def complete(self) -> int:
+        """The size of a complete body: a ``206``'s declared length, else ``limit``."""
+        return self.length if self.length is not None else self.limit
+
+    def next_read(self, received: int) -> int:
+        """How many bytes to ask for next, after ``received``: at most one chunk, and
+        never past ``limit``. 0 once ``limit`` is reached."""
+        return min(CHUNK, self.limit - received)
+
+    def answer(self, url: str, start: int, data: bytes) -> HttpAnswer:
+        if self.length is not None and len(data) != self.length:
+            raise OSError(
+                f"{display_url(url)}: the server declared {self.length} bytes "
+                f"from {start} in Content-Range and sent "
+                f"{'more' if len(data) > self.length else len(data)}"
+            )
+        return HttpAnswer(data, self.kind, self.total)
 
 
 def content_range(
@@ -102,7 +162,9 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
         return None
     from fsspec.asyn import sync
 
-    async def cat(url: str, start: int, end: int) -> HttpAnswer:
+    async def begin(url: str, start: int, end: int) -> HttpAnswer | _Body:
+        """Send the request and check its status and headers: an answer that holds
+        no bytes, or the body to read."""
         kw = dict(fs.kwargs)
         headers = dict(kw.pop("headers", None) or {})
         headers["Range"] = f"bytes={start}-{end - 1}"
@@ -110,51 +172,111 @@ def bounded_http_cat(fs: Any) -> RangeRequest | None:
         kw["headers"] = headers
         session = await fs.set_session()
         kw["auto_decompress"] = False
-        async with session.get(fs.encode_url(url), **kw) as r:
-            if r.status == 416:
-                # The range starts past the object's end. Every request lies inside
-                # the size read at open, so the object is shorter now.
-                match = _UNSATISFIED_RANGE.fullmatch(
-                    r.headers.get("Content-Range", "").strip()
-                )
-                return HttpAnswer(
-                    b"", "unsatisfiable", None if match is None else int(match[1])
-                )
-            fs._raise_not_found_for_status(r, url)
-            encoding = r.headers.get("Content-Encoding", "identity").strip().lower()
-            if encoding not in ("", "identity"):
-                raise OSError(
-                    f"{display_url(url)}: the server answered a request for bytes "
-                    f"{start}-{end} in Content-Encoding {encoding!r}, though the "
-                    f"request asked for the bytes as stored"
-                )
-            if r.status == 206:
-                length, total = content_range(
-                    url, r.headers.get("Content-Range"), start, end
-                )
-                data = await read_at_most(r, length + 1)
-                if len(data) != length:
-                    raise OSError(
-                        f"{display_url(url)}: the server declared {length} bytes "
-                        f"from {start} in Content-Range and sent "
-                        f"{'more' if len(data) > length else len(data)}"
-                    )
-                return HttpAnswer(data, "range", total)
-            # The range was ignored: the body is the whole object from byte 0.
-            if start > 0:
-                return HttpAnswer(b"", "ignored")
-            return HttpAnswer(await read_at_most(r, end), "whole", r.content_length)
+        context = session.get(fs.encode_url(url), **kw)
+        r = await context.__aenter__()
+        try:
+            body = _check(r, url, start, end, context)
+        except BaseException:
+            await context.__aexit__(*sys.exc_info())
+            raise
+        if isinstance(body, HttpAnswer):
+            await context.__aexit__(None, None, None)
+        return body
 
-    async def read_at_most(r: Any, limit: int) -> bytes:
+    def _check(
+        r: Any, url: str, start: int, end: int, context: Any
+    ) -> HttpAnswer | _Body:
+        if r.status == 416:
+            # The range starts past the object's end. Every request lies inside
+            # the size read at open, so the object is shorter now.
+            match = _UNSATISFIED_RANGE.fullmatch(
+                r.headers.get("Content-Range", "").strip()
+            )
+            return HttpAnswer(
+                b"", "unsatisfiable", None if match is None else int(match[1])
+            )
+        fs._raise_not_found_for_status(r, url)
+        encoding = r.headers.get("Content-Encoding", "identity").strip().lower()
+        if encoding not in ("", "identity"):
+            raise OSError(
+                f"{display_url(url)}: the server answered a request for bytes "
+                f"{start}-{end} in Content-Encoding {encoding!r}, though the "
+                f"request asked for the bytes as stored"
+            )
+        if r.status == 206:
+            length, total = content_range(
+                url, r.headers.get("Content-Range"), start, end
+            )
+            return _Body(r, context, "range", length + 1, length, total)
+        # The range was ignored: the body is the whole object from byte 0.
+        if start > 0:
+            return HttpAnswer(b"", "ignored")
+        return _Body(r, context, "whole", end, None, r.content_length)
+
+    async def read_chunk(body: _Body, n: int) -> bytes:
+        """Up to ``n`` bytes of the body: fewer only at its end. aiohttp hands over
+        what has arrived (often 64 KiB), so this gathers several of its reads."""
         out = bytearray()
-        while len(out) < limit:
-            chunk = await r.content.read(min(1 << 20, limit - len(out)))
-            if not chunk:
+        while len(out) < n:
+            part = await body.response.content.read(n - len(out))
+            if not part:
                 break
-            out += chunk
+            out += part
         return bytes(out)
 
-    def run(url: str, start: int, end: int) -> HttpAnswer:
-        return cast(HttpAnswer, sync(fs.loop, cat, url, start, end))
+    async def finish(body: _Body, exc: BaseException | None) -> None:
+        if exc is None:
+            await body.context.__aexit__(None, None, None)
+        else:
+            await body.context.__aexit__(type(exc), exc, exc.__traceback__)
+
+    async def cat(url: str, start: int, end: int) -> HttpAnswer:
+        """The whole request in one call on the event loop."""
+        body = await begin(url, start, end)
+        if isinstance(body, HttpAnswer):
+            return body
+        out = bytearray()
+        try:
+            while n := body.next_read(len(out)):
+                chunk = await read_chunk(body, n)
+                if not chunk:
+                    break
+                out += chunk
+        except BaseException as exc:
+            await finish(body, exc)
+            raise
+        await finish(body, None)
+        return body.answer(url, start, bytes(out))
+
+    def run(
+        url: str,
+        start: int,
+        end: int,
+        *,
+        on_received: Callable[[int], None] | None = None,
+    ) -> HttpAnswer:
+        if on_received is None:
+            return cast(HttpAnswer, sync(fs.loop, cat, url, start, end))
+        body = cast("HttpAnswer | _Body", sync(fs.loop, begin, url, start, end))
+        if isinstance(body, HttpAnswer):
+            return body
+        out = bytearray()
+        try:
+            while n := body.next_read(len(out)):
+                chunk = cast(bytes, sync(fs.loop, read_chunk, body, n))
+                if not chunk:
+                    break
+                out += chunk
+                if len(chunk) == n and len(out) < body.complete:
+                    # On the thread that sent the request, between two reads of the
+                    # body. Not once the body is complete, nor after a short chunk,
+                    # which is its end: the request's end report or its error
+                    # follows.
+                    on_received(len(out))
+        except BaseException as exc:
+            sync(fs.loop, finish, body, exc)
+            raise
+        sync(fs.loop, finish, body, None)
+        return body.answer(url, start, bytes(out))
 
     return run

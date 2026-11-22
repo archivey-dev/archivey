@@ -262,6 +262,15 @@ than with a diagnostic on every member.
   against a surviving digest before any are returned (2026-09-22, PR 401).
 - The RAR5 encryption record stays fatal: a member shown as plaintext would be a wrong
   answer (PR 371, `formats/rar.md` §6).
+- Salvage (2026-11-07, davi): "since the goal of salvage is to salvage as much as
+  possible, a file under a wrong name is better than nothing." A member listed from a
+  header that failed its CRC, once the next header confirms its sizes, is listed with
+  `MEMBER_HEADER_DAMAGED` on every read; its data is still checked by its own digest.
+  Nothing wrong is silent, so this rule holds. Exception to the ruling above: a damaged
+  RAR5 header whose encryption flag reads "not encrypted" lists the member as plaintext,
+  and its read then fails its CRC (`formats/rar.md` §1, `salvage-step-1`). TAR follows
+  the same rule (`salvage-step-2-tar`): it has no member digest, so only the member's
+  size is confirmed, by the intact header it points at; the read's diagnostic says so.
 - `created` never holds a change time in any format (DR-5).
 - Streams raise rather than clamp an over-long read (CONTRIBUTING §Coding standards).
 - A ZIP central entry whose name, extra or comment runs past the directory, swallows
@@ -710,7 +719,8 @@ field would be false for most members of an ordinary read.
   2026-09-23, PR 398).
 - RAR stream spool: "let's add a cap, it would be a config field" (2026-09-26, PR 485).
 - PPMd in-process threshold is a config field, not a constant (2026-09-26, PR 481).
-- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612). No longer
+  applies: since PR 1701 the native ISO parser does not read path tables to list.
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
 - A container inside a compression stream (a `.tar.gz`, a handler's `.cpio.xz`) holds
@@ -757,7 +767,8 @@ rule.
   (2026-09-26, PR 493).
 - `detect_format` must not allocate an LZMA dictionary at whatever size a crafted header
   declares (2026-10-07).
-- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612). No longer
+  applies: since PR 1701 the native ISO parser does not read path tables to list.
 - Decoder memory is capped before allocation (PR 398).
 
 **Known limits.** Limits cap bytes, entries and key-derivation rounds, not time; the

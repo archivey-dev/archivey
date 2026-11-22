@@ -3,6 +3,7 @@
 module archivey
 constant archivey.ARCHIVE_INTEGRITY_CODES: frozenset
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_TRAILING_DATA
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNLISTED_DATA
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.ARCHIVE_UNREAD_SESSION
@@ -10,6 +11,7 @@ item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.DIGEST_UNVERIFIABLE
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.EXTENSION_FORMAT_UNCONFIRMED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_DIRECTORY_DATA_IGNORED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_AMBIGUOUS
+item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_DAMAGED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LINK_DATA_IGNORED
 item archivey.ARCHIVE_INTEGRITY_CODES DiagnosticCode.MEMBER_LOCAL_METHOD_DIFFERS
@@ -247,6 +249,9 @@ value archivey.CompressionAlgorithm.RAR = 'rar'
 value archivey.CompressionAlgorithm.LZW = 'lzw'
 value archivey.CompressionAlgorithm.BZIP3 = 'bzip3'
 value archivey.CompressionAlgorithm.SNAPPY = 'snappy'
+value archivey.CompressionAlgorithm.LZFSE = 'lzfse'
+value archivey.CompressionAlgorithm.LZVN = 'lzvn'
+value archivey.CompressionAlgorithm.ADC = 'adc'
 value archivey.CompressionAlgorithm.UNKNOWN = 'unknown'
 class archivey.CompressionMethod()
 init archivey.CompressionMethod(algo: CompressionAlgorithm, level: int | None = None, properties: bytes | None = None) -> None
@@ -351,7 +356,9 @@ value archivey.DiagnosticCode.ARCHIVE_EOF_MARKER_MISSING = 'archive_eof_marker_m
 value archivey.DiagnosticCode.ARCHIVE_TRAILING_DATA = 'archive_trailing_data'
 value archivey.DiagnosticCode.ARCHIVE_UNLISTED_DATA = 'archive_unlisted_data'
 value archivey.DiagnosticCode.ARCHIVE_UNREAD_SESSION = 'archive_unread_session'
+value archivey.DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT = 'archive_structure_inconsistent'
 value archivey.DiagnosticCode.MEMBER_TIMESTAMP_INVALID = 'member_timestamp_invalid'
+value archivey.DiagnosticCode.MEMBER_HEADER_DAMAGED = 'member_header_damaged'
 value archivey.DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED = 'member_header_record_skipped'
 value archivey.DiagnosticCode.SYMLINK_TARGET_UNAVAILABLE = 'symlink_target_unavailable'
 value archivey.DiagnosticCode.DIGEST_UNVERIFIABLE = 'digest_unverifiable'
@@ -376,7 +383,7 @@ value archivey.DiagnosticCode.MEMBER_NAME_DUPLICATE_UNEXPECTED = 'member_name_du
 value archivey.DiagnosticCode.SOURCE_CHANGE_UNDETECTABLE = 'source_change_undetectable'
 value archivey.DiagnosticCode.MEMBER_PATH_REFUSED = 'member_path_refused'
 value archivey.DiagnosticCode.MEMBER_READERS_DISAGREE = 'member_readers_disagree'
-alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
+alias archivey.DiagnosticContext = NameNormalizationContext | NameEncodingContext | MemberNameControlsContext | UnusedArgumentContext | EmptyArchiveContext | UnconfirmedFormatContext | FormatConflictContext | DetectionDecoderLimitContext | ScanRaceContext | ArchiveEofContext | ArchiveStructureContext | UnlistedDataContext | UnreadSessionContext | MemberTimestampContext | MemberHeaderDamageContext | MemberHeaderRecordContext | SymlinkTargetContext | DigestContext | DirectoryDataContext | LinkDataContext | HeaderAmbiguityContext | EncryptedVerificationContext | SeekIndexContext | StreamRewindContext | SolidReopenContext | SelectorUnmatchedContext | SpecialFileDataContext | LocalHeaderContext | OffsetWrapContext | SizeWrapContext | UnknownMemberTypeContext | SourceChangeContext | PathRefusedContext | NameDuplicateContext | UnexpectedNameDuplicateContext | ReaderDisagreementContext
 class archivey.DiagnosticPolicy()
 init archivey.DiagnosticPolicy(*, ignore: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None, raise_on: Iterable[DiagnosticCode | DiagnosticCodeStr] | None = None) -> None
 field archivey.DiagnosticPolicy.ignore: frozenset[DiagnosticCode]
@@ -590,6 +597,7 @@ value archivey.OptionalLibrary.BZIP3 = 'bz3'
 value archivey.OptionalLibrary.CRAMJAM = 'cramjam'
 value archivey.OptionalLibrary.GOOGLE_CRC32C = 'google_crc32c'
 value archivey.OptionalLibrary.CRC32C = 'crc32c'
+value archivey.OptionalLibrary.ARCHIVEY_CODECS = 'archivey_codecs'
 class archivey.OverwritePolicy(Enum)
 enum archivey.OverwritePolicy
 value archivey.OverwritePolicy.ERROR = 'error'
@@ -749,6 +757,14 @@ field archivey.diagnostics.ArchiveEofContext.kind: Literal['archive_eof'] = 'arc
 field archivey.diagnostics.ArchiveEofContext.observed_bytes: int = 0
 field archivey.diagnostics.ArchiveEofContext.observed_kind: Literal['absent', 'short', 'nonzero'] = 'absent'
 method archivey.diagnostics.ArchiveEofContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.ArchiveStructureContext(_JsonSafeContext)
+init archivey.diagnostics.ArchiveStructureContext(kind: Literal['archive_structure'] = 'archive_structure', archive_name: str | None = None, format: str = '', structure: str = '', offset: int = 0) -> None
+field archivey.diagnostics.ArchiveStructureContext.archive_name: str | None = None
+field archivey.diagnostics.ArchiveStructureContext.format: str = ''
+field archivey.diagnostics.ArchiveStructureContext.kind: Literal['archive_structure'] = 'archive_structure'
+field archivey.diagnostics.ArchiveStructureContext.offset: int = 0
+field archivey.diagnostics.ArchiveStructureContext.structure: str = ''
+method archivey.diagnostics.ArchiveStructureContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.DetectionDecoderLimitContext(_JsonSafeContext)
 init archivey.diagnostics.DetectionDecoderLimitContext(kind: Literal['detection_decoder_limit'] = 'detection_decoder_limit', archive_name: str | None = None, tier: Literal['inner_tar', 'content_probe', 'probe_completion'] = 'inner_tar', stream_format: str = '', max_decoder_memory: int = 0, needed: int | None = None) -> None
 field archivey.diagnostics.DetectionDecoderLimitContext.archive_name: str | None = None
@@ -796,8 +812,12 @@ code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unlisted_data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unlisted-data'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_unread_session'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-unread-session'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive_structure_inconsistent'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'archive-structure-inconsistent'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_timestamp_invalid'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-timestamp-invalid'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_damaged'
+code-literal archivey.diagnostics.DiagnosticCodeStr 'member-header-damaged'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member_header_record_skipped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'member-header-record-skipped'
 code-literal archivey.diagnostics.DiagnosticCodeStr 'symlink_target_unavailable'
@@ -925,6 +945,16 @@ field archivey.diagnostics.LocalHeaderContext.local_raw_name_base64: str | None 
 field archivey.diagnostics.LocalHeaderContext.member_id: int | None = None
 field archivey.diagnostics.LocalHeaderContext.member_name: str = ''
 method archivey.diagnostics.LocalHeaderContext.to_dict(self) -> dict[str, object]
+class archivey.diagnostics.MemberHeaderDamageContext(_JsonSafeContext)
+init archivey.diagnostics.MemberHeaderDamageContext(kind: Literal['member_header_damage'] = 'member_header_damage', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', volume_index: int | None = None, header_offset: int = 0) -> None
+field archivey.diagnostics.MemberHeaderDamageContext.archive_name: str | None = None
+field archivey.diagnostics.MemberHeaderDamageContext.format: str = ''
+field archivey.diagnostics.MemberHeaderDamageContext.header_offset: int = 0
+field archivey.diagnostics.MemberHeaderDamageContext.kind: Literal['member_header_damage'] = 'member_header_damage'
+field archivey.diagnostics.MemberHeaderDamageContext.member_id: int | None = None
+field archivey.diagnostics.MemberHeaderDamageContext.member_name: str = ''
+field archivey.diagnostics.MemberHeaderDamageContext.volume_index: int | None = None
+method archivey.diagnostics.MemberHeaderDamageContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.MemberHeaderRecordContext(_JsonSafeContext)
 init archivey.diagnostics.MemberHeaderRecordContext(kind: Literal['member_header_record'] = 'member_header_record', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, record: str = '', record_id: int | None = None, reason: str = '', list_truncated: bool = False) -> None
 field archivey.diagnostics.MemberHeaderRecordContext.archive_name: str | None = None
@@ -1183,6 +1213,7 @@ attribute archivey.formats.FormatHandler.install_hint = None
 attribute archivey.formats.FormatHandler.magic = ()
 attribute archivey.formats.FormatHandler.probe = None
 attribute archivey.formats.FormatHandler.requires = ()
+attribute archivey.formats.FormatHandler.supports_password = False
 method archivey.formats.FormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
 attribute archivey.formats.FormatHandler.uses_encoding = False
 class archivey.formats.FormatReader(ABC)
@@ -1207,17 +1238,18 @@ attribute archivey.formats.IndexedFormatHandler.extensions = ()
 attribute archivey.formats.IndexedFormatHandler.install_hint = None
 attribute archivey.formats.IndexedFormatHandler.magic = ()
 attribute archivey.formats.IndexedFormatHandler.non_seekable_reason = None
-method archivey.formats.IndexedFormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any]
+method archivey.formats.IndexedFormatHandler.open(self, source: ReaderSource, context: ReaderContext) -> IndexedReader[Any] | NeedsPassword[Any, IndexedReader[Any]]
 attribute archivey.formats.IndexedFormatHandler.probe = None
 attribute archivey.formats.IndexedFormatHandler.requires = ()
+attribute archivey.formats.IndexedFormatHandler.supports_password = False
 method archivey.formats.IndexedFormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
 attribute archivey.formats.IndexedFormatHandler.uses_encoding = False
 class archivey.formats.IndexedReader(FormatReader, Generic[LocatorT])
 method archivey.formats.IndexedReader.archive_info(self) -> ReaderArchiveInfo
 method archivey.formats.IndexedReader.close(self) -> None
-method archivey.formats.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]]
+method archivey.formats.IndexedReader.iter_members(self) -> Iterator[MemberRecord[LocatorT]] | Generator[MemberRecord[LocatorT] | NeedsPassword[Any, Any], Any, None]
 attribute archivey.formats.IndexedReader.member_list_upfront = True
-method archivey.formats.IndexedReader.open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData
+method archivey.formats.IndexedReader.open_member(self, member: ArchiveMember, locator: LocatorT) -> MemberData | NeedsPassword[Any, MemberData]
 method archivey.formats.IndexedReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
 class archivey.formats.Magic(tuple)
 field archivey.formats.Magic.data: bytes
@@ -1228,6 +1260,7 @@ field archivey.formats.MemberData.checked: bool
 field archivey.formats.MemberData.digests: tuple[MemberDigest, ...]
 field archivey.formats.MemberData.ranges: tuple[tuple[int, int], ...]
 field archivey.formats.MemberData.stream: BinaryIO | io.RawIOBase
+field archivey.formats.MemberData.unlocked: PasswordConfirmVerdict | None
 class archivey.formats.MemberDigest(tuple)
 field archivey.formats.MemberDigest.expected: bytes
 field archivey.formats.MemberDigest.name: str
@@ -1235,21 +1268,37 @@ field archivey.formats.MemberDigest.new: Callable[[], Hasher] | None
 class archivey.formats.MemberRecord(tuple, Generic[LocatorT])
 field archivey.formats.MemberRecord.locator: LocatorT
 field archivey.formats.MemberRecord.member: ArchiveMember
+field archivey.formats.MemberRecord.unlocked: PasswordConfirmVerdict | None
 class archivey.formats.MemberSpan(tuple)
 field archivey.formats.MemberSpan.checked: bool
 field archivey.formats.MemberSpan.data: BinaryIO | io.RawIOBase | None
 field archivey.formats.MemberSpan.data_length: int
 field archivey.formats.MemberSpan.digests: tuple[MemberDigest, ...]
 field archivey.formats.MemberSpan.member: ArchiveMember
+field archivey.formats.MemberSpan.unlocked: PasswordConfirmVerdict | None
+class archivey.formats.NeedsPassword(Generic[UnlockedT, ResultT])
+init archivey.formats.NeedsPassword(what: str, check: Callable[[bytes], tuple[UnlockedT | None, PasswordConfirmVerdict]], full_check: Callable[[bytes], tuple[UnlockedT | None, PasswordConfirmVerdict]] | None = None, member: ArchiveMember | None = None, then: Callable[[UnlockedT, PasswordConfirmVerdict], ResultT] | None = None) -> None
+field archivey.formats.NeedsPassword.check: Callable[[bytes], tuple[UnlockedT | None, PasswordConfirmVerdict]]
+field archivey.formats.NeedsPassword.full_check: Callable[[bytes], tuple[UnlockedT | None, PasswordConfirmVerdict]] | None = None
+field archivey.formats.NeedsPassword.member: ArchiveMember | None = None
+field archivey.formats.NeedsPassword.then: Callable[[UnlockedT, PasswordConfirmVerdict], ResultT] | None = None
+field archivey.formats.NeedsPassword.what: str
+class archivey.formats.PasswordConfirmVerdict(Enum)
+enum archivey.formats.PasswordConfirmVerdict
+value archivey.formats.PasswordConfirmVerdict.REJECTED = 'rejected'
+value archivey.formats.PasswordConfirmVerdict.CONFIRMED = 'confirmed'
+value archivey.formats.PasswordConfirmVerdict.INCONCLUSIVE = 'inconclusive'
 reexport archivey.formats.PluginContainer = archivey.PluginContainer
 reexport archivey.formats.PluginStream = archivey.PluginStream
 class archivey.formats.ReaderArchiveInfo(tuple)
 field archivey.formats.ReaderArchiveInfo.comment: str | None
 field archivey.formats.ReaderArchiveInfo.extra: Mapping[str, object]
 field archivey.formats.ReaderArchiveInfo.format_version: str | None
+field archivey.formats.ReaderArchiveInfo.is_encrypted: bool
 field archivey.formats.ReaderArchiveInfo.is_solid: bool
 class archivey.formats.ReaderContext()
 property archivey.formats.ReaderContext.archive_name: str | None
+method archivey.formats.ReaderContext.charge_key_derivation(self, rounds: int) -> None
 method archivey.formats.ReaderContext.charge_metadata(self, nbytes: int, *, what: str) -> None
 property archivey.formats.ReaderContext.config: ArchiveyConfig
 method archivey.formats.ReaderContext.decode_name(self, raw: bytes) -> str
@@ -1276,6 +1325,7 @@ attribute archivey.formats.SequentialFormatHandler.magic = ()
 method archivey.formats.SequentialFormatHandler.open_sequential(self, context: ReaderContext) -> SequentialReader
 attribute archivey.formats.SequentialFormatHandler.probe = None
 attribute archivey.formats.SequentialFormatHandler.requires = ()
+attribute archivey.formats.SequentialFormatHandler.supports_password = False
 method archivey.formats.SequentialFormatHandler.translate_exception(self, exc: Exception) -> ArchiveyError | None
 attribute archivey.formats.SequentialFormatHandler.uses_encoding = False
 class archivey.formats.SequentialReader(FormatReader)
@@ -1284,7 +1334,7 @@ method archivey.formats.SequentialReader.close(self) -> None
 attribute archivey.formats.SequentialReader.data_on_demand = False
 attribute archivey.formats.SequentialReader.link_target_in_data = False
 method archivey.formats.SequentialReader.translate_exception(self, exc: Exception) -> ArchiveyError | None
-method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan]
+method archivey.formats.SequentialReader.walk(self, stream: ForwardStream) -> Iterator[MemberSpan] | Generator[MemberSpan | NeedsPassword[Any, Any], Any, None]
 function archivey.formats.block_stream(size: int, block_size: int, read_block: Callable[[int], bytes | BinaryIO]) -> BinaryIO
 function archivey.formats.buffered_stream(stream: BinaryIO | io.RawIOBase) -> BinaryIO
 function archivey.formats.register_codec(handler: type[CodecHandler]) -> None

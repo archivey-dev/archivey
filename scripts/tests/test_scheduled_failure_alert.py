@@ -69,6 +69,44 @@ def test_failed_jobs_keeps_failures_and_timeouts_only() -> None:
     assert alert.failed_jobs(jobs) == ["a", "b"]
 
 
+def test_a_run_with_no_failure_names_the_job_that_did_not_pass() -> None:
+    lost = {"name": "macos", "conclusion": "cancelled", "steps": []}
+    started = {"name": "ubuntu", "conclusion": "cancelled", "steps": [{"name": "x"}]}
+    broken = {"name": "win", "conclusion": "startup_failure", "steps": []}
+    passed = {"name": "docs", "conclusion": "success", "steps": [{"name": "x"}]}
+    assert alert.failed_jobs([lost, started, broken, passed]) == ["ubuntu", "win"]
+    assert alert.failed_jobs([lost, passed]) == []
+
+
+def test_a_job_no_runner_took_is_listed_as_lost() -> None:
+    # Issue 1654: macOS runners were short, GitHub cancelled the job before any step,
+    # and the other jobs passed.
+    lost = {"name": "macos", "conclusion": "cancelled", "steps": []}
+    passed = {"name": "ubuntu", "conclusion": "success", "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([lost, passed]) == ["macos"]
+    # A real failure next to a lost job reports as usual.
+    failed = {"name": "win", "conclusion": "failure", "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([lost, failed]) == []
+    # A job cancelled after it started (or a run with no jobs) is not this case.
+    started = {**lost, "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([started, passed]) == []
+    assert alert.lost_jobs([]) == []
+
+
+@pytest.mark.parametrize("other", ["cancelled", "startup_failure", "action_required"])
+def test_a_lost_job_does_not_hide_another_bad_job(other: str) -> None:
+    # A job that started and was then cancelled (a runner shutdown, or a
+    # timeout-minutes hit reported as cancelled) is a real problem next to a lost one.
+    lost = {"name": "macos", "conclusion": "cancelled", "steps": []}
+    bad = {"name": "ubuntu", "conclusion": other, "steps": [{"name": "x"}]}
+    passed = {"name": "win", "conclusion": "success", "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([lost, bad, passed]) == []
+    # Skipped and neutral jobs leave a lost job as the only problem.
+    skipped = {"name": "docs", "conclusion": "skipped", "steps": []}
+    neutral = {"name": "lint", "conclusion": "neutral", "steps": [{"name": "x"}]}
+    assert alert.lost_jobs([lost, skipped, neutral, passed]) == ["macos"]
+
+
 def test_a_new_issue_lists_the_jobs_and_keeps_the_marker() -> None:
     action = report()
     assert action.kind == "create"
@@ -153,8 +191,21 @@ if args[:2] == ["issue", "list"]:
     print(json.dumps([{"number": 7, "title": "Scheduled run failing: CI"}]))
 elif args[:2] == ["issue", "view"]:
     print(os.environ["GH_ISSUE"])
+elif args[:2] == ["run", "list"]:
+    print(json.dumps([
+        {"databaseId": 6, "event": "push", "status": "in_progress"},
+        {"databaseId": 5, "event": "push", "status": "completed"},
+        {"databaseId": 4, "event": "workflow_dispatch", "status": "completed"},
+        {"databaseId": 2, "event": "push", "status": "completed",
+         "conclusion": "cancelled"},
+        {"databaseId": 3, "event": "schedule", "status": "completed"},
+    ]))
 elif args[:2] == ["run", "view"]:
-    print(json.dumps({"jobs": [{"name": "pypy3.11", "conclusion": "failure"}]}))
+    if args[2] != "5" and os.environ.get("GH_PREVIOUS_FAILS"):
+        sys.exit(1)
+    key = "GH_JOBS" if args[2] == "5" else "GH_PREVIOUS_JOBS"
+    print(os.environ.get(key) or json.dumps(
+        {"jobs": [{"name": "pypy3.11", "conclusion": "failure"}]}))
 """
 
 
@@ -163,6 +214,8 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     stub.write_text(STUB, encoding="utf-8")
     stub.chmod(0o755)
     log = tmp_path / "log"
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"workflow_run": {"run_attempt": 1}}), encoding="utf-8")
     env = {
         **os.environ,
         "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
@@ -174,12 +227,50 @@ def test_main_drives_gh(tmp_path: Path) -> None:
         "SHA": "0123456789abcdef",
         "RUN_URL": "https://run",
         "RUN_ID": "5",
+        "GITHUB_EVENT_PATH": str(event),
         "ASSIGNEE": "davitf",
     }
     subprocess.run([sys.executable, str(SCRIPT)], env=env, check=True)
     calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert ["run", "view", "5", "--attempt", "1", "--json", "jobs"] in calls
     assert calls[-1][:3] == ["issue", "comment", "7"]
     assert "- **new:** `pypy3.11`" in calls[-1][-1]
+    assert "https://run/attempts/1" in calls[-1][-1]
+
+    def run(jobs: dict, previous: dict) -> list[list[str]]:
+        env["GH_JOBS"], env["GH_PREVIOUS_JOBS"] = json.dumps(jobs), json.dumps(previous)
+        log.unlink()
+        subprocess.run([sys.executable, str(SCRIPT)], env=env, check=True)
+        return [
+            json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+        ]
+
+    lost = {"jobs": [{"name": "macos", "conclusion": "cancelled", "steps": []}]}
+    green = {"jobs": [{"name": "macos", "conclusion": "success", "steps": [{"n": 1}]}]}
+    # A first lost job changes nothing; run 3 (the previous scheduled run) was green.
+    calls = run(lost, green)
+    assert calls[-1] == ["run", "view", "3", "--json", "jobs"]
+    # A second one in a row reports, naming the lost job.
+    calls = run(lost, lost)
+    assert calls[-1][:3] == ["issue", "comment", "7"]
+    body = calls[-1][-1]
+    assert "Jobs no runner took in this run" in body
+    assert "or its jobs could not be read" in body
+    assert "- `macos`" in body
+    # Lost jobs stay out of the failed list and its marker.
+    assert "Failed jobs" not in body
+    # A previous run that lost a job next to another bad job also counts.
+    started = {"name": "ubuntu", "conclusion": "cancelled", "steps": [{"n": 1}]}
+    calls = run(lost, {"jobs": [*lost["jobs"], started]})
+    assert calls[-1][:3] == ["issue", "comment", "7"]
+    # A lost job next to a started-then-cancelled one reports, naming the latter.
+    calls = run({"jobs": [*lost["jobs"], started]}, green)
+    assert calls[-1][:3] == ["issue", "comment", "7"]
+    assert "- **new:** `ubuntu`" in calls[-1][-1]
+    # A previous run whose jobs cannot be read counts as lost: report.
+    env["GH_PREVIOUS_FAILS"] = "1"
+    calls = run(lost, green)
+    assert calls[-1][:3] == ["issue", "comment", "7"]
 
 
 @pytest.mark.parametrize("odd", ["name\twith\ttab", "line\nbreak", "ends --> here"])

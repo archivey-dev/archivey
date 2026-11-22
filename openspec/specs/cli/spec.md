@@ -428,9 +428,12 @@ a writer that never comes; on those `info` prints the open error alone.
 ### Requirement: version reports package identity and optional format matrix
 
 `--version` SHALL print `archivey <version>` and exit. With `-v` / `--verbose`,
-it SHALL also print a `formats:` matrix from the registry availability API
-(`list_known_formats` / `format_availability`), including missing-component
-install hints when support is not full.
+it SHALL also print, from the registry availability API (`list_known_formats` /
+`format_availability`), the archive formats and the compression formats by support
+level, and the install commands for missing or faster optional packages, grouped by
+command, with each package's PyPI name. An optional package that is installed but
+fails to import SHALL be reported as absent, with the import error in place of the
+install advice.
 
 #### Scenario: version
 
@@ -439,6 +442,7 @@ install hints when support is not full.
 | `archivey --version` | One line: `archivey <version>`; exit `0` |
 | `archivey --version -v` / `archivey -v --version` | Version line, then archive formats and compression formats by support level, a sentence naming the containers read inside any readable compression, and the install commands grouped by what they add, complete or speed up |
 | A `container.compression` pair whose support differs from the weaker of its parts | Printed on its own under "combinations that differ from their parts"; matching pairs are not listed |
+| An optional package that is installed but fails to import | Reported as absent: its formats show the lower support level or as slower, and its entry gives the import error and says to reinstall it |
 | Run through `uvx archivey-cli`, `uv tool install`, or `pipx` | A `pip install …` hint is printed as `uvx --with …`, `uv tool install --with …`, or `pipx inject archivey-cli …`; other advice unchanged |
 | Run through `uvx archivey`, `uv tool install archivey`, or `pipx install archivey` (the library alone) | Hints name that tool's `archivey` environment, and one line says the matching `archivey-cli` command installs the same command with the recommended optional packages |
 
@@ -892,3 +896,37 @@ SHALL retain the verb's existing failure-reporting rules.
 | HTTP 403 at setup or during a member read | Exit `1`, no traceback, sanitized URL in the error |
 | Handled transport exception or `SourceChangedError` during a member read | Exit `1`, existing partial-output behavior, no traceback |
 | Unlisted backend exception or programming error | Propagates unchanged |
+
+### Requirement: The CLI shows the reads of the archive's file
+
+Every verb that opens an archive (`list`, `info`, `test`, `extract` and `cat`) SHALL set
+`ArchiveyConfig.on_source_read` when it would show a progress bar: `tqdm` is installed,
+`--hide-progress` is not given, and stderr (or the process's own stderr) is a terminal.
+It SHALL show one line on stderr, and only the reads of the file the user named
+(`nest_level` 0).
+
+Before the first member's data is read, and in `list`, `info` and `cat`, the line SHALL
+be a status line: where in the file the latest read ended, against the file's size,
+shown only once the reads have gone on for 0.5 seconds and cleared, not left, when
+they end. It SHALL be cleared before the CLI prints a line to stderr, and `cat` SHALL
+clear it for good before it writes the first byte to stdout. In `test` and `extract`
+the member bar SHALL replace it at the first member's data. That bar SHALL count output
+bytes against the selected members' total when the total is known, and otherwise the
+position in the file against the file's size, so a `.tar.xz` shows a percentage. For a
+URL the line SHALL also show the range requests so far and the bytes they fetched.
+
+#### Scenario: a large .tar.xz is tested
+
+- **WHEN** `archivey test big.tar.xz` runs on a terminal with `tqdm` installed
+- **THEN** the bar shows how far the file has been read as a percentage of its size
+
+#### Scenario: a URL is listed
+
+- **WHEN** `archivey list https://host/big.zip` takes longer than half a second
+- **THEN** a status line shows the position, the request count and the bytes fetched,
+  and it is gone before the first member line is printed
+
+#### Scenario: progress is hidden
+
+- **WHEN** `--hide-progress` is given, or stderr is not a terminal
+- **THEN** no line is shown and `on_source_read` is not set

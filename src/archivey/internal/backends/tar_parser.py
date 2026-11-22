@@ -387,6 +387,22 @@ def _field_named(block: bytes) -> str:
 _DEVICE_NUMBER_TYPES = (b"3", b"4")
 
 
+# The two reasons a block fails its checksum, which a walk may follow past
+# (``TarWalker._follow_damaged``): every other rejection names a field that does not
+# parse, which no size can be read past.
+CHECKSUM_NOT_A_NUMBER = "the checksum field is not a number"
+BAD_CHECKSUM = "bad header checksum"
+_CHECKSUM_FAULTS = (BAD_CHECKSUM, CHECKSUM_NOT_A_NUMBER)
+
+
+def with_fixed_checksum(block: bytes) -> bytes:
+    """``block`` with its checksum field set to the byte sum it holds, so that a header
+    whose checksum failed parses from its other fields (a damaged header the walk
+    follows). The hot path never pays for it."""
+    total = sum(block[:148]) + 8 * 0x20 + sum(block[156:])
+    return block[:148] + b"%06o\x00 " % total + block[156:]
+
+
 def parse_header_block(
     block: bytes, offset: int
 ) -> HeaderBlock | ZeroBlock | RejectedBlock:
@@ -401,10 +417,10 @@ def parse_header_block(
     try:
         stored_sum = parse_number(block[148:156])
     except _BadNumber:
-        return RejectedBlock(offset, "the checksum field is not a number")
+        return RejectedBlock(offset, CHECKSUM_NOT_A_NUMBER)
     checksum = _checksum_matches(block, stored_sum)
     if checksum is None:
-        return RejectedBlock(offset, "bad header checksum")
+        return RejectedBlock(offset, BAD_CHECKSUM)
     try:
         mode, uid, gid, size, mtime = map(_cached_number, _split_numbers(block))
     except _BadNumber:
@@ -1167,6 +1183,9 @@ class TarEntry:
     # Header shapes no known writer produces in this member's chain, each once, with
     # the PAX key or name field involved (b"path" for an L header, b"linkpath" for K).
     ambiguities: tuple[tuple[Ambiguity, bytes], ...] = ()
+    # Where the first header of the chain that failed its checksum starts, when the
+    # walk followed it (``TarWalker._follow_damaged``); ``None`` for a clean chain.
+    damaged_header: int | None = None
 
     @property
     def typeflag(self) -> bytes:
@@ -1182,6 +1201,7 @@ class TarEntry:
             self.stored_size,
             self.size,
             self.sparse,
+            self.damaged_header,
         )
 
     @property
@@ -1202,6 +1222,7 @@ class TarSpan:
     stored_size: int
     size: int
     sparse: SparseMap | None
+    damaged_header: int | None = None
 
 
 def _field_tails(block: bytes, entry: TarEntry) -> list[tuple[Ambiguity, bytes]]:
@@ -1342,10 +1363,13 @@ class _Chain:
 
     __slots__ = (
         "ambiguities",
+        "damage",
         "extended_at",
         "long_link",
         "long_name",
+        "note",
         "own",
+        "pending",
         "sparse_numbytes",
         "sparse_offsets",
         "start",
@@ -1370,6 +1394,17 @@ class _Chain:
         # The header shapes found so far (TarEntry.ambiguities), in order, repeats
         # included.
         self.ambiguities: list[tuple[Ambiguity, bytes]] = []
+        # The first header in the chain that failed its checksum and that the walk
+        # followed: its offset, why it failed, ``extended_at`` as it stood before it,
+        # which is what a stop there reports (TarWalker._stop_at_damage), and whether
+        # it is an extended header rather than the member header.
+        self.damage: tuple[int, str, int | None, bool] | None = None
+        # Whether the last header read failed its checksum and still waits for the
+        # block its size points at to confirm it.
+        self.pending = False
+        # Added to the stop's reason: why a forward-only walk (a pipe, or a file
+        # opened with streaming=True) could not check the header after.
+        self.note = ""
 
 
 class TarWalker:
@@ -1385,10 +1420,21 @@ class TarWalker:
     """
 
     def __init__(
-        self, stream: BinaryIO, *, seekable: bool, end: int | None = None
+        self,
+        stream: BinaryIO,
+        *,
+        seekable: bool,
+        end: int | None = None,
+        source_seekable: bool = False,
     ) -> None:
         self._stream = stream
         self._seekable = seekable
+        # Why a forward-only walk could not check the header after a damaged member:
+        # a source that can seek is read past the damage without streaming=True, any
+        # other once it is saved to a file.
+        self._hold_note = (
+            _STREAMING_HOLD_NOTE if source_seekable else _FORWARD_HOLD_NOTE
+        )
         # Byte length of the archive when it is a fact (a plain file). A read is then
         # clamped to what the file holds, so one member is one read. Unknown (a
         # compressed stream, a test buffer) keeps the stepped read.
@@ -1419,6 +1465,13 @@ class TarWalker:
         # The first error next_entry raised: the walk is over, and later calls
         # raise it again.
         self._failed: ArchiveyError | None = None
+        # How many headers in a row, up to the last one read, failed their checksum
+        # and were followed (capped at _MAX_DAMAGED_HEADER_RUN).
+        self._damage_run = 0
+        # Each damaged header the walk followed and listed a member from, as
+        # (offset, why its checksum failed, whether it is an extended header), in
+        # walk order. The reader ends the pass in CorruptionError when there is one.
+        self.followed: list[tuple[int, str, bool]] = []
 
     # The stream ---------------------------------------------------------------
 
@@ -1573,6 +1626,26 @@ class TarWalker:
             raise
 
     def _next_entry(self, budget: Budget) -> TarEntry | TarEnd:
+        """Read one member's chain of headers (:meth:`_read_chain`).
+
+        A chain that holds a header the walk followed past a failed checksum
+        (:meth:`_follow_damaged`) and then does not end in a confirmed member stops
+        the walk where today's walk stops, at that header, whatever else went wrong
+        after it: the sizes it pointed at were not confirmed, so nothing they framed
+        is trusted, an error included.
+        """
+        chain = _Chain(self._pos)
+        try:
+            result = self._read_chain(budget, chain)
+        except ArchiveyError:
+            if chain.damage is None:
+                raise
+            return self._stop_at_damage(chain)
+        if chain.damage is not None and isinstance(result, TarEnd):
+            return self._stop_at_damage(chain)
+        return result
+
+    def _read_chain(self, budget: Budget, chain: _Chain) -> TarEntry | TarEnd:
         """Read one member's chain of headers and build its entry.
 
         1. Read the block at the current offset, starting where the last member's
@@ -1590,7 +1663,6 @@ class TarWalker:
         """
         charge = _Charger(budget)
         offset = self._pos
-        chain = _Chain(offset)
         # Two facts the last call left for this one's first block.
         unchecked = self._unchecked_data_end
         self._unchecked_data_end = None
@@ -1606,6 +1678,26 @@ class TarWalker:
                     self._check_data_present(offset)
                 return self._end_at_short_block(block, offset, chain, zero_span)
             parsed = parse_header_block(block, offset)
+            if (
+                isinstance(parsed, RejectedBlock)
+                and parsed.reason in _CHECKSUM_FAULTS
+                # Right after a link's zero span, any non-header makes the span the
+                # trailer (_end_at_zero_span); following an unchecked size there would
+                # pick between that reading and a member on bytes nothing vouches for.
+                and (zero_span is None or offset != zero_span[1])
+            ):
+                followed = self._follow_damaged(block, parsed, chain)
+                if isinstance(followed, TarEnd):
+                    return followed
+                parsed, block = followed
+            elif chain.pending:
+                # The block a damaged extended header's size points at.
+                if not _confirms(parsed):
+                    return self._stop_at_damage(chain)
+                chain.pending = False
+                self._damage_run = 0
+            elif self._damage_run:
+                self._damage_run = 0
             if isinstance(parsed, ZeroBlock | RejectedBlock):
                 return self._end_at_non_header(parsed, block, offset, chain, zero_span)
             if parsed.signed_checksum:
@@ -1629,7 +1721,172 @@ class TarWalker:
                 return self._reject(offset, exc.reason)
             self._record_member_ambiguities(entry, chain, block)
             self._place_next_header(entry, parsed)
+            if chain.damage is not None:
+                return self._confirm_damaged_entry(entry, chain)
             return entry
+
+    # Damaged headers ------------------------------------------------------------
+
+    def _follow_damaged(
+        self, block: bytes, rejected: RejectedBlock, chain: _Chain
+    ) -> tuple[HeaderBlock, bytes] | TarEnd:
+        """Read a header that failed its checksum from its other fields, as ``unrar``
+        reads a RAR header that failed its CRC (the maintainer ruled TAR the same,
+        2026-11-07).
+
+        The walk goes on from where its size points, and keeps what it read only when
+        the block there confirms it (:func:`_confirms`, :meth:`_confirms_at`). Up to
+        :data:`_MAX_DAMAGED_HEADER_RUN` damaged headers in a row are followed. A
+        header whose other fields do not parse, or that has no ``ustar`` magic,
+        stops the walk at once: a block of member data where a header was expected
+        (after a directory that declares a size, say) fails its checksum too, and its
+        empty fields parse, but it holds no magic. GNU tar
+        scans block by block for the next header instead; that search is salvage
+        mode's, not the default's (a deliberate DR-6 departure, ruled with this
+        step).
+
+        Returns the header and the block with its checksum set, or the walk's end.
+        """
+        fixed = with_fixed_checksum(block)
+        parsed = parse_header_block(fixed, rejected.offset)
+        if chain.damage is None:
+            extended = (
+                isinstance(parsed, HeaderBlock) and parsed.typeflag in EXTENDED_TYPES
+            )
+            chain.damage = (
+                rejected.offset,
+                rejected.reason,
+                chain.extended_at,
+                extended,
+            )
+        if (
+            not isinstance(parsed, HeaderBlock)
+            or not _confirms(parsed)
+            or self._damage_run >= _MAX_DAMAGED_HEADER_RUN
+        ):
+            return self._stop_at_damage(chain)
+        self._damage_run += 1
+        chain.pending = True
+        return parsed, fixed
+
+    def _confirm_damaged_entry(
+        self, entry: TarEntry, chain: _Chain
+    ) -> TarEntry | TarEnd:
+        """Return ``entry``, flagged, once the chain's damage is confirmed; else stop
+        at the damage. A chain whose member header is the damaged one is confirmed by
+        the block its size points at (:meth:`_confirms_at`); one whose damaged header
+        was an extended header was confirmed by the block after it already."""
+        assert chain.damage is not None
+        if self._zero_span is not None:
+            # A link's zero span read past: two readings, so no confirmation.
+            return self._stop_at_damage(chain)
+        if chain.pending:
+            confirmed = self._confirms_at(self._pos)
+            if confirmed is not True:
+                chain.note = confirmed
+                return self._stop_at_damage(chain)
+        offset, reason, _, extended = chain.damage
+        entry.damaged_header = offset
+        self.followed.append((offset, reason, extended))
+        return entry
+
+    def _confirms_at(self, pos: int) -> Literal[True] | str:
+        """Whether the block at ``pos``, where a damaged member header's size points,
+        confirms it: ``True``, or the note for the stop (empty, or why a pipe could
+        not look).
+
+        A member header that passes its checksum and has the ``ustar`` magic confirms
+        it (a block of random bytes passes the checksum about once in 2**17; the magic
+        adds 48 bits). So does the end-of-archive marker when only zeros follow it to
+        the end of the archive (:meth:`_clean_end_at`). A header there that failed its
+        checksum too is followed by its own size, while the run stays under the cap:
+        the chain is confirmed by the block after it, as a RAR chain is.
+        """
+        run = self._damage_run
+        while True:
+            look = self._look_ahead(pos, BLOCKSIZE)
+            if isinstance(look, _HoldExceeded):
+                return self._hold_note
+            if len(look) < BLOCKSIZE:
+                return ""
+            parsed = parse_header_block(look, pos)
+            if isinstance(parsed, ZeroBlock):
+                return self._clean_end_at(pos)
+            if _confirms(parsed):
+                return True
+            if (
+                not isinstance(parsed, RejectedBlock)
+                or parsed.reason not in _CHECKSUM_FAULTS
+                or run >= _MAX_DAMAGED_HEADER_RUN
+            ):
+                return ""
+            header = parse_header_block(with_fixed_checksum(look), pos)
+            after = _bare_next_header(header, pos)
+            if after is None:
+                return ""
+            pos = after
+            run += 1
+
+    def _clean_end_at(self, pos: int) -> Literal[True] | str:
+        """Whether the archive from ``pos`` on is an end-of-archive marker and only
+        zeros to its end, read no further than :data:`_CLEAN_END_SCAN` bytes: a size
+        that lands there lands where the archive's own trailer starts."""
+        look = self._look_ahead(pos, _CLEAN_END_SCAN + 1)
+        if isinstance(look, _HoldExceeded):
+            return self._hold_note
+        if 2 * BLOCKSIZE <= len(look) <= _CLEAN_END_SCAN and look.count(0) == len(look):
+            return True
+        return ""
+
+    def _look_ahead(self, pos: int, count: int) -> bytes | _HoldExceeded:
+        """Up to ``count`` bytes from ``pos`` on, without moving the walk.
+
+        A seekable walk seeks; the next read seeks back anyway. A forward-only walk
+        reads the bytes up to ``pos`` and from it, and replays them to every later
+        read (:class:`_ReplayStream`), so the member's data stays readable through
+        :meth:`open_data`. It holds no more than :data:`_FORWARD_HOLD` bytes before
+        ``pos``, the span a RAR pipe holds (the maintainer's ruling, 2026-11-21);
+        past that it returns :data:`_HOLD_EXCEEDED`.
+        """
+        if self._seekable:
+            self._seek(pos)
+            return self._read_header_bytes(count)
+        held = self._held_block
+        if held is not None:
+            self._held_block = None
+            start, prefix = held
+        else:
+            start, prefix = self._stream_pos, b""
+        if pos - start > _FORWARD_HOLD:
+            if held is not None:
+                self._held_block = held
+            return _HOLD_EXCEEDED
+        data = prefix + self._read_header_bytes(pos - start + count - len(prefix))
+        stream = self._stream
+        # One replay however many headers are followed: a layer per look ahead would
+        # cost every later read a frame per layer, past the recursion limit.
+        if not (isinstance(stream, _ReplayStream) and stream.prepend(data)):
+            self._stream = cast(
+                BinaryIO, _ReplayStream(0, data, stream, position=_no_position)
+            )
+        self._stream_pos = start
+        return data[pos - start :]
+
+    def _stop_at_damage(self, chain: _Chain) -> TarEnd:
+        """End the walk at the chain's first damaged header, as a walk that never
+        followed it ends there (:meth:`_end_at_non_header`)."""
+        assert chain.damage is not None
+        offset, reason, extended_at, _ = chain.damage
+        if extended_at is not None:
+            reason = (
+                f"the extended header at offset {extended_at} is followed by a "
+                f"block that is no header ({reason})"
+            )
+        # A block a look ahead or _header_follows held is past the end set here, so
+        # no later read of this walk asks for it.
+        self._held_block = None
+        self.end = TarEnd(TarEndKind.REJECTED, offset, reason=reason + chain.note)
+        return self.end
 
     def _end_at_short_block(
         self,
@@ -2262,8 +2519,9 @@ _SEEK_RANGE_ERRNOS = frozenset((errno.EINVAL, errno.EOVERFLOW))
 
 class _ReplayStream:
     """``zeros`` zero bytes, then ``head``, then the rest of ``stream``: a walk's
-    view of bytes it had read past, as stream_after_end serves them. The zeros are
-    made as they are read, so a long span costs no memory."""
+    view of bytes it had read past, as stream_after_end serves them, and a
+    forward-only walk's own stream after a look ahead (TarWalker._look_ahead). The
+    zeros are made as they are read, so a long span costs no memory."""
 
     def __init__(
         self,
@@ -2274,6 +2532,9 @@ class _ReplayStream:
     ) -> None:
         self._zeros = zeros
         self._head = head
+        # Where the unread part of ``head`` starts: slicing it on every read would
+        # copy a held span of megabytes once per block.
+        self._at = 0
         self._stream = stream
         # Puts the stream where the replayed bytes end, once, before its first read.
         self._position: Callable[[], None] | None = position
@@ -2285,16 +2546,94 @@ class _ReplayStream:
         n = min(size, self._zeros)
         self._zeros -= n
         out = bytes(n)
-        if len(out) < size and self._head:
-            take = size - len(out)
-            out += self._head[:take]
-            self._head = self._head[take:]
+        if len(out) < size and self._at < len(self._head):
+            end = self._at + size - len(out)
+            out += self._head[self._at : end]
+            self._at = min(end, len(self._head))
         if len(out) < size:
             if self._position is not None:
                 self._position()
                 self._position = None
             out += self._stream.read(size - len(out))
         return out
+
+    def prepend(self, data: bytes) -> bool:
+        """Serve ``data`` before what is left, and say whether it could: only once
+        the zeros are used up, as ``data`` was read after them."""
+        if self._zeros:
+            return False
+        self._head = data + self._head[self._at :]
+        self._at = 0
+        return True
+
+
+# Damaged headers (TarWalker._follow_damaged) ---------------------------------------
+
+# The most headers in a row that failed their checksum and that a walk follows, as for
+# RAR (rar_parser._MAX_DAMAGED_HEADER_CHAIN).
+_MAX_DAMAGED_HEADER_RUN = 8
+
+# How far a walk reads to tell that a damaged header's size lands on the archive's
+# trailer: the end-of-archive marker and only zeros after it, to the end. GNU tar pads
+# to its 10240-byte record; 1 MiB is the trailing scan RAR uses for the same question.
+_CLEAN_END_SCAN = 1 << 20
+
+# The bytes before the block it checks that a forward-only walk holds to confirm a
+# damaged header: the span a RAR pipe holds (rar_forward.KEEP_BYTES), which the
+# maintainer ruled the pipe limit for both (2026-11-21).
+_FORWARD_HOLD = 4 << 20
+
+_FORWARD_HOLD_NOTE = (
+    "; from a file, the walk could check the header its size points at and go on: "
+    "save the archive to a file to read past the damage"
+)
+# The same note when the source can seek and only streaming=True kept the walk
+# forward-only (``stream_members()`` never seeks).
+_STREAMING_HOLD_NOTE = (
+    "; a random-access walk could check the header its size points at and go on: "
+    "open the archive without streaming=True to read past the damage"
+)
+
+# The member header types whose data area a bare header frames by its own size, and
+# those that carry none: what a run of damaged headers is followed by
+# (_bare_next_header). Any other type needs its chain or the block after it.
+_BARE_DATA_TYPES = (b"0", b"\x00", b"7")
+_BARE_NO_DATA_TYPES = (b"1", b"2", b"5")
+
+
+class _HoldExceeded:
+    """The span a forward-only look ahead would hold is past :data:`_FORWARD_HOLD`."""
+
+
+_HOLD_EXCEEDED = _HoldExceeded()
+
+
+def _no_position() -> None:
+    """A replay over the stream the walk was reading: nothing to reposition."""
+
+
+def _confirms(parsed: HeaderBlock | ZeroBlock | RejectedBlock) -> bool:
+    """Whether ``parsed``, where a damaged header's size points, confirms it: a header
+    that passes its checksum and has the ``ustar`` magic (a v7 header has none, and a
+    checksum alone is a weak check)."""
+    return isinstance(parsed, HeaderBlock) and parsed.format is not HeaderFormat.V7
+
+
+def _bare_next_header(
+    header: HeaderBlock | ZeroBlock | RejectedBlock, pos: int
+) -> int | None:
+    """Where the header after the damaged member header ``header`` at ``pos`` starts,
+    from the header alone, or ``None`` when that takes more than the header (its type
+    is an extended header, a link with a size, or one the type byte's damage made).
+    Each damaged header in a run is followed again, with its chain, when the walk
+    reaches it."""
+    if not isinstance(header, HeaderBlock) or not _confirms(header):
+        return None
+    if header.typeflag in _BARE_DATA_TYPES:
+        return pos + BLOCKSIZE + _round_up(header.size)
+    if header.typeflag in _BARE_NO_DATA_TYPES and not header.size:
+        return pos + BLOCKSIZE
+    return None
 
 
 class _RejectedHeader(Exception):

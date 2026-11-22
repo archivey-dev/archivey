@@ -6,10 +6,20 @@ a scheduled or post-merge (``push``) run; that file says which runs and why. The
 open issue per workflow, titled ``Scheduled run failing: <workflow>``:
 
 - **A failed run** opens the issue, or comments on the open one. Each report lists the
-  jobs that failed (none when the run started no jobs or its jobs could not be read) and
+  jobs that failed or timed out, or when none did, the jobs that ended another way that
+  is not a pass (cancelled after a step ran, ``startup_failure`` and so on). The list
+  is empty when the run started no jobs or its jobs could not be read. It
   keeps that list in a hidden `MARKER` line. A job that the previous report's list did
   not name is marked **new**, so a second failure in a workflow that is already red does
   not read as the old one. A report with no earlier list marks nothing new.
+- **A red run whose only problem is jobs no runner picked up** changes nothing the first
+  time. GitHub cancels such a job without running a step ("The job was not acquired by
+  Runner of type hosted"), for example when macOS runners are short, and the run ends
+  as a failure although no code ran. When the workflow's previous scheduled or
+  post-merge run on `main` lost a job the same way, the run reports as a failure that
+  names the lost jobs, so a shortage that lasts, or a job no runner can ever take, is
+  not silent. A job that failed, timed out, or started and was then cancelled always
+  reports the run.
 - **A green scheduled run** closes the issue. A green ``push`` run closes nothing: some
   workflows search for much less time after a merge than on their schedule.
 
@@ -17,7 +27,8 @@ Only text this workflow posted is read for the previous list: anyone can comment
 public issue, and a planted list would hide new failures.
 
 Stdlib only; GitHub is reached through the ``gh`` command. The run is described by the
-environment variables the workflow sets (`main` lists them).
+environment variables the workflow sets (`main` lists them) and, for the run's attempt,
+by the ``workflow_run`` event file (`_attempt`).
 """
 
 from __future__ import annotations
@@ -27,6 +38,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 #: The hidden line that carries a report's failed jobs, as a JSON list. JSON escapes a
@@ -68,9 +80,42 @@ def title(workflow: str) -> str:
     return f"Scheduled run failing: {workflow}"
 
 
+#: Job conclusions that do not make a run red.
+_FINE = frozenset({"success", "skipped", "neutral"})
+
+
+def _is_lost(job: dict) -> bool:
+    return job.get("conclusion") == "cancelled" and not job.get("steps")
+
+
 def failed_jobs(jobs: list[dict]) -> list[str]:
-    """The names of the jobs that failed or timed out, sorted, each once."""
-    return sorted({j["name"] for j in jobs if j.get("conclusion") in FAILED})
+    """The names of the jobs that failed or timed out, sorted, each once.
+
+    When none did, the jobs that did not pass and were not lost (cancelled after a step
+    ran, ``startup_failure`` and so on), so the report of such a run still names the
+    job that made it red. A fail-fast run's other jobs, cancelled as it stopped, stay
+    out while a job failed.
+    """
+    failed = {j["name"] for j in jobs if j.get("conclusion") in FAILED}
+    if not failed:
+        failed = {
+            j["name"]
+            for j in jobs
+            if j.get("conclusion") not in _FINE and not _is_lost(j)
+        }
+    return sorted(failed)
+
+
+def lost_jobs(jobs: list[dict]) -> list[str]:
+    """The jobs GitHub cancelled before any step ran, when they are the run's only problem.
+
+    Such a job was never taken by a runner, so nothing in the repository was checked.
+    The list is empty when any other job did not pass: one that failed or timed out, or
+    one that started and was then cancelled. That run reports as usual.
+    """
+    if not all(_is_lost(j) for j in jobs if j.get("conclusion") not in _FINE):
+        return []
+    return sorted({j["name"] for j in jobs if _is_lost(j)})
 
 
 def previous_jobs(issue: dict) -> list[str] | None:
@@ -118,8 +163,13 @@ def decide(
     run_url: str,
     issue: dict | None,
     jobs: list[str],
+    lost: Sequence[str] = (),
 ) -> Action:
-    """The action for one finished run, given the open issue (None when there is none)."""
+    """The action for one finished run, given the open issue (None when there is none).
+
+    ``lost`` names jobs no runner took. They are listed under their own heading and
+    left out of the marker, so **new** keeps meaning newly failing.
+    """
     line = f"`{conclusion}` on {sha[:12]}: {run_url}"
     if conclusion == "success":
         if issue is not None and event == "schedule":
@@ -127,6 +177,12 @@ def decide(
         return Action("none")
     previous = previous_jobs(issue) if issue is not None else None
     block, new = jobs_block(jobs, previous)
+    if lost:
+        block += (
+            "\n\nJobs no runner took in this run (cancelled before any step):\n"
+            + "\n".join(f"- `{job}`" for job in lost)
+            + "\n\nThe previous run also lost a job, or its jobs could not be read."
+        )
     if issue is not None:
         noun = "job" if new == 1 else "jobs"
         lead = f"New failure in {new} {noun}" if new else "Still failing"
@@ -148,13 +204,69 @@ def _gh(*args: str) -> str:
     ).stdout
 
 
-def _run_jobs(run_id: str) -> list[str]:
+def _attempt() -> str:
+    """The attempt that finished, from the ``workflow_run`` event GitHub saved for the job.
+
+    A rerun may already be the run's latest attempt, which ``gh run view`` reads by
+    default. Read from the event file, not passed in from the workflow, so the workflow
+    puts no event text in its environment.
+    """
+    with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as f:
+        return str(int(json.load(f)["workflow_run"]["run_attempt"]))
+
+
+def _run_jobs(run_id: str, attempt: str) -> list[dict]:
     try:
-        data = json.loads(_gh("run", "view", run_id, "--json", "jobs"))
+        data = json.loads(
+            _gh("run", "view", run_id, "--attempt", attempt, "--json", "jobs")
+        )
     except (subprocess.CalledProcessError, json.JSONDecodeError):
         # Without the list the report reads as it did before jobs were named.
         return []
-    return failed_jobs(data.get("jobs") or [])
+    return data.get("jobs") or []
+
+
+def _previous_run_lost(workflow: str, run_id: str) -> bool:
+    """Whether the previous scheduled or post-merge run on `main` also lost a job.
+
+    Its newest attempt counts, so a green rerun clears it. A cancelled or skipped run is
+    passed over, as the alert passes over such runs: a superseded run's queued jobs
+    also end cancelled with no steps. A lost job counts whatever the previous run's
+    other jobs did. True when the runs or the previous run's jobs cannot be read: a
+    report that might be noise is better than a gap nobody sees.
+    """
+    try:
+        runs = json.loads(
+            _gh(
+                "run",
+                "list",
+                "--workflow",
+                workflow,
+                "--branch",
+                "main",
+                "--limit",
+                "20",
+                "--json",
+                "databaseId,event,status,conclusion",
+            )
+        )
+        previous = next(
+            (
+                str(run["databaseId"])
+                for run in runs
+                if str(run.get("databaseId")) != run_id
+                and run.get("status") == "completed"
+                and run.get("conclusion") not in ("cancelled", "skipped")
+                and run.get("event") in ("schedule", "push")
+            ),
+            None,
+        )
+        if previous is None:
+            return False
+        data = json.loads(_gh("run", "view", previous, "--json", "jobs"))
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
+        return True
+    return any(_is_lost(j) for j in data.get("jobs") or [])
 
 
 def main() -> int:
@@ -179,15 +291,22 @@ def main() -> int:
         issue = json.loads(
             _gh("issue", "view", str(number), "--json", "author,body,comments")
         )
-    jobs = _run_jobs(env["RUN_ID"]) if conclusion != "success" else []
+    attempt = _attempt()
+    run_jobs = _run_jobs(env["RUN_ID"], attempt) if conclusion != "success" else []
+    lost = lost_jobs(run_jobs)
+    if lost and not _previous_run_lost(workflow, env["RUN_ID"]):
+        print(f"none: {name} (no runner took {', '.join(lost)}; no job failed)")
+        return 0
+    jobs = failed_jobs(run_jobs)
     action = decide(
         workflow=workflow,
         conclusion=conclusion,
         event=env["EVENT"],
         sha=env["SHA"],
-        run_url=env["RUN_URL"],
+        run_url=env["RUN_URL"] + "/attempts/" + attempt,
         issue=issue,
         jobs=jobs,
+        lost=lost,
     )
     if action.kind == "close":
         _gh(

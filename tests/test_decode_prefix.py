@@ -575,12 +575,17 @@ def test_probes_find_the_byte_one_byte_calls_find(
     for _ in range(4):
         at = rng.randrange(len(packed) // 10, len(packed) - 100)
         damaged = packed[:at] + rng.randbytes(16) + packed[at + 16 :]
+        # The one-byte decode runs once, in 4096-byte reads, and every read size must
+        # match it (on a seekable source each bounded read size gets the same bytes).
+        # In 64 KiB reads it would make up to 64 Ki one-byte calls per damage, and
+        # pyppmd hands each call to its own decoding thread: about 50 µs per call
+        # idle, and past the 60 s test timeout on a loaded machine.
+        monkeypatch.setattr(decompressor_stream, "_redecode_probe", lambda *_: 1)
+        one_byte = _probed_prefix(damaged, codec, 4096, config)
+        assert one_byte[1] is not None, "the damage must surface as an error"
+        monkeypatch.setattr(decompressor_stream, "_redecode_probe", real_probe)
         for size in (4096, 65536):
-            monkeypatch.setattr(decompressor_stream, "_redecode_probe", real_probe)
-            probed = _probed_prefix(damaged, codec, size, config)
-            assert probed[1] is not None, "the damage must surface as an error"
-            monkeypatch.setattr(decompressor_stream, "_redecode_probe", lambda *_: 1)
-            assert probed == _probed_prefix(damaged, codec, size, config), (at, size)
+            assert _probed_prefix(damaged, codec, size, config) == one_byte, (at, size)
 
 
 def test_a_large_read_finds_the_failing_byte_in_few_calls(

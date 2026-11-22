@@ -229,6 +229,7 @@ class MemberStreamParts:
         "checks_content",
         "collector",
         "custom_digests",
+        "digest_error",
         "digest_transforms",
         "end_check",
         "expected_hashes",
@@ -265,6 +266,7 @@ class MemberStreamParts:
         fill_size: bool,
         custom_digests: CustomDigests | None,
         bounded: bool,
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None,
         /,
     ) -> None:
         self.inner = inner
@@ -285,6 +287,7 @@ class MemberStreamParts:
         self.fill_size = fill_size
         self.custom_digests = custom_digests
         self.bounded = bounded
+        self.digest_error = digest_error
         self.return_failed: Callable[[], None] | None = None
 
     def build_verifier(self) -> MemberVerifier | None:
@@ -304,6 +307,7 @@ class MemberStreamParts:
             fill_size=self.fill_size,
             custom_digests=self.custom_digests,
             bounded=self.bounded,
+            digest_error=self.digest_error,
         )
 
 
@@ -443,6 +447,7 @@ class ArchiveStreamImpl(ArchiveStream):
         checks_content: bool = False,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None,
     ) -> None:
         super().__init__()
         # Named in the closed-source error and returned by ``name``; ``None`` for a
@@ -516,6 +521,7 @@ class ArchiveStreamImpl(ArchiveStream):
                 lazy=lazy,
                 custom_digests=custom_digests,
                 bounded=bounded,
+                digest_error=digest_error,
             )
 
     def _init_checks(
@@ -532,6 +538,7 @@ class ArchiveStreamImpl(ArchiveStream):
         lazy: bool,
         custom_digests: CustomDigests | None = None,
         bounded: bool = False,
+        digest_error: Callable[[CorruptionError], ArchiveyError] | None = None,
     ) -> None:
         """The part of the constructor that can emit: inside the stream's scope."""
         # Fused member verification (None when there is nothing to check). Prefer an
@@ -550,6 +557,7 @@ class ArchiveStreamImpl(ArchiveStream):
                 fill_size=fill_size,
                 custom_digests=custom_digests,
                 bounded=bounded,
+                digest_error=digest_error,
             )
         if not lazy and self._inner is None:
             self._ensure_open()

@@ -19,7 +19,7 @@ from archivey import (
     open_archive,
     open_stream,
 )
-from archivey.internal.read_progress import LOCAL_REPORT_STEP
+from archivey.internal.read_progress import LOCAL_REPORT_STEP, SourceReadReporter
 from tests.conftest import requires, requires_unrar_cli
 
 _RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
@@ -96,6 +96,81 @@ def test_a_nested_reader_reports_at_its_nest_level(tmp_path: Path) -> None:
     assert all(c.name == str(path) for c in after if c.nest_level == 0)
     assert all(c.name != str(path) for c in after if c.nest_level == 1)
     assert all(c.nest_level == 0 for c in seen.calls[:before])
+
+
+def test_a_nested_reader_reports_the_member_size(tmp_path: Path) -> None:
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("x.bin", os.urandom(2 * LOCAL_REPORT_STEP))
+    path = tmp_path / "outer.zip"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("inner.zip", inner.getvalue())
+    seen = _Recorder()
+    config = ArchiveyConfig(on_source_read=seen)
+    with (
+        open_archive(path, config=config, seekable_members=True) as outer,
+        outer.open("inner.zip") as member,
+        open_archive(member, parent=outer) as nested,
+    ):
+        nested.read("x.bin")
+    # The member's size is known, so a caller can draw a bar for the nested archive.
+    nested_calls = [c for c in seen.calls if c.nest_level == 1]
+    assert nested_calls
+    assert all(c.size == len(inner.getvalue()) for c in nested_calls)
+
+
+class _HintedPipe(io.RawIOBase):
+    """A non-seekable stream with an fsspec-style ``size`` claim."""
+
+    def __init__(self, data: bytes, size: int | None) -> None:
+        self._data = io.BytesIO(data)
+        if size is not None:
+            self.size = size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        chunk = self._data.read(len(b))
+        b[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("ratio", [1, 8])
+def test_a_size_hint_is_reported_but_does_not_set_the_report_step(
+    tmp_path: Path, ratio: int
+) -> None:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        payload = os.urandom(8 * LOCAL_REPORT_STEP)
+        info = tarfile.TarInfo("big.bin")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    data = buf.getvalue()
+
+    def reports(size: int | None) -> list[SourceProgress]:
+        seen = _Recorder()
+        config = ArchiveyConfig(on_source_read=seen)
+        with (
+            open_archive(
+                _HintedPipe(data, size), config=config, streaming=True
+            ) as reader,
+            reader.stream_members() as members,
+        ):
+            for _, stream in members:
+                if stream is not None:
+                    stream.read()
+        return seen.calls
+
+    unhinted = reports(None)
+    hint = len(data) // ratio
+    hinted = reports(hint)
+    # The hint fills in ``size``; a hint that understates does not make every read
+    # past it report.
+    assert all(c.size == hint for c in hinted)
+    assert len(hinted) == len(unhinted)
 
 
 def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> None:
@@ -185,8 +260,8 @@ def test_the_callback_s_exception_propagates_unchanged(
 
 @pytest.mark.parametrize("shape", ["zip", "bz2"])
 def test_accelerated_members_still_report_every_mib(tmp_path: Path, shape: str) -> None:
-    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region
-    # when nothing reports; while reporting it is read through the source.
+    # A deflate or bzip2 member of a ZIP is handed to an accelerator as a file region,
+    # and while reporting the accelerator notes its reads of it.
     seen = _Recorder()
     config = ArchiveyConfig(on_source_read=seen)
     size = 6 * LOCAL_REPORT_STEP
@@ -674,6 +749,41 @@ def test_a_mixed_volume_list_reports_local_and_remote_parts() -> None:
         fs.rm("/mixed", recursive=True)
 
 
+def test_a_mixed_volume_list_reports_local_parts_after_a_url(
+    tmp_path: Path,
+) -> None:
+    fsspec = pytest.importorskip("fsspec")
+    fs = fsspec.filesystem("memory")
+    data = _small_zip({f"m{i}.bin": os.urandom(100_000) for i in range(5)})
+    step = len(data) // 5 + 1
+    chunks = [data[i : i + step] for i in range(0, len(data), step)]
+    assert len(chunks) == 5
+    parts: list[Any] = []
+    local_size = 0
+    for i, chunk in enumerate(chunks):
+        if i % 2:
+            fs.pipe(f"/mixed3/a.zip.{i + 1:03d}", chunk)
+            parts.append(fsspec.open(f"memory://mixed3/a.zip.{i + 1:03d}"))
+        else:
+            part = tmp_path / f"a.zip.{i + 1:03d}"
+            part.write_bytes(chunk)
+            parts.append(part)
+            local_size += len(chunk)
+    try:
+        seen = _Recorder()
+        config = ArchiveyConfig(on_source_read=seen, source_read_step=0)
+        with open_archive(parts, config=config) as r:
+            for m in r.members():
+                r.read(m)
+        local = [c for c in seen.calls if c.request_start is None]
+        local_bytes = sum(c.position - (c.read_start or 0) for c in local)
+        # Parts 2 and 4 start after a URL part; their bytes count too.
+        assert local_bytes >= local_size
+        assert max(c.position for c in local) == len(data)
+    finally:
+        fs.rm("/mixed3", recursive=True)
+
+
 def test_a_caller_thread_named_like_archivey_s_still_reports(tmp_path: Path) -> None:
     path = _gz_file(tmp_path, 3 * LOCAL_REPORT_STEP)
     seen = _Recorder()
@@ -709,3 +819,30 @@ def test_a_compressed_url_reports_its_url_as_the_name() -> None:
         assert all(c.name and "example.zip.gz" in c.name for c in seen.calls)
     finally:
         fs.rm("/named", recursive=True)
+
+
+def test_bytes_a_failed_request_reported_stay_counted() -> None:
+    """A request that reported bytes inside its answer and then failed (it never
+    ends) took those bytes: the next request's report still counts them, so the
+    totals never go down. Fails if ``request_started`` drops the in-flight count."""
+    seen: list[int] = []
+    reporter = SourceReadReporter(lambda p: seen.append(p.bytes_read), "x", 1 << 30)
+    reporter.request_started(0, 3 << 20)
+    reporter.request_received(0, 3 << 20, 1 << 20)
+    reporter.request_received(0, 3 << 20, 2 << 20)
+    # The answer broke here: no request_ended. The reader retries.
+    reporter.request_started(2 << 20, 3 << 20)
+    reporter.request_ended(2 << 20, 3 << 20, 1 << 20)
+    assert seen == [0, 1 << 20, 2 << 20, 2 << 20, 3 << 20]
+
+
+def test_bytes_of_a_finished_request_count_once() -> None:
+    """Bytes reported inside an answer count once its request ends: the in-flight
+    count is cleared, not added again by the next request."""
+    seen: list[int] = []
+    reporter = SourceReadReporter(lambda p: seen.append(p.bytes_read), "x", 1 << 30)
+    reporter.request_started(0, 2 << 20)
+    reporter.request_received(0, 2 << 20, 1 << 20)
+    reporter.request_ended(0, 2 << 20, 2 << 20)
+    reporter.request_started(2 << 20, 3 << 20)
+    assert seen == [0, 1 << 20, 2 << 20, 2 << 20]

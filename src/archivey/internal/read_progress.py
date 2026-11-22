@@ -9,9 +9,14 @@ One :class:`SourceReadReporter` serves one opened source. Two kinds of source fe
   for every read when that is 0.
 - :class:`~archivey.internal.remote.RangeSource` calls
   :meth:`~SourceReadReporter.request_started` and
-  :meth:`~SourceReadReporter.request_ended` around each range request. Each reaches
-  the caller. The source over a range source then reports no bytes of its own: the
-  requests already counted them.
+  :meth:`~SourceReadReporter.request_ended` around each range request, and over HTTP
+  :meth:`~SourceReadReporter.request_received` after each MiB of the answer. Each
+  reaches the caller. The source over a range source then reports no bytes of its own:
+  the requests already counted them.
+- The rapidgzip child, given a byte range of the file under an ``ArchiveSource``
+  (``file_region``), reads it itself with ``os.pread`` and notes each read; its
+  parent reports those to the source's reporter (``RegionReport``), on the caller's
+  thread, as if the source had read them.
 
 Nothing here runs when the callback is unset: the hooks check for a reporter first.
 
@@ -31,6 +36,7 @@ and goes on cannot lose the stop: it surfaces at the next read.
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from archivey.internal.streams.callers_source import mark_source_callback
@@ -54,17 +60,26 @@ class SourceReadReporter:
         size: int | None,
         step: int = 1 << 20,
         nest_level: int = 0,
+        *,
+        size_is_fact: bool = True,
     ) -> None:
+        """``size`` goes into each report. Only a size that is a fact (``size_is_fact``)
+        also marks the source's end, where a report comes due before ``step`` bytes:
+        a hint that understates would otherwise make every read past it report."""
         self.callback = callback
         self.step = step
         self.nest_level = nest_level
         self._offset = 0
         self._name = name
         self._size = size
+        self._end = size if size_is_fact else None
         self._lock = threading.Lock()
         self._bytes_read = 0
         self._reported_at = 0
         self._requests = 0
+        # Bytes an unfinished request has reported inside its answer: counted in
+        # ``bytes_read`` from then on, even when the request fails and never ends.
+        self._in_flight = 0
         # What the callback raised, once it has: every later report raises it again.
         self._stopped: BaseException | None = None
         # A report due while archivey's own thread read: the next report on a
@@ -81,14 +96,15 @@ class SourceReadReporter:
         self.raise_if_stopped()
         position += self._offset
         with self._lock:
-            self._bytes_read += n
+            self._bytes_read += n + self._in_flight
+            self._in_flight = 0
             total = self._bytes_read
             if total == self._reported_at:
                 return
             if (
                 total - self._reported_at < self.step
                 and not at_end
-                and (self._size is None or position < self._size)
+                and (self._end is None or position < self._end)
                 and self._deferred is None
             ):
                 return
@@ -126,13 +142,31 @@ class SourceReadReporter:
         sent (a volume's base offset already added)."""
         self.raise_if_stopped()
         with self._lock:
+            # A request that failed after reporting took those bytes all the same.
+            self._bytes_read += self._in_flight
+            self._in_flight = 0
             self._requests += 1
             snapshot = self._remote_progress(start, end, 0, done=False, position=start)
+        self._report_or_defer(snapshot)
+
+    def request_received(self, start: int, end: int, received: int) -> None:
+        """The answer to the request for ``[start, end)`` has brought ``received``
+        bytes so far. ``bytes_read`` includes them; :meth:`request_ended` then adds the
+        request's bytes once. When the request fails instead, the next
+        :meth:`request_started` or local read adds them."""
+        self.raise_if_stopped()
+        with self._lock:
+            self._in_flight = received
+            snapshot = self._remote_progress(
+                start, end, received, done=False, position=start + received
+            )
+            snapshot = replace(snapshot, bytes_read=self._bytes_read + received)
         self._report_or_defer(snapshot)
 
     def request_ended(self, start: int, end: int, received: int) -> None:
         """The request for ``[start, end)`` returned ``received`` bytes."""
         with self._lock:
+            self._in_flight = 0
             self._bytes_read += received
             snapshot = self._remote_progress(
                 start, end, received, done=True, position=start + received

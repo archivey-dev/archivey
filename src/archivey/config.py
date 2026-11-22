@@ -395,25 +395,21 @@ class ListingLimits:
     against ``max_metadata_bytes`` as it arrives. A ZIP file whose end record sits
     behind more than 64 KiB of trailing bytes is walked the same way at open, which
     charges ``max_members`` on each local header.
-    ISO also counts each path-table entry against ``max_members`` (a table of more than
-    ``max_members + 1`` entries is refused): every entry is a directory, which is a
-    member anyway, so real images never notice. ISO counts the UDF tree it parses
-    against ``max_members`` too, one per UDF name, whether or not ``members()`` lists
-    UDF: an image whose UDF tree has more names than its ISO 9660 tree can be refused
-    for the UDF tree. ISO counts members per tree but weighs bytes as one sum for the
-    whole image, every tree together. ISO also weighs every full path of the UDF tree
-    as it builds it at open, in a separate sum against ``max_metadata_bytes``, whether
-    or not UDF is the listed tree. The listing weighs the same paths as member names,
-    normalized (a ``.`` or empty segment dropped), so a UDF tree whose names that
-    shortens can be refused at open although its listing would fit.
-    RPM refuses a header that lists more files than ``max_members`` at open, before it
-    builds the file list.
-    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
-    open, and refuses a header that lists more payloads than ``max_members``.
-    TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
-    header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
-    keyword does not count again.
+    ISO counts the UDF tree it parses against ``max_members`` too, one per UDF name,
+    whether or not ``members()`` lists UDF: an image whose UDF tree has more names than
+    its ISO 9660 tree can be refused for the UDF tree. ISO counts members per tree but
+    weighs bytes as one sum for the whole image, every tree together. ISO also weighs
+    every full path of the UDF tree as it builds it at open, in a separate sum against
+    ``max_metadata_bytes``, whether or not UDF is the listed tree. The listing weighs
+    the same paths as member names, normalized (a ``.`` or empty segment dropped), so a
+    UDF tree whose names that shortens can be refused at open although its listing would
+    fit. RPM refuses a header that lists more files than ``max_members`` at open, before
+    it builds the file list. makeself weighs its shell header against
+    ``max_metadata_bytes`` as it reads it, at open, and refuses a header that lists more
+    payloads than ``max_members``. TAR refuses, in every mode, an extended header (PAX
+    or GNU long name) that declares more than is left of ``max_metadata_bytes``, before
+    reading it. While it parses a PAX header, TAR also charges 256 bytes for each
+    distinct keyword, once: a repeated keyword does not count again.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``
@@ -1109,9 +1105,10 @@ class ArchiveyConfig:
     archive's own file, or ``None``.
 
     A local file or stream reports about once per MiB read. A URL source (an
-    ``fsspec.core.OpenFile``) reports before and after each range request. Detection's
-    reads count. It runs on the thread that read, and an exception it raises propagates
-    out of that read: raising is how a caller stops a slow read. Every later read of the
+    ``fsspec.core.OpenFile``) reports before and after each range request, and over
+    HTTP about once per MiB of the answer as it comes in. Detection's reads count. It
+    runs on the thread that read, and an exception it raises propagates out of that
+    read: raising is how a caller stops a slow read. Every later read of the
     file raises it again, and ``extract_all(on_error="continue")`` stops on it rather
     than counting it as one member's failure. A read on a thread archivey started (the
     RAR volume feeder) does not call it: the latest such report is kept and delivered on
@@ -1135,7 +1132,8 @@ class ArchiveyConfig:
     (1 MiB). ``0`` calls it for every read, so :attr:`SourceProgress.read_start
     <archivey.SourceProgress.read_start>` and ``position`` give the range of each read:
     a log of every region of the file read. A URL source reports every request
-    whatever this is.
+    whatever this is; over HTTP a request also reports about once per MiB of its
+    answer, a gap this step does not set.
     """
 
     if TYPE_CHECKING:

@@ -13,6 +13,7 @@ from archivey import (
     FormatAvailability,
     FormatSupport,
     MissingComponent,
+    OptionalLibrary,
     format_availability,
     list_known_formats,
 )
@@ -24,12 +25,37 @@ from archivey.cli.version_report import (
     cli_package_hint,
     detect_installer,
     install_command,
+    unimportable_packages,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_broken_packages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the report off the host's packages: the import probe imports every one
+    found, and a broken one would make it ask the faked ``format_availability`` again
+    with ``config=``. A test that wants a broken package replaces this stub."""
+    monkeypatch.setattr(version_report, "unimportable_packages", lambda skip=(): {})
 
 
 def _report(capsys: pytest.CaptureFixture[str]) -> str:
     assert main(["--version", "-v"]) == EXIT_OK
     return capsys.readouterr().out
+
+
+def _level_row(out: str, section: str, level: str) -> list[str]:
+    """The labels on one support-level row of a report section, continuation lines
+    included."""
+    lines = out.split(f"\n{section}\n")[1].split("\n\n")[0].splitlines()
+    prefix = f"  {level + ':':<10}"
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            text = line[len(prefix) :]
+            for more in lines[i + 1 :]:
+                if not more.startswith(" " * 12):
+                    break
+                text += " " + more.strip()
+            return [label.strip() for label in text.split(",")]
+    return []
 
 
 def test_version_alone_is_one_line(capsys: pytest.CaptureFixture[str]) -> None:
@@ -46,7 +72,9 @@ def test_report_splits_archives_from_compression(
         "\ncompression and encodings\n"
     )
     assert "zip" in archives and "tar" in archives
-    assert "dmg (recognised, not readable)" in archives
+    # DMG is read now: listed among the formats read in full, with no note.
+    assert "dmg" in archives
+    assert "recognised, not readable" not in archives
     assert "gz" in compression and "xz" in compression
     assert (
         "tar also open inside any of these that can be read, such as tar.gz."
@@ -104,14 +132,16 @@ def test_missing_and_slower_are_grouped_by_command(
     monkeypatch.setattr(version_report, "format_availability", fake)
     monkeypatch.setattr(version_report, "detect_installer", lambda: Install("pip"))
     out = _report(capsys)
-    assert out.count(hint) == 1
+    printed = 'pip install "archivey[recommended]"'
+    assert out.count(printed) == 1
     section = out.split("to read more, or faster\n")[1]
+    # The packages are named as pip installs them, not by their import names.
     assert section.splitlines()[:5] == [
-        f"  {hint}",
+        f"  {printed}",
         "    adds iso",
         "    completes 7z",
         "    faster for lzo",
-        "    packages: pyppmd, pycdlib, compress_utils",
+        "    packages: pyppmd, pycdlib, compress-utils",
     ]
     assert "slower without optional packages: lzo" in out
 
@@ -177,7 +207,7 @@ def test_a_pair_that_differs_from_its_parts_is_printed(
 @pytest.mark.parametrize(
     ("installer", "expected"),
     [
-        ("pip", "pip install archivey[bzip3]"),
+        ("pip", 'pip install "archivey[bzip3]"'),
         ("uvx", 'uvx --with "archivey[bzip3]" archivey-cli'),
         ("uv-tool", 'uv tool install --with "archivey[bzip3]" archivey-cli'),
         ("pipx", 'pipx inject archivey-cli "archivey[bzip3]"'),
@@ -198,6 +228,9 @@ def test_install_command_targets_the_library_tool() -> None:
 def test_install_command_keeps_other_advice() -> None:
     assert install_command("pip install compress-utils", Install("uvx")) == (
         "uvx --with compress-utils archivey-cli"
+    )
+    assert install_command("pip install compress-utils", Install("pip")) == (
+        "pip install compress-utils"
     )
     reason = "archivey does not use lz4 under PyPy"
     assert install_command(reason, Install("uvx")) == reason
@@ -308,3 +341,73 @@ def test_report_prints_the_cli_package_hint(
     flat = " ".join(_report(capsys).split())
     assert "uvx archivey-cli installs the same command" in flat
     assert "uvx --with x archivey" in flat
+
+
+def test_packages_line_uses_pypi_names(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = version_report.format_availability
+    hint = "pip install archivey[bzip3]"
+
+    def fake(fmt: ArchiveFormat) -> FormatAvailability:
+        if fmt == ArchiveFormat.BZIP3:
+            missing = (MissingComponent(OptionalLibrary.BZIP3, hint),)
+            return FormatAvailability(fmt, FormatSupport.NONE, missing)
+        if fmt == ArchiveFormat.SNAPPY:
+            faster = (MissingComponent(OptionalLibrary.GOOGLE_CRC32C, "pip install x"),)
+            return FormatAvailability(fmt, FormatSupport.FULL, faster_with=faster)
+        return FormatAvailability(fmt, real(fmt).support)
+
+    monkeypatch.setattr(version_report, "format_availability", fake)
+    monkeypatch.setattr(version_report, "detect_installer", lambda: Install("pip"))
+    out = _report(capsys)
+    assert '  pip install "archivey[bzip3]"\n    adds bz3\n    packages: bzip3\n' in out
+    assert "    packages: google-crc32c\n" in out
+
+
+def test_a_package_that_fails_to_import_is_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "brotli").mkdir()
+    (tmp_path / "brotli" / "__init__.py").write_text(
+        'raise ImportError("simulated broken wheel")\n'
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "brotli", raising=False)
+    broken = unimportable_packages()
+    assert broken[OptionalLibrary.BROTLI] == "ImportError: simulated broken wheel"
+    assert "brotli" not in sys.modules
+    # A package to skip is not imported.
+    assert OptionalLibrary.BROTLI not in unimportable_packages({"brotli"})
+
+
+def test_report_counts_a_package_that_fails_to_import_as_absent(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``format_availability`` only looks a package up, so it counts a broken one as
+    present; a read treats it as absent, and so does the report."""
+    monkeypatch.setattr(
+        version_report,
+        "unimportable_packages",
+        lambda skip: {OptionalLibrary.BROTLI: "ImportError: simulated broken wheel"},
+    )
+    monkeypatch.setattr(version_report, "detect_installer", lambda: Install("pip"))
+    out = _report(capsys)
+    assert "br" in _level_row(out, "compression and encodings", "none")
+    flat = " ".join(out.split())
+    assert (
+        "brotli is installed but fails to import (ImportError: simulated broken "
+        "wheel); reinstalling it may fix this adds br"
+    ) in flat
+    assert "ArchiveyConfig.formats turns it off" not in flat
+
+
+def test_a_combination_row_names_packages_as_pip_does() -> None:
+    hint = "pip install archivey[bzip3]"
+    availability = FormatAvailability(
+        ArchiveFormat.BZIP3,
+        FormatSupport.NONE,
+        (MissingComponent(OptionalLibrary.BZIP3, hint),),
+    )
+    line = version_report._format_line(ArchiveFormat.BZIP3, availability)
+    assert line == ["  bz3: none (missing bzip3)"]

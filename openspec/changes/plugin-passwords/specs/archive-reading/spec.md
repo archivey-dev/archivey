@@ -66,17 +66,25 @@ skipped. An `INCONCLUSIVE` candidate SHALL NOT be accepted while static candidat
 remain to probe: every remaining static candidate SHALL be probed with the same bounded
 plan. Then:
 
-- one survivor SHALL be accepted, `INCONCLUSIVE`;
+- one survivor SHALL be accepted, `INCONCLUSIVE`, when no provider can be asked for the
+  unit, or when the unit has no full check (it is read once, or a plugin gave no
+  `full_check`): the provider is then not asked first. When a provider can be asked and
+  there is a full check, the survivor SHALL run it as several do, and a `REJECTED`
+  result SHALL lead to the provider: the survivor may be a known-good
+  password from another unit, and the provider may hold this unit's own. With no
+  provider, a lone survivor means every other static candidate was rejected, so the
+  read's own check reports a wrong one and the unit is decoded once;
 - several survivors SHALL each, in candidate order, run the **full check**: the plan
   that walks to the unit's end anchor whatever the codec. The first survivor it confirms
   SHALL be accepted. When the unit has no anchor to walk to, the first survivor SHALL be
   accepted, `INCONCLUSIVE`. When the full check rejects every survivor, the provider, if
   any, SHALL be consulted as if no static candidate had survived;
-- provider answers SHALL NOT be gathered this way: the provider stays lazy, and its
-  first answer that is not `REJECTED` SHALL be accepted. Exception: for a format plugin
-  whose `NeedsPassword` request carries a `full_check` (`format-plugins`), an
-  `INCONCLUSIVE` provider answer SHALL run that full check first, and a `REJECTED`
-  result SHALL lead to the next provider call. The built-in readers keep the rule above.
+- provider answers SHALL NOT be gathered this way: the provider stays lazy, and is
+  asked one answer at a time. An `INCONCLUSIVE` answer SHALL run the full check first
+  when the unit has one, and a `REJECTED` result SHALL lead to the next provider call;
+  the first answer that neither the bounded plan nor the full check rejects SHALL be
+  accepted. The rule is the same for the built-in readers and for a format plugin's
+  `NeedsPassword` request (`format-plugins`).
 
 **A unit read once** (a ZIP member from a pipe) has no second walk for the full check.
 There the backend SHALL run each candidate's bounded plan on a kept prefix of the unit's
@@ -87,13 +95,16 @@ accepted, `INCONCLUSIVE`, and its read-time digest decides, as for one candidate
 is a choice that MAY change: spooling the whole unit would allow the full check.
 
 The full check is proportional to the unit's size, and it SHALL run only for candidates
-that survived the bounded plan when more than one did, or, for a plugin that passed a
-`full_check`, for an `INCONCLUSIVE` provider answer.
+that survived the bounded plan when more than one did, for a lone survivor while a
+provider can still be asked for the unit, and for an `INCONCLUSIVE` provider answer.
 
 A `CONFIRMED` candidate SHALL be added to known-good. An `INCONCLUSIVE` candidate
 SHALL be added to known-good only when the candidate set is unambiguous. The
 candidate loop remains `_PasswordCandidates.attempt`; confirmation supplies the
-bounded probe and the full check. A second driver SHALL NOT be introduced.
+bounded probe and the full check. A format plugin's `NeedsPassword` request SHALL run
+through the same loop, which also tries the request's saved winner first, leaves the
+provider out of a replacement open, and lets go of the plugin's guards around each
+provider call. A second driver SHALL NOT be introduced.
 
 Accepting an `INCONCLUSIVE` candidate SHALL emit `ENCRYPTED_MEMBER_UNVERIFIED` if the
 caller then abandons the member's stream before its declared digest is reached.

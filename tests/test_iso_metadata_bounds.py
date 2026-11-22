@@ -80,7 +80,8 @@ def test_a_path_table_size_past_the_image_reads_nothing(limits: ListingLimits) -
 
 
 def test_an_image_whose_directories_fill_max_members_still_opens() -> None:
-    """Real images never notice: the path table holds the root plus the members."""
+    """An image whose directories alone fill ``max_members`` opens: the listing counts
+    its members, and its path table, which names the root too, is not read."""
     import pycdlib
 
     count = 300
@@ -95,6 +96,25 @@ def test_an_image_whose_directories_fill_max_members_still_opens() -> None:
     config = ArchiveyConfig(listing_limits=ListingLimits(max_members=count))
     with open_archive(io.BytesIO(out.getvalue()), config=config) as reader:
         assert len(reader.members()) == count
+
+
+def test_a_path_table_longer_than_max_members_is_not_counted() -> None:
+    """A path table of 100 entries in an image of one file opens under
+    ``max_members=10``. Before the native parser, each path-table entry counted
+    against ``max_members``, and a table of more than ``max_members + 1`` entries
+    was refused."""
+    data = _build_iso()
+    (table,) = struct.unpack_from("<I", data, _PVD + 140)
+    entries = b"".join(
+        bytes([4, 0]) + struct.pack("<IH", 18, 1) + b"D%03d" % index
+        for index in range(100)
+    )
+    assert len(entries) <= 2048
+    data[table * 2048 : table * 2048 + len(entries)] = entries
+    data[_PATH_TABLE_SIZE : _PATH_TABLE_SIZE + 8] = _both(len(entries))
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_members=10))
+    with open_archive(io.BytesIO(bytes(data)), config=config) as reader:
+        assert [m.name for m in reader.members()] == ["a" * 230]
 
 
 # --- the Rock Ridge continuation area ---------------------------------------------

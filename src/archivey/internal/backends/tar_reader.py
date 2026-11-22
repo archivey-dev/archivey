@@ -79,6 +79,7 @@ from archivey.diagnostics import (
     DirectoryDataContext,
     HeaderAmbiguityContext,
     LinkDataContext,
+    MemberHeaderDamageContext,
     MemberHeaderRecordContext,
     ReaderDisagreementContext,
     UnknownMemberTypeContext,
@@ -235,6 +236,10 @@ _WALK_BUFFER = 8 * 1024
 # How many of the other fields one MEMBER_HEADER_AMBIGUOUS report names; it counts
 # the rest. A PAX header can hold a shape for thousands of keys.
 _AMBIGUOUS_FIELDS_NAMED = 3
+
+# How many followed damaged headers the end-of-pass error names; the rest it counts
+# (the same limit as rar_parser._NAMED_DAMAGES).
+_NAMED_DAMAGES = 4
 
 # GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
 # lists the directory's contents at dump time. GNU tar extracts it as a directory; the
@@ -846,7 +851,13 @@ class TarReader(BaseArchiveReader):
         """
         end = self._plain_source_size
         if self._streaming:
-            return TarWalker(self._stream, seekable=False, end=end)
+            assert self._source is not None
+            return TarWalker(
+                self._stream,
+                seekable=False,
+                end=end,
+                source_seekable=self._source.seekable(),
+            )
         # Plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own buffer. Joining the tail on would copy the member.
         # A codec keeps the join: rewinding it would decode the tail again.
@@ -909,6 +920,42 @@ class TarReader(BaseArchiveReader):
         return (cap - counted, cap)
 
     @override
+    def _reports_member_read(self, member: ArchiveMember) -> bool:
+        span = member._raw
+        return isinstance(span, TarSpan) and span.damaged_header is not None
+
+    @override
+    def _report_member_read(self, member: ArchiveMember) -> None:
+        """``MEMBER_HEADER_DAMAGED`` for a member listed from a header that failed its
+        checksum (``TarSpan.damaged_header``), on each read and never at listing.
+
+        A TAR member has no checksum of its own: what vouches for its size is the
+        header that size pointed at, which passed its checksum. Its other fields are
+        checked by nothing.
+        """
+        span = member._raw
+        assert isinstance(span, TarSpan) and span.damaged_header is not None
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.MEMBER_HEADER_DAMAGED,
+            message=(
+                f"TAR member {quoted(member.name)} is listed from a header that "
+                f"failed its checksum (at offset {span.damaged_header}); the header "
+                "its size points at confirmed the size, but its name, type, mode, "
+                "owner and times are checked by nothing and may be wrong."
+            ),
+            context=MemberHeaderDamageContext(
+                archive_name=self._archive_name,
+                member_name=member.name,
+                member_id=member.member_id,
+                format=ArchiveFormat.TAR.display_name,
+                volume_index=None,
+                header_offset=span.damaged_header,
+            ),
+            member=member,
+            logger=integrity_logger,
+        )
+
+    @override
     def _member_data_is_stream_bytes(self, member: ArchiveMember) -> bool:
         # A TAR is compressed as a whole, so a member's data is a slice of the decoded
         # stream, except a sparse member's, whose holes read as zeros it does not store.
@@ -964,6 +1011,34 @@ class TarReader(BaseArchiveReader):
             # checksum covers are failures of verify_all() instead.
             self._note_spanning_unreachable("codec", self._listed, e)
             raise
+        self._raise_followed_damage()
+
+    def _raise_followed_damage(self) -> None:
+        """End a walk that followed a damaged header in :class:`CorruptionError`,
+        once every member is listed and the end checked: the archive is damaged
+        even though no member was lost (``TarWalker.followed``), as a RAR walk that
+        followed one ends."""
+        walker = self._walker
+        if not walker.followed:
+            return
+        # The first few are named and the rest counted, as RAR's ``_add_damage``
+        # does: an archive of thousands of damaged headers cannot grow the message
+        # with its size.
+        text = "; also ".join(
+            f"the {'extended' if extended else 'member'} header at offset {offset} "
+            f"failed its checksum ({reason})"
+            for offset, reason, extended in walker.followed[:_NAMED_DAMAGES]
+        )
+        more = len(walker.followed) - _NAMED_DAMAGES
+        if more == 1:
+            text += "; and 1 more damaged header was followed"
+        elif more > 1:
+            text += f"; and {more} more damaged headers were followed"
+        listed = "Its member is" if len(walker.followed) == 1 else "Their members are"
+        raise CorruptionError(
+            f"TAR archive is corrupt: {text}. {listed} listed, and the walk went on "
+            "from where each size points, which the header there confirmed."
+        )
 
     def _walk_members(self) -> Iterator[ArchiveMember]:
         """The member walk, one header per pull.

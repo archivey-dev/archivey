@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+from typing import Any
 
 import pytest
 
@@ -179,3 +180,88 @@ def test_advisory_info_and_pedantic_refuses(caplog: pytest.LogCaptureFixture) ->
         pytest.raises(DiagnosticRaisedError),
     ):
         reader.members()
+
+
+def _nested_image(depth: int, hidden_in: str, *, rock_ridge: bool, udf: bool) -> bytes:
+    """A chain of ``depth`` directories ``d0/d1/...`` in every tree, a file in every
+    tree at the bottom, and a file at the bottom that only ``hidden_in`` holds."""
+    import pycdlib
+
+    iso = pycdlib.PyCdlib()
+    iso.new(
+        interchange_level=3,
+        rock_ridge="1.09" if rock_ridge else None,
+        joliet=3,
+        udf="2.60" if udf else None,
+    )
+    iso_dir = joliet_dir = ""
+    for level in range(depth):
+        iso_dir += f"/D{level}"
+        joliet_dir += f"/d{level}"
+        kwargs: dict[str, str] = {"joliet_path": joliet_dir}
+        if rock_ridge:
+            kwargs["rr_name"] = f"d{level}"
+        if udf:
+            kwargs["udf_path"] = joliet_dir
+        iso.add_directory(iso_dir, **kwargs)
+    for index, (name, data) in enumerate((("both", b"both"), ("hidden", b"hidden"))):
+        iso_path = f"{iso_dir}/F{index}.;1"
+        kwargs = {"joliet_path": f"{joliet_dir}/{name}"}
+        if rock_ridge:
+            kwargs["rr_name"] = name
+        if udf:
+            kwargs["udf_path"] = f"{joliet_dir}/{name}"
+        iso.add_fp(io.BytesIO(data), len(data), iso_path, **kwargs)
+        if name == "hidden":
+            if hidden_in != "iso":
+                iso.rm_hard_link(iso_path=iso_path)
+            if hidden_in != "joliet":
+                iso.rm_hard_link(joliet_path=f"{joliet_dir}/{name}")
+            if udf and hidden_in != "udf":
+                iso.rm_hard_link(udf_path=f"{joliet_dir}/{name}")
+    out = io.BytesIO()
+    iso.write_fp(out)
+    iso.close()
+    return out.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("hidden_in", "rock_ridge", "udf", "expected"),
+    [
+        ("joliet", True, False, ("d0/d1/d2/hidden", "file_only_in_joliet")),
+        ("iso", False, False, ("D0/D1/D2/F1", "file_only_in_iso9660")),
+        ("udf", True, True, ("d0/d1/d2/hidden", "file_only_in_udf")),
+    ],
+)
+def test_a_hidden_file_in_a_subdirectory_is_reported_by_its_path(
+    hidden_in: str, rock_ridge: bool, udf: bool, expected: tuple[str, str]
+) -> None:
+    image = _nested_image(3, hidden_in, rock_ridge=rock_ridge, udf=udf)
+    names, found = _reported(image)
+    assert found == [expected]
+    assert names[-1].endswith("both")
+
+
+def test_comparing_a_deep_tree_renders_no_path_per_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a reported file's path is rendered, from its parent links; a path per
+    directory of the unlisted tree made a deep chain quadratic."""
+    from archivey.internal.backends.iso_reader import IsoReader
+
+    real = IsoReader._joliet_text
+    calls = 0
+
+    def counting(entry: Any) -> str:
+        nonlocal calls
+        calls += 1
+        return real(entry)
+
+    monkeypatch.setattr(IsoReader, "_joliet_text", staticmethod(counting))
+    renders = []
+    for depth in (1, 6):
+        calls = 0
+        image = _nested_image(depth, "iso", rock_ridge=True, udf=False)
+        assert _reported(image)[1] == []
+        renders.append(calls)
+    assert renders == [0, 0], renders
