@@ -321,6 +321,7 @@ class _PluginAdapter(BaseArchiveReader):
         context._spanning_check = self._new_spanning_check
         context._passwords = passwords
         context._decompress_coder = self._decompress_coder
+        context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
         self._reader = self._open_reader(context)

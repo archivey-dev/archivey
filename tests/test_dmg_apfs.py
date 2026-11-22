@@ -512,6 +512,31 @@ def test_a_lost_extent_leaf_fails_only_that_file_and_never_reads_zeros() -> None
             reader.read(listed["B"])
 
 
+def test_a_read_from_a_known_hole_into_a_lost_extent_raises() -> None:
+    # A: an extent at 0, a hole, then an extent at 8192 that sits alone in a leaf
+    # which is then damaged. The zeros served for the hole must not run on over the
+    # lost extent.
+    data = b"a" * 4096 + bytes(4096) + b"b" * 4096
+    nodes = [d.Node("A", data=data), d.Node("Z", data=b"z")]
+    options = {
+        "hashed": False,
+        "holes": {"A": [(4096, 4096)]},
+        "split_before": [("A", apfs.EXTENT, 8192), ("Z", apfs.INODE)],
+    }
+    written = a.write_apfs(nodes, **options)  # type: ignore[arg-type]
+    assert len(written.fs_leaves) == 3
+    leaf = written.fs_leaves[1]
+    broken = a.write_apfs(nodes, patch=_flip(lambda c, i: leaf), **options)  # type: ignore[arg-type]
+    with _open(a.apfs_dmg(broken.container)) as reader:
+        listed = {}
+        with pytest.raises(CorruptionError, match="cannot be used"):
+            for member in reader:
+                listed[member.name] = member
+        assert reader.read(listed["Z"]) == b"z"
+        with pytest.raises(CorruptionError, match="damaged node"):
+            reader.read(listed["A"])
+
+
 def test_a_damaged_object_map_leaf_fails_the_lookups_it_held() -> None:
     nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(40)]
     options = {"leaf_records": 6, "omap_leaf_entries": 2}
@@ -788,6 +813,37 @@ def test_an_encrypted_volume_beside_a_readable_one_is_reported() -> None:
     assert unlisted[0].context.member_name == "Locked"
 
 
+def _mark_first_volume_nodes_encrypted(container: bytearray, info: a.Apfs) -> None:
+    """Set the encrypted flag on every mapping of the first volume's object map,
+    which the volume's own flags say is not encrypted."""
+    size = info.block_size
+    for leaf in info.omap_leaves:
+        at = leaf * size
+        flags, _, count, toc_at, _ = struct.unpack_from("<HHIHH", container, at + 32)
+        assert flags & 4  # fixed-size entries
+        toc = at + 56 + toc_at
+        values_end = at + size - (40 if flags & 1 else 0)
+        for i in range(count):
+            _, value_at = struct.unpack_from("<HH", container, toc + 4 * i)
+            struct.pack_into("<I", container, values_end - value_at, 4)
+        a.reseal(container, leaf, size)
+
+
+def test_an_encrypted_mapping_in_a_plain_volume_does_not_stop_the_other_volumes() -> (
+    None
+):
+    container = a.write_apfs(
+        [d.Node("a.txt", data=b"a")],
+        name="Broken",
+        more_volumes=[("Fine", [d.Node("b.txt", data=b"b")])],
+        patch=_mark_first_volume_nodes_encrypted,
+    )
+    seen = _listed_until_error(
+        a.apfs_dmg(container.container), CorruptionError, "marks node"
+    )
+    assert "Fine/b.txt" in seen
+
+
 def _encrypt_second_volume(container: bytearray, info: a.Apfs) -> None:
     at = info.volume_superblocks[1]
     struct.pack_into("<Q", container, at * info.block_size + 264, 0)
@@ -806,6 +862,31 @@ def test_max_metadata_bytes_applies_to_the_filesystem_tree() -> None:
         pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
     ):
         reader.members()
+
+
+def test_max_metadata_bytes_counts_the_kept_trees_with_the_members() -> None:
+    nodes = [d.Node(f"{i:03d}" + "n" * 200, data=b"x") for i in range(100)]
+    image = a.apfs_dmg(a.write_apfs(nodes).container)
+    with _open(image) as reader:
+        reader.members()
+        tracker = reader._listing_tracker  # type: ignore[attr-defined]
+        kept, total = tracker._kept_bytes, tracker.metadata_bytes
+        # A second listing counts the kept trees once, not again.
+        reader.members()
+        assert tracker.metadata_bytes == total
+    # The kept trees fit on their own, and so do the members; together they do not.
+    limit = total - 1
+    assert 0 < kept < limit
+    assert 0 < total - kept < limit
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=limit))
+    with (
+        _open(image, config=config) as reader,
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+    ):
+        reader.members()
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=total))
+    with _open(image, config=config) as reader:
+        assert len(reader.members()) == len(reader.members())
 
 
 def test_a_zero_extent_bomb_stops_at_the_ratio_guard() -> None:

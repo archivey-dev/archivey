@@ -133,11 +133,16 @@ The first listing, per APFS container (`ApfsContainer.load`, also reached from
   an encrypted object-map entry) or a sealed one is not listed
   (`ARCHIVE_UNLISTED_DATA` beside other volumes, `UnsupportedFeatureError` when it is
   the only kind); a lost one fails the listing after the others;
-- each volume's object map, read whole.
+- each volume's object map, read whole. An entry there marked encrypted, in a volume
+  whose flags say it is not, is damage to the node it maps (a damaged key range), not a
+  refusal: the other volumes are still listed.
 
 What APFS keeps for the life of the archive (the object maps and each filesystem tree,
-which member reads need) is counted against `max_metadata_bytes` by the reader itself
-(`DmgReader._keep`), since `charge_metadata` lasts only for a listing.
+which member reads need) is counted against `max_metadata_bytes` on the listing's own
+tracker (`DmgReader._keep`, through the adapter's `ReaderContext._keep_metadata` and
+`ListingLimitTracker.keep`), so it counts together with the members listed and, for an
+archive inside another, with what the outer levels keep. Unlike `charge_metadata`, the
+charge stays across listings.
 
 Per APFS volume, at the first listing (`ApfsVolume.walk`, then `_ApfsWalk`): one walk of
 the filesystem tree in key order keeps the inodes, directory records, extended

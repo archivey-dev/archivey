@@ -855,7 +855,13 @@ class ApfsVolume:
                 f"the object map of APFS volume {quoted(self.name)} has no entry for node {oid}"
             )
         if found[1] & _OMAP_ENCRYPTED:
-            raise UnsupportedFeatureError("encrypted APFS volumes are not supported")
+            # The volume was read as not encrypted, so this mapping contradicts it:
+            # damage to the node it leads to, as any bad mapping is, and not a
+            # refusal of the whole archive.
+            raise CorruptionError(
+                f"the object map of APFS volume {quoted(self.name)} marks node {oid} "
+                "encrypted, but the volume is not encrypted"
+            )
         return found[0]
 
     def walk(self) -> FsTree:
@@ -1036,13 +1042,13 @@ def stream_reader(
         )
         lost.append((low, high, each))
 
-    def hole(at: int) -> None:
-        """Serve zeros at ``at``, unless an extent the records cannot show may start
-        between the last known extent before it and ``at``."""
+    def hole(at: int, stop: int) -> None:
+        """Serve zeros over [``at``, ``stop``), unless an extent the records cannot
+        show may start between the last known extent before ``at`` and ``stop``."""
         index = bisect.bisect_right(starts, at) - 1
         before = starts[index] if index >= 0 else -1
         for low, high, each in lost:
-            if low <= at and high > before:
+            if low < stop and high > before:
                 raise CorruptionError(
                     f"the extents of {what} from byte {at} are in a damaged node of "
                     f"the filesystem tree (block {each.address}: {each.reason})"
@@ -1078,9 +1084,9 @@ def stream_reader(
             if index < len(starts) and starts[index] + lengths[index] <= at:
                 index += 1
                 continue
-            hole(at)
             following = starts[index] if index < len(starts) else end
             take = min(end, following) - at
+            hole(at, at + take)
             parts.append(bytes(take))
             at += take
         return b"".join(parts)

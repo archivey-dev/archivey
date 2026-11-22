@@ -308,7 +308,14 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
     def _keep(self, nbytes: int, what: str) -> None:
         """Count what the APFS reading keeps for the life of the archive (object maps
         and filesystem trees, which member reads need) against
-        ``max_metadata_bytes``, since ``charge_metadata`` lasts only for a listing."""
+        ``max_metadata_bytes``, with what the listing holds and, for an archive read
+        inside another, what the outer levels hold: ``charge_metadata`` lasts only
+        for a listing. Without the adapter's hook, the kept bytes are bounded
+        alone."""
+        keep = self._context._keep_metadata
+        if keep is not None:
+            keep(nbytes, what)
+            return
         self._kept += nbytes
         budget = self._context.config.listing_limits.max_metadata_bytes
         if budget is not None and self._kept > budget:

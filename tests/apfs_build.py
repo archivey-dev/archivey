@@ -278,7 +278,7 @@ def write_apfs(
     holes: dict[str, Sequence[tuple[int, int]]] | None = None,
     zero_extents: dict[str, Sequence[tuple[int, int]]] | None = None,
     clones: dict[str, str] | None = None,
-    split_before: Sequence[tuple[str, int]] = (),
+    split_before: Sequence[tuple[str, int] | tuple[str, int, int]] = (),
     leaf_records: int | None = None,
     omap_leaf_entries: int | None = None,
     newer_checkpoint: str | None = None,
@@ -302,9 +302,10 @@ def write_apfs(
 
     ``split_before`` lists (path, record type) pairs: the first record of that type for
     that path's inode (for type 8, its stream; for type 9, the record naming it) starts
-    a new leaf. ``leaf_records`` caps the records per leaf. ``newer_checkpoint`` adds
-    a checkpoint with a higher transaction after the real one: ``"bad-checksum"`` (its
-    superblock fails its checksum) or ``"missing-map"`` (its superblock is good and its
+    a new leaf. A third item, for type 8, names the extent's logical offset instead.
+    ``leaf_records`` caps the records per leaf. ``newer_checkpoint`` adds a checkpoint
+    with a higher transaction after the real one: ``"bad-checksum"`` (its superblock
+    fails its checksum) or ``"missing-map"`` (its superblock is good and its
     checkpoint-map block is not there).
     """
     holes = dict(holes or {})
@@ -640,11 +641,15 @@ def write_apfs(
 
         # ── the filesystem tree: leaves, then an index root over them if needed ──
         breaks = set()
-        for spath, skind in split_before:
+        for spath, skind, *at in split_before:
             target_ids = {inode_ids[spath], streams.get(spath, inode_ids[spath])}
             for i, rec in enumerate(records):
-                if rec.kind == skind and (
-                    rec.oid in target_ids if skind != DIR_REC else rec.path == spath
+                if (
+                    rec.kind == skind
+                    and (
+                        rec.oid in target_ids if skind != DIR_REC else rec.path == spath
+                    )
+                    and (not at or rec.secondary == (at[0],))
                 ):
                     breaks.add(i)
                     break

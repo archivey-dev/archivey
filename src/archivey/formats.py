@@ -618,6 +618,12 @@ class ReaderContext:
     # while listing work runs on this thread, so a member read is not counted.
     # Internal, set by the adapter; not for plugins.
     _listing_draw: Callable[[int], None] | None = None
+    # ``_keep_metadata(n, what)`` counts ``n`` bytes the reader keeps for as long as
+    # it is open (DMG's APFS object maps and trees) toward
+    # ``ListingLimits.max_metadata_bytes``, with what the listing holds, at any time:
+    # unlike ``charge_metadata`` the charge outlives the walk. Internal, set by the
+    # adapter; not for plugins.
+    _keep_metadata: Callable[[int, str], None] | None = None
 
     def __init__(
         self,
