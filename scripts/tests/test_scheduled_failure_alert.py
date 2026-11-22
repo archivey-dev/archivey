@@ -69,6 +69,15 @@ def test_failed_jobs_keeps_failures_and_timeouts_only() -> None:
     assert alert.failed_jobs(jobs) == ["a", "b"]
 
 
+def test_a_run_with_no_failure_names_the_job_that_did_not_pass() -> None:
+    lost = {"name": "macos", "conclusion": "cancelled", "steps": []}
+    started = {"name": "ubuntu", "conclusion": "cancelled", "steps": [{"name": "x"}]}
+    broken = {"name": "win", "conclusion": "startup_failure", "steps": []}
+    passed = {"name": "docs", "conclusion": "success", "steps": [{"name": "x"}]}
+    assert alert.failed_jobs([lost, started, broken, passed]) == ["ubuntu", "win"]
+    assert alert.failed_jobs([lost, passed]) == []
+
+
 def test_a_job_no_runner_took_is_listed_as_lost() -> None:
     # Issue 1654: macOS runners were short, GitHub cancelled the job before any step,
     # and the other jobs passed.
@@ -250,6 +259,14 @@ def test_main_drives_gh(tmp_path: Path) -> None:
     assert "- `macos`" in body
     # Lost jobs stay out of the failed list and its marker.
     assert "Failed jobs" not in body
+    # A previous run that lost a job next to another bad job also counts.
+    started = {"name": "ubuntu", "conclusion": "cancelled", "steps": [{"n": 1}]}
+    calls = run(lost, {"jobs": [*lost["jobs"], started]})
+    assert calls[-1][:3] == ["issue", "comment", "7"]
+    # A lost job next to a started-then-cancelled one reports, naming the latter.
+    calls = run({"jobs": [*lost["jobs"], started]}, green)
+    assert calls[-1][:3] == ["issue", "comment", "7"]
+    assert "- **new:** `ubuntu`" in calls[-1][-1]
     # A previous run whose jobs cannot be read counts as lost: report.
     env["GH_PREVIOUS_FAILS"] = "1"
     calls = run(lost, green)
