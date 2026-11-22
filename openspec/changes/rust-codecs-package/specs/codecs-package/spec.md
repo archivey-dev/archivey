@@ -88,6 +88,7 @@ more than `out_size` bytes. Every allocation SHALL be bounded by a constructor a
 | A parameter the kernel does not support | `UnsupportedDataError` |
 | Two threads call one object at once | One raises `RuntimeError`; the object's state is intact |
 | A `bytearray` input that another thread writes during the call | The kernel reads a consistent copy, or holds the GIL; never reads memory being written |
+| Another mutable buffer (`array.array`, `mmap`, a write through a second `memoryview`) written during the call | The caller's to prevent, as with CPython's own `zlib` and `hashlib`: such an exporter has no lock to take. The kernel still reads only its own copy |
 
 ### Requirement: Streaming decoder state can be copied and saved
 
@@ -117,6 +118,8 @@ block's offset.
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |
 | An LZX decoder saved after returning 1 byte of a 12-byte last frame | `total_out` counts that 1 byte; the restored decoder returns the other 11, then `eof` |
+| LZX or LZW saved during a capped `flush()` | The restored decoder has not been flushed: given the input from `total_in` and then `flush()`, it returns the rest of the output and ends as the original does |
+| LZX at `eof` with bytes after the stream | `total_in` stops where the stream does (an odd uncompressed block's pad byte in, words fetched ahead out); `unused_data` holds the rest |
 | An ARM64 filter saved with 2 bytes held back | The resumed filter returns those 2 bytes first; output equals the straight decode |
 | ZipCrypto saved after `n` bytes | `getstate()` holds the three 32-bit keys after the kernel name and revision; decrypting from offset `n` equals the straight decrypt |
 | `copy()` then decode on both | Both produce the same output; neither affects the other |

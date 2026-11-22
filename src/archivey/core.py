@@ -19,7 +19,7 @@ package).
    is followed to the split first volume beside it.
 4. Refuse a format this open can never read (``_refuse_unopenable_format``): off
    by policy, out of a replacement plugin's reach, a volume set for a format without
-   volumes, a raw CD sector image, or a recognised-only format (DMG).
+   volumes, a raw CD sector image, or a recognised-only format (none is built in).
 5. Pick the backend (``_backend_for_source``): refuse a non-seekable source for a
    format that needs to seek in either mode, look up the backend
    (``PackageNotInstalledError``), emit the ``password=`` / ``encoding=``
@@ -1037,7 +1037,7 @@ def _refuse_unopenable_format(
 
     Covers, in order: a format ``config.formats`` turns off, what a replacement plugin
     cannot read, a volume set for a format without volumes, a raw CD sector image, and
-    a recognised-only format (DMG). All of these come before the backend lookup, so
+    a recognised-only format. All of these come before the backend lookup, so
     the caller is not told to install a package for an open that would fail anyway.
     """
     resolved_format = decision.format
@@ -1094,10 +1094,11 @@ def _refuse_unopenable_format(
             )
         refuse_raw_sector_image(archive_source, resolved_format, archive_name)
 
-    # Detection claims a recognised-only format (DMG) so this refusal can name it and
-    # carry ``archive_name``. It comes before ``reader_for_format``, which raises the
-    # same text but takes no archive name. Such a backend's own ``open_read`` must
-    # raise the same refusal too, as ``UdifBackend`` does; nothing provides that.
+    # A backend with ``READ_IMPLEMENTED`` false (none is built in) is registered so
+    # detection can name its format and this refusal can carry ``archive_name``. It
+    # comes before ``reader_for_format``, which raises the same text but takes no
+    # archive name. Such a backend's own ``open_read`` must raise the same refusal
+    # too; nothing provides that.
     unread_message = get_registry().unread_format_message(resolved_format)
     if unread_message is not None:
         raise UnsupportedFeatureError(

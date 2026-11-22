@@ -97,7 +97,7 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 | Kernel | `KERNELS` key | Python name | Constructor or call |
 | --- | --- | --- | --- |
 | LZX | `"lzx"` | `lzx.Decompressor` | `(window_bits, *, output_size=None)`; `set_output_size(n)`; `reset(output_size=None)` at a CAB folder start |
-| Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
+| Unix `compress` | `"lzw"` | `lzw.Decompressor` | `(*, max_width=None, block_mode=None, nine_bit_widens=None)`; `flush(max_length=-1)`, `truncation`; `header_params`, `clear_offsets` |
 | LZO1X | `"lzo1x"` | `lzo1x.decompress` | `(block, *, out_size)` |
 | ZipCrypto | `"zipcrypto"` | `zipcrypto.Decryptor` | `(password: bytes)`; `decrypt(data) -> bytes` |
 | BCJ2 | `"bcj2"` | `bcj2.Decompressor` | `(main, call, jump, rc, *, out_size)`, four readable binary streams |
@@ -116,13 +116,16 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   with `set_output_size(n)` before the last frame starts. The kernel decodes one whole
   frame into an internal buffer of at most 32 KiB and returns it in `max_length`
   slices. `eof` turns true when `total_out`, the bytes returned so far, reaches the
-  output size. Without an output size, every frame is 32 KiB and `eof` stays false.
+  output size. Without an output size, every frame is 32 KiB, and `eof` turns true at
+  `flush()` once the last frame has used all the input.
   This is how `cab_reader.py` calls `decode_frame(frame)` today.
 - LZX also needs to know when the compressed input has ended, which an output size
   does not say: the CAB reader's `_lzx_more()` returns `None` after the last data
   block, and only then does the Python twin read zero padding past the end (at most
-  `_MAX_PADDING` bytes) for its last lookahead. Before that, a frame that the input does
-  not yet cover waits for more input (`needs_input` true). LZX therefore has
+  `_MAX_PADDING` bytes) for its last lookahead. Before that, a frame is tried only
+  once the queued input is about twice what the last frame used, so that a frame fed
+  block by block is decoded once, not retried at every block; output lags the input
+  by up to two frames, and `needs_input` is true while it waits. LZX therefore has
   `flush(max_length=-1)`, like LZW: it marks the end of input, finishes the frame with
   the twin's zero padding, and returns the rest. A frame that still cannot finish then
   raises `TruncatedDataError`, as the twin's `TruncatedError`. This also covers a
@@ -134,6 +137,14 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
   and `truncation`: `None`, or the message of the Python twin's `truncation` (padding
   owed, nonzero leftover bits). Truncation is reported, not raised, so the bytes before
   it are kept; archivey decides what to raise, as it does with the twin today.
+  `max_length` bounds what every call decodes, `flush()` included: the final pass runs
+  only once less than one code of input is left. `nine_bit_widens` is the switch the
+  Python twin already has for the old `compress` variant whose 9-bit codes widen at a
+  different point (`None` guesses from the data). `clear_offsets` lists the CLEAR codes
+  the last `decompress()` or `flush()` call passed, as `(input, output)` offsets counted
+  like `total_in` and `total_out`, where a decoder made with the stream's
+  `header_params` can start afresh; each call reports only its own, so a caller that
+  wants them all collects them.
 - BCJ2 reads four input streams, so it cannot take one `data` argument. It pulls from
   four objects with `read(n)` and gives output through `read(max_length)` with `eof`.
   `out_size` is the declared output size (`unpack_size` in the 7z pipeline) and is

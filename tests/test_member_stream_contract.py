@@ -910,7 +910,7 @@ _UNTESTED: tuple[tuple[str, str], ...] = (
     ("multi-volume", "no corpus builder for split/multi-volume archives"),
     ("tar-lzma-alone", "no corpus builder for tar + LZMA Alone"),
     ("tar-unix-compress", "no corpus builder for tar + unix compress (.tar.Z)"),
-    ("udif", "UDIF is recognised and refused; there is no reader"),
+    ("udif", "no corpus builder for DMG; tests/test_dmg.py reads the hdiutil fixtures"),
     (
         "mozlz4",
         "no corpus builder for Firefox mozlz4; tests/test_mozlz4.py seeks in a file",

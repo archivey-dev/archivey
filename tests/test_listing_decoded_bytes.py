@@ -329,3 +329,18 @@ def test_an_rpm_lists_from_its_header_without_decoding() -> None:
     data = _build(_Package(files))
     with archivey.open_archive(io.BytesIO(data), config=_config(1)) as reader:
         assert len(reader.members()) == 3
+
+
+def test_a_dmg_listing_counts_the_runs_it_decodes() -> None:
+    """Each run a DMG listing decodes counts, so a catalog that keeps missing the run
+    cache cannot decode without bound."""
+    from tests.test_dmg import _image
+
+    data = _image(run_sectors=1)  # one sector per run: the walk decodes many runs
+    with archivey.open_archive(io.BytesIO(data), config=_config(None)) as reader:
+        assert len(reader.members()) == 23
+    with (
+        archivey.open_archive(io.BytesIO(data), config=_config(8 << 10)) as reader,
+        pytest.raises(ResourceLimitError, match="max_decoded_bytes=8192"),
+    ):
+        reader.members()

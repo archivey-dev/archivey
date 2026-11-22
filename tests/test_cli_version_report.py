@@ -46,7 +46,9 @@ def test_report_splits_archives_from_compression(
         "\ncompression and encodings\n"
     )
     assert "zip" in archives and "tar" in archives
-    assert "dmg (recognised, not readable)" in archives
+    # DMG is read now: listed among the formats read in full, with no note.
+    assert "dmg" in archives
+    assert "recognised, not readable" not in archives
     assert "gz" in compression and "xz" in compression
     assert (
         "tar also open inside any of these that can be read, such as tar.gz."
