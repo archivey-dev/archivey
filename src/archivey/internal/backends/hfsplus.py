@@ -83,6 +83,9 @@ XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
 _DECMPFS_KEEP = DECMPFS_CHUNK + 64
+# What one kept extent costs in memory: a (start, count) tuple of two ints, and its
+# slots in the list and in the final tuple.
+_EXTENT_CHARGE = 96
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -813,7 +816,7 @@ def read_attributes(
                     continue
                 more = struct.unpack_from(">16I", data, 8)
                 added = [(more[i], more[i + 1]) for i in range(0, 16, 2) if more[i + 1]]
-                charge(8 * len(added), "HFS+ attributes")
+                charge(_EXTENT_CHARGE * len(added), "HFS+ attributes")
                 kept = grown.get((cnid, name))
                 if kept is None:
                     extents = list(existing.fork.extents)
@@ -823,10 +826,12 @@ def read_attributes(
                 extents += added
                 blocks += sum(count for _, count in added)
                 if blocks > existing.fork.total_blocks:
-                    raise CorruptionError(
-                        f"the extents of an attribute of file {cnid} hold {blocks} "
-                        f"blocks, more than its {existing.fork.total_blocks}"
-                    )
+                    # More blocks than the fork has: the attribute is damaged and
+                    # dropped, so its later extent records find nothing to grow.
+                    bad.add(cnid)
+                    del attrs[name]
+                    grown.pop((cnid, name), None)
+                    continue
                 grown[(cnid, name)] = (extents, blocks)
             else:
                 bad.add(cnid)
