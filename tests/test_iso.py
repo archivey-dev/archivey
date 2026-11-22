@@ -1283,6 +1283,29 @@ def test_a_relocated_directory_lists_under_its_placeholders_name() -> None:
         assert ar.read(deep) == b"deep"
 
 
+def test_a_parked_directory_no_cl_points_at_lists_where_it_is_stored() -> None:
+    """A directory whose ``..`` carries ``PL`` is hidden from its parking place only
+    when a ``CL`` relinks it. With no ``CL`` pointing back, hiding it would lose it
+    and its files, so it lists where it is stored, under ``rr_moved``."""
+
+    def populate(iso: Any) -> None:
+        path = ""
+        for name in [f"L{i}" for i in range(1, 9)]:
+            path += f"/{name}"
+            iso.add_directory(path, rr_name=name.lower())
+        iso.add_fp(io.BytesIO(b"deep"), 4, path + "/F.;1", rr_name="f.txt")
+
+    data = _build_rr_iso(populate)
+    assert data.count(b"CL\x0c\x01") == 1
+    # The placeholder keeps its record, now a plain empty file with no ``CL``.
+    data = data.replace(b"CL\x0c\x01", b"XX\x0c\x01")
+    with open_archive(io.BytesIO(data)) as ar:
+        names = {m.name for m in ar.members()}
+        assert "rr_moved/l8/f.txt" in names
+        assert "l1/l2/l3/l4/l5/l6/l7/l8" in names
+        assert ar.read("rr_moved/l8/f.txt") == b"deep"
+
+
 def test_a_rock_ridge_record_without_entries_lists_under_its_iso_name() -> None:
     """An RR image whose one record has no System Use entries keeps that member,
     names it from the ISO 9660 identifier, and says what was lost."""
