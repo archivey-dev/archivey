@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import lzma
+import os
 import random
 import shutil
 import struct
@@ -229,6 +230,10 @@ def write_7z(
 # Archives the 7-Zip CLI writes ---------------------------------------------------------
 
 
+# 2023-11-14 22:13:20 UTC: the time of every file the CLI archives.
+_FIXED_TIME = 1_700_000_000
+
+
 class SevenZipBuilder:
     """Builds archives with the 7-Zip CLI in one temporary directory, each once."""
 
@@ -246,6 +251,9 @@ class SevenZipBuilder:
             src.mkdir(parents=True)
             for name, data in source_files(count, long_names=long_names).items():
                 (src / name).write_bytes(data)
+                # A fixed time, so the archive's bytes (its header CRC among them)
+                # do not change from run to run with one 7-Zip.
+                os.utime(src / name, (_FIXED_TIME, _FIXED_TIME))
             out = work / "a.7z"
             result = run_7z(
                 ["a", "-t7z", "-bd", "-y", *KINDS[kind], str(out), "."],

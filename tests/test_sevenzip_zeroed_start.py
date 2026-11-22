@@ -25,6 +25,7 @@ from archivey.config import ArchiveyConfig
 from archivey.diagnostics import ArchiveStructureContext, DiagnosticCode
 from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from archivey.internal.backends.sevenzip_parser import (
+    ZEROED_START_TAIL,
     find_zeroed_start_next_header,
 )
 from tests.conftest import requires, run_7z
@@ -161,8 +162,23 @@ def test_zeroed_bytes_with_a_recomputed_crc_open_as_today() -> None:
 def test_every_kind_of_archive_opens_with_a_zeroed_start_header(
     kind: str, sevenzip_builder: SevenZipBuilder
 ) -> None:
+    """An archive the 7-Zip CLI writes opens with its start header zeroed, when
+    7-Zip's rule finds its next header: the ``17 06`` or ``01 04`` pair nearest the
+    end. The header's own fields can hold such a pair after its start: a CRC whose
+    first byte is ``04`` makes ``0a 01 04`` (kCRC, all defined). 7-Zip refuses that
+    archive, and so does archivey. The CRC covers the files' times, so the builder
+    gives every file one fixed time, and then one 7-Zip writes the same bytes on
+    every run."""
     data = sevenzip_builder.build(kind)
-    assert read_all(zero_start_header(data)) == read_all(data)
+    damaged = zero_start_header(data)
+    start, _ = next_header_span(data)
+    check = min(ZEROED_START_TAIL, len(data) - 32)
+    found = find_zeroed_start_next_header(data[-check:])
+    if found is None or len(data) - check + found != start:
+        with pytest.raises(CorruptionError, match="start header is zero"):
+            read_all(damaged)
+        return
+    assert read_all(damaged) == read_all(data)
 
 
 def test_a_pair_that_starts_no_header_is_refused_as_corrupt() -> None:
