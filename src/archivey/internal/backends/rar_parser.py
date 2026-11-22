@@ -3941,9 +3941,9 @@ class _Rar3Walk:
         """What the plain header at ``pos`` is, for :meth:`_follow_damage`.
 
         Where the block after it starts, for a ``FILE``, ``SUB`` or ``ENDARC`` that
-        passes its CRC; :data:`_PROBE_END` for the end of the file;
-        :data:`_PROBE_CLEAN_END` for an end block that passes and has nothing but
-        zeros after it, which confirms on its own; the block, its
+        passes its CRC; :data:`_PROBE_END` for exactly the end of the file (not a
+        position past it); :data:`_PROBE_CLEAN_END` for an end block that passes and has
+        nothing but zeros after it, which confirms on its own; the block, its
         fields and CRC end for a damaged ``FILE`` or ``SUB`` whose fields parse;
         ``None`` for anything else.
         """
@@ -3954,7 +3954,15 @@ class _Rar3Walk:
         except CorruptionError:
             return None
         if block is None:
-            return _PROBE_END
+            # The read is empty at the end of the file and at every position past
+            # it. Only the end itself is the clean end: a position past it is where
+            # a size no CRC checked points, often one read from random bytes, and
+            # counting it would let one CRC16 match confirm the jump.
+            try:
+                end = source.seek(0, io.SEEK_END)
+            except (OSError, ValueError):
+                return None
+            return _PROBE_END if pos == end else None
         header_size = block.header_size
         if block.block_type == _RAR3_ENDARC:
             if block.header_crc != _crc32(block.hdata[2:header_size]) & 0xFFFF:

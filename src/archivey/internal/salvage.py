@@ -269,9 +269,9 @@ class SalvageState:
                 reason="no_header",
                 volume_index=volume_index,
             ),
-            f"Salvage skipped {length} bytes at offset {offset}"
-            f"{_in_layer(layer, volume_index)} of the {self._format_name} archive: no "
-            "header passes the format's checks in it.",
+            f"Salvage skipped {length} {'byte' if length == 1 else 'bytes'} at offset "
+            f"{offset}{_in_layer(layer, volume_index)} of the {self._format_name} "
+            "archive: no header passes the format's checks in it.",
         )
 
     def record_search_limit(

@@ -501,3 +501,13 @@ def test_a_second_walk_searches_quietly_as_the_first_did() -> None:
     again.finish()
     assert state.searched_bytes == searched
     assert len(collector.snapshot().retained) == records
+
+
+def test_a_one_byte_region_says_byte() -> None:
+    data = b"\x00" + MAGIC + b"rest"
+    state, collector = _state()
+    assert (
+        search_forward(state, _Layer(data).read_at, _magic_search(), start=0).found == 1
+    )
+    [record] = collector.snapshot().retained
+    assert "skipped 1 byte at offset 0" in record.message
