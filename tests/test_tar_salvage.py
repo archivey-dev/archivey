@@ -777,12 +777,56 @@ def _lying_size() -> bytes:
     return bytes(out + bytes(2 * BLOCKSIZE))
 
 
+def _tar_inside_a_big_member() -> bytes:
+    """A damaged block, then ``big.bin``: 6 MiB that starts with a 5-member tar, then
+    5 members after it."""
+    inner = _build(5, seed=7, max_size=100, names=[f"inner{i}" for i in range(5)])
+    body = inner.data + random.Random(1).randbytes((6 << 20) - len(inner.data))
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, content in [
+            ("a", b"abc"),
+            ("pad", b"p" * 10),
+            ("big.bin", body),
+            *((f"after{i}", b"z" * 50) for i in range(5)),
+        ]:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        offsets = [m.offset for m in tar.getmembers()]
+    return _zeroed(data, offsets[1], BLOCKSIZE)
+
+
+def _headers_after_a_liar() -> bytes:
+    """A damaged block, then a header that claims 7 MiB it does not hold, then
+    ``early`` (1.5 MiB), ``mid`` (2 MiB), ``late`` (5 MiB, its header about 3.5 MiB
+    after the liar's) and 5 small members: the claimed end lands inside ``late``'s
+    data."""
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    rng = random.Random(5)
+    out = bytearray(header("a", 3) + b"abc".ljust(BLOCKSIZE, b"\0"))
+    out += b"\x01" * BLOCKSIZE + header("liar", 7 << 20)
+    for name, size in (("early", 3 << 19), ("mid", 2 << 20), ("late", 5 << 20)):
+        out += header(name, size) + rng.randbytes(size)
+    for index in range(5):
+        out += header(f"tail{index}", 50) + b"t" * 50 + bytes(BLOCKSIZE - 50)
+    return bytes(out + bytes(2 * BLOCKSIZE))
+
+
 @pytest.mark.parametrize(
     "data",
     [
         pytest.param(_dense(60), id="dense"),
         pytest.param(_confirmed_big(), id="big"),
         pytest.param(_lying_size(), id="lying-size"),
+        pytest.param(_tar_inside_a_big_member(), id="tar-inside-a-big-member"),
     ],
 )
 def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
@@ -796,15 +840,85 @@ def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
     unconfirmed member's whole claimed size through the walk, which ran into the
     stream's end and ended the walk in ``TruncatedError`` (3 members); its data now
     reads from the window and ends there quietly (fails with ``open_data`` in place
-    of ``open_held_data`` in ``TarReader._member_body``)."""
+    of ``open_held_data`` in ``TarReader._member_body``).
+
+    ``tar-inside-a-big-member``: a found member with 6 MiB of data, more than the
+    4 MiB a forward-only read holds. Its size is trusted, so its data reads in full
+    and the tar stored in it is not listed; it is the one member whose flag differs,
+    as nothing has confirmed it when it is listed (round 3 of PR 1768, K6: its
+    data stopped at 4 MiB with ``TruncatedError``, and ``inner0``..``inner4`` were
+    listed)."""
     direct = _list(data, salvage=True)
     nested = _list(_as_deb(data), salvage=True)
     assert nested.names[0] == "DEBIAN/control"
     assert nested.members[1:] == direct.members
-    assert {n: (c.offset, c.confirmed) for n, c in nested.found().items()} == {
-        n: (c.offset, c.confirmed) for n, c in direct.found().items()
+    # The found members whose data is longer than the hold.
+    trusted = {
+        name
+        for name, size, _ in direct.members
+        if name in direct.found() and (size or 0) > 4 << 20
     }
+    assert trusted <= {"big.bin"}
+    nested_flags = {n: (c.offset, c.confirmed) for n, c in nested.found().items()}
+    direct_flags = {n: (c.offset, c.confirmed) for n, c in direct.found().items()}
+    for name in trusted:
+        offset, confirmed = direct_flags[name]
+        assert confirmed and nested_flags[name] == (offset, False)
+        assert "size is trusted" in next(
+            d.message
+            for d in nested.of(DiagnosticCode.MEMBER_FOUND_BY_SCAN)
+            if isinstance(d.context, SalvageScanContext)
+            and d.context.member_name == name
+        )
+        direct_flags[name] = nested_flags[name]
+    assert nested_flags == direct_flags
     assert len(direct.found()) >= 4
+
+
+def test_a_deb_extracts_a_trusted_member_bigger_than_the_hold(tmp_path: Path) -> None:
+    """``extract_all`` on the deb writes ``big.bin`` whole and every member after
+    it, and still ends in the damage error (K6: it stopped at ``big.bin``)."""
+    data = _tar_inside_a_big_member()
+    direct = _list(data, salvage=True)
+    with (
+        open_archive(io.BytesIO(_as_deb(data)), salvage=True) as reader,
+        pytest.raises(CorruptionError),
+    ):
+        reader.extract_all(tmp_path)
+    written = {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+    assert written.pop("DEBIAN/control")
+    assert written == {name: content for name, _, content in direct.members}
+
+
+def test_a_deb_searches_back_inside_a_trusted_size_that_lies() -> None:
+    """A trusted size that lies by more than the hold: the block where it ends is
+    no header, so the search goes back inside the last 4 MiB the walk's window
+    kept, from where the read ended. ``late``, whose header is in that span, and
+    the members after it are listed; ``early``, before the span, is lost. The plain
+    tar's search goes inside the whole claimed span and lists every member."""
+    data = _headers_after_a_liar()
+    direct = _list(data, salvage=True)
+    assert direct.names == [
+        "a",
+        "liar",
+        "early",
+        "mid",
+        "late",
+        *(f"tail{i}" for i in range(5)),
+    ]
+    nested = _list(_as_deb(data), salvage=True)
+    names = nested.names[1:]
+    assert names[:2] == ["a", "liar"]
+    assert "early" not in names
+    assert names[-6:] == ["late", *(f"tail{i}" for i in range(5))]
+    found = nested.found()
+    assert found["liar"].confirmed is False
+    assert found["late"].offset == direct.found()["late"].offset
+    assert isinstance(nested.error, CorruptionError)
 
 
 def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:
@@ -902,28 +1016,6 @@ def test_dense_headers_cost_little_through_a_deb(
     assert copied <= len(data) + count * per_member
 
 
-def _tar_inside_a_big_member() -> bytes:
-    """A damaged block, then ``big.bin``: 6 MiB that starts with a 5-member tar, then
-    5 members after it."""
-    inner = _build(5, seed=7, max_size=100, names=[f"inner{i}" for i in range(5)])
-    body = inner.data + random.Random(1).randbytes((6 << 20) - len(inner.data))
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-        for name, content in [
-            ("a", b"abc"),
-            ("pad", b"p" * 10),
-            ("big.bin", body),
-            *((f"after{i}", b"z" * 50) for i in range(5)),
-        ]:
-            info = tarfile.TarInfo(name)
-            info.size = len(content)
-            tar.addfile(info, io.BytesIO(content))
-    data = buf.getvalue()
-    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
-        offsets = [m.offset for m in tar.getmembers()]
-    return _zeroed(data, offsets[1], BLOCKSIZE)
-
-
 def test_a_gzip_tar_confirms_a_member_bigger_than_the_hold() -> None:
     """A found member with more than 4 MiB of data, on a codec stream, is confirmed
     by decoding forward to the header after it, so the tar stored in its data is not
@@ -938,6 +1030,60 @@ def test_a_gzip_tar_confirms_a_member_bigger_than_the_hold() -> None:
     assert {n: c.confirmed for n, c in gzipped.found().items()} == {
         n: c.confirmed for n, c in plain.found().items()
     }
+
+
+def _big_groups(groups: int, *, damaged: bool) -> bytes:
+    """``a``, then ``groups`` groups of ``pad_i`` (its header zeroed when
+    ``damaged``, else only the first group's), ``big_i`` (4 MiB and 4 KiB of random
+    bytes, more than the hold) and ``ok_i``, then ``tail``."""
+    rng = random.Random(8)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        members = [("a", b"abc")]
+        for index in range(groups):
+            members += [
+                (f"pad{index}", b"p" * 10),
+                (f"big{index}", rng.randbytes((4 << 20) + 4096)),
+                (f"ok{index}", b"o" * 10),
+            ]
+        for name, content in [*members, ("tail", b"t" * 10)]:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        offsets = {m.name: m.offset for m in tar.getmembers()}
+    for index in range(groups if damaged else 1):
+        data = _zeroed(data, offsets[f"pad{index}"], BLOCKSIZE)
+    return data
+
+
+@pytest.mark.parametrize(
+    ("groups", "damaged"),
+    [
+        pytest.param(6, True, id="six-found"),
+        pytest.param(3, False, id="walk-reached"),
+    ],
+)
+def test_a_gzip_tar_confirms_big_members_as_the_tar_does(
+    groups: int, damaged: bool
+) -> None:
+    """Several members bigger than the hold past damage, on a codec stream, get the
+    confirmations the plain tar gives them.
+
+    ``six-found``: each ``big_i`` is found by a search after its own damage, and
+    ``ok_i`` confirms it. The far-look budget charged every look, so from the
+    third one on the looks were refused and ``big2``, ``big4`` and ``big5`` came
+    back unconfirmed (round 3 of PR 1768, K7); a look that confirms now costs
+    nothing. ``walk-reached``: one damage, then ``big1`` and ``big2`` reached by the
+    walk, which had no far look and came back unconfirmed (K8)."""
+    data = _big_groups(groups, damaged=damaged)
+    plain = _list(data, salvage=True)
+    gzipped = _list(gzip.compress(data, compresslevel=1), salvage=True)
+    assert gzipped.names == plain.names
+    flags = {n: c.confirmed for n, c in plain.found().items()}
+    assert {n: c.confirmed for n, c in gzipped.found().items()} == flags
+    assert all(flags[f"big{i}"] for i in range(groups))
 
 
 def test_far_confirmations_on_a_gzip_tar_are_bounded() -> None:

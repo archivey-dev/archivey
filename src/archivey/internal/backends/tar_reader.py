@@ -666,13 +666,16 @@ class _SalvageWalk:
     member and the member count at that point: the pass ends in its error once the
     searches are done (Q3). ``found_at`` is where the chain of the entry about to be
     listed starts, when a search found it. ``v7`` is the v7 rule the last search
-    used, for the confirmation of what it found.
+    used, for the confirmation of what it found. ``trusted`` is, for the member
+    just listed, where its chain starts and where its data ends, when a
+    forward-only walk trusted its size (``TarWalker.salvage_confirms``).
     """
 
     default_end: TarEnd | None = None
     default_last: ArchiveMember | None = None
     default_count: int = 0
     found_at: int | None = None
+    trusted: tuple[int, int] | None = None
     v7: bool = False
     limit_reached: bool = False
     # Whether any member was listed, and whether one had a header other than v7.
@@ -1144,6 +1147,8 @@ class TarReader(BaseArchiveReader):
             entry = None
         while entry is not None:
             if isinstance(entry, TarEntry):
+                # The block after a trusted member's data made this entry.
+                salvage.trusted = None
                 last_member = self._to_member(entry, index)
                 search_from = None
                 if salvage.default_end is not None:
@@ -1162,6 +1167,17 @@ class TarReader(BaseArchiveReader):
                 self._refresh_member_levels()
                 continue
             start = self._salvage_start(walker, entry, salvage)
+            trusted, salvage.trusted = salvage.trusted, None
+            if (
+                trusted is not None
+                and entry.offset == trusted[1]
+                and not salvage.limit_reached
+                and (start is not None or entry.kind is not TarEndKind.ZERO_BLOCK)
+            ):
+                # Nothing confirms the size a forward-only walk trusted: search back
+                # inside the member's data, as far as the walk's window still
+                # keeps it (design.md, "Notes from the TAR PR").
+                start = walker.search_floor(trusted[0] + BLOCKSIZE)
             if start is None:
                 break
             salvage.begin(entry, last_member, index)
@@ -1297,10 +1313,18 @@ class TarReader(BaseArchiveReader):
         salvage.found_at = None
         try:
             with self._translated_errors(), self._walk_guard():
-                confirmed = walker.salvage_confirms(v7=salvage.v7, searched=searched)
+                looked = walker.salvage_confirms(v7=salvage.v7, searched=searched)
         except CorruptionError:
-            confirmed = False
-        if searched and not confirmed and self._streaming:
+            looked = False
+        # ``None``: a forward-only walk cannot see the block after the data within
+        # the span it holds. A found member's size is then trusted: the walk reads
+        # on through its data, and searches back inside it only when the block
+        # there does not confirm it (maintainer decision on review finding K6).
+        trusted = searched and looked is None
+        confirmed = bool(looked)
+        if trusted:
+            salvage.trusted = (found, walker.position)
+        if searched and looked is False and self._streaming:
             span = member._raw
             assert isinstance(span, TarSpan)
             self._held_spans.add(span.data_offset)
@@ -1317,6 +1341,13 @@ class TarReader(BaseArchiveReader):
             how = (
                 "the header after its data passes the same checks, so its size is "
                 "confirmed"
+            )
+        elif trusted:
+            how = (
+                "its data runs past the bytes a forward-only read holds, so its size "
+                "is trusted and the walk reads on through it; if the header after "
+                "its data does not pass the same checks, the search goes back "
+                "inside the last of its data"
             )
         else:
             how = (
@@ -1344,7 +1375,7 @@ class TarReader(BaseArchiveReader):
             member=member,
             logger=backends_logger,
         )
-        return None if confirmed or not searched else found + BLOCKSIZE
+        return None if confirmed or trusted or not searched else found + BLOCKSIZE
 
     def _raise_members_the_codec_checked(self) -> None:
         """Raise every listed file to ``CHECKSUM`` when the codec's checksum covered it.
