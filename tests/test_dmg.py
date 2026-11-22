@@ -638,6 +638,17 @@ def test_a_property_list_over_its_cap_is_refused_before_it_is_read() -> None:
         _open(image, format=ArchiveFormat.DMG)
 
 
+@pytest.mark.parametrize("encoding", [b"UTF-9", b"rot13"])
+def test_a_property_list_with_an_unusable_encoding_is_corruption(
+    encoding: bytes,
+) -> None:
+    image = d.dmg_of([d.Node("a.txt", data=b"hi")])
+    damaged = image.replace(b'encoding="UTF-8"', b'encoding="' + encoding + b'"')
+    assert damaged != image
+    with pytest.raises(CorruptionError, match="property list .* does not parse"):
+        _open(damaged)
+
+
 def test_a_segmented_image_is_refused() -> None:
     def segmented(koly: bytearray) -> None:
         struct.pack_into(">I", koly, 60, 2)

@@ -394,6 +394,7 @@ class UdifImage:
             TypeError,
             KeyError,
             IndexError,
+            LookupError,  # the XML declaration names an unknown or non-text codec
             OverflowError,
             RecursionError,
             struct.error,
