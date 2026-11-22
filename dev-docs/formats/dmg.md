@@ -152,9 +152,12 @@ after the others.
 **Damaged nodes (D7).** Every object's Fletcher-64, type, own id and transaction are
 checked. A node that fails, or does not parse, or whose keys are out of order, is
 skipped whole: the walk records the range of keys its verified parent gave it
-(`apfs.Damage`) and goes on with its siblings; a damaged root damages the whole range.
-Keys are compared on (object id, record type, extent offset) only: names are left out,
-since hashed directory keys may collide, so a boundary counts as inside. Then:
+(`apfs.Damage`) and goes on with its siblings; a damaged root damages the whole range. A
+leaf whose checksum passes but holds a record that does not parse is skipped the same
+way: nothing from it is kept. The ranges are merged and kept sorted
+(`apfs.DamageIndex`), so each lookup is a bisection, whatever the number of damaged
+nodes. Keys are compared on (object id, record type, extent offset) only: names are left
+out, since hashed directory keys may collide, so a boundary counts as inside. Then:
 
 - a member whose inode record, or whose symlink or decmpfs attribute, may be in a
   damaged range is not listed; other attributes in one leave it listed with
@@ -164,6 +167,11 @@ since hashed directory keys may collide, so a boundary counts as inside. Then:
 - an object-map lookup whose newer entry may be in a damaged node raises
   `CorruptionError` ("mapped by a damaged node"), not "not found";
 - the listing ends with `CorruptionError` naming the first damaged block.
+
+With no damaged node, directory records in a directory the walk from the root does not
+reach end the listing with `CorruptionError` naming their count, as HFS+ orphans do.
+The parent of the root (id 1) and the private directory (id 3) are not reached by
+design and are left out.
 
 ### 2.3 Member data
 

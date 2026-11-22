@@ -46,6 +46,7 @@ from archivey.formats import (
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
+    TimeField,
     block_stream,
 )
 from archivey.internal.backends import apfs, disk_partitions as partitions, hfsplus
@@ -216,6 +217,7 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         image.end_open()
         self._units: list[_Unit] | None = None
         self._load_failure: ArchiveyError | None = None
+        self._fatal: ArchiveyError | None = None
         self._trees: dict[int, apfs.FsTree] = {}
         self._kept = 0
         self._names: list[str] | None = None
@@ -322,6 +324,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         remembered as the listing's error."""
         if self._units is not None:
             return self._units
+        if self._fatal is not None:
+            raise self._fatal
         units: list[_Unit] = []
         refused: list[str] = []
         failure: ArchiveyError | None = self._open_failure
@@ -354,11 +358,15 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                 )
         if not units:
             if refused and failure is None:
+                more = f" and {len(refused) - 1} more" if len(refused) > 1 else ""
                 failure = UnsupportedFeatureError(
-                    f"The DMG disk image holds only {refused[0]}s, which archivey does "
-                    "not read"
+                    f"The DMG disk image holds no volume archivey reads: it holds "
+                    f"{refused[0]}{more}"
                 )
             assert failure is not None
+            # Kept, so a later call raises it again without a second scan and
+            # without reporting each refused volume again.
+            self._fatal = failure
             raise failure
         self._units = units
         self._load_failure = failure
@@ -978,6 +986,16 @@ class _ApfsWalk:
                     continue
                 yield made
             stack.extend(reversed(below))
+        orphans = sum(
+            len(entries)
+            for parent, entries in tree.children.items()
+            if parent not in directories and parent not in apfs.UNREACHED_DIRECTORIES
+        )
+        if orphans:
+            problems.append(
+                f"{orphans} directory records are in directories the volume does not "
+                "reach from its root"
+            )
         if tree.damage:
             first_bad = tree.damage[0]
             unlisted = f"; {lost} members are not listed" if lost else ""
@@ -1010,11 +1028,15 @@ class _ApfsWalk:
             uid=inode.uid,
             gid=inode.gid,
         )
-        for field, value in (("modified", inode.modified), ("created", inode.created)):
+        times: tuple[tuple[TimeField, int], ...] = (
+            ("modified", inode.modified),
+            ("created", inode.created),
+        )
+        for field, value in times:
             if value:
                 self._context.set_unix_time(
                     member,
-                    field,  # type: ignore[arg-type]
+                    field,
                     value // 1_000_000_000,
                     nanoseconds=value % 1_000_000_000,
                     source="apfs",

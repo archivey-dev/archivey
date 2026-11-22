@@ -86,6 +86,9 @@ _INO_EXT_DSTREAM = 8
 _XATTR_STREAM, _XATTR_EMBEDDED = 0x1, 0x2
 
 ROOT_DIRECTORY = 2
+# Directories no path from the root reaches: the parent of the root and private
+# directories, and the private directory, which holds the volume's own files.
+UNREACHED_DIRECTORIES = frozenset((1, 3))
 UF_COMPRESSED = 0x20
 SYMLINK_XATTR = "com.apple.fs.symlink"
 DECMPFS_XATTR = "com.apple.decmpfs"
@@ -93,13 +96,17 @@ RESOURCE_FORK_XATTR = "com.apple.ResourceFork"
 
 MIN_BLOCK_SIZE = 4096
 MAX_BLOCK_SIZE = 65536
-# The checkpoint descriptor ring: at most this many blocks, and the scan reads and
-# decodes at most SCAN_BUDGET bytes (the open budget's size, counted on its own).
+# The checkpoint scan reads and decodes at most SCAN_BUDGET bytes (the open budget's
+# size, counted on its own). The ring cap is structural: SCAN_BUDGET already bounds the
+# work, so the cap only refuses an absurd header before any read.
 MAX_DESC_BLOCKS = 65536
 SCAN_BUDGET = 64 << 20
+# Structural: a B-tree of depth 32 with a fanout of at least 2 addresses more nodes
+# than a container's 64-bit block count can hold.
 MAX_DEPTH = 32
 # The block a file read gathers at a time through its extents.
 READ_PIECE = 1 << 20
+# The format's NX_MAX_FILE_SYSTEMS: the superblock's volume array has this many slots.
 _MAX_VOLUMES = 100
 # A filesystem node's records cost about this much each beyond their bytes.
 _RECORD_COST = 64
@@ -136,17 +143,75 @@ class Damage(NamedTuple):
     reason: str
 
 
-def _span_overlaps(damage: list[Damage], prefix: tuple[int, ...]) -> Damage | None:
-    """The first damaged range that may hold a key starting with ``prefix``. Bounds
-    are compared on the prefix alone, so a boundary key counts as inside."""
-    n = len(prefix)
-    for each in damage:
-        if each.low is not None and each.low[:n] > prefix:
-            continue
-        if each.high is not None and each.high[:n] < prefix:
-            continue
-        return each
-    return None
+_BELOW: tuple[int, ...] = ()
+_ABOVE: tuple[float, ...] = (float("inf"),)
+
+
+class DamageIndex:
+    """The damaged ranges of one tree, with lookups in logarithmic time: the ranges
+    are merged into disjoint intervals sorted by key, so the intervals that meet a
+    query are one run found by bisection. A range's bounds count as inside it."""
+
+    def __init__(self) -> None:
+        self._items: list[Damage] = []
+        # (low, high, the first range merged in), disjoint and in key order.
+        self._merged: list[tuple[tuple[float, ...], tuple[float, ...], Damage]] | None
+        self._merged = None
+
+    def append(self, item: Damage) -> None:
+        self._items.append(item)
+        self._merged = None
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, index: int) -> Damage:
+        return self._items[index]
+
+    def _intervals(self) -> list[tuple[tuple[float, ...], tuple[float, ...], Damage]]:
+        if self._merged is None:
+            merged: list[tuple[tuple[float, ...], tuple[float, ...], Damage]] = []
+            spans = sorted(
+                (
+                    _BELOW if each.low is None else each.low,
+                    _ABOVE if each.high is None else each.high,
+                    i,
+                )
+                for i, each in enumerate(self._items)
+            )
+            for low, high, i in spans:
+                if merged and low <= merged[-1][1]:
+                    last = merged[-1]
+                    merged[-1] = (last[0], max(last[1], high), last[2])
+                else:
+                    merged.append((low, high, self._items[i]))
+            self._merged = merged
+        return self._merged
+
+    def meeting(
+        self, low: tuple[float, ...], high: tuple[float, ...]
+    ) -> Iterator[Damage]:
+        """The merged ranges that meet the key range [``low``, ``high``], in key
+        order, each with its merged bounds (``None`` for no bound) and the address
+        and reason of the first range merged into it."""
+        merged = self._intervals()
+        i = bisect.bisect_left(merged, low, key=lambda m: m[1])
+        while i < len(merged) and merged[i][0] <= high:
+            start, end, first = merged[i]
+            yield Damage(
+                None if start == _BELOW else tuple(int(k) for k in start),
+                None if end == _ABOVE else tuple(int(k) for k in end),
+                first.address,
+                first.reason,
+            )
+            i += 1
+
+    def holding(self, prefix: tuple[int, ...]) -> Iterator[Damage]:
+        """The merged ranges that may hold a key starting with ``prefix``."""
+        return self.meeting(prefix, (*prefix, float("inf")))
+
+    def first_holding(self, prefix: tuple[int, ...]) -> Damage | None:
+        return next(self.holding(prefix), None)
 
 
 # ── Objects and B-trees ──────────────────────────────────────────────────────────────
@@ -264,6 +329,19 @@ def _parse_node(
     return _Node(leaf, level, records, info)
 
 
+class _Leaf(NamedTuple):
+    """A leaf's records, with the key range its parent gave it and its block: the
+    ``Damage`` to record when a record in it does not parse."""
+
+    records: list[tuple[bytes, bytes]]
+    low: tuple[int, ...] | None
+    high: tuple[int, ...] | None
+    address: int
+
+    def damage(self, reason: str) -> Damage:
+        return Damage(self.low, self.high, self.address, reason)
+
+
 def _walk(
     blocks: _Blocks,
     root: int,
@@ -272,13 +350,13 @@ def _walk(
     max_xid: int,
     order: Callable[[bytes], tuple[int, ...]],
     resolve: Callable[[int], int] | None,
-    damage: list[Damage],
+    damage: DamageIndex,
     seen: set[int],
-) -> Iterator[list[tuple[bytes, bytes]]]:
-    """The leaves of a B-tree, in key order, each as its records. ``root`` is the
-    root node's address, or its virtual id when ``resolve`` maps ids to addresses
-    (a filesystem tree). A node that cannot be used is added to ``damage`` with the key
-    range its parent gave it, and the walk goes on."""
+) -> Iterator[_Leaf]:
+    """The leaves of a B-tree, in key order. ``root`` is the root node's address, or
+    its virtual id when ``resolve`` maps ids to addresses (a filesystem tree). A node
+    that cannot be used is added to ``damage`` with the key range its parent gave it,
+    and the walk goes on."""
     # (node id or address, low bound, high bound, the level the parent expects)
     stack: list[
         tuple[int, tuple[int, ...] | None, tuple[int, ...] | None, int | None]
@@ -325,7 +403,7 @@ def _walk(
             damage.append(Damage(low, high, address, str(exc)))
             continue
         if node.leaf:
-            yield node.records
+            yield _Leaf(node.records, low, high, address)
             continue
         children = []
         for i, (_key, value) in enumerate(node.records):
@@ -361,7 +439,7 @@ class _Omap:
     ) -> None:
         self.what = what
         self.max_xid = max_xid
-        self.damage: list[Damage] = []
+        self.damage = DamageIndex()
         # oid -> (xid, flags, address)
         self.entries: dict[int, tuple[int, int, int]] = {}
         try:
@@ -370,7 +448,7 @@ class _Omap:
             self.damage.append(Damage(None, None, address, str(exc)))
             return
         (tree,) = struct.unpack_from("<Q", head, 48)
-        for records in _walk(
+        for leaf in _walk(
             blocks,
             tree,
             subtype="object map",
@@ -380,20 +458,24 @@ class _Omap:
             damage=self.damage,
             seen=set(),
         ):
-            charge(len(records) * _RECORD_COST, what)
-            for key, value in records:
+            charge(len(leaf.records) * _RECORD_COST, what)
+            # A leaf is all or nothing: a value that does not parse drops the leaf.
+            found: list[tuple[int, int, int, int]] = []
+            for key, value in leaf.records:
                 oid, xid = struct.unpack_from("<QQ", key)
                 if xid > max_xid:
                     continue
                 if len(value) < _OMAP_VALUE.size:
-                    self.damage.append(
-                        Damage(None, None, address, "a value shorter than 16 bytes")
-                    )
-                    return
+                    self.damage.append(leaf.damage("a value shorter than 16 bytes"))
+                    break
                 flags, _, where = _OMAP_VALUE.unpack_from(value)
-                best = self.entries.get(oid)
-                if best is None or best[0] < xid:
-                    self.entries[oid] = (xid, flags, where)
+                found.append((oid, xid, flags, where))
+            else:
+                for oid, xid, flags, where in found:
+                    best = self.entries.get(oid)
+                    if best is None or best[0] < xid:
+                        self.entries[oid] = (xid, flags, where)
+        charge(len(self.damage) * _RECORD_COST, what)
 
     def lookup(self, oid: int) -> tuple[int, int] | None:
         """``(address, flags)`` of object ``oid``, or ``None`` when the map has no
@@ -401,11 +483,7 @@ class _Omap:
         may be in a damaged node."""
         found = self.entries.get(oid)
         after = found[0] + 1 if found is not None else 0
-        for each in self.damage:
-            if each.low is not None and each.low > (oid, self.max_xid):
-                continue
-            if each.high is not None and each.high < (oid, after):
-                continue
+        for each in self.damage.meeting((oid, after), (oid, self.max_xid)):
             raise CorruptionError(
                 f"APFS object {oid} is mapped by a damaged node of {self.what} (block "
                 f"{each.address}: {each.reason})"
@@ -707,11 +785,11 @@ class FsTree:
         # Per data stream: logical offset, length, block, flattened, in key order.
         self.extents: dict[int, array[int]] = {}
         self.encrypted_streams: set[int] = set()
-        self.damage: list[Damage] = []
+        self.damage = DamageIndex()
 
     def damaged(self, oid: int, kind: int) -> Damage | None:
         """The damaged range that may hold a record (``oid``, ``kind``), if any."""
-        return _span_overlaps(self.damage, (oid, kind))
+        return self.damage.first_holding((oid, kind))
 
 
 class ApfsVolume:
@@ -777,7 +855,7 @@ class ApfsVolume:
         blocks = self.container._blocks
         charge = self._charge
         what = f"the APFS volume {quoted(self.name)}"
-        for records in _walk(
+        for leaf in _walk(
             blocks,
             self._root,
             subtype="filesystem",
@@ -787,17 +865,22 @@ class ApfsVolume:
             damage=tree.damage,
             seen=set(),
         ):
+            records = leaf.records
             charge(
                 sum(len(k) + len(v) for k, v in records) + _RECORD_COST * len(records),
                 what,
             )
-            self._add(tree, records)
+            try:
+                self._add(tree, records)
+            except (CorruptionError, TruncatedError) as exc:
+                tree.damage.append(leaf.damage(str(exc)))
+        charge(len(tree.damage) * _RECORD_COST, what)
         return tree
 
     def _add(self, tree: FsTree, records: list[tuple[bytes, bytes]]) -> None:
         """One leaf's records into ``tree``. A record that does not parse is damage
         in a node whose checksum passed: the leaf is all or nothing, so it is parsed
-        in full before anything is kept."""
+        in full before anything is kept, and the error leaves ``tree`` as it was."""
         inodes: list[tuple[int, Inode]] = []
         children: list[tuple[int, Child]] = []
         xattrs: list[tuple[int, str, Xattr]] = []
@@ -930,11 +1013,7 @@ def stream_reader(
     # The damaged offsets of this stream's extent keys: [low, high] each.
     lost: list[tuple[int, float, Damage]] = []
     prefix = (stream, EXTENT)
-    for each in tree.damage:
-        if each.low is not None and each.low[:2] > prefix:
-            continue
-        if each.high is not None and each.high[:2] < prefix:
-            continue
+    for each in tree.damage.holding(prefix):
         low = each.low[2] if each.low is not None and each.low[:2] == prefix else 0
         high = (
             each.high[2]

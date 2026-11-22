@@ -315,6 +315,33 @@ def test_an_object_deleted_after_a_transaction_is_found_before_it() -> None:
     assert omap(11).lookup(501) is None
 
 
+def test_the_damage_index_finds_what_a_scan_of_every_range_finds() -> None:
+    import random
+
+    rng = random.Random(7)
+
+    def key() -> tuple[int, ...]:
+        return tuple(rng.randrange(6) for _ in range(rng.randrange(1, 4)))
+
+    for _ in range(300):
+        index = apfs.DamageIndex()
+        ranges = []
+        for _ in range(rng.randrange(8)):
+            low = None if rng.random() < 0.15 else key()
+            high = None if rng.random() < 0.15 else key()
+            if low is not None and high is not None and high < low:
+                low, high = high, low
+            index.append(apfs.Damage(low, high, 0, ""))
+            ranges.append((low, high))
+        prefix = key()[:2]
+        n = len(prefix)
+        expected = any(
+            (low is None or low[:n] <= prefix) and (high is None or high[:n] >= prefix)
+            for low, high in ranges
+        )
+        assert (index.first_holding(prefix) is not None) == expected, (ranges, prefix)
+
+
 def _flip(
     address: Callable[[bytearray, a.Apfs], int],
 ) -> Callable[[bytearray, a.Apfs], None]:
@@ -491,6 +518,57 @@ def test_a_name_with_a_slash_is_corruption_after_the_others() -> None:
     assert seen == ["a.txt"]
 
 
+def test_a_record_that_does_not_parse_drops_only_its_leaf() -> None:
+    nodes = [d.Node(f"a{i}.txt", data=b"x") for i in range(40)]
+
+    def cut(records: list) -> None:
+        # Called for each volume's records; only the first holds a5.txt.
+        rec = next(
+            (r for r in records if r.path == "a5.txt" and r.kind == apfs.INODE), None
+        )
+        if rec is None:
+            return
+        records[records.index(rec)] = a._Record(
+            rec.oid, rec.kind, rec.secondary, rec.key, rec.value[:20], rec.path
+        )
+
+    written = a.write_apfs(
+        nodes,
+        name="One",
+        leaf_records=8,
+        more_volumes=[("Two", [d.Node("b.txt", data=b"b")])],
+        patch_records=cut,
+    )
+    seen = _listed_until_error(
+        a.apfs_dmg(written.container), CorruptionError, "inode record is too short"
+    )
+    assert "Two/b.txt" in seen
+    listed = [name for name in seen if name.startswith("One/a")]
+    assert "One/a5.txt" not in listed
+    # The members of the dropped leaf are missing; every other one is listed.
+    assert 30 <= len(listed) < 39
+
+
+def test_a_record_in_a_directory_the_root_does_not_reach_is_corruption() -> None:
+    nodes = [
+        d.Node("a.txt", data=b"a"),
+        d.Node("m.txt", data=b"m"),
+        d.Node("z.txt", data=b"z"),
+    ]
+
+    def move(records: list) -> None:
+        rec = _record(records, "m.txt", apfs.DIR_REC)
+        key = struct.pack("<Q", 9999 | apfs.DIR_REC << 60) + rec.key[8:]
+        records[records.index(rec)] = a._Record(
+            9999, rec.kind, rec.secondary, key, rec.value, rec.path
+        )
+
+    seen = _listed_until_error(
+        _patched(move, nodes), CorruptionError, "1 directory records are in directories"
+    )
+    assert seen == ["a.txt", "z.txt"]
+
+
 def _edit_extent(
     path: str, edit: Callable[[bytearray], None]
 ) -> Callable[[list], None]:
@@ -574,6 +652,23 @@ def test_an_unreadable_volume_is_refused_by_name(options: dict, match: str) -> N
     image = a.apfs_dmg(a.write_apfs([d.Node("a.txt", data=b"a")], **options).container)
     with _open(image) as reader, pytest.raises(UnsupportedFeatureError, match=match):
         reader.members()
+
+
+def test_a_refused_volume_is_reported_once_however_often_the_listing_is_asked() -> None:
+    image = a.apfs_dmg(
+        a.write_apfs([d.Node("a.txt", data=b"a")], volume_flags=0).container
+    )
+    with _open(image) as reader:
+        for _ in range(3):
+            with pytest.raises(
+                UnsupportedFeatureError,
+                match="holds no volume archivey reads: it holds an encrypted APFS "
+                "volume ",
+            ):
+                reader.members()
+        reader.info  # noqa: B018
+        unlisted = _codes(reader).count(DiagnosticCode.ARCHIVE_UNLISTED_DATA)
+    assert unlisted == 1
 
 
 def test_a_fusion_container_is_refused_at_open() -> None:
