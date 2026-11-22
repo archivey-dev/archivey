@@ -55,18 +55,25 @@ _local = threading.local()
 @dataclass(frozen=True)
 class SalvageRequest:
     """What the opener of a reader says about salvage: whether the caller asked for
-    it, and whether the backend that builds the reader has a salvage search
-    (``ReadBackend.SUPPORTS_SALVAGE``)."""
+    it, whether the backend that builds the reader has a salvage search
+    (``ReadBackend.SUPPORTS_SALVAGE``), and whether the reader reads again what an
+    earlier reader of the same archive reported (``repeat``): an inner archive
+    built again by a walk started over to reach member data. A repeat reader
+    salvages as the first one did, and records none of the salvage codes, since
+    the first one recorded them."""
 
     requested: bool = False
     supported: bool = False
+    repeat: bool = False
 
 
 _NO_REQUEST = SalvageRequest()
 
 
 @contextmanager
-def requesting_salvage(requested: bool, *, supported: bool) -> Generator[None]:
+def requesting_salvage(
+    requested: bool, *, supported: bool, repeat: bool = False
+) -> Generator[None]:
     """Let the next reader built on this thread take this salvage request.
 
     ``open_archive`` wraps the backend's ``open_read`` in it with the caller's
@@ -74,10 +81,13 @@ def requesting_salvage(requested: bool, *, supported: bool) -> Generator[None]:
     with the outer reader's request, so an archive archivey opens inside another
     salvages when the outer one was asked to. The first reader built in the block
     takes the request (:func:`take_salvage_request`); one a password provider or a
-    diagnostic callback opens later in the same open does not.
+    diagnostic callback opens later in the same open does not. ``repeat`` marks a
+    reader that reads again what an earlier one reported (:class:`SalvageRequest`).
     """
     before = getattr(_local, "request", _NO_REQUEST)
-    _local.request = SalvageRequest(requested=requested, supported=supported)
+    _local.request = SalvageRequest(
+        requested=requested, supported=supported, repeat=repeat
+    )
     try:
         yield
     finally:
@@ -96,14 +106,17 @@ def take_salvage_request() -> SalvageRequest:
 class HeaderSearch:
     """What a format gives :func:`search_forward`.
 
-    ``find_header(window, start)`` returns the index in ``window`` of the first
-    candidate position at or after ``start`` where a header passes the format's own
-    checks, or ``None``. It is pure on the bytes it is given. ``window[0]`` is always
-    at a candidate position, so the candidate positions are ``start``,
-    ``start + step``, ``start + 2 * step`` and so on; a ``find_header`` that returns
-    any other index is a bug, and the search raises ``AssertionError``. A header that
-    does not fit in the window does not pass: the search shows it again, whole, in
-    the next window, unless the layer ends first.
+    ``find_header(window, start, stop)`` returns the index in ``window`` of the first
+    candidate position at or after ``start`` and before ``stop`` where a header
+    passes the format's own checks, or ``None``. It is pure on the bytes it is given.
+    ``window[0]`` is always at a candidate position, so the candidate positions are
+    ``start``, ``start + step``, ``start + 2 * step`` and so on, up to ``stop``; a
+    ``find_header`` that returns any other index is a bug, and the search raises
+    ``AssertionError``. It examines no candidate position at or after ``stop``: the
+    search gives those to a later window, or the budget does not pay for them. The
+    window holds ``max_header_size - 1`` bytes past ``stop`` where the layer has
+    them, so each candidate before ``stop`` can be checked whole. A header that does
+    not fit in the window does not pass: the layer ends inside it.
 
     ``step`` is the distance between candidate positions: 512 for TAR, 4 or 1 for
     CPIO, 2 for ar. Candidate positions are counted from the ``base`` given to
@@ -114,7 +127,7 @@ class HeaderSearch:
     header that straddles a window's end is found once, in the window where it fits.
     """
 
-    find_header: Callable[[bytes, int], int | None]
+    find_header: Callable[[bytes, int, int], int | None]
     step: int
     max_header_size: int
 
@@ -424,6 +437,16 @@ def search_forward(
             layer=layer, started_at=region_start, examined_from=pos, stopped_at=pos
         )
         return SearchResult(found=None, limit_reached=True)
+    if end is None and pos > region_start:
+        # The bytes before the first candidate position are not examined, but only
+        # a read shows whether the layer has them: a layer that ends among them
+        # skips only what it holds.
+        gap = read_at(region_start, pos - region_start)
+        if len(gap) < pos - region_start:
+            layer_end = region_start + len(gap)
+            state._examined(layer, layer_end, layer_end)
+            _record_no_header(state, layer, region_start, layer_end)
+            return SearchResult(found=None)
     # With a budget, no read goes past the last header the budget lets the search
     # reach: the bytes it may examine, plus the rest of a header that starts there.
     read_limit = (
@@ -474,26 +497,28 @@ def search_forward(
             )
 
         if last >= pos:
-            found = search.find_header(buf, 0)
+            # The candidate positions this window may examine are those before
+            # ``stop``; the window keeps the bytes a header at the last one needs.
+            stop = last - pos + 1
+            window = buf[: stop - 1 + search.max_header_size]
+            found = search.find_header(window, 0, stop)
             if found is not None:
-                if found < 0 or found % step:
+                if found < 0 or found % step or found >= stop:
                     raise AssertionError(
                         f"find_header returned {found}, which is not a candidate "
-                        f"position (a multiple of {step} at or after 0)"
+                        f"position (a multiple of {step} at or after 0 and before "
+                        f"{stop})"
                     )
-                if pos + found <= last:
-                    header_at = pos + found
-                    after = header_at + step
-                    state._examined(
-                        layer, pos, min(after, buf_end) if at_end else after
+                header_at = pos + found
+                after = header_at + step
+                state._examined(layer, pos, min(after, buf_end) if at_end else after)
+                if header_at > region_start:
+                    state.record_region(
+                        layer=layer,
+                        offset=region_start,
+                        length=header_at - region_start,
                     )
-                    if header_at > region_start:
-                        state.record_region(
-                            layer=layer,
-                            offset=region_start,
-                            length=header_at - region_start,
-                        )
-                    return SearchResult(found=header_at)
+                return SearchResult(found=header_at)
             # The last candidate position examined, then the first one after it.
             examined_last = pos + (last - pos) // step * step
             next_pos = examined_last + step
