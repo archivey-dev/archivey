@@ -241,6 +241,10 @@ _WALK_BUFFER = 8 * 1024
 # the rest. A PAX header can hold a shape for thousands of keys.
 _AMBIGUOUS_FIELDS_NAMED = 3
 
+# How many followed damaged headers the end-of-pass error names; the rest it counts
+# (the same limit as rar_parser._NAMED_DAMAGES).
+_NAMED_DAMAGES = 4
+
 # GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
 # lists the directory's contents at dump time. GNU tar extracts it as a directory; the
 # list is skipped.
@@ -892,7 +896,13 @@ class TarReader(BaseArchiveReader):
         """
         end = self._plain_source_size
         if self._streaming:
-            return TarWalker(self._stream, seekable=False, end=end)
+            assert self._source is not None
+            return TarWalker(
+                self._stream,
+                seekable=False,
+                end=end,
+                source_seekable=self._source.seekable(),
+            )
         # Plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own buffer. Joining the tail on would copy the member.
         # A codec keeps the join: rewinding it would decode the tail again.
@@ -1077,15 +1087,23 @@ class TarReader(BaseArchiveReader):
         walker = self._walker
         if not walker.followed:
             return
-        parts = [
-            f"the member header at offset {offset} failed its checksum ({reason})"
-            for offset, reason in walker.followed
-        ]
-        listed = "Its member is" if len(parts) == 1 else "Their members are"
+        # The first few are named and the rest counted, as RAR's ``_add_damage``
+        # does: an archive of thousands of damaged headers cannot grow the message
+        # with its size.
+        text = "; also ".join(
+            f"the {'extended' if extended else 'member'} header at offset {offset} "
+            f"failed its checksum ({reason})"
+            for offset, reason, extended in walker.followed[:_NAMED_DAMAGES]
+        )
+        more = len(walker.followed) - _NAMED_DAMAGES
+        if more == 1:
+            text += "; and 1 more damaged header was followed"
+        elif more > 1:
+            text += f"; and {more} more damaged headers were followed"
+        listed = "Its member is" if len(walker.followed) == 1 else "Their members are"
         raise CorruptionError(
-            f"TAR archive is corrupt: {'; also '.join(parts)}. {listed} listed, and "
-            "the walk went on from where each size points, which the header there "
-            "confirmed."
+            f"TAR archive is corrupt: {text}. {listed} listed, and the walk went on "
+            "from where each size points, which the header there confirmed."
         )
 
     def _walk_members(self) -> Iterator[ArchiveMember]:
