@@ -606,6 +606,29 @@ def test_type_9_without_its_marker_is_unsupported(
             reader.read("t9")
 
 
+@pytest.mark.parametrize("kind", [7, 11])
+def test_a_compressed_chunk_past_its_size_names_that_size(
+    monkeypatch: pytest.MonkeyPatch, kind: int
+) -> None:
+    """An inline LZVN (7) or LZFSE (11) value that decodes to 3 bytes more than its
+    header's size: the error names the size."""
+    real = d._decmpfs
+
+    def short(kind_: int, data: bytes) -> tuple[bytes, bytes]:
+        value, fork = real(kind_, data)
+        if kind_ == kind:
+            value = value[:8] + struct.pack("<Q", len(data) - 3) + value[16:]
+        return value, fork
+
+    monkeypatch.setattr(d, "_decmpfs", short)
+    image = _image([d.Node("c", data=b"abcdefgh", compression=kind)])
+    with (
+        _open(image) as reader,
+        pytest.raises(CorruptionError, match="decodes to more than 5 bytes"),
+    ):
+        reader.read("c")
+
+
 # ── Limits and UDIF structure ────────────────────────────────────────────────────────
 
 
