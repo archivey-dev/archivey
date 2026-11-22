@@ -940,7 +940,7 @@ class _ApfsWalk:
             for child in sorted(tree.children.get(parent, ()), key=lambda c: c.name):
                 entry = self._context.decode_name(child.name)
                 if "/" in entry or entry in ("", ".", ".."):
-                    problems.append(f"a directory record names {entry!r}")
+                    problems.append(f"a directory record names {quoted(entry)}")
                     continue
                 within = prefix + entry
                 path = f"{self._top}/{within}" if self._top else within
@@ -983,12 +983,12 @@ class _ApfsWalk:
             unlisted = f"; {lost} members are not listed" if lost else ""
             self.failure = CorruptionError(
                 f"{len(tree.damage)} nodes of the filesystem tree of the APFS volume "
-                f"{name!r} cannot be used (block {first_bad.address}: "
+                f"{quoted(name)} cannot be used (block {first_bad.address}: "
                 f"{first_bad.reason}){unlisted}"
             )
         elif problems:
             self.failure = CorruptionError(
-                f"the APFS volume {name!r} is damaged: {problems[0]}"
+                f"the APFS volume {quoted(name)} is damaged: {problems[0]}"
                 + (f" ({len(problems) - 1} more problems)" if len(problems) > 1 else "")
             )
 

@@ -40,6 +40,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import ReaderContext, ReaderSource
+from archivey.terminal import quoted
 
 _OBJECT = struct.Struct("<QQQII")  # checksum, oid, xid, type, subtype
 _NODE = struct.Struct("<HHIHH")  # flags, level, keys, table offset, table length
@@ -754,7 +755,7 @@ class ApfsVolume:
             blocks,
             self._omap_address,
             self.xid,
-            f"the object map of APFS volume {self.name!r}",
+            f"the object map of APFS volume {quoted(self.name)}",
             self._charge,
         )
 
@@ -763,7 +764,7 @@ class ApfsVolume:
         found = self._omap.lookup(oid)
         if found is None:
             raise CorruptionError(
-                f"the object map of APFS volume {self.name!r} has no entry for node {oid}"
+                f"the object map of APFS volume {quoted(self.name)} has no entry for node {oid}"
             )
         if found[1] & _OMAP_ENCRYPTED:
             raise UnsupportedFeatureError("encrypted APFS volumes are not supported")
@@ -775,7 +776,7 @@ class ApfsVolume:
         tree = FsTree()
         blocks = self.container._blocks
         charge = self._charge
-        what = f"the APFS volume {self.name!r}"
+        what = f"the APFS volume {quoted(self.name)}"
         for records in _walk(
             blocks,
             self._root,
