@@ -533,6 +533,8 @@ class DebReader(SequentialReader):
         search_from: int | None = None
         control = False
         while True:
+            # Whether the search found this header, or the walk walked on to it.
+            searched = search_from is not None
             if search_from is not None:
                 assert salvage is not None and damage is not None
                 hit = self._search(salvage, stream, search_from)
@@ -559,7 +561,8 @@ class DebReader(SequentialReader):
                     salvage, offset + HEADER_SIZE + size + (size & 1)
                 )
                 if not confirmed:
-                    search_from = offset
+                    # The search goes on inside its data, past this header.
+                    search_from = salvage.after(offset)
             if name.startswith(b"_"):
                 stream.skip(size)
                 stream.read(size & 1)
@@ -571,6 +574,7 @@ class DebReader(SequentialReader):
                     self._control(stream.take(size), fmt),
                     offset,
                     confirmed,
+                    searched,
                 )
                 control = True
                 stream.read(size & 1)
@@ -578,9 +582,10 @@ class DebReader(SequentialReader):
             fmt = _tar_format(name, b"data", _DATA_STREAMS)
             if fmt is None:
                 if damage is not None:
-                    # A header the search found that is not a package member: the
+                    # A header past the damage that is not a package member: the
                     # search goes on past it.
-                    search_from = offset
+                    assert salvage is not None
+                    search_from = salvage.after(offset)
                     continue
                 if not control:
                     raise CorruptionError(
@@ -598,6 +603,7 @@ class DebReader(SequentialReader):
                 self._data(stream.take(size), fmt),
                 offset,
                 confirmed,
+                searched,
             )
             # dpkg-deb reads no further: members after the data tar are not part of
             # the package.
@@ -613,12 +619,16 @@ class DebReader(SequentialReader):
         spans: Iterator[MemberSpan],
         offset: int,
         confirmed: bool,
+        searched: bool,
     ) -> Iterator[MemberSpan]:
-        """``spans``, each member flagged as found by the salvage search when
-        ``salvage`` is given: the tar's ar header at ``offset`` is past damage."""
+        """``spans``, each member flagged with ``MEMBER_FOUND_BY_SCAN`` when
+        ``salvage`` is given: the tar's ar header at ``offset`` is past damage, found
+        by the search (``searched``) or walked on to."""
         for span in spans:
             if salvage is not None:
-                salvage.found(span.member, offset=offset, confirmed=confirmed)
+                salvage.found(
+                    span.member, offset=offset, confirmed=confirmed, searched=searched
+                )
             yield span
 
     def _search(

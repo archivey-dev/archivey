@@ -602,3 +602,66 @@ def test_cpio_gz_searches_the_decoded_stream(tmp_path: Path) -> None:
     assert [m[0] for m in members] == [n for i, (n, _d) in enumerate(FILES) if i != 2]
     [region] = _regions(diagnostics)
     assert (region.layer, region.offset) == ("gzip", offsets[2])
+
+
+# Review round 1 ----------------------------------------------------------------------
+
+
+def test_cpio_member_walked_on_then_unconfirmed_is_listed_once(tmp_path: Path) -> None:
+    """C is found, D is walked on to and is unconfirmed (E is damaged): the search
+    after D starts past D's header, so D is not found a second time."""
+    files = [(name, name.encode() * 50) for name in "ABCDEF"]
+    raw, offsets = _cpio("newc", files)
+    damaged = bytearray(raw)
+    for i in (1, 4):
+        damaged[offsets[i] : offsets[i] + 6] = b"\0" * 6
+    path = _write(tmp_path, bytes(damaged), "a.cpio")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["A", "C", "D", "F"]
+    found = {c.member_name: c for c in _found(diagnostics)}
+    assert found["C"].confirmed and not found["D"].confirmed
+
+
+def test_ar_member_walked_on_then_unconfirmed_is_listed_once(tmp_path: Path) -> None:
+    files = [(f"{name}.o", name.encode() * 51) for name in "ABCDEF"]
+    raw, offsets = _gnu_ar(files)
+    damaged = bytearray(raw)
+    for name in ("B.o", "E.o"):
+        damaged[offsets[name] : offsets[name] + 60] = b"#" * 60
+    path = _write(tmp_path, bytes(damaged), "a.a")
+    members, diagnostics, _error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["A.o", "C.o", "D.o", "F.o"]
+    found = {c.member_name: c for c in _found(diagnostics)}
+    assert found["C.o"].confirmed and not found["D.o"].confirmed
+
+
+def test_cpio_gz_size_past_the_decoding_limits_is_not_held(tmp_path: Path) -> None:
+    """A found header whose size runs far past the decoded stream: the probe the
+    ratio limit refuses rejects the candidate, and the pass ends in the first
+    damage, not in the limit."""
+    import gzip
+
+    raw, offsets = _cpio("newc")
+    damaged = bytearray(raw)
+    damaged[offsets[1]] = 0
+    # The filesize field of the next header (after the magic and six fields).
+    damaged[offsets[2] + 54 : offsets[2] + 62] = b"FFFFFF00"
+    path = _write(tmp_path, gzip.compress(bytes(damaged)), "a.cpio.gz")
+    members, _diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == [FILES[i][0] for i in (0, 3, 4, 5)]
+    assert type(error) is CorruptionError
+
+
+def test_found_message_says_how_the_member_was_reached(tmp_path: Path) -> None:
+    path = _damaged_cpio(tmp_path)
+    with open_archive(path, salvage=True) as reader:
+        reader.members_report()
+        messages = [
+            d.message
+            for d in reader.diagnostics.retained
+            if d.code is DiagnosticCode.MEMBER_FOUND_BY_SCAN
+        ]
+    assert "by a header search" in messages[0]
+    assert all(
+        "walking on after a member a header search found" in m for m in messages[1:]
+    )

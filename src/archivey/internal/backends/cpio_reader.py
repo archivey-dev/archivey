@@ -292,6 +292,8 @@ class CpioReader(SequentialReader):
         search_from: int | None = None
         base = 0
         while True:
+            # Whether the search found this header, or the walk walked on to it.
+            searched = search_from is not None
             if search_from is not None:
                 assert salvage is not None and damage is not None
                 hit = self._search(salvage, stream, search_from, base)
@@ -325,10 +327,16 @@ class CpioReader(SequentialReader):
                 # one the search found, and those walked on from it.
                 assert salvage is not None
                 confirmed = self._confirmed(salvage, header)
-                salvage.found(member, offset=header.offset, confirmed=confirmed)
+                salvage.found(
+                    member,
+                    offset=header.offset,
+                    confirmed=confirmed,
+                    searched=searched,
+                )
                 if not confirmed:
-                    # No claim on its data: the search goes on inside it.
-                    search_from = header.offset
+                    # No claim on its data: the search goes on inside it, past this
+                    # header, which it must not find again.
+                    search_from = salvage.after(header.offset)
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)

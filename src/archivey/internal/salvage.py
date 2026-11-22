@@ -37,7 +37,7 @@ from archivey.diagnostics import (
     SalvageScanContext,
     SalvageUnavailableContext,
 )
-from archivey.exceptions import ArchiveyError
+from archivey.exceptions import ArchiveyError, ResourceLimitError
 from archivey.internal.logs import backends as logger
 from archivey.internal.overrides import override
 from archivey.terminal import escape_control_chars
@@ -577,7 +577,7 @@ class WalkSalvage:
         self.state = state
         self.layer = layer
         self.size = size
-        self.read_at = read_at
+        self._read_at = read_at
         self._open_reader = open_reader
         self.seek = seek
         self._report_found = report_found
@@ -606,9 +606,30 @@ class WalkSalvage:
         finally:
             close()
 
+    def after(self, header: int) -> int:
+        """Where a search starts that must not find the header at ``header`` again
+        (a member past the damage that nothing confirms): the search rounds it up to
+        the next candidate position."""
+        return header + 1
+
+    def read_at(self, offset: int, n: int) -> bytes:
+        """Up to ``n`` bytes of the layer from ``offset``, for a check of a header
+        the search did not read: the next one, or the first one's magic.
+
+        A probe the decoding limits refuse (a decoded layer read past what the
+        archive's size allows, at an offset a damaged size field gave) reads as
+        nothing: the candidate fails its check, and the pass ends in the first
+        damage, not in the limit.
+        """
+        try:
+            return self._read_at(offset, n)
+        except ResourceLimitError:
+            return b""
+
     def holds(self, end: int) -> bool:
         """Whether the layer has bytes up to ``end``: a found member whose data runs
-        past the layer's end is not listed, since reading it would stop the pass."""
+        past the layer's end is not listed, since reading it would stop the pass. On
+        a decoded layer of unknown size, a probe the limits refuse is not held."""
         if self.size is not None:
             return end <= self.size
         return end <= 0 or len(self.read_at(end - 1, 1)) == 1
@@ -620,10 +641,18 @@ class WalkSalvage:
         offset: int,
         confirmed: bool,
         unchecked: tuple[str, ...] = ("position",),
+        searched: bool = True,
     ) -> None:
-        """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, before it is yielded."""
+        """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, before it is yielded:
+        found by the search (``searched``), or walked on to after a member the search
+        found."""
         if self._report_found is None:
             return
+        where = (
+            "by a header search"
+            if searched
+            else "walking on after a member a header search found"
+        )
         how = (
             "the header after its data passes too"
             if confirmed
@@ -638,8 +667,8 @@ class WalkSalvage:
                 confirmed=confirmed,
                 unchecked=unchecked,
             ),
-            f"Salvage found {self._format_name} member {member.name!r} by a header "
-            f"search at offset {offset}{_in_layer(self.layer)}; {how}.",
+            f"Salvage found {self._format_name} member {member.name!r} {where}, "
+            f"at offset {offset}{_in_layer(self.layer)}; {how}.",
         )
 
     def ending(self, error: ArchiveyError) -> ArchiveyError:

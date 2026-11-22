@@ -153,9 +153,14 @@ _SEARCH_ANY_BYTE = _search_at(1)
 
 def ar_confirmed(salvage: WalkSalvage, after: int) -> bool:
     """Whether the header at ``after``, past a member's padded data, passes the
-    search's check, or the archive ends there."""
+    search's check, or the archive ends there. A probe the decoding limits refuse
+    reads as nothing, and the layer does not hold the bytes before ``after`` then
+    either: unconfirmed."""
     head = salvage.read_at(after, HEADER_SIZE)
-    return not head or _passes(head, 0)
+    if not head:
+        # The last pad byte may be missing (a writer that leaves it off).
+        return salvage.holds(after - 1)
+    return _passes(head, 0)
 
 
 class ArReader(SequentialReader):
@@ -207,6 +212,8 @@ class ArReader(SequentialReader):
             base = None
         names: bytes | None = None
         while True:
+            # Whether the search found this header, or the walk walked on to it.
+            searched = search_from is not None
             if search_from is not None:
                 assert salvage is not None and damage is not None
                 hit = self._search(salvage, stream, search_from, base, names)
@@ -246,7 +253,9 @@ class ArReader(SequentialReader):
                     salvage, offset + HEADER_SIZE + size + (size & 1)
                 )
                 if not confirmed:
-                    search_from = offset
+                    # The search goes on inside its data, past this header, which it
+                    # must not find again.
+                    search_from = salvage.after(offset)
             if entry.table is not None:
                 names = entry.table
                 continue
@@ -261,6 +270,7 @@ class ArReader(SequentialReader):
                     offset=offset,
                     confirmed=confirmed,
                     unchecked=entry.unchecked,
+                    searched=searched,
                 )
             yield MemberSpan(member, entry.data_length)
             # The pad byte; a writer that leaves it off the last member is harmless.
