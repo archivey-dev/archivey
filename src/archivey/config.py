@@ -981,10 +981,6 @@ class ArchiveyConfig:
     spool_limits: SpoolLimits = SpoolLimits()
     """Caps on what a reader writes to temporary storage. See :class:`SpoolLimits`."""
 
-    salvage_limits: SalvageLimits = SalvageLimits()
-    """Caps on the search a salvage reader makes past damage
-    (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
-
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.
 
@@ -1145,6 +1141,10 @@ class ArchiveyConfig:
     answer, a gap this step does not set.
     """
 
+    salvage_limits: SalvageLimits = SalvageLimits()
+    """Caps on the search a salvage reader makes past damage
+    (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
+
     if TYPE_CHECKING:
         # The constructor's input types, wider than the fields for the enum fields and
         # ``detection_budget``: ``__post_init__`` converts a string spelling (or a
@@ -1169,7 +1169,6 @@ class ArchiveyConfig:
             listing_limits: ListingLimits = ...,
             decoder_limits: DecoderLimits = ...,
             spool_limits: SpoolLimits = ...,
-            salvage_limits: SalvageLimits = ...,
             detection_budget: (
                 DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr
             ) = ...,
@@ -1185,6 +1184,7 @@ class ArchiveyConfig:
             recover_partial_data: bool = ...,
             on_source_read: OnSourceRead | None = ...,
             source_read_step: int = ...,
+            salvage_limits: SalvageLimits = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
