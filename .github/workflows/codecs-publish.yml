@@ -1,0 +1,266 @@
+name: archivey-codecs wheels
+
+# Builds, tests and publishes archivey-codecs (packages/archivey-codecs), the optional
+# Rust package. Its releases are separate from archivey's: tag `codecs-vX.Y.Z`, which
+# publish.yml's `v*` filter does not match (design D7 and D8 of the rust-codecs-package
+# change).
+#
+#   • a pull request that touches the package or this file -> build and test only
+#   • pushing a `codecs-v*` tag                              -> real PyPI
+#   • Run workflow -> target=testpypi                        -> TestPyPI (dry run)
+#   • Run workflow -> target=pypi                            -> real PyPI from the ref
+#
+# Wheels: one abi3 wheel (CPython 3.11 and later) per platform, plus one wheel per
+# free-threaded CPython (3.13t, 3.14t), which abi3 does not cover. Each wheel is
+# installed in a clean environment with archivey from this checkout and runs the
+# package's own tests (test_api.py, test_parity.py) with CODECS_REQUIRED=1, so a wheel
+# that does not import fails instead of skipping. musllinux wheels are tested in an
+# Alpine container (abi3 only: there is no free-threaded Alpine image).
+#
+# Trusted Publishing must be set up on the index side, once, for project
+# `archivey-codecs`, as a "pending publisher" (the project does not exist yet):
+#   • PyPI:     repo archivey-dev/archivey, workflow `codecs-publish.yml`, environment `pypi`
+#   • TestPyPI: repo archivey-dev/archivey, workflow `codecs-publish.yml`, environment `testpypi`
+# The GitHub environments `pypi` and `testpypi` are the ones publish.yml already uses.
+
+on:
+  push:
+    tags:
+      - 'codecs-v*'
+  pull_request:
+    paths:
+      - packages/archivey-codecs/**
+      - .github/workflows/codecs-publish.yml
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Index to publish to
+        required: true
+        default: testpypi
+        type: choice
+        options: [testpypi, pypi]
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a PR cancels that PR's previous run. A tag or a dispatch gets its own
+  # group, so nothing cancels a publish.
+  group: codecs-publish-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  PACKAGE: packages/archivey-codecs
+
+jobs:
+  rust-checks:
+    name: cargo fmt and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup component add rustfmt clippy
+      - name: cargo fmt
+        working-directory: ${{ env.PACKAGE }}
+        run: cargo fmt --check
+      - name: cargo clippy
+        working-directory: ${{ env.PACKAGE }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  wheels:
+    name: wheels / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: manylinux x86_64, os: ubuntu-latest, target: x86_64, manylinux: auto, libc: glibc }
+          - { name: manylinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: auto, libc: glibc }
+          - { name: musllinux x86_64, os: ubuntu-latest, target: x86_64, manylinux: musllinux_1_2, libc: musl }
+          - { name: musllinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: musllinux_1_2, libc: musl }
+          - { name: macOS arm64, os: macos-14, target: aarch64 }
+          - { name: macOS x86_64, os: macos-15-intel, target: x86_64 }
+          - { name: Windows x86_64, os: windows-latest, target: x64 }
+          - { name: Windows arm64, os: windows-11-arm, target: aarch64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Pythons for the build (macOS, Windows) and the tests
+        if: matrix.libc != 'musl'
+        run: |
+          uv python install 3.11 3.13t 3.14t
+          # maturin builds on the host outside Linux, so it gets each interpreter's path.
+          # On Linux it builds in the manylinux container, which has its own.
+          if [ "${{ runner.os }}" = Linux ]; then
+            echo "INTERPRETERS=python3.11 python3.13t python3.14t" >> "$GITHUB_ENV"
+          else
+            echo "INTERPRETERS=$(uv python find 3.11) $(uv python find 3.13t) $(uv python find 3.14t)" >> "$GITHUB_ENV"
+          fi
+      - name: Interpreters for the musllinux build
+        if: matrix.libc == 'musl'
+        run: echo "INTERPRETERS=python3.11 python3.13t python3.14t" >> "$GITHUB_ENV"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: ${{ env.PACKAGE }}
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          args: --release --locked --out ${{ github.workspace }}/dist -i ${{ env.INTERPRETERS }}
+      - name: List wheels
+        run: ls -l dist/
+      - name: Test each wheel
+        if: matrix.libc != 'musl'
+        run: |
+          set -euo pipefail
+          for py in 3.11 3.13t 3.14t; do
+            case "$py" in
+              *t) wheel="$(ls dist/*-cp${py//[.t]/}-cp${py//./}-*.whl)" ;;
+              *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
+            esac
+            echo "::group::$py: $wheel"
+            rm -rf "$RUNNER_TEMP/venv"
+            uv venv --python "$py" "$RUNNER_TEMP/venv"
+            VIRTUAL_ENV="$RUNNER_TEMP/venv" uv pip install "$wheel" . pytest
+            # -c /dev/null: the repo's pytest settings ask for plugins (cov, xdist,
+            # timeout) this environment does not install.
+            py_exe="$RUNNER_TEMP/venv/bin/python"
+            [ -x "$py_exe" ] || py_exe="$RUNNER_TEMP/venv/Scripts/python.exe"
+            CODECS_REQUIRED=1 "$py_exe" -m pytest -q -c /dev/null \
+              --rootdir=. -p no:cacheprovider "$PACKAGE/tests"
+            echo "::endgroup::"
+          done
+      - name: Test the abi3 wheel on Alpine
+        if: matrix.libc == 'musl'
+        run: |
+          docker run --rm -v "$PWD":/w -w /w python:3.12-alpine sh -euc '
+            python -m venv /tmp/venv
+            /tmp/venv/bin/pip install -q dist/*-abi3-*.whl . pytest
+            CODECS_REQUIRED=1 /tmp/venv/bin/python -m pytest -q -c /dev/null \
+              --rootdir=. -p no:cacheprovider "$0/tests"
+          ' "$PACKAGE"
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.libc || 'native' }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: ${{ env.PACKAGE }}
+          command: sdist
+          args: --out ${{ github.workspace }}/dist
+      - name: Verify tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#codecs-v}"
+          built="$(ls dist/archivey_codecs-*.tar.gz | sed -E 's|.*/archivey_codecs-(.+)\.tar\.gz|\1|')"
+          echo "tag version = $tag, built version = $built"
+          if [ "$tag" != "$built" ]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' does not match the package version '$built'. Set [package].version in $PACKAGE/Cargo.toml before tagging." >&2
+            exit 1
+          fi
+      # A new top-level name here means what the sdist ships changed: update the list on
+      # purpose.
+      - name: Check sdist contents
+        run: |
+          got="$(tar tzf dist/archivey_codecs-*.tar.gz | cut -d/ -f2 | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ')"
+          want="$(printf '%s\n' .gitignore CHANGELOG.md Cargo.lock Cargo.toml LICENSE PKG-INFO README.md bench pyproject.toml python src tests | LC_ALL=C sort -u | paste -sd' ')"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the sdist holds top-level entries [$got], expected [$want]" >&2
+            exit 1
+          fi
+      - name: The sdist builds and passes the tests
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/venv" uv pip install dist/archivey_codecs-*.tar.gz . pytest
+          CODECS_REQUIRED=1 "$RUNNER_TEMP/venv/bin/python" -m pytest -q -c /dev/null \
+            --rootdir=. -p no:cacheprovider "$PACKAGE/tests"
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  check:
+    name: distribution metadata
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: List distributions
+        run: ls -l dist/
+      # PyPI rejects bad metadata after the upload, when the filename can no longer be
+      # reused. Catch it here.
+      - name: twine check
+        run: pipx run twine check --strict dist/*
+
+  pypi:
+    name: Publish to PyPI
+    needs: [rust-checks, check]
+    # Real PyPI only from the canonical repo: a codecs tag, or an explicit manual run.
+    if: >-
+      github.repository == 'archivey-dev/archivey'
+      && (startsWith(github.ref, 'refs/tags/codecs-v') || inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+      # skip-existing lets a re-run finish the files a failed run left out (a PyPI
+      # filename can never be uploaded twice). attestations: a PEP 740 attestation per
+      # file, as publish.yml does for archivey.
+      - name: Publish archivey-codecs
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+          attestations: true
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: [rust-checks, check]
+    # Dry run: manual dispatch only, so a tag push never lands on TestPyPI by accident.
+    if: >-
+      github.repository == 'archivey-dev/archivey'
+      && github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: Publish archivey-codecs
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          skip-existing: true
+          attestations: true
