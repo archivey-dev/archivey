@@ -259,11 +259,22 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   it (CPIO's variant). TAR does not read it: a first header that does not parse is
   damage at offset 0 under salvage, whatever the detection said, and the search runs at
   open, so a file with no header still fails at open.
-- **A forward-only walk** (a nested reader such as a deb's `data.tar`) does not search
-  bytes it has already read past and does not hold: the damaged block itself and an
-  extended chain's own data read as zeros, which never pass. It holds an unconfirmed
-  found member's data, up to the 4 MiB pipe span, for the search inside it; past that
-  span the rest of the data is not searched.
+- **A forward-only walk** (a nested reader such as a deb's `data.tar`) reads through a
+  window that, from the first search on, keeps the last 4 MiB (the pipe span) it
+  read, so the search inside an unconfirmed member's data reads that data again and
+  the walk goes back to the found header. Bytes it read past and no longer keeps (the
+  damaged block itself, data read further than the span) read as zeros, which never
+  pass. A compressed TAR's walk reads its codec stream through the same window from
+  the first search on, because a seek back on a codec stream decodes again from a
+  restart point.
+- **Confirmation is bounded on a layer that is costly to go back on** (a codec stream,
+  or forward-only). There a found member is confirmed only when the block after its
+  data is within the 4 MiB span of where the walk stands; past that it is unconfirmed
+  and the search goes on inside its data, which keeps recall. A plain file seeks, so
+  any size is confirmed. The clean-end check reads each byte once per walk: an end
+  more than the 1 MiB scan away answers without a read, and the zeros before the end
+  are scanned once. So every byte is decoded once, and what each found member costs
+  beyond that is a few blocks and the search's own window.
 
 ## Verification
 

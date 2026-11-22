@@ -159,8 +159,8 @@ class SalvageState:
     is whether it salvages, which also needs its backend to have a salvage search.
     A reader asks ``enabled`` before it searches, and reads ``limits`` for the caps.
     ``lost_start`` says the format came from ``format=`` or the name's extension, so
-    the archive's first header may be lost: a salvage reader whose first header
-    does not parse searches for one from the start (design decision 9).
+    the archive's first header may be lost (design decision 9), for a format whose
+    search depends on it (CPIO's and ar's, in a later PR; TAR does not read it).
 
     A format calls :func:`search_forward` with this state, and :meth:`finish` when its
     walk ends, which records the ``report_limit`` record if any range went

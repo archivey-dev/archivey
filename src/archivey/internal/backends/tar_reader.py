@@ -908,7 +908,9 @@ class TarReader(BaseArchiveReader):
         # ends, so a walk started over replaces the last one's view.
         self._close_walker_view()
         self._walker_view = view
-        return TarWalker(view, seekable=True, end=end)
+        # A codec stream seeks back by decoding again from a restart point, so a
+        # salvage walk reads it through a window (TarWalker.salvage_search).
+        return TarWalker(view, seekable=True, end=end, rewind_costly=self._compressed)
 
     def _io_guard(self) -> AbstractContextManager[object]:
         return self._handle_lock if self._handle_lock is not None else nullcontext()
@@ -1273,8 +1275,6 @@ class TarReader(BaseArchiveReader):
         try:
             with self._translated_errors(), self._walk_guard():
                 confirmed = walker.salvage_confirms(v7=salvage.v7)
-                if searched and not confirmed:
-                    walker.hold_for_search()
         except CorruptionError:
             confirmed = False
         unchecked: tuple[str, ...] = ("position",)

@@ -25,6 +25,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    ListingLimits,
     SalvageLimits,
     open_archive,
 )
@@ -34,6 +35,7 @@ from archivey.diagnostics import (
     SalvageScanContext,
 )
 from archivey.exceptions import ArchiveyError, CorruptionError, FormatDetectionError
+from archivey.internal.backends import tar_parser
 from archivey.internal.backends.tar_parser import (
     BLOCKSIZE,
     TarEnd,
@@ -44,7 +46,7 @@ from archivey.internal.backends.tar_parser import (
     tar_header_search,
 )
 from archivey.internal.diagnostics_collector import collector_from_config
-from archivey.internal.salvage import SalvageState
+from archivey.internal.salvage import WINDOW_SIZE, SalvageState
 
 # ---------------------------------------------------------------------------
 # Building and damaging archives
@@ -523,7 +525,8 @@ def test_stream_members_and_extract_all_see_the_salvage_listing(tmp_path: Path) 
     with open_archive(path, salvage=True) as reader, pytest.raises(CorruptionError):
         reader.extract_all(tmp_path / "out")
     extracted = sorted(
-        str(p.relative_to(tmp_path / "out")) for p in (tmp_path / "out").rglob("*.bin")
+        p.relative_to(tmp_path / "out").as_posix()
+        for p in (tmp_path / "out").rglob("*.bin")
     )
     assert extracted == sorted(listing.names)
 
@@ -681,7 +684,6 @@ def _walk(data: bytes, *, seekable: bool) -> list[tuple[str, int, bool]]:
         if isinstance(entry, TarEntry):
             out.append((entry.name.decode(), entry.header_offset, found))
             if found and not walker.salvage_confirms(v7=False):
-                walker.hold_for_search()
                 result = walker.salvage_search(
                     state, entry.header_offset + BLOCKSIZE, v7=False, layer="archive"
                 )
@@ -713,6 +715,125 @@ def test_a_forward_only_walk_finds_what_a_seekable_one_finds(
     assert _walk(data, seekable=False) == seekable
 
 
+def _as_deb(data_tar: bytes) -> bytes:
+    from tests.test_deb import CONTROL, _ar, _tar as _deb_tar
+
+    return _ar(
+        (b"debian-binary", b"2.0\n"),
+        (b"control.tar", _deb_tar([("./control", CONTROL)])),
+        (b"data.tar", data_tar),
+    )
+
+
+# What each dense header claims: more than the clean-end scan, less than the hold.
+_DENSE_SIZE = 2_048_000
+
+
+def _dense(count: int, *, zeros: int = 4_000_000) -> bytes:
+    """One member, a damaged block, then ``count`` headers 1024 bytes apart, each
+    claiming :data:`_DENSE_SIZE` bytes, with a block of junk after each, then
+    ``zeros`` zero bytes: no header the search finds is confirmed, and each one sends
+    the confirmation that far ahead."""
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    out = bytearray(header("a", 3) + b"abc".ljust(BLOCKSIZE, b"\0"))
+    out += b"\x01" * BLOCKSIZE
+    for index in range(count):
+        out += header(f"h{index}", _DENSE_SIZE) + b"\xaa" * BLOCKSIZE
+    return bytes(out + bytes(zeros))
+
+
+def _confirmed_big() -> bytes:
+    """A damaged header, then a member bigger than the clean-end scan that the
+    header after its data confirms."""
+    tar = _build(6, max_size=2000)
+    big = _build(1, seed=9, max_size=10, names=["big.bin"])
+    with tarfile.open(fileobj=io.BytesIO(big.data)) as t:
+        info = t.getmembers()[0]
+    info.size = 3 << 20
+    head = info.tobuf(format=tarfile.GNU_FORMAT)
+    body = random.Random(4).randbytes(info.size)
+    data = tar.data[: tar.offsets[3]] + head + body + tar.data[tar.offsets[3] :]
+    return _zeroed(data, tar.offsets[2], BLOCKSIZE)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [pytest.param(_dense(60), id="dense"), pytest.param(_confirmed_big(), id="big")],
+)
+def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
+    """The forward-only walk of a deb's data.tar lists the members, sizes, bytes and
+    confirmations the seekable walk of the same tar lists, with found members
+    bigger than the clean-end scan. Before the window, the forward-only search
+    replayed only what it had read itself, lost the rest of the hold, and read the
+    stream's end too early as the clean end: 5 members, one confirmed."""
+    direct = _list(data, salvage=True)
+    nested = _list(_as_deb(data), salvage=True)
+    assert nested.names[0] == "DEBIAN/control"
+    assert nested.members[1:] == direct.members
+    assert {n: (c.offset, c.confirmed) for n, c in nested.found().items()} == {
+        n: (c.offset, c.confirmed) for n, c in direct.found().items()
+    }
+    assert len(direct.found()) >= 4
+
+
+def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:
+    """K1, a codec stream: each found member's confirmation used to decode up to its
+    claimed size and then seek back, which decodes again from the stream's start, so
+    the cost grew with members times offset. The walk now reads the codec stream
+    once: listing decodes no more than twice the tar's length.
+
+    Fails with ``rewind_costly=False`` in ``TarReader._new_walker`` (no window)."""
+    data = _dense(300)
+    limits = ListingLimits(max_decoded_bytes=2 * len(data))
+    with open_archive(
+        io.BytesIO(gzip.compress(data)),
+        salvage=True,
+        config=ArchiveyConfig(listing_limits=limits),
+    ) as reader:
+        report = reader.members_report()
+    assert len(report.members) == 301
+    assert isinstance(report.error, CorruptionError)
+
+
+def test_dense_headers_copy_little_on_a_forward_only_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """K1, a forward-only walk: each look ahead used to copy the whole span from
+    where the walk stands, and each replay copied the held bytes again. The bytes
+    the walk's window hands out are now the tar once, plus per found member one
+    search window and a few blocks.
+
+    Fails when ``TarWalker._peek`` copies from the walk's position:
+    ``self._window().peek(self._stream_pos, pos + count - self._stream_pos)``
+    sliced at ``pos - self._stream_pos``."""
+    copied = 0
+    peek, read = tar_parser._Window.peek, tar_parser._Window.read
+
+    def counted_peek(self: tar_parser._Window, offset: int, count: int) -> bytes:
+        nonlocal copied
+        out = peek(self, offset, count)
+        copied += len(out)
+        return out
+
+    def counted_read(self: tar_parser._Window, size: int = -1) -> bytes:
+        nonlocal copied
+        out = read(self, size)
+        copied += len(out)
+        return out
+
+    monkeypatch.setattr(tar_parser._Window, "peek", counted_peek)
+    monkeypatch.setattr(tar_parser._Window, "read", counted_read)
+    count = 100
+    data = _dense(count)
+    assert len(_walk(data, seekable=False)) == count + 1
+    assert copied <= len(data) + count * (WINDOW_SIZE + 16 * BLOCKSIZE)
+
+
 def test_a_deb_with_a_damaged_data_tar_lists_past_the_damage() -> None:
     from tests.test_deb import CONTROL, _ar, _tar as _deb_tar
 
@@ -735,28 +856,35 @@ def test_a_deb_with_a_damaged_data_tar_lists_past_the_damage() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _gnu_tar() -> str | None:
-    tar = shutil.which("tar")
-    if tar is None:
-        return None
+# A GNU tar run that takes longer than this is a hang.
+_GNU_TAR_TIMEOUT = 60
+
+
+def _has_gnu_tar() -> bool:
+    if shutil.which("tar") is None:
+        return False
     try:
         version = subprocess.run(
-            [tar, "--version"], capture_output=True, check=True, text=True
+            ["tar", "--version"],
+            capture_output=True,
+            check=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=_GNU_TAR_TIMEOUT,
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    return tar if "GNU tar" in version else None
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "GNU tar" in version
 
 
-_GNU_TAR = _gnu_tar()
+_GNU_TAR = _has_gnu_tar()
 
 
-@pytest.mark.skipif(_GNU_TAR is None, reason="needs GNU tar")
+@pytest.mark.skipif(not _GNU_TAR, reason="needs GNU tar")
 @pytest.mark.parametrize(("name", "data", "tar"), _CORPUS, ids=[c[0] for c in _CORPUS])
 def test_salvage_extracts_the_member_set_gnu_tar_extracts(
     name: str, data: bytes, tar: _Tar, tmp_path: Path
 ) -> None:
-    assert _GNU_TAR is not None
     path = tmp_path / "d.tar"
     path.write_bytes(data)
     assert set(_list(path, salvage=True).names) == _gnu_extracts(path, tmp_path)
@@ -770,13 +898,12 @@ def _gnu_extracts(path: Path, tmp_path: Path) -> set[str]:
     starts no search where the default walk itself ends on a zero block, as the
     default reads that end without an error, so there GNU tar runs without it.
     """
-    assert _GNU_TAR is not None
     ignore_zeros = _list(path).error is not None
     out = tmp_path / "gnu"
     out.mkdir()
     subprocess.run(
         [
-            _GNU_TAR,
+            "tar",
             *(["--ignore-zeros"] if ignore_zeros else []),
             "-xf",
             str(path),
@@ -785,5 +912,7 @@ def _gnu_extracts(path: Path, tmp_path: Path) -> set[str]:
         ],
         capture_output=True,
         check=False,
+        stdin=subprocess.DEVNULL,
+        timeout=_GNU_TAR_TIMEOUT,
     )
     return {str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()}
