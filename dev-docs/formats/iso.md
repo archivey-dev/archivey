@@ -263,9 +263,9 @@ Ridge namespace a relocated directory is skipped where it is parked and listed w
 its `CL` placeholder stands (`_children`, `_is_parked`, `_relocated`). A directory
 counts as parked only when its `..` carries `PL` and a `CL` that the listing reaches
 points at its extent (`_unrelinked`): one with a `PL` and no such `CL` lists where it
-is stored, since hiding it would lose its files without a word. A `CL` inside the
-directory's own subtree does not count, because the listing reaches it only through
-that directory. Linux hides an entry by its own `RE` entry instead. The `CL` is
+is stored, since hiding it would lose its files without a word. A `CL` that the
+listing can reach only through that directory, such as one inside its own subtree,
+does not count. Linux hides an entry by its own `RE` entry instead. The `CL` is
 followed to the directory at its extent for its contents and attributes, and the member
 keeps the placeholder's own `NM` name, as Linux's `readdir` does. pycdlib instead took
 the first entry of that directory's parent with the placeholder's name, which listed one

@@ -1248,12 +1248,12 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         points at.
 
         The primary tree is walked as :meth:`_children` lists it: a ``CL`` is followed
-        to its directory and a ``PL`` directory is not entered where it is stored.
-        A ``CL`` counts only once the walk reaches it, so one inside the very
-        directory it would relink does not hide that directory. Each ``PL`` directory
-        whose extent no reached ``CL`` points at, in the order the walk met them, is
-        then listed where it is stored and walked in turn, since the ``CL`` entries
-        under it may relink others. Each extent is walked once.
+        to its directory and a ``PL`` directory is not entered where it is stored. A
+        ``CL`` counts only once the walk reaches it, so one that the listing reaches
+        only through the directory it would relink does not hide that directory. Each
+        ``PL`` directory whose extent no reached ``CL`` points at, in the order the walk
+        met them, is then listed where it is stored and walked in turn, since the ``CL``
+        entries under it may relink others. Each extent is walked once.
         """
         if self._orphans is None:
             assert self._volume is not None

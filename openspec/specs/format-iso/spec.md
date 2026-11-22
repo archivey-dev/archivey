@@ -241,8 +241,8 @@ every child of which is a relocated directory: its `..` carries a PL record and 
 CL record the listing reaches points at its extent) SHALL NOT be listed; the
 relocated subtrees appear at their logical place. A directory whose `..` carries a PL
 record, and whose extent no CL record the listing reaches points at, SHALL be listed
-where it is stored, with its files. A CL record inside that directory's own subtree
-does not count, since the listing reaches it only through that directory.
+where it is stored, with its files. A CL record that the listing can reach only through
+that directory, such as one inside its own subtree, does not count.
 
 #### Scenario: ISO record matrix
 
