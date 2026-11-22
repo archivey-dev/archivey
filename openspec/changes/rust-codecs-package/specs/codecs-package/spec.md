@@ -106,14 +106,18 @@ and SHALL NOT hold input that the object holds but has not used. An object made 
 `from_state` and fed each input from its `total_in` offset SHALL produce exactly the
 output a straight decode produces from offset `total_out` (for ZipCrypto, from offset
 `total_in`). `from_state` SHALL refuse a state written by another kernel or another
-revision with `UnsupportedDataError`. Block functions have no state; a seek point is the
+revision with `UnsupportedDataError`. A decoder that holds a decode error (LZW, LZX,
+BCJ2) SHALL refuse `getstate()` with `ValueError`: it raises that error on every later
+call, and has no state to resume from. Block functions have no state; a seek point is the
 block's offset.
 
 #### Scenario: resume from a saved state
 
 | Case | Expected |
 | --- | --- |
-| Save at any call boundary, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
+| Save at any call boundary before a decode error, resume from `total_in` | Output equals the straight decode from `total_out`, byte for byte, errors included |
+| LZW, LZX or BCJ2 `getstate()` after a decode error | `ValueError`; every later call raises the same error |
+| LZX without an output size, saved after it read input past the stream, then a late `set_output_size()` | The original gives that input back and drops an error met in it; the restored decoder keeps it consumed and keeps the error |
 | BCJ2 saved mid-stream, restored with four new streams each at its own `total_in` | Output equals the straight decode from `total_out` |
 | BCJ2 restored twice from one state, with independent streams, reads interleaved past their buffers | Both produce the straight decode; neither affects the other |
 | `bcj2.Decompressor.copy` | Does not exist |
