@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import struct
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from archivey.exceptions import CorruptionError, TruncatedError
 from archivey.internal import native
@@ -163,25 +163,28 @@ def lzfse_decompress(data: bytes, max_length: int) -> bytes:
 Decode = Callable[[bytes, int], bytes]
 
 
-def decoders(
-    excluded: frozenset[OptionalLibrary], *, isolated: bool
-) -> tuple[Decode, Decode]:
-    """The LZFSE and the raw LZVN decoder to use: archivey-codecs' kernels when
-    :mod:`archivey.internal.native` allows them (installed, not in ``excluded``, not
-    ``isolated`` under ``NATIVE_DECODERS``), else :func:`lzfse_decompress` and
+def decoder(
+    kernel: Literal["lzfse", "lzvn"],
+    excluded: frozenset[OptionalLibrary],
+    *,
+    isolated: bool,
+) -> Decode:
+    """The LZFSE or the raw LZVN decoder to use: archivey-codecs' ``kernel`` when
+    :mod:`archivey.internal.native` allows it (installed, not in ``excluded``, not
+    ``isolated`` under ``NATIVE_DECODERS``), else :func:`lzfse_decompress` or
     :func:`lzvn_decompress`. Both give the same bytes and the same errors."""
-    lzfse = native.apple_lz("lzfse", excluded, isolated=isolated) or lzfse_decompress
-    lzvn = native.apple_lz("lzvn", excluded, isolated=isolated) or lzvn_decompress
-    return lzfse, lzvn
+    python = lzfse_decompress if kernel == "lzfse" else lzvn_decompress
+    return native.apple_lz(kernel, excluded, isolated=isolated) or python
 
 
-def decoders_for(config: ArchiveyConfig) -> tuple[Decode, Decode]:
-    """:func:`decoders` for a reader's call: its policy's switched-off packages, and
+def decoder_for(kernel: Literal["lzfse", "lzvn"], config: ArchiveyConfig) -> Decode:
+    """:func:`decoder` for a reader's call: its policy's switched-off packages, and
     whether its ``process_isolation`` is ``NATIVE_DECODERS``."""
     # Imported here: archivey.config imports the codecs package.
     from archivey.config import ProcessIsolation
 
-    return decoders(
+    return decoder(
+        kernel,
         config.formats._libraries_off,
         isolated=config.process_isolation is ProcessIsolation.NATIVE_DECODERS,
     )

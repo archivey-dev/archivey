@@ -88,17 +88,24 @@ def is_panic(exc: BaseException) -> bool:
     return kind.__name__ == "PanicException" and kind.__module__ == "pyo3_runtime"
 
 
-def caused_by_panic(exc: BaseException) -> bool:
-    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
-    never something the archive's data or a password could cause."""
+def panic_of(exc: BaseException) -> BaseException | None:
+    """The panic in ``exc``'s ``__cause__`` chain, or ``None``. A caller that raises a
+    new error in place of ``exc`` raises it ``from panic_of(exc)``, so a kernel bug
+    keeps its panic as the cause."""
     seen: set[int] = set()
     cause = exc.__cause__
     while cause is not None and id(cause) not in seen:
         if is_panic(cause):
-            return True
+            return cause
         seen.add(id(cause))
         cause = cause.__cause__
-    return False
+    return None
+
+
+def caused_by_panic(exc: BaseException) -> bool:
+    """Whether a panic is in ``exc``'s ``__cause__`` chain: the error is a kernel bug,
+    never something the archive's data or a password could cause."""
+    return panic_of(exc) is not None
 
 
 @contextlib.contextmanager

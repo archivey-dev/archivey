@@ -36,7 +36,7 @@ from archivey.internal.streams.codecs import deps
 from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
 from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
 from archivey.internal.streams.codecs.lzfse_decoder import (
-    decoders,
+    decoder,
     lzfse_decompress,
     lzvn_decompress,
 )
@@ -665,7 +665,8 @@ def test_lzfse_uses_the_kernel_unless_switched_off_or_isolated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _fake_apple(monkeypatch, lzfse=1, lzvn=1)
-    lzfse, lzvn = decoders(frozenset(), isolated=False)
+    lzfse = decoder("lzfse", frozenset(), isolated=False)
+    lzvn = decoder("lzvn", frozenset(), isolated=False)
     stream = b"bvx-\x03\0\0\0abc" + b"bvx$"
     assert lzfse(stream, 3) == b"abc"
     assert lzvn(bytes([0x40, 0x01]) + b"a" + bytes([0x06]) + bytes(7), 4) == b"aaaa"
@@ -676,12 +677,10 @@ def test_lzfse_uses_the_kernel_unless_switched_off_or_isolated(
     with pytest.raises(TruncatedError, match="ends before its end-of-stream block"):
         lzfse(stream[:-1], 3)
     for excluded, isolated in ((EXCLUDED, False), (frozenset(), True)):
-        assert decoders(excluded, isolated=isolated) == (
-            lzfse_decompress,
-            lzvn_decompress,
-        )
+        assert decoder("lzfse", excluded, isolated=isolated) is lzfse_decompress
+        assert decoder("lzvn", excluded, isolated=isolated) is lzvn_decompress
     _fake_apple(monkeypatch, lzfse=0, lzvn=1)
-    assert decoders(frozenset(), isolated=False)[0] is lzfse_decompress
+    assert decoder("lzfse", frozenset(), isolated=False) is lzfse_decompress
 
 
 def test_dmg_and_hfs_reads_use_the_kernels_unless_switched_off(
@@ -702,11 +701,44 @@ def test_dmg_and_hfs_reads_use_the_kernels_unless_switched_off(
     assert calls == []
 
 
-def test_a_panic_in_a_dmg_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> None:
-    _fake_apple(monkeypatch, panic=True, lzfse=1, lzvn=1)
-    # The reader names the run and the kernel; the run's message drops the cause.
-    with pytest.raises(CorruptionError, match="lzfse run .* LZFSE decoder failed"):
-        _read_all(DMG_FIXTURES / "hfs-ULFO.dmg")
+@pytest.mark.parametrize(
+    ("name", "kernel", "match"),
+    [
+        ("hfs-ULFO.dmg", "lzfse", "lzfse run .* LZFSE decoder failed"),
+        # compressed.txt is decmpfs type 8: LZVN chunks in its resource fork.
+        ("hfs-UDRO.dmg", "lzvn", "compressed data of file .* LZVN decoder failed"),
+    ],
+)
+def test_a_panic_in_a_dmg_read_is_corruption_caused_by_it(
+    monkeypatch: pytest.MonkeyPatch, name: str, kernel: str, match: str
+) -> None:
+    """A panic in either kernel reaches the caller as ``CorruptionError`` that names
+    the run or the file, with the panic as its cause."""
+    _fake_apple(monkeypatch, panic=True, **{kernel: 1})
+    with pytest.raises(CorruptionError, match=match) as info:
+        _read_all(DMG_FIXTURES / name)
+    assert native.caused_by_panic(info.value)
+    assert isinstance(info.value.__cause__, PanicException)
+
+
+def test_opening_a_dmg_without_lzfse_runs_looks_up_no_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LZFSE decoder is chosen at the first LZFSE run: opening and listing an
+    image with none (UDRO) never looks up the LZFSE or LZVN kernel."""
+    looked_up: list[str] = []
+    kernels = native.kernels
+
+    def spy(name: str, excluded: frozenset[OptionalLibrary]):
+        looked_up.append(name)
+        return kernels(name, excluded)
+
+    monkeypatch.setattr(native, "kernels", spy)
+    with open_archive(DMG_FIXTURES / "hfs-UDRO.dmg") as reader:
+        assert reader.members()
+    assert not {"lzfse", "lzvn"} & set(looked_up)
+    _read_all(DMG_FIXTURES / "hfs-ULFO.dmg")
+    assert "lzfse" in looked_up
 
 
 # ── The real package ──────────────────────────────────────────────────────────────────
@@ -1028,7 +1060,7 @@ def test_dmg_uses_the_kernels_and_reads_the_same(name: str) -> None:
     """The real kernels read every file the Python decoders read, ``compressed.txt``
     (LZVN in its resource fork) included."""
     path = DMG_FIXTURES / name
-    assert decoders(frozenset(), isolated=False)[0] is not lzfse_decompress
+    assert decoder("lzfse", frozenset(), isolated=False) is not lzfse_decompress
     assert _read_all(path) == _read_all(path, OFF)
 
 

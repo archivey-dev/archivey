@@ -48,10 +48,12 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import ReaderContext, ReaderSource
+from archivey.internal import native
 from archivey.internal.overrides import override
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import (
-    decoders_for,
+    Decode,
+    decoder_for,
     lzfse_decompress,
 )
 from archivey.terminal import quoted
@@ -303,8 +305,8 @@ class UdifImage:
     def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
         self._source = source
         self._context = context
-        # The LZFSE decoder: archivey-codecs' kernel when the call allows it.
-        self._lzfse = decoders_for(context.config)[0]
+        # The LZFSE decoder, chosen at the first LZFSE run (:meth:`_decode_run`).
+        self._lzfse: Decode | None = None
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
@@ -710,14 +712,22 @@ class UdifImage:
             draw(decoded)
         try:
             if in_house is not None:
-                decode = self._lzfse if kind == LZFSE else in_house[1]
+                decode = in_house[1]
+                if kind == LZFSE:
+                    if self._lzfse is None:
+                        # archivey-codecs' kernel when the call allows it.
+                        self._lzfse = decoder_for("lzfse", self._context.config)
+                    decode = self._lzfse
                 data = decode(raw, decoded + 1)
             else:
                 data = self._through_archivey(raw, _THROUGH_ARCHIVEY[kind], decoded)
         except (CorruptionError, TruncatedError) as exc:
             # The run was read whole, so a stream that stops early is a wrong stored
-            # size or damage, not a cut file.
-            raise CorruptionError(f"{self._where(index)}: {exc}") from None
+            # size or damage, not a cut file. A kernel panic stays the cause: it is a
+            # bug, not damage (native.py).
+            raise CorruptionError(f"{self._where(index)}: {exc}") from native.panic_of(
+                exc
+            )
         if len(data) != decoded:
             got = f"more than {decoded}" if len(data) > decoded else str(len(data))
             raise CorruptionError(

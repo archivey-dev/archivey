@@ -35,11 +35,10 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.formats import ReaderContext, ReaderSource
+from archivey.internal import native
 from archivey.internal.streams.codecs.lzfse_decoder import (
     Decode,
-    decoders_for,
-    lzfse_decompress,
-    lzvn_decompress,
+    decoder_for,
 )
 from archivey.types import CompressionAlgorithm, StreamFormat
 
@@ -978,11 +977,11 @@ def decmpfs_reader(
         refusal = context.config.formats._codec_refusal(method)
         if refusal is not None:
             raise UnsupportedFeatureError(f"{refusal}.")
-    # The LZFSE and LZVN decoders: archivey-codecs' kernels when the call allows them.
+    # The file's LZFSE or LZVN decoder: archivey-codecs' kernel when the call allows it.
     apple = (
-        decoders_for(context.config)
+        decoder_for("lzvn" if kind in _LZVN_KINDS else "lzfse", context.config)
         if method is not None
-        else (lzfse_decompress, lzvn_decompress)
+        else None
     )
     chunks = -(-size // DECMPFS_CHUNK)
 
@@ -1057,10 +1056,11 @@ def _decode_chunk(
     data: bytes,
     want: int,
     cnid: int,
-    apple: tuple[Decode, Decode],
+    apple: Decode | None,
 ) -> bytes:
     """One decmpfs chunk, which must decode to exactly ``want`` bytes. ``apple`` is
-    the LZFSE and the raw LZVN decoder (:func:`decoders_for`)."""
+    the file's LZFSE or raw LZVN decoder (:func:`decoder_for`), ``None`` for the other
+    types."""
     try:
         if kind == 1:
             out = data
@@ -1098,11 +1098,16 @@ def _decode_chunk(
         # The LZVN and LZFSE decoders refuse any output past ``want`` themselves, and
         # their message names ``want``.
         elif kind in _LZVN_KINDS:
-            out = data[1:] if data[:1] == b"\x06" else apple[1](data, want)
+            assert apple is not None
+            out = data[1:] if data[:1] == b"\x06" else apple(data, want)
         else:
-            out = data[1:] if data[:1] == b"\xff" else apple[0](data, want)
+            assert apple is not None
+            out = data[1:] if data[:1] == b"\xff" else apple(data, want)
     except (CorruptionError, TruncatedError) as exc:
-        raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
+        # A kernel panic stays the cause: it is a bug, not damage (native.py).
+        raise CorruptionError(
+            f"the compressed data of file {cnid}: {exc}"
+        ) from native.panic_of(exc)
     if len(out) != want:
         raise CorruptionError(
             f"a compressed chunk of file {cnid} (type {kind}) decodes to "
