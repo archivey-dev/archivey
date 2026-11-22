@@ -220,6 +220,11 @@ class ReaderState:
         self.concurrent = MemberStreams.CONCURRENT in member_streams
         self.seekable = MemberStreams.SEEKABLE in member_streams
         self.open_site = open_site
+        # Set by a reader whose plugin asks the caller's password provider: whether
+        # this context is inside that provider call running on a given thread
+        # (``_PasswordCandidates.in_provider_call_on``). A wait for an operation that
+        # thread owns would then wait for the provider that waits for it.
+        self.provider_reentry: Callable[[int | None], bool] | None = None
         self._lock = threading.RLock()
         self._materialization_cv = threading.Condition(self._lock)
         self._workers_cv = threading.Condition(self._lock)
@@ -602,6 +607,7 @@ class ReaderState:
                             "Cannot start materialization: another materialization is "
                             "already in progress."
                         )
+                    self.refuse_wait_on_provider(self._materializing_thread)
                     self._materialization_cv.wait()
                     continue
                 # UNMATERIALIZED — elect this caller.
@@ -780,6 +786,12 @@ class ReaderState:
                         "callback). Callbacks must not close the reader that "
                         "triggered them."
                     )
+                # Before either wait below: from inside a password provider (its
+                # thread or a copied context), waiting for the operation that waits
+                # on the provider, or for a closer that waits on that operation,
+                # never ends.
+                for token in (*self._passes_locked(), *self._workers):
+                    self.refuse_wait_on_provider(token.thread.ident)
                 # Another closer is draining, or close already finished.
                 if self._closing or self.lifecycle is not LifecycleState.OPEN:
                     while self.lifecycle is LifecycleState.OPEN and self._closing:
@@ -966,6 +978,18 @@ class ReaderState:
             and self._outstanding_leases_locked() == 0
             and not self._teardown_claimed
         )
+
+    def refuse_wait_on_provider(self, owner: int | None) -> None:
+        """Raise instead of waiting for an operation ``owner`` (a thread ident) runs,
+        when this call comes from inside the password provider that operation is
+        waiting for (``provider_reentry``)."""
+        check = self.provider_reentry
+        if check is not None and check(owner):
+            raise ArchiveyUsageError(
+                "Password provider reentered the archive reader that is waiting for "
+                "its answer. Return a password (or None) without calling back into "
+                "archivey from the provider."
+            )
 
     def _same_thread_token_locked(self) -> OperationToken | None:
         """A token this thread holds while inside a reader call, if any.

@@ -238,6 +238,45 @@ class RarDecompressor(Enum):
 RarDecompressorStr = Literal["unrar", "unar", "auto", "none"]
 
 
+class PartialDataRecovery(Enum):
+    """Which bytes a read hands back when it meets damage, for
+    :attr:`ArchiveyConfig.recover_partial_data`.
+
+    Every level raises the same error for the same damage, and the next read after the
+    bytes it hands back raises it: only the bytes that come back first differ.
+    """
+
+    OFF = "off"
+    """No extra work for the bytes before damage. A read that meets damaged compressed
+    data raises, and the bytes the failing decoder step gave before it are lost; the
+    bytes the read's earlier steps gave still come back, as do the bytes the in-house
+    decoders (``.Z``, lzop, the old ZIP methods) and bzip3 return before an error at no
+    extra cost. On a pipe a gzip, zlib or deflate decoder does not copy its state before
+    each step. Use it when a damaged member is thrown away whole anyway."""
+    BEFORE_DAMAGE = "before_damage"
+    """The default: a read with a size that meets damaged compressed data returns every
+    byte the decoder gives before it, and the next read raises. Finding those bytes
+    means decompressing that part again, from the last point the stream can restart at,
+    so it costs a second decode on damaged data, and on a source that cannot seek a
+    gzip, zlib or deflate decoder copies its state before each step.
+
+    A read that meets a failed checksum or size check (a CRC that does not match, a
+    member longer than its declared size) raises and returns none of its bytes."""
+    ALL = "all"
+    """As ``BEFORE_DAMAGE``, and a read that meets a failed checksum or size check also
+    returns its bytes: the next read raises the check's error. Reading such a member to
+    its end then gives every byte the decoder produced, the bytes that fail the check
+    included. For a caller who keeps what it can of a damaged member and still wants
+    to hear that it failed. A caller that stops once it has the member's size, or
+    after one ``read()`` to the end, without reading again, never sees the error; keep
+    reading until a read returns ``b""`` or raises. :meth:`ArchiveReader.read
+    <archivey.ArchiveReader.read>` does, so it raises at every level."""
+
+
+# The string spellings of ``PartialDataRecovery``, for ``recover_partial_data``.
+PartialDataRecoveryStr = Literal["off", "before_damage", "before-damage", "all"]
+
+
 # Minimum known compressed input size (bytes) before ``use_rapidgzip`` AUTO selects
 # rapidgzip for a DEFLATE-family stream (gzip / zlib / raw deflate). ``ON`` ignores
 # this; unknown size keeps pre-threshold AUTO.
@@ -357,25 +396,21 @@ class ListingLimits:
     against ``max_metadata_bytes`` as it arrives. A ZIP file whose end record sits
     behind more than 64 KiB of trailing bytes is walked the same way at open, which
     charges ``max_members`` on each local header.
-    ISO also counts each path-table entry against ``max_members`` (a table of more than
-    ``max_members + 1`` entries is refused): every entry is a directory, which is a
-    member anyway, so real images never notice. ISO counts the UDF tree it parses
-    against ``max_members`` too, one per UDF name, whether or not ``members()`` lists
-    UDF: an image whose UDF tree has more names than its ISO 9660 tree can be refused
-    for the UDF tree. ISO counts members per tree but weighs bytes as one sum for the
-    whole image, every tree together. ISO also weighs every full path of the UDF tree
-    as it builds it at open, in a separate sum against ``max_metadata_bytes``, whether
-    or not UDF is the listed tree. The listing weighs the same paths as member names,
-    normalized (a ``.`` or empty segment dropped), so a UDF tree whose names that
-    shortens can be refused at open although its listing would fit.
-    RPM refuses a header that lists more files than ``max_members`` at open, before it
-    builds the file list.
-    makeself weighs its shell header against ``max_metadata_bytes`` as it reads it, at
-    open, and refuses a header that lists more payloads than ``max_members``.
-    TAR refuses, in every mode, an extended header (PAX or GNU long name) that declares
-    more than is left of ``max_metadata_bytes``, before reading it. While it parses a PAX
-    header, TAR also charges 256 bytes for each distinct keyword, once: a repeated
-    keyword does not count again.
+    ISO counts the UDF tree it parses against ``max_members`` too, one per UDF name,
+    whether or not ``members()`` lists UDF: an image whose UDF tree has more names than
+    its ISO 9660 tree can be refused for the UDF tree. ISO counts members per tree but
+    weighs bytes as one sum for the whole image, every tree together. ISO also weighs
+    every full path of the UDF tree as it builds it at open, in a separate sum against
+    ``max_metadata_bytes``, whether or not UDF is the listed tree. The listing weighs
+    the same paths as member names, normalized (a ``.`` or empty segment dropped), so a
+    UDF tree whose names that shortens can be refused at open although its listing would
+    fit. RPM refuses a header that lists more files than ``max_members`` at open, before
+    it builds the file list. makeself weighs its shell header against
+    ``max_metadata_bytes`` as it reads it, at open, and refuses a header that lists more
+    payloads than ``max_members``. TAR refuses, in every mode, an extended header (PAX
+    or GNU long name) that declares more than is left of ``max_metadata_bytes``, before
+    reading it. While it parses a PAX header, TAR also charges 256 bytes for each
+    distinct keyword, once: a repeated keyword does not count again.
     A Debian package holds its ``debian-binary``, ``DEBIAN/control`` and
     ``DEBIAN/md5sums`` whole, and refuses the one whose size takes their sum past
     ``max_metadata_bytes``, before reading it. It also counts against ``max_members``
@@ -1086,27 +1121,22 @@ class ArchiveyConfig:
     ``unar`` on ``PATH``. The same rules as :attr:`unrar_path`: when set, it is the only
     ``unar`` archivey runs, and it must pass the same identification and RAR5 check."""
 
-    recover_partial_data: bool = True
-    """Whether a read that meets damaged compressed data first hands back the bytes
-    before the damage.
+    recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
+    """Which bytes a read that meets damage hands back before it raises: a
+    :class:`PartialDataRecovery`, or its name as a string (``"off"``,
+    ``"before_damage"``, ``"all"``). A ``bool`` is refused.
 
-    ``True``: on a source that can seek, a read with a size that meets a decoder error
-    returns every byte the decoder gives before it, and the next read raises. Finding
-    those bytes means decompressing that part again, from the last point the stream can
-    restart at, so it costs a second decode on damaged data. ``False``: archivey does not
-    decode again for them, and on a pipe a gzip, zlib or deflate decoder does not copy
-    its state before each step. The read that meets the damage raises, and the bytes the
-    failing decoder step gave before it are lost; the bytes the read's earlier steps
-    gave still come back, as do the bytes the in-house decoders (``.Z``, lzop, the old
-    ZIP methods) and bzip3 return before an error at no extra cost. Use it when a
-    damaged member is thrown away whole anyway. (Brotli still decodes again to tell
+    ``BEFORE_DAMAGE``, the default, returns the bytes before damaged compressed data,
+    at the cost of a second decode of the damaged part. ``OFF`` skips that work. ``ALL``
+    also returns the bytes of a read that fails a checksum or size check, and raises the
+    check's error on the next read. (Brotli still decodes again under ``OFF`` to tell
     bytes after its stream from damage: that decides which error is raised, not which
     bytes come back.)
 
-    A compressed TAR's own stream recovers its bytes either way, so every member that
-    ends before the damage is still read whole; the member the damage cuts may still
-    hand back its first bytes. The same archive gives the same members and the same
-    error either way: only the partial bytes before an error differ.
+    A compressed TAR's own stream recovers its bytes before damage at every level, so
+    every member that ends before the damage is still read whole; the member the damage
+    cuts may still hand back its first bytes. The same archive gives the same members
+    and the same error at every level: only the partial bytes before an error differ.
     """
 
     on_source_read: OnSourceRead | None = None
@@ -1185,7 +1215,7 @@ class ArchiveyConfig:
             max_read_through: int = ...,
             unrar_path: str | os.PathLike[str] | None = ...,
             unar_path: str | os.PathLike[str] | None = ...,
-            recover_partial_data: bool = ...,
+            recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = ...,
             on_source_read: OnSourceRead | None = ...,
             source_read_step: int = ...,
             salvage_limits: SalvageLimits = ...,
@@ -1280,7 +1310,6 @@ def _check_guard_switches(config: ArchiveyConfig) -> None:
     for field_name in (
         "rar_allow_glob_member_concatenation",
         "read_link_targets",
-        "recover_partial_data",
         "always_probe_content",
         "discover_volumes",
     ):
@@ -1371,6 +1400,25 @@ def _convert_enum_fields(config: ArchiveyConfig) -> None:
             ProcessIsolation,
             call="ArchiveyConfig()",
             param="process_isolation=",
+        ),
+    )
+    recover = config.recover_partial_data
+    if isinstance(recover, bool):
+        # The field was a bool before it was this enum: name the level that does what
+        # the bool did, rather than only listing the spellings.
+        level = "BEFORE_DAMAGE" if recover else "OFF"
+        raise _UsageTypeError(
+            f"ArchiveyConfig() takes a PartialDataRecovery for recover_partial_data=, "
+            f"not a bool: use PartialDataRecovery.{level} for {recover}."
+        )
+    object.__setattr__(
+        config,
+        "recover_partial_data",
+        coerce_enum(
+            config.recover_partial_data,
+            PartialDataRecovery,
+            call="ArchiveyConfig()",
+            param="recover_partial_data=",
         ),
     )
 

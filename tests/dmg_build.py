@@ -797,10 +797,10 @@ def _decmpfs(kind: int, data: bytes) -> tuple[bytes, bytes]:
         elif kind == 12:
             encoded = [chunk(lzfse_stored(b), b, b"\xff") for b in blocks]
         else:
-            # Type 10: the type 8 offset table over raw blocks, as the prototype reads
-            # it. This is an unverified stand-in: no tool here reads type 10, so the
-            # layout must be checked on a real file before anyone relies on it (§6.6).
-            encoded = list(blocks)
+            # Type 10: the type 8 offset table over raw blocks, each behind a 0xCC
+            # byte. The macOS check (tasks.md §M) found this is the layout the kernel
+            # reads; it refuses the same table without the 0xCC bytes (EINVAL).
+            encoded = [b"\xcc" + b for b in blocks]
         offsets = [4 * (len(encoded) + 1)]
         for e in encoded:
             offsets.append(offsets[-1] + len(e))
@@ -1579,3 +1579,140 @@ def dmg_of(
     return write_udif(
         disk.segments, tables=disk.tables, codec=codec, **udif_options
     ).image
+
+
+# ── Encrypted images (encrcdsa v2) ───────────────────────────────────────────────────
+
+# The field values every hdiutil fixture holds (macOS 26); ``dmg_encrypted`` documents
+# the layout.
+ENCRYPTED_HEADER = struct.Struct(">8s7I16sIQQI")
+KEY_ENTRY = struct.Struct(">IQQ")
+PASSWORD_BLOB = struct.Struct(">4I32sI32s5I")
+CSSM_AES = 0x80000001
+CSSM_3DES = 17
+KEY_MARK = b"CKIE\0"
+# hdiutil's sizes: a password blob is 616 bytes (its wrapped-key field is 512), and the
+# encrypted data starts at 0x1DE00. ``hdiutil attach`` refuses an image with a shorter
+# blob as "corrupt".
+BLOB_SIZE = 616
+DATA_OFFSET = 0x1DE00
+
+
+@dataclass
+class EncryptedEntry:
+    """One key entry. ``kind`` 1 is a password; any other kind gets a dummy blob."""
+
+    kind: int = 1
+    password: bytes = b"secret"
+    iterations: int = 1000
+    wrap: str = "aes"  # or "3des"
+    mark: bool = True  # end the unwrapped key with ``CKIE\0`` as macOS 26 does
+    patch_plain: Callable[[bytearray], None] | None = None  # the unwrapped key
+    patch_blob: Callable[[bytearray], None] | None = None
+
+
+def encrypt_dmg(
+    image: bytes,
+    *,
+    entries: Sequence[EncryptedEntry] = (EncryptedEntry(),),
+    key_bits: int = 128,
+    block_size: int = 512,
+    seed: int = 1,
+    patch_header: Callable[[bytearray], None] | None = None,
+) -> bytes:
+    """``image`` (a whole ``.dmg``) encrypted as ``hdiutil convert -encryption`` does:
+    the encrcdsa v2 header, its key entries, then the image in AES-CBC blocks of
+    ``block_size``, each with the IV ``HMAC-SHA1(hmac_key, block number)[:16]``. The
+    keys come from ``seed``, so one seed gives the same file every run."""
+    import hashlib
+    import hmac
+    import random
+
+    from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    rng = random.Random(seed)
+    aes_key = rng.randbytes(key_bits // 8)
+    hmac_key = rng.randbytes(20)
+    table_end = ENCRYPTED_HEADER.size + len(entries) * KEY_ENTRY.size
+    blobs: list[bytes] = []
+    for entry in entries:
+        if entry.kind != 1:
+            blobs.append(bytes(BLOB_SIZE))
+            continue
+        plain = bytearray(aes_key + hmac_key + (KEY_MARK if entry.mark else b""))
+        if entry.patch_plain:
+            entry.patch_plain(plain)
+        block = 16 if entry.wrap == "aes" else 8
+        pad = block - len(plain) % block
+        plain += bytes([pad]) * pad
+        salt = rng.randbytes(20)
+        iv = rng.randbytes(8) + (bytes(8) if entry.wrap == "aes" else b"")
+        derived = hashlib.pbkdf2_hmac(
+            "sha1", entry.password, salt, entry.iterations, 24
+        )
+        cipher = (
+            Cipher(algorithms.AES(derived), modes.CBC(iv))
+            if entry.wrap == "aes"
+            else Cipher(TripleDES(derived), modes.CBC(iv))
+        )
+        encryptor = cipher.encryptor()
+        wrapped = encryptor.update(bytes(plain)) + encryptor.finalize()
+        blob = bytearray(
+            PASSWORD_BLOB.pack(
+                103,  # PBKDF2
+                0,
+                entry.iterations,
+                len(salt),
+                salt,
+                8,  # the IV size macOS states, for AES too
+                iv,
+                192,
+                CSSM_AES if entry.wrap == "aes" else CSSM_3DES,
+                7,  # PKCS#7
+                6,  # CBC
+                len(wrapped),
+            )
+            + wrapped
+        )
+        blob += bytes(max(0, BLOB_SIZE - len(blob)))
+        if entry.patch_blob:
+            entry.patch_blob(blob)
+        blobs.append(bytes(blob))
+    offsets: list[int] = []
+    at = table_end
+    for blob in blobs:
+        offsets.append(at)
+        at += len(blob)
+    data_offset = max(DATA_OFFSET, at + (-at % 4096))
+    header = bytearray(
+        ENCRYPTED_HEADER.pack(
+            b"encrcdsa",
+            2,
+            16,
+            5,
+            CSSM_AES,
+            key_bits,
+            91,
+            160,
+            uuid.UUID(int=seed).bytes,
+            block_size,
+            len(image),
+            data_offset,
+            len(entries),
+        )
+    )
+    for entry, offset, blob in zip(entries, offsets, blobs, strict=True):
+        header += KEY_ENTRY.pack(entry.kind, offset, len(blob))
+    for blob in blobs:
+        header += blob
+    header += bytes(data_offset - len(header))
+    if patch_header:
+        patch_header(header)
+    padded = image + bytes(-len(image) % block_size)
+    out = bytearray(header)
+    for number in range(len(padded) // block_size):
+        iv = hmac.new(hmac_key, number.to_bytes(4, "big"), hashlib.sha1).digest()[:16]
+        encryptor = Cipher(algorithms.AES(aes_key), modes.CBC(iv)).encryptor()
+        out += encryptor.update(padded[number * block_size : (number + 1) * block_size])
+    return bytes(out)
