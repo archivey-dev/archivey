@@ -186,11 +186,12 @@ tag, publish). One-time repo rename / PyPI setup:
 [`dev-docs/release-repo-cutover.md`](dev-docs/release-repo-cutover.md).
 User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). A pull request may add or
 edit a line under `## [Unreleased]` when the line fits the entry's sections: new
-features, public API changes and security fixes one line each. Merge into an existing
-line on the same topic instead of adding one, and keep the list short and user-facing.
-A plain bug fix (not a security fix, and not a change in behaviour users rely on) needs
-no line: the release counts those in the one shared **Fixed** line, so pull requests do
-not edit that line and do not conflict on it. The release PR does the final
+features, public API changes and security fixes one line each. When a line on the same
+topic exists, merge into it instead of adding a second one; a topic with no line yet
+gets a new line. Keep the list short and user-facing. A fix that changes behaviour users
+rely on gets its own line. A plain bug fix needs no line: the release counts those in
+the one shared **Fixed** line, so pull requests do not edit that line and do not
+conflict on it. The release PR does the final
 pass (triage, order, wording), so each entry is an organized list at release time.
 
 Whether a release can be a patch follows

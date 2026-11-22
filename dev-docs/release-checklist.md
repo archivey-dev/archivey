@@ -32,9 +32,10 @@ fails if the tag and either packaged version disagree.
 ## 1. Gather user-visible changes (CHANGELOG)
 
 Pull requests may add or edit lines under `## [Unreleased]`, merged into the structure
-below (CONTRIBUTING.md §Cutting a release). The release PR does the final pass: add what
-the merged pull requests left out, merge lines on the same topic, drop what is not
-user-facing, and fix the order and wording. What goes in it:
+below (CONTRIBUTING.md §Cutting a release). They leave the shared **Fixed** line alone:
+a plain bug fix needs no line. The release PR does the final pass: add what the merged
+pull requests left out, merge lines on the same topic, drop what is not user-facing, and
+fix the order and wording. What goes in it:
 
 - one line per new feature and per public API change, counting a renamed or removed
   `archivey` verb or option and a changed exit code (**Added** / **Changed** /

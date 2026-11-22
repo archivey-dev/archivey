@@ -25,9 +25,9 @@ session needs and points at the rest.
    maintainer).
 5. **Public-repo rules.** No internal-tracker URLs or keys anywhere in the repo, PR text or
    commits — write "tracked internally". End every comment and review you post with the
-   agent attribution footer (§Review workflow). A `CHANGELOG.md` edit goes under
-   `## [Unreleased]` and merges into the existing lines (CONTRIBUTING.md §Cutting a
-   release).
+   agent attribution footer (§Review workflow). A `CHANGELOG.md` line goes under
+   `## [Unreleased]`, merged into a line on the same topic when one exists; a plain bug
+   fix needs no line (CONTRIBUTING.md §Cutting a release).
 
 ## What this repo is
 

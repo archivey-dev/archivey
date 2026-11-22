@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Pull requests may add or edit lines under `[Unreleased]`, and the release does the final
 pass: new features, public API changes and security fixes get a line each, and other bug
-fixes are summarized in one line. How to write the entry: see
+fixes are summarized in one line that the release writes, so a plain bug fix needs no
+line. How to write the entry: see
 [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md).
 
 ## [Unreleased]
@@ -675,7 +676,7 @@ What goes in this file, from 0.2.0 on:
   plain bug fix needs no line. The release PR does the final pass
   (dev-docs/release-checklist.md, section 1).
 
-`scripts/release.py start` writes the compare links below this comment.
+`scripts/release/release.py start` writes the compare links below this comment.
 -->
 
 [Unreleased]: https://github.com/archivey-dev/archivey/compare/v0.5.1...HEAD
