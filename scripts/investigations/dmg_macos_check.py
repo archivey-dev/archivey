@@ -239,33 +239,46 @@ def _check_writer_image(name: str, image: bytes, nodes: list, work: Path) -> Res
 
 
 def _compare_with_nodes(root: Path, nodes: list) -> list[str]:
+    """What differs between the mounted volume and the writer's nodes. A read the
+    file system refuses is that node's problem, so every node is still checked."""
     problems = []
     data = {n.path: n.data for n in nodes if n.kind == "file"}
     for node in nodes:
         full = root / node.path
-        if not os.path.lexists(full):
-            problems.append(f"{node.path}: not on the mounted volume")
-            continue
-        if node.kind == "file":
-            if full.read_bytes() != node.data:
-                problems.append(f"{node.path}: the mounted file's bytes differ")
-            if node.resource_fork:
-                fork = (full / "..namedfork" / "rsrc").read_bytes()
-                if fork != node.resource_fork:
-                    problems.append(f"{node.path}: the resource fork differs")
-            for key, value in node.xattrs.items():
-                if _xattr(full, key) != value:
-                    problems.append(f"{node.path}: extended attribute {key} differs")
-        elif node.kind == "hardlink":
-            if full.read_bytes() != data[node.target]:
-                problems.append(f"{node.path}: the hard link's bytes differ")
-            if os.stat(full).st_ino != os.stat(root / node.target).st_ino:
-                problems.append(f"{node.path}: not the same file as {node.target}")
-        elif node.kind == "symlink":
-            if os.readlink(full) != node.target:
-                problems.append(f"{node.path}: symlink target differs")
-        elif node.kind == "dir" and not full.is_dir():
-            problems.append(f"{node.path}: not a directory")
+        step = "lstat"
+        try:
+            if not os.path.lexists(full):
+                problems.append(f"{node.path}: not on the mounted volume")
+                continue
+            if node.kind == "file":
+                step = "read"
+                if full.read_bytes() != node.data:
+                    problems.append(f"{node.path}: the mounted file's bytes differ")
+                if node.resource_fork:
+                    step = "read the resource fork"
+                    fork = (full / "..namedfork" / "rsrc").read_bytes()
+                    if fork != node.resource_fork:
+                        problems.append(f"{node.path}: the resource fork differs")
+                for key, value in node.xattrs.items():
+                    if _xattr(full, key) != value:
+                        problems.append(
+                            f"{node.path}: extended attribute {key} differs"
+                        )
+            elif node.kind == "hardlink":
+                step = "read"
+                if full.read_bytes() != data[node.target]:
+                    problems.append(f"{node.path}: the hard link's bytes differ")
+                step = "stat"
+                if os.stat(full).st_ino != os.stat(root / node.target).st_ino:
+                    problems.append(f"{node.path}: not the same file as {node.target}")
+            elif node.kind == "symlink":
+                step = "readlink"
+                if os.readlink(full) != node.target:
+                    problems.append(f"{node.path}: symlink target differs")
+            elif node.kind == "dir" and not full.is_dir():
+                problems.append(f"{node.path}: not a directory")
+        except OSError as exc:
+            problems.append(f"{node.path}: {step} failed: {exc.strerror or exc}")
     return problems
 
 
@@ -421,7 +434,9 @@ def _table(title: str, results: list[Result]) -> list[str]:
         "| --- | --- | --- | --- |",
     ]
     for r in results:
-        shown = "; ".join(r.problems[:5]).replace("|", "\\|")
+        shown = "; ".join(r.problems[:12]).replace("|", "\\|")
+        if len(r.problems) > 12:
+            shown += f"; and {len(r.problems) - 12} more"
         notes = "; ".join(r.notes).replace("|", "\\|")
         lines.append(f"| {r.name} | {r.outcome} | {shown} | {notes} |")
     return [*lines, ""]
