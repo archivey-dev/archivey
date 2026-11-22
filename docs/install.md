@@ -122,7 +122,9 @@ the packages its `FormatPolicy(exclude_libraries=)` or `only_libraries=` turns o
 Its `faster_with` lists the packages that would only make reading faster: without compress-utils,
 archivey decodes LZO and Snappy in Python, and without rapidgzip it decodes gzip, zlib, DEFLATE
 and bzip2 without parallel decoding. `archivey --version -v` prints the same answers for the whole
-install, with the command that installs each missing package.
+install, with the command that installs each missing package. It also imports each optional
+package it finds, which `format_availability()` doesn't, so a package that is installed but
+fails to import (a broken wheel, say) shows up there as missing, with the import error.
 
 ## Python versions and platforms
 
