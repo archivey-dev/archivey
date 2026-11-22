@@ -1227,9 +1227,10 @@ member from a file does; the walk SHALL go on to the members after it, and the c
 directory at the end SHALL check it as any other member. Otherwise the walk SHALL stop
 there as before. This does not apply before the first member. It applies only when the
 member before the damaged header records its sizes in its local header (bit 3 clear):
-after a member whose sizes are in a data descriptor, the walk finds that member's end by
-the intact signature that follows it, so it SHALL stop at that member as before, and the
-pipe lists less than a file does.
+after a member whose sizes are in a data descriptor, the walk accepts that descriptor only
+when an intact signature follows it (for a STORED member this is also how it finds the
+data's end), so it SHALL stop at that member as before, and the pipe lists less than a
+file does.
 
 #### Scenario: a damaged local signature from a pipe
 
@@ -1243,6 +1244,6 @@ pipe lists less than a file does.
 - **WHEN** the signature of the third of five local headers is damaged, the second
   member keeps its sizes in a data descriptor (bit 3 set, as `zip -` writes to stdout),
   and the archive is read from a pipe
-- **THEN** the pass stops at the second member, whose read raises
-  `UnsupportedFeatureError` ("read the archive from a seekable source"), as it did
-  before this rule; a file read still lists all five
+- **THEN** the pass ends at the second member with an error, as it did before this
+  rule (`UnsupportedFeatureError` for a STORED member, `CorruptionError` "no data
+  descriptor after member #1" for a compressed one); a file read still lists all five
