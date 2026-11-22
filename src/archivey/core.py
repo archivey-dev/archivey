@@ -486,20 +486,20 @@ def open_archive(
     :exc:`~archivey.exceptions.UnsupportedFeatureError`. ``None`` (the default) starts
     a new nest.
 
-    ``salvage=True`` reads a damaged archive further than the default does. Where
-    damage stops the member list, the reader searches forward for the next header
-    that passes the format's own checks and lists the members it finds there, each
-    with the diagnostic ``MEMBER_FOUND_BY_SCAN``; each range it steps over is recorded
-    as ``ARCHIVE_REGION_SKIPPED``. Every member the default lists comes first and
-    unchanged, and the listing still ends in the error that ends it without salvage.
-    A found member's header passed its checks, but nothing proves it belongs to this
+    ``salvage=True`` reads a damaged archive further than the default does. Where damage
+    stops the member list, the reader searches forward for the next header that passes
+    the format's own checks and lists the members it finds there, each with the
+    diagnostic ``MEMBER_FOUND_BY_SCAN``; each range it steps over is recorded as
+    ``ARCHIVE_REGION_SKIPPED``. Every member the default lists comes first and
+    unchanged, and the listing still ends in the error that ends it without salvage. A
+    found member's header passed its checks, but nothing proves it belongs to this
     archive, so do not use ``salvage=True`` to decide what an archive holds or whether
     it is safe. :class:`~archivey.SalvageLimits` (``config.salvage_limits``) caps the
     search. Salvage needs a seekable source, so ``streaming=True`` is refused. A format
-    without a salvage search is read as without it and records
-    ``SALVAGE_UNAVAILABLE``. An archive archivey opens inside another one (a ``.deb``'s
-    ``data.tar``) salvages when the outer one does; one opened with ``parent=``
-    salvages when that call says so.
+    without a salvage search, or whose search cannot run on a nested archive read
+    forward only, is read as without it and records ``SALVAGE_UNAVAILABLE``. An archive
+    archivey opens inside another one (a ``.deb``'s ``data.tar``) salvages when the
+    outer one does; one opened with ``parent=`` salvages when that call says so.
 
     The format is auto-detected from the source's magic bytes (then its extension) unless
     ``format=`` is passed explicitly. A directory path opens as a directory pseudo-archive.
