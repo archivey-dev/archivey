@@ -104,6 +104,9 @@ The first listing, per volume (`_VolumeWalk`):
   decmpfs header whole), charged;
 - pass 2 (`catalog_entries`): one member per folder and file record, in catalog order
   (parent id, then name), skipping the hidden folders' contents and the journal files.
+  Each folder path it builds and caches is charged to `max_metadata_bytes`, so a deep
+  chain inside a hidden folder is bounded too. A visible folder's path is charged
+  again in its member's name, because both strings are kept.
 
 Type precedence: hard-link Finder markers first (`hlnk`/`hfs+` file link,
 `fdrp`/`MACS` directory link), then a non-zero BSD mode, then the Finder `slnk`/`rhap`
@@ -288,6 +291,11 @@ Choices made in Part E:
 ./scripts/test.sh tests/test_dmg.py tests/test_dmg_apfs.py tests/test_udif.py \
     tests/test_dmg_build.py tests/test_detection_workspace.py tests/test_lzfse_decoder.py
 ```
+
+On macOS, `scripts/investigations/dmg_macos_check.py` checks the test writer's images
+with `hdiutil verify`, `fsck_hfs -n` and a read-only mount, and archivey against fresh
+`hdiutil create` images in every format. The `dmg-macos` workflow runs it weekly and
+after a merge that touches the DMG code; the table is its job summary.
 
 | Claim |
 | --- |
