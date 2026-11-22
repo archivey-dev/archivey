@@ -524,6 +524,132 @@ def test_an_extent_past_the_volume_fails_that_file_only() -> None:
     assert names == ["a", "b"]
 
 
+def test_an_extents_file_short_of_its_blocks_is_corruption() -> None:
+    """The extents overflow file has no overflow extents of its own (TN1150): its
+    fork record holding fewer blocks than it says is damage, not a lookup."""
+
+    def short(header: bytearray) -> None:
+        at = 192 + 12  # the extents file fork's totalBlocks
+        struct.pack_into(">I", header, at, struct.unpack_from(">I", header, at)[0] + 5)
+
+    image = d.dmg_of(
+        [d.Node("a.bin", data=b"x" * 4096 * 12, fragment=12)],
+        hfs_options={"patch_header": short},
+    )
+    with (
+        pytest.raises(CorruptionError, match="extents overflow file's eight"),
+        _open(image) as reader,
+    ):
+        reader.members()
+        reader.read("a.bin")
+
+
+def _attribute_extent_records(
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+    total_blocks: int | None = None,
+    first_only: bool = False,
+) -> None:
+    """Make the builder add ``count`` extent records (0x30) of eight one-block
+    extents after each fork attribute record (0x20), or only after the first one in
+    key order, and set that fork's block count to ``total_blocks`` when given."""
+    real = d._btree
+
+    def btree(records, node_size, **kwargs):
+        if kwargs.get("max_key") == 266:  # the attributes tree
+            out = []
+            done = False
+            for key, data in records:
+                if struct.unpack_from(">I", data)[0] != 0x20 or (first_only and done):
+                    out.append((key, data))
+                    continue
+                done = True
+                if total_blocks is not None:
+                    data = bytearray(data)
+                    struct.pack_into(">I", data, 8 + 12, total_blocks)
+                    data = bytes(data)
+                out.append((key, data))
+                body = struct.pack(">II", 0x30, 0) + struct.pack(">II", 1, 1) * 8
+                out += [(key, body)] * count
+            records = out
+        return real(records, node_size, **kwargs)
+
+    monkeypatch.setattr(d, "_btree", btree)
+
+
+def test_attribute_extents_past_the_fork_blocks_fail_that_file_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Extent records (0x30) that hold more blocks than the attribute's fork: that
+    file is listed without the attribute, with a warning, and the others list."""
+    _attribute_extent_records(monkeypatch, 3, first_only=True)
+    image = d.dmg_of(
+        [
+            d.Node("a", data=b"1", xattrs={"x": b"v" * 10, "y": b"w"}),
+            d.Node("b", data=b"2", xattrs={"x": b"v" * 10, "y": b"w"}),
+        ],
+        hfs_options={"attributes_in_fork": ["x"]},
+    )
+    with _open(image) as reader:
+        members = {m.name: m for m in reader.members()}
+        assert DiagnosticCode.MEMBER_HEADER_RECORD_SKIPPED in _codes(reader)
+    assert members["a"].extra["dmg.xattrs"] == {"y": b"w"}
+    assert members["b"].extra["dmg.xattrs"] == {"x": None, "y": b"w"}
+
+
+def test_attribute_extents_are_charged_to_max_metadata_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 200 records of eight extents: 1600 extents of about 100 bytes each in memory,
+    # past a 64 KiB cap. At 8 bytes each (their size on disk) they would fit.
+    _attribute_extent_records(monkeypatch, 200, total_blocks=0xFFFF_FFFF)
+    image = d.dmg_of(
+        [d.Node("f", data=b"hi", xattrs={"x": b"v" * 10})],
+        hfs_options={"attributes_in_fork": ["x"], "node_size": 32768},
+    )
+    config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=64 << 10))
+    with (
+        pytest.raises(ResourceLimitError, match="max_metadata_bytes"),
+        _open(image, config=config) as reader,
+    ):
+        reader.members()
+
+
+def test_a_fork_attribute_split_over_an_extent_record_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A decmpfs attribute in a fork whose extents go on in an extent record (0x30):
+    the file reads whole."""
+    data = bytes(range(256)) * 40  # with its header, three blocks of 4096
+    real = d._btree
+
+    def btree(records, node_size, **kwargs):
+        if kwargs.get("max_key") != 266:  # not the attributes tree
+            return real(records, node_size, **kwargs)
+        out = []
+        for key, body in records:
+            if struct.unpack_from(">I", body)[0] != 0x20:
+                out.append((key, body))
+                continue
+            start, blocks = struct.unpack_from(">II", body, 8 + 16)
+            assert blocks >= 2
+            head = bytearray(body)
+            struct.pack_into(">II", head, 8 + 16, start, 1)
+            more_key = bytearray(key)
+            struct.pack_into(">I", more_key, 8, 1)  # the record's start block
+            more = struct.pack(">IIII", 0x30, 0, start + 1, blocks - 1) + bytes(56)
+            out += [(key, bytes(head)), (bytes(more_key), more)]
+        return real(out, node_size, **kwargs)
+
+    monkeypatch.setattr(d, "_btree", btree)
+    image = d.dmg_of(
+        [d.Node("f", data=data, compression=9)],
+        hfs_options={"attributes_in_fork": ["com.apple.decmpfs"]},
+    )
+    with _open(image) as reader:
+        assert reader.read("f") == data
+
+
 def test_a_long_symlink_target_is_reported() -> None:
     nodes = [d.Node("l", kind="symlink", target="t" * 2000)]
     with _open(_image(nodes)) as reader:
