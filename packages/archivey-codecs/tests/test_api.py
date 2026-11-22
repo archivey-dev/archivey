@@ -389,6 +389,23 @@ def test_lzx_state_after_a_capped_flush() -> None:
         assert d.flush() == _HELLO[max(at, 1) :]
 
 
+def test_lzx_state_of_a_frame_ended_by_a_late_output_size() -> None:
+    """A frame stalls after 10 bytes, and a late output size of 10 ends it there. A
+    state saved before the next call holds a frame with all its bytes decoded."""
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"  # 10 bytes, uncompressed
+    second = bytes.fromhex("00604001") + r_regs + b"abcdefghij"
+    data = first + second[:-5]
+    d = lzx.Decompressor(15)
+    assert d.decompress(data) == b""
+    d.set_output_size(10)
+    r = lzx.Decompressor.from_state(d.getstate())
+    assert r.decompress(data[r.total_in :] + b"tail") == b"0123456789"
+    assert r.eof
+    assert d.decompress(b"tail") == b"0123456789"
+    assert r.unused_data == d.unused_data
+
+
 def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])

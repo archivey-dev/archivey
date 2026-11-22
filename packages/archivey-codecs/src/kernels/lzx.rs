@@ -633,7 +633,9 @@ impl LzxDecoder {
         let done = r.u32()? as usize;
         if size > FRAME_SIZE
             || (size == 0 && done != 0)
-            || (size > 0 && (done >= size || !d.header_read))
+            // `done == size`: a late output size ended the frame where it stalled, and
+            // the next call finishes it without reading.
+            || (size > 0 && (done > size || !d.header_read))
             || d.window_pos + done > d.window_size
         {
             return r.bad(format!("a frame of {size} bytes with {done} decoded"));
