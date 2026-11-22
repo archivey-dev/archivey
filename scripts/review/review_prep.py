@@ -411,9 +411,10 @@ API_SURFACE = "dev-docs/api-surface.txt"
 CODECS_API = "packages/archivey-codecs/python/archivey_codecs/"
 # The trailer that raises a pull request to deep, in any of its commit messages:
 # `Review-Tier: deep (why)`. History keeps it, so a later push cannot lower the tier.
-_TIER_TRAILER_RE = re.compile(
-    r"^review-tier:\s*deep\b[ \t]*(.*)$", re.IGNORECASE | re.MULTILINE
-)
+# Git parses the trailers (`%(trailers)`: the last paragraph only), so a body line that
+# happens to start with the key is not one.
+TIER_TRAILER = "Review-Tier"
+_DEEP_VALUE_RE = re.compile(r"^deep\b[ \t]*(.*)$", re.IGNORECASE)
 # The release's and the review loop's own files: standard, with the security pass and
 # the pull request's author as the attacker (skill §1). The loop's rules are here
 # because a pull request is reviewed under its own copy of them
@@ -750,7 +751,6 @@ class Tier:
     # What decided it: for deep, the lines `deep: ...` prints; otherwise the paths that
     # kept it from light.
     reasons: list[str]
-    api_changed: bool  # dev-docs/api-surface.txt changed
     # New files under a parser, codec or kernel directory (deep, with the security
     # pass).
     new_parsers: list[str] = field(default_factory=list)
@@ -761,6 +761,10 @@ class Tier:
     process: list[str] = field(default_factory=list)
     # The public API files it changes: archivey's surface and archivey-codecs' stubs.
     api_paths: list[str] = field(default_factory=list)
+
+    @property
+    def api_changed(self) -> bool:
+        return bool(self.api_paths)
 
 
 def tier(
@@ -784,7 +788,6 @@ def tier(
     api = [p for p in api if p == API_SURFACE or p.endswith(".pyi")]
     core = [p for p in paths if _matches(p, DEEP_SECURITY + DEEP_CORE) and changed(p)]
     process = [p for p in paths if _matches(p, PROCESS_FILES)]
-    api_changed = API_SURFACE in paths
     deep = (
         [f"public API: {p}" for p in api]
         + [f"new reader, parser, codec or kernel: {p}" for p in new_parsers]
@@ -792,7 +795,7 @@ def tier(
         + [f"raised in a commit: {r or '(no reason given)'}" for r in raised]
     )
     if deep:
-        return Tier("deep", deep, api_changed, new_parsers, [], process, api)
+        return Tier("deep", deep, new_parsers, process=process, api_paths=api)
     heavier = [
         p
         for p in paths
@@ -804,8 +807,8 @@ def tier(
         )
     ]
     if paths and not heavier:
-        return Tier("light", [], api_changed, new_parsers, [], process, api)
-    return Tier("standard", heavier, api_changed, new_parsers, [], process, api)
+        return Tier("light", [], new_parsers, process=process, api_paths=api)
+    return Tier("standard", heavier, new_parsers, process=process, api_paths=api)
 
 
 def _strip_docstrings(tree: ast.AST) -> ast.AST:
@@ -836,10 +839,13 @@ def _code_changed(before: str | None, after: str | None) -> bool:
     return ast.dump(old) != ast.dump(new)
 
 
-def raised_tiers(log: str) -> list[str]:
-    """The reasons of the `Review-Tier: deep` trailers in these commit messages."""
+def raised_tiers(values: str) -> list[str]:
+    """The reasons of the `deep` values among these `Review-Tier` trailer values, one
+    per line, as `git log --format=%(trailers:key=Review-Tier,valueonly)` prints them."""
     return [
-        m.group(1).strip().strip("()").strip() for m in _TIER_TRAILER_RE.finditer(log)
+        m.group(1).strip().strip("()").strip()
+        for line in values.splitlines()
+        if (m := _DEEP_VALUE_RE.match(line.strip()))
     ]
 
 
@@ -870,7 +876,13 @@ def review_tier(base: str, head: str) -> Tier:
             return True
         return _code_changed(base_text(fork, path), base_text(head, path))
 
-    raised = raised_tiers(git("log", "--format=%B", f"{fork}..{head}"))
+    raised = raised_tiers(
+        git(
+            "log",
+            f"--format=%(trailers:key={TIER_TRAILER},valueonly,separator=%x0a)",
+            f"{fork}..{head}",
+        )
+    )
     t = tier(paths, added, code_changed, raised)
     files = parse_diff(git("diff", "-U0", "-M", f"{base}...{head}"))
     both = {

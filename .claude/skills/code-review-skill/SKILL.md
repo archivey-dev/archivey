@@ -159,8 +159,9 @@ its list, live in that script.
     release script, the loop's prompt and scripts, this skill): the attacker is whoever
     can open a pull request or write its title, body, branch name, label or a comment.
     Try whether that text can reach a `run:` line, a token with more scope than the job
-    needs, a step that runs the pull request's code with secrets, or an agent that it
-    steers into a command, a token or a write it should not make.
+    needs, a step that runs the pull request's code with secrets, shared CI state the
+    job's token does not scope (the Actions cache, artifacts other jobs restore), or an
+    agent that it steers into a command, a token or a write it should not make.
 
   Running an attempt checks a claim; it is not a re-run of the gates (§6). Report one
   `Security pass:` line per property or file (§3): what you tried and what happened. A

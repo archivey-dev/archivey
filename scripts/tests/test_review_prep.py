@@ -206,7 +206,7 @@ def test_outcome_names_what_a_non_red_run_means() -> None:
 
 def test_tier_is_light_only_when_every_path_is_maintainer_prose_or_tests() -> None:
     light = prep.tier(["dev-docs/x.md", "tests/test_x.py", "mkdocs.yml", "NOTES.md"])
-    assert (light.name, light.api_changed) == ("light", False)
+    assert (light.name, light.api_changed, light.api_paths) == ("light", False, [])
     # A spec is a contract, and a nested `.md` outside the light folders is not prose.
     assert prep.tier(["dev-docs/x.md", "openspec/specs/cli/spec.md"]).name == "standard"
     # User docs get the Opus round, so they are standard.
@@ -332,9 +332,12 @@ def test_code_changed_ignores_docstrings_and_comments() -> None:
 
 
 def test_a_commit_trailer_raises_the_tier_and_nothing_lowers_it() -> None:
-    log = "Fix it\n\nReview-Tier: deep (resumable state)\n\nNext\n\nreview-tier: Deep\n"
-    assert prep.raised_tiers(log) == ["resumable state", ""]
-    assert prep.raised_tiers("Review-Tier: standard\n") == []
+    # The trailer values `git log --format=%(trailers:...,valueonly)` prints.
+    assert prep.raised_tiers("deep (resumable state)\n\nDeep\n") == [
+        "resumable state",
+        "",
+    ]
+    assert prep.raised_tiers("standard\n") == []
     t = prep.tier(["src/archivey/core.py"], raised=["resumable state"])
     assert (t.name, t.reasons) == ("deep", ["raised in a commit: resumable state"])
     assert prep.tier(["dev-docs/x.md"], raised=[""]).reasons == [
@@ -631,7 +634,14 @@ def test_review_tier_reads_adds_renames_and_texts_from_git(
         },
     )
     _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-qm", "pr\n\nReview-Tier: deep (a test)")
+    # A body line that starts with the key is prose, not a trailer.
+    _git(
+        tmp_path,
+        "commit",
+        "-qm",
+        "pr\n\nReview-Tier: deep is how you raise it.\nMore prose.\n\n"
+        "Review-Tier: deep (a test)",
+    )
     # main moves on after the fork: the "before" texts must not come from its tip.
     _git(tmp_path, "checkout", "-q", "main")
     _write(tmp_path, {"pyproject.toml": pyproject.replace('"a"', '"a", "b"')})
