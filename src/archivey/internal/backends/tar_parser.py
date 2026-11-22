@@ -1395,9 +1395,10 @@ class _Chain:
         # included.
         self.ambiguities: list[tuple[Ambiguity, bytes]] = []
         # The first header in the chain that failed its checksum and that the walk
-        # followed: its offset, why it failed, and ``extended_at`` as it stood before
-        # it, which is what a stop there reports (TarWalker._stop_at_damage).
-        self.damage: tuple[int, str, int | None] | None = None
+        # followed: its offset, why it failed, ``extended_at`` as it stood before it,
+        # which is what a stop there reports (TarWalker._stop_at_damage), and whether
+        # it is an extended header rather than the member header.
+        self.damage: tuple[int, str, int | None, bool] | None = None
         # Whether the last header read failed its checksum and still waits for the
         # block its size points at to confirm it.
         self.pending = False
@@ -1418,10 +1419,21 @@ class TarWalker:
     """
 
     def __init__(
-        self, stream: BinaryIO, *, seekable: bool, end: int | None = None
+        self,
+        stream: BinaryIO,
+        *,
+        seekable: bool,
+        end: int | None = None,
+        source_seekable: bool = False,
     ) -> None:
         self._stream = stream
         self._seekable = seekable
+        # Why a forward-only walk could not check the header after a damaged member:
+        # a source that can seek is read past the damage without streaming=True, any
+        # other once it is saved to a file.
+        self._hold_note = (
+            _STREAMING_HOLD_NOTE if source_seekable else _FORWARD_HOLD_NOTE
+        )
         # Byte length of the archive when it is a fact (a plain file). A read is then
         # clamped to what the file holds, so one member is one read. Unknown (a
         # compressed stream, a test buffer) keeps the stepped read.
@@ -1456,9 +1468,9 @@ class TarWalker:
         # and were followed (capped at _MAX_DAMAGED_HEADER_RUN).
         self._damage_run = 0
         # Each damaged header the walk followed and listed a member from, as
-        # (offset, why its checksum failed), in walk order. The reader ends the pass
-        # in CorruptionError when there is one.
-        self.followed: list[tuple[int, str]] = []
+        # (offset, why its checksum failed, whether it is an extended header), in
+        # walk order. The reader ends the pass in CorruptionError when there is one.
+        self.followed: list[tuple[int, str, bool]] = []
 
     # The stream ---------------------------------------------------------------
 
@@ -1737,7 +1749,15 @@ class TarWalker:
         fixed = with_fixed_checksum(block)
         parsed = parse_header_block(fixed, rejected.offset)
         if chain.damage is None:
-            chain.damage = (rejected.offset, rejected.reason, chain.extended_at)
+            extended = (
+                isinstance(parsed, HeaderBlock) and parsed.typeflag in EXTENDED_TYPES
+            )
+            chain.damage = (
+                rejected.offset,
+                rejected.reason,
+                chain.extended_at,
+                extended,
+            )
         if (
             not isinstance(parsed, HeaderBlock)
             or not _confirms(parsed)
@@ -1764,9 +1784,9 @@ class TarWalker:
             if confirmed is not True:
                 chain.note = confirmed
                 return self._stop_at_damage(chain)
-        offset, reason, _ = chain.damage
+        offset, reason, _, extended = chain.damage
         entry.damaged_header = offset
-        self.followed.append((offset, reason))
+        self.followed.append((offset, reason, extended))
         return entry
 
     def _confirms_at(self, pos: int) -> Literal[True] | str:
@@ -1785,7 +1805,7 @@ class TarWalker:
         while True:
             look = self._look_ahead(pos, BLOCKSIZE)
             if isinstance(look, _HoldExceeded):
-                return _FORWARD_HOLD_NOTE
+                return self._hold_note
             if len(look) < BLOCKSIZE:
                 return ""
             parsed = parse_header_block(look, pos)
@@ -1812,7 +1832,7 @@ class TarWalker:
         that lands there lands where the archive's own trailer starts."""
         look = self._look_ahead(pos, _CLEAN_END_SCAN + 1)
         if isinstance(look, _HoldExceeded):
-            return _FORWARD_HOLD_NOTE
+            return self._hold_note
         if 2 * BLOCKSIZE <= len(look) <= _CLEAN_END_SCAN and look.count(0) == len(look):
             return True
         return ""
@@ -1855,7 +1875,7 @@ class TarWalker:
         """End the walk at the chain's first damaged header, as a walk that never
         followed it ends there (:meth:`_end_at_non_header`)."""
         assert chain.damage is not None
-        offset, reason, extended_at = chain.damage
+        offset, reason, extended_at, _ = chain.damage
         if extended_at is not None:
             reason = (
                 f"the extended header at offset {extended_at} is followed by a "
@@ -2565,6 +2585,12 @@ _FORWARD_HOLD = 4 << 20
 _FORWARD_HOLD_NOTE = (
     "; from a file, the walk could check the header its size points at and go on: "
     "save the archive to a file to read past the damage"
+)
+# The same note when the source can seek and only streaming=True kept the walk
+# forward-only (``stream_members()`` never seeks).
+_STREAMING_HOLD_NOTE = (
+    "; a random-access walk could check the header its size points at and go on: "
+    "open the archive without streaming=True to read past the damage"
 )
 
 # The member header types whose data area a bare header frames by its own size, and
