@@ -267,14 +267,22 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   pass. A compressed TAR's walk reads its codec stream through the same window from
   the first search on, because a seek back on a codec stream decodes again from a
   restart point.
-- **Confirmation is bounded on a layer that is costly to go back on** (a codec stream,
-  or forward-only). There a found member is confirmed only when the block after its
-  data is within the 4 MiB span of where the walk stands; past that it is unconfirmed
-  and the search goes on inside its data, which keeps recall. A plain file seeks, so
-  any size is confirmed. The clean-end check reads each byte once per walk: an end
-  more than the 1 MiB scan away answers without a read, and the zeros before the end
-  are scanned once. So every byte is decoded once, and what each found member costs
-  beyond that is a few blocks and the search's own window.
+- **Confirmation is bounded on a layer that is costly to go back on.** A plain file
+  seeks, so any size is confirmed. A forward-only walk confirms a found member only
+  when the block after its data is within the 4 MiB span of where it stands (the pipe
+  span); past that the member is unconfirmed and the search goes on inside its data,
+  which keeps recall. A codec stream confirms past the span by decoding forward to
+  the block, which a confirmed walk decodes anyway. When that fails, the search goes
+  back into the data and decodes again from a restart point, so these looks share a
+  budget: their offsets may add up to the furthest offset the walk has decoded, and
+  past that the 4 MiB span applies there too. The clean-end check reads each byte
+  once per walk: an end more than the 1 MiB scan away answers without a read, and the
+  zeros before the end are scanned once.
+- **An unconfirmed found member's data, on a forward-only walk,** is read from the
+  window without moving the walk, and ends quietly where the stream ends or at the
+  4 MiB span: its size is not trusted. A deb's pass drains each member's data, so a
+  lying size no longer runs the walk into the stream's end, and the bytes it hands
+  out count once against `max_decoded_bytes`, however many found members cover them.
 
 ## Verification
 

@@ -1497,6 +1497,12 @@ class TarWalker:
         # (end, start, exact): the bytes from start to end are all zero, and with
         # exact the byte before start is not (:meth:`_zeros_before`).
         self._zero_tail: tuple[int, int, bool] | None = None
+        # A codec walk's looks past its hold so far, as the sum of their offsets
+        # (salvage_confirms).
+        self._far_spent = 0
+        # A forward-only walk: the furthest offset of the bytes the data of members
+        # nothing confirms has handed out (open_held_data), which each count once.
+        self._held_drawn_to = 0
 
     # The stream ---------------------------------------------------------------
 
@@ -1619,6 +1625,33 @@ class TarWalker:
         whether it still is."""
         return _ForwardSlice(self, span.data_offset, span.stored_size)
 
+    def open_held_data(
+        self, span: TarSpan, draw: Callable[[int], object] | None
+    ) -> _HeldSlice:
+        """``span``'s data area, on a forward-only walk, for a member a salvage search
+        found and nothing confirms: read from the walk's window without moving the
+        walk, which goes back into that data to search it. Its size is not trusted,
+        so it ends, with no error, where the stream ends or at the walk's hold
+        (:data:`_FORWARD_HOLD` past where the walk stands). ``draw`` takes the
+        count of the bytes handed out, each byte of the stream once, however many
+        such members cover it."""
+        assert not self._seekable
+        start = span.data_offset
+        length = max(0, min(span.stored_size, self._stream_pos + _FORWARD_HOLD - start))
+        return _HeldSlice(self, start, length, draw)
+
+    def _held_peek(
+        self, offset: int, count: int, draw: Callable[[int], object] | None
+    ) -> bytes:
+        data = self._peek(offset, count)
+        end = offset + len(data)
+        new = end - max(offset, self._held_drawn_to)
+        if new > 0:
+            self._held_drawn_to = end
+            if draw is not None:
+                draw(new)
+        return data
+
     def stream_after_end(self) -> BinaryIO:
         """The stream, positioned right after the zero block the walk ended on, for
         the caller's check of the rest of the end-of-archive marker and what follows
@@ -1737,18 +1770,27 @@ class TarWalker:
         the zero block before ``pos``, the archive's clean end."""
         return self._clean_tail(pos, BLOCKSIZE) is True
 
-    def salvage_confirms(self, *, v7: bool) -> bool:
+    def salvage_confirms(self, *, v7: bool, searched: bool = False) -> bool:
         """Whether the block where the next header starts confirms the member a
         salvage search found: a header that passes the search's own check, or the
         archive's clean end (the end-of-archive marker, then only zeros).
 
-        A forward-only walk, and a salvage walk whose stream is costly to seek back,
-        look no further than :data:`_FORWARD_HOLD` bytes past where they stand
-        (:meth:`_look_ahead`): a member with more data than that is unconfirmed, and
-        the search goes on inside its data."""
+        A forward-only walk looks no further than :data:`_FORWARD_HOLD` bytes past
+        where it stands (:meth:`_look_ahead`): a member with more data than that is
+        unconfirmed, and the search goes on inside its data. A walk over a codec
+        stream looks further for a member the search found (``searched``) by
+        decoding forward to the block, which a confirmed walk decodes anyway. When
+        nothing confirms it, the search goes back into its data, which decodes again
+        from a restart point. So each such look counts its offset against a budget
+        of the furthest offset the walk has decoded (``_far_spent``); once that is
+        spent, the cap applies here too."""
         if self.end is not None:
             return False
         pos = self._pos
+        if searched and self._far_look_allowed(pos):
+            self._far_spent += pos
+            # Decode forward to the block: the window then holds what follows it.
+            self._seek(pos)
         look = self._look_ahead(pos, BLOCKSIZE)
         if isinstance(look, _HoldExceeded) or len(look) < BLOCKSIZE:
             return False
@@ -2071,6 +2113,16 @@ class TarWalker:
         if self._beyond_hold(pos):
             return _HOLD_EXCEEDED
         return self._peek(pos, count)
+
+    def _far_look_allowed(self, pos: int) -> bool:
+        """Whether a codec walk may decode forward past its hold to ``pos``."""
+        window = self._win
+        return (
+            self._seekable
+            and window is not None
+            and self._beyond_hold(pos)
+            and self._far_spent < window.furthest
+        )
 
     def _beyond_hold(self, pos: int) -> bool:
         held = self._held_block
@@ -2793,6 +2845,13 @@ class _Window:
         self._keep = BLOCKSIZE
         # Where the inner stream ended, once a read of it came back empty.
         self.eof_at: int | None = None
+        # The furthest end the held bytes had before a seek moved them.
+        self._max_end = offset
+
+    @property
+    def furthest(self) -> int:
+        """The furthest offset of the inner stream this window has read to."""
+        return max(self._max_end, self.end)
 
     @property
     def start(self) -> int:
@@ -2823,6 +2882,7 @@ class _Window:
         return offset
 
     def _restart(self, offset: int) -> None:
+        self._max_end = max(self._max_end, self.end)
         self._buf = bytearray()
         self._start = self._pos = offset
         self.eof_at = None
@@ -3035,6 +3095,49 @@ class _ReadOnly(dict[bytes, PaxValue]):
     the walker never writes to one once it is made."""
 
     __slots__ = ()
+
+
+class _HeldSlice(ReadOnlyIOStream):
+    """The data of a member a salvage search found and nothing confirms, on a
+    forward-only walk (:meth:`TarWalker.open_held_data`)."""
+
+    def __init__(
+        self,
+        walker: TarWalker,
+        start: int,
+        length: int,
+        draw: Callable[[int], object] | None,
+    ) -> None:
+        super().__init__()
+        self._walker = walker
+        self._start = start
+        self._length = length
+        self._draw = draw
+        self._done = 0
+
+    @override
+    def tell(self) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        return self._done
+
+    def in_place(self) -> bool:
+        return True
+
+    @override
+    def read(self, size: int = -1, /) -> bytes:
+        if self.closed:
+            raise ValueError("read from a closed TAR member stream")
+        left = self._length - self._done
+        want = left if size is None or size < 0 else min(size, left)
+        if want <= 0:
+            return b""
+        data = self._walker._held_peek(self._start + self._done, want, self._draw)
+        self._done += len(data)
+        if len(data) < want:
+            # The stream ended: so does this member's data.
+            self._length = self._done
+        return data
 
 
 class _ForwardSlice(ReadOnlyIOStream):

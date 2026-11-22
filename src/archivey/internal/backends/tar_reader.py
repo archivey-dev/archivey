@@ -128,6 +128,7 @@ from archivey.internal.naming import (
     emit_member_name_normalized,
     normalize_member_name,
 )
+from archivey.internal.nesting import NestDraws
 from archivey.internal.open_site import OpenSite
 from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
@@ -774,6 +775,10 @@ class TarReader(BaseArchiveReader):
             else None
         )
 
+        # The data offsets of the members a salvage search found and nothing
+        # confirms, on a forward-only walk: their data reads from the walk's window
+        # and does not move the walk (TarWalker.open_held_data).
+        self._held_spans: set[int] = set()
         try:
             self._stream = self._open_byte_stream(
                 source, format, streaming, member_streams=member_streams
@@ -1292,9 +1297,13 @@ class TarReader(BaseArchiveReader):
         salvage.found_at = None
         try:
             with self._translated_errors(), self._walk_guard():
-                confirmed = walker.salvage_confirms(v7=salvage.v7)
+                confirmed = walker.salvage_confirms(v7=salvage.v7, searched=searched)
         except CorruptionError:
             confirmed = False
+        if searched and not confirmed and self._streaming:
+            span = member._raw
+            assert isinstance(span, TarSpan)
+            self._held_spans.add(span.data_offset)
         unchecked: tuple[str, ...] = ("position",)
         if searched and entry.header.offset == found and walker.found_name_full:
             unchecked += ("name",)
@@ -1390,7 +1399,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=True),
                 member.name,
                 size=member.size,
-                draw_budget=not self._compressed,
+                draw_budget=self._member_draws(member),
             )
 
     @override
@@ -2337,7 +2346,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=False),
                 member.name,
                 size=member.size,
-                draw_budget=not self._compressed,
+                draw_budget=self._member_draws(member),
             )
 
     def _track_member_level(self, member: ArchiveMember) -> None:
@@ -2425,7 +2434,9 @@ class TarReader(BaseArchiveReader):
             if sparse_error is not None:
                 raise sparse_error
         stream: BinaryIO
-        if self._streaming:
+        if self._streaming and span.data_offset in self._held_spans:
+            stream = self._walker.open_held_data(span, self._held_drawer())
+        elif self._streaming:
             stream = self._walker.open_data(span)
         elif in_walk:
             with self._walk_lock:
@@ -2444,6 +2455,38 @@ class TarReader(BaseArchiveReader):
             assert self._handle_lock is not None
             stream = LockedStream(stream, self._handle_lock)
         return stream
+
+    def _member_draws(self, member: ArchiveMember) -> bool:
+        """Whether ``member``'s data stream draws what it delivers from the budget.
+
+        Not on a compressed tar, whose codec stream draws every byte it decodes, and
+        not for the data of a member a salvage search found and nothing confirms on
+        a forward-only walk, which draws each byte of the stream once itself
+        (:meth:`_held_drawer`)."""
+        if self._compressed:
+            return False
+        span = member._raw
+        return not (
+            self._streaming
+            and isinstance(span, TarSpan)
+            and span.data_offset in self._held_spans
+        )
+
+    def _held_drawer(self) -> Callable[[int], object] | None:
+        """What draws the bytes of a held member's data (``open_held_data``), as
+        ``_track_decompressed`` would draw them, but each byte of the stream once:
+        overlapping found members share their bytes. ``None`` on a compressed tar,
+        whose codec stream drew them as it decoded them."""
+        if self._compressed:
+            return None
+        count = self._listing_decode
+        stage = count is not None and count.room() is not None
+        budget = self._stage_draws if stage else self._nest
+        if budget is None or (
+            isinstance(budget, NestDraws) and budget.max_decoded_bytes is None
+        ):
+            return None
+        return budget._draw_bytes
 
     def _hole_drawer(self) -> Callable[[int], int] | None:
         """Draws a sparse member's holes from the budget when its stored bytes are
@@ -2528,7 +2571,7 @@ class TarReader(BaseArchiveReader):
                 self._member_body(member, in_walk=False),
                 member.name,
                 size=member.size,
-                draw_budget=not self._compressed,
+                draw_budget=self._member_draws(member),
             )
         )
 

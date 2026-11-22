@@ -761,16 +761,42 @@ def _confirmed_big() -> bytes:
     return _zeroed(data, tar.offsets[2], BLOCKSIZE)
 
 
+def _lying_size() -> bytes:
+    """A damaged block, then a header claiming 3 MiB with no data after it, then 20
+    real members and the end marker."""
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    out = bytearray(header("a", 3) + b"abc".ljust(BLOCKSIZE, b"\0"))
+    out += b"\x01" * BLOCKSIZE + header("liar", 3 << 20)
+    for index in range(20):
+        out += header(f"m{index}", 100) + b"x" * 100 + bytes(BLOCKSIZE - 100)
+    return bytes(out + bytes(2 * BLOCKSIZE))
+
+
 @pytest.mark.parametrize(
     "data",
-    [pytest.param(_dense(60), id="dense"), pytest.param(_confirmed_big(), id="big")],
+    [
+        pytest.param(_dense(60), id="dense"),
+        pytest.param(_confirmed_big(), id="big"),
+        pytest.param(_lying_size(), id="lying-size"),
+    ],
 )
 def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
     """The forward-only walk of a deb's data.tar lists the members, sizes, bytes and
     confirmations the seekable walk of the same tar lists, with found members
-    bigger than the clean-end scan. Before the window, the forward-only search
-    replayed only what it had read itself, lost the rest of the hold, and read the
-    stream's end too early as the clean end: 5 members, one confirmed."""
+    bigger than the clean-end scan.
+
+    ``dense``: before the window, the forward-only search replayed only what it had
+    read itself, lost the rest of the hold, and read the stream's end too early as
+    the clean end (5 members, one confirmed). ``lying-size``: the deb's pass read an
+    unconfirmed member's whole claimed size through the walk, which ran into the
+    stream's end and ended the walk in ``TruncatedError`` (3 members); its data now
+    reads from the window and ends there quietly (fails with ``open_data`` in place
+    of ``open_held_data`` in ``TarReader._member_body``)."""
     direct = _list(data, salvage=True)
     nested = _list(_as_deb(data), salvage=True)
     assert nested.names[0] == "DEBIAN/control"
@@ -782,7 +808,7 @@ def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
 
 
 def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:
-    """K1, a codec stream: each found member's confirmation used to decode up to its
+    """A codec stream: each found member's confirmation used to decode up to its
     claimed size and then seek back, which decodes again from the stream's start, so
     the cost grew with members times offset. The walk now reads the codec stream
     once: listing decodes no more than twice the tar's length.
@@ -803,7 +829,7 @@ def test_dense_headers_cost_the_decoded_length_on_a_gzip_tar() -> None:
 def test_dense_headers_copy_little_on_a_forward_only_walk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """K1, a forward-only walk: each look ahead used to copy the whole span from
+    """A forward-only walk: each look ahead used to copy the whole span from
     where the walk stands, and each replay copied the held bytes again. The bytes
     the walk's window hands out are now the tar once, plus per found member one
     search window and a few blocks.
@@ -832,6 +858,114 @@ def test_dense_headers_copy_little_on_a_forward_only_walk(
     data = _dense(count)
     assert len(_walk(data, seekable=False)) == count + 1
     assert copied <= len(data) + count * (WINDOW_SIZE + 16 * BLOCKSIZE)
+
+
+def test_dense_headers_cost_little_through_a_deb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same through the reader, in a deb, whose pass drains each member's data:
+    the data of a member nothing confirms reads from the window, so the walk hands
+    out at most the tar, one search window and the hold-bounded data per member,
+    and draws each byte of it once from ``max_decoded_bytes``. Before, the drain
+    drew every found member's whole claimed size, and the decode limit stopped a
+    6.4 MB data.tar (fails with ``_member_draws`` returning ``not
+    self._compressed``)."""
+    copied = 0
+    peek, read = tar_parser._Window.peek, tar_parser._Window.read
+
+    def counted_peek(self: tar_parser._Window, offset: int, count: int) -> bytes:
+        nonlocal copied
+        out = peek(self, offset, count)
+        copied += len(out)
+        return out
+
+    def counted_read(self: tar_parser._Window, size: int = -1) -> bytes:
+        nonlocal copied
+        out = read(self, size)
+        copied += len(out)
+        return out
+
+    monkeypatch.setattr(tar_parser._Window, "peek", counted_peek)
+    monkeypatch.setattr(tar_parser._Window, "read", counted_read)
+    count = 100
+    data = _dense(count)
+    limits = ListingLimits(max_decoded_bytes=2 * len(data))
+    with open_archive(
+        io.BytesIO(_as_deb(data)),
+        salvage=True,
+        config=ArchiveyConfig(listing_limits=limits),
+    ) as reader:
+        report = reader.members_report()
+    assert len(report.members) == count + 2
+    assert isinstance(report.error, CorruptionError)
+    per_member = WINDOW_SIZE + _DENSE_SIZE + 16 * BLOCKSIZE
+    assert copied <= len(data) + count * per_member
+
+
+def _tar_inside_a_big_member() -> bytes:
+    """A damaged block, then ``big.bin``: 6 MiB that starts with a 5-member tar, then
+    5 members after it."""
+    inner = _build(5, seed=7, max_size=100, names=[f"inner{i}" for i in range(5)])
+    body = inner.data + random.Random(1).randbytes((6 << 20) - len(inner.data))
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+        for name, content in [
+            ("a", b"abc"),
+            ("pad", b"p" * 10),
+            ("big.bin", body),
+            *((f"after{i}", b"z" * 50) for i in range(5)),
+        ]:
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        offsets = [m.offset for m in tar.getmembers()]
+    return _zeroed(data, offsets[1], BLOCKSIZE)
+
+
+def test_a_gzip_tar_confirms_a_member_bigger_than_the_hold() -> None:
+    """A found member with more than 4 MiB of data, on a codec stream, is confirmed
+    by decoding forward to the header after it, so the tar stored in its data is not
+    listed: the same 7 members as the plain tar (and GNU tar). With the 4 MiB cap on
+    codec streams the search went inside its data: 12 members (fails with
+    ``searched=False`` passed to ``salvage_confirms``)."""
+    data = _tar_inside_a_big_member()
+    plain = _list(data, salvage=True)
+    assert plain.names == ["a", "big.bin", *(f"after{i}" for i in range(5))]
+    gzipped = _list(gzip.compress(data), salvage=True)
+    assert gzipped.members == plain.members
+    assert {n: c.confirmed for n, c in gzipped.found().items()} == {
+        n: c.confirmed for n, c in plain.found().items()
+    }
+
+
+def test_far_confirmations_on_a_gzip_tar_are_bounded() -> None:
+    """Headers 1 KiB apart that each claim 16 MiB, on a codec stream: each look past
+    the hold that fails sends the search back, which decodes again from the start.
+    Those looks stop once their offsets add up to what the walk has decoded, so
+    listing decodes a few times the tar's length, not members times offset (fails
+    when ``_far_look_allowed`` ignores ``_far_spent``)."""
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.USTAR_FORMAT)
+
+    out = bytearray(header("a", 3) + b"abc".ljust(BLOCKSIZE, b"\0"))
+    out += b"\x01" * BLOCKSIZE
+    for index in range(300):
+        out += header(f"h{index}", 16 << 20) + b"\xaa" * BLOCKSIZE
+    # Random bytes, so the archive is not a decompression bomb.
+    data = bytes(out + random.Random(2).randbytes(20 << 20))
+    limits = ListingLimits(max_decoded_bytes=4 * len(data))
+    with open_archive(
+        io.BytesIO(gzip.compress(data)),
+        salvage=True,
+        config=ArchiveyConfig(listing_limits=limits),
+    ) as reader:
+        report = reader.members_report()
+    assert len(report.members) == 301
 
 
 def test_a_deb_with_a_damaged_data_tar_lists_past_the_damage() -> None:
