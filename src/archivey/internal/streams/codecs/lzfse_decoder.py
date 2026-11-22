@@ -129,7 +129,14 @@ def lzfse_decompress(data: bytes, max_length: int) -> bytes:
             if n_raw == 0:
                 raise CorruptionError("LZVN block declares no output")
             block_start = len(out)
-            end = _lzvn(src, start, start + n_payload, out, block_start + n_raw)
+            end = _lzvn(
+                src,
+                start,
+                start + n_payload,
+                out,
+                block_start + n_raw,
+                f"LZVN block decodes to more than its {n_raw} bytes",
+            )
             if len(out) != block_start + n_raw:
                 decoded = len(out) - block_start
                 raise CorruptionError(
@@ -151,17 +158,24 @@ def lzvn_decompress(data: bytes, max_length: int) -> bytes:
     end-of-stream opcode, and nothing after it."""
     src = bytes(data)
     out = bytearray()
-    end = _lzvn(src, 0, len(src), out, max_length)
+    end = _lzvn(
+        src,
+        0,
+        len(src),
+        out,
+        max_length,
+        f"LZVN data decodes to more than {max_length} bytes",
+    )
     if end != len(src):
         raise CorruptionError(f"{len(src) - end} bytes follow the end of the LZVN data")
     return bytes(out)
 
 
-def _lzvn(src: bytes, i: int, n: int, out: bytearray, limit: int) -> int:
+def _lzvn(src: bytes, i: int, n: int, out: bytearray, limit: int, overrun: str) -> int:
     """Decode LZVN from ``src[i:n]`` onto ``out`` up to its end-of-stream opcode; return
     the offset just past that opcode. ``out`` may already hold earlier output, which
-    matches can reach back into, and may not grow past ``limit``. ``d`` starts at 0,
-    which no match may use."""
+    matches can reach back into, and may not grow past ``limit``: past it, the
+    ``CorruptionError`` says ``overrun``. ``d`` starts at 0, which no match may use."""
     d = 0
     while True:
         if i >= n:
@@ -235,7 +249,7 @@ def _lzvn(src: bytes, i: int, n: int, out: bytearray, limit: int) -> int:
             if i + lit > n:
                 raise TruncatedError("LZVN data ends inside a literal")
             if len(out) + lit > limit:
-                raise _too_long(limit)
+                raise CorruptionError(overrun)
             out += src[i : i + lit]
             i += lit
         if mlen:
@@ -245,7 +259,7 @@ def _lzvn(src: bytes, i: int, n: int, out: bytearray, limit: int) -> int:
                     "LZVN match reaches before the start of the output"
                 )
             if size + mlen > limit:
-                raise _too_long(limit)
+                raise CorruptionError(overrun)
             _copy_match(out, d, mlen)
 
 
