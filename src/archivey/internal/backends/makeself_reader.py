@@ -43,14 +43,13 @@ import binascii
 import hashlib
 import io
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 from archivey.diagnostics import ArchiveEofContext, DiagnosticCode
 from archivey.exceptions import (
     CorruptionError,
-    EncryptionError,
     ResourceLimitError,
     TruncatedError,
     UnsupportedFeatureError,
@@ -59,18 +58,15 @@ from archivey.formats import (
     ForwardStream,
     Magic,
     MemberSpan,
+    NeedsPassword,
+    PasswordConfirmVerdict,
     ReaderArchiveInfo,
     ReaderContext,
     SequentialFormatHandler,
     SequentialReader,
 )
-from archivey.internal.config import KeyDerivationBudget
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
-from archivey.internal.password import (
-    _PasswordCandidatesExhausted,
-    wrong_password_error,
-)
 from archivey.internal.streams.crypto import (
     AES_BLOCK_SIZE,
     AesParams,
@@ -230,28 +226,27 @@ class MakeselfReader(SequentialReader):
         self._context = context
         self._extra = ArchiveInfoExtra({})
         self._version: str | None = None
-        self._budget: KeyDerivationBudget | None = None
+        self._encrypted = False
         # PBKDF2 output by (password, salt, digest): a later walk reuses the first's.
         self._keys: dict[tuple[bytes, bytes, str], bytes] = {}
-
-    def _kdf_budget(self) -> KeyDerivationBudget:
-        if self._budget is None:
-            self._budget = KeyDerivationBudget(self._context.config.decoder_limits)
-            if self._context._usage is not None:
-                self._context._usage.watch_key_derivation(self._budget)
-        return self._budget
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:
         # Every payload is one TAR read through its decoder: members share a decode.
         return ReaderArchiveInfo(
-            is_solid=True, format_version=self._version, extra=self._extra
+            is_solid=True,
+            is_encrypted=self._encrypted,
+            format_version=self._version,
+            extra=self._extra,
         )
 
     @override
-    def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
+    def walk(
+        self, stream: ForwardStream
+    ) -> Generator[MemberSpan | NeedsPassword[AesParams, Any], Any, None]:
         pending = _Pending()
         header = self._read_header(stream, pending)
+        self._encrypted = header.cipher is not None
         inner = ArchiveFormat(ContainerFormat.TAR, header.compressor)
         spanning = self._context._spanning_check
         for index, size in enumerate(header.sizes):
@@ -262,11 +257,12 @@ class MakeselfReader(SequentialReader):
                 header.cipher is not None and header.cipher.armored
             ):
                 data = io.BufferedReader(_Base64Reader(data, index), _READ_SIZE)
+            unlocked: PasswordConfirmVerdict | None = None
             if header.cipher is not None:
-                data = io.BufferedReader(
-                    self._decrypt(data, header.cipher, header.compressor, index),
-                    _READ_SIZE,
+                decrypted, unlocked = yield from self._decrypt(
+                    data, header.cipher, header.compressor, index
                 )
+                data = io.BufferedReader(decrypted, _READ_SIZE)
             check = (
                 spanning(("makeself payload", index))
                 if digests.hashers and spanning is not None
@@ -274,7 +270,17 @@ class MakeselfReader(SequentialReader):
             )
             for span in self._context.open_nested(data, inner):
                 if check is not None:
-                    check.cover(span.member)
+                    # The digests cover the stored bytes: with them intact, the
+                    # decrypted files are right only under the right key, which a
+                    # CONFIRMED unlock alone proves.
+                    check.cover(
+                        span.member,
+                        proves_data=unlocked
+                        in (None, PasswordConfirmVerdict.CONFIRMED),
+                    )
+                if unlocked is not None:
+                    span.member.is_encrypted = True
+                    span = span._replace(unlocked=unlocked)
                 yield span
             # To the end of every layer, so a base64 or openssl end is checked
             # whatever the TAR reader above read.
@@ -291,14 +297,20 @@ class MakeselfReader(SequentialReader):
 
     def _decrypt(
         self, data: BinaryIO, cipher: _Cipher, compressor: StreamFormat, index: int
-    ) -> _OpenSSLReader:
-        """Payload ``index`` decrypted with the caller's password.
+    ) -> Generator[
+        NeedsPassword[AesParams, Any],
+        tuple[AesParams, PasswordConfirmVerdict],
+        tuple[_OpenSSLReader, PasswordConfirmVerdict],
+    ]:
+        """Payload ``index`` decrypted with the caller's password, which the walk asks
+        archivey for with the ``NeedsPassword`` this yields.
 
-        A password is taken once the first bytes it decrypts start what the payload
-        must hold: the compressor's magic, or for a TAR that is not compressed, a TAR
-        header whose checksum matches. A wrong password passes that by chance about
-        once in 2**24 tries or less often (2**19 for Unix compress: 16 flag values and
-        two digests); PKCS#7 padding is checked again at the end.
+        A password passes the check once the first bytes it decrypts start what the
+        payload must hold: the compressor's magic, or for a TAR that is not compressed,
+        a TAR header whose checksum matches. A wrong password passes that by chance
+        about once in 2**24 tries or less often (2**19 for Unix compress: 16 flag
+        values and two digests), which is weaker than the strength rule's CRC-32, so
+        the check says ``INCONCLUSIVE``; PKCS#7 padding is checked again at the end.
         """
         head = _read_up_to(data, 16)
         if len(head) < 16 or not head.startswith(_SALTED):
@@ -313,43 +325,28 @@ class MakeselfReader(SequentialReader):
             )
         salt = head[8:16]
         probe = _read_up_to(data, _probe_length(compressor))
-        excluded = self._context.config.formats._libraries_off
-        backend = get_crypto_backend(excluded)
-        note_crypto_use(self._context._usage)
-        passwords = self._context._passwords
-
-        def unlock(password: bytes) -> AesParams:
-            for params in _derive(
-                cipher, password, salt, self._kdf_budget(), self._keys
-            ):
-                stage = backend.aes_cbc_decrypt_stage(params)
-                if _starts_payload(stage.update(probe), compressor):
-                    return params
-            raise wrong_password_error(
-                f"Wrong password for makeself payload {index + 1}"
-            )
-
         if len(probe) % AES_BLOCK_SIZE or len(probe) < _probe_length(compressor):
             raise TruncatedError(
                 f"makeself payload {index + 1}: the file ends inside its first "
                 "encrypted bytes"
             )
-        required = EncryptionError(
-            f"makeself payload {index + 1} is encrypted with openssl: pass password= "
-            "to read it"
+        excluded = self._context.config.formats._libraries_off
+        backend = get_crypto_backend(excluded)
+        note_crypto_use(self._context._usage)
+        charge = self._context.charge_key_derivation
+
+        def check(password: bytes) -> tuple[AesParams | None, PasswordConfirmVerdict]:
+            for params in _derive(cipher, password, salt, charge, self._keys):
+                stage = backend.aes_cbc_decrypt_stage(params)
+                if _starts_payload(stage.update(probe), compressor):
+                    return params, PasswordConfirmVerdict.INCONCLUSIVE
+            return None, PasswordConfirmVerdict.REJECTED
+
+        params, verdict = yield NeedsPassword(f"makeself payload {index + 1}", check)
+        reader = _OpenSSLReader(
+            data, backend.aes_cbc_decrypt_stage(params), probe, index
         )
-        if passwords is None:
-            raise required
-        try:
-            params = passwords.attempt(None, unlock)
-        except _PasswordCandidatesExhausted as exc:
-            # Keep "required" apart from "rejected", naming the payload in both.
-            if exc.last_error is None:  # no candidate was tried
-                raise required from exc
-            raise wrong_password_error(
-                f"Wrong password for makeself payload {index + 1}"
-            ) from exc
-        return _OpenSSLReader(data, backend.aes_cbc_decrypt_stage(params), probe, index)
+        return reader, verdict
 
     # The header ---------------------------------------------------------------------
 
@@ -971,17 +968,18 @@ def _derive(
     cipher: _Cipher,
     password: bytes,
     salt: bytes,
-    budget: KeyDerivationBudget,
+    charge: Callable[[int], None],
     cache: dict[tuple[bytes, bytes, str], bytes],
 ) -> Iterator[AesParams]:
     """The key and IV for each digest ``cipher`` may have used. A PBKDF2 derivation
-    not in ``cache`` is charged to ``budget`` first: a crafted header may name many
-    payloads, one derivation each, and a second walk repeats the first's."""
+    not in ``cache`` is charged first (``ReaderContext.charge_key_derivation``): a
+    crafted header may name many payloads, one derivation each, and a second walk
+    repeats the first's."""
     for digest in cipher.digests:
         if cipher.pbkdf2:
             material = cache.get((password, salt, digest), b"")
             if not material:
-                budget.spend(_PBKDF2_ROUNDS, what="makeself openssl key derivation")
+                charge(_PBKDF2_ROUNDS)
                 material = hashlib.pbkdf2_hmac(
                     digest, password, salt, _PBKDF2_ROUNDS, _KEY_IV
                 )
@@ -1176,11 +1174,12 @@ class MakeselfHandler(SequentialFormatHandler):
     format = ArchiveFormat.MAKESELF
     magic = (Magic(0, MAGIC),)
     uses_encoding = True
+    # openssl payloads take password= (``MakeselfReader._decrypt``).
+    supports_password = True
 
     @override
     def open_sequential(self, context: ReaderContext) -> MakeselfReader:
         return MakeselfReader(context)
 
 
-# openssl payloads take password= (``MakeselfReader._decrypt``).
-MakeselfReadBackend = register_builtin_format(MakeselfHandler, SUPPORTS_PASSWORD=True)
+MakeselfReadBackend = register_builtin_format(MakeselfHandler)

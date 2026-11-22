@@ -272,6 +272,9 @@ open-source continuation of Robert Jung's ARJ. Nothing on the CI image writes AR
 - `links.arj`: `arj a -a1 -r` of a file, a symlink to it, a hard link to it, a FIFO and a
   directory, which ARJ for Unix stores as type-6 members with `U` extended headers.
 - `garbled.arj`: `small.txt` garbled with `-gsecret`.
+- `garbled_m1.arj` and `garbled_m4.arj`: `words.txt` and `small.txt` with
+  `arj a -m1 -gsecret` and `-m4 -gsecret`, written 2026-11-21. ARJ stores `small.txt`
+  with method 0, so each holds a compressed and a stored garbled member.
 - `sfx_junior`: `small.txt` with `arj a -je1 -m1`, a self-extractor whose stub is ARJ for
   Unix's small ARJSFXJR module, an x86-64 ELF program (GPL-2, built from the `arj`
   source package), written 2026-11-11. The archive starts at byte 23 104.
