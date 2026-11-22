@@ -41,6 +41,7 @@ from archivey.config import (
     PasswordRequest,
     ProcessIsolation,
     RarDecompressor,
+    SalvageLimits,
     SpoolLimits,
 )
 from archivey.core import (
@@ -215,6 +216,7 @@ __all__ = [
     "ReadError",
     "ResourceLimitError",
     "ResourceUnavailableError",
+    "SalvageLimits",
     "SourceChangedError",
     "SourceProgress",
     "SpoolLimits",

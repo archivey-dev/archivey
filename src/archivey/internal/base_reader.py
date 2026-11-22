@@ -201,6 +201,11 @@ from archivey.internal.reader_state import (
 )
 from archivey.internal.remote import source_change
 from archivey.internal.resource_usage import ResourceUsage, ResourceUsageRecorder
+from archivey.internal.salvage import (
+    SalvageState,
+    emit_salvage_unavailable,
+    take_salvage_request,
+)
 from archivey.internal.selection import (
     CollectionSelector,
     normalize_member_selector,
@@ -673,6 +678,11 @@ class ReadBackend(ABC):
     # accepted and recorded as PASSWORD_ARGUMENT_UNUSED (a keyring offered, not an
     # assertion about this archive). ZIP sets this True; the native 7z/RAR readers too.
     SUPPORTS_PASSWORD: bool = False
+    # Whether this backend's reader has a salvage search
+    # (``open_archive(salvage=True)``, ``archivey.internal.salvage``). A reader asked to
+    # salvage by a backend without one records SALVAGE_UNAVAILABLE at open and reads as
+    # it does without salvage.
+    SUPPORTS_SALVAGE: bool = False
     # Whether this backend applies a caller-supplied `encoding=` when decoding member
     # names. False for backends that decode names some other way — 7z stores UTF-16LE,
     # the directory and single-file names come from the filesystem — so open_archive()
@@ -948,6 +958,25 @@ class BaseArchiveReader(ArchiveReader):
         )
         self._member_streams = member_streams
         self._open_site = open_site
+        # Salvage mode (``archivey.internal.salvage``): the opener's request, taken
+        # like the parent above. ``self._salvage_mode.enabled`` says whether this
+        # reader searches past damage, and ``self._salvage_mode.limits`` holds its
+        # caps.
+        salvage_request = take_salvage_request()
+        self._salvage_mode = SalvageState(
+            requested=salvage_request.requested,
+            enabled=salvage_request.requested and salvage_request.supported,
+            limits=self._config.salvage_limits,
+            collector=self._diagnostics_collector,
+            archive_name=archive_name,
+            format_name=format.display_name,
+        )
+        if salvage_request.requested and not salvage_request.supported:
+            emit_salvage_unavailable(
+                self._diagnostics_collector,
+                archive_name=archive_name,
+                format_name=format.display_name,
+            )
         # A random, opaque identity token (not id(self), which the allocator can reuse
         # after a reader is garbage-collected — a member of a dead reader must never
         # pass another reader's identity check; and not a plain counter, whose small

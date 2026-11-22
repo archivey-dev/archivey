@@ -5,12 +5,13 @@ functions that open, detect or report on archives: :func:`~archivey.open_archive
 :func:`~archivey.open_stream`, :func:`~archivey.detect_format`,
 :func:`~archivey.format_availability` and :func:`~archivey.list_supported_formats`. Its
 fields are grouped into the limit classes here (:class:`ExtractionLimits`,
-:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`), the enums that
-pick an accelerator, an external program, or which decoders run in a child process
-(:class:`AcceleratorMode`, :class:`RarDecompressor`, :class:`ProcessIsolation`), and
-policies defined in their own modules (diagnostics, formats, detection budget). Every
-field is checked when the config is built, so a wrong value fails at the caller's line
-rather than deep inside a read. This module also holds the password types.
+:class:`ListingLimits`, :class:`DecoderLimits`, :class:`SpoolLimits`,
+:class:`SalvageLimits`), the enums that pick an accelerator, an external program, or
+which decoders run in a child process (:class:`AcceleratorMode`,
+:class:`RarDecompressor`, :class:`ProcessIsolation`), and policies defined in their own
+modules (diagnostics, formats, detection budget). Every field is checked when the config
+is built, so a wrong value fails at the caller's line rather than deep inside a read.
+This module also holds the password types.
 """
 
 from __future__ import annotations
@@ -837,6 +838,40 @@ SpoolLimits.UNLIMITED = SpoolLimits(max_bytes=None)
 
 
 @dataclass(frozen=True)
+class SalvageLimits:
+    """Caps on the search a reader opened with ``open_archive(salvage=True)`` makes.
+
+    Where damage stops the member walk, a salvage reader searches forward for the next
+    header that passes its format's checks. These limits bound that search. Each
+    reader counts from zero, and an archive read inside another (``ReaderContext.
+    open_nested``) is a reader of its own. The limits that apply to every read apply
+    to a salvage reader unchanged: a found member is decoded and extracted under
+    :class:`DecoderLimits` and :class:`ExtractionLimits` like any other.
+    """
+
+    max_search_bytes: int | None = None
+    """Most bytes one reader's searches may examine, all searches and all layers
+    together (the archive's own bytes and a decoded stream inside it). ``None``, the
+    default, does not cap the search: it examines each byte at most once per layer,
+    so it cannot cost more than one read of each layer.
+
+    When the cap is reached, the search stops there, records one
+    ``ARCHIVE_REGION_SKIPPED`` with ``reason="search_limit"`` and lists nothing after
+    it; the listing ends in the damage error, as it does without salvage.
+    """
+
+    max_reported_regions: int = 1_000
+    """Most ``ARCHIVE_REGION_SKIPPED`` records one reader makes for ranges it skipped.
+
+    This caps the records, not the search: past it, the search goes on, and one last
+    record with ``reason="report_limit"`` counts the ranges not reported.
+    """
+
+    def __post_init__(self) -> None:
+        check_limit_fields(self, cls="SalvageLimits")
+
+
+@dataclass(frozen=True)
 class ArchiveyConfig:
     """Library tuning knobs passed as ``config=`` to :func:`open_archive`,
     :func:`open_stream` and :func:`detect_format`.
@@ -945,6 +980,10 @@ class ArchiveyConfig:
 
     spool_limits: SpoolLimits = SpoolLimits()
     """Caps on what a reader writes to temporary storage. See :class:`SpoolLimits`."""
+
+    salvage_limits: SalvageLimits = SalvageLimits()
+    """Caps on the search a salvage reader makes past damage
+    (``open_archive(salvage=True)``). See :class:`SalvageLimits`."""
 
     detection_budget: DetectionBudget = BALANCED_BUDGET
     """Upper bounds on what format detection may read and decode.
@@ -1130,6 +1169,7 @@ class ArchiveyConfig:
             listing_limits: ListingLimits = ...,
             decoder_limits: DecoderLimits = ...,
             spool_limits: SpoolLimits = ...,
+            salvage_limits: SalvageLimits = ...,
             detection_budget: (
                 DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr
             ) = ...,
@@ -1195,6 +1235,7 @@ def _check_policy_fields(config: ArchiveyConfig) -> None:
         ("listing_limits", ListingLimits),
         ("decoder_limits", DecoderLimits),
         ("spool_limits", SpoolLimits),
+        ("salvage_limits", SalvageLimits),
         ("diagnostic_policy", DiagnosticPolicy),
         ("formats", FormatPolicy),
     )

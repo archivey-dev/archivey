@@ -64,6 +64,7 @@ from archivey import (
     ExtractionLimits,
     FormatPolicy,
     ListingLimits,
+    SalvageLimits,
     SpoolLimits,
     detect_format,
     format_availability,
@@ -459,8 +460,25 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 bad,
                 lambda b=bad: SpoolLimits(max_bytes=b),
             ),
+            _case(
+                "SalvageLimits",
+                "max_search_bytes",
+                bad,
+                lambda b=bad: SalvageLimits(max_search_bytes=b),
+            ),
         ]
 
+    # The limit fields that are not ``| None`` take None as a bad value: it disables
+    # nothing, it breaks the comparison.
+    for bad in ("x", -1, True, 1.5, None):
+        rows.append(
+            _case(
+                "SalvageLimits",
+                "max_reported_regions",
+                bad,
+                lambda b=bad: SalvageLimits(max_reported_regions=b),
+            )
+        )
     # The two activation thresholds are the limit fields that are not ``| None``, so
     # None belongs in their bad set: it disables nothing, it breaks the comparison.
     for cls in (DecoderLimits,):
@@ -531,6 +549,15 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
                 "spool_limits",
                 bad,
                 lambda b=bad: _with_config(archive, out(), spool_limits=b),
+            )
+        )
+    for bad in ("x", 0, SalvageLimits, None):
+        rows.append(
+            _case(
+                "ArchiveyConfig",
+                "salvage_limits",
+                bad,
+                lambda b=bad: _with_config(archive, out(), salvage_limits=b),
             )
         )
     for bad in ("x", 0, DiagnosticPolicy, None):
@@ -626,7 +653,12 @@ def _cases(archive: Path, dest: Path) -> list[_Case]:
     # Operation flags take a real bool, as the config's switches do: "false" is
     # truthy, so a flag loaded from text would switch a mode on.
     for bad in ("false", 0, 1, None):
-        for flag in ("streaming", "seekable_members", "concurrent_operations"):
+        for flag in (
+            "streaming",
+            "seekable_members",
+            "concurrent_operations",
+            "salvage",
+        ):
             rows.append(
                 _case(
                     "open_archive",
@@ -885,6 +917,7 @@ def _public_surface() -> list[tuple[str, list[str]]]:
         DetectionBudget,
         ExtractionLimits,
         ListingLimits,
+        SalvageLimits,
         SpoolLimits,
     ):
         surface.append((cls.__name__, [f.name for f in dataclasses.fields(cls)]))
@@ -1182,6 +1215,11 @@ _BUILTIN_CASES: list[tuple[str, Callable[[Path, Path], Any], type[Exception]]] =
     (
         "open_archive(streaming=True, concurrent_operations=True)",
         lambda a, t: open_archive(a, streaming=True, concurrent_operations=True),
+        ValueError,
+    ),
+    (
+        "open_archive(streaming=True, salvage=True)",
+        lambda a, t: open_archive(a, streaming=True, salvage=True),
         ValueError,
     ),
     (

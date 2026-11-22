@@ -188,6 +188,30 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
     never use `salvage=True` to decide what an archive holds or whether it is safe.
     Extraction safety is unchanged.
 
+## Notes from the switch PR
+
+Choices the decisions above left open, made while building PR 1:
+
+- **The backend flag** is `ReadBackend.SUPPORTS_SALVAGE`, upper case like the other
+  backend flags (`SUPPORTS_PASSWORD`), not `supports_salvage`.
+- **How the flag reaches a reader.** The opener wraps the backend's `open_read` in
+  `requesting_salvage(...)`, and `BaseArchiveReader.__init__` takes the request, as
+  `parent=` is taken (`nesting.joining`). `open_archive` and `ReaderContext.open_nested`
+  are the two openers; no `open_read` signature changed. A reader reads
+  `self._salvage_mode` (`SalvageState`): `.enabled`, `.limits`.
+- **Nested readers** are built forward-only (`streaming=True` over the member's
+  stream), so a format whose search runs inside a nested reader reads that layer
+  forward. The driver reads forward within one search for that reason.
+- **One `SALVAGE_UNAVAILABLE` per reader**: a `.deb` opened with `salvage=True` records
+  it for the package and for each inner tar while TAR has no search.
+- **The budget** counts `step` bytes per candidate position examined (fewer at a
+  layer's end). With `max_search_bytes=0` nothing is examined.
+- **The `search_limit` record** has the `offset` where the stopped search started.
+  **The `report_limit` record** has the `offset` of the first range not reported and
+  `length=None`; its message gives the count, since the context has no count field. A
+  format calls `SalvageState.finish()` at the end of its walk to record it, and
+  `SalvageState.restart()` when a walk starts over.
+
 ## Verification
 
 Q18: a member found by a search has the `verifiable` level its own read can reach. For

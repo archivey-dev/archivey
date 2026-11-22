@@ -353,10 +353,10 @@ def check_limit_fields(limits: DataclassInstance, *, cls: str) -> None:
     """Run :func:`check_limit` on every field of a limits dataclass, in field order.
 
     The limits dataclasses are ``ExtractionLimits``, ``ListingLimits``,
-    ``DecoderLimits``, ``SpoolLimits`` (all in :mod:`archivey.config`) and
-    ``DetectionBudget`` (:mod:`archivey.detection_cost`). This module is a leaf, so
-    both can import it: ``config`` imports ``detection_cost``, so the check cannot live
-    in ``config``.
+    ``DecoderLimits``, ``SpoolLimits``, ``SalvageLimits`` (all in
+    :mod:`archivey.config`) and ``DetectionBudget`` (:mod:`archivey.detection_cost`).
+    This module is a leaf, so both can import it: ``config`` imports
+    ``detection_cost``, so the check cannot live in ``config``.
 
     ``allow_float`` and ``allow_none`` come from the field's annotation (a string,
     under ``from __future__ import annotations``), which must be one of

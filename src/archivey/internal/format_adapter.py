@@ -105,6 +105,7 @@ from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
+from archivey.internal.salvage import requesting_salvage
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -850,7 +851,16 @@ class _PluginAdapter(BaseArchiveReader):
         with collector.member_ids_from(first), quiet():
             head = data.read(1) or b""
         config = self._nested_config()
-        with collector.member_ids_from(first), reading_inside(self), quiet():
+        # An inner archive salvages when this one was asked to, whether or not this
+        # format has a salvage search of its own.
+        with (
+            collector.member_ids_from(first),
+            reading_inside(self),
+            requesting_salvage(
+                self._salvage_mode.requested, supported=backend_cls.SUPPORTS_SALVAGE
+            ),
+            quiet(),
+        ):
             reader = backend_cls().open_read(
                 ArchiveSource.for_stream(
                     cast(BinaryIO, _Primed(head, data)) if head else data
