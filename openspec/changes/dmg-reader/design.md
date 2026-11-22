@@ -525,7 +525,7 @@ attribute: header `<4sIQ` (magic `fpmc`, type, uncompressed size), then data.
 | 4 | zlib, in the resource fork (resource-map layout, 64 KiB blocks) | |
 | 7 | LZVN inline (first byte `0x06` = stored) | |
 | 8 | LZVN in resource fork (offset table, 64 KiB blocks) | **The fixture `compressed.txt` is type 8** (360,000 bytes), so this path has real data |
-| 10 | raw in resource fork | No tool here reads it (7-Zip refuses it), so the table layout is unconfirmed: the prototype and the test writer use the type 8 offset table. Check on a real file before relying on it. |
+| 10 | raw in resource fork (type 8 offset table), each chunk after a `0xCC` byte | The macOS kernel reads only this layout and refuses the table without the byte (the macOS check, `tasks.md` §M), so a chunk without it is `CorruptionError`. 7-Zip refuses type 10. |
 | 11 | LZFSE inline (`0xFF` = stored) | |
 | 12 | LZFSE in resource fork | |
 | other | | `UnsupportedFeatureError` at that member's read |
@@ -539,13 +539,15 @@ chunk).
 Resource-fork types (4, 8, 10, 12): the fork holds `n = ceil(size / 64 KiB)` chunks,
 located by the type's table (type 4: the resource-map layout, a 256-byte resource fork
 header, then the `cmpf` resource with a count and (offset, length) pairs; types 8 and
-12, and as the prototype reads it type 10: `n + 1` little-endian u32 offsets). The table must
-have exactly `n` chunks and every chunk inside the fork (else `CorruptionError`). Each
-chunk must decode to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk
-that starts with its type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8)
-is the raw block after that byte, not encoded data: macOS stores a chunk that does not
-shrink that way, and 7-Zip reads it. Decode chunk
-by chunk through `block_stream`, not the whole file in memory like the prototype.
+12, and type 10: `n + 1` little-endian u32 offsets). The table must have exactly `n`
+chunks and every chunk inside the fork (else `CorruptionError`). Each chunk must decode
+to exactly 64 KiB, the last to `size - 64 KiB * (n - 1)`. A chunk that starts with its
+type's stored marker (`0xFF` for types 4 and 12, `0x06` for type 8) is the raw block
+after that byte, not encoded data: macOS stores a chunk that does not shrink that way,
+and 7-Zip reads it. A type 10 chunk is always its raw block after a `0xCC` byte, and one
+without it is `CorruptionError`: the macOS check (`tasks.md` §M) found the kernel reads
+that layout and refuses the table without the byte. Decode chunk by chunk through
+`block_stream`, not the whole file in memory like the prototype.
 
 Missing pieces: a file with `UF_COMPRESSED` but no `com.apple.decmpfs` attribute, a
 fork type whose resource fork is missing or empty, and an attribute shorter than its

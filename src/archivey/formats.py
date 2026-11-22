@@ -580,13 +580,16 @@ class _TakenBytes(io.RawIOBase):
 
 class _SpanningCheck(Protocol):
     """A check over the data of several members, which a built-in reader runs itself
-    (a makeself payload's digests). The adapter's ``SpanningCheck`` implements it."""
+    (a makeself payload's digests, a DMG partition's CRC-32s). The adapter's
+    ``SpanningCheck`` implements it."""
 
     def cover(self, member: ArchiveMember) -> None: ...
 
     def passed(self) -> None: ...
 
     def failed(self, message: str) -> ArchiveyError: ...
+
+    def did_not_run(self, cause: BaseException | None) -> None: ...
 
 
 class ReaderContext:
@@ -595,6 +598,14 @@ class ReaderContext:
     # ``_spanning_check(key)`` returns the check for one spanning check of the
     # archive. Internal, set by the adapter; not for plugins.
     _spanning_check: Callable[[object], _SpanningCheck] | None = None
+    # ``_spanning_pass(run)`` registers ``run``, for a check over several members
+    # whose bytes no member read reaches (DMG's partition CRC-32s, which cover
+    # filesystem metadata and free space too). ``verify_all()`` calls ``run()`` after
+    # it has read the members, every call; ``run`` decodes what it needs itself,
+    # reports through its ``_spanning_check`` checks (``passed`` or ``failed``, whose
+    # error ``verify_all()`` returns for every covered file) and keeps its result, so
+    # a second call decodes nothing. Internal, set by the adapter; not for plugins.
+    _spanning_pass: Callable[[Callable[[], None]], None] | None = None
     # The caller's ``password=`` (``internal.password._PasswordCandidates``), for a
     # built-in reader that decrypts (makeself's openssl payloads). Internal, set by
     # the adapter; not for plugins.

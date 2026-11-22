@@ -94,6 +94,9 @@ The first listing, per volume (`_VolumeWalk`):
   decmpfs header whole), charged;
 - pass 2 (`catalog_entries`): one member per folder and file record, in catalog order
   (parent id, then name), skipping the hidden folders' contents and the journal files.
+  Each folder path it builds and caches is charged to `max_metadata_bytes`, so a deep
+  chain inside a hidden folder is bounded too. A visible folder's path is charged
+  again in its member's name, because both strings are kept.
 
 Type precedence: hard-link Finder markers first (`hlnk`/`hfs+` file link,
 `fdrp`/`MACS` directory link), then a non-zero BSD mode, then the Finder `slnk`/`rhap`
@@ -116,12 +119,37 @@ Member-local refusals raise at read, and the other members stay readable: a miss
 hard-link inode, a compressed flag without its attribute, an extent past the volume, a
 directory hard link, an unknown decmpfs type, an unknown run type.
 
-### 2.4 Extract
+### 2.4 Verify
+
+Each `blkx` table stores a CRC-32 of its runs: every run but the ignore runs, decoded,
+in sector order, zero fill included. That CRC covers the filesystem's metadata and free
+space too, and members overlap (hard links, decmpfs), so member reads cannot stand in
+for it. `verify_all()` runs a separate pass (`DmgReader._check_partitions`, registered
+through `ReaderContext._spanning_pass`) after it has read the members:
+
+- A file is `CHECKSUM` from the listing when its whole partition is covered by runs of
+  tables that carry a CRC-32, with no gap; otherwise `LENGTH`, and the pass never runs
+  for it. Plain reads do not run the pass, so they leave files at `LENGTH`.
+- The unit is a whole table, never a partition range: one table that straddles two
+  partitions is decoded whole, and a mismatch fails the files of both.
+- One run is in memory at a time, not cached, and raw runs go to the CRC in 1 MiB
+  slices. A zero-fill run is folded in with the zero-extension operator
+  (`udif.crc32_zeros`), so a 2^50-byte one costs a few dozen small matrix products.
+- The `koly` block's data-fork CRC-32 (the stored bytes read once more) and master
+  checksum (a CRC-32 of the tables' CRC-32s in property-list order) are checked in the
+  same pass, and a mismatch fails every checked file.
+- The runs the pass decodes or reads, raw ones included (runs may share stored bytes),
+  are held to `DecoderLimits.max_ratio` against the file's size, on their own total.
+  Past it, or on a codec the policy refuses, the pass stops and the files it did not
+  prove are failures saying the check did not run.
+- The pass runs once per reader; later `verify_all()` calls reuse its result.
+
+### 2.5 Extract
 
 Through the shared extraction path. Extended attributes and resource forks are listed in
 `extra` (D2) and not written.
 
-### 2.5 Write
+### 2.6 Write
 
 Not shipped.
 
@@ -140,9 +168,10 @@ checked before it is used (§2.2); zero-fill runs make large disks from tiny fil
 member reads are bounded by the archive-wide ratio and the extraction limits, and every
 run a listing decodes, a cache miss included, counts toward
 `ListingLimits.max_decoded_bytes`; the in-house ADC, LZFSE and LZVN decoders are bounded
-by their output length; B-tree leaf chains, folder parent chains and overflow extents
-are loop-checked; the open is bounded by the open budget. The fuzz target is `dmg` in
-`tests/atheris_fuzz/`.
+by their output length; `verify_all()`'s checksum pass holds the runs it decodes to the
+archive-wide ratio on its own total (§2.4); B-tree leaf chains, folder parent chains
+and overflow extents are loop-checked; the open is bounded by the open budget. The fuzz
+target is `dmg` in `tests/atheris_fuzz/`.
 
 ## 5. Sharp edges
 
@@ -169,11 +198,12 @@ Choices made in Part B that the plan left open:
 - **Folder thread records are not cross-checked yet** (deferred to Part D).
 - **Run tables are bounded against `max_metadata_bytes` at open by the reader**, because
   `charge_metadata` is for listing only.
+- **A decmpfs type 10 chunk is its raw block after a 0xCC byte.** The macOS check
+  (section 8) found the kernel reads that layout and refuses the same offset table
+  without the byte, so a chunk without it is `CorruptionError`.
 
 ## 7. Open questions
 
-- decmpfs type 10 (raw in the resource fork) has no real sample; it is read with the
-  type 8 offset table.
 - Journal replay (a volume with pending transactions is refused).
 - Whether any current tool still writes `koly` at offset 0.
 
@@ -184,6 +214,11 @@ Choices made in Part B that the plan left open:
     tests/test_detection_workspace.py tests/test_lzfse_decoder.py
 ```
 
+On macOS, `scripts/investigations/dmg_macos_check.py` checks the test writer's images
+with `hdiutil verify`, `fsck_hfs -n` and a read-only mount, and archivey against fresh
+`hdiutil create` images in every format. The `dmg-macos` workflow runs it weekly and
+after a merge that touches the DMG code; the table is its job summary.
+
 | Claim |
 | --- |
 | Every unencrypted HFS+ `hdiutil` fixture lists and reads as macOS mounts it (`test_an_hdiutil_image_lists_and_reads_as_macos_mounts_it`) |
@@ -191,6 +226,9 @@ Choices made in Part B that the plan left open:
 | Encrypted and APFS images are refused by name |
 | 7-Zip extracts the same bytes, with the listed differences (`test_7zip_*`) |
 | Damage fails the member it touches, and a damaged catalog node delivers the members before it |
+| `verify_all()` raises every file of an `hdiutil` image to `CHECKSUM`, decoding each table once (`test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum`) |
+| A changed byte no member reads fails the files of its partition, and a table over two partitions fails both (`test_a_change_no_member_reads_is_caught_by_verify_all`, `test_one_table_over_two_partitions_is_checked_whole`) |
+| A 2^50-byte zero-fill run is checked in under five seconds (`test_a_zero_fill_run_of_a_petabyte_is_checked_in_no_time`) |
 
 ## 9. References
 
