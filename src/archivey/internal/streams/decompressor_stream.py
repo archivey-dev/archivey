@@ -1814,7 +1814,15 @@ class DecompressorStream(ReadOnlyIOStream):
                 return None
             self._spent = KeptError.of(exc)
             if bounded and _may_recover(exc):
-                recovered = self._redecode_to_error(before)
+                try:
+                    recovered = self._redecode_to_error(before)
+                except Exception as stop:
+                    # A stop from the caller's source or ``on_source_read`` during
+                    # the second decode replaces the data error: the stream keeps
+                    # raising it, as a stop on any other read would.
+                    if from_callers_source(stop):
+                        self._spent = KeptError.of(stop)
+                    raise
                 if recovered:
                     return DecodeOut(recovered)
             raise
@@ -2187,8 +2195,8 @@ class DecompressorStream(ReadOnlyIOStream):
                     self._buffer.extend(
                         self._read_decompressed_chunk(n - len(self._buffer))
                     )
-                except Exception:
-                    if not self._returns_before_spent():
+                except Exception as exc:
+                    if from_callers_source(exc) or not self._returns_before_spent():
                         raise
             held = pending()
             if held is not None:
@@ -2240,8 +2248,13 @@ class DecompressorStream(ReadOnlyIOStream):
         except BaseException as exc:
             self._stage(parts)
             # Only a decode error waits behind the bytes it gathered: an interrupt
-            # (KeyboardInterrupt, SystemExit) raises now.
-            if not isinstance(exc, Exception) or not self._returns_before_spent():
+            # (KeyboardInterrupt, SystemExit) and the caller's own exception (a stop
+            # from ``on_source_read``) raise now.
+            if (
+                not isinstance(exc, Exception)
+                or from_callers_source(exc)
+                or not self._returns_before_spent()
+            ):
                 raise
             return None
         if not got or self._restart_pending or pending() is not None:

@@ -993,6 +993,10 @@ class ArchiveSource(ReadOnlyIOStream):
                 limit = min(limit, max(self._length - self._pos, 0))
             if not limit:
                 # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
+                # A stop raised on the read that took the last bytes raises here
+                # again, or the decoder takes the bytes it lost for a cut file.
+                if self._progress is not None:
+                    self._progress.raise_if_stopped()
                 return 0
             with whole[:limit] as view:
                 return self._fill(b, view)

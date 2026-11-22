@@ -7,6 +7,7 @@ import lzma
 import os
 import threading
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -418,33 +419,91 @@ def test_a_stop_ends_an_extraction_that_continues_on_errors(
         reader.extract_all(tmp_path / "out", on_error="continue")
 
 
-def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
-    tmp_path: Path,
-) -> None:
+def _bad_crc_gz(tmp_path: Path, seed: int, random_size: int, run: int) -> Path:
     # A wrong CRC in the trailer: the decoder decodes again up to the error to keep
-    # the bytes before it. A stop raised during that second decode must still reach
-    # the caller, not the data error.
+    # the bytes before it (the re-decode).
     import gzip
+    import random
 
-    data = gzip.compress(os.urandom(1 << 18) + b"a" * (1 << 20))
-    path = tmp_path / "badcrc.gz"
+    payload = random.Random(seed).randbytes(random_size) + b"a" * run
+    data = gzip.compress(payload)
+    path = tmp_path / f"badcrc{seed}.gz"
     path.write_bytes(data[:-8] + b"\0\0\0\0" + data[-4:])
+    return path
 
-    def extract(callback: Any) -> None:
+
+@pytest.mark.parametrize(
+    ("seed", "random_size", "run"), [(0, 1 << 16, 1 << 18), (1, 1 << 18, 1 << 20)]
+)
+@pytest.mark.parametrize("call", ["extract_all", "read", "read_twice"])
+def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
+    tmp_path: Path, seed: int, random_size: int, run: int, call: str
+) -> None:
+    # A stop raised during the re-decode must reach the caller, not the data error,
+    # also when the read already holds output; and the next read raises it again.
+    path = _bad_crc_gz(tmp_path, seed, random_size, run)
+
+    def go(callback: Any) -> None:
         config = ArchiveyConfig(
             on_source_read=callback, source_read_step=0, use_rapidgzip="off"
         )
-        with open_archive(path, config=config) as reader:
-            reader.extract_all(tmp_path / "out", on_error="continue")
+        if call == "extract_all":
+            with open_archive(path, config=config) as reader:
+                reader.extract_all(tmp_path / "out", on_error="continue")
+            return
+        with open_stream(path, config=config) as stream:
+            if call == "read":
+                stream.read()
+                return
+            try:
+                stream.read()
+            except _StopValue:
+                pass
+            stream.read()
+
+    from archivey import CorruptionError
 
     recorder = _Recorder()
-    extract(recorder)
+    if call == "extract_all":
+        go(recorder)
+    else:
+        with pytest.raises(CorruptionError):
+            go(recorder)
     calls = len(recorder.calls)
     assert calls > 0
     for n in range(1, calls + 1):
         with pytest.raises(_StopValue) as caught:
-            extract(_stop_on(n, _StopValue))
+            go(_stop_on(n, _StopValue))
         assert type(caught.value) is _StopValue
+
+
+def test_a_stop_on_the_read_of_the_last_bytes_holds_on_the_next_read(
+    tmp_path: Path,
+) -> None:
+    # The stop drops the bytes that read took. The next read finds the source at its
+    # end, and must raise the stop again, not a truncation error.
+    import gzip
+
+    path = tmp_path / "a.gz"
+    path.write_bytes(gzip.compress(os.urandom(1 << 16) + b"a" * (1 << 18)))
+    config = ArchiveyConfig(source_read_step=0, use_rapidgzip="off")
+    recorder = _Recorder()
+    with open_stream(path, config=replace(config, on_source_read=recorder)) as stream:
+        stream.read()
+    calls = len(recorder.calls)
+    stopped = 0
+    for n in range(1, calls + 1):
+        stop = _stop_on(n, _StopValue)
+        try:
+            stream = open_stream(path, config=replace(config, on_source_read=stop))
+        except _StopValue:
+            continue
+        with stream:
+            for _ in range(2):
+                with pytest.raises(_StopValue):
+                    stream.read()
+        stopped += 1
+    assert stopped
 
 
 @requires_unrar_cli()
