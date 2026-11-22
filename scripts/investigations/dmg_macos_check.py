@@ -108,6 +108,12 @@ def _attached(image: Path, *, mount: bool) -> Iterator[tuple[list[str], Path | N
             if "Apple_HFS" in e.get("content-hint", "")
             or e.get("content-hint", "") == "48465300-0000-11AA-AA11-00306543ECAC"
         ]
+        if not devices:
+            raise ValueError(
+                f"no dev-entry; keys {sorted({k for e in entities for k in e})}"
+            )
+        # The shortest dev-entry is the whole disk (/dev/disk4, not /dev/disk4s1),
+        # which is the node hdiutil detach takes.
         whole = min(devices, key=len)
     except (plistlib.InvalidFileException, KeyError, TypeError, ValueError) as exc:
         _remove_mount_dir(mount_dir)
@@ -129,6 +135,21 @@ def _remove_mount_dir(mount_dir: Path | None) -> None:
             mount_dir.rmdir()
         except OSError:
             pass
+
+
+def _mounted_links(root: Path) -> set[frozenset[str]]:
+    """The mounted volume's hard links: each set of names that share one inode."""
+    by_inode: dict[int, set[str]] = {}
+    for dirpath, _, filenames in os.walk(root):
+        for name in filenames:
+            full = Path(dirpath) / name
+            rel = _nfc(full.relative_to(root).as_posix())
+            info = full.lstat()
+            if rel.split("/", 1)[0] in _SYSTEM or not stat.S_ISREG(info.st_mode):
+                continue
+            if info.st_nlink > 1:
+                by_inode.setdefault(info.st_ino, set()).add(rel)
+    return {frozenset(names) for names in by_inode.values() if len(names) > 1}
 
 
 def _mounted_tree(root: Path) -> dict[str, tuple[str, object]]:
@@ -199,10 +220,14 @@ def _check_writer_image(name: str, image: bytes, nodes: list, work: Path) -> Res
         with _attached(path, mount=False) as (devices, _):
             for device in devices:
                 fsck = _run("fsck_hfs", "-n", device)
-                if "ermission denied" in fsck.stdout + fsck.stderr:
+                said = fsck.stdout + fsck.stderr
+                if fsck.returncode != 0 and (
+                    "ermission denied" in said or "not permitted" in said
+                ):
                     fsck = _run("sudo", "-n", "fsck_hfs", "-n", device)
                 if fsck.returncode != 0:
-                    tail = " ".join(fsck.stdout.strip().splitlines()[-3:])
+                    lines = (fsck.stdout + fsck.stderr).strip().splitlines()
+                    tail = " ".join(lines[-4:])
                     result.problems.append(f"fsck_hfs -n {device}: {tail}")
         with _attached(path, mount=True) as (_, root):
             assert root is not None
@@ -279,9 +304,11 @@ def _is_decmpfs(path: Path) -> bool:
     return bool(getattr(os.lstat(path), "st_flags", 0) & stat.UF_COMPRESSED)
 
 
-def _archivey_tree(image: Path) -> tuple[dict[str, tuple[str, object]], bytes | None]:
-    """archivey's listing (name -> (kind, value)), and the source tree's extended
-    attribute as archivey lists it."""
+def _archivey_tree(
+    image: Path,
+) -> tuple[dict[str, tuple[str, object]], bytes | None, set[frozenset[str]]]:
+    """archivey's listing (name -> (kind, value)), the source tree's extended
+    attribute as archivey lists it, and its hard links as sets of names."""
     from archivey import MemberType, open_archive
 
     found: dict[str, tuple[str, object]] = {}
@@ -308,10 +335,12 @@ def _archivey_tree(image: Path) -> tuple[dict[str, tuple[str, object]], bytes | 
                 found[name] = ("hardlink", _nfc(member.link_target or ""))
             else:
                 found[name] = ("other", None)
+    groups: dict[str, set[str]] = {}
     for name, (kind, target) in list(found.items()):
         if kind == "hardlink":
+            groups.setdefault(str(target), {str(target)}).add(name)
             found[name] = ("file", hashes.get(str(target)))
-    return found, xattr
+    return found, xattr, {frozenset(names) for names in groups.values()}
 
 
 def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
@@ -338,9 +367,9 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
         else:
             result.problems.append(message)
         return result
-    ours_xattr = None
+    ours_xattr, ours_links = None, set()
     try:
-        ours, ours_xattr = _archivey_tree(image)
+        ours, ours_xattr, ours_links = _archivey_tree(image)
     except Exception as exc:  # noqa: BLE001 - every refusal is a result here
         result.problems.append(f"archivey: {type(exc).__name__}: {exc}")
         ours = {}
@@ -348,6 +377,7 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
         with _attached(image, mount=True) as (_, root):
             assert root is not None
             theirs = _mounted_tree(root)
+            theirs_links = _mounted_links(root)
             theirs_xattr = _xattr(root / XATTR_FILE, XATTR_NAME)
             if _is_decmpfs(root / COMPRESSED_FILE):
                 result.notes.append(f"{COMPRESSED_FILE} is decmpfs in the image")
@@ -355,10 +385,15 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
                 result.notes.append(f"{COMPRESSED_FILE} is NOT decmpfs in the image")
     except _IMAGE_ERRORS as exc:
         result.problems.append(f"{type(exc).__name__}: {exc}")
-        theirs, theirs_xattr = {}, None
+        theirs, theirs_xattr, theirs_links = {}, None, set()
     if theirs_xattr != XATTR_VALUE:
         result.problems.append(
             f"mounted {XATTR_FILE}: extended attribute {XATTR_NAME} is {theirs_xattr!r}"
+        )
+    if ours and theirs and ours_links != theirs_links:
+        result.problems.append(
+            f"hard links: archivey {sorted(map(sorted, ours_links))}, "
+            f"mounted {sorted(map(sorted, theirs_links))}"
         )
     if ours and ours_xattr != theirs_xattr:
         result.problems.append(
