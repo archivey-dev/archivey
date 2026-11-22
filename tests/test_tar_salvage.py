@@ -761,9 +761,9 @@ def _confirmed_big() -> bytes:
     return _zeroed(data, tar.offsets[2], BLOCKSIZE)
 
 
-def _lying_size() -> bytes:
-    """A damaged block, then a header claiming 3 MiB with no data after it, then 20
-    real members and the end marker."""
+def _lying_size(claimed: int = 3 << 20) -> bytes:
+    """A damaged block, then a header claiming ``claimed`` bytes (3 MiB) with no data
+    after it, then 20 real members and the end marker."""
 
     def header(name: str, size: int) -> bytes:
         info = tarfile.TarInfo(name)
@@ -771,7 +771,7 @@ def _lying_size() -> bytes:
         return info.tobuf(format=tarfile.USTAR_FORMAT)
 
     out = bytearray(header("a", 3) + b"abc".ljust(BLOCKSIZE, b"\0"))
-    out += b"\x01" * BLOCKSIZE + header("liar", 3 << 20)
+    out += b"\x01" * BLOCKSIZE + header("liar", claimed)
     for index in range(20):
         out += header(f"m{index}", 100) + b"x" * 100 + bytes(BLOCKSIZE - 100)
     return bytes(out + bytes(2 * BLOCKSIZE))
@@ -827,6 +827,7 @@ def _headers_after_a_liar() -> bytes:
         pytest.param(_confirmed_big(), id="big"),
         pytest.param(_lying_size(), id="lying-size"),
         pytest.param(_tar_inside_a_big_member(), id="tar-inside-a-big-member"),
+        pytest.param(_lying_size(8 << 20), id="lying-size-past-the-end"),
     ],
 )
 def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
@@ -847,16 +848,23 @@ def test_a_deb_data_tar_lists_what_the_same_tar_lists(data: bytes) -> None:
     and the tar stored in it is not listed; it is the one member whose flag differs,
     as nothing has confirmed it when it is listed (round 3 of PR 1768, K6: its
     data stopped at 4 MiB with ``TruncatedError``, and ``inner0``..``inner4`` were
-    listed)."""
+    listed).
+
+    ``lying-size-past-the-end``: the liar claims 8 MiB, more than the hold and past
+    the end of the data.tar, so the deb trusts its size. Its data met the stream's
+    end and ended the walk in ``TruncatedError`` (3 members, round 4 of PR 1768,
+    K9); it now ends there quietly and the search goes back inside it."""
     direct = _list(data, salvage=True)
     nested = _list(_as_deb(data), salvage=True)
     assert nested.names[0] == "DEBIAN/control"
     assert nested.members[1:] == direct.members
-    # The found members whose data is longer than the hold.
+    # The confirmed found members whose data is longer than the hold.
     trusted = {
         name
         for name, size, _ in direct.members
-        if name in direct.found() and (size or 0) > 4 << 20
+        if name in direct.found()
+        and direct.found()[name].confirmed
+        and (size or 0) > 4 << 20
     }
     assert trusted <= {"big.bin"}
     nested_flags = {n: (c.offset, c.confirmed) for n, c in nested.found().items()}

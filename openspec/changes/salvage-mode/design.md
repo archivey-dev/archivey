@@ -269,25 +269,25 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   restart point.
 - **Confirmation is bounded on a layer that is costly to go back on.** A plain file
   seeks, so any size is confirmed. A forward-only walk looks at the block after a
-  member's data only when it is within the 4 MiB span of where the walk stands (the
-  pipe span). Past that span, a found member's size is trusted, as GNU tar reads a
-  pipe: it is listed unconfirmed, its data reads in full through the walk, and the
-  walk goes on from where the size points. When the block there does not confirm
-  it, the search goes back inside the member's data, from the first byte the walk's
-  window still keeps, which is at most 4 MiB before where the read ended. So a real
-  member bigger than the span reads whole and a tar stored in it is not listed, and
-  a size that lies by more than the span loses the members whose headers are in all
-  but the last 4 MiB of the claimed span (maintainer decision on round 3 of PR 1768,
-  K6, option (b) as the review recommended). A codec stream confirms past the span by
-  decoding forward to the block, which the walk decodes next anyway when the member
-  is confirmed. That look is free for a member the walk reached, whose walk goes on
-  from the block whatever it holds, and for a found member that it confirms. When it
-  fails for a found member, the search goes back into the data and decodes again
-  from a restart point, so the failed looks share a budget: their offsets may add up
-  to the furthest offset the walk has decoded, and past that a found member's look
-  is capped at the span. The clean-end check reads each byte
-  once per walk: an end more than the 1 MiB scan away answers without a read, and the
-  zeros before the end are scanned once.
+  member's data only when it is within the 4 MiB span of where the walk stands (the pipe
+  span). Past that span, a found member's size is trusted, as GNU tar reads a pipe: it
+  is listed unconfirmed, its data reads in full through the walk, and the walk goes on
+  from where the size points. When the block there does not confirm it, or the stream
+  ends before it (the data then ends quietly there, as a held read does), the search
+  goes back inside the member's data, from the first byte the walk's window still keeps,
+  which is at most 4 MiB before where the read ended. So a real member bigger than the
+  span reads whole and a tar stored in it is not listed, and a size that lies by more
+  than the span loses the members whose headers are in all but the last 4 MiB of the
+  read (the review's recommendation (round 3, K6), pending the maintainer's ruling). A
+  codec stream confirms past the span by decoding forward to the block, which the walk
+  decodes next anyway when the member is confirmed. That look is free for a member the
+  walk reached, whose walk goes on from the block whatever it holds, and for a found
+  member that it confirms. When it fails for a found member, the search goes back into
+  the data and decodes again from a restart point, so the failed looks share a budget:
+  their offsets may add up to the furthest offset the walk has decoded, and past that a
+  found member's look is capped at the span. The clean-end check reads each byte once
+  per walk: an end more than the 1 MiB scan away answers without a read, and the zeros
+  before the end are scanned once.
 - **An unconfirmed found member's data, on a forward-only walk,** when the block
   after it is within the span and does not confirm it, is read from the window
   without moving the walk, and ends quietly where the stream ends: its size is not

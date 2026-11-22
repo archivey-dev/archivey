@@ -782,6 +782,10 @@ class TarReader(BaseArchiveReader):
         # confirms, on a forward-only walk: their data reads from the walk's window
         # and does not move the walk (TarWalker.open_held_data).
         self._held_spans: set[int] = set()
+        # The data offsets of found members whose size a forward-only walk trusted
+        # (``_SalvageWalk.trusted``): their data ends quietly where the stream ends
+        # (TarWalker.open_data, ``quiet_end``).
+        self._trusted_spans: set[int] = set()
         try:
             self._stream = self._open_byte_stream(
                 source, format, streaming, member_streams=member_streams
@@ -1170,11 +1174,11 @@ class TarReader(BaseArchiveReader):
             trusted, salvage.trusted = salvage.trusted, None
             if (
                 trusted is not None
-                and entry.offset == trusted[1]
                 and not salvage.limit_reached
                 and (start is not None or entry.kind is not TarEndKind.ZERO_BLOCK)
             ):
-                # Nothing confirms the size a forward-only walk trusted: search back
+                # Nothing confirms the size a forward-only walk trusted (the block at
+                # its claimed end, or the stream's end before that): search back
                 # inside the member's data, as far as the walk's window still
                 # keeps it (design.md, "Notes from the TAR PR").
                 start = walker.search_floor(trusted[0] + BLOCKSIZE)
@@ -1319,11 +1323,16 @@ class TarReader(BaseArchiveReader):
         # ``None``: a forward-only walk cannot see the block after the data within
         # the span it holds. A found member's size is then trusted: the walk reads
         # on through its data, and searches back inside it only when the block
-        # there does not confirm it (maintainer decision on review finding K6).
+        # there does not confirm it, or the stream ends first (the review's
+        # recommendation (round 3, K6), pending the maintainer's ruling).
         trusted = searched and looked is None
         confirmed = bool(looked)
         if trusted:
             salvage.trusted = (found, walker.position)
+            if self._streaming:
+                span = member._raw
+                assert isinstance(span, TarSpan)
+                self._trusted_spans.add(span.data_offset)
         if searched and looked is False and self._streaming:
             span = member._raw
             assert isinstance(span, TarSpan)
@@ -2468,7 +2477,9 @@ class TarReader(BaseArchiveReader):
         if self._streaming and span.data_offset in self._held_spans:
             stream = self._walker.open_held_data(span, self._held_drawer())
         elif self._streaming:
-            stream = self._walker.open_data(span)
+            stream = self._walker.open_data(
+                span, quiet_end=span.data_offset in self._trusted_spans
+            )
         elif in_walk:
             with self._walk_lock:
                 stream = self._walk_data(span)

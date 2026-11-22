@@ -1618,12 +1618,14 @@ class TarWalker:
         """Where the next header starts (the end of the last member's data area)."""
         return self._pos
 
-    def open_data(self, span: TarSpan) -> _ForwardSlice:
+    def open_data(self, span: TarSpan, *, quiet_end: bool = False) -> _ForwardSlice:
         """A forward-only stream over ``span``'s data area (``stored_size`` bytes),
         read through the walk's own stream. It is good while the walk stays at the
         data, that is until the next :meth:`next_entry`; its ``in_place()`` tells
-        whether it still is."""
-        return _ForwardSlice(self, span.data_offset, span.stored_size)
+        whether it still is. With ``quiet_end`` (a found member whose size a
+        forward-only salvage walk trusted), the data ends with no error where the
+        stream ends, as :meth:`open_held_data` does."""
+        return _ForwardSlice(self, span.data_offset, span.stored_size, quiet_end)
 
     def open_held_data(
         self, span: TarSpan, draw: Callable[[int], object] | None
@@ -3166,11 +3168,14 @@ class _HeldSlice(ReadOnlyIOStream):
 class _ForwardSlice(ReadOnlyIOStream):
     """Forward-only reads of one member's data area, counted by its walker."""
 
-    def __init__(self, walker: TarWalker, start: int, length: int) -> None:
+    def __init__(
+        self, walker: TarWalker, start: int, length: int, quiet_end: bool = False
+    ) -> None:
         super().__init__()
         self._walker = walker
         self._start = start
         self._length = length
+        self._quiet_end = quiet_end
         self._done = 0
 
     @override
@@ -3197,6 +3202,11 @@ class _ForwardSlice(ReadOnlyIOStream):
         want = left if whole else min(size, left)
         data = walker._read(want, DATA_READ_STEP)
         self._done += len(data)
+        if self._quiet_end and len(data) < want:
+            # A trusted size the stream does not hold: the data ends here, and the
+            # walk's next step reports the stream end, where the search goes back.
+            self._length = self._done
+            return data
         if whole and data and len(data) < want:
             # A read with no size asks for the whole member, so the error at the cut
             # belongs in this call and the bytes before it are not returned. The next
