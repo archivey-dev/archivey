@@ -56,13 +56,18 @@ _local = threading.local()
 class SalvageRequest:
     """What the opener of a reader says about salvage: whether the caller asked for
     it, whether the backend that builds the reader has a salvage search
-    (``ReadBackend.SUPPORTS_SALVAGE``), and whether the archive's start may be lost:
-    ``lost_start`` is set when the format came from ``format=`` or the source name's
-    extension, not from the archive's own bytes (design decision 9)."""
+    (``ReadBackend.SUPPORTS_SALVAGE``), whether the archive's start may be lost, and
+    whether the reader reads again what an earlier reader of the same archive
+    reported. ``lost_start`` is set when the format came from ``format=`` or the
+    source name's extension, not from the archive's own bytes (design decision 9).
+    ``repeat`` marks an inner archive built again by a walk started over to reach
+    member data: a repeat reader salvages as the first one did, and records none of
+    the salvage codes, since the first one recorded them."""
 
     requested: bool = False
     supported: bool = False
     lost_start: bool = False
+    repeat: bool = False
 
 
 _NO_REQUEST = SalvageRequest()
@@ -70,7 +75,11 @@ _NO_REQUEST = SalvageRequest()
 
 @contextmanager
 def requesting_salvage(
-    requested: bool, *, supported: bool, lost_start: bool = False
+    requested: bool,
+    *,
+    supported: bool,
+    lost_start: bool = False,
+    repeat: bool = False,
 ) -> Generator[None]:
     """Let the next reader built on this thread take this salvage request.
 
@@ -80,11 +89,16 @@ def requesting_salvage(
     salvages when the outer one was asked to. The first reader built in the block
     takes the request (:func:`take_salvage_request`); one a password provider or a
     diagnostic callback opens later in the same open does not. ``lost_start`` is
-    :attr:`SalvageRequest.lost_start`; it counts only with ``requested``.
+    :attr:`SalvageRequest.lost_start`; it counts only with ``requested``. ``repeat``
+    marks a reader that reads again what an earlier one reported
+    (:class:`SalvageRequest`).
     """
     before = getattr(_local, "request", _NO_REQUEST)
     _local.request = SalvageRequest(
-        requested=requested, supported=supported, lost_start=requested and lost_start
+        requested=requested,
+        supported=supported,
+        lost_start=requested and lost_start,
+        repeat=repeat,
     )
     try:
         yield
@@ -104,14 +118,17 @@ def take_salvage_request() -> SalvageRequest:
 class HeaderSearch:
     """What a format gives :func:`search_forward`.
 
-    ``find_header(window, start)`` returns the index in ``window`` of the first
-    candidate position at or after ``start`` where a header passes the format's own
-    checks, or ``None``. It is pure on the bytes it is given. ``window[0]`` is always
-    at a candidate position, so the candidate positions are ``start``,
-    ``start + step``, ``start + 2 * step`` and so on; a ``find_header`` that returns
-    any other index is a bug, and the search raises ``AssertionError``. A header that
-    does not fit in the window does not pass: the search shows it again, whole, in
-    the next window, unless the layer ends first.
+    ``find_header(window, start, stop)`` returns the index in ``window`` of the first
+    candidate position at or after ``start`` and before ``stop`` where a header
+    passes the format's own checks, or ``None``. It is pure on the bytes it is given.
+    ``window[0]`` is always at a candidate position, so the candidate positions are
+    ``start``, ``start + step``, ``start + 2 * step`` and so on, up to ``stop``; a
+    ``find_header`` that returns any other index is a bug, and the search raises
+    ``AssertionError``. It examines no candidate position at or after ``stop``: the
+    search gives those to a later window, or the budget does not pay for them. The
+    window holds ``max_header_size - 1`` bytes past ``stop`` where the layer has
+    them, so each candidate before ``stop`` can be checked whole. A header that does
+    not fit in the window does not pass: the layer ends inside it.
 
     ``step`` is the distance between candidate positions: 512 for TAR, 4 or 1 for
     CPIO, 2 for ar. Candidate positions are counted from the ``base`` given to
@@ -122,7 +139,7 @@ class HeaderSearch:
     header that straddles a window's end is found once, in the window where it fits.
     """
 
-    find_header: Callable[[bytes, int], int | None]
+    find_header: Callable[[bytes, int, int], int | None]
     step: int
     max_header_size: int
 
@@ -471,6 +488,16 @@ def search_forward(
             volume_index=volume_index,
         )
         return SearchResult(found=None, limit_reached=True)
+    if end is None and pos > region_start:
+        # The bytes before the first candidate position are not examined, but only
+        # a read shows whether the layer has them: a layer that ends among them
+        # skips only what it holds.
+        gap = read_at(region_start, pos - region_start)
+        if len(gap) < pos - region_start:
+            layer_end = region_start + len(gap)
+            state._examined(layer, layer_end, layer_end, volume_index)
+            _record_no_header(state, layer, region_start, layer_end, volume_index)
+            return SearchResult(found=None)
     # With a budget, no read goes past the last header the budget lets the search
     # reach: the bytes it may examine, plus the rest of a header that starts there.
     read_limit = (
@@ -521,20 +548,23 @@ def search_forward(
             )
 
         if last >= pos:
-            found = search.find_header(buf, 0)
+            # The candidate positions this window may examine are those before
+            # ``stop``; the window keeps the bytes a header at the last one needs.
+            stop = last - pos + 1
+            window = buf[: stop - 1 + search.max_header_size]
+            found = search.find_header(window, 0, stop)
             while found is not None:
-                if found < 0 or found % step:
+                if found < 0 or found % step or found >= stop:
                     raise AssertionError(
                         f"find_header returned {found}, which is not a candidate "
-                        f"position (a multiple of {step} at or after 0)"
+                        f"position (a multiple of {step} at or after 0 and before "
+                        f"{stop})"
                     )
-                if pos + found > last:
-                    break
                 header_at = pos + found
                 if accept is not None and not accept(header_at):
                     # Passed over inside the same range: look on from the next
                     # position in the bytes already read.
-                    found = search.find_header(buf, found + step)
+                    found = search.find_header(window, found + step, stop)
                     continue
                 after = header_at + step
                 state._examined(
