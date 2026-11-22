@@ -200,6 +200,31 @@ pub trait Input {
     fn more(&mut self) -> std::result::Result<Option<Vec<u8>>, Self::Error>;
 }
 
+/// The trees a block header reads code lengths for: the main tree (`true`) or the
+/// length tree, and the first and last symbol (`usize::MAX`: the window's number
+/// of main symbols).
+const TREES: [(bool, usize, usize); 3] = [
+    (true, 0, NUM_CHARS),
+    (true, NUM_CHARS, usize::MAX),
+    (false, 0, LENGTH_SYMBOLS),
+];
+
+/// The input read is dropped only once more than this can go: a trim moves a few
+/// bytes per kilobyte read, not per block.
+const TRIM_AT: usize = 4096;
+
+/// The input position and bit buffer, to go back to when a read runs out of input.
+type Mark = (usize, u64, u32, u32);
+
+/// A block header that ran out of input in its trees: which tree (an index into
+/// `TREES`), the next length to read, and its pretree once read.
+#[derive(Clone)]
+struct Header {
+    tree: usize,
+    x: usize,
+    pre: Option<([u8; PRETREE_SYMBOLS], Tree)>,
+}
+
 #[derive(Clone)]
 pub struct LzxDecoder {
     window_bits: u32,
@@ -233,10 +258,16 @@ pub struct LzxDecoder {
     offset: u64,
     frame: u64,
     /// The frame being decoded once it started, and where in the window it starts.
-    /// The input buffer only grows while a frame is in progress (it is trimmed when
-    /// one starts), so a place kept to resume from stays valid as input arrives.
+    /// The input buffer is trimmed only where no place to resume from is kept (at
+    /// frame start and at each block header start), so a place kept stays valid as
+    /// input arrives.
     frame_size: Option<usize>,
     frame_start: usize,
+    /// The input position when the frame started: a frame that ran out of input
+    /// before reading anything is not started yet.
+    frame_mark: (usize, u32),
+    /// A block header that ran out of input inside its trees.
+    header: Option<Header>,
 }
 
 #[inline(always)]
@@ -285,6 +316,8 @@ impl LzxDecoder {
             frame: 0,
             frame_size: None,
             frame_start: 0,
+            frame_mark: (0, 0),
+            header: None,
         })
     }
 
@@ -326,42 +359,58 @@ impl LzxDecoder {
         &self.buf[start..self.pos.min(real_end).max(start)]
     }
 
-    /// The size of the frame in progress, which ran out of input and waits for more.
-    pub fn frame_in_progress(&self) -> Option<usize> {
+    /// The frame in progress, which ran out of input and waits for more: its size,
+    /// and the bytes it has decoded. A frame that read nothing yet is not started.
+    pub fn frame_in_progress(&self) -> Option<(usize, usize)> {
         self.frame_size
+            .map(|size| (size, self.window_pos - self.frame_start))
     }
 
     /// Give the frame in progress a new size, once the output size is known late. The
     /// frame decodes as if it had that size from its start, as long as it has not
     /// decoded past it: a run stops at the first symbol at or past its end either
-    /// way. `false` when it has.
+    /// way. A size of 0 (the output ends where the frame starts) leaves no frame in
+    /// progress; what it read stays read. `false` when it has decoded past `size`.
     pub fn resize_frame(&mut self, size: usize) -> bool {
-        if self.frame_size.is_none() || size == 0 || size > FRAME_SIZE {
+        let Some((_, done)) = self.frame_in_progress() else {
+            return false;
+        };
+        if size > FRAME_SIZE || done > size {
             return false;
         }
-        if self.window_pos - self.frame_start > size {
-            return false;
-        }
-        self.frame_size = Some(size);
+        self.frame_size = (size > 0).then_some(size);
         true
     }
 
-    /// What a block header or the stream header can change, to resume from its start
-    /// when it runs out of input: all but the window and the input buffer, which
-    /// a header does not write (the buffer only grows inside a frame).
-    fn snapshot(&mut self) -> LzxDecoder {
-        let window = std::mem::take(&mut self.window);
-        let buf = std::mem::take(&mut self.buf);
-        let saved = self.clone();
-        self.window = window;
-        self.buf = buf;
-        saved
+    fn bit_mark(&self) -> Mark {
+        (self.pos, self.bits, self.nbits, self.since_symbol)
     }
 
-    fn resume_from(&mut self, mut saved: LzxDecoder) {
-        saved.window = std::mem::take(&mut self.window);
-        saved.buf = std::mem::take(&mut self.buf);
-        *self = saved;
+    fn back_to(&mut self, mark: Mark) {
+        (self.pos, self.bits, self.nbits, self.since_symbol) = mark;
+    }
+
+    /// Drop the input read, keeping the last few bytes: words read ahead into the bit
+    /// buffer go back to the byte input before an uncompressed block
+    /// (`align_for_raw`). Only where no place to resume from is kept.
+    fn trim(&mut self) {
+        let drop = self.pos - self.pos.min(8);
+        if drop > TRIM_AT {
+            self.buf.drain(..drop);
+            self.pos -= drop;
+            self.frame_mark.0 = self.frame_mark.0.wrapping_sub(drop);
+        }
+    }
+
+    /// The frame ran out of input. One that has read nothing yet is not started, so
+    /// the next call may ask for another size.
+    fn stalled(&mut self) {
+        if self.window_pos == self.frame_start
+            && self.header.is_none()
+            && (self.pos, self.nbits) == self.frame_mark
+        {
+            self.frame_size = None;
+        }
     }
 
     /// The decoder's state (design D3): everything it consumed, none of the input it
@@ -396,6 +445,22 @@ impl LzxDecoder {
         out.push(self.block_type as u8);
         state::put_u32(out, self.block_length as u32);
         state::put_u32(out, self.block_remaining as u32);
+        // A block header that ran out of input in its trees: its tree + 1 (0 for
+        // none), the next length, and its pretree's lengths once read.
+        match &self.header {
+            None => out.push(0),
+            Some(h) => {
+                out.push(h.tree as u8 + 1);
+                state::put_u32(out, h.x as u32);
+                match &h.pre {
+                    None => out.push(0),
+                    Some((pre, _)) => {
+                        out.push(1);
+                        out.extend_from_slice(pre);
+                    }
+                }
+            }
+        }
         state::put_u64(out, self.offset);
         state::put_u64(out, self.frame);
         // The frame in progress: its size (0 for none) and the bytes it has so far.
@@ -444,29 +509,24 @@ impl LzxDecoder {
         if trees > 7 {
             return r.bad(format!("tree flags {trees}"));
         }
-        let rebuild = |present: bool, tree: Result<Option<Tree>>| -> Result<Option<Tree>> {
-            match (present, tree?) {
-                (false, _) => Ok(None),
-                (true, Some(t)) => Ok(Some(t)),
-                (true, None) => r.bad("an empty tree"),
+        // A tree that is not there is not built: inside a block header its lengths
+        // may be half read, and the header builds it again once they are read.
+        let rebuild = |present: bool, lengths: &[u8], count: usize, what: &str| {
+            if !present {
+                return Ok(None);
+            }
+            match build_table(lengths, count, what, false)? {
+                Some(t) => Ok(Some(t)),
+                None => r.bad("an empty tree"),
             }
         };
-        d.main_table = rebuild(
-            trees & 1 != 0,
-            build_table(&d.main_lengths, MAIN_MAX, "main", trees & 1 == 0),
-        )?;
-        d.length_table = rebuild(
-            trees & 2 != 0,
-            build_table(&d.length_lengths, LENGTH_MAX, "length", true),
-        )?;
+        d.main_table = rebuild(trees & 1 != 0, &d.main_lengths, MAIN_MAX, "main")?;
+        d.length_table = rebuild(trees & 2 != 0, &d.length_lengths, LENGTH_MAX, "length")?;
         d.aligned_table = rebuild(
             trees & 4 != 0,
-            build_table(
-                &d.aligned_lengths,
-                ALIGNED_SYMBOLS,
-                "aligned",
-                trees & 4 == 0,
-            ),
+            &d.aligned_lengths,
+            ALIGNED_SYMBOLS,
+            "aligned",
         )?;
         d.r0 = r.u64()?;
         d.r1 = r.u64()?;
@@ -482,6 +542,44 @@ impl LzxDecoder {
             || d.block_remaining > d.block_length
         {
             return r.bad("a block header out of range");
+        }
+        let tree = usize::from(r.u8()?);
+        if tree > 0 {
+            let tree = tree - 1;
+            let x = r.u32()? as usize;
+            let read = r.bool()?;
+            if tree >= TREES.len()
+                || !(d.block_type == VERBATIM || d.block_type == ALIGNED)
+                || d.block_remaining != d.block_length
+            {
+                return r.bad("a block header in progress out of range");
+            }
+            let (_, first, last) = TREES[tree];
+            let last = if last == usize::MAX {
+                d.main_symbols
+            } else {
+                last
+            };
+            let pre = if read {
+                let mut lengths = [0u8; PRETREE_SYMBOLS];
+                lengths.copy_from_slice(r.take(PRETREE_SYMBOLS)?);
+                let built: Result<Option<Tree>> =
+                    build_table(&lengths, PRETREE_SYMBOLS, "pretree", false);
+                match built {
+                    Ok(Some(table))
+                        if first <= x && x < last && lengths.iter().all(|&l| l < 16) =>
+                    {
+                        Some((lengths, table))
+                    }
+                    _ => return r.bad("a block header in progress out of range"),
+                }
+            } else {
+                if x != first {
+                    return r.bad("a block header in progress out of range");
+                }
+                None
+            };
+            d.header = Some(Header { tree, x, pre });
         }
         d.offset = r.u64()?;
         d.frame = r.u64()?;
@@ -499,6 +597,8 @@ impl LzxDecoder {
             d.frame_size = Some(size);
             d.frame_start = d.window_pos;
             d.window_pos += done;
+            // Not where this frame started: it stays started.
+            d.frame_mark = (usize::MAX, 0);
         }
         d.padding = usize::from(r.u8()?);
         let zeros = usize::from(r.u8()?);
@@ -632,14 +732,7 @@ impl LzxDecoder {
 
     // ── Trees ───────────────────────────────────────────────────────────────────
 
-    fn read_pre_symbol<I: Input>(
-        &mut self,
-        pre: &Option<Tree>,
-        input: &mut I,
-    ) -> Result<usize, I::Error> {
-        let Some(tree) = pre else {
-            return corrupt("LZX pretree symbol read from an empty tree");
-        };
+    fn read_pre_symbol<I: Input>(&mut self, tree: &Tree, input: &mut I) -> Result<usize, I::Error> {
         if self.nbits < MAX_CODE {
             self.refill(MAX_CODE, input)?;
         }
@@ -659,40 +752,67 @@ impl LzxDecoder {
         Ok((entry >> 5) as usize)
     }
 
-    fn read_lengths<I: Input>(
+    /// Read the code lengths of the header's tree from its next length on, after its
+    /// pretree (read first when not read yet). When the input runs out, the header's
+    /// place is kept in `header` and the input goes back to the start of the pretree
+    /// or of the length symbol it was in: each symbol writes its lengths only once
+    /// all its bits are read, so going on from there is exact.
+    fn read_lengths<I: Input>(&mut self, mut h: Header, input: &mut I) -> Result<(), I::Error> {
+        let mut mark = self.bit_mark();
+        let result = self.read_lengths_from(&mut h, &mut mark, input);
+        if matches!(result, Err(DecodeError::Source(_))) {
+            self.back_to(mark);
+            self.header = Some(h);
+        }
+        result
+    }
+
+    fn read_lengths_from<I: Input>(
         &mut self,
-        main: bool,
-        first: usize,
-        last: usize,
+        h: &mut Header,
+        mark: &mut Mark,
         input: &mut I,
     ) -> Result<(), I::Error> {
-        let mut pre = [0u8; PRETREE_SYMBOLS];
-        for p in pre.iter_mut() {
-            *p = self.read_bits(4, input)? as u8;
+        let (main, _, last) = TREES[h.tree];
+        let last = if last == usize::MAX {
+            self.main_symbols
+        } else {
+            last
+        };
+        if h.pre.is_none() {
+            let mut pre = [0u8; PRETREE_SYMBOLS];
+            for p in pre.iter_mut() {
+                *p = self.read_bits(4, input)? as u8;
+            }
+            let Some(table) = build_table(&pre, PRETREE_SYMBOLS, "pretree", false)? else {
+                return corrupt("LZX pretree tree has no codes");
+            };
+            h.pre = Some((pre, table));
         }
-        let table = build_table(&pre, PRETREE_SYMBOLS, "pretree", false)?;
-        let mut x = first;
-        while x < last {
-            let code = self.read_pre_symbol(&table, input)?;
+        let table = &h.pre.as_ref().unwrap().1;
+        while h.x < last {
+            let x = h.x;
+            *mark = self.bit_mark();
+            let code = self.read_pre_symbol(table, input)?;
             if code == 17 {
                 let run = self.read_bits(4, input)? as usize + 4;
                 self.lengths(main)[x..x + run].fill(0);
-                x += run;
+                h.x += run;
             } else if code == 18 {
                 let run = self.read_bits(5, input)? as usize + 20;
                 self.lengths(main)[x..x + run].fill(0);
-                x += run;
+                h.x += run;
             } else if code == 19 {
                 let run = self.read_bits(1, input)? as usize + 4;
-                let code = self.read_pre_symbol(&table, input)?;
+                let code = self.read_pre_symbol(table, input)?;
                 let lengths = self.lengths(main);
                 let value = delta(lengths[x], code);
                 lengths[x..x + run].fill(value);
-                x += run;
+                h.x += run;
             } else {
                 let lengths = self.lengths(main);
                 lengths[x] = delta(lengths[x], code);
-                x += 1;
+                h.x += 1;
             }
         }
         Ok(())
@@ -706,7 +826,68 @@ impl LzxDecoder {
         }
     }
 
+    /// Read a block header, or go on with one that ran out of input in its trees
+    /// (`header`). Its fixed fields are read again from their start when they run
+    /// out: they are a few bytes.
     fn read_block_header<I: Input>(&mut self, input: &mut I) -> Result<(), I::Error> {
+        if self.header.is_none() {
+            let mark = self.bit_mark();
+            let fields = (
+                self.block_type,
+                self.block_length,
+                self.block_remaining,
+                self.intel_started,
+            );
+            if let Err(e) = self.read_block_start(input) {
+                if matches!(e, DecodeError::Source(_)) {
+                    self.back_to(mark);
+                    (
+                        self.block_type,
+                        self.block_length,
+                        self.block_remaining,
+                        self.intel_started,
+                    ) = fields;
+                }
+                return Err(e);
+            }
+            if self.block_type == UNCOMPRESSED {
+                return Ok(());
+            }
+            // Built again once their lengths are read; a saved state has none of
+            // them half read.
+            self.main_table = None;
+            self.length_table = None;
+            self.header = Some(Header {
+                tree: 0,
+                x: 0,
+                pre: None,
+            });
+        }
+        while let Some(h) = self.header.take() {
+            let tree = h.tree;
+            self.read_lengths(h, input)?;
+            if tree == 1 {
+                self.main_table = build_table(&self.main_lengths, MAIN_MAX, "main", false)?;
+                if self.main_lengths[0xE8] != 0 {
+                    self.intel_started = true;
+                }
+            } else if tree == 2 {
+                self.length_table = build_table(&self.length_lengths, LENGTH_MAX, "length", true)?;
+            }
+            if tree < 2 {
+                self.header = Some(Header {
+                    tree: tree + 1,
+                    x: TREES[tree + 1].1,
+                    pre: None,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// A block header's fixed fields: type, length, the aligned tree, or an
+    /// uncompressed block's repeated offsets.
+    fn read_block_start<I: Input>(&mut self, input: &mut I) -> Result<(), I::Error> {
         if self.block_type == UNCOMPRESSED && self.block_length & 1 == 1 {
             self.raw_bytes(1, input)?;
         }
@@ -725,15 +906,7 @@ impl LzxDecoder {
             self.aligned_lengths = aligned;
         }
         if block_type == VERBATIM || block_type == ALIGNED {
-            self.read_lengths(true, 0, NUM_CHARS, input)?;
-            let ms = self.main_symbols;
-            self.read_lengths(true, NUM_CHARS, ms, input)?;
-            self.main_table = build_table(&self.main_lengths, MAIN_MAX, "main", false)?;
-            if self.main_lengths[0xE8] != 0 {
-                self.intel_started = true;
-            }
-            self.read_lengths(false, 0, LENGTH_SYMBOLS, input)?;
-            self.length_table = build_table(&self.length_lengths, LENGTH_MAX, "length", true)?;
+            Ok(())
         } else if block_type == UNCOMPRESSED {
             self.intel_started = true;
             self.align_for_raw(input)?;
@@ -742,10 +915,10 @@ impl LzxDecoder {
             self.r0 = u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as u64;
             self.r1 = u32::from_le_bytes([s[4], s[5], s[6], s[7]]) as u64;
             self.r2 = u32::from_le_bytes([s[8], s[9], s[10], s[11]]) as u64;
+            Ok(())
         } else {
-            return corrupt(format!("LZX block type {block_type}"));
+            corrupt(format!("LZX block type {block_type}"))
         }
-        Ok(())
     }
 
     // ── Frames ──────────────────────────────────────────────────────────────────
@@ -760,16 +933,10 @@ impl LzxDecoder {
                 if !(frame_size > 0 && frame_size <= FRAME_SIZE) {
                     return Err(DecodeError::Value(format!("frame size {frame_size}")));
                 }
-                // Trim the input read, keeping the last few bytes: words read ahead
-                // into the bit buffer go back to the byte input before an
-                // uncompressed block (`align_for_raw`).
-                let drop = self.pos - self.pos.min(8);
-                if drop > 4096 {
-                    self.buf.drain(..drop);
-                    self.pos -= drop;
-                }
+                self.trim();
+                self.frame_mark = (self.pos, self.nbits);
                 if !self.header_read {
-                    let saved = self.snapshot();
+                    let mark = self.bit_mark();
                     let header = (|| {
                         if self.read_bits(1, input)? != 0 {
                             let high = self.read_bits(16, input)?;
@@ -779,7 +946,7 @@ impl LzxDecoder {
                     })();
                     if let Err(e) = header {
                         if matches!(e, DecodeError::Source(_)) {
-                            self.resume_from(saved);
+                            self.back_to(mark);
                         }
                         return Err(e);
                     }
@@ -802,11 +969,13 @@ impl LzxDecoder {
                 break;
             }
             let todo = frame_size - so_far;
-            if self.block_remaining == 0 {
-                let saved = self.snapshot();
+            if self.header.is_some() || self.block_remaining == 0 {
+                if self.header.is_none() {
+                    self.trim();
+                }
                 if let Err(e) = self.read_block_header(input) {
                     if matches!(e, DecodeError::Source(_)) {
-                        self.resume_from(saved);
+                        self.stalled();
                     }
                     return Err(e);
                 }
@@ -823,6 +992,7 @@ impl LzxDecoder {
                     Err(e) => {
                         if matches!(e, DecodeError::Source(_)) {
                             (self.pos, self.since_symbol) = (at, since);
+                            self.stalled();
                         }
                         return Err(e);
                     }
@@ -839,6 +1009,7 @@ impl LzxDecoder {
                             // The run stopped at the start of a symbol: keep what it
                             // decoded.
                             self.block_remaining -= self.window_pos - before;
+                            self.stalled();
                         }
                         return Err(e);
                     }
@@ -930,12 +1101,15 @@ impl LzxDecoder {
         // `nbits` where the last Huffman symbol began, for `since_symbol`; set so that
         // a run with no symbols (an empty block) leaves it as it was.
         let mut top = nbits + self.since_symbol;
-        // Where the input ran out: the bit buffer, input position, `top`, repeated
-        // offsets and window position at the start of the symbol it ran out in.
+        // Where the input ran out: the bit buffer, input position, bits read since the
+        // last symbol began, repeated offsets and window position at the start of the
+        // symbol it ran out in.
         #[allow(clippy::type_complexity)]
         let mut stop: Option<(u64, u32, usize, u32, u64, u64, u64, usize)> = None;
         let result: Result<(), I::Error> = (|| {
             while pos < end {
+                // `top` is not moved by a refill, so take this before one.
+                let since = top - nbits;
                 if nbits < 32 {
                     if self.pos + 4 <= self.buf.len() {
                         let b = &self.buf[self.pos..self.pos + 4];
@@ -951,13 +1125,13 @@ impl LzxDecoder {
                         if let Err(e) = self.slow_fill(&mut bits, &mut nbits, input) {
                             // Resume from this symbol's start: the locals as they are
                             // (`slow_fill` changes them only when it succeeds).
-                            stop = Some((bits, nbits, bpos, top, r0, r1, r2, pos));
+                            stop = Some((bits, nbits, bpos, since, r0, r1, r2, pos));
                             return Err(e);
                         }
                     }
                 }
                 // The symbol's start, to resume from if its extra bits run out.
-                let (start_nbits, start_top, start_bpos) = (nbits, top, self.pos);
+                let (start_nbits, start_bpos) = (nbits, self.pos);
                 top = nbits;
                 let symbol = Self::lookup(main, bits, &mut nbits) as usize;
                 if symbol < 256 {
@@ -996,8 +1170,7 @@ impl LzxDecoder {
                         if let Err(e) = self.slow_fill(&mut bits, &mut nbits, input) {
                             // Only the codes read since the symbol began changed
                             // `nbits`; the repeated offsets change after this.
-                            stop =
-                                Some((bits, start_nbits, start_bpos, start_top, r0, r1, r2, pos));
+                            stop = Some((bits, start_nbits, start_bpos, since, r0, r1, r2, pos));
                             return Err(e);
                         }
                         top += nbits - filled;
@@ -1050,14 +1223,11 @@ impl LzxDecoder {
             }
             Ok(())
         })();
-        if let Some((b, n, bpos, t, a0, a1, a2, p)) = stop {
+        if let Some((b, n, bpos, since, a0, a1, a2, p)) = stop {
             if matches!(result, Err(DecodeError::Source(_))) {
                 (self.bits, self.nbits, self.pos) = (b, n, bpos);
                 (self.r0, self.r1, self.r2) = (a0, a1, a2);
-                // Unused: the symbol is decoded again, and its start sets `top` before
-                // anything reads it. 0 keeps a saved state within `load`'s range.
-                let _ = t;
-                self.since_symbol = 0;
+                self.since_symbol = since;
                 self.window_pos = p;
                 return result.map(|()| 0);
             }
