@@ -703,8 +703,9 @@ def folder_path(
     chain that comes back to a folder. For a loop, the folder's cnid goes in ``looped``,
     so the walk lists the other members and raises at its end. ``seen`` ends a loop and
     the cache keeps the whole walk linear in the number of folders. Each path the cache
-    keeps is charged: a deep chain costs the square of its depth, and the folders of a
-    hidden folder never become members, whose names are charged."""
+    keeps is charged to ``max_metadata_bytes``: the paths of a chain grow with the
+    square of its depth, and the folders inside a hidden folder never become members,
+    so no member name is charged for them."""
     if cnid in cache:
         return cache[cnid]
     chain: list[int] = []
