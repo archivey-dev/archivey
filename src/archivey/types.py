@@ -559,6 +559,11 @@ class OptionalLibrary(StrEnum):
     CRC32C = "crc32c"
     """``crc32c``: the CRC-32C of ``.sz`` files, used when ``google-crc32c`` is not
     installed."""
+    ARCHIVEY_CODECS = "archivey_codecs"
+    """``archivey-codecs``: Rust versions of decoders archivey otherwise runs in
+    Python (so far the CRC-16 of LHA archives and traditional ZIP encryption). They
+    give the same bytes and the same errors, faster. The package is not on PyPI
+    yet; until it is installed, this switch changes nothing."""
 
 
 OptionalLibraryStr = Literal[
@@ -578,6 +583,8 @@ OptionalLibraryStr = Literal[
     "google_crc32c",
     "google-crc32c",
     "crc32c",
+    "archivey_codecs",
+    "archivey-codecs",
 ]
 """The values of :class:`OptionalLibrary`, for an argument that takes either spelling."""
 

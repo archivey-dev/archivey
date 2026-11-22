@@ -74,10 +74,10 @@ are ticked once its first run on `main` is green; APFS joins M.2 with Part E.
 
 ## F. Partition CRC-32
 
-- [ ] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
+- [x] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
   partition (ignore runs excluded, runs outside the partition included, zero fill folded
   in O(log n)); one table straddling two partitions fails both; `verify_all()`
-- [ ] F.2 Data-fork and master checksums if cheap
+- [x] F.2 Data-fork and master checksums if cheap
 
 ## G. Encrypted images
 

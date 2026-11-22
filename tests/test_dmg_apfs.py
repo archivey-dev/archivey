@@ -26,6 +26,7 @@ from archivey import (
     MemberType,
     ResourceLimitError,
     UnsupportedFeatureError,
+    Verification,
     open_archive,
 )
 from archivey.formats import ReaderSource
@@ -862,6 +863,51 @@ def _encrypt_second_volume(container: bytearray, info: a.Apfs) -> None:
     at = info.volume_superblocks[1]
     struct.pack_into("<Q", container, at * info.block_size + 264, 0)
     a.reseal(container, at)
+
+
+# ── Verify ───────────────────────────────────────────────────────────────────────────
+
+_MARK = b"marked file content\n"
+
+
+def _padding_flipper(flip: bool) -> Callable[[int, bytes], bytes]:
+    """A run encoder that, when ``flip``, changes a byte in the unused end of the block
+    holding ``_MARK``, after the builder took the CRC-32 of the real bytes. No member
+    read reaches it."""
+
+    def encode(kind: int, data: bytes) -> bytes:
+        at = data.find(_MARK)
+        if flip and at >= 0:
+            at += 1000
+            data = data[:at] + bytes([data[at] ^ 0xFF]) + data[at + 1 :]
+        return d.encode_run(kind, data)
+
+    return encode
+
+
+@pytest.mark.parametrize("flip", [False, True], ids=["intact", "changed"])
+def test_verify_all_checks_every_volume_of_an_apfs_container(flip: bool) -> None:
+    container = a.write_apfs(
+        [d.Node("a.txt", data=_MARK)],
+        name="One",
+        more_volumes=[("Two", [d.Node("b.txt", data=b"b")])],
+    )
+    image = a.apfs_dmg(
+        container.container, codec=d.ZLIB, run_sectors=8, encode=_padding_flipper(flip)
+    )
+    with _open(image) as reader:
+        files = [m for m in reader.members() if m.is_file]
+        assert {m.name for m in files} == {"One/a.txt", "Two/b.txt"}
+        assert {m.verifiable for m in files} == {Verification.CHECKSUM}
+        assert reader.read("One/a.txt") == _MARK
+        report = reader.verify_all()
+        if not flip:
+            assert report.ok, report.failures
+            assert {m.verified for m in files} == {Verification.CHECKSUM}
+        else:
+            # The volumes share their partition's check, so both fail.
+            assert {m.name for m, _ in report.failures} == {"One/a.txt", "Two/b.txt"}
+            assert all("CRC-32" in str(e) for _, e in report.failures)
 
 
 # ── Limits ───────────────────────────────────────────────────────────────────────────
