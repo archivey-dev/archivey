@@ -520,7 +520,18 @@ def test_rar4_a_landing_whose_data_runs_past_the_end_is_not_followed() -> None:
     assert [m.filename for m in archive.members] == ["a.txt"]
     assert archive.damaged is not None
     assert archive.truncated is None
-    # A pipe finds the end of the file by reading to it, and gives the same answer.
+
+
+@requires_binary("unrar")
+def test_rar4_a_pipe_does_not_follow_a_landing_whose_data_runs_past_the_end() -> None:
+    """The same archive from a pipe: the forward source finds the end of the file by
+    reading to it, and gives the same answer as a file."""
+    landing = _rar3_stored("fake", b"z" * 1000)[:-1000]
+    data = (
+        _rar3_start()
+        + _rar3_stored("a.txt", b"a")
+        + _rar3_stored("b.bin", b"x" * 10 + landing, pack_size=10)
+    )
     seen, error = _read_pass(_pipe(data), streaming=True)
     assert [name for name, _, _ in seen] == ["a.txt"]
     assert isinstance(error, CorruptionError)

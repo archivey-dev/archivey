@@ -616,10 +616,7 @@ class ArchiveSource(ReadOnlyIOStream):
         if not name and decompressed is not None:
             # fsspec's decompressing file has no name; the object's URL is the file.
             name = decompressed.url
-        # A member stream under a nested reader has no size fact, but its size hint
-        # (the member's size) still lets a caller draw a percentage.
-        size = self._length if self._length is not None else self._size
-        reporter = SourceReadReporter(callback, name, size, step, nest_level)
+        reporter = SourceReadReporter(callback, name, self._length, step, nest_level)
         self._reporter = reporter
         if self._remote:
             # In a volume set a range source reads at its own offsets; its reports
@@ -631,10 +628,10 @@ class ArchiveSource(ReadOnlyIOStream):
             joined = self._joined
             if joined is not None:
                 pairs = zip(joined.volume_items, joined.volume_ranges, strict=True)
-                for item, (start, length) in pairs:
+                for item, (start, end) in pairs:
                     bases[id(item)] = start
                     if id(item) not in remote:
-                        local.append((start, start + length))
+                        local.append((start, end))
             for ranged in self._remote:
                 ranged.progress = reporter
                 ranged.progress_base = bases.get(id(ranged), 0)
