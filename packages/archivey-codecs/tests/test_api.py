@@ -837,3 +837,34 @@ def test_bcj2_decoded_runs_ahead_of_total_out() -> None:
     while not d.eof:
         d.read(100_000)
     assert d.decoded == d.total_out == len(_BCJ2_MAIN)
+
+
+def test_lzx_frame_of_empty_blocks_holds_little_input() -> None:
+    """A frame's input is not bounded by its output: blocks of length 0 give none.
+    The decoder drops the input it read at each block header, so feeding 64 MiB of
+    empty uncompressed blocks does not keep them. Run in a fresh process, so its
+    resident memory says what the decoder holds (Linux only: it reads
+    ``/proc/self/statm``)."""
+    import subprocess
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("reads /proc/self/statm")
+    probe = (
+        "from archivey_codecs import lzx\n"
+        "rss = lambda: int(open('/proc/self/statm').read().split()[1]) * 4096\n"
+        # The stream header bit and an empty uncompressed block, then more of them
+        # (each 16 bytes: type and length, alignment, three repeated offsets).
+        "first = bytes.fromhex('00300000') + bytes.fromhex('01000000') * 3\n"
+        "piece = (bytes.fromhex('00600000') + bytes.fromhex('01000000') * 3) * 65536\n"
+        "d = lzx.Decompressor(15, output_size=32768)\n"
+        "assert d.decompress(first) == b''\n"
+        "before = rss()\n"
+        "for _ in range(64):\n"
+        "    assert d.decompress(piece) == b''\n"
+        "print((rss() - before) >> 20)\n"
+    )
+    got = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert int(got.stdout) < 16, f"the decoder kept {got.stdout.strip()} MB of input"
