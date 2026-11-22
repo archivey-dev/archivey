@@ -4489,7 +4489,7 @@ class ExtractionCoordinator:
 
     def _trusted_kept_partial(self, path: Path) -> _Claim | None:
         """Under TRUSTED, the claim of a partial file ``OnError.KEEP_PARTIAL`` kept at
-        exactly ``path``, or ``None``.
+        the entry ``path`` reaches, by any name, or ``None``.
 
         TRUSTED reports no collision, so ``_resolve_collision`` returns no prior claim
         and an earlier member keeps its result when a later one lands on its name. A
@@ -4497,11 +4497,14 @@ class ExtractionCoordinator:
         now holds the later member's content."""
         if self._policy is not ExtractionPolicy.TRUSTED:
             return None
+        # The key resolves the parent, and the physical paths compare where each name
+        # is: a name that reaches the kept file through a directory alias matches,
+        # as the exact spelling does.
         claim = self._state.collision_map.get(self._collision_key(path))
-        if claim is None or claim.path != path:
+        if claim is None or claim.physical != self._physical_path(path):
             return None
         earlier = self._state.results[claim.result_index]
-        if earlier.status is not ExtractionStatus.FAILED or earlier.path != path:
+        if earlier.status is not ExtractionStatus.FAILED or earlier.path is None:
             return None
         return claim
 

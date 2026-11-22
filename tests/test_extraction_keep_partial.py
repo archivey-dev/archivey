@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import os
 import struct
 import tarfile
 import warnings
@@ -495,3 +496,39 @@ def test_trusted_later_member_on_a_kept_partial_name_clears_its_path(
     assert second.status is ExtractionStatus.EXTRACTED
     assert second.path == dest / "a.bin"
     assert (dest / "a.bin").read_bytes() == b"second"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs a directory symlink")
+@pytest.mark.parametrize("mode", _MODES)
+def test_trusted_later_member_through_an_alias_clears_the_kept_path(
+    tmp_path: Path, mode: str
+) -> None:
+    # The caller's ``alias`` is a link to ``real`` inside the destination. Under
+    # TRUSTED and REPLACE, ``alias/a.bin`` lands over the partial file
+    # ``real/a.bin`` kept: the failed result must stop naming it.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("real/a.bin", _PAYLOAD)
+        zf.writestr("alias/a.bin", b"second")
+    data = bytearray(buf.getvalue())
+    data[data.find(_PAYLOAD[:4096]) + 100] ^= 0xFF
+    src = tmp_path / "alias.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    (dest / "real").mkdir(parents=True)
+    (dest / "alias").symlink_to("real", target_is_directory=True)
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        on_error=OnError.KEEP_PARTIAL,
+        overwrite=OverwritePolicy.REPLACE,
+        policy=ExtractionPolicy.TRUSTED,
+    )
+    by_name = {r.member.name: r for r in report.results}
+    first, second = by_name["real/a.bin"], by_name["alias/a.bin"]
+    assert second.status is ExtractionStatus.EXTRACTED
+    assert (dest / "real" / "a.bin").read_bytes() == b"second"
+    assert first.status is ExtractionStatus.FAILED
+    assert first.path is None
