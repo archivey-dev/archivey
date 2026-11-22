@@ -392,9 +392,9 @@ class UdifImage:
             xml.parsers.expat.ExpatError,
             ValueError,
             TypeError,
-            KeyError,
-            IndexError,
-            LookupError,  # the XML declaration names an unknown or non-text codec
+            # KeyError and IndexError from the parser, and an XML declaration that
+            # names an unknown or non-text codec.
+            LookupError,
             OverflowError,
             RecursionError,
             struct.error,
