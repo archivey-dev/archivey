@@ -268,8 +268,9 @@ rulings on the handbook page, and general ones in `dev-docs/design-rules.md`.
   2026-11-19). The template's comment says what goes in it. Keep it true as the PR
   changes, like the rest of the body.
 - A PR may add or edit `CHANGELOG.md` lines under `## [Unreleased]` when they fit its
-  sections: merge into an existing line on the same topic, put a bug fix in the one
-  shared **Fixed** line, and keep the list short and user-facing. The release PR does
+  sections: merge into an existing line on the same topic and keep the list short and
+  user-facing. A plain bug fix needs no line; the release counts those in the shared
+  **Fixed** line, which PRs leave alone. The release PR does
   the final pass (CONTRIBUTING.md §Cutting a release).
 
 **Outside the repo.** Upstream bug reports are drafted by agents and filed by the

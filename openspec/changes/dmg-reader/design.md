@@ -64,7 +64,8 @@ no archive may cause unbounded memory, disk, hang or crash), DR-15b (fail at ope
 no work proportional to the archive there), DR-20 (parse in Python; native code that can
 crash runs in a child), DR-21a (do not ship what cannot be tested), DR-24 (tests against
 real producers). PRs open with the "For dummies" section from
-`.github/pull_request_template.md`. Do not edit `CHANGELOG.md`.
+`.github/pull_request_template.md`. A `CHANGELOG.md` line goes under `## [Unreleased]`
+(CONTRIBUTING.md §Cutting a release).
 
 ---
 
