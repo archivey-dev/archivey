@@ -38,6 +38,7 @@ unconfirmed candidates, **Q18** `verifiable` of a member only salvage reaches.
 16. Found while measuring (default mode)
 17. Open questions
 18. Rejected
+19. As implemented
 
 ## 1. Measurements
 
@@ -570,3 +571,41 @@ Each question below is one no ruling settles. The recommendation comes first.
 - **Restarting a solid stream after damage.** RAR's codecs have no restart point
   (measured: 0 of 123), and a guessed decoder state gives wrong bytes (DR-1).
 - **Recovery records** (Q13). Users run `rar r` or WinRAR's repair first.
+
+## 19. As implemented
+
+Where the implementation differs from the sections above, or settles what they leave
+open:
+
+- **The window (§15.1)** is set by the RAR caller, not the driver: `_RarSalvage.search`
+  passes `max(WINDOW_SIZE, 2 × max_header_size)` to `search_forward`. The driver's
+  default window is unchanged for other formats.
+- **The driver's other additions (§15.2 to §15.4)** are as written: `search_forward`
+  takes `accept(header_at) -> bool`, and a rejected candidate is searched past inside
+  the same region; `SalvageState` keeps its positions per `(layer, volume_index)`, and
+  both contexts, region messages and the `report_limit` record carry `volume_index`.
+  The finders are callable objects.
+- **`format`** in the salvage contexts is `"RAR"` (`ArchiveFormat.RAR.display_name`),
+  as the driver's `ARCHIVE_REGION_SKIPPED` records and every other RAR diagnostic use,
+  not `"rar"` (§12).
+- **`next_volume` (§9)** applies to every member of a volume after one where salvage
+  listed a member past damage, not only after a volume whose walk ended in damage: the
+  default reaches neither. Only after a volume that ended in damage is the next one
+  read as after a gap.
+- **A stored RAR5 archive comment** (`CMT`) is not read once the walk is past damage:
+  a found `CMT` may belong to an inner archive.
+- **Found members are flagged at open.** The parse reads the whole archive, so every
+  `MEMBER_FOUND_BY_SCAN` is recorded with the listing, and the damage error is raised
+  after the last member. A lost start's or a damaged MAIN's error
+  (`RarArchive.open_error`) is raised first there, with the other damage after "; also".
+- **Solid passes.** A found member is left out of the one-pipe pass and read as
+  `open()` reads it. A stream source's pass over an archive with found members reads
+  the original archive's pipe (`_solid_pass_groups` returns `None`).
+- **The unconfirmed-chain digest rule (§7, last item)** has no case yet: no unconfirmed
+  RAR 1.5-4 candidate appeared in the corpus, and the measured RAR 1.5-4 archives are
+  stored, so archivey slices them with their CRC checked.
+- **Measured** (`tests/test_rar_salvage.py`, members read back byte-exact over the 15
+  damage kinds): `many_list_store_nonsolid__.rar` 2 607 default, 2 608 `unrar x`,
+  3 356 salvage; `many_list_store__.rar` 10 442 / 10 443 / 14 484; RAR 2.9, 2 217 /
+  2 586 / 3 342. The salvage counts match §1's within 2; the default and `unrar`
+  counts differ from §1's, which came from the prototype scripts.

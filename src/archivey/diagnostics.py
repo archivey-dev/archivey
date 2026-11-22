@@ -1380,18 +1380,23 @@ class SalvageScanContext(_JsonSafeContext):
 
     ``format`` is the archive format's name. ``method`` says how the member was
     found: ``"header_search"``, a forward search for a header that passes the
-    format's checks. ``offset`` is where the member's header starts, counted from the
-    start of its layer (``RegionSkippedContext.layer``).
+    format's checks; ``"next_volume"``, the normal walk of a later volume of a
+    multi-volume set, which only salvage goes on to after a volume that ended in
+    damage. ``offset`` is where the member's header starts, counted from the start of
+    its layer (``RegionSkippedContext.layer``), and in a multi-volume set from the
+    start of its volume. ``volume_index`` is that volume's 0-based position in the
+    set (not the format's own volume number), or ``None`` for an archive in one file.
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
     checks, or is the format's clean end. An unconfirmed member's sizes are checked by
     nothing, so its data may run into other members' bytes.
 
-    ``unchecked`` names the fields no check covers. It always holds ``"position"``:
-    nothing says the member belongs at this level of the archive, since a header of an
-    archive stored inside a member passes the checks too. A format adds the fields its
-    damage could leave wrong, such as ``"name"`` when a long name may have been in
-    the lost region.
+    ``unchecked`` names the fields no check covers. For ``"header_search"`` it always
+    holds ``"position"``: nothing says the member belongs at this level of the
+    archive, since a header of an archive stored inside a member passes the checks
+    too. A format adds the fields its damage could leave wrong, such as ``"name"``
+    when a long name may have been in the lost region. For ``"next_volume"`` it is
+    empty: the walk read the header where the volume's own start puts it.
     """
 
     kind: Literal["salvage_scan"] = "salvage_scan"
@@ -1399,10 +1404,11 @@ class SalvageScanContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     format: str = ""
-    method: Literal["header_search"] = "header_search"
+    method: Literal["header_search", "next_volume"] = "header_search"
     offset: int = 0
     confirmed: bool = False
     unchecked: tuple[str, ...] = ("position",)
+    volume_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1412,7 +1418,10 @@ class RegionSkippedContext(_JsonSafeContext):
     ``format`` is the archive format's name. ``layer`` is ``"archive"`` for the
     archive's own bytes, or the name of the codec whose decoded stream was searched,
     such as ``"gzip"``. ``offset`` is where the range starts in that layer, and
-    ``length`` its length in bytes, or ``None`` when it is not known.
+    ``length`` its length in bytes, or ``None`` when it is not known. In a
+    multi-volume set ``offset`` counts from the start of the volume
+    ``volume_index`` names (its 0-based position in the set); ``volume_index`` is
+    ``None`` for an archive in one file.
 
     ``reason`` says why the range was skipped:
 
@@ -1434,6 +1443,7 @@ class RegionSkippedContext(_JsonSafeContext):
     offset: int = 0
     length: int | None = None
     reason: Literal["no_header", "search_limit", "report_limit"] = "no_header"
+    volume_index: int | None = None
 
 
 @dataclass(frozen=True)

@@ -1291,6 +1291,36 @@ the seekable reader's member building, verification and solid-pass demultiplexin
 - **A RAR 1.5-4 symlink's target** is its data: up to 64 KiB of it is kept as the walk
   passes it, for `_ensure_link_target`.
 
+### 2.7 Salvage mode
+
+`open_archive(salvage=True)` (`openspec/changes/salvage-rar-search/design.md`). Where
+the walk stops on damage, `rar_search` searches forward through the shared driver
+(`internal/salvage.search_forward`) and the walk reads on from the header it finds.
+
+- **Finders.** RAR5: a header that passes its CRC-32. Headers over 4 KiB get their CRC
+  from prefix CRCs of the window, so crafted input is hashed about once per byte. RAR
+  1.5-4: a `FILE` or `SUB` header that passes its CRC16, confirmed by the header after
+  its data (an unconfirmed one is listed, `confirmed=False`). Quick-open copies are not
+  members.
+- **Where it starts.** RAR5 right after the bad header. RAR 1.5-4 at the data offset
+  of the last header read, since that header's sizes may be the damage.
+- **Lost start.** No signature, under a `.rar` name or `format="rar"`: both finders,
+  and the first confirmed header sets the version. A damaged MAIN is read past the same
+  way. Without MAIN, the flags come from the file headers (and, for a later volume,
+  from volume 1).
+- **Volumes.** Each volume is its own search layer (`volume_index` in the contexts).
+  After a volume that ends in damage the walk goes on to every later volume given;
+  members there are `method="next_volume"`.
+- **Reading.** A found member always reads through a synthetic archive (no include
+  mask, no pass over the original). A found solid member whose stream runs through lost
+  bytes raises `CorruptionError` before any program runs; stored members read anyway.
+  `unar` refuses found members that need a program. `-hp` archives are not searched
+  (`SALVAGE_UNAVAILABLE`).
+- **Measured** (15 damage kinds each, members read back byte-exact; pinned in
+  `tests/test_rar_salvage.py`): `many_list_store_nonsolid__.rar` 2 607 default, 2 608
+  `unrar x`, 3 356 salvage; `many_list_store__.rar` 10 442 / 10 443 / 14 484; the same
+  256 files as RAR 2.9, 2 217 / 2 586 / 3 342.
+
 ## 3. In the wild
 
 **The format is defined by one vendor's tool, and that tool is not redistributable.** RAR

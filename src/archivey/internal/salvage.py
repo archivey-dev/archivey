@@ -54,18 +54,23 @@ _local = threading.local()
 @dataclass(frozen=True)
 class SalvageRequest:
     """What the opener of a reader says about salvage: whether the caller asked for
-    it, and whether the backend that builds the reader has a salvage search
-    (``ReadBackend.SUPPORTS_SALVAGE``)."""
+    it, whether the backend that builds the reader has a salvage search
+    (``ReadBackend.SUPPORTS_SALVAGE``), and whether the archive's start may be lost:
+    ``lost_start`` is set when the format came from ``format=`` or the source name's
+    extension, not from the archive's own bytes (design decision 9)."""
 
     requested: bool = False
     supported: bool = False
+    lost_start: bool = False
 
 
 _NO_REQUEST = SalvageRequest()
 
 
 @contextmanager
-def requesting_salvage(requested: bool, *, supported: bool) -> Generator[None]:
+def requesting_salvage(
+    requested: bool, *, supported: bool, lost_start: bool = False
+) -> Generator[None]:
     """Let the next reader built on this thread take this salvage request.
 
     ``open_archive`` wraps the backend's ``open_read`` in it with the caller's
@@ -73,10 +78,13 @@ def requesting_salvage(requested: bool, *, supported: bool) -> Generator[None]:
     with the outer reader's request, so an archive archivey opens inside another
     salvages when the outer one was asked to. The first reader built in the block
     takes the request (:func:`take_salvage_request`); one a password provider or a
-    diagnostic callback opens later in the same open does not.
+    diagnostic callback opens later in the same open does not. ``lost_start`` is
+    :attr:`SalvageRequest.lost_start`; it counts only with ``requested``.
     """
     before = getattr(_local, "request", _NO_REQUEST)
-    _local.request = SalvageRequest(requested=requested, supported=supported)
+    _local.request = SalvageRequest(
+        requested=requested, supported=supported, lost_start=requested and lost_start
+    )
     try:
         yield
     finally:
@@ -149,6 +157,9 @@ class SalvageState:
     ``requested`` is whether the reader was opened with ``salvage=True``; ``enabled``
     is whether it salvages, which also needs its backend to have a salvage search.
     A reader asks ``enabled`` before it searches, and reads ``limits`` for the caps.
+    ``lost_start`` says the format came from ``format=`` or the name's extension, so
+    the archive's first header may be lost: a salvage reader whose first header
+    does not parse searches for one from the start (design decision 9).
 
     A format calls :func:`search_forward` with this state, and :meth:`finish` when its
     walk ends, which records the ``report_limit`` record if any range went
@@ -165,9 +176,11 @@ class SalvageState:
         collector: DiagnosticCollector,
         archive_name: str | None,
         format_name: str,
+        lost_start: bool = False,
     ) -> None:
         self.requested = requested
         self.enabled = enabled
+        self.lost_start = enabled and lost_start
         self.limits = limits
         self._collector = collector
         self._archive_name = archive_name
@@ -180,36 +193,42 @@ class SalvageState:
         self.searched_bytes = 0
         # Set once max_search_bytes stops a search; every later search stops at once.
         self.limit_reached = False
-        # Per layer, the first candidate position no search has examined yet.
-        self._positions: dict[str, int] = {}
+        # Per layer, and per volume of a set, the first candidate position no
+        # search has examined yet.
+        self._positions: dict[tuple[str, int | None], int] = {}
         # ARCHIVE_REGION_SKIPPED records made, and the ranges past the cap: their
         # count and where the first of them starts.
         self._reported_regions = 0
         self._unreported_regions = 0
-        self._first_unreported: tuple[str, int] | None = None
+        self._first_unreported: tuple[str, int, int | None] | None = None
         self._finished = False
 
-    def position(self, layer: str = ARCHIVE_LAYER) -> int:
+    def position(
+        self, layer: str = ARCHIVE_LAYER, volume_index: int | None = None
+    ) -> int:
         """The first position in ``layer`` that no search has examined yet (``0``
-        when none has searched it)."""
-        return self._positions.get(layer, 0)
+        when none has searched it). In a multi-volume set each volume is its own
+        offset space, so ``volume_index`` names which one."""
+        return self._positions.get((layer, volume_index), 0)
 
     def remaining_bytes(self) -> int | None:
         """Bytes the searches may still examine, or ``None`` for no cap."""
         cap = self.limits.max_search_bytes
         return None if cap is None else max(0, cap - self.searched_bytes)
 
-    def _examined(self, layer: str, start: int, stop: int) -> None:
+    def _examined(
+        self, layer: str, start: int, stop: int, volume_index: int | None = None
+    ) -> None:
         """Count the bytes from ``start`` to ``stop`` as examined, and move the
         layer's position to ``stop``. The position never moves back: a byte behind it
         was examined already, and examining it again would count it twice."""
-        if stop < self.position(layer) or stop < start:
+        before = self.position(layer, volume_index)
+        if stop < before or stop < start:
             raise AssertionError(
-                f"the {layer} search position would move back, from "
-                f"{self.position(layer)} to {stop}"
+                f"the {layer} search position would move back, from {before} to {stop}"
             )
         self.searched_bytes += stop - start
-        self._positions[layer] = stop
+        self._positions[layer, volume_index] = stop
 
     def record_region(
         self,
@@ -217,13 +236,14 @@ class SalvageState:
         layer: str,
         offset: int,
         length: int | None,
+        volume_index: int | None = None,
     ) -> None:
         """Record one ``ARCHIVE_REGION_SKIPPED`` with ``reason="no_header"``, within
         ``max_reported_regions``. A range past the cap is counted for :meth:`finish`
         instead."""
         if self._reported_regions >= self.limits.max_reported_regions:
             if self._first_unreported is None:
-                self._first_unreported = (layer, offset)
+                self._first_unreported = (layer, offset, volume_index)
             self._unreported_regions += 1
             return
         self._reported_regions += 1
@@ -235,14 +255,21 @@ class SalvageState:
                 offset=offset,
                 length=length,
                 reason="no_header",
+                volume_index=volume_index,
             ),
-            f"Salvage skipped {length} bytes at offset {offset}{_in_layer(layer)} of "
-            f"the {self._format_name} archive: no header passes the format's checks "
-            "in it.",
+            f"Salvage skipped {length} bytes at offset {offset}"
+            f"{_in_layer(layer, volume_index)} of the {self._format_name} archive: no "
+            "header passes the format's checks in it.",
         )
 
     def record_search_limit(
-        self, *, layer: str, started_at: int, examined_from: int, stopped_at: int
+        self,
+        *,
+        layer: str,
+        started_at: int,
+        examined_from: int,
+        stopped_at: int,
+        volume_index: int | None = None,
     ) -> None:
         """Record the ``ARCHIVE_REGION_SKIPPED`` with ``reason="search_limit"`` for a
         search that started at ``started_at`` and that ``max_search_bytes`` stopped at
@@ -262,11 +289,13 @@ class SalvageState:
                 offset=started_at,
                 length=None,
                 reason="search_limit",
+                volume_index=volume_index,
             ),
             f"Salvage stopped searching {searched}the {self._format_name} "
             f"archive: SalvageLimits.max_search_bytes "
             f"({self.limits.max_search_bytes}) ran out. The search started at offset "
-            f"{started_at} and {stop}; nothing after it is listed.",
+            f"{started_at}{_in_volume(volume_index)} and {stop}; nothing after it is "
+            "listed.",
         )
 
     def finish(self) -> None:
@@ -277,7 +306,7 @@ class SalvageState:
         self._finished = True
         if self._first_unreported is None:
             return
-        layer, offset = self._first_unreported
+        layer, offset, volume_index = self._first_unreported
         count = self._unreported_regions
         ranges = "range" if count == 1 else "ranges"
         self._emit(
@@ -288,10 +317,11 @@ class SalvageState:
                 offset=offset,
                 length=None,
                 reason="report_limit",
+                volume_index=volume_index,
             ),
             f"Salvage skipped {count} more {ranges} of the {self._format_name} "
-            f"archive, from offset {offset}{_in_layer(layer)}, that are not reported "
-            f"one by one: SalvageLimits.max_reported_regions is "
+            f"archive, from offset {offset}{_in_layer(layer, volume_index)}, that are "
+            f"not reported one by one: SalvageLimits.max_reported_regions is "
             f"{self.limits.max_reported_regions}.",
         )
 
@@ -304,8 +334,13 @@ class SalvageState:
         )
 
 
-def _in_layer(layer: str) -> str:
-    return "" if layer == ARCHIVE_LAYER else f" of its {layer} stream"
+def _in_layer(layer: str, volume_index: int | None = None) -> str:
+    stream = "" if layer == ARCHIVE_LAYER else f" of its {layer} stream"
+    return stream + _in_volume(volume_index)
+
+
+def _in_volume(volume_index: int | None) -> str:
+    return "" if volume_index is None else f" in volume {volume_index + 1}"
 
 
 def emit_salvage_unavailable(
@@ -336,6 +371,8 @@ def search_forward(
     base: int = 0,
     layer: str = ARCHIVE_LAYER,
     window_size: int = WINDOW_SIZE,
+    volume_index: int | None = None,
+    accept: Callable[[int], bool] | None = None,
 ) -> SearchResult:
     """Search ``layer`` forward from ``start`` for the next header that passes.
 
@@ -359,20 +396,27 @@ def search_forward(
     ``"search_limit"`` record with no length. A format that lists the found member
     and finds it unconfirmed searches again from the next candidate position after
     it; one that walks on from the member searches again only at the next damage.
+
+    ``volume_index`` names the volume of a multi-volume set the layer is in: each
+    volume has its own positions, and the records name it. ``accept(offset)``, when
+    given, is asked about each header found: ``False`` passes it over without ending
+    the range, so one record covers the bytes on both sides of it, as for a copy of
+    a header that is not a member (the search counts the position examined and goes
+    on from the next one).
     """
     if not state.enabled:
         raise AssertionError("search_forward called on a reader that does not salvage")
     if start < base:
         raise AssertionError(f"search start {start} is before the base {base}")
-    if end is not None and (end < start or end < state.position(layer)):
+    if end is not None and (end < start or end < state.position(layer, volume_index)):
         raise AssertionError(
             f"search end {end} is before the start {start} or before the "
-            f"{layer} search position {state.position(layer)}"
+            f"{layer} search position {state.position(layer, volume_index)}"
         )
     if state.limit_reached:
         return SearchResult(found=None, limit_reached=True)
     step = search.step
-    region_start = max(start, state.position(layer))
+    region_start = max(start, state.position(layer, volume_index))
     if end is not None and region_start >= end:
         # An empty range: nothing to examine or record, and the position stays.
         return SearchResult(found=None)
@@ -380,8 +424,8 @@ def search_forward(
     pos = base + -(-(region_start - base) // step) * step
     if end is not None and pos >= end:
         # No candidate position is left before the end: nothing to examine.
-        state._examined(layer, end, end)
-        _record_no_header(state, layer, region_start, end)
+        state._examined(layer, end, end, volume_index)
+        _record_no_header(state, layer, region_start, end, volume_index)
         return SearchResult(found=None)
     examined_from = pos
     remaining = state.remaining_bytes()
@@ -389,7 +433,11 @@ def search_forward(
         # Stop before reading: a read could only fetch bytes nobody may examine.
         state.limit_reached = True
         state.record_search_limit(
-            layer=layer, started_at=region_start, examined_from=pos, stopped_at=pos
+            layer=layer,
+            started_at=region_start,
+            examined_from=pos,
+            stopped_at=pos,
+            volume_index=volume_index,
         )
         return SearchResult(found=None, limit_reached=True)
     # With a budget, no read goes past the last header the budget lets the search
@@ -438,36 +486,43 @@ def search_forward(
 
         if last >= pos:
             found = search.find_header(buf, 0)
-            if found is not None:
+            while found is not None:
                 if found < 0 or found % step:
                     raise AssertionError(
                         f"find_header returned {found}, which is not a candidate "
                         f"position (a multiple of {step} at or after 0)"
                     )
-                if pos + found <= last:
-                    header_at = pos + found
-                    after = header_at + step
-                    state._examined(
-                        layer, pos, min(after, buf_end) if at_end else after
+                if pos + found > last:
+                    break
+                header_at = pos + found
+                if accept is not None and not accept(header_at):
+                    # Passed over inside the same range: look on from the next
+                    # position in the bytes already read.
+                    found = search.find_header(buf, found + step)
+                    continue
+                after = header_at + step
+                state._examined(
+                    layer, pos, min(after, buf_end) if at_end else after, volume_index
+                )
+                if header_at > region_start:
+                    state.record_region(
+                        layer=layer,
+                        offset=region_start,
+                        length=header_at - region_start,
+                        volume_index=volume_index,
                     )
-                    if header_at > region_start:
-                        state.record_region(
-                            layer=layer,
-                            offset=region_start,
-                            length=header_at - region_start,
-                        )
-                    return SearchResult(found=header_at)
+                return SearchResult(found=header_at)
             # The last candidate position examined, then the first one after it.
             examined_last = pos + (last - pos) // step * step
             next_pos = examined_last + step
             if at_end and not budget_bound:
                 next_pos = min(next_pos, buf_end)
-            state._examined(layer, pos, next_pos)
+            state._examined(layer, pos, next_pos, volume_index)
             buf = buf[next_pos - pos :]
             pos = next_pos
 
         if at_end and pos >= buf_end and not budget_bound:
-            _record_no_header(state, layer, region_start, buf_end)
+            _record_no_header(state, layer, region_start, buf_end, volume_index)
             return SearchResult(found=None)
         if budget_bound:
             state.limit_reached = True
@@ -476,16 +531,22 @@ def search_forward(
                 started_at=region_start,
                 examined_from=examined_from,
                 stopped_at=pos,
+                volume_index=volume_index,
             )
             return SearchResult(found=None, limit_reached=True)
 
 
 def _record_no_header(
-    state: SalvageState, layer: str, region_start: int, layer_end: int
+    state: SalvageState,
+    layer: str,
+    region_start: int,
+    layer_end: int,
+    volume_index: int | None = None,
 ) -> None:
     if layer_end > region_start:
         state.record_region(
             layer=layer,
             offset=region_start,
             length=layer_end - region_start,
+            volume_index=volume_index,
         )

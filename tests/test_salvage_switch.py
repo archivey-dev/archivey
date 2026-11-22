@@ -1,9 +1,9 @@
-"""``open_archive(salvage=True)``: the switch, before any format has a salvage search.
+"""``open_archive(salvage=True)``: the switch.
 
 Salvage needs a seekable file, so ``streaming=True`` is refused before the source is
-read. A format without a salvage search reads exactly as the default and records
-``SALVAGE_UNAVAILABLE`` once at open; ``salvage=False`` records none of the salvage
-codes.
+read. A format without a salvage search (ZIP and TAR here) reads exactly as the
+default and records ``SALVAGE_UNAVAILABLE`` once at open; RAR has one, and an intact
+RAR records nothing. ``salvage=False`` records none of the salvage codes.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+import shutil
 import tarfile
 import zipfile
 from pathlib import Path
@@ -35,6 +36,8 @@ from archivey.exceptions import ArchiveyUsageError
 from archivey.internal.base_reader import BaseArchiveReader
 from archivey.internal.salvage import SalvageState
 
+_RAR_FIXTURE = Path(__file__).parent / "fixtures" / "rar" / "basic_nonsolid__.rar"
+
 SALVAGE_CODES = {
     DiagnosticCode.MEMBER_FOUND_BY_SCAN,
     DiagnosticCode.ARCHIVE_REGION_SKIPPED,
@@ -55,6 +58,11 @@ def _tar(path: Path) -> Path:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             t.addfile(info, io.BytesIO(data))
+    return path
+
+
+def _rar(path: Path) -> Path:
+    shutil.copyfile(_RAR_FIXTURE, path)
     return path
 
 
@@ -91,7 +99,7 @@ def test_salvage_takes_a_real_bool(tmp_path: Path) -> None:
         open_archive(_zip(tmp_path / "a.zip"), salvage="yes")  # type: ignore[call-overload]
 
 
-@pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
+@pytest.mark.parametrize("make", [_zip, _tar, _rar], ids=["zip", "tar", "rar"])
 def test_an_intact_archive_reads_the_same_with_salvage(make, tmp_path: Path) -> None:
     path = make(tmp_path / ("a." + make.__name__.strip("_")))
     assert _listing(path, salvage=True) == _listing(path)
@@ -124,7 +132,7 @@ def test_a_format_without_salvage_records_unavailable_once(
         assert not reader._salvage_mode.enabled
 
 
-@pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
+@pytest.mark.parametrize("make", [_zip, _tar, _rar], ids=["zip", "tar", "rar"])
 def test_without_salvage_no_salvage_code_is_recorded(make, tmp_path: Path) -> None:
     path = make(tmp_path / ("a." + make.__name__.strip("_")))
     with open_archive(path) as reader:
@@ -133,6 +141,19 @@ def test_without_salvage_no_salvage_code_is_recorded(make, tmp_path: Path) -> No
         assert isinstance(reader, BaseArchiveReader)
         assert not reader._salvage_mode.requested
         assert not reader._salvage_mode.enabled
+
+
+def test_a_format_with_salvage_records_nothing_on_an_intact_archive(
+    tmp_path: Path,
+) -> None:
+    """RAR has a salvage search: an intact archive gets no salvage code at all."""
+    path = _rar(tmp_path / "a.rar")
+    with open_archive(path, salvage=True) as reader:
+        reader.members()
+        list(reader.stream_members())
+        assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+        assert isinstance(reader, BaseArchiveReader)
+        assert reader._salvage_mode.enabled
 
 
 def test_strict_does_not_raise_on_salvage_unavailable(tmp_path: Path) -> None:
@@ -219,6 +240,32 @@ def test_config_refuses_a_salvage_limits_that_is_not_one() -> None:
                 offset=512,
                 length=None,
                 reason="search_limit",
+            ),
+        ),
+        (
+            DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+            SalvageScanContext(
+                archive_name="x.part1.rar",
+                member_name="a",
+                member_id=0,
+                format="RAR",
+                method="next_volume",
+                offset=20,
+                confirmed=True,
+                unchecked=(),
+                volume_index=2,
+            ),
+        ),
+        (
+            DiagnosticCode.ARCHIVE_REGION_SKIPPED,
+            RegionSkippedContext(
+                archive_name="x.part1.rar",
+                format="RAR",
+                layer="archive",
+                offset=7,
+                length=100,
+                reason="no_header",
+                volume_index=1,
             ),
         ),
         (

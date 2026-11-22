@@ -15,8 +15,9 @@ one line. How to write the entry: see
 ### Added
 
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
-  (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
-  reads as before and records `SALVAGE_UNAVAILABLE`.
+  (`ArchiveyConfig.salvage_limits`). RAR searches past damage for the next header and
+  lists what it finds (`MEMBER_FOUND_BY_SCAN`); every other format reads as before and
+  records `SALVAGE_UNAVAILABLE`.
 
 ## [0.5.1] - 2026-11-20
 

@@ -42,6 +42,11 @@ _USE_UNRAR = (
     "Set ArchiveyConfig.rar_decompressor to 'unrar' to read it with RARLAB unrar."
 )
 
+REFUSE_FOUND_BY_SALVAGE = (
+    "salvage mode found this member past damage, and unar names a member by its own "
+    "index in the original archive, where it reads no member past the damage. "
+    + _USE_UNRAR
+)
 REFUSE_RAR4_ENCRYPTED = (
     "unar 1.10 returns no data, and reports success, for encrypted RAR 2.x-4.x data "
     "even with the right password. " + _USE_UNRAR
@@ -473,6 +478,10 @@ class UnarRarPolicy:
 
     def member_refusal(self, info: RarMemberInfo) -> str | None:
         """Why ``unar`` must not read this member on its own, or ``None``."""
+        if info.found is not None:
+            # A synthetic archive of the member would do, but unar is only ever
+            # handed the original archive; unrar reads such a member.
+            return REFUSE_FOUND_BY_SALVAGE
         version = info.unknown_compression_version()
         if version is not None:
             return REFUSE_UNKNOWN_COMPRESSION.format(version=version)
