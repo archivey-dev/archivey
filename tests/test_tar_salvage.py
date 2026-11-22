@@ -41,6 +41,7 @@ from archivey.exceptions import (
     CorruptionError,
     FormatDetectionError,
     ResourceLimitError,
+    TruncatedError,
 )
 from archivey.internal.backends import tar_parser
 from archivey.internal.backends.tar_parser import (
@@ -839,6 +840,27 @@ def _flags(listing: _Listing) -> dict[str, tuple[int, bool]]:
     return {n: (c.offset, c.confirmed) for n, c in listing.found().items()}
 
 
+def _reached_liar(claimed: int) -> bytes:
+    """A damaged block, then ``m0``, which the search finds and the next header
+    confirms, then ``liar``, which the walk reaches and which claims ``claimed``
+    bytes, past the archive's end, then 3 small members and the end marker."""
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.GNU_FORMAT)
+
+    def padded(data: bytes) -> bytes:
+        return data + bytes(-len(data) % BLOCKSIZE)
+
+    out = header("a", 3) + padded(b"abc") + b"\x01" * BLOCKSIZE
+    out += header("m0", 100) + padded(b"x" * 100)
+    out += header("liar", claimed) + padded(b"y" * 3000)
+    for index in range(3):
+        out += header(f"t{index}", 10) + padded(b"z" * 10)
+    return out + bytes(2 * BLOCKSIZE)
+
+
 _PARITY_CASES = [
     pytest.param(_dense(60), id="dense"),
     pytest.param(_confirmed_big(), id="big"),
@@ -846,6 +868,8 @@ _PARITY_CASES = [
     pytest.param(_tar_inside_a_big_member(), id="tar-inside-a-big-member"),
     pytest.param(_lying_size(8 << 20), id="lying-size-past-the-end"),
     pytest.param(_headers_after_a_liar(), id="headers-after-a-liar"),
+    pytest.param(_reached_liar(8 << 20), id="reached-liar-8MiB"),
+    pytest.param(_reached_liar(1 << 30), id="reached-liar-1GiB"),
 ]
 
 
@@ -1102,12 +1126,9 @@ def test_a_gzip_tar_confirms_big_members_as_the_tar_does(
     confirmations the plain tar gives them.
 
     ``six-found``: each ``big_i`` is found by a search after its own damage, and
-    ``ok_i`` confirms it. The far-look budget charged every look, so from the third one
-    on the looks were refused and ``big2``, ``big4`` and ``big5`` came back unconfirmed
-    (round 3 of PR 1768, K7); under the two-pass rule the first pass looks past the hold
-    for every one. ``walk-reached``: one damage, then ``big1`` and ``big2`` reached by
-    the
-    walk, which had no far look and came back unconfirmed (K8)."""
+    ``ok_i`` confirms it: the first pass looks past the hold for every one.
+    ``walk-reached``: one damage, then ``big1`` and ``big2``, which the walk reaches
+    and the look past the hold confirms."""
     data = _big_groups(groups, damaged=damaged)
     plain = _list(data, salvage=True)
     gzipped = _list(gzip.compress(data, compresslevel=1), salvage=True)
@@ -1203,6 +1224,109 @@ def test_a_lying_size_still_lists_the_members_after_it(claimed: int, wrap: str) 
     assert names == ["a", "liar", *(f"m{i}" for i in range(20))]
     assert listing.found()["liar"].confirmed is False
     assert isinstance(listing.error, CorruptionError)
+
+
+@pytest.mark.parametrize(
+    "claimed", [pytest.param(8 << 20, id="8MiB"), pytest.param(1 << 30, id="1GiB")]
+)
+@pytest.mark.parametrize("wrap", ["plain", "gzip", "deb", "deb-gzip", "makeself"])
+def test_a_reached_size_past_the_end_lists_the_members_after_it(
+    claimed: int, wrap: str
+) -> None:
+    """A member the walk reaches after a confirmed found member, whose size points
+    past the archive's end: the search goes inside its data, as for a found member
+    nothing confirms, and lists the members after it. Before, the plain tar raised
+    a bare ``AssertionError`` (a search from past the end), the gzip tar raised
+    ``ResourceLimitError`` (the walk seeked the codec past its end, which counted
+    as decoded), and the deb and the makeself payload lost ``t0``..``t2``."""
+    data = _reached_liar(claimed)
+    raw = {
+        "plain": lambda: data,
+        "gzip": lambda: gzip.compress(data),
+        "deb": lambda: _as_deb(data),
+        "deb-gzip": lambda: _as_deb_gz(data),
+        "makeself": lambda: _as_makeself(data),
+    }[wrap]()
+    listing = _list(raw, salvage=True)
+    names = [n for n in listing.names if n != "DEBIAN/control"]
+    assert names == ["a", "m0", "liar", "t0", "t1", "t2"]
+    assert listing.found()["liar"].confirmed is False
+    assert isinstance(listing.error, CorruptionError)
+
+
+def _random_damaged_tar(seed: int) -> bytes:
+    """A member and a damaged block, then real members, liars (1 to 12 MiB, or
+    about 8 GiB) and more damaged blocks in a random order, then the end marker.
+    The liars are past the default walk's end: a liar the default walk reaches on
+    a codec stream stops it with the ratio guard, with or without salvage."""
+    rng = random.Random(seed)
+
+    def header(name: str, size: int) -> bytes:
+        info = tarfile.TarInfo(name)
+        info.size = size
+        return info.tobuf(format=tarfile.GNU_FORMAT)
+
+    out = bytearray(header("first", 3) + b"abc".ljust(BLOCKSIZE, b"\0"))
+    out += b"\x01" * BLOCKSIZE
+    for index in range(rng.randint(4, 14)):
+        kind = rng.random()
+        if kind < 0.4:
+            body = rng.randbytes(rng.randint(0, 5000))
+            out += header(f"r{index}", len(body)) + body
+            out += bytes(-len(body) % BLOCKSIZE)
+        elif kind < 0.7:
+            claimed = rng.choice([rng.randint(1, 12) << 20, (8 << 30) - 1])
+            body = rng.randbytes(rng.randint(0, 3) * BLOCKSIZE)
+            out += header(f"l{index}", claimed) + body
+        else:
+            out += b"\x01" * BLOCKSIZE
+    return bytes(out + bytes(2 * BLOCKSIZE))
+
+
+@pytest.mark.parametrize("seed", range(24))
+def test_random_liars_never_break_the_salvage_listing(seed: int) -> None:
+    """Random damaged tars with liars the search finds or the walk reaches: the
+    listing ends in an archivey error or none, never another exception, and the
+    gzip tar and the deb's data.tar list what the plain tar lists."""
+    data = _random_damaged_tar(seed)
+    plain = _list(data, salvage=True)
+    assert plain.error is None or isinstance(plain.error, ArchiveyError)
+    gzipped = _list(gzip.compress(data, compresslevel=1), salvage=True)
+    assert gzipped.names == plain.names
+    nested = _list(_as_deb(data), salvage=True)
+    assert nested.names[1:] == plain.names
+
+
+def _truncated_deb(which: str) -> bytes:
+    from tests.test_deb import CONTROL, _ar, _tar as _deb_tar
+
+    files = [(f"./f{i}", b"q" * 3000) for i in range(5)]
+    control = _deb_tar([("./control", CONTROL), *(files if which == "control" else [])])
+    data = _deb_tar(files if which == "data" else [("./x", b"1")])
+    deb = _ar(
+        (b"debian-binary", b"2.0\n"), (b"control.tar", control), (b"data.tar", data)
+    )
+    # Cut inside the tar, after the third (data) or second (control) member.
+    tar, kept = (data, 3) if which == "data" else (control, 2)
+    return deb[: deb.index(tar) + kept * 3584]
+
+
+@pytest.mark.parametrize("which", ["data", "control"])
+def test_a_deb_whose_tar_is_cut_short_is_truncated(which: str, tmp_path: Path) -> None:
+    """The ar header says how long the tar is, so a deb on a file whose data.tar or
+    control.tar ends early is truncated, from the listing and from extraction:
+    the seekable view is only taken when the file holds the tar's bytes, and
+    ``take()`` raises at the cut. Before, the view read short and the deb listed
+    and extracted the first members with no error (fails when
+    ``ForwardStream._take_view`` ignores ``None`` from ``_view_fn``)."""
+    raw = _truncated_deb(which)
+    # A cut control.tar raises at open, where the deb reads its control file.
+    with pytest.raises(TruncatedError), open_archive(io.BytesIO(raw)) as reader:
+        report = reader.members_report()
+        if report.error is not None:
+            raise report.error
+    with pytest.raises(TruncatedError), open_archive(io.BytesIO(raw)) as reader:
+        reader.extract_all(tmp_path)
 
 
 def _as_deb_gz(data_tar: bytes) -> bytes:

@@ -2256,7 +2256,13 @@ class SequentialReaderAdapter(_PluginAdapter):
             # The archive's own bytes on a seekable source: an inner archive a
             # built-in reader takes (``ForwardStream._take_view``) reads a view of
             # them, so its reader can go back (maintainer ruling, 2026-11-22).
-            layer.forward._view_fn = shared.view
+            def view(offset: int, n: int) -> BinaryIO | None:
+                size = shared.size
+                if size is None or offset + n > size:
+                    return None
+                return shared.view(offset, n)
+
+            layer.forward._view_fn = view
         return layer
 
     def _decompress_layer(

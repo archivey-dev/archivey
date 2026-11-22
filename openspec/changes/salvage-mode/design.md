@@ -301,10 +301,22 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
     (`_Window.skip_to`) and stops at the stream's end: a seek past the end counted
     as decoded bytes, and the ratio guard stopped a listing whose found member
     claimed 8 MiB past the end.
+- **A size past the archive's end.** A member the walk reaches after a found one,
+  whose size points past the archive's end as far as the walk knows it (a file's
+  size, or where a read of the stream came back short), is treated as a found member
+  that nothing confirms: the search goes inside its data, and the walk does not step
+  to where its size points. In the second pass, a reached member that what pass 1
+  listed does not confirm is searched inside too. The walk's window reads a codec
+  stream forward to any offset past what it holds, never seeks it, so a size past the
+  end decodes nothing it does not read. A search from an offset at or past the end
+  finds nothing. A forward-only walk trusts a reached member's size past the hold as
+  it trusts a found one's.
 - **A deb's tars on a plain file** read with random access. A deb opened with random
   access hands its control and data tars to `open_nested` as seekable views of the
   file (`ForwardStream._take_view`, internal: the public `take()` contract does not
-  change), and the inner reader is built without `streaming=True`. A plain data.tar
+  change), and the inner reader is built without `streaming=True`. The view is taken
+  only when the file holds the bytes the ar header gives; a tar cut short is read
+  through `take()`, which raises `TruncatedError` at the cut. A plain data.tar
   then confirms as the plain `.tar` does, so a deb's data.tar lists exactly what the
   same tar lists; a compressed one follows the two-pass rule. The inner reader's
   limits are the outer one's as before: its listing tracker charges outward, its

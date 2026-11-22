@@ -1690,6 +1690,11 @@ class TarWalker:
         ``end`` bounds the search: the second salvage pass searches one range the
         first pass stepped over (``TarReader._second_pass``).
         """
+        if self._end is not None:
+            end = self._end if end is None else min(end, self._end)
+        if end is not None and start >= end:
+            # Nothing is left to search: a size that points past the archive's end.
+            return SearchResult(found=None)
         if not self._seekable or self._rewind_costly:
             self._window().keep_behind(_FORWARD_HOLD)
         result = search_forward(
@@ -1697,7 +1702,7 @@ class TarWalker:
             self._salvage_read,
             tar_header_search(v7=v7),
             start=start,
-            end=end if self._end is None else min(self._end, end or self._end),
+            end=end,
             layer=layer,
         )
         found = result.found
@@ -1819,6 +1824,22 @@ class TarWalker:
             passes_header_search(look, v7=v7)
             or (look == _ZERO_BLOCK and self.zeros_to_end(pos + BLOCKSIZE))
         )
+
+    def points_past_end(self) -> bool:
+        """Whether the next header's offset is past the archive's end, as far as the
+        walk knows it: a file's size, or where a read of the stream came back
+        short. Called after :meth:`salvage_confirms`, whose look reads there."""
+        pos = self._pos
+        end = self._end
+        if end is None:
+            end = self._eof_at
+        if end is None and self._win is not None:
+            end = self._eof_at = self._win.eof_at
+        if end is None and self._seekable and self._win is None and pos > 0:
+            # A seekable stream of unknown length: the byte before ``pos`` says.
+            self._seek(pos - 1)
+            return not self._read(1)
+        return end is not None and pos > end
 
     def search_floor(self, start: int) -> int:
         """Where a search back into a member's data starts after the walk read past
@@ -2905,7 +2926,9 @@ class _Window:
         if self._start <= offset <= self.end:
             self._pos = offset
             return offset
-        if not self._seekable:
+        if offset > self.end or not self._seekable:
+            # Forward: the next read reads the inner on to it (_reach), so a seek
+            # past the stream's end decodes nothing and counts nothing.
             assert offset > self.end, "a forward-only window never goes back"
             self._pos = offset
             return offset
@@ -2920,14 +2943,13 @@ class _Window:
         self.eof_at = None
 
     def _reach(self, offset: int) -> None:
-        """Make the held bytes reach ``offset``: past the end, a forward-only inner
-        is read through to it."""
+        """Make the held bytes reach ``offset``: past the end, the inner is read
+        through to it, never seeked. A codec inner decodes those bytes on a seek
+        anyway, and a read stops at the stream's end, where a seek past it would
+        count bytes no decoder produced (a size that lies past the end)."""
         if offset <= self.end:
             return
-        if self._seekable:
-            self._inner.seek(offset)
-            self._restart(offset)
-            return
+        self._max_end = max(self._max_end, self.end)
         # Nothing between the held bytes and ``offset`` is kept, so neither is
         # anything before it.
         self._start = self.end

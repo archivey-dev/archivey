@@ -409,8 +409,9 @@ class ForwardStream:
         # Internal, set by the adapter; not for plugins. ``_view_fn(offset, n)``
         # returns a seekable view of the archive's ``n`` bytes at ``offset``, when
         # the stream reads a seekable source of its own (a plain file, not a pipe
-        # or a decoded layer): ``_take_view`` hands it out.
-        self._view_fn: Callable[[int, int], BinaryIO] | None = None
+        # or a decoded layer) and that source holds them: ``_take_view`` hands it
+        # out. ``None`` when the source ends first.
+        self._view_fn: Callable[[int, int], BinaryIO | None] | None = None
 
     @property
     def offset(self) -> int:
@@ -490,15 +491,19 @@ class ForwardStream:
         not move while it is read: the walk resumes after the ``n`` bytes as after
         :meth:`take`, and the view refuses reads from then on. ``open_nested``
         opens an inner archive over a view with random access, so its reader can
-        go back (``TarReader``'s salvage confirmations)."""
+        go back (``TarReader``'s salvage confirmations). When the source ends
+        inside the ``n`` bytes, this is :meth:`take`, which raises
+        ``TruncatedError`` at the cut."""
         view_fn = self._view_fn
-        if view_fn is None:
+        if view_fn is None or n < 0:
             return self.take(n)
-        if n < 0:
-            raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
         self._check_not_handed_off()
         self._end_take()
-        taken = self._taken = _TakenView(view_fn(self._offset, n), self._offset + n)
+        view = view_fn(self._offset, n)
+        if view is None:
+            # The source ends inside the bytes: take() raises TruncatedError there.
+            return self.take(n)
+        taken = self._taken = _TakenView(view, self._offset + n)
         return cast(BinaryIO, taken)
 
     def _end_take(self) -> None:

@@ -1389,15 +1389,18 @@ class TarReader(BaseArchiveReader):
         except CorruptionError:
             looked = False
         far = walker.looked_far
-        if looked is None and not self._streaming:
-            # The second pass, past its gap: what the first pass listed there.
+        # The second pass, past its gap and the hold: what the first pass listed
+        # there answers. A member the walk reached that it does not confirm is
+        # searched inside, since the walk cannot go on past the gap.
+        known = looked is None and not self._streaming
+        if known:
             pos = walker.position
             looked = pos in salvage.known or pos == salvage.clean_end
         # ``None``: a forward-only walk cannot see the block after the data within
         # the span it holds. A found member's size is then trusted: the walk reads
         # on through its data, and searches back inside it only when the block
         # there does not confirm it, or the stream ends first.
-        trusted = searched and looked is None
+        trusted = looked is None
         confirmed = bool(looked)
         if trusted:
             salvage.trusted = (found, walker.position)
@@ -1405,9 +1408,13 @@ class TarReader(BaseArchiveReader):
                 self._trusted_spans.add(entry.data_offset)
         if searched and looked is False and self._streaming:
             self._held_spans.add(entry.data_offset)
+        # A member the walk reached whose size points past the archive's end: the
+        # walk cannot go on from there, so the search goes inside its data, as
+        # for a found member that nothing confirms.
+        past = not searched and not confirmed and (known or walker.points_past_end())
         search_from: int | None = None
         unread = 0
-        if searched and not confirmed and not trusted:
+        if (searched or past) and not confirmed and not trusted:
             search_from = found + BLOCKSIZE
             if far:
                 search_from = walker.search_floor(search_from)
@@ -1417,7 +1424,24 @@ class TarReader(BaseArchiveReader):
         unchecked: tuple[str, ...] = ("position",)
         if searched and entry.header.offset == found and walker.found_name_full:
             unchecked += ("name",)
-        if not searched:
+        if past:
+            how = (
+                "the walk reached it from a member the search found, and its size "
+                "points past the end of the archive, so the search goes on inside "
+                "its data"
+            )
+        elif trusted:
+            how = (
+                ""
+                if searched
+                else "the walk reached it from a member the search found; "
+            ) + (
+                "its data runs past the bytes a forward-only read holds, so its size "
+                "is trusted and the walk reads on through it; if the header after "
+                "its data does not pass the same checks, the search goes back "
+                "inside the last of its data"
+            )
+        elif not searched:
             how = "the walk reached it from a member the search found" + (
                 ", and the header after its data passes the same checks"
                 if confirmed
@@ -1427,13 +1451,6 @@ class TarReader(BaseArchiveReader):
             how = (
                 "the header after its data passes the same checks, so its size is "
                 "confirmed"
-            )
-        elif trusted:
-            how = (
-                "its data runs past the bytes a forward-only read holds, so its size "
-                "is trusted and the walk reads on through it; if the header after "
-                "its data does not pass the same checks, the search goes back "
-                "inside the last of its data"
             )
         elif unread and gap is None:
             how = (
