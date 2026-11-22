@@ -184,7 +184,7 @@ method archivey.ArchiveStream.verify(self, *, password_only: bool = False) -> Ve
 method archivey.ArchiveStream.writable(self) -> bool
 method archivey.ArchiveStream.write(self, b: object, /) -> int
 class archivey.ArchiveyConfig()
-init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor | RarDecompressorStr = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: bool = True, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576) -> None
+init archivey.ArchiveyConfig(use_rapidgzip: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, use_indexed_bzip2: AcceleratorMode | AcceleratorModeStr = AcceleratorMode.AUTO, process_isolation: ProcessIsolation | ProcessIsolationStr = ProcessIsolation.KNOWN_CRASHES, zip_unflagged_fallback_encoding: str = 'cp437', rar_allow_glob_member_concatenation: bool = False, rar_decompressor: RarDecompressor | RarDecompressorStr = RarDecompressor.AUTO, read_link_targets: bool = True, extraction_limits: ExtractionLimits = ExtractionLimits(...), listing_limits: ListingLimits = ListingLimits(...), decoder_limits: DecoderLimits = DecoderLimits(...), spool_limits: SpoolLimits = SpoolLimits(...), detection_budget: DetectionBudget | DetectionBudgetPreset | DetectionBudgetPresetStr = DetectionBudget(...), always_probe_content: bool = False, discover_volumes: bool = True, diagnostic_policy: DiagnosticPolicy = <factory>, max_retained_diagnostic_references: int = 256, on_diagnostic: OnDiagnostic | None = None, formats: FormatPolicy = <factory>, max_read_through: int = 1048576, unrar_path: str | os.PathLike[str] | None = None, unar_path: str | os.PathLike[str] | None = None, recover_partial_data: PartialDataRecovery | PartialDataRecoveryStr = PartialDataRecovery.BEFORE_DAMAGE, on_source_read: OnSourceRead | None = None, source_read_step: int = 1048576) -> None
 field archivey.ArchiveyConfig.always_probe_content: bool = False
 field archivey.ArchiveyConfig.decoder_limits: DecoderLimits = DecoderLimits(...)
 field archivey.ArchiveyConfig.detection_budget: DetectionBudget = DetectionBudget(...)
@@ -201,7 +201,7 @@ field archivey.ArchiveyConfig.process_isolation: ProcessIsolation = ProcessIsola
 field archivey.ArchiveyConfig.rar_allow_glob_member_concatenation: bool = False
 field archivey.ArchiveyConfig.rar_decompressor: RarDecompressor = RarDecompressor.AUTO
 field archivey.ArchiveyConfig.read_link_targets: bool = True
-field archivey.ArchiveyConfig.recover_partial_data: bool = True
+field archivey.ArchiveyConfig.recover_partial_data: PartialDataRecovery = PartialDataRecovery.BEFORE_DAMAGE
 field archivey.ArchiveyConfig.source_read_step: int = 1048576
 field archivey.ArchiveyConfig.spool_limits: SpoolLimits = SpoolLimits(...)
 field archivey.ArchiveyConfig.unar_path: str | os.PathLike[str] | None = None
@@ -578,6 +578,7 @@ class archivey.OnError(Enum)
 enum archivey.OnError
 value archivey.OnError.STOP = 'stop'
 value archivey.OnError.CONTINUE = 'continue'
+value archivey.OnError.KEEP_PARTIAL = 'keep_partial'
 class archivey.OpenError(ArchiveyError)
 init archivey.OpenError(message: str, *, source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 class archivey.OptionalLibrary(StrEnum)
@@ -606,6 +607,11 @@ value archivey.OverwritePolicy.RENAME = 'rename'
 class archivey.PackageNotInstalledError(ArchiveyError)
 init archivey.PackageNotInstalledError(message: str, *, missing: tuple[MissingComponent, ...] = (), source_format: ArchiveFormat | None = None, archive_name: str | None = None, member_name: str | None = None, link_target: str | None = None, format_unconfirmed: bool = False) -> None
 field archivey.PackageNotInstalledError.missing: tuple[MissingComponent, ...]
+class archivey.PartialDataRecovery(Enum)
+enum archivey.PartialDataRecovery
+value archivey.PartialDataRecovery.OFF = 'off'
+value archivey.PartialDataRecovery.BEFORE_DAMAGE = 'before_damage'
+value archivey.PartialDataRecovery.ALL = 'all'
 alias archivey.PasswordInput = str | bytes | Sequence[str | bytes] | Callable[[PasswordRequest], str | bytes | None] | None
 alias archivey.PasswordProvider = Callable[[PasswordRequest], str | bytes | None]
 class archivey.PasswordRequest()

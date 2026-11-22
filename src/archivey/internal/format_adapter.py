@@ -2646,7 +2646,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             # The container's members are read through this stream, several small
             # ones to one read: a failing call that lost its bytes would take whole
             # members with it. So it recovers them whatever the caller set.
-            recover_partial_data=True,
+            redecode_before_damage=True,
         )
         if self._streaming:
             # The parent is done (the ForwardStream that called this refuses reads
