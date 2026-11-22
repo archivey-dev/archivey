@@ -17,8 +17,8 @@ Run::
 
     uv run python scripts/investigations/dmg_macos_check.py --out results.md
 
-It writes a Markdown table per part, and exits non-zero when any image fails, or when M.2
-compared no image. Only a format in ``OPTIONAL_FORMATS`` may be skipped, when this
+It writes a Markdown table per part, and exits non-zero when any image fails, or when
+M.2 compared no image. Only a format in ``OPTIONAL_FORMATS`` may be skipped, when this
 ``hdiutil`` refuses to create it; any other failed ``hdiutil create`` is a failure. The
 ``dmg-macos`` workflow runs it after a merge to ``main`` that touches the DMG code and
 every week.

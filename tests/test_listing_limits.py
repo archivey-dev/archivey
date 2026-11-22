@@ -1003,6 +1003,26 @@ def test_reset_starts_every_count_over() -> None:
         tracker.hold_member(_file("x" * 996), "waiting")
 
 
+def test_kept_bytes_stay_on_the_nest_across_a_reset_until_the_inner_reader_closes() -> (
+    None
+):
+    """What an inner reader keeps for its life (``keep``) counts on the outermost
+    tracker, still counts after the inner listing starts over (``reset``), and comes
+    off when the inner reader closes (``leave_nest``)."""
+    limits = ListingLimits(max_metadata_bytes=1000)
+    root = ListingLimitTracker(limits)
+    inner = ListingLimitTracker(limits, outer=root)
+    inner.keep(600, "trees")
+    assert root._nested_bytes == 600
+    inner.reset()
+    assert (inner.metadata_bytes, root._nested_bytes) == (600, 600)
+    with pytest.raises(ResourceLimitError, match="max_metadata_bytes"):
+        root.keep(500, "more")
+    inner.leave_nest()
+    assert root._nested_bytes == 0
+    root.keep(500, "more")
+
+
 def test_walk_charges_add_up_and_come_off_once() -> None:
     tracker = ListingLimitTracker(ListingLimits(max_metadata_bytes=100))
     tracker.charge_walk(40, "a header")

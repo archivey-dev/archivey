@@ -169,14 +169,6 @@ def test_a_version_1_encrypted_image_is_named_from_its_last_bytes() -> None:
         _open(image)
 
 
-@pytest.mark.parametrize(
-    "name", ["apfs-UDZO.dmg", "apfs-UDBZ.dmg", "apfs-ULFO.dmg", "apfs-ULMO.dmg"]
-)
-def test_an_apfs_image_is_refused_until_apfs_is_read(name: str) -> None:
-    with pytest.raises(UnsupportedFeatureError, match="APFS disk images are not"):
-        open_archive(_FIXTURES / name)
-
-
 # ── Builder images: every codec, layout and volume kind ──────────────────────────────
 
 _TEXT = b"The quick brown fox jumps over the lazy dog.\n" * 4000
@@ -313,6 +305,19 @@ def test_random_access_reads_inside_a_large_file() -> None:
         assert stream.read(1000) == (_BIG * 8)[1_500_000:1_501_000]
 
 
+def test_a_compressed_hard_link_hides_its_decmpfs_attribute_under_every_name() -> None:
+    nodes = [
+        d.Node("a.txt", data=_TEXT, compression=4, xattrs={"user.tag": b"t"}),
+        d.Node("b.txt", kind="hardlink", target="a.txt"),
+    ]
+    members, data = _read_all(_image(nodes))
+    assert data["a.txt"] == _TEXT
+    for name in ("a.txt", "b.txt"):
+        xattrs = members[name].extra["dmg.xattrs"]  # type: ignore[attr-defined]
+        assert "user.tag" in xattrs
+        assert "com.apple.decmpfs" not in xattrs
+
+
 # ── Several volumes ──────────────────────────────────────────────────────────────────
 
 
@@ -328,8 +333,11 @@ def _volumes(*names: str, apfs: bool = False) -> bytes:
         )
         parts.append(d.Partition(hfs.volume, name=name))
     if apfs:
+        # The NXSB magic and nothing else: the probe calls it APFS, the open finds
+        # block 0 damaged.
         container = bytearray(64 * d.SECTOR)
         container[32:36] = b"NXSB"
+        struct.pack_into("<I", container, 36, 4096)
         parts.append(
             d.Partition(bytes(container), name="Container", gpt_type=d.APFS_GUID)
         )
@@ -362,18 +370,35 @@ def test_volume_names_follow_the_mount_points() -> None:
     ]
 
 
-def test_an_apfs_partition_beside_hfs_is_reported_and_not_listed() -> None:
-    with _open(_volumes("Data", apfs=True)) as reader:
-        names = [m.name for m in reader.members()]
+def test_a_damaged_apfs_container_beside_hfs_fails_after_the_hfs_members() -> None:
+    names = []
+    with (
+        pytest.raises(CorruptionError, match="APFS"),
+        _open(_volumes("Data", apfs=True)) as reader,
+    ):
+        for member in reader:
+            names.append(member.name)
+    assert sorted(names) == ["readme.txt", "zlink.txt"]
+
+
+def test_an_hfs_volume_beside_hfs_plus_is_reported_and_not_listed() -> None:
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"a")])
+    wrapper = bytearray(64 * d.SECTOR)
+    wrapper[1024:1026] = b"BD"
+    disk = d.write_gpt(
+        [d.Partition(hfs.volume), d.Partition(bytes(wrapper), name="Old")]
+    )
+    image = d.write_udif(disk.segments, tables=disk.tables).image
+    with _open(image) as reader:
+        assert [m.name for m in reader.members()] == ["a.txt"]
         unlisted = [
             diag
             for diag in reader.diagnostics.retained
             if diag.code is DiagnosticCode.ARCHIVE_UNLISTED_DATA
         ]
-    assert sorted(names) == ["readme.txt", "zlink.txt"]
     assert len(unlisted) == 1
-    assert "APFS container" in unlisted[0].message
-    assert unlisted[0].context.member_name == "Container"
+    assert "HFS volume" in unlisted[0].message
+    assert unlisted[0].context.member_name == "Old"
 
 
 def test_an_image_with_no_filesystem_names_its_partitions() -> None:
@@ -919,7 +944,9 @@ def test_the_gpt_partition_type_names_only_describe() -> None:
 _7Z_PRIVATE = "[HFS+ Private Data]"
 
 
-def _7z_files(tmp_path: Path, image: bytes) -> dict[str, bytes] | None:
+def _7z_files(
+    tmp_path: Path, image: bytes, *, volume_folder: bool = True
+) -> dict[str, bytes] | None:
     """What 7-Zip extracts, below the volume's folder: regular files only, without
     attribute and resource fork side files. ``None`` when it cannot read the image."""
     import os
@@ -936,7 +963,9 @@ def _7z_files(tmp_path: Path, image: bytes) -> dict[str, bytes] | None:
     for root, _dirs, names in os.walk(out):
         for n in names:
             full = Path(root) / n
-            rel = full.relative_to(out).as_posix().split("/", 1)[-1]
+            rel = full.relative_to(out).as_posix()
+            if volume_folder:
+                rel = rel.split("/", 1)[-1]
             if full.is_symlink() or not full.is_file() or ":" in n:
                 continue
             files[unicodedata.normalize("NFC", rel)] = full.read_bytes()
@@ -959,7 +988,12 @@ def _archivey_files(image: bytes) -> tuple[dict[str, bytes], set[str]]:
 
 
 def _compare_with_7zip(
-    tmp_path: Path, image: bytes, *, may_lack: set[str], compressed: set[str]
+    tmp_path: Path,
+    image: bytes,
+    *,
+    may_lack: set[str],
+    compressed: set[str],
+    volume_folder: bool = True,
 ) -> None:
     """``compressed``: the decmpfs files. On macOS 7-Zip leaves their data fork empty
     and hands the compression to the file system, where macOS's own mount shows their
@@ -974,7 +1008,9 @@ def _compare_with_7zip(
     if (sevenzip_version() or (0, 0)) < (23, 1):
         pytest.skip("7-Zip older than 23.01 does not read these HFS+ volumes")
     ours, links = _archivey_files(image)
-    theirs = _7z_files(tmp_path, image)
+    # 7-Zip extracts an HFS+ volume into a folder named after it, an APFS volume's
+    # files at the top.
+    theirs = _7z_files(tmp_path, image, volume_folder=volume_folder)
     if theirs is None or not any(not k.startswith(_7Z_PRIVATE) for k in theirs):
         pytest.skip("this 7-Zip cannot read the image")
     inodes = {k: v for k, v in theirs.items() if k.startswith(_7Z_PRIVATE)}
@@ -984,11 +1020,12 @@ def _compare_with_7zip(
             if theirs.get(name) == b"":
                 del theirs[name]
                 may_lack = may_lack | {name}
-    # A hard link's paths are empty files in 7-Zip's extraction; its data is the
-    # inode's.
+    # A hard link's paths are empty files in 7-Zip's HFS+ extraction, its data the
+    # inode's; on APFS 7-Zip writes the data at each path.
     for name in links | {n for n in ours if theirs.get(n) == b"" and ours[n]}:
         if name in theirs:
-            assert theirs.pop(name) == b"", name
+            got = theirs.pop(name)
+            assert got == b"" or got in ours.values(), name
     for name, data in ours.items():
         if name in may_lack and name not in theirs:
             continue

@@ -82,7 +82,7 @@ SYMLINK_MAX = 1024
 XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
-_DECMPFS_KEEP = DECMPFS_CHUNK + 64
+DECMPFS_KEEP = DECMPFS_CHUNK + 64
 # What one kept extent costs in memory: a (start, count) tuple of two ints, and its
 # slots in the list and in the final tuple.
 _EXTENT_CHARGE = 96
@@ -93,7 +93,7 @@ _S_IFMT = 0o170000
 _S_IFREG = 0o100000
 _S_IFDIR = 0o040000
 _S_IFLNK = 0o120000
-_SPECIAL = {
+SPECIAL_FILES = {
     0o010000: "fifo",
     0o020000: "char_device",
     0o060000: "block_device",
@@ -600,8 +600,8 @@ def file_kind(info: FileInfo) -> tuple[str, str | None]:
     if info.mode:
         if kind == _S_IFLNK:
             return SYMLINK, None
-        if kind in _SPECIAL:
-            return SPECIAL, _SPECIAL[kind]
+        if kind in SPECIAL_FILES:
+            return SPECIAL, SPECIAL_FILES[kind]
         if kind in (_S_IFREG, 0):
             return REGULAR, None
         if kind == _S_IFDIR:
@@ -798,7 +798,7 @@ def read_attributes(
                 if 16 + size > len(data):
                     bad.add(cnid)
                     continue
-                keep = _DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
+                keep = DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
                 value = data[16 : 16 + size] if size <= keep else None
                 charge(
                     2 * length + (len(value) if value else 0) + 32, "HFS+ attributes"
@@ -858,7 +858,7 @@ def attribute_value(volume: HfsVolume, cnid: int, attribute: Attribute) -> bytes
     fork = attribute.fork
     if fork is None:
         raise CorruptionError(f"the attribute of file {cnid} was not kept")
-    if fork.size > _DECMPFS_KEEP:
+    if fork.size > DECMPFS_KEEP:
         raise CorruptionError(
             f"an attribute of file {cnid} is {fork.size} bytes, more than archivey "
             "reads"
@@ -905,14 +905,16 @@ _LZFSE_KINDS = (11, 12)
 
 
 def decmpfs_reader(
-    volume: HfsVolume,
     context: ReaderContext,
     cnid: int,
     header: Decmpfs,
-    rsrc: Fork,
+    fork_size: int,
+    open_fork: Callable[[], Callable[[int, int], bytes]],
 ) -> Callable[[int], bytes]:
     """``read_block(i)`` for a ``block_stream`` of 64 KiB chunks over the decoded
-    file. Every length is checked before it is used."""
+    file. ``open_fork()`` gives ``read(offset, n)`` over the ``fork_size`` bytes of the
+    resource fork (an HFS+ fork, or APFS's ``com.apple.ResourceFork`` attribute), and is
+    called only for a type stored there. Every length is checked before it is used."""
     kind, size = header.kind, header.size
     if kind not in _INLINE and kind not in _IN_RESOURCE_FORK:
         raise UnsupportedFeatureError(
@@ -945,12 +947,11 @@ def decmpfs_reader(
             return _decode_chunk(context, kind, header.inline, size, cnid)
 
         return inline_block
-    if not rsrc.size:
+    if not fork_size:
         raise CorruptionError(
             f"file {cnid} is compressed in its resource fork, which is empty"
         )
-    read = volume.fork_reader(cnid, RESOURCE_FORK, rsrc)
-    fork_size = rsrc.size
+    read = open_fork()
     if kind == 4:
         if fork_size < 260:
             raise CorruptionError(f"the resource fork of file {cnid} is too short")

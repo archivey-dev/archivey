@@ -719,7 +719,10 @@ of oids the same way. Every later lookup checks these ranges:
   fixture's `random.bin`, id 22 for both, so an interval would also catch its extents):
   its inode record `(oid, 3)`; the directory record that names it, `(parent, 9, name)`;
   and the xattrs that change what it is, `(oid, 4, "com.apple.fs.symlink")` for a
-  symlink and `(oid, 4, "com.apple.decmpfs")` for a file with `UF_COMPRESSED`. If any of
+  symlink and `(oid, 4, "com.apple.decmpfs")` for a file with `UF_COMPRESSED`. The
+  comparison leaves names out: a directory record compares as `(parent, 9)` and an xattr
+  as `(oid, 4)`, since hashed directory keys may collide, so a range whose bound shares
+  that prefix counts as holding the key (it refuses more, never less). If any of
   those keys falls in a damaged range, the member is not listed (its type and size
   cannot be trusted), and the end-of-listing `CorruptionError` counts it. Other xattrs
   in a damaged range leave the member listed with those names missing from `extra`, and
