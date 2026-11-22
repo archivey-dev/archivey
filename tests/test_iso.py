@@ -2899,6 +2899,27 @@ def test_a_link_target_through_one_directory_many_times_sorts_it_once(
     assert sorts[0] == sorts[1], sorts
 
 
+def test_each_directory_is_sorted_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The walk, the Joliet search and link targets all ask for a directory's sorted
+    entries; the reader sorts each directory once and keeps the result. Many
+    non-UTF-8 directories whose ``CL`` placeholders point at one wide directory
+    otherwise sorted it once each."""
+    from archivey.internal.backends import iso_reader
+
+    real = iso_reader._sorted_children
+    sorted_ids: list[int] = []
+
+    def counting(directory: Any) -> Any:
+        sorted_ids.append(id(directory))
+        return real(directory)
+
+    monkeypatch.setattr(iso_reader, "_sorted_children", counting)
+    with open_archive(io.BytesIO(_latin1_names_with_joliet_image())) as ar:
+        ar.members()
+    assert sorted_ids
+    assert len(sorted_ids) == len(set(sorted_ids)), sorted_ids
+
+
 def test_empty_files_sharing_an_extent_are_matched_in_linear_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
