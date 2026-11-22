@@ -198,11 +198,12 @@ Choices made in Part B that the plan left open:
 - **Folder thread records are not cross-checked yet** (deferred to Part D).
 - **Run tables are bounded against `max_metadata_bytes` at open by the reader**, because
   `charge_metadata` is for listing only.
+- **A decmpfs type 10 chunk is its raw block after a 0xCC byte.** The macOS check
+  (section 8) found the kernel reads that layout and refuses the same offset table
+  without the byte, so a chunk without it is `CorruptionError`.
 
 ## 7. Open questions
 
-- decmpfs type 10 (raw in the resource fork) has no real sample; it is read with the
-  type 8 offset table.
 - Journal replay (a volume with pending transactions is refused).
 - Whether any current tool still writes `koly` at offset 0.
 

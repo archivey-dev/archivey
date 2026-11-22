@@ -1004,8 +1004,18 @@ def _decode_chunk(
 ) -> bytes:
     """One decmpfs chunk, which must decode to exactly ``want`` bytes."""
     try:
-        if kind in (1, 10):
+        if kind == 1:
             out = data
+        elif kind == 10:
+            # Each chunk is its raw block behind a 0xCC byte. The macOS kernel reads
+            # that layout and refuses a chunk without the byte (EINVAL), as the macOS
+            # check against hdiutil found (tasks.md §M).
+            if data[:1] != b"\xcc":
+                raise CorruptionError(
+                    f"a type 10 chunk of the compressed file {cnid} does not start "
+                    "with the 0xCC byte macOS requires"
+                )
+            out = data[1:]
         elif kind == 9:
             # 7-Zip (``HfsHandler.cpp``) reads type 9 only after a 0xCC byte and
             # refuses it without; no macOS sample shows what Apple writes or accepts
