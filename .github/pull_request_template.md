@@ -25,7 +25,9 @@ the precise, technical record. -->
 
 <!-- What could break, and for whom, if this change is wrong.
 Tier: the "tier:" line that `python3 scripts/review/review_prep.py tier` prints (light,
-standard or deep), and the paths behind it.
+standard or deep), and the paths behind it. When the change is tricky in a way the paths
+do not show (architecture, concurrency, crypto, resumable state, limits), add
+`Review-Tier: deep (why)` to a commit message: the script then prints deep.
 Public API: "none", or the names added, changed or removed (the diff of
 dev-docs/api-surface.txt lists them). Removing or renaming a public name is the
 maintainer's call.

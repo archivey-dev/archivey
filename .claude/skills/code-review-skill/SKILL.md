@@ -94,11 +94,11 @@ does not restate them.
 
 ### How deep: the tier
 
-A pull request's changed paths set how deep the review goes, not its author or its
-size. Run `python3 scripts/review/review_prep.py tier` first: it is stdlib only, so it needs no
-project environment, and it compares against `origin/main`. It prints the tier, the paths
-that decided it, and whether `dev-docs/api-surface.txt` changed. The path lists, and why
-each path is on its list, live in that script.
+What a pull request changes sets how deep the review goes, not its author or its size.
+Run `python3 scripts/review/review_prep.py tier` first: it is stdlib only, so it needs
+no project environment, and it compares against `origin/main`. It prints the tier, what
+decided it, and whether the public API changed. The path lists, and why each path is on
+its list, live in that script.
 
 - **Light** — every changed path is maintainer prose, tests or benchmarks. An agent's
   instructions and contracts are never light (skills, commands, `AGENTS.md`,
@@ -111,45 +111,51 @@ each path is on its list, live in that script.
   is 🔄 only for a 🔴 (§4), so a light PR ends in one round otherwise.
 - **Standard** — the review this skill and its reference docs describe, unchanged. A
   standard PR can still get the security pass (below, under Deep).
-- **Deep** — a path where one bug breaks a safety guarantee for every format, or a
-  workflow or release file. Format parsers and codecs stay standard by design; the script
-  says why. This tier is not a commissioned deep review: `deep-reviews.md` does not apply.
-  Everything in Standard, plus [`threat-model.md`](../../../dev-docs/threat-model.md) and
+- **Deep** — a change whose bugs a second model should look for: it moves the public API
+  (archivey's surface, or archivey-codecs' type stubs), adds a reader, parser, codec or
+  native kernel file, changes the code (not only docstrings or comments) of a layer
+  every format goes through (`DEEP_SECURITY`, `DEEP_CORE`), or carries a
+  `Review-Tier: deep` trailer in one of its commits. The trailer is for what paths
+  cannot show: a change to the architecture, a non-straightforward change, or tricky
+  code (concurrency, crypto, resumable state, limits). It can raise the tier and nothing
+  lowers it. A standard pull request that you think should be deep is a 🟢 that asks for
+  the trailer, like a wrong tier line. Workflows, the release script and the review
+  loop's files are not deep on their own: they are standard with the security pass. A
+  deep pull request needs a Codex or Cursor review that approves, after the Opus pass,
+  before it merges (maintainer, 2026-11-22). This tier is not a commissioned deep
+  review: `deep-reviews.md` does not apply. Everything in Standard, plus
+  [`threat-model.md`](../../../dev-docs/threat-model.md) and
   [`security-review-guide.md`](reference/security-review-guide.md), and the security
-  pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the ones
-  that moved a contract. When every deep path is a workflow that only a dispatch or the
-  schedule starts, with a read-only token and no secret (`quiet_workflow`), the pull
-  request is standard with the security pass still on; take its attacker from the
-  `DEEP_PROCESS` item below, and check what the workflow writes that its token does not
-  scope (the Actions cache, artifacts other jobs restore).
+  pass below. On a fix round, trace every fix outward (`fix-round.md`), not only the
+  ones that moved a contract.
 
   **Every round on a deep pull request ends with a security pass**, done after the rest
   of the review and reported on its own. Safe handling of hostile input is what the deep
   paths carry, so it gets its own attention rather than whatever is left after the
   general review (maintainer, 2026-10-30). Format code reads hostile bytes too, so a
   pull request of any tier gets the pass when the script prints `security pass: yes`
-  (a new reader, parser or codec file), when its Risk section's `Security:` line says
-  yes, or when the change meets one of that line's rules in
+  (deep, or a release or review-loop file), when its Risk section's `Security:` line
+  says yes, or when the change meets one of that line's rules in
   `.github/pull_request_template.md` whatever the line says (maintainer, 2026-10-31).
   The line can be raised, never lowered: run the pass, and a "no" on a change the rules
   cover is 🟢, like a wrong tier line. The script's two lists set the attacker:
 
-  - *A library path* (`DEEP_SECURITY`, and format or codec code the rules above cover):
-    the attacker controls the archive or the directory source. Take each defended
-    property in `threat-model.md` §3 the path carries, or, where §3 names none for it,
-    the guarantee every library path carries: writes stay inside the destination,
-    resources stay bounded, and archive-supplied input reaches a command line or a
-    terminal only as inert text. Try to break it with a crafted name, size, offset, link
-    target or member order, a truncated or concatenated stream, or a hostile directory
-    source. Build each attempt and its destination in a fresh temporary directory
-    outside the checkout. Run it under the library configuration the pull request ships
-    (the defaults, unless the diff changes them), never a tighter one; keep a bomb that
-    works cheap from outside the library instead: a small fixture, a `timeout`, a capped
-    `ulimit -v`. Where a `tests/test_cve_regressions*.py` case sits near the change,
-    read it for the shape of a known attack and take its result from CI, or say CI has
-    none yet. A pull request below deep that gets the pass also reads `threat-model.md`
-    for it.
-  - *The release's and the review loop's own files* (`DEEP_PROCESS`: workflows, the
+  - *A library path* (`DEEP_SECURITY`, `DEEP_CORE`, and format or codec code the rules
+    above cover): the attacker controls the archive or the directory source. Take each
+    defended property in `threat-model.md` §3 the path carries, or, where §3 names none
+    for it, the guarantee every library path carries: writes stay inside the
+    destination, resources stay bounded, and archive-supplied input reaches a command
+    line or a terminal only as inert text. Try to break it with a crafted name, size,
+    offset, link target or member order, a truncated or concatenated stream, or a
+    hostile directory source. Build each attempt and its destination in a fresh
+    temporary directory outside the checkout. Run it under the library configuration the
+    pull request ships (the defaults, unless the diff changes them), never a tighter
+    one; keep a bomb that works cheap from outside the library instead: a small fixture,
+    a `timeout`, a capped `ulimit -v`. Where a `tests/test_cve_regressions*.py` case
+    sits near the change, read it for the shape of a known attack and take its result
+    from CI, or say CI has none yet. A pull request below deep that gets the pass also
+    reads `threat-model.md` for it.
+  - *The release's and the review loop's own files* (`PROCESS_FILES`: workflows, the
     release script, the loop's prompt and scripts, this skill): the attacker is whoever
     can open a pull request or write its title, body, branch name, label or a comment.
     Try whether that text can reach a `run:` line, a token with more scope than the job

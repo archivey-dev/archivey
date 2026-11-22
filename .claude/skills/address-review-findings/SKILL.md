@@ -426,10 +426,11 @@ do not spend a round on fixes the review already described.
 **After an approving verdict with CI green**, turn on squash auto-merge
 (`enable_pr_auto_merge`, the connector tool, not `gh pr merge` or raw `gh api`) for a
 straightforward PR (on
-standard and deep, after the Opus pass approves; on deep, Cursor too); a tricky one goes
-to the maintainer. Decide with the tier script as the pull request's base branch has it
-(the same ref `risk-label.yml` uses), never the pull request's copy, and never from the
-labels alone (a label can be removed, and a fork's pull request gets none):
+standard and deep, after the Opus pass approves; on deep, a Codex or Cursor review too);
+a tricky one goes to the maintainer. Decide with the tier script as the pull request's
+base branch has it (the same ref `risk-label.yml` uses), never the pull request's copy,
+and never from the labels alone (a label can be removed, and a fork's pull request gets
+none):
 
 ```bash
 base=main  # the pull request's base branch
