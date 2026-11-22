@@ -27,7 +27,7 @@ import pytest
 from archivey.internal.streams.codecs.adc_decoder import adc_decompress
 from archivey.internal.streams.codecs.lzfse_decoder import lzfse_decompress
 from tests import dmg_build as d
-from tests.conftest import run_7z, sevenzip_version
+from tests.conftest import requires, run_7z, sevenzip_version
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -728,6 +728,7 @@ def test_7zip_reads_layout_options(tmp_path: Path, options: dict) -> None:
 # ── Encrypted images against the hdiutil fixtures ────────────────────────────────────
 
 
+@requires("cryptography")
 @pytest.mark.parametrize("name", ["hfs-UDZO-AES-128.dmg", "apfs-UDZO-AES-256.dmg"])
 def test_encrypted_header_fields_match_hdiutil(name: str) -> None:
     fixture = (_FIXTURES / name).read_bytes()

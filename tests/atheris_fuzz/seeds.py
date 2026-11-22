@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import gzip
+import importlib.util
 import io
 import lzma
 import shutil
@@ -250,11 +251,16 @@ def dmg_seeds() -> list[bytes]:
             ("gpt", build.LZMA),
         )
     ]
-    # An encrypted image (one PBKDF2 round, so a run spends no time deriving keys).
-    encrypted = build.encrypt_dmg(
-        images[0], entries=[build.EncryptedEntry(password=b"pw", iterations=1)]
-    )
-    return [b"", _koly_block(), b"encrcdsa" + bytes(504), encrypted] + images
+    seeds = [b"", _koly_block(), b"encrcdsa" + bytes(504)]
+    # An encrypted image (one PBKDF2 round, so a run spends no time deriving keys);
+    # the writer needs ``cryptography``.
+    if importlib.util.find_spec("cryptography") is not None:
+        seeds.append(
+            build.encrypt_dmg(
+                images[0], entries=[build.EncryptedEntry(password=b"pw", iterations=1)]
+            )
+        )
+    return seeds + images
 
 
 def dmg_apfs_seeds() -> list[bytes]:

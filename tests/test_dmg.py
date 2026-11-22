@@ -40,6 +40,7 @@ from archivey import (
 )
 from archivey.internal.backends.dmg_reader import volume_names
 from tests import dmg_build as d
+from tests.conftest import requires
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -56,6 +57,17 @@ _HFS_ENCRYPTED = {
     "hfs-UDZO-AES-128.dmg": ["zlib"],
     "hfs-UDZO-AES-256.dmg": ["zlib"],
 }
+# The encrypted images need ``cryptography``; the core-only CI jobs lack it.
+_NEEDS_CRYPTO = requires("cryptography")
+
+
+def _with_crypto_marks(names: object) -> list:
+    return [
+        pytest.param(n, marks=_NEEDS_CRYPTO) if "-AES-" in n else n
+        for n in names  # type: ignore[attr-defined]
+    ]
+
+
 _ENCRYPTED_FIXTURES = [
     *_HFS_ENCRYPTED,
     "apfs-UDZO-AES-128.dmg",
@@ -90,7 +102,9 @@ def _sha256_listing(name: str) -> dict[str, str]:
 # ── The hdiutil fixtures ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", sorted({**_HFS_IMAGES, **_HFS_ENCRYPTED}))
+@pytest.mark.parametrize(
+    "name", _with_crypto_marks(sorted({**_HFS_IMAGES, **_HFS_ENCRYPTED}))
+)
 def test_an_hdiutil_image_lists_and_reads_as_macos_mounts_it(name: str) -> None:
     hashes = _sha256_listing("hfs-sha256.txt")
     encrypted = name in _HFS_ENCRYPTED
@@ -162,6 +176,7 @@ def test_the_adc_image_reads() -> None:
     assert hashlib.sha256(data).hexdigest().startswith("f49602b2")
 
 
+@_NEEDS_CRYPTO
 @pytest.mark.parametrize("name", sorted(_ENCRYPTED_FIXTURES))
 def test_an_encrypted_hdiutil_image_asks_for_its_password(name: str) -> None:
     path = _FIXTURES / name
@@ -184,6 +199,7 @@ def test_an_encrypted_hdiutil_image_asks_for_its_password(name: str) -> None:
     assert len(asked) == 1
 
 
+@_NEEDS_CRYPTO
 @pytest.mark.parametrize("name", sorted(_ENCRYPTED_FIXTURES))
 def test_an_encrypted_image_charges_its_key_derivation(name: str) -> None:
     # Each fixture asks for 370 370 to 454 545 PBKDF2 rounds (macOS times them).
@@ -198,6 +214,7 @@ def _encrypted(image: bytes | None = None, **options: object) -> bytes:
     return d.encrypt_dmg(_image() if image is None else image, **options)  # type: ignore[arg-type]
 
 
+@_NEEDS_CRYPTO
 @pytest.mark.parametrize(
     "options",
     [
@@ -228,6 +245,7 @@ def test_an_encrypted_builder_image_reads_as_the_plain_one(options: dict) -> Non
     assert all(m.is_encrypted for m in members.values())  # type: ignore[attr-defined]
 
 
+@_NEEDS_CRYPTO
 def test_any_password_entry_of_an_encrypted_image_unlocks_it() -> None:
     image = _encrypted(
         entries=[
@@ -243,12 +261,14 @@ def test_any_password_entry_of_an_encrypted_image_unlocks_it() -> None:
         _open(image, password="third")
 
 
+@_NEEDS_CRYPTO
 def test_an_image_locked_only_by_a_certificate_is_refused_by_name() -> None:
     image = _encrypted(entries=[d.EncryptedEntry(kind=2)])
     with pytest.raises(UnsupportedFeatureError, match="certificate or keychain"):
         _open(image, password="secret")
 
 
+@_NEEDS_CRYPTO
 def test_a_wrong_password_that_passes_the_padding_check_is_rejected() -> None:
     # The unwrapped key's padding is right but neither the koly block nor the key
     # mark is there: a wrong password passes the padding check about once in 256.
@@ -263,6 +283,7 @@ def test_a_wrong_password_that_passes_the_padding_check_is_rejected() -> None:
         _open(image, password="secret")
 
 
+@_NEEDS_CRYPTO
 def test_an_encrypted_raw_disk_is_refused_after_its_password() -> None:
     raw = d.write_gpt(
         [d.Partition(d.write_hfsplus([d.Node("a.txt", data=b"hi")]).volume)]
@@ -275,6 +296,7 @@ def test_an_encrypted_raw_disk_is_refused_after_its_password() -> None:
         _open(image, password="secret")
 
 
+@_NEEDS_CRYPTO
 def test_a_damaged_encrypted_block_is_corruption_not_a_wrong_password() -> None:
     image = bytearray(_encrypted(_image(codec=d.ZLIB)))
     # A byte inside the encrypted data fork, well before the plist and koly.
@@ -303,6 +325,7 @@ def _blob_patch(offset: int, fmt: str, value: int):
     return patch
 
 
+@_NEEDS_CRYPTO
 @pytest.mark.parametrize(
     ("options", "error", "match"),
     [
@@ -412,6 +435,7 @@ def test_a_damaged_encrypted_header_is_refused_before_any_password(
             _open(image, password=password)
 
 
+@_NEEDS_CRYPTO
 def test_a_cut_encrypted_image_is_truncated_before_any_password() -> None:
     image = _encrypted()
     with pytest.raises(TruncatedError, match="before the end of its encrypted data"):
@@ -1416,7 +1440,8 @@ def _files(reader) -> list:
 
 
 @pytest.mark.parametrize(
-    "name", sorted({**_HFS_IMAGES, **_HFS_ENCRYPTED}) + ["hfs-UDCO.dmg"]
+    "name",
+    _with_crypto_marks(sorted({**_HFS_IMAGES, **_HFS_ENCRYPTED}) + ["hfs-UDCO.dmg"]),
 )
 def test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum(
     name: str, monkeypatch: pytest.MonkeyPatch

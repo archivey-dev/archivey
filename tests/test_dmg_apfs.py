@@ -32,6 +32,7 @@ from archivey import (
 from archivey.formats import ReaderSource
 from archivey.internal.backends import apfs
 from tests import apfs_build as a, dmg_build as d
+from tests.conftest import requires
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "external" / "dmg_hdiutil"
 
@@ -76,7 +77,13 @@ def _listed_until_error(image: bytes, error: type[Exception], match: str) -> lis
 # ── The hdiutil fixtures ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", sorted({**_APFS_IMAGES, **_APFS_ENCRYPTED}))
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(n, marks=requires("cryptography")) if "-AES-" in n else n
+        for n in sorted({**_APFS_IMAGES, **_APFS_ENCRYPTED})
+    ],
+)
 def test_an_hdiutil_apfs_image_lists_and_reads_as_macos_mounts_it(name: str) -> None:
     hashes = {}
     for line in (
