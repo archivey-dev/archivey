@@ -38,12 +38,14 @@ from __future__ import annotations
 import argparse
 import ast
 import importlib.util
+import io
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import tokenize
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -379,10 +381,14 @@ DEEP_SECURITY = (
     "src/archivey/internal/resource_usage.py",
     "src/archivey/internal/external/",
     "src/archivey/internal/streams/child_process.py",
+    "src/archivey/internal/filters.py",
 )
 # The layer every format goes through: the reader base and the plugin adapter, reader
 # state and its locks, passwords, the source, and the streams that check and defer
-# errors. A bug here reaches every format at once, as one in DEEP_SECURITY does.
+# errors (with the kept errors and the verification combiner they use). A bug here
+# reaches every format at once, as one in DEEP_SECURITY does. `core.py` and
+# `registry.py` are also on every open but only dispatch to a reader: a bug there fails
+# every format's tests at once, so they stay standard.
 DEEP_CORE = (
     "src/archivey/internal/base_reader.py",
     "src/archivey/internal/format_adapter.py",
@@ -393,6 +399,8 @@ DEEP_CORE = (
     "src/archivey/internal/streams/archive_stream.py",
     "src/archivey/internal/streams/decompressor_stream.py",
     "src/archivey/internal/streams/verify.py",
+    "src/archivey/internal/streams/kept_errors.py",
+    "src/archivey/internal/streams/verification.py",
 )
 # A new file under one of these is a new reader, parser, codec or native kernel: deep,
 # with the security pass. An edit to an existing one is standard, since nearly every
@@ -828,14 +836,31 @@ def _strip_docstrings(tree: ast.AST) -> ast.AST:
     return tree
 
 
+_DIRECTIVE_RE = re.compile(r"#\s*(?:type|pyrefly|ty|pyright|mypy)\s*:|#\s*noqa\b")
+
+
+def _directives(text: str) -> list[str]:
+    """The type-checker and lint directives among a file's comments, in order."""
+    return [
+        " ".join(tok.string.split())
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+        if tok.type == tokenize.COMMENT and _DIRECTIVE_RE.search(tok.string)
+    ]
+
+
 def _code_changed(before: str | None, after: str | None) -> bool:
-    """Whether a Python file changed more than its docstrings and comments. A file added
-    or removed, one that does not parse, and anything not Python count as changed."""
+    """Whether a Python file changed more than its docstrings and plain comments. A
+    type-checker or lint directive (`# type: ignore`, `# pyrefly: ignore`, `# noqa`...)
+    is not a plain comment: it changes what the checks accept, so it counts. A file
+    added or removed, one that does not parse, and anything not Python count as
+    changed."""
     if before is None or after is None:
         return True
     try:
         old, new = (_strip_docstrings(ast.parse(t)) for t in (before, after))
-    except SyntaxError:
+        if _directives(before) != _directives(after):
+            return True
+    except (SyntaxError, tokenize.TokenError):
         return True
     return ast.dump(old) != ast.dump(new)
 

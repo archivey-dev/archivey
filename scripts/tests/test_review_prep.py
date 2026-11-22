@@ -329,6 +329,18 @@ def test_code_changed_ignores_docstrings_and_comments() -> None:
     assert prep._code_changed("x = 1\n", 'x = 1\n"s"\n')
     assert prep._code_changed(None, "x = 1\n")
     assert prep._code_changed("x = (\n", "x = 1\n")
+    # A type-checker or lint directive is not a plain comment.
+    plain = "def f() -> int:\n    return g()\n"
+    for directive in (
+        "# pyrefly: ignore[bad-return]",
+        "# type: ignore",
+        "# noqa: E501",
+    ):
+        assert prep._code_changed(plain, plain.replace("g()", f"g()  {directive}"))
+    assert not prep._code_changed(
+        plain.replace("g()", "g()  # ty: ignore"),
+        plain.replace("g()", "g()  #  ty: ignore"),
+    )
 
 
 def test_a_commit_trailer_raises_the_tier_and_nothing_lowers_it() -> None:
