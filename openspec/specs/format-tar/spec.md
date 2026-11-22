@@ -557,11 +557,11 @@ slots with `(0, 0)`.
 
 ### Requirement: A damaged TAR header SHALL be followed when the block its size points at confirms it
 
-When a header fails its checksum (the checksum does not match, or the checksum field is
-not a number), the walk SHALL read it from its other fields when they parse as any
-header's do and it has the `ustar` magic (POSIX or old GNU). It SHALL then take the
-member's chain as for an intact header and go on from where the next header starts,
-when the block there *confirms* it:
+When a header fails its checksum, the walk SHALL read it from its other fields when
+they parse as any header's do and it has the `ustar` magic (POSIX or old GNU). It SHALL
+then take the member's chain as for an intact header and go on from where the next
+header starts, when the block there *confirms* it (a header fails its checksum when the
+checksum does not match, or when the checksum field is not a number):
 
 - a header that passes its checksum and has the `ustar` magic; or
 - the end-of-archive marker with only zero bytes after it to the end of the archive,
@@ -579,13 +579,15 @@ to salvage mode.
 
 A member listed from a damaged chain SHALL carry the damaged header's offset, and every
 read of it SHALL emit `MEMBER_HEADER_DAMAGED` (`diagnostics`); listing it SHALL NOT. After
-the last member, the pass SHALL end in `CorruptionError` naming each followed header.
+the last member, the pass SHALL end in `CorruptionError` naming the first four followed
+headers, each as a member or an extended header, and counting the rest.
 
 On a forward-only source the walk SHALL read the damaged member's data and the block
 after it ahead and replay them, holding no more than 4 MiB before that block (the RAR
 pipe's span); a longer member SHALL stop the walk at the damage, and the error SHALL say
-to save the archive to a file. The listing SHALL otherwise be the same in both access
-modes and on compressed TARs.
+to save the archive to a file, or, when the source can seek and only `streaming=True`
+made the walk forward-only, to open it without `streaming=True`. The listing SHALL
+otherwise be the same in both access modes and on compressed TARs.
 
 #### Scenario: damaged header matrix
 
@@ -600,4 +602,6 @@ modes and on compressed TARs.
 | A damaged `L` or `x` header with an intact size | All listed, the member flagged, with its long name |
 | Eight damaged headers in a row / nine | All listed / the walk stops at the first |
 | A pipe, a damaged member over 4 MiB | The walk stops at it; the error says to save the archive to a file |
+| A file opened with `streaming=True`, a damaged member over 4 MiB | The walk stops at it; the error says to open it without `streaming=True` |
+| 2,500 damaged headers apart | All listed; the error names four and counts 2,496 more |
 | `DiagnosticPolicy.STRICT` | The damaged member's read raises `DiagnosticRaisedError`; the others read |

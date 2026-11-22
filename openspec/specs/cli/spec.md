@@ -428,9 +428,12 @@ a writer that never comes; on those `info` prints the open error alone.
 ### Requirement: version reports package identity and optional format matrix
 
 `--version` SHALL print `archivey <version>` and exit. With `-v` / `--verbose`,
-it SHALL also print a `formats:` matrix from the registry availability API
-(`list_known_formats` / `format_availability`), including missing-component
-install hints when support is not full.
+it SHALL also print, from the registry availability API (`list_known_formats` /
+`format_availability`), the archive formats and the compression formats by support
+level, and the install commands for missing or faster optional packages, grouped by
+command, with each package's PyPI name. An optional package that is installed but
+fails to import SHALL be reported as absent, with the import error in place of the
+install advice.
 
 #### Scenario: version
 
@@ -439,6 +442,7 @@ install hints when support is not full.
 | `archivey --version` | One line: `archivey <version>`; exit `0` |
 | `archivey --version -v` / `archivey -v --version` | Version line, then archive formats and compression formats by support level, a sentence naming the containers read inside any readable compression, and the install commands grouped by what they add, complete or speed up |
 | A `container.compression` pair whose support differs from the weaker of its parts | Printed on its own under "combinations that differ from their parts"; matching pairs are not listed |
+| An optional package that is installed but fails to import | Reported as absent: its formats show the lower support level or as slower, and its entry gives the import error and says to reinstall it |
 | Run through `uvx archivey-cli`, `uv tool install`, or `pipx` | A `pip install …` hint is printed as `uvx --with …`, `uv tool install --with …`, or `pipx inject archivey-cli …`; other advice unchanged |
 | Run through `uvx archivey`, `uv tool install archivey`, or `pipx install archivey` (the library alone) | Hints name that tool's `archivey` environment, and one line says the matching `archivey-cli` command installs the same command with the recommended optional packages |
 
