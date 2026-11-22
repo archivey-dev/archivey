@@ -894,6 +894,10 @@ class ArchiveSource(ReadOnlyIOStream):
             # its own contract, not a stall.
             avail = min(n, length - self._pos)
             if avail <= 0:
+                if self._progress is not None:
+                    # As in ``readinto``: a stop raised on the read that took the last
+                    # bytes raises here again, not an empty answer.
+                    self._progress.raise_if_stopped()
                 return b""
             data = read_blocking(reader, avail)
             if len(data) > avail:
@@ -994,7 +998,8 @@ class ArchiveSource(ReadOnlyIOStream):
             if not limit:
                 # Nothing asked, or nothing left: answered without I/O, as ``read`` is.
                 # A stop raised on the read that took the last bytes raises here
-                # again, or the decoder takes the bytes it lost for a cut file.
+                # again (``read`` does the same), or the decoder takes the bytes it
+                # lost for a cut file.
                 if self._progress is not None:
                     self._progress.raise_if_stopped()
                 return 0

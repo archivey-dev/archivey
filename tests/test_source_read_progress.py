@@ -435,12 +435,21 @@ def _bad_crc_gz(tmp_path: Path, seed: int, random_size: int, run: int) -> Path:
 @pytest.mark.parametrize(
     ("seed", "random_size", "run"), [(0, 1 << 16, 1 << 18), (1, 1 << 18, 1 << 20)]
 )
-@pytest.mark.parametrize("call", ["extract_all", "read", "read_twice"])
+@pytest.mark.parametrize(
+    "call", ["extract_all", "read", "read_twice", "read_bounded_twice"]
+)
+@pytest.mark.parametrize("stop_type", [_StopValue, KeyboardInterrupt])
 def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
-    tmp_path: Path, seed: int, random_size: int, run: int, call: str
+    tmp_path: Path,
+    seed: int,
+    random_size: int,
+    run: int,
+    call: str,
+    stop_type: type[BaseException],
 ) -> None:
     # A stop raised during the re-decode must reach the caller, not the data error,
-    # also when the read already holds output; and the next read raises it again.
+    # also when the read already holds output; and the next read raises it again,
+    # before the bytes the stopped read had buffered.
     path = _bad_crc_gz(tmp_path, seed, random_size, run)
 
     def go(callback: Any) -> None:
@@ -451,15 +460,17 @@ def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
             with open_archive(path, config=config) as reader:
                 reader.extract_all(tmp_path / "out", on_error="continue")
             return
+        size = 1 << 20 if call == "read_bounded_twice" else -1
         with open_stream(path, config=config) as stream:
             if call == "read":
                 stream.read()
                 return
             try:
-                stream.read()
-            except _StopValue:
+                while stream.read(size):
+                    pass
+            except stop_type:
                 pass
-            stream.read()
+            stream.read(size)
 
     from archivey import CorruptionError
 
@@ -472,9 +483,9 @@ def test_a_stop_during_the_re_decode_of_a_damaged_member_is_not_lost(
     calls = len(recorder.calls)
     assert calls > 0
     for n in range(1, calls + 1):
-        with pytest.raises(_StopValue) as caught:
-            go(_stop_on(n, _StopValue))
-        assert type(caught.value) is _StopValue
+        with pytest.raises(stop_type) as caught:
+            go(_stop_on(n, stop_type))
+        assert type(caught.value) is stop_type
 
 
 def test_a_stop_on_the_read_of_the_last_bytes_holds_on_the_next_read(
