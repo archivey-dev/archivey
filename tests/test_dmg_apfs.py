@@ -466,6 +466,23 @@ def test_damaged_ranges_count_against_max_metadata_bytes_as_they_are_found() -> 
         reader.members()
 
 
+def test_a_damaged_leaf_error_also_names_the_first_other_problem() -> None:
+    nodes = [d.Node(f"f{i:03d}.txt", data=b"x") for i in range(60)]
+    nodes.append(d.Node("bad", data=b"b", raw_name=b"x/y"))
+    options = {"leaf_records": 8, "hashed": False}
+    written = a.write_apfs(nodes, **options)  # type: ignore[arg-type]
+    middle = written.fs_leaves[len(written.fs_leaves) // 2]
+    broken = a.write_apfs(nodes, patch=_flip(lambda c, i: middle), **options)  # type: ignore[arg-type]
+    with (
+        _open(a.apfs_dmg(broken.container)) as reader,
+        pytest.raises(CorruptionError) as raised,
+    ):
+        reader.members()
+    message = str(raised.value)
+    assert "cannot be used" in message
+    assert "also, a directory record names 'x/y'" in message
+
+
 def test_a_lost_extent_leaf_fails_only_that_file_and_never_reads_zeros() -> None:
     nodes = [
         d.Node("A", data=b"a" * 4096 + bytes(4096) + b"b" * 4096),
