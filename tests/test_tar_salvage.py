@@ -474,6 +474,42 @@ def test_strict_does_not_stop_the_salvage_listing() -> None:
     assert isinstance(salvage.error, CorruptionError)
 
 
+def test_reading_found_members_after_the_listing_searches_and_records_nothing(
+    tmp_path: Path,
+) -> None:
+    """A member read after the listing is read from its data area, not by a walk:
+    the reader's search budget and its salvage records stay as the listing left
+    them, for open(), a second pass and extract_all alike."""
+    tar = _build(20)
+    path = tmp_path / "d.tar"
+    path.write_bytes(_zeroed(tar.data, tar.offsets[8]))
+    salvage_codes = {
+        DiagnosticCode.ARCHIVE_REGION_SKIPPED,
+        DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+    }
+
+    def counts(reader: object) -> dict[object, int]:
+        all_counts = reader.diagnostics.counts  # type: ignore[attr-defined]
+        return {code: all_counts.get(code, 0) for code in salvage_codes}
+
+    with open_archive(path, salvage=True) as reader:
+        report = reader.members_report()
+        assert isinstance(report.error, CorruptionError)
+        state = reader._salvage_mode  # type: ignore[attr-defined]
+        searched = state.searched_bytes
+        before = counts(reader)
+        assert before[DiagnosticCode.ARCHIVE_REGION_SKIPPED] == 1
+        assert before[DiagnosticCode.MEMBER_FOUND_BY_SCAN] == len(report.members) - 8
+        for member in report.members[8:]:
+            assert reader.read(member) == tar.contents[member.name]
+        with pytest.raises(CorruptionError):
+            list(reader.stream_members())
+        with pytest.raises(CorruptionError):
+            reader.extract_all(tmp_path / "out")
+        assert counts(reader) == before
+        assert state.searched_bytes == searched
+
+
 def test_stream_members_and_extract_all_see_the_salvage_listing(tmp_path: Path) -> None:
     tar = _build(20)
     data = _zeroed(tar.data, tar.offsets[8])

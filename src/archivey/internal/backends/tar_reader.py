@@ -1100,6 +1100,12 @@ class TarReader(BaseArchiveReader):
         else:
             walker = self._new_walker()
             salvage = _SalvageWalk()
+            # Only a listing walk started over after a discarded failure gets here
+            # (the base's ``_abandon_walk``): it searches and records again from zero,
+            # and the base replays each position's records, so each is kept once. A
+            # member read after the listing reads its data area by offset
+            # (``_independent_data``) and walks nothing, so no walk for data needs a
+            # quiet state of its own.
             self._salvage_mode.restart()
             with self._translated_errors():
                 first = self._first_entry(walker, salvage)
