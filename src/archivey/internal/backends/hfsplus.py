@@ -86,6 +86,10 @@ DECMPFS_KEEP = DECMPFS_CHUNK + 64
 # What one kept extent costs in memory: a (start, count) tuple of two ints, and its
 # slots in the list and in the final tuple.
 _EXTENT_CHARGE = 96
+# The memory one kept folder thread holds besides its name: a dict slot, its int key,
+# a (parent, name) tuple, the parent int and the bytes object (about 207 bytes measured
+# with tracemalloc on CPython 3.12 for an empty name).
+_THREAD_CHARGE = 208
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -627,6 +631,10 @@ class Catalog(NamedTuple):
     folders: dict[int, tuple[int, str]]  # folder id: (parent id, name)
     inodes: dict[int, Entry]  # link id: the iNode file in the private folder
     hidden: frozenset[int]  # folder ids whose contents are not listed
+    # The folders whose thread record is missing, unreadable, or names another parent
+    # or name, by folder id. Paths come from the folder records; a thread only
+    # cross-checks them.
+    bad_threads: tuple[int, ...] = ()
 
 
 def read_catalog(
@@ -641,10 +649,24 @@ def read_catalog(
     hidden: set[int] = set()
     inode_records: list[Entry] = []
     failure: ArchiveyError | None = None
+    threads: dict[int, tuple[int, bytes] | None] = {}
     try:
         for key, data in volume.catalog().leaf_records():
+            if data[:2] == b"\x00\x03":
+                # A folder thread: keyed by the folder's id with an empty name, it
+                # holds the folder's parent id and name (TN1150 "Catalog File").
+                cnid, _ = _catalog_key(key)
+                if cnid in threads:
+                    continue
+                thread = _thread_record(data)
+                charge(
+                    _THREAD_CHARGE + (len(thread[1]) if thread else 0),
+                    "the HFS+ folder threads",
+                )
+                threads[cnid] = thread
+                continue
             if data[:2] != b"\x00\x01" and data[:2] != b"\x00\x02":
-                continue  # thread records
+                continue  # file threads; pass 2 refuses an unknown type
             parent, raw = _catalog_key(key)
             if data[:2] == b"\x00\x01":
                 if len(data) < _FOLDER_RECORD:
@@ -663,6 +685,9 @@ def read_catalog(
                 charge(len(data) + len(raw), "the HFS+ hard-link inodes")
     except ArchiveyError as exc:
         failure = exc
+    # A private folder found after its inodes' records (it sorts by its parent, the
+    # root, which comes first, so only a damaged catalog does this): its inodes are
+    # read again in the second pass's order, so a link may find none.
     inodes: dict[int, Entry] = {}
     for entry in inode_records:
         if entry.name.startswith("iNode"):
@@ -670,10 +695,30 @@ def read_catalog(
                 inodes[int(entry.name[5:])] = entry
             except ValueError:
                 pass
-    # A private folder found after its inodes' records (it sorts by its parent, the
-    # root, which comes first, so only a damaged catalog does this): its inodes are
-    # read again in the second pass's order, so a link may find none.
-    return Catalog(folders, inodes, frozenset(hidden)), failure
+    bad_threads: tuple[int, ...] = ()
+    # A pass stopped by a damaged node has not read the later threads, so every later
+    # folder would look like it had none: the cross-check runs on a whole pass only.
+    if failure is None:
+        bad_threads = tuple(
+            cnid
+            for cnid, (parent, name) in folders.items()
+            if (thread := threads.get(cnid)) is None
+            or thread[0] != parent
+            or _decode_name(thread[1]) != name
+        )
+    return Catalog(folders, inodes, frozenset(hidden), bad_threads), failure
+
+
+def _thread_record(data: bytes) -> tuple[int, bytes] | None:
+    """A thread record's (parent id, name as stored UTF-16BE), or ``None`` when it is
+    too short for its name: it then disagrees, as a missing one does, and the listing,
+    which does not need it, goes on."""
+    if len(data) < 10:
+        return None
+    parent, length = struct.unpack_from(">IH", data, 4)
+    if length > 255 or 10 + 2 * length > len(data):
+        return None
+    return parent, data[10 : 10 + 2 * length]
 
 
 def _file_entry(parent: int, raw_name: bytes, data: bytes) -> Entry:

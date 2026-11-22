@@ -45,15 +45,16 @@ on a Mac. A workflow on a macOS runner checks archivey against them. Like the ot
 workflows, it runs after a merge to `main` and on a schedule, never on pull requests,
 and the maintainer merges the PR that adds it (it adds triggers).
 
-- [ ] M.1 Writer images through Apple's tools (early: it checks `tests/dmg_build.py`):
+- [x] M.1 Writer images through Apple's tools (early: it checks `tests/dmg_build.py`):
   each builder image passes `hdiutil verify` and `hdiutil attach -readonly`, the mounted
   volume holds the files the writer put there, and each HFS+ volume passes `fsck_hfs -n`
-- [ ] M.2 Reader against fresh `hdiutil` images (with B.8): `hdiutil create` in every
+- [x] M.2 Reader against fresh `hdiutil` images (with B.8): `hdiutil create` in every
   format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO; HFS+, HFSX, APFS from Part E), then
   archivey's listing and file hashes match the mounted volume's
 
 Both are `scripts/investigations/dmg_macos_check.py`, run by `dmg-macos.yml`. They
-are ticked once its first run on `main` is green; APFS joins M.2 with Part E.
+were ticked after its first green run on `main` (2026-11-22, run 45021023296, after
+decmpfs type 10 was fixed); APFS joins M.2 with Part E.
 
 ## C. User docs
 
@@ -62,7 +63,8 @@ are ticked once its first run on `main` is green; APFS joins M.2 with Part E.
 
 ## D. Polish
 
-- [ ] D.1 Anything part B's review defers
+- [x] D.1 Anything part B's review defers: the folder thread cross-check (one
+  `folder_thread` diagnostic per volume)
 
 ## E. APFS
 

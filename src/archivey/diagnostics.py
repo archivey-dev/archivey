@@ -713,6 +713,9 @@ class ArchiveStructureContext(_JsonSafeContext):
     - ``"link_count"``: an APFS file's sibling-link records (one per hard-link name)
       disagree with its inode's link count; the directory records decide what is
       listed. ``offset`` is the inode id.
+    - ``"folder_thread"``: HFS+ folders whose thread record is missing, unreadable, or
+      names another parent or name than the folder record. Reported once per volume; the folder
+      records decide the paths, and ``offset`` is the first such folder's catalog id.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"
