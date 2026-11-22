@@ -245,7 +245,8 @@ def test_scan_context_defaults_hold_position_unchecked() -> None:
 def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     """A ``.deb``'s control and data tars are read by readers archivey opens itself
     (``ReaderContext.open_nested``): they are asked to salvage when the package is,
-    and, with no TAR salvage search yet, each records ``SALVAGE_UNAVAILABLE``."""
+    and, with no TAR salvage search yet, each records ``SALVAGE_UNAVAILABLE``. The
+    package itself has the ar search, so it records none."""
     from tests.test_deb import _deb
 
     with open_archive(io.BytesIO(_deb()), salvage=True) as reader:
@@ -255,7 +256,7 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
             for d in reader.diagnostics.retained
             if isinstance(d.context, SalvageUnavailableContext)
         ]
-    assert formats == ["DEB", "TAR", "TAR_XZ"]
+    assert formats == ["TAR", "TAR_XZ"]
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)

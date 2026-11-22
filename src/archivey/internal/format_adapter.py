@@ -49,6 +49,7 @@ from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     DiagnosticCode,
     DiagnosticContext,
+    SalvageScanContext,
     validate_code_context,
 )
 from archivey.exceptions import (
@@ -105,7 +106,14 @@ from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import ContentProbe, get_registry
 from archivey.internal.remote import MAX_PENDING_HINTS
 from archivey.internal.resource_usage import handler_name
-from archivey.internal.salvage import requesting_salvage
+from archivey.internal.salvage import (
+    ARCHIVE_LAYER,
+    QuietSalvageState,
+    SalvageState,
+    WalkSalvage,
+    emit_salvage_unavailable,
+    requesting_salvage,
+)
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import MemberStreamParts, RewindWarning
 from archivey.internal.streams.blocks import BlockStream
@@ -2029,6 +2037,24 @@ class SequentialReaderAdapter(_PluginAdapter):
         # A streaming walk over a source that can seek and is not compressed: where
         # the walk's first byte is on the source (``_decompress_layer``).
         self._walk_start: int | None = None
+        # Salvage: each random-access layer's search, by the walk stream that reads
+        # it (``ReaderContext._salvage``). A streaming reader (an archive read inside
+        # another one) reads forward only, and the search moves back to the header
+        # it finds, so it does not salvage.
+        self._walk_salvages: weakref.WeakKeyDictionary[ForwardStream, WalkSalvage] = (
+            weakref.WeakKeyDictionary()
+        )
+        if self._salvage_mode.enabled:
+            if self._streaming:
+                self._salvage_mode.enabled = False
+                emit_salvage_unavailable(
+                    self._diagnostics_collector,
+                    archive_name=self._archive_name,
+                    format_name=self._format.display_name,
+                    forward_only=True,
+                )
+            else:
+                context._salvage = self._walk_salvages.get
         try:
             self._open_streams(source, member_streams=self._member_streams)
         except BaseException:
@@ -2123,6 +2149,8 @@ class SequentialReaderAdapter(_PluginAdapter):
             finally:
                 self._listing_walk.close()
             walk = self._listing_walk = _Walk()
+            # A listing walk started over searches again from the start.
+            self._salvage_mode.restart()
         if self._streaming:
             stream = self._owned_stream
             assert stream is not None
@@ -2134,7 +2162,14 @@ class SequentialReaderAdapter(_PluginAdapter):
         else:
             assert self._shared is not None
             walk.layer = self._random_access_layer(
-                walk, self._shared, compressed=self._compressed
+                walk,
+                self._shared,
+                compressed=self._compressed,
+                layer_name=(
+                    self._format.stream.name.lower()
+                    if self._compressed
+                    else ARCHIVE_LAYER
+                ),
             )
         forward = walk.layer.forward
         with self._translated_errors(), self._handle_guard():
@@ -2146,9 +2181,10 @@ class SequentialReaderAdapter(_PluginAdapter):
                 self._walk_step = None
 
     def _random_access_layer(
-        self, walk: _Walk, shared: SharedSource, *, compressed: bool
+        self, walk: _Walk, shared: SharedSource, *, compressed: bool, layer_name: str
     ) -> _Layer:
-        """A layer over ``shared`` with a view of its own for ``walk``."""
+        """A layer over ``shared`` with a view of its own for ``walk``, named
+        ``layer_name`` in salvage records."""
         # A plain file: a read larger than the buffer rewinds the prefetched tail and
         # returns the file's own bytes. A codec keeps the join, since rewinding it
         # would decode the tail again; and a skip reads through it, which is what a
@@ -2159,8 +2195,75 @@ class SequentialReaderAdapter(_PluginAdapter):
         walk.views.append(view)
         # A codec under ``shared`` draws from the budget: an outer one
         # (``_open_outer_codec_stream``) or a ``decompress()`` layer's.
-        return self._layer_forward(
+        layer = self._layer_forward(
             walk, _Layer(view, shared, drawn=compressed), seekable=not compressed
+        )
+        if self._salvage_mode.enabled:
+            self._walk_salvages[layer.forward] = self._layer_salvage(
+                walk, layer, shared, layer_name
+            )
+        return layer
+
+    def _layer_salvage(
+        self, walk: _Walk, layer: _Layer, shared: SharedSource, layer_name: str
+    ) -> WalkSalvage:
+        """The salvage search of one random-access layer: reads through views of
+        ``shared`` of its own, and moves the walk's stream to what it finds. A walk
+        started over to reach member data searches as the listing did, and records
+        nothing again."""
+        listing = walk is self._listing_walk
+        state: SalvageState = self._salvage_mode
+        if not listing:
+            state = QuietSalvageState(
+                requested=True,
+                enabled=True,
+                limits=state.limits,
+                collector=self._diagnostics_collector,
+                archive_name=self._archive_name,
+                format_name=self._format.display_name,
+                lost_start=state.lost_start,
+            )
+        forward = layer.forward
+        stream = layer.stream
+
+        def read_at(offset: int, n: int) -> bytes:
+            view = shared.view(offset, None)
+            try:
+                return read_blocking(view, n)
+            finally:
+                view.close()
+
+        def open_reader(
+            start: int,
+        ) -> tuple[Callable[[int, int], bytes], Callable[[], None]]:
+            # One view for one search, read forward from where it starts.
+            view = shared.view(start, None)
+            at = start
+
+            def read(offset: int, n: int) -> bytes:
+                nonlocal at
+                if offset != at:
+                    view.seek(offset - start)
+                data = read_blocking(view, n)
+                at = offset + len(data)
+                return data
+
+            return read, view.close
+
+        def report_found(
+            member: ArchiveMember, details: SalvageScanContext, message: str
+        ) -> None:
+            self._report(DiagnosticCode.MEMBER_FOUND_BY_SCAN, message, details, member)
+
+        return WalkSalvage(
+            state=state,
+            layer=layer_name,
+            size=shared.size,
+            read_at=read_at,
+            open_reader=open_reader,
+            seek=lambda offset: forward._move_to(offset, stream.seek),
+            report_found=report_found if listing else None,
+            format_name=self._format.display_name,
         )
 
     def _layer_forward(self, walk: _Walk, layer: _Layer, *, seekable: bool) -> _Layer:
@@ -2317,7 +2420,16 @@ class SequentialReaderAdapter(_PluginAdapter):
                 shared = self._layer_sources[key] = SharedSource(
                     self._guarded_layer(self._budget_drawn(decoded, stage=True))
                 )
-            layer = self._random_access_layer(walk, shared, compressed=True)
+            layer = self._random_access_layer(
+                walk,
+                shared,
+                compressed=True,
+                layer_name=(
+                    stream_format.name.lower()
+                    if isinstance(stream_format, StreamFormat)
+                    else str(stream_format)
+                ),
+            )
         walk.layer = layer
         return layer.forward
 

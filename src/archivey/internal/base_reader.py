@@ -970,6 +970,7 @@ class BaseArchiveReader(ArchiveReader):
             collector=self._diagnostics_collector,
             archive_name=archive_name,
             format_name=format.display_name,
+            lost_start=salvage_request.lost_start,
         )
         if salvage_request.requested and not salvage_request.supported:
             emit_salvage_unavailable(

@@ -96,6 +96,14 @@ archivey's hard links name an earlier member only, so:
   together with the members already listed, so a held link that takes either over
   raises `ResourceLimitError`.
 
+With `open_archive(salvage=True)`, where a header fails before the trailer, the walk
+searches forward for the next header of the variant the first header showed (`newc`
+and `crc` at 4-byte steps, `odc` at every byte; binary has no search) and lists every
+member after the damage with `MEMBER_FOUND_BY_SCAN`. A found `TRAILER!!!` ends the walk;
+the pass still ends in the first damage error (`openspec/changes/salvage-mode`, design
+decision 7). A CPIO read inside another archive (a `.pkg` payload) reads forward only
+and records `SALVAGE_UNAVAILABLE`.
+
 ### 2.3 Member data
 
 Nothing here is format-specific apart from the crc sum, which is checked as the data is

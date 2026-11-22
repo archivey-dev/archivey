@@ -214,6 +214,46 @@ Choices the decisions above left open, made while building PR 1:
   format calls `SalvageState.finish()` at the end of its walk to record it, and
   `SalvageState.restart()` when a walk starts over.
 
+## Notes from the CPIO and ar PR
+
+Choices made while building PR 3, and where it departs from the decisions above:
+
+- **Every member past the damage is flagged**, not only the one the search found: the
+  ones walked on from a found member are not in the default listing either (the
+  archive-reading delta: each added member carries `MEMBER_FOUND_BY_SCAN`). Each one
+  is checked as a found one is, so a member whose next header fails is unconfirmed,
+  and the search goes on inside its data (decision 4 resumed the normal walk; the
+  next header's failure would start a search there anyway, after the member's data).
+- **How a sequential reader reaches the driver.** `ReaderContext._salvage(stream)`
+  (internal, set by the adapter) gives a `WalkSalvage` for the layer the walk reads:
+  `search()`, `read_at()`, `seek()` (moves the walk's `ForwardStream` back to the
+  found header), `holds()`, `found()` and `ending()` (finish, and the damage error,
+  its message noting the search limit when that stopped the search). The CPIO and ar
+  readers import `HeaderSearch` and `WalkSalvage` from `internal.salvage` until the
+  plugin hook (step 11); `tests/public_names.py` allows those two names.
+- **Forward-only layers do not search.** The walk moves back to the header the search
+  found, which a reader built `streaming=True` over a member's data cannot do. A CPIO
+  or ar reader inside another archive (a `.pkg` payload) records
+  `SALVAGE_UNAVAILABLE`, saying it reads forward only, and reads as the default. A
+  random-access `.cpio.gz` searches its decoded stream (`layer="gzip"`).
+- **A found member whose data runs past the layer's end is not listed**: reading it
+  would end the pass in `TruncatedError` instead of the first damage. A default
+  member whose size runs past the end still ends the pass there, as the default does.
+- **CPIO damage at the first header**: its magic still names the variant (detection
+  needed it), so the search runs for that variant. Binary CPIO has no search.
+- **Lost start (reader side).** `SalvageRequest.lost_start` / `SalvageState.lost_start`
+  (`requesting_salvage(..., lost_start=True)`, the TAR PR's shape). With it, a CPIO
+  whose first header fails searches all three ASCII magics at every byte; the first
+  header found sets the alignment of later `newc`/`crc` searches. An ar whose magic is
+  missing searches from 0 at **every byte** (not 2: the bytes lost may be odd), then
+  at 2-byte steps from the first header found.
+- **deb.** A damaged ar header after `debian-binary` starts the ar search; a found
+  `control.tar*` or `data.tar*` is read as the walk reads one, each inner member
+  flagged with the ar header's offset. A found header with another name is passed
+  over. Damage to `debian-binary`'s own header is not searched: detection needs it.
+- **ar** after damage takes a second `//` table (the later one names what follows),
+  and a `/123` whose offset is past the table keeps its raw name like a lost table.
+
 ## Verification
 
 Q18: a member found by a search has the `verifiable` level its own read can reach. For

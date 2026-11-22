@@ -75,6 +75,13 @@ per file:
   timestamp past `datetime`'s range (12 decimal digits reach the year 33658) is
   `modified=None`.
 
+With `open_archive(salvage=True)`, where a header fails, the walk searches forward at
+2-byte steps for the next header that passes the search's check and lists every member
+after the damage with `MEMBER_FOUND_BY_SCAN`. A GNU `/123` name whose table was lost
+keeps that raw name, with `"name"` in `unchecked`; a found `//` table names the members
+after it (`openspec/changes/salvage-mode`, design decision 8). A `.deb` uses the same
+search on its ar level.
+
 ### 2.3 Member data
 
 Nothing here is format-specific: a member's data is the span after its header (after the

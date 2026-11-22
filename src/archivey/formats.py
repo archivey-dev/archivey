@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from archivey.internal.nesting import NestDraws
     from archivey.internal.password import _PasswordCandidates
     from archivey.internal.resource_usage import ResourceUsageRecorder
+    from archivey.internal.salvage import WalkSalvage
 
 __all__ = [
     "CodecCall",
@@ -532,6 +533,15 @@ class ForwardStream:
         self._handed_off = True
         return decoded
 
+    def _move_to(self, offset: int, seek: Callable[[int], object]) -> None:
+        """Move the stream to ``offset``, back or forward, with ``seek`` moving what
+        it reads there. Internal (salvage: a walk moving to a header its search
+        found); not for plugins, whose walks read forward."""
+        self._check_not_handed_off()
+        self._end_take()
+        seek(offset)
+        self._offset = offset
+
     def _check_not_handed_off(self) -> None:
         if self._handed_off:
             raise ArchiveyUsageError(
@@ -618,6 +628,11 @@ class ReaderContext:
     # while listing work runs on this thread, so a member read is not counted.
     # Internal, set by the adapter; not for plugins.
     _listing_draw: Callable[[int], None] | None = None
+    # ``_salvage(stream)`` gives the salvage search of the layer ``stream`` reads
+    # (``internal.salvage.WalkSalvage``), or ``None`` when the reader does not
+    # salvage or reads that layer forward only. Internal, set by the adapter; not
+    # for plugins.
+    _salvage: Callable[[ForwardStream], WalkSalvage | None] | None = None
 
     def __init__(
         self,

@@ -24,6 +24,7 @@ lists comes first and unchanged.
 
 from __future__ import annotations
 
+import copy
 import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -33,13 +34,18 @@ from typing import TYPE_CHECKING
 from archivey.diagnostics import (
     DiagnosticCode,
     RegionSkippedContext,
+    SalvageScanContext,
     SalvageUnavailableContext,
 )
+from archivey.exceptions import ArchiveyError
 from archivey.internal.logs import backends as logger
+from archivey.internal.overrides import override
+from archivey.terminal import escape_control_chars
 
 if TYPE_CHECKING:
     from archivey.config import SalvageLimits
     from archivey.internal.diagnostics_collector import DiagnosticCollector
+    from archivey.types import ArchiveMember
 
 # Bytes one window of the search holds beyond the overlap. 1 MiB keeps a read large
 # enough to be cheap on a file and on a range-request source, and small enough to hold.
@@ -59,13 +65,19 @@ class SalvageRequest:
 
     requested: bool = False
     supported: bool = False
+    # The archive's start is not confirmed by its bytes (detection did not find the
+    # format there): the reader treats a first header that fails at offset 0 as
+    # damage at 0 and searches from 0. Set by the lost-start opener.
+    lost_start: bool = False
 
 
 _NO_REQUEST = SalvageRequest()
 
 
 @contextmanager
-def requesting_salvage(requested: bool, *, supported: bool) -> Generator[None]:
+def requesting_salvage(
+    requested: bool, *, supported: bool, lost_start: bool = False
+) -> Generator[None]:
     """Let the next reader built on this thread take this salvage request.
 
     ``open_archive`` wraps the backend's ``open_read`` in it with the caller's
@@ -76,7 +88,9 @@ def requesting_salvage(requested: bool, *, supported: bool) -> Generator[None]:
     diagnostic callback opens later in the same open does not.
     """
     before = getattr(_local, "request", _NO_REQUEST)
-    _local.request = SalvageRequest(requested=requested, supported=supported)
+    _local.request = SalvageRequest(
+        requested=requested, supported=supported, lost_start=lost_start
+    )
     try:
         yield
     finally:
@@ -165,9 +179,13 @@ class SalvageState:
         collector: DiagnosticCollector,
         archive_name: str | None,
         format_name: str,
+        lost_start: bool = False,
     ) -> None:
         self.requested = requested
         self.enabled = enabled
+        # Whether the reader starts with a search from offset 0 when its first
+        # header fails there (``SalvageRequest.lost_start``).
+        self.lost_start = lost_start
         self.limits = limits
         self._collector = collector
         self._archive_name = archive_name
@@ -309,15 +327,26 @@ def _in_layer(layer: str) -> str:
 
 
 def emit_salvage_unavailable(
-    collector: DiagnosticCollector, *, archive_name: str | None, format_name: str
+    collector: DiagnosticCollector,
+    *,
+    archive_name: str | None,
+    format_name: str,
+    forward_only: bool = False,
 ) -> None:
     """Record ``SALVAGE_UNAVAILABLE`` for a reader asked to salvage whose format has
-    no salvage search."""
+    no salvage search, or, with ``forward_only``, whose search needs to move back in
+    a layer this reader reads forward only (an archive inside another one)."""
+    why = (
+        "this reader reads its archive forward only, inside another archive, and the "
+        "search needs to go back"
+        if forward_only
+        else "archivey has no salvage search for this format"
+    )
     collector.emit(
         code=DiagnosticCode.SALVAGE_UNAVAILABLE,
         message=(
-            f"salvage=True has no effect on {format_name}: archivey has no salvage "
-            "search for this format, so the archive is read as it is without it."
+            f"salvage=True has no effect on {format_name}: {why}, so the archive is "
+            "read as it is without it."
         ),
         context=SalvageUnavailableContext(
             archive_name=archive_name, format=format_name
@@ -489,3 +518,131 @@ def _record_no_header(
             offset=region_start,
             length=layer_end - region_start,
         )
+
+
+def noting_search_limit(state: SalvageState, error: ArchiveyError) -> ArchiveyError:
+    """The damage error that ends a salvage pass: ``error`` itself, or, when
+    ``SalvageLimits.max_search_bytes`` stopped a search, a copy of it whose message
+    says so."""
+    if not state.limit_reached:
+        return error
+    noted = copy.copy(error)
+    raw = (
+        f"{error.raw_message}; salvage stopped there: SalvageLimits.max_search_bytes "
+        f"({state.limits.max_search_bytes}) stopped the search"
+    )
+    noted.raw_message = raw
+    noted.message = escape_control_chars(raw)
+    noted.args = (noted.message, *error.args[1:])
+    return noted
+
+
+class QuietSalvageState(SalvageState):
+    """The salvage state of a walk started over to reach member data: it searches as
+    the listing walk did, so it finds the same members, and records nothing, since
+    the listing walk recorded it all."""
+
+    @override
+    def _emit(self, context: RegionSkippedContext, message: str) -> None:
+        pass
+
+
+class WalkSalvage:
+    """What a sequential reader's walk uses to search past damage in the layer it
+    reads: built by archivey for each layer a random-access walk reads, and handed
+    out by ``ReaderContext._salvage(stream)`` (``None`` when the reader does not
+    salvage, or reads the layer forward only).
+
+    ``read_at`` and :meth:`search` read the layer through views of their own and do
+    not move the walk's stream; :meth:`seek` moves it, back as well as forward, to a
+    header the search found. :meth:`found` records ``MEMBER_FOUND_BY_SCAN`` for a
+    member about to be yielded. When the walk ends, :meth:`ending` gives the error
+    to raise, after :meth:`SalvageState.finish`.
+    """
+
+    def __init__(
+        self,
+        *,
+        state: SalvageState,
+        layer: str,
+        size: int | None,
+        read_at: Callable[[int, int], bytes],
+        open_reader: Callable[
+            [int], tuple[Callable[[int, int], bytes], Callable[[], None]]
+        ],
+        seek: Callable[[int], None],
+        report_found: Callable[[ArchiveMember, SalvageScanContext, str], None] | None,
+        format_name: str,
+    ) -> None:
+        self.state = state
+        self.layer = layer
+        self.size = size
+        self.read_at = read_at
+        self._open_reader = open_reader
+        self.seek = seek
+        self._report_found = report_found
+        self._format_name = format_name
+
+    @property
+    def lost_start(self) -> bool:
+        """The reader was asked to find its first header by a search from 0."""
+        return self.state.lost_start
+
+    def search(
+        self, search: HeaderSearch, *, start: int, base: int = 0
+    ) -> SearchResult:
+        """:func:`search_forward` over this layer from ``start``."""
+        read, close = self._open_reader(start)
+        try:
+            return search_forward(
+                self.state,
+                read,
+                search,
+                start=start,
+                end=self.size,
+                base=base,
+                layer=self.layer,
+            )
+        finally:
+            close()
+
+    def holds(self, end: int) -> bool:
+        """Whether the layer has bytes up to ``end``: a found member whose data runs
+        past the layer's end is not listed, since reading it would stop the pass."""
+        if self.size is not None:
+            return end <= self.size
+        return end <= 0 or len(self.read_at(end - 1, 1)) == 1
+
+    def found(
+        self,
+        member: ArchiveMember,
+        *,
+        offset: int,
+        confirmed: bool,
+        unchecked: tuple[str, ...] = ("position",),
+    ) -> None:
+        """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, before it is yielded."""
+        if self._report_found is None:
+            return
+        how = (
+            "the header after its data passes too"
+            if confirmed
+            else "nothing after it confirms it, so its sizes are unchecked"
+        )
+        self._report_found(
+            member,
+            SalvageScanContext(
+                member_name=member.name,
+                format=self._format_name,
+                offset=offset,
+                confirmed=confirmed,
+                unchecked=unchecked,
+            ),
+            f"Salvage found {self._format_name} member {member.name!r} by a header "
+            f"search at offset {offset}{_in_layer(self.layer)}; {how}.",
+        )
+
+    def ending(self, error: ArchiveyError) -> ArchiveyError:
+        """Finish the walk's salvage records and give the damage error to raise."""
+        self.state.finish()
+        return noting_search_limit(self.state, error)

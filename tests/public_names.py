@@ -33,8 +33,9 @@ def _imported_names(path: Path) -> Iterator[tuple[str, str]]:
 
 def assert_only_public_archivey(module_file: str | None) -> None:
     """Every archivey name the module imports is public, apart from the call that
-    registers it as a built-in format and ``override``, the typing decorator every
-    library source carries (a format from outside would take ``typing.override``)."""
+    registers it as a built-in format, ``override``, the typing decorator every
+    library source carries (a format from outside would take ``typing.override``),
+    and the salvage search's two names, which have no plugin hook yet."""
     assert module_file is not None
     for module, name in _imported_names(Path(module_file)):
         if module.split(".")[0] != "archivey":
@@ -44,6 +45,11 @@ def assert_only_public_archivey(module_file: str | None) -> None:
             continue
         if module == "archivey.internal.overrides":
             assert name == "override", name
+            continue
+        if module == "archivey.internal.salvage":
+            # The salvage search, which plugins get later through a hook of their
+            # own (openspec/changes/salvage-mode, design decision 4).
+            assert name in ("HeaderSearch", "WalkSalvage"), name
             continue
         assert module in _PUBLIC, module
         assert name in _PUBLIC[module], (module, name)

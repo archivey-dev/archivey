@@ -60,6 +60,7 @@ from archivey.internal.filters import (
 )
 from archivey.internal.format_adapter import HeldInnerData, register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.salvage import WalkSalvage
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -462,6 +463,14 @@ def _str_bytes(text: str) -> int:
     return 2 * len(text)
 
 
+def _ar_confirmed(salvage: WalkSalvage, after: int) -> bool:
+    """The ar reader's confirmation of a found header (``ar_confirmed``)."""
+    # Imported here, as in ``DebReader._search``.
+    from archivey.internal.backends.ar_reader import ar_confirmed
+
+    return ar_confirmed(salvage, after)
+
+
 def _tar_format(
     name: bytes, kind: bytes, streams: dict[bytes, StreamFormat]
 ) -> ArchiveFormat | None:
@@ -515,32 +524,128 @@ class DebReader(SequentialReader):
         self._count(size, "debian-binary member")
         self._read_version(stream.read_exact(size))
         stream.read(size & 1)
+        # Salvage (``open_archive(salvage=True)``): where an ar header after
+        # debian-binary is damaged, the walk searches on for the next ar header, as
+        # the ar reader does, and lists the tar it finds; the pass ends in the first
+        # damage. The tars themselves are read as they are.
+        salvage = self._context._salvage(stream) if self._context._salvage else None
+        damage: CorruptionError | None = None
+        search_from: int | None = None
         control = False
         while True:
-            name, size = self._header(stream)
+            if search_from is not None:
+                assert salvage is not None and damage is not None
+                hit = self._search(salvage, stream, search_from)
+                search_from = None
+                if hit is None:
+                    raise salvage.ending(damage)
+                offset, name, size = hit
+            else:
+                offset = stream.offset
+                try:
+                    name, size = self._header(stream)
+                except CorruptionError as err:
+                    if salvage is None:
+                        raise
+                    damage = damage or err
+                    search_from = offset
+                    continue
+            confirmed = True
+            if damage is not None:
+                # Past the damage, a member claims its data only when the header
+                # after it passes too, or the package ends there.
+                assert salvage is not None
+                confirmed = _ar_confirmed(
+                    salvage, offset + HEADER_SIZE + size + (size & 1)
+                )
+                if not confirmed:
+                    search_from = offset
             if name.startswith(b"_"):
                 stream.skip(size)
                 stream.read(size & 1)
                 continue
-            if not control:
-                fmt = _tar_format(name, b"control", _CONTROL_STREAMS)
-                if fmt is None:
+            fmt = None if control else _tar_format(name, b"control", _CONTROL_STREAMS)
+            if fmt is not None:
+                yield from self._found(
+                    salvage if damage else None,
+                    self._control(stream.take(size), fmt),
+                    offset,
+                    confirmed,
+                )
+                control = True
+                stream.read(size & 1)
+                continue
+            fmt = _tar_format(name, b"data", _DATA_STREAMS)
+            if fmt is None:
+                if damage is not None:
+                    # A header the search found that is not a package member: the
+                    # search goes on past it.
+                    search_from = offset
+                    continue
+                if not control:
                     raise CorruptionError(
                         "Debian package has no control.tar member after debian-binary"
                     )
-                yield from self._control(stream.take(size), fmt)
-                control = True
-            else:
-                fmt = _tar_format(name, b"data", _DATA_STREAMS)
-                if fmt is None:
-                    raise CorruptionError(
-                        "Debian package has an unexpected member before its data.tar"
-                    )
-                yield from self._data(stream.take(size), fmt)
-                # dpkg-deb reads no further: members after the data tar are not part
-                # of the package.
-                return
-            stream.read(size & 1)
+                raise CorruptionError(
+                    "Debian package has an unexpected member before its data.tar"
+                )
+            if not control and damage is None:
+                raise CorruptionError(
+                    "Debian package has no control.tar member after debian-binary"
+                )
+            yield from self._found(
+                salvage if damage else None,
+                self._data(stream.take(size), fmt),
+                offset,
+                confirmed,
+            )
+            # dpkg-deb reads no further: members after the data tar are not part of
+            # the package.
+            if salvage is not None:
+                if damage is not None:
+                    raise salvage.ending(damage)
+                salvage.state.finish()
+            return
+
+    @staticmethod
+    def _found(
+        salvage: WalkSalvage | None,
+        spans: Iterator[MemberSpan],
+        offset: int,
+        confirmed: bool,
+    ) -> Iterator[MemberSpan]:
+        """``spans``, each member flagged as found by the salvage search when
+        ``salvage`` is given: the tar's ar header at ``offset`` is past damage."""
+        for span in spans:
+            if salvage is not None:
+                salvage.found(span.member, offset=offset, confirmed=confirmed)
+            yield span
+
+    def _search(
+        self, salvage: WalkSalvage, stream: ForwardStream, start: int
+    ) -> tuple[int, bytes, int] | None:
+        """The next ar header the salvage search finds from ``start`` whose data
+        the package holds, with its offset, name and size; the stream is moved to
+        its data. ``None`` when none is found."""
+        while True:
+            # Imported here: importing the ar reader registers AR, and the order the
+            # formats register in is the order detection tries them.
+            from archivey.internal.backends.ar_reader import AR_HEADER_SEARCH
+
+            result = salvage.search(AR_HEADER_SEARCH, start=start)
+            if result.found is None:
+                return None
+            at = result.found
+            salvage.seek(at)
+            try:
+                name, size = self._header(stream)
+            except CorruptionError:
+                start = at
+                continue
+            if not salvage.holds(at + HEADER_SIZE + size):
+                start = at
+                continue
+            return at, name, size
 
     def _header(self, stream: ForwardStream) -> tuple[bytes, int]:
         """The next ar member's name and size."""
@@ -792,4 +897,4 @@ class DebHandler(SequentialFormatHandler):
         return DebReader(context)
 
 
-DebReadBackend = register_builtin_format(DebHandler)
+DebReadBackend = register_builtin_format(DebHandler, SUPPORTS_SALVAGE=True)

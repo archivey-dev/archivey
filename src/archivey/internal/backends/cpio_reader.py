@@ -32,13 +32,16 @@ never arrives (all its links empty, as for an empty file) is yielded at the trai
 the first as an empty ``FILE``, the rest as links to it.
 
 The reader is written against ``archivey.formats`` and archivey's public names only,
-as a format added from outside would be; ``register_builtin_format`` is the one
-internal name it uses (``tests/test_cpio.py`` checks). Handbook page:
+as a format added from outside would be; ``register_builtin_format`` and the
+salvage search (``internal.salvage``, which has no plugin hook yet) are the internal
+names it uses (``tests/test_cpio.py`` checks). With ``open_archive(salvage=True)`` the
+walk searches past damage for the next header (``_search``). Handbook page:
 ``dev-docs/formats/cpio.md``.
 """
 
 from __future__ import annotations
 
+import re
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -68,6 +71,7 @@ from archivey.formats import (
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.salvage import HeaderSearch, WalkSalvage
 from archivey.terminal import quoted
 from archivey.types import ArchiveFormat, ArchiveInfoExtra, ArchiveMember, MemberType
 
@@ -85,6 +89,62 @@ _ODC = b"070707"
 _NEWC = b"070701"
 _CRC = b"070702"
 _AFIO_LARGE = b"070727"
+
+
+_ASCII_MAGICS = frozenset({_ODC, _NEWC, _CRC})
+_ODC_SIZE = 76
+_NEWC_SIZE = 110
+# Each field of a header the salvage search checks: digits only.
+_NEWC_DIGITS = re.compile(rb"[0-9A-Fa-f]{104}\Z")
+_ODC_DIGITS = re.compile(rb"[0-7]{70}\Z")
+
+
+def _name_size(window: bytes, at: int, magics: frozenset[bytes]) -> int | None:
+    """The name size of the ASCII header at ``at`` of ``window`` when its magic is
+    one of ``magics``, every field holds digits only and the size is in range;
+    ``None`` otherwise, or when the header does not fit in ``window``."""
+    magic = window[at : at + 6]
+    if magic not in magics:
+        return None
+    if magic == _ODC:
+        fields = window[at + 6 : at + _ODC_SIZE]
+        if not _ODC_DIGITS.match(fields):
+            return None
+        name_size = int(fields[53:59], 8)
+    else:
+        fields = window[at + 6 : at + _NEWC_SIZE]
+        if not _NEWC_DIGITS.match(fields):
+            return None
+        name_size = int(fields[88:96], 16)
+    return name_size if 1 <= name_size <= MAX_NAME_BYTES else None
+
+
+def _passes(window: bytes, at: int, magics: frozenset[bytes]) -> bool:
+    """Whether a header the salvage search accepts starts at ``at`` of ``window``:
+    its magic is one of ``magics``, every field parses, the name size is in range
+    and the name ends with its NUL there."""
+    name_size = _name_size(window, at, magics)
+    if name_size is None:
+        return False
+    end = at + (_ODC_SIZE if window[at : at + 6] == _ODC else _NEWC_SIZE) + name_size
+    return end <= len(window) and window[end - 1] == 0
+
+
+def _header_search(magics: frozenset[bytes], step: int) -> HeaderSearch:
+    """The salvage search for the headers of ``magics``, at every ``step`` bytes."""
+
+    def find_header(window: bytes, start: int) -> int | None:
+        at = start
+        while True:
+            # The three ASCII magics share their first five bytes.
+            i = window.find(b"07070", at)
+            if i < 0:
+                return None
+            if i % step == 0 and _passes(window, i, magics):
+                return i
+            at = i + 1
+
+    return HeaderSearch(find_header, step, _NEWC_SIZE + MAX_NAME_BYTES)
 
 
 class Variant(Enum):
@@ -127,6 +187,13 @@ _AFIO_LARGE_FIELDS = (
 _AFIO_LARGE_SEPARATORS = ((24, b"m"), (79, b"n"), (92, b"s"), (109, b":"))
 
 _S_IFMT = 0o170000
+
+# The magic each variant's salvage search looks for; binary has no search.
+_VARIANT_MAGICS = {
+    Variant.ODC: frozenset({_ODC}),
+    Variant.NEWC: frozenset({_NEWC}),
+    Variant.CRC: frozenset({_CRC}),
+}
 
 
 @dataclass
@@ -217,21 +284,51 @@ class CpioReader(SequentialReader):
     @override
     def walk(self, stream: ForwardStream) -> Iterator[MemberSpan]:
         groups: dict[tuple[tuple[int, int], int], _LinkGroup] = {}
+        # Salvage (``open_archive(salvage=True)``): the layer's search, the first
+        # damage the walk met, where the next search starts, and the origin of the
+        # candidate positions (0, or a header found after a lost start).
+        salvage = self._context._salvage(stream) if self._context._salvage else None
+        damage: CorruptionError | None = None
+        search_from: int | None = None
+        base = 0
         while True:
-            header = self._read_header(stream)
-            raw = stream.read_exact(header.name_size)
-            if raw[-1:] != b"\0":
-                raise CorruptionError(
-                    f"CPIO header at offset {header.offset}: the name is not "
-                    "NUL-terminated"
-                )
-            raw = raw[:-1]
-            stream.skip(self._name_pad(header))
+            if search_from is not None:
+                assert salvage is not None and damage is not None
+                hit = self._search(salvage, stream, search_from, base)
+                search_from = None
+                if hit is None:
+                    raise salvage.ending(damage)
+                header, raw, base = hit
+            else:
+                offset = stream.offset
+                try:
+                    header, raw = self._read_entry(stream)
+                except CorruptionError as err:
+                    if salvage is None or self._search_magics(salvage) is None:
+                        raise
+                    # Damage: the walk searches on from the damaged header, and the
+                    # pass ends in this error.
+                    damage = damage or err
+                    search_from = offset
+                    continue
             if raw == TRAILER:
                 yield from self._flush(groups)
                 self._check_end(stream)
+                if salvage is not None:
+                    if damage is not None:
+                        raise salvage.ending(damage)
+                    salvage.state.finish()
                 return
             member = self._member(header, raw)
+            if damage is not None:
+                # Past the damage every member is one the default does not list: the
+                # one the search found, and those walked on from it.
+                assert salvage is not None
+                confirmed = self._confirmed(salvage, header)
+                salvage.found(member, offset=header.offset, confirmed=confirmed)
+                if not confirmed:
+                    # No claim on its data: the search goes on inside it.
+                    search_from = header.offset
             size = header.file_size
             # A file that shares its inode with another.
             key = (header.dev, header.ino)
@@ -268,6 +365,85 @@ class CpioReader(SequentialReader):
                     link.size = None
                     yield MemberSpan(link, 0)
                 group.held.clear()
+
+    def _read_entry(self, stream: ForwardStream) -> tuple[Header, bytes]:
+        """The next header and its name, the NUL taken off, and the name's padding."""
+        header = self._read_header(stream)
+        raw = stream.read_exact(header.name_size)
+        if raw[-1:] != b"\0":
+            raise CorruptionError(
+                f"CPIO header at offset {header.offset}: the name is not NUL-terminated"
+            )
+        stream.skip(self._name_pad(header))
+        return header, raw[:-1]
+
+    # Salvage ------------------------------------------------------------------------
+
+    def _search_magics(self, salvage: WalkSalvage) -> frozenset[bytes] | None:
+        """The magics the salvage search looks for: the variant the archive showed,
+        any of the three ASCII ones after a lost start, or ``None`` for a binary
+        archive, which has no search."""
+        variant = self._variant
+        if variant is None:
+            if salvage.lost_start:
+                return _ASCII_MAGICS
+            # The first header failed: its magic still names the variant.
+            magic = salvage.read_at(0, len(_ODC))
+            if magic == _AFIO_LARGE:
+                return frozenset({_ODC})
+            return frozenset({magic}) if magic in _ASCII_MAGICS else None
+        return _VARIANT_MAGICS.get(variant)
+
+    def _search(
+        self, salvage: WalkSalvage, stream: ForwardStream, start: int, base: int
+    ) -> tuple[Header, bytes, int] | None:
+        """The next header the salvage search finds from ``start`` that the walk
+        reads and whose data the layer holds, with the base of the later searches; the
+        stream is moved to after its name. ``None`` when none is
+        found."""
+        # A search for any variant (a lost start) runs at every byte; the header it
+        # finds sets the alignment of the later ones.
+        any_variant = self._variant is None
+        while True:
+            magics = self._search_magics(salvage)
+            assert magics is not None
+            step = 1 if _ODC in magics else 4
+            result = salvage.search(
+                _header_search(magics, step), start=start, base=base % step
+            )
+            if result.found is None:
+                return None
+            at = result.found
+            salvage.seek(at)
+            try:
+                header, raw = self._read_entry(stream)
+            except CorruptionError:
+                start = at
+                continue
+            if not salvage.holds(stream.offset + header.file_size):
+                start = at
+                continue
+            return header, raw, at if any_variant else base
+
+    def _confirmed(self, salvage: WalkSalvage, header: Header) -> bool:
+        """Whether the header after a found member's data passes the search's check
+        (the trailer included)."""
+        after = (
+            header.offset
+            + (_ODC_SIZE if header.variant is Variant.ODC else _NEWC_SIZE)
+            + header.name_size
+            + self._name_pad(header)
+            + header.file_size
+            + self._data_pad(header)
+        )
+        magics = _VARIANT_MAGICS[header.variant]
+        head = salvage.read_at(after, _NEWC_SIZE)
+        name_size = _name_size(head, 0, magics)
+        if name_size is None:
+            return False
+        fixed = _ODC_SIZE if head[:6] == _ODC else _NEWC_SIZE
+        whole = head[:fixed] + salvage.read_at(after + fixed, name_size)
+        return _passes(whole, 0, magics)
 
     def _flush(
         self, groups: dict[tuple[tuple[int, int], int], _LinkGroup]
@@ -562,4 +738,4 @@ class CpioHandler(SequentialFormatHandler):
         return CpioReader(context)
 
 
-CpioReadBackend = register_builtin_format(CpioHandler)
+CpioReadBackend = register_builtin_format(CpioHandler, SUPPORTS_SALVAGE=True)
