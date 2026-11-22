@@ -161,7 +161,7 @@ jobs:
         run: |
           # Read-only: the container cannot change the wheels the next step uploads.
           docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/w:ro -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
-            # No free-threaded 3.13 in the image: test that wheel on uv's, as built.
+            # No free-threaded 3.13 in the image: test that wheel on the uv build, as built.
             /opt/python/cp312-cp312/bin/python -m pip install -q uv
             /opt/python/cp312-cp312/bin/python -m uv python install 3.13t
             for tag in cp311-cp311 cp314-cp314 cp313-cp313t cp314-cp314t; do
