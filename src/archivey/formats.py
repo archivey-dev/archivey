@@ -611,6 +611,9 @@ class _TakenView(io.RawIOBase):
     """What :meth:`ForwardStream._take_view` returns: a seekable view of the next
     bytes of its stream, up to ``end``, read at its own position. Internal."""
 
+    # What close() reads, set before __init__ runs.
+    _view: BinaryIO | None = None
+
     def __init__(self, view: BinaryIO, end: int) -> None:
         self._view = view
         self.end = end
@@ -635,6 +638,7 @@ class _TakenView(io.RawIOBase):
     @override
     def readinto(self, buffer: Any) -> int:
         self._check()
+        assert self._view is not None
         data = self._view.read(len(buffer))
         buffer[: len(data)] = data
         return len(data)
@@ -642,20 +646,23 @@ class _TakenView(io.RawIOBase):
     @override
     def read(self, size: int | None = -1, /) -> bytes:
         self._check()
+        assert self._view is not None
         return self._view.read(-1 if size is None else size)
 
     @override
     def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
         self._check()
+        assert self._view is not None
         return self._view.seek(offset, whence)
 
     @override
     def tell(self) -> int:
+        assert self._view is not None
         return self._view.tell()
 
     @override
     def close(self) -> None:
-        if not self.closed:
+        if not self.closed and self._view is not None:
             self._view.close()
         super().close()
 
