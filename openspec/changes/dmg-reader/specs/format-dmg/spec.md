@@ -194,16 +194,16 @@ unencrypted one through AES-CBC blocks of the header's block size. With no passw
 `open_archive` SHALL raise `EncryptionError`; with no right password among the
 candidates it SHALL raise the wrong-password `EncryptionError`. The key-derivation work
 SHALL count against archivey's key-derivation budget, charged with each entry's
-iteration count when a password is tried. The image and its members SHALL
-report `is_encrypted`, and `archive_info().extra["dmg.encryption"]` SHALL name the
-cipher (`"AES-128"`, `"AES-192"`, `"AES-256"`). Every length in the encrypted header
-(data block size, key-entry count and sizes, salt, IV and wrapped-key lengths) SHALL be
-checked before any read and before a password is asked for: a data block size other
-than 512 or 4096 SHALL raise `UnsupportedFeatureError`, a length past the header or its
+iteration count when a password is tried. The image and its members SHALL report
+`is_encrypted`, and `archive_info().extra["dmg.encryption"]` SHALL name the cipher
+(`"AES-128"`, `"AES-192"`, `"AES-256"`). Every length in the encrypted header (data
+block size, key-entry count and sizes, salt, IV and wrapped-key lengths) SHALL be
+checked before any read and before a password is asked for: a data block size other than
+512 or 4096 SHALL raise `UnsupportedFeatureError`, a length past the header or its
 field, or a key-entry count or iteration count of 0, `CorruptionError`, and a count or
-size over its cap (16 key entries; 4 KiB for each key entry) `ResourceLimitError`. `cdsaencr` v1 images and images
-with no password key entry SHALL raise `UnsupportedFeatureError`. Without
-`cryptography`, `PackageNotInstalledError`.
+size over its cap (16 key entries; 4 KiB for each key entry) `ResourceLimitError`.
+`cdsaencr` v1 images and images with no password key entry SHALL raise
+`UnsupportedFeatureError`. Without `cryptography`, `PackageNotInstalledError`.
 
 #### Scenario: encrypted images
 
