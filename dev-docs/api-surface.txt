@@ -1065,14 +1065,14 @@ field archivey.diagnostics.RegionSkippedContext.offset: int = 0
 field archivey.diagnostics.RegionSkippedContext.reason: Literal['no_header', 'search_limit', 'report_limit'] = 'no_header'
 method archivey.diagnostics.RegionSkippedContext.to_dict(self) -> dict[str, object]
 class archivey.diagnostics.SalvageScanContext(_JsonSafeContext)
-init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',)) -> None
+init archivey.diagnostics.SalvageScanContext(kind: Literal['salvage_scan'] = 'salvage_scan', archive_name: str | None = None, member_name: str = '', member_id: int | None = None, format: str = '', method: Literal['header_search', 'header_repair'] = 'header_search', offset: int = 0, confirmed: bool = False, unchecked: tuple[str, ...] = ('position',)) -> None
 field archivey.diagnostics.SalvageScanContext.archive_name: str | None = None
 field archivey.diagnostics.SalvageScanContext.confirmed: bool = False
 field archivey.diagnostics.SalvageScanContext.format: str = ''
 field archivey.diagnostics.SalvageScanContext.kind: Literal['salvage_scan'] = 'salvage_scan'
 field archivey.diagnostics.SalvageScanContext.member_id: int | None = None
 field archivey.diagnostics.SalvageScanContext.member_name: str = ''
-field archivey.diagnostics.SalvageScanContext.method: Literal['header_search'] = 'header_search'
+field archivey.diagnostics.SalvageScanContext.method: Literal['header_search', 'header_repair'] = 'header_search'
 field archivey.diagnostics.SalvageScanContext.offset: int = 0
 field archivey.diagnostics.SalvageScanContext.unchecked: tuple[str, ...] = ('position',)
 method archivey.diagnostics.SalvageScanContext.to_dict(self) -> dict[str, object]

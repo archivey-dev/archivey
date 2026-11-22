@@ -286,10 +286,11 @@ class DiagnosticCode(StrEnum):
     write another tree or refuse it. Advisory: the shapes come from real archives."""
     MEMBER_FOUND_BY_SCAN = "member_found_by_scan"
     """A reader opened with ``open_archive(salvage=True)`` found this member by
-    searching past damage, not by the format's normal walk. Its header passed the
-    format's own checks, but nothing says it belongs at this level of the archive: a
-    header of an archive stored inside a member passes too. The context says which
-    fields no check covers. Reported once per member, at listing. Salvage only."""
+    searching past damage, or listed it from a header it repaired (a 7z start or
+    end header), not by the format's normal walk. Its header passed the format's own
+    checks, but nothing says it belongs at this level of the archive: a header of an
+    archive stored inside a member passes too. The context says which fields no check
+    covers. Reported once per member, at listing. Salvage only."""
     ARCHIVE_REGION_SKIPPED = "archive_region_skipped"
     """A salvage search (``open_archive(salvage=True)``) stepped over a range of the
     archive in which no header passed the format's checks, or stopped at a
@@ -1385,19 +1386,29 @@ class SalvageScanContext(_JsonSafeContext):
     """A salvage search found a member past damage (``MEMBER_FOUND_BY_SCAN``).
 
     ``format`` is the archive format's name. ``method`` says how the member was
-    found: ``"header_search"``, a forward search for a header that passes the
-    format's checks. ``offset`` is where the member's header starts, counted from the
-    start of its layer (``RegionSkippedContext.layer``).
+    found:
+
+    - ``"header_search"``: a search for a header that passes the format's checks (for
+      7z, an end header found by a search of the file's tail, or a copy of the header
+      found in the packed area);
+    - ``"header_repair"``: a header whose stored fields salvage corrected under a CRC,
+      or used although it fails its own CRC (7z: the start header, or the end header
+      when its parse and decode check it).
+
+    ``offset`` is where the member's header starts, counted from the start of its
+    layer (``RegionSkippedContext.layer``); for 7z, where the end header used starts.
 
     ``confirmed`` is ``True`` when the header after the member's data passes the same
-    checks, or is the format's clean end. An unconfirmed member's sizes are checked by
-    nothing, so its data may run into other members' bytes.
+    checks, or is the format's clean end; for 7z, when a CRC-32 confirmed the end
+    header used. An unconfirmed member's sizes are checked by nothing, so its data may
+    run into other members' bytes.
 
-    ``unchecked`` names the fields no check covers. It always holds ``"position"``:
-    nothing says the member belongs at this level of the archive, since a header of an
-    archive stored inside a member passes the checks too. A format adds the fields its
-    damage could leave wrong, such as ``"name"`` when a long name may have been in
-    the lost region.
+    ``unchecked`` names the fields no check covers. For a format that searches for
+    member headers it always holds ``"position"``: nothing says the member belongs at
+    this level of the archive, since a header of an archive stored inside a member
+    passes the checks too. A format adds the fields its damage could leave wrong, such
+    as ``"name"`` when a long name may have been in the lost region. A 7z member
+    listed from an end header a CRC-32 confirmed has it empty.
     """
 
     kind: Literal["salvage_scan"] = "salvage_scan"
@@ -1405,7 +1416,7 @@ class SalvageScanContext(_JsonSafeContext):
     member_name: str = ""
     member_id: int | None = None
     format: str = ""
-    method: Literal["header_search"] = "header_search"
+    method: Literal["header_search", "header_repair"] = "header_search"
     offset: int = 0
     confirmed: bool = False
     unchecked: tuple[str, ...] = ("position",)

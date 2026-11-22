@@ -259,3 +259,20 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+
+
+def test_7z_salvages_and_records_no_unavailable(tmp_path: Path) -> None:
+    """7z has a salvage search (``openspec/changes/salvage-7z``): an intact archive
+    reads as without salvage and records none of the salvage codes. Its repairs are
+    tested in ``tests/test_sevenzip_salvage.py``."""
+    from tests.sevenzip_salvage_util import source_files, write_7z
+
+    path = tmp_path / "a.7z"
+    path.write_bytes(write_7z(source_files(3)))
+    assert _listing(path, salvage=True) == _listing(path)
+    with open_archive(path, salvage=True) as reader:
+        reader.members()
+        list(reader.stream_members())
+        assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+        assert isinstance(reader, BaseArchiveReader)
+        assert reader._salvage_mode.enabled

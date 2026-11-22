@@ -22,13 +22,13 @@ stack on step 3's switch PR (`salvage-mode`).
 
 ## 2. Salvage: header repair (PR 2)
 
-- [ ] 2.1 `supports_salvage` for 7z; `method` values `"header_repair"` and
+- [x] 2.1 `supports_salvage` for 7z; `method` values `"header_repair"` and
       `"header_search"`.
-- [ ] 2.2 R1, R2, R3 (a, b, c), R4 in `sevenzip_parser.py`, pure on bytes; search bytes
+- [x] 2.2 R1, R2, R3 (a, b, c), R4 in `sevenzip_parser.py`, pure on bytes; search bytes
       counted through the step 3 driver.
 - [ ] 2.3 A next header that fails its CRC: parse anyway, accept under the folder CRC.
 - [ ] 2.4 Lost start (decision 11): R4 search, the lost-byte count, folders after it.
-- [ ] 2.5 Tests: every Q15 damage row; add-only (default raises, salvage lists all, the
+- [x] 2.5 Tests: every Q15 damage row; add-only (default raises, salvage lists all, the
       pass ends in the default's error); `max_search_bytes=0`; the R2 candidate count.
 
 ## 3. Salvage: content (PR 3)

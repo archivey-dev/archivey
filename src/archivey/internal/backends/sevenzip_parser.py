@@ -887,6 +887,31 @@ def parse_decoded_header(decoded: bytes, *, max_members: int | None) -> PlainHea
     return block
 
 
+def parse_header_prefix(
+    data: bytes | memoryview, *, max_members: int | None
+) -> tuple[HeaderBlock, int]:
+    """Parse the header block that starts ``data``, up to its final ``kEnd``, and
+    return it with the count of bytes it takes. Bytes after that ``kEnd`` are left
+    alone, where :func:`parse_header_block` refuses them.
+
+    Salvage uses it on bytes whose end nothing gives: an end header found by its
+    first bytes, and an LZMA1 stream decoded past the header it holds (LZMA1 as 7-Zip
+    writes it has no end marker). ``data`` must start with ``kHeader`` or
+    ``kEncodedHeader``.
+    """
+    cur = _Cursor(data)
+    prop = _read_property(cur, "7z header")
+    if prop == _Property.HEADER:
+        block: HeaderBlock = _parse_plain_header(
+            cur, max_members=max_members, exact=False
+        )
+    elif prop == _Property.ENCODED_HEADER:
+        block = EncodedHeader(_read_streams_info(cur, max_members=max_members))
+    else:
+        raise CorruptionError(f"Expected 7z HEADER or ENCODED_HEADER, got 0x{prop:02x}")
+    return block, cur.pos
+
+
 def _require_header_consumed(cur: _Cursor) -> None:
     """Refuse bytes after the header's final ``kEnd``.
 
@@ -1067,13 +1092,20 @@ __all__ = [
     "packed_streams_end",
     "parse_decoded_header",
     "parse_header_block",
+    "parse_header_prefix",
     "read_signature_and_next_header",
     "unpack_signature_header",
 ]
 
 
-def _parse_plain_header(cur: _Cursor, *, max_members: int | None) -> PlainHeader:
-    """Read the sections of a ``kHeader`` up to its ``kEnd``; ``cur`` is past the tag."""
+def _parse_plain_header(
+    cur: _Cursor, *, max_members: int | None, exact: bool = True
+) -> PlainHeader:
+    """Read the sections of a ``kHeader`` up to its ``kEnd``; ``cur`` is past the tag.
+
+    ``exact=False`` leaves ``cur`` after the ``kEnd`` instead of refusing the bytes
+    after it (:func:`parse_header_prefix`).
+    """
     streams = _StreamsInfo()
     files: list[SevenZipFileRecord] = []
     comment: str | None = None
@@ -1081,7 +1113,8 @@ def _parse_plain_header(cur: _Cursor, *, max_members: int | None) -> PlainHeader
     while True:
         prop = _read_property(cur, "7z plain header")
         if prop == _Property.END:
-            _require_header_consumed(cur)
+            if exact:
+                _require_header_consumed(cur)
             return PlainHeader(streams, files, comment)
         if prop == _Property.ARCHIVE_PROPERTIES:
             _skip_archive_properties(cur)

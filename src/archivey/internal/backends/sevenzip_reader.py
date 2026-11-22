@@ -43,6 +43,7 @@ from archivey.diagnostics import (
     ArchiveStructureContext,
     DiagnosticCode,
     DigestContext,
+    SalvageScanContext,
 )
 from archivey.exceptions import (
     ArchiveyError,
@@ -61,6 +62,7 @@ from archivey.internal.backends.sevenzip_detect import (
 )
 from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
+    SIGNATURE_HEADER_SIZE,
     ZEROED_START_ERROR,
     EncodedHeader,
     FolderGraph,
@@ -81,6 +83,8 @@ from archivey.internal.backends.sevenzip_parser import (
     parse_decoded_header,
     parse_header_block,
     read_signature_and_next_header,
+    start_header_is_zero,
+    unpack_signature_header,
 )
 from archivey.internal.backends.sevenzip_pipeline import (
     aes_tail_confirms,
@@ -89,6 +93,14 @@ from archivey.internal.backends.sevenzip_pipeline import (
     encoded_header_needs_password,
     folder_aes_tail,
     open_folder_pipeline,
+)
+from archivey.internal.backends.sevenzip_salvage import (
+    EndHeaderFind,
+    TailBudget,
+    repair_one_byte,
+    repair_stored_fields,
+    search_tail_crc,
+    zeroed_start_candidates,
 )
 from archivey.internal.base_reader import (
     UNREADABLE_LINK_TARGET_ERRORS,
@@ -158,6 +170,7 @@ from archivey.internal.streams.streamtools import (
     SolidBlockReader,
     check_seek_args,
     is_seekable,
+    read_exact,
     skip_forward,
 )
 from archivey.internal.streams.streamtools.binaryio import read_blocking
@@ -319,6 +332,29 @@ def _compression_coders(folder: SevenZipFolder) -> list[SevenZipCoder]:
         first_input = graph.inputs[index][:1]
         index = graph.producer(first_input[0]) if first_input else None
     return walk
+
+
+@dataclass
+class _SalvageOutcome:
+    """What salvage found where the default open failed: the archive read from an
+    end header it found (``find``), whether a CRC-32 confirmed that header, where the
+    start header puts the next header (the packed area ends there), and whether
+    ``SalvageLimits.max_search_bytes`` stopped a search."""
+
+    archive: SevenZipArchive | None = None
+    find: EndHeaderFind | None = None
+    confirmed: bool = False
+    header_start: int | None = None
+    limit_reached: bool = False
+
+
+@dataclass(frozen=True)
+class _SalvageOpen:
+    """A salvage open: the default's error, raised at the end of the pass, and what
+    salvage found."""
+
+    error: CorruptionError | TruncatedError
+    outcome: _SalvageOutcome
 
 
 @dataclass(frozen=True)
@@ -1024,10 +1060,14 @@ class SevenZipReader(BaseArchiveReader):
         finally:
             probe.close()
         self._volume_count = source.volume_count
+        # Set when the default open failed and salvage read the archive anyway: the
+        # pass ends in the default's error (``_iter_members``).
+        self._salvaged: _SalvageOpen | None = None
         self._archive = self._load_archive()
         self._report_recovered_start_header()
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
+        self._report_salvaged_members()
         self._folder_members = self._members_by_folder()
         # Folders whose unpack digest proves bytes no member's own CRC covers: several
         # members, and one with no CRC. A one-file folder's digest is already its
@@ -1055,7 +1095,9 @@ class SevenZipReader(BaseArchiveReader):
                 for member in members:
                     if _member_crc(member) is None:
                         mark_spanning_checksum(member)
-        self._report_trailing_data()
+        if self._salvaged is None:
+            # A salvaged archive's end is not known, and its pass ends in an error.
+            self._report_trailing_data()
 
     def _view(self, start: int, length: int | None = None) -> BinaryIO:
         """A source view whose ``start`` is measured from the signature header.
@@ -1081,6 +1123,14 @@ class SevenZipReader(BaseArchiveReader):
             return self._load_archive_counted()
 
     def _load_archive_counted(self) -> SevenZipArchive:
+        try:
+            return self._load_default()
+        except (CorruptionError, TruncatedError) as exc:
+            if not self._salvage_mode.enabled:
+                raise
+            return self._salvage_archive(exc)
+
+    def _load_default(self) -> SevenZipArchive:
         return load_sevenzip_archive(
             self._view(0),
             passwords=self._passwords,
@@ -1094,6 +1144,178 @@ class SevenZipReader(BaseArchiveReader):
             ),
             budget=self._stage_draws,
         )
+
+    # Salvage (open_archive(salvage=True)) --------------------------------------------
+
+    def _salvage_archive(
+        self, error: CorruptionError | TruncatedError
+    ) -> SevenZipArchive:
+        """Read the archive the default open refused with ``error``, in salvage mode.
+
+        Tries the start-header and end-header repairs of
+        ``openspec/changes/salvage-7z`` (decisions 2 and 3) and reads the archive from
+        the first end header that passes. With none, the archive lists nothing. Either
+        way the open succeeds and the pass ends in ``error`` (``_iter_members``), whose
+        message then says what salvage did.
+        """
+        view = self._view(0)
+        try:
+            outcome = self._find_salvage_header(view)
+        finally:
+            view.close()
+        self._salvaged = _SalvageOpen(error, outcome)
+        if outcome.archive is not None:
+            return outcome.archive
+        return empty_archive(SignatureInfo(0, 4, b"", SIGNATURE_HEADER_SIZE))
+
+    def _find_salvage_header(self, view: BinaryIO) -> _SalvageOutcome:
+        file_size = view.seek(0, io.SEEK_END)
+
+        def read_at(offset: int, size: int) -> bytes:
+            view.seek(offset)
+            return read_exact(view, size)
+
+        outcome = _SalvageOutcome()
+        signature = read_at(0, SIGNATURE_HEADER_SIZE)
+        if len(signature) < SIGNATURE_HEADER_SIZE:
+            return outcome
+        fields = unpack_signature_header(signature)
+        if not fields.magic_ok or fields.major_version != 0:
+            return outcome
+        start_header = signature[12:SIGNATURE_HEADER_SIZE]
+        budget = TailBudget(self._salvage_mode)
+        if fields.start_header_crc_ok:
+            # The start header is intact: the damage is in the next header or after.
+            pass
+        elif start_header_is_zero(signature):
+            # The default's rule for a zeroed start header failed; R4 looks further.
+            for start, data in zeroed_start_candidates(read_at, file_size, budget):
+                find = EndHeaderFind(start, data, "R4", crc_checked=False)
+                if self._try_salvage_load(view, signature, find, outcome):
+                    break
+        else:
+            stored_crc = int.from_bytes(signature[8:12], "little")
+            find = (
+                repair_stored_fields(start_header, read_at, file_size)
+                or repair_one_byte(start_header, stored_crc, read_at, file_size)
+                or search_tail_crc(start_header, read_at, file_size, budget)
+            )
+            if find is not None:
+                self._try_salvage_load(view, signature, find, outcome)
+        if outcome.archive is None:
+            budget.stopped(file_size)
+            outcome.limit_reached = self._salvage_mode.limit_reached
+        return outcome
+
+    def _try_salvage_load(
+        self,
+        view: BinaryIO,
+        signature: bytes,
+        find: EndHeaderFind,
+        outcome: _SalvageOutcome,
+    ) -> bool:
+        """Parse and decode the end header ``find``, and keep the archive in
+        ``outcome`` when it loads. ``outcome.header_start`` is set either way: the
+        start header leads there, so the packed area ends there."""
+        outcome.header_start = find.start
+        info = SignatureInfo(
+            signature[6], signature[7], find.data, find.start + len(find.data)
+        )
+        max_members = self._config.listing_limits.max_members
+        try:
+            block = parse_header_block(find.data, max_members=max_members)
+            archive = _load_from_signature(
+                view,
+                info,
+                passwords=self._passwords,
+                key_cache=self._key_cache,
+                stream_config=self._stream_config,
+                collector=self._diagnostics_collector,
+                max_members=max_members,
+                max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
+                budget=self._stage_draws,
+            )
+        except (CorruptionError, TruncatedError):
+            return False
+        # A CRC-32 confirmed the end header's bytes, or its decode passed the folder
+        # CRC of the encoded header; a plain header found by its parse alone, or an
+        # encoded one with no CRC, is confirmed by nothing.
+        confirmed = find.crc_checked or (
+            isinstance(block, EncodedHeader)
+            and all(f.digest_defined for f in block.streams.folders or [])
+        )
+        outcome.archive = archive
+        outcome.find = find
+        outcome.confirmed = confirmed
+        return True
+
+    def _report_salvaged_members(self) -> None:
+        """Record ``MEMBER_FOUND_BY_SCAN`` for each member salvage listed from an end
+        header the default open could not use. The default listed none of them: it
+        raised at open (add-only, Q2)."""
+        salvaged = self._salvaged
+        if salvaged is None or salvaged.outcome.find is None:
+            return
+        find = salvaged.outcome.find
+        confirmed = salvaged.outcome.confirmed
+        offset = self._origin + find.start
+        unchecked: tuple[str, ...] = () if confirmed else ("position",)
+        check = (
+            "a CRC-32 confirms that end header"
+            if confirmed
+            else "only its parse checks that end header"
+        )
+        for index, member in enumerate(self._members):
+            self._diagnostics_collector.emit(
+                code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,
+                message=(
+                    f"7z member {quoted(member.name)} was listed by salvage from the "
+                    f"end header at offset {offset}, found by {find.description}: "
+                    f"{check}."
+                ),
+                context=SalvageScanContext(
+                    archive_name=self._archive_name,
+                    member_name=member.name,
+                    member_id=index,
+                    format=ArchiveFormat.SEVEN_Z.display_name,
+                    method=find.method,
+                    offset=offset,
+                    confirmed=confirmed,
+                    unchecked=unchecked,
+                ),
+                member=member,
+                logger=backends_logger,
+            )
+
+    def _salvage_error(self) -> ArchiveyError:
+        """The error a salvaged pass ends in: the default's, saying what salvage did."""
+        salvaged = self._salvaged
+        assert salvaged is not None
+        error = salvaged.error
+        outcome = salvaged.outcome
+        notes: list[str] = []
+        if outcome.find is not None:
+            notes.append(
+                "salvage read the end header at offset "
+                f"{self._origin + outcome.find.start}, found by "
+                f"{outcome.find.description}, and flagged every member it lists "
+                "with MEMBER_FOUND_BY_SCAN"
+            )
+        else:
+            notes.append("salvage found no end header it could use")
+        if outcome.limit_reached:
+            notes.append(
+                "SalvageLimits.max_search_bytes stopped the search, so nothing after "
+                "that point is listed"
+            )
+        message = (
+            f"{raw_message_of(error).rstrip('.')}. In salvage mode, "
+            + "; ".join(notes)
+            + "."
+        )
+        salvage_error = type(error)(message)
+        salvage_error.__cause__ = error
+        return salvage_error
 
     def _report_recovered_start_header(self) -> None:
         """Report a start header that was zero, whose next header was found by its
@@ -1266,6 +1488,11 @@ class SevenZipReader(BaseArchiveReader):
     @override
     def _iter_members(self) -> Iterator[ArchiveMember]:
         yield from self._members
+        if self._salvaged is not None:
+            # The default open raised; salvage lists what it found, and the pass
+            # still ends in that error (Q3).
+            self._salvage_mode.finish()
+            raise self._salvage_error()
 
     @override
     def _iter_with_data(
@@ -2429,6 +2656,7 @@ class SevenZipReadBackend(ReadBackend):
     SFX_HIT_VALIDATOR = staticmethod(validate_sevenzip_signature_header)
     SFX_PARSER_SCANS = True
     SUPPORTS_PASSWORD = True
+    SUPPORTS_SALVAGE = True
     SUPPORTS_STREAMING_NON_SEEKABLE = False
     NON_SEEKABLE_REASON = "its index is at the end of the file"
     OPTIONAL_DEPENDENCY = None

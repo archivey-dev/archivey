@@ -15,8 +15,8 @@ one line. How to write the entry: see
 ### Added
 
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
-  (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
-  reads as before and records `SALVAGE_UNAVAILABLE`.
+  (`ArchiveyConfig.salvage_limits`): 7z repairs a damaged start header and lists what it
+  finds, flagged; other formats read as before and record `SALVAGE_UNAVAILABLE`.
 
 ### Changed
 
