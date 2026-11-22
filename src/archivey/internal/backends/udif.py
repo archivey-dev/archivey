@@ -25,6 +25,7 @@ Detection keeps the ``koly`` signatures here (:data:`MAGIC`, :data:`TRAILER`): a
 from __future__ import annotations
 
 import bisect
+import contextlib
 import io
 import plistlib
 import struct
@@ -32,7 +33,7 @@ import xml.parsers.expat
 import zlib
 from array import array
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import TYPE_CHECKING, BinaryIO, NamedTuple, NoReturn
 
 from archivey.diagnostics import (
@@ -302,6 +303,10 @@ class UdifImage:
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
+        self._budget_total = OPEN_BUDGET
+        self._budget_what = "opening the UDIF image"
+        # Whether served zeros count against the budget (only inside ``budget()``).
+        self._count_zeros = False
         size = source.size
         if size is None:
             with source.view(0) as whole:
@@ -597,14 +602,40 @@ class UdifImage:
         budget."""
         self._budget = None
 
+    @contextlib.contextmanager
+    def budget(self, nbytes: int, what: str) -> Generator[None]:
+        """Count the bytes read inside the block against ``nbytes``:
+        ``ResourceLimitError`` names ``what`` when they would exceed it. For a bounded
+        step after the open, such as the APFS checkpoint scan (design §6A.2). The
+        physical bytes read and the bytes decoded count, as the open budget counts
+        them, and so do the bytes served from zero-fill runs, ignored runs and gaps:
+        those cost nothing to store, and the step's work is per byte served."""
+        saved = (
+            self._budget,
+            self._budget_total,
+            self._budget_what,
+            self._count_zeros,
+        )
+        self._budget, self._budget_total, self._budget_what = nbytes, nbytes, what
+        self._count_zeros = True
+        try:
+            yield
+        finally:
+            (
+                self._budget,
+                self._budget_total,
+                self._budget_what,
+                self._count_zeros,
+            ) = saved
+
     def _spend(self, nbytes: int) -> None:
         if self._budget is None:
             return
         self._budget -= nbytes
         if self._budget < 0:
             raise ResourceLimitError(
-                f"opening the UDIF image read and decoded more than the "
-                f"{OPEN_BUDGET >> 20} MiB archivey allows at open"
+                f"{self._budget_what} read and decoded more than the "
+                f"{self._budget_total >> 20} MiB archivey allows for it"
             )
 
     def _read_file(self, offset: int, n: int, what: str) -> bytes:
@@ -725,6 +756,8 @@ class UdifImage:
                 following = index + 1
                 gap_end = starts[following] * SECTOR if following < len(starts) else end
                 take = min(end, gap_end) - pos
+                if self._count_zeros:
+                    self._spend(take)
                 parts.append(bytes(take))
                 pos += take
                 continue
@@ -734,6 +767,8 @@ class UdifImage:
             within = pos - run_start
             kind = self._kind[index]
             if kind in _STORED_NOTHING:
+                if self._count_zeros:
+                    self._spend(take)
                 parts.append(bytes(take))
             elif kind == RAW:
                 self._check_raw(index)
