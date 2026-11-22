@@ -840,9 +840,10 @@ class _MemberState:
     # Intra-member progress emit while copying a FILE (None when on_progress is unset
     # or the member has no streamed body).
     emit_progress: Callable[[], None] | None = None
-    # The run's claim on the entry this member's destination names now, by any
-    # spelling (``Placements.owner``, from ``_resolve_collision``): the file a
-    # REPLACE landing there replaces, whose claim the landing retires.
+    # The run's claim on the entry this member's destination names now
+    # (``Placements.owner``, from ``_resolve_collision``): by any spelling where the
+    # answer is used, and under TRUSTED outside REPLACE and KEEP_PARTIAL the key's
+    # claim. A REPLACE landing retires the claim of the file it replaces.
     owner: _Claim | None = None
     # The member's data as the pass staged it (``_stage_then_place``): a FILE written
     # from it lands by renaming or linking it (``_write_file_atomic``), and its bytes

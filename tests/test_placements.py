@@ -10,6 +10,7 @@ as ``WindowsPath``'s does, and run everywhere.
 from __future__ import annotations
 
 import os
+import unicodedata
 from pathlib import Path, PureWindowsPath
 from typing import cast
 
@@ -33,7 +34,7 @@ def test_owner_is_none_with_nothing_claimed(tmp_path: Path) -> None:
 
 
 @posix_inodes
-def test_the_file_at_a_name_decides_over_the_key(tmp_path: Path) -> None:
+def test_a_name_no_key_reaches_finds_the_claim_of_its_file(tmp_path: Path) -> None:
     placements = Placements()
     first = placements.claim(_file(tmp_path / "A"), "A", tmp_path / "A", 0)
     os.link(tmp_path / "A", tmp_path / "a")
@@ -122,3 +123,32 @@ def test_a_release_matches_the_path_as_spelled() -> None:
     assert placements.at_path(upper, "A") is claim
     assert placements.release(upper, placements.claimed_key(upper) or "")
     assert not placements
+
+
+@posix_inodes
+def test_a_hard_link_elsewhere_with_the_same_name_is_another_entry(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "d").mkdir()
+    (tmp_path / "e").mkdir()
+    placements = Placements()
+    here = placements.claim(_file(tmp_path / "d" / "A"), "d/A", tmp_path / "d/A", 0)
+    os.link(tmp_path / "d" / "A", tmp_path / "e" / "a")
+    placements.claim(tmp_path / "e" / "a", "e/a", tmp_path / "e/a", 1)
+    # ``d/a`` stands for the entry ``d/A`` (a case alias): ``e/a`` has its name, but
+    # in another directory.
+    os.link(tmp_path / "d" / "A", tmp_path / "d" / "a")
+    assert placements.owner(tmp_path / "d" / "a", "d/a", occupied=True) is here
+
+
+@posix_inodes
+def test_a_name_folds_unicode_normalization_too(tmp_path: Path) -> None:
+    nfc = unicodedata.normalize("NFC", "café")
+    nfd = unicodedata.normalize("NFD", "café")
+    placements = Placements()
+    first = placements.claim(_file(tmp_path / nfc), nfc, tmp_path / nfc, 0)
+    os.link(tmp_path / nfc, tmp_path / "b")
+    placements.claim(tmp_path / "b", "b", tmp_path / "b", 1)
+    # On APFS the NFD spelling is the entry the NFC one names.
+    os.link(tmp_path / nfc, tmp_path / nfd)
+    assert placements.owner(tmp_path / nfd, nfd, occupied=True) is first

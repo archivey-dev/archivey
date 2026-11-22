@@ -24,7 +24,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from archivey.internal.filters import collision_key
 from archivey.internal.long_paths import long_path
+from archivey.types import ExtractionPolicy
 
 
 @dataclass(frozen=True)
@@ -172,20 +174,41 @@ class Placements:
                 cst = os.lstat(long_path(claim.path))
                 self._by_id.setdefault((cst.st_dev, cst.st_ino), []).append(claim)
         self._unindexed.clear()
-        candidates = [
+        live = [
             claim
             for claim in self._by_id.get((st.st_dev, st.st_ino), ())
-            if self.is_live(claim) and _is_file_of(claim, st)
+            if self.is_live(claim)
         ]
-        if not candidates:
-            return None
-        # Hard links of one file: the name that folds to this one is the entry here,
-        # else the latest claim stands for them all.
-        name = path.name.casefold()
-        for claim in reversed(candidates):
-            if claim.path.name.casefold() == name:
+        # Hard links of one file are several entries. The entry here is the claim
+        # whose name folds to this one (case, Unicode normalization, a trailing dot
+        # or space) in the same directory; a name that test cannot decide (an 8.3
+        # short name) takes the latest claim of the file.
+        name = _folded(path.name)
+        for claim in reversed(live):
+            if (
+                _folded(claim.path.name) == name
+                and _same_directory(claim.path, path)
+                and _is_file_of(claim, st)
+            ):
                 return claim
-        return candidates[-1]
+        for claim in reversed(live):
+            if _is_file_of(claim, st):
+                return claim
+        return None
+
+
+def _folded(name: str) -> str:
+    return collision_key(name, ExtractionPolicy.STANDARD)
+
+
+def _same_directory(a: Path, b: Path) -> bool:
+    """Whether the parents of ``a`` and ``b`` are one directory."""
+    try:
+        return os.path.samestat(
+            os.stat(long_path(a.parent)), os.stat(long_path(b.parent))
+        )
+    except OSError:
+        return False
 
 
 def _is_file_of(claim: Claim, st: os.stat_result) -> bool:
