@@ -1402,7 +1402,8 @@ class _Chain:
         # Whether the last header read failed its checksum and still waits for the
         # block its size points at to confirm it.
         self.pending = False
-        # Added to the stop's reason: why a pipe could not check the header after.
+        # Added to the stop's reason: why a forward-only walk (a pipe, or a file
+        # opened with streaming=True) could not check the header after.
         self.note = ""
 
 

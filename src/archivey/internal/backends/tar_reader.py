@@ -237,13 +237,13 @@ _WALK_BUFFER = 8 * 1024
 # the rest. A PAX header can hold a shape for thousands of keys.
 _AMBIGUOUS_FIELDS_NAMED = 3
 
-# GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
-# lists the directory's contents at dump time. GNU tar extracts it as a directory; the
-# list is skipped.
 # How many followed damaged headers the end-of-pass error names; the rest it counts
 # (the same limit as rar_parser._NAMED_DAMAGES).
 _NAMED_DAMAGES = 4
 
+# GNU tar's incremental dumps store a directory as a ``D`` (dumpdir) entry, whose data
+# lists the directory's contents at dump time. GNU tar extracts it as a directory; the
+# list is skipped.
 _DIRECTORY_TYPES = frozenset((b"5", b"D"))
 
 _SYMLINK_TYPE = b"2"
