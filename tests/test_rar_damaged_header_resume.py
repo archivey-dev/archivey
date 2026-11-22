@@ -520,6 +520,11 @@ def test_rar4_a_landing_whose_data_runs_past_the_end_is_not_followed() -> None:
     assert [m.filename for m in archive.members] == ["a.txt"]
     assert archive.damaged is not None
     assert archive.truncated is None
+    # A pipe finds the end of the file by reading to it, and gives the same answer.
+    seen, error = _read_pass(_pipe(data), streaming=True)
+    assert [name for name, _, _ in seen] == ["a.txt"]
+    assert isinstance(error, CorruptionError)
+    assert not isinstance(error, TruncatedError)
 
 
 def test_rar4_nine_damaged_headers_in_a_row_stop_the_walk() -> None:
