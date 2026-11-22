@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import random
 import types
 import zipfile
 from pathlib import Path
@@ -23,7 +24,11 @@ from archivey import (
     FormatPolicy,
     OptionalLibrary,
     ProcessIsolation,
+    StreamFormat,
+    TruncatedError,
+    UnsupportedFeatureError,
     open_archive,
+    open_stream,
 )
 from archivey.internal import native
 from archivey.internal.backends import lha_reader, zipcrypto
@@ -35,7 +40,13 @@ from archivey.internal.streams.codecs.lzma_filter_decoder import (
     branch_maker,
 )
 from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
+from archivey.internal.streams.codecs.unix_compress_decoder import (
+    LzwState,
+    UnixCompressDecoder,
+)
+from tests.conftest import requires
 from tests.lha_util import Member, archive
+from tests.streams_util import make_unix_compress
 from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
 
 EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
@@ -118,6 +129,32 @@ class _FakeRiscv(_FakeBranch):
     decode_with = staticmethod(riscv_decode)
 
 
+class _FakeLzw:
+    """Stands in for ``archivey_codecs.lzw.Decompressor``: records that it was built,
+    and panics on the first ``decompress``."""
+
+    built: ClassVar[int] = 0
+    needs_input = True
+    eof = False
+    header_params = None
+    nine_bit_widens = None
+    truncation = None
+    clear_offsets: ClassVar[list[tuple[int, int]]] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        type(self).built += 1
+
+    calls: ClassVar[int] = 0
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes:
+        type(self).calls += 1
+        raise PanicException("index out of bounds")
+
+    def flush(self, max_length: int = -1) -> bytes:
+        type(self).calls += 1
+        return b""
+
+
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
     """Install a fake ``archivey_codecs`` whose ``KERNELS`` is ``kernels``."""
 
@@ -128,6 +165,8 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
     monkeypatch.setattr(_FakeDecryptor, "panic", False)
     monkeypatch.setattr(_FakeBranch, "built", [])
     monkeypatch.setattr(_FakeBranch, "panic", False)
+    monkeypatch.setattr(_FakeLzw, "built", 0)
+    monkeypatch.setattr(_FakeLzw, "calls", 0)
     monkeypatch.setattr(_FakeBranch, "calls", 0)
     monkeypatch.setattr(_FakeDecryptor, "panic_header", False)
     monkeypatch.setattr(_FakeDecryptor, "calls", 0)
@@ -136,6 +175,10 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
         crc16_arc=crc16_arc,
         zipcrypto=types.SimpleNamespace(Decryptor=_FakeDecryptor),
         filters=types.SimpleNamespace(Arm64Decoder=_FakeArm64, RiscvDecoder=_FakeRiscv),
+        lzw=types.SimpleNamespace(Decompressor=_FakeLzw),
+        TruncatedDataError=type("TruncatedDataError", (ValueError,), {}),
+        CorruptDataError=type("CorruptDataError", (ValueError,), {}),
+        UnsupportedDataError=type("UnsupportedDataError", (ValueError,), {}),
     )
     package = deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=True)
     package._module = module  # type: ignore[assignment]
@@ -361,6 +404,56 @@ def test_a_panic_in_a_7z_riscv_read_is_corruption(
         assert all(reader.read(m) for m in reader.members())
 
 
+def test_lzw_uses_the_kernel_unless_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, lzw=1)
+    assert native.lzw(frozenset(), isolated=False) is not None
+    assert native.lzw(EXCLUDED, isolated=False) is None
+    assert native.lzw(frozenset(), isolated=True) is None
+    _fake(monkeypatch, lzw=0)
+    assert native.lzw(frozenset(), isolated=False) is None
+
+
+def test_an_lzw_state_refuses_every_call_after_a_panic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, lzw=1)
+    make = native.lzw(frozenset(), isolated=False)
+    assert make is not None
+    state = make()
+    with pytest.raises(CorruptionError, match="LZW decoder failed") as info:
+        state.feed(b"\x1f\x9d\x90abc")
+    assert _FakeLzw.calls == 1
+    for again in (state.flush, lambda: state.feed(b"more")):
+        with pytest.raises(CorruptionError) as repeat:
+            again()
+        assert repeat.value is info.value
+    assert _FakeLzw.calls == 1
+
+
+@requires("ncompress")
+def test_a_panic_in_a_z_read_is_corruption(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, lzw=1)
+    data = b"hello LZW " * 500
+    raw = make_unix_compress(data)
+    with (
+        pytest.raises(CorruptionError, match="LZW decoder failed") as info,
+        open_stream(io.BytesIO(raw), format=StreamFormat.UNIX_COMPRESS) as stream,
+    ):
+        stream.read()
+    assert isinstance(info.value.__cause__, PanicException)
+    assert _FakeLzw.built
+    isolated = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    for config in (OFF, isolated):
+        _FakeLzw.built = 0
+        with open_stream(
+            io.BytesIO(raw), format=StreamFormat.UNIX_COMPRESS, config=config
+        ) as stream:
+            assert stream.read() == data
+        assert _FakeLzw.built == 0
+
+
 def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -525,3 +618,166 @@ def test_7z_riscv_uses_the_kernel_and_reads_the_same(name: str) -> None:
         with open_archive(RISCV_7Z.with_name(name), config=config) as reader:
             results.append([reader.read(m) for m in reader.members()])
     assert results[0] == results[1]
+
+
+def _read_z(raw: bytes, config: ArchiveyConfig | None, piece: int) -> tuple:
+    """All of ``raw`` read in ``piece``-byte reads, then the error, if any."""
+    out = bytearray()
+    with open_stream(
+        io.BytesIO(raw), format=StreamFormat.UNIX_COMPRESS, config=config
+    ) as stream:
+        try:
+            while chunk := stream.read(piece):
+                out += chunk
+        except (CorruptionError, TruncatedError) as exc:
+            return bytes(out), type(exc).__name__, str(exc)
+    return bytes(out), None, None
+
+
+@needs_codecs
+@requires("ncompress")
+@pytest.mark.parametrize("piece", [1, 4096, -1])
+def test_z_uses_the_kernel_and_reads_the_same(piece: int) -> None:
+    make = native.lzw(frozenset(), isolated=False)
+    assert make is not None
+    assert isinstance(make(), native.NativeLzw)
+    data = (bytes(range(256)) * 50 + b"text " * 30000) * 3
+    raw = make_unix_compress(data)
+    # 1-byte reads are slow, so they read the first 1500 bytes, damaged inside them.
+    window = 1500 if piece == 1 else len(raw)
+    base = raw[:window]
+    cases = [base, base[:-7], raw[:2], raw[:3]]
+    damaged = []
+    for at in (300, 500, 1100):
+        bad = bytearray(base)
+        bad[at] ^= 0xFF
+        damaged.append(bytes(bad))
+    for case in cases + damaged:
+        assert _read_z(case, None, piece) == _read_z(case, OFF, piece)
+    for case in damaged:
+        # Each damaged case reaches a bad code, so the error path is compared.
+        assert _read_z(case, OFF, piece)[1] == "CorruptionError"
+    if piece != 1:
+        assert _read_z(raw, None, piece)[0] == data
+
+
+@needs_codecs
+@requires("ncompress")
+def test_z_seeks_back_through_clear_points_with_the_kernel() -> None:
+    """A seekable stream records CLEAR points and restarts at one on a seek back:
+    the kernel's offsets give the same points and the same bytes."""
+    rng = random.Random(3)
+    data = b"the quick brown fox " * 20_000 + rng.randbytes(300_000)
+    raw = make_unix_compress(data)
+    for config in (None, OFF):
+        with open_stream(
+            io.BytesIO(raw),
+            format=StreamFormat.UNIX_COMPRESS,
+            seekable=True,
+            config=config,
+        ) as stream:
+            assert stream.read() == data
+            for at in (650_000, 123_456, 7, 699_999):
+                stream.seek(at)
+                assert stream.read(1000) == data[at : at + 1000]
+
+
+def _z_points(make_state: object, raw: bytes) -> tuple[bytes, list]:
+    decoder = UnixCompressDecoder(
+        make_state(),  # type: ignore[operator]
+        comp_cursor=0,
+        decomp_cursor=0,
+        make_state=make_state,  # type: ignore[arg-type]
+    )
+    out = bytearray()
+    points = []
+    for start in range(0, len(raw), 5000):
+        got = decoder.feed(raw[start : start + 5000], 7000)
+        out += got.data
+        points += got.points
+        while not decoder.needs_input:
+            got = decoder.feed(b"", 7000)
+            out += got.data
+            points += got.points
+    got = decoder.flush()
+    return bytes(out + got.data), points + got.points
+
+
+@needs_codecs
+@requires("ncompress")
+def test_z_clear_points_match_and_restart_with_the_kernel() -> None:
+    rng = random.Random(3)
+    # Text, then random bytes: the ratio drops, so compress writes CLEAR codes.
+    data = b"the quick brown fox " * 20_000 + rng.randbytes(300_000)
+    raw = make_unix_compress(data)
+    make = native.lzw(frozenset(), isolated=False)
+    assert make is not None
+    out, points = _z_points(make, raw)
+    assert out == data
+    assert (out, points) == _z_points(LzwState, raw)
+    assert len(points) >= 3  # the header point and the CLEARs
+    template = UnixCompressDecoder(
+        make(), comp_cursor=0, decomp_cursor=0, make_state=make
+    )
+    template.feed(raw[:3])  # reads the header
+    for point in points[1:]:
+        restarted = template.recreate(point, io.BytesIO())
+        got = restarted.feed(raw[point.compressed_offset :]).data
+        while not restarted.needs_input:
+            got += restarted.feed(b"").data
+        got += restarted.flush().data
+        assert got == data[point.decompressed_offset :]
+
+
+def _drive_lzw(state: object, data: bytes, cap: int) -> tuple:
+    """Feed all of ``data`` with output capped at ``cap``, then call ``flush()``
+    twice and ``feed()`` once more: the bytes, the CLEAR units, each call's
+    error, and which calls returned output."""
+    out = bytearray()
+    units: list = []
+    events: list = []
+
+    def call(step: object) -> bool:
+        try:
+            got, more = step()  # type: ignore[operator]
+        except (CorruptionError, UnsupportedFeatureError) as exc:
+            events.append((type(exc).__name__, str(exc)))
+            return False
+        out.extend(got)
+        units.extend(more)
+        events.append(("ok", bool(got)))
+        return True
+
+    # One capped feed leaves most of the stream for flush().
+    call(lambda: state.feed(data, cap))  # type: ignore[attr-defined]
+    for step in (state.flush, state.flush, lambda: state.feed(b"x")):  # type: ignore[attr-defined]
+        call(step)
+    errors = [e for e in events if e[0] != "ok"]
+    return bytes(out), units, errors, events[-3:]
+
+
+@needs_codecs
+@requires("ncompress")
+def test_lzw_bad_code_inside_flush_raises_from_the_next_call() -> None:
+    """A bad code met by ``flush()`` after some output: ``flush()`` returns that
+    output and the next call raises, as ``LzwState`` does."""
+    make = native.lzw(frozenset(), isolated=False)
+    assert make is not None
+    rng = random.Random(11)
+    inside_flush = 0
+    for _ in range(200):
+        data = b"".join(
+            rng.choice((b"abc", b"hello ", bytes([rng.randrange(256)])))
+            for _ in range(rng.randint(50, 3000))
+        )
+        bad = bytearray(make_unix_compress(data))
+        for _ in range(rng.randint(1, 3)):
+            bad[rng.randrange(3, len(bad))] ^= rng.randrange(1, 256)
+        cap = rng.choice((1, 50, 1000))
+        rust = _drive_lzw(make(), bytes(bad), cap)
+        python = _drive_lzw(LzwState(), bytes(bad), cap)
+        assert rust[:3] == python[:3]
+        first_flush, second_flush, _ = rust[3]
+        if first_flush == ("ok", True) and second_flush[0] != "ok":
+            inside_flush += 1
+    assert inside_flush > 0

@@ -14,7 +14,7 @@ A kernel is used when all of these hold:
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
   DEBUG);
-- for a decoding kernel (ARM64, RISC-V), the call's ``process_isolation`` is not
+- for a decoding kernel (ARM64, RISC-V, LZW), the call's ``process_isolation`` is not
   ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python twin keeps
   that setting's promise that no native decoder runs in this process.
 
@@ -30,7 +30,11 @@ from collections.abc import Callable, Generator
 from types import ModuleType
 from typing import Protocol
 
-from archivey.exceptions import CorruptionError
+from archivey.exceptions import (
+    CorruptionError,
+    TruncatedError,
+    UnsupportedFeatureError,
+)
 from archivey.internal import logs
 from archivey.internal.streams.codecs import deps
 from archivey.types import OptionalLibrary
@@ -38,6 +42,7 @@ from archivey.types import OptionalLibrary
 MIN_REVISIONS: dict[str, int] = {
     "arm64": 1,
     "crc16_arc": 1,
+    "lzw": 1,
     "riscv": 1,
     "zipcrypto": 1,
 }
@@ -103,6 +108,22 @@ def panic_to_corruption(kernel: str) -> Generator[None]:
                 f"archivey-codecs' {kernel} decoder failed on this data: {exc}"
             ) from exc
         raise
+
+
+@contextlib.contextmanager
+def codec_errors(module: ModuleType, kernel: str) -> Generator[None]:
+    """Raise the package's errors as archivey's, with the same message, and a panic
+    as ``CorruptionError``. The kernels raise with their Python twin's message, so the
+    error a caller sees is the one the twin raises."""
+    try:
+        with panic_to_corruption(kernel):
+            yield
+    except module.TruncatedDataError as exc:
+        raise TruncatedError(str(exc)) from None
+    except module.CorruptDataError as exc:
+        raise CorruptionError(str(exc)) from None
+    except module.UnsupportedDataError as exc:
+        raise UnsupportedFeatureError(str(exc)) from None
 
 
 class Latch:
@@ -274,5 +295,148 @@ def branch_filter(
     def new(start_offset: int) -> NativeBranch:
         with panic_to_corruption(label):
             return NativeBranch(decoder(start_offset), label)
+
+    return new
+
+
+# ── Unix compress (LZW) ───────────────────────────────────────────────────────────────
+
+
+class _LzwDecompressor(Protocol):
+    """``archivey_codecs.lzw.Decompressor``."""
+
+    def decompress(self, data: bytes, max_length: int = -1) -> bytes: ...
+
+    def flush(self, max_length: int = -1) -> bytes: ...
+
+    @property
+    def eof(self) -> bool: ...
+
+    @property
+    def needs_input(self) -> bool: ...
+
+    @property
+    def truncation(self) -> str | None: ...
+
+    @property
+    def header_params(self) -> tuple[int, bool] | None: ...
+
+    @property
+    def nine_bit_widens(self) -> bool | None: ...
+
+    @property
+    def clear_offsets(self) -> list[tuple[int, int]]: ...
+
+
+# Bytes of a ``.Z`` header: the magic and the flags byte.
+_LZW_HEADER = 3
+
+
+class NativeLzw:
+    """archivey-codecs' LZW decoder in the shape of the Python ``LzwState``: ``feed``
+    and ``flush`` return ``(bytes, units)``, a unit being one CLEAR's segment
+    ``(decompressed_size, compressed_size)`` from the CLEAR before it (or from just
+    after the header).
+
+    Errors keep the Python decoder's pattern: a bad code hands back the bytes decoded
+    before it, and the error raises from the next call.
+    """
+
+    __slots__ = ("_at", "_d", "_finished", "_flushed", "_latch", "_module")
+
+    def __init__(
+        self, module: ModuleType, decoder: _LzwDecompressor, *, header_in_stream: bool
+    ) -> None:
+        self._module = module
+        self._d = decoder
+        self._latch = Latch("LZW")
+        self._finished = False
+        self._flushed = False
+        # The last CLEAR's (input, output) offset: the kernel counts the header in
+        # the input when it reads one from the stream, and the units start after it.
+        self._at = (_LZW_HEADER if header_in_stream else 0, 0)
+
+    @property
+    def header_params(self) -> tuple[int, bool] | None:
+        return self._d.header_params
+
+    @property
+    def nine_bit_widens(self) -> bool | None:
+        return self._d.nine_bit_widens
+
+    @property
+    def truncated(self) -> bool:
+        return self._d.truncation is not None
+
+    @property
+    def truncation(self) -> str | None:
+        return self._d.truncation
+
+    def _units(self) -> list[tuple[int, int]]:
+        units = []
+        comp, decomp = self._at
+        for at_in, at_out in self._d.clear_offsets:
+            units.append((at_out - decomp, at_in - comp))
+            comp, decomp = at_in, at_out
+        self._at = (comp, decomp)
+        return units
+
+    def _call(self, call: Callable[[], bytes]) -> tuple[bytes, list[tuple[int, int]]]:
+        with self._latch.guard(), codec_errors(self._module, "LZW"):
+            out = call()
+            units = self._units()
+        return out, units
+
+    def feed(
+        self, data: bytes, max_length: int = -1
+    ) -> tuple[bytes, list[tuple[int, int]]]:
+        if self._finished:
+            return b"", []
+        if self._flushed:
+            # A flush() that raised: the kernel raises the same error again.
+            return self._call(lambda: self._d.flush(max_length))
+        return self._call(lambda: self._d.decompress(data, max_length))
+
+    def flush(self) -> tuple[bytes, list[tuple[int, int]]]:
+        # A bad code after the output returned here raises from the next call: the
+        # kernel keeps the error and raises it again.
+        self._flushed = True
+        out, units = self._call(self._d.flush)
+        self._finished = True
+        return out, units
+
+    def is_finished(self) -> bool:
+        return self._finished
+
+    @property
+    def needs_input(self) -> bool:
+        return self._finished or self._d.needs_input
+
+
+def lzw(
+    excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[..., NativeLzw] | None:
+    """A constructor of :class:`NativeLzw` taking ``LzwState``'s keyword arguments,
+    or ``None`` to use ``LzwState``. ``isolated`` as for :func:`branch_filter`."""
+    if isolated:
+        return None
+    module = kernels("lzw", excluded)
+    if module is None:
+        return None
+    decompressor = module.lzw.Decompressor
+
+    def new(
+        *,
+        max_width: int | None = None,
+        block_mode: bool | None = None,
+        nine_bit_widens: bool | None = None,
+    ) -> NativeLzw:
+        with codec_errors(module, "LZW"):
+            d = decompressor(
+                max_width=max_width,
+                block_mode=block_mode,
+                nine_bit_widens=nine_bit_widens,
+            )
+        return NativeLzw(module, d, header_in_stream=max_width is None)
 
     return new
