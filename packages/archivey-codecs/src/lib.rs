@@ -1068,7 +1068,12 @@ impl LzxDecompressor {
                 (left > 0).then(|| left.min(lzx::FRAME_SIZE as u64) as usize)
             }
             None => {
-                if self.ended && self.queued() == 0 && self.inner.unread_input().is_empty() {
+                // A frame in progress may hold all its input in the bit buffer.
+                if self.ended
+                    && self.queued() == 0
+                    && self.inner.unread_input().is_empty()
+                    && self.inner.frame_in_progress().is_none()
+                {
                     self.finished = true;
                     None
                 } else {

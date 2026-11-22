@@ -925,3 +925,18 @@ def test_lzw_width_is_checked() -> None:
     rs = archivey_codecs.lzw.Decompressor(block_mode=False)
     rs.decompress(header)
     assert py.header_params == rs.header_params == (16, True)
+
+
+def test_lzx_without_output_size_flush_finishes_the_frame_in_progress() -> None:
+    """Without an output size, a frame whose input sits whole in the bit buffer is
+    still in progress at ``flush()``: it is decoded, not taken for the end."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(11)
+    for layout in (("verbatim",), ("aligned",)):
+        data = sample_data(rng, 2 * FRAME)
+        blocks = LzxEncoder(window_bits=15, blocks=layout).encode(data)
+        d = archivey_codecs.lzx.Decompressor(15)
+        # The first data block only: the frame's last symbols look past it.
+        assert d.decompress(blocks[0]) == b"", layout
+        assert d.flush(FRAME) == data[:FRAME], layout
