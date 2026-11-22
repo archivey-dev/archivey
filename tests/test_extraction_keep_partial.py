@@ -572,21 +572,23 @@ def test_trusted_case_variant_over_a_kept_partial(tmp_path: Path, mode: str) -> 
         assert (dest / "A.bin").read_bytes()[:100] == _PAYLOAD[:100]
 
 
+@pytest.mark.parametrize("first_damaged", [True, False], ids=["partial", "whole"])
 @pytest.mark.parametrize("mode", _MODES)
 def test_trusted_first_spelling_again_after_two_kept_partials(
-    tmp_path: Path, mode: str
+    tmp_path: Path, mode: str, first_damaged: bool
 ) -> None:
-    # Under TRUSTED and REPLACE: the damaged ``A.bin``, the damaged ``a.bin``, then
-    # a good member a filter maps to ``A.bin``. Where the filesystem folds case, each
-    # later name lands over the one before, so both failed results lose their
-    # paths. Where it keeps them apart, only ``A.bin``'s partial file is replaced.
+    # Under TRUSTED and REPLACE: ``A.bin`` (damaged, or whole), the damaged
+    # ``a.bin``, then a good member a filter maps to ``A.bin``. Where the filesystem
+    # folds case, each later name lands over the one before, so every failed result
+    # loses its path; a whole first member keeps its result, as TRUSTED reports no
+    # collision. Where the names stay apart, only ``A.bin``'s file is replaced.
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.writestr("A.bin", _PAYLOAD)
         zf.writestr("a.bin", _PAYLOAD)
         zf.writestr("good.bin", b"third")
     data = bytearray(buf.getvalue())
-    for name in (b"A.bin", b"a.bin"):
+    for name in (b"A.bin", b"a.bin") if first_damaged else (b"a.bin",):
         # The first copy of the name is in its local header, just before its data.
         data[data.find(_PAYLOAD[:4096], data.find(name)) + 100] ^= 0xFF
     src = tmp_path / "three.zip"
@@ -605,11 +607,14 @@ def test_trusted_first_spelling_again_after_two_kept_partials(
         filter=lambda m: m.replace(name="A.bin") if m.name == "good.bin" else m,
     )
     first, second, third = report.results
-    assert first.status is ExtractionStatus.FAILED
     assert second.status is ExtractionStatus.FAILED
     assert third.status is ExtractionStatus.EXTRACTED
     assert (dest / "A.bin").read_bytes() == b"third"
-    assert first.path is None
+    if first_damaged:
+        assert first.status is ExtractionStatus.FAILED
+        assert first.path is None
+    else:
+        assert first.status is ExtractionStatus.EXTRACTED
     if folds:
         assert second.path is None
     else:
