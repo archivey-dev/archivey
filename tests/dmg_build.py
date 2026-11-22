@@ -797,10 +797,10 @@ def _decmpfs(kind: int, data: bytes) -> tuple[bytes, bytes]:
         elif kind == 12:
             encoded = [chunk(lzfse_stored(b), b, b"\xff") for b in blocks]
         else:
-            # Type 10: the type 8 offset table over raw blocks, as the prototype reads
-            # it. This is an unverified stand-in: no tool here reads type 10, so the
-            # layout must be checked on a real file before anyone relies on it (§6.6).
-            encoded = list(blocks)
+            # Type 10: the type 8 offset table over raw blocks, each behind a 0xCC
+            # byte. The macOS check (plan M) found this is the layout the kernel
+            # reads; it refuses the same table without the 0xCC bytes (EINVAL).
+            encoded = [b"\xcc" + b for b in blocks]
         offsets = [4 * (len(encoded) + 1)]
         for e in encoded:
             offsets.append(offsets[-1] + len(e))

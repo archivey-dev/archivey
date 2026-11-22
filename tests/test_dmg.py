@@ -732,6 +732,28 @@ def test_type_9_without_its_marker_is_unsupported(
             reader.read("t9")
 
 
+def test_a_type_10_chunk_without_its_marker_is_corrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS reads a type 10 chunk only after a 0xCC byte and refuses one without."""
+    real = d._decmpfs
+
+    def no_marker(kind: int, data: bytes) -> tuple[bytes, bytes]:
+        value, fork = real(kind, data)
+        if kind == 10:
+            fork = struct.pack("<II", 8, 8 + len(data)) + data
+        return value, fork
+
+    monkeypatch.setattr(d, "_decmpfs", no_marker)
+    image = _image(
+        [d.Node("t10", data=b"plain", compression=10), d.Node("ok", data=b"1")]
+    )
+    with _open(image) as reader:
+        assert reader.read("ok") == b"1"
+        with pytest.raises(CorruptionError, match="0xCC"):
+            reader.read("t10")
+
+
 @pytest.mark.parametrize("kind", [7, 11])
 def test_a_compressed_chunk_past_its_size_names_that_size(
     monkeypatch: pytest.MonkeyPatch, kind: int
