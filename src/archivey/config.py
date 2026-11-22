@@ -858,6 +858,11 @@ class SalvageLimits:
     When the cap is reached, the search stops there, records one
     ``ARCHIVE_REGION_SKIPPED`` with ``reason="search_limit"`` and lists nothing after
     it; the listing ends in the damage error, as it does without salvage.
+
+    The cap counts the listing's searches. A reader that walks the archive again from
+    its start to reach a member's data searches the same way, up to the same cap, so
+    it finds the same members; those searches count against a cap of their own and
+    record nothing, so a member read costs at most the listing's search again.
     """
 
     max_reported_regions: int = 1_000

@@ -32,8 +32,8 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
    check is needed. `stream_members()`, `extract_all()` and `verify_all()` on a
    random-access reader work as usual. A nested archive archivey opens itself
    (`ReaderContext.open_nested`: a deb's `data.tar`, a `.pkg` payload, a makeself
-   payload) inherits the flag; `reader.open_archive` / `open_archive(parent=...)` takes
-   it as given by the caller. An RPM's CPIO payload is not a nested reader: the RPM
+   payload) inherits the flag; `open_archive(parent=...)` takes it as given by the
+   caller. An RPM's CPIO payload is not a nested reader: the RPM
    reader parses it itself, under its own salvage state.
 
 2. **`SalvageLimits`.**
@@ -101,10 +101,11 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
                                  unconfirmed -> search resumes at C + step (inside its data)
    ```
 
-   - The driver reads through the backend's own seekable view in windows (1 MiB, with
-     an overlap of the format's longest header so a header across a window edge is
-     found once), counts every byte it examines against `max_search_bytes`, and never
-     examines a byte twice in one layer: the search position only moves forward.
+   - The driver reads the layer forward in windows (1 MiB, with an overlap of the
+     format's longest header so a header across a window edge is found once): through
+     the backend's seekable view, or through a nested reader's forward-only stream. It
+     counts every byte it examines against `max_search_bytes`, and never examines a
+     byte twice in one layer of a walk: the search position only moves forward.
    - A confirmed member resumes the **normal** walk after it, so the default rules
      (follow-size, the end marker, every check) apply again from there, and a later
      damage starts a new search.
@@ -202,8 +203,14 @@ Choices the decisions above left open, made while building PR 1:
   are the two openers; no `open_read` signature changed. A reader reads
   `self._salvage_mode` (`SalvageState`): `.enabled`, `.limits`.
 - **Nested readers** are built forward-only (`streaming=True` over the member's
-  stream), so a format whose search runs inside a nested reader reads that layer
-  forward. The driver reads forward within one search for that reason.
+  stream). One search reads forward, so it can run there. Going back after it, into
+  the data of an unconfirmed member, is the format's call: TAR holds up to 4 MiB of
+  it, and CPIO and ar on a forward-only reader record `SALVAGE_UNAVAILABLE`.
+- **Walks.** The reader's `SalvageState` holds the listing walk's budget, records and
+  layer positions. A listing walk started over calls `restart()`. Another walk from
+  the start (to reach a member's data, possibly beside the listing walk) searches with
+  a `QuietSalvageState` of its own: the same cap, from zero, recording nothing, so it
+  finds the same members and leaves the reader's state as it is.
 - **One `SALVAGE_UNAVAILABLE` per reader**: a `.deb` opened with `salvage=True` records
   it for the package and for each inner tar while TAR has no search.
 - **The budget** counts `step` bytes per candidate position examined (fewer at a
@@ -212,7 +219,7 @@ Choices the decisions above left open, made while building PR 1:
   **The `report_limit` record** has the `offset` of the first range not reported and
   `length=None`; its message gives the count, since the context has no count field. A
   format calls `SalvageState.finish()` at the end of its walk to record it, and
-  `SalvageState.restart()` when a walk starts over.
+  `SalvageState.restart()` when its listing walk starts over.
 
 ## Notes from the TAR PR
 
