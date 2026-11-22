@@ -9,14 +9,17 @@ Runs on macOS only, where ``hdiutil`` and ``fsck_hfs`` are. Two parts:
   attributes, compressed files read back through the file system).
 - **reader** (M.2): ``hdiutil create`` makes a fresh image of a small tree in every
   format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO) and filesystem (HFS+, HFSX); archivey's
-  listing and file hashes must match the mounted volume's.
+  listing, file hashes and one extended attribute must match the mounted volume's.
+  The source tree holds a decmpfs-compressed file; each row notes whether it is still
+  compressed inside the image.
 
 Run::
 
     uv run python scripts/investigations/dmg_macos_check.py --out results.md
 
-It writes a Markdown table per part, and exits non-zero when any image fails. A format
-this ``hdiutil`` cannot create is reported and not counted as a failure. The
+It writes a Markdown table per part, and exits non-zero when any image fails, or when M.2
+compared no image. Only a format in ``OPTIONAL_FORMATS`` may be skipped, when this
+``hdiutil`` refuses to create it; any other failed ``hdiutil create`` is a failure. The
 ``dmg-macos`` workflow runs it after a merge to ``main`` that touches the DMG code and
 every week.
 """
@@ -42,7 +45,14 @@ sys.path.insert(0, str(_REPO))
 
 TIMEOUT = 300
 FORMATS = ("UDZO", "UDBZ", "ULFO", "ULMO", "UDRO", "UDCO")
+# Formats that a newer hdiutil may no longer create; a refusal skips the row.
+OPTIONAL_FORMATS = frozenset({"UDCO"})
 FILESYSTEMS = ("HFS+", "HFSX")
+# The M.2 source tree's extended attribute and transparently compressed file.
+XATTR_FILE, XATTR_NAME, XATTR_VALUE = "hello.txt", "com.example.test", b"xattr value"
+COMPRESSED_FILE = "compressed.txt"
+# Errors that a check of one image records as that image's problem.
+_IMAGE_ERRORS = (RuntimeError, OSError, subprocess.TimeoutExpired)
 # The file system's own entries, which neither side is asked to agree on.
 _SYSTEM = {".fseventsd", ".Trashes", ".HFS+ Private Directory Data\r"}
 
@@ -52,6 +62,7 @@ class Result:
     name: str
     problems: list[str] = field(default_factory=list)
     skipped: str = ""
+    notes: list[str] = field(default_factory=list)
 
     @property
     def outcome(self) -> str:
@@ -80,8 +91,13 @@ def _attached(image: Path, *, mount: bool) -> Iterator[tuple[list[str], Path | N
         args += ["-mountpoint", str(mount_dir)]
     else:
         args.append("-nomount")
-    done = _run(*args, str(image))
+    try:
+        done = _run(*args, str(image))
+    except subprocess.TimeoutExpired:
+        _remove_mount_dir(mount_dir)
+        raise
     if done.returncode != 0:
+        _remove_mount_dir(mount_dir)
         raise RuntimeError(f"hdiutil attach failed: {done.stderr.strip()}")
     entities = plistlib.loads(done.stdout.encode())["system-entities"]
     devices = [e["dev-entry"] for e in entities if "dev-entry" in e]
@@ -95,9 +111,18 @@ def _attached(image: Path, *, mount: bool) -> Iterator[tuple[list[str], Path | N
     try:
         yield hfs or [whole], mount_dir
     finally:
-        _run("hdiutil", "detach", whole, "-force")
-        if mount_dir is not None:
+        detached = _run("hdiutil", "detach", whole, "-force")
+        if detached.returncode == 0:
+            _remove_mount_dir(mount_dir)
+
+
+def _remove_mount_dir(mount_dir: Path | None) -> None:
+    """Remove an empty mount point; one still in use after a failed detach stays."""
+    if mount_dir is not None:
+        try:
             mount_dir.rmdir()
+        except OSError:
+            pass
 
 
 def _mounted_tree(root: Path) -> dict[str, tuple[str, object]]:
@@ -159,12 +184,12 @@ def _check_writer_image(name: str, image: bytes, nodes: list, work: Path) -> Res
     result = Result(name)
     path = work / f"{name.replace(' ', '-')}.dmg"
     path.write_bytes(image)
-    verify = _run("hdiutil", "verify", str(path))
-    if verify.returncode != 0:
-        result.problems.append(
-            f"hdiutil verify: {verify.stderr.strip() or verify.stdout.strip()}"
-        )
     try:
+        verify = _run("hdiutil", "verify", str(path))
+        if verify.returncode != 0:
+            result.problems.append(
+                f"hdiutil verify: {verify.stderr.strip() or verify.stdout.strip()}"
+            )
         with _attached(path, mount=False) as (devices, _):
             for device in devices:
                 fsck = _run("fsck_hfs", "-n", device)
@@ -176,9 +201,9 @@ def _check_writer_image(name: str, image: bytes, nodes: list, work: Path) -> Res
         with _attached(path, mount=True) as (_, root):
             assert root is not None
             result.problems += _compare_with_nodes(root, nodes)
-    except (RuntimeError, subprocess.TimeoutExpired) as exc:
-        result.problems.append(str(exc))
-    path.unlink()
+    except _IMAGE_ERRORS as exc:
+        result.problems.append(f"{type(exc).__name__}: {exc}")
+    path.unlink(missing_ok=True)
     return result
 
 
@@ -217,24 +242,44 @@ def _compare_with_nodes(root: Path, nodes: list) -> list[str]:
 
 
 def _make_source(src: Path) -> None:
+    """The M.2 source tree. Raises RuntimeError when a macOS tool does not do its part,
+    so that the run fails instead of silently comparing less."""
     (src / "sub dir").mkdir(parents=True)
-    (src / "hello.txt").write_bytes(b"hello dmg\n")
+    (src / XATTR_FILE).write_bytes(b"hello dmg\n")
     (src / "text.txt").write_bytes(b"compressible line\n" * 20000)
     (src / "random.bin").write_bytes(os.urandom(300_000))
     (src / "sub dir" / "café.txt").write_bytes(b"accent")
     os.link(src / "hello.txt", src / "sub dir" / "hardlink.txt")
     os.symlink("hello.txt", src / "link-rel")
-    _run("xattr", "-w", "com.example.test", "xattr value", str(src / "hello.txt"))
+    value = XATTR_VALUE.decode()
+    _checked("xattr", "-w", XATTR_NAME, value, str(src / XATTR_FILE))
     plain = src.parent / "plain.txt"
     plain.write_bytes(b"compressible line\n" * 20000)
     # ditto stores the copy through decmpfs, as the committed fixtures' compressed.txt.
-    _run("ditto", "--hfsCompression", str(plain), str(src / "compressed.txt"))
+    _checked("ditto", "--hfsCompression", str(plain), str(src / COMPRESSED_FILE))
+    if not _is_decmpfs(src / COMPRESSED_FILE):
+        raise RuntimeError(
+            f"ditto --hfsCompression left {COMPRESSED_FILE} uncompressed"
+        )
 
 
-def _archivey_tree(image: Path) -> dict[str, tuple[str, object]]:
+def _checked(*args: str) -> None:
+    done = _run(*args)
+    if done.returncode != 0:
+        raise RuntimeError(f"{' '.join(args[:2])} failed: {done.stderr.strip()}")
+
+
+def _is_decmpfs(path: Path) -> bool:
+    return bool(getattr(os.lstat(path), "st_flags", 0) & stat.UF_COMPRESSED)
+
+
+def _archivey_tree(image: Path) -> tuple[dict[str, tuple[str, object]], bytes | None]:
+    """archivey's listing (name -> (kind, value)), and the source tree's extended
+    attribute as archivey lists it."""
     from archivey import MemberType, open_archive
 
     found: dict[str, tuple[str, object]] = {}
+    xattr = None
     hashes: dict[str, str] = {}
     with open_archive(image) as reader:
         members = reader.members()
@@ -242,6 +287,10 @@ def _archivey_tree(image: Path) -> dict[str, tuple[str, object]]:
             name = _nfc(member.name.rstrip("/"))
             if name.split("/", 1)[0] in _SYSTEM:
                 continue
+            if name == XATTR_FILE:
+                listed = member.extra.get("dmg.xattrs")
+                if isinstance(listed, dict):
+                    xattr = listed.get(XATTR_NAME)
             if member.type is MemberType.FILE:
                 hashes[name] = hashlib.sha256(reader.read(member)).hexdigest()
                 found[name] = ("file", hashes[name])
@@ -256,7 +305,7 @@ def _archivey_tree(image: Path) -> dict[str, tuple[str, object]]:
     for name, (kind, target) in list(found.items()):
         if kind == "hardlink":
             found[name] = ("file", hashes.get(str(target)))
-    return found
+    return found, xattr
 
 
 def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
@@ -277,10 +326,15 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
         str(image),
     )
     if made.returncode != 0:
-        result.skipped = f"hdiutil create: {made.stderr.strip()[:120]}"
+        message = f"hdiutil create: {made.stderr.strip()[:200]}"
+        if fmt in OPTIONAL_FORMATS:
+            result.skipped = message
+        else:
+            result.problems.append(message)
         return result
+    ours_xattr = None
     try:
-        ours = _archivey_tree(image)
+        ours, ours_xattr = _archivey_tree(image)
     except Exception as exc:  # noqa: BLE001 - every refusal is a result here
         result.problems.append(f"archivey: {type(exc).__name__}: {exc}")
         ours = {}
@@ -288,9 +342,23 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
         with _attached(image, mount=True) as (_, root):
             assert root is not None
             theirs = _mounted_tree(root)
-    except (RuntimeError, subprocess.TimeoutExpired) as exc:
-        result.problems.append(str(exc))
-        theirs = {}
+            theirs_xattr = _xattr(root / XATTR_FILE, XATTR_NAME)
+            if _is_decmpfs(root / COMPRESSED_FILE):
+                result.notes.append(f"{COMPRESSED_FILE} is decmpfs in the image")
+            else:
+                result.notes.append(f"{COMPRESSED_FILE} is NOT decmpfs in the image")
+    except _IMAGE_ERRORS as exc:
+        result.problems.append(f"{type(exc).__name__}: {exc}")
+        theirs, theirs_xattr = {}, None
+    if theirs_xattr != XATTR_VALUE:
+        result.problems.append(
+            f"mounted {XATTR_FILE}: extended attribute {XATTR_NAME} is {theirs_xattr!r}"
+        )
+    if ours and ours_xattr != theirs_xattr:
+        result.problems.append(
+            f"{XATTR_FILE}: archivey lists {XATTR_NAME} as {ours_xattr!r}, "
+            f"mounted {theirs_xattr!r}"
+        )
     if ours or theirs:
         for name in sorted(set(ours) | set(theirs)):
             if ours.get(name) != theirs.get(name):
@@ -305,10 +373,16 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
 
 
 def _table(title: str, results: list[Result]) -> list[str]:
-    lines = [f"## {title}", "", "| Image | Outcome | Problems |", "| --- | --- | --- |"]
+    lines = [
+        f"## {title}",
+        "",
+        "| Image | Outcome | Problems | Notes |",
+        "| --- | --- | --- | --- |",
+    ]
     for r in results:
         shown = "; ".join(r.problems[:5]).replace("|", "\\|")
-        lines.append(f"| {r.name} | {r.outcome} | {shown} |")
+        notes = "; ".join(r.notes).replace("|", "\\|")
+        lines.append(f"| {r.name} | {r.outcome} | {shown} | {notes} |")
     return [*lines, ""]
 
 
@@ -333,14 +407,22 @@ def main() -> int:
             failed |= any(r.problems for r in writer)
         if args.part in ("reader", "both"):
             src = work / "src"
-            _make_source(src)
-            reader = [
-                _check_fresh_image(fmt, fs, src, work)
-                for fmt in FORMATS
-                for fs in FILESYSTEMS
-            ]
-            lines += _table("archivey against fresh hdiutil images (M.2)", reader)
-            failed |= any(r.problems for r in reader)
+            try:
+                _make_source(src)
+            except _IMAGE_ERRORS as exc:
+                lines += ["## M.2", "", f"The source tree failed: {exc}", ""]
+                failed = True
+            else:
+                reader = [
+                    _check_fresh_image(fmt, fs, src, work)
+                    for fmt in FORMATS
+                    for fs in FILESYSTEMS
+                ]
+                lines += _table("archivey against fresh hdiutil images (M.2)", reader)
+                failed |= any(r.problems for r in reader)
+                if not any(not r.skipped for r in reader):
+                    lines += ["M.2 compared no image.", ""]
+                    failed = True
     text = "\n".join(lines)
     print(text)
     if args.out is not None:
