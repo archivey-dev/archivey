@@ -338,6 +338,10 @@ def test_a_commit_trailer_raises_the_tier_and_nothing_lowers_it() -> None:
         "",
     ]
     assert prep.raised_tiers("standard\n") == []
+    # Only one pair around the whole reason is unwrapped.
+    assert prep.raised_tiers(
+        "deep (a) and (b)\ndeep (nested (parens))\ndeep (why) extra\ndeep (open\n"
+    ) == ["(a) and (b)", "nested (parens)", "(why) extra", "(open"]
     t = prep.tier(["src/archivey/core.py"], raised=["resumable state"])
     assert (t.name, t.reasons) == ("deep", ["raised in a commit: resumable state"])
     assert prep.tier(["dev-docs/x.md"], raised=[""]).reasons == [

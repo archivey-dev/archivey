@@ -483,7 +483,8 @@ REQUIRED_CHECKS = (
 # (`pull_request_target`, `workflow_run`, and the comment and review triggers), or
 # reads the `github` context in an expression: any field but a few fixed ones can carry
 # text someone outside chose (a title, a branch, an actor's name). A new `run:` step
-# with no expression is not matched; the Opus pass and Cursor review it.
+# with no expression is not matched; the Opus pass and its security pass review it, and
+# the author adds a `Review-Tier: deep` trailer when the step is tricky.
 _GITHUB_FIXED = (
     "sha|repository|repository_id|repository_owner|repository_owner_id|run_id"
     "|run_number|run_attempt|workflow|job|server_url|api_url|graphql_url|event_name"
@@ -843,10 +844,22 @@ def raised_tiers(values: str) -> list[str]:
     """The reasons of the `deep` values among these `Review-Tier` trailer values, one
     per line, as `git log --format=%(trailers:key=Review-Tier,valueonly)` prints them."""
     return [
-        m.group(1).strip().strip("()").strip()
+        _unwrap(m.group(1).strip())
         for line in values.splitlines()
         if (m := _DEEP_VALUE_RE.match(line.strip()))
     ]
+
+
+def _unwrap(reason: str) -> str:
+    """The reason without one pair of parentheses around all of it, if it has one."""
+    if not reason.startswith("("):
+        return reason
+    depth = 0
+    for i, ch in enumerate(reason):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if depth == 0:
+            return reason[1:-1].strip() if i == len(reason) - 1 else reason
+    return reason
 
 
 def _name_status(base: str, head: str) -> list[list[str]]:

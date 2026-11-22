@@ -26,10 +26,12 @@ the precise, technical record. -->
 <!-- What could break, and for whom, if this change is wrong.
 Tier: the "tier:" line that `python3 scripts/review/review_prep.py tier` prints (light,
 standard or deep), and the paths behind it. When the change is tricky in a way the paths
-do not show (architecture, concurrency, crypto, resumable state, limits), add
-`Review-Tier: deep (why)` to a commit message: the script then prints deep.
-Public API: "none", or the names added, changed or removed (the diff of
-dev-docs/api-surface.txt lists them). Removing or renaming a public name is the
+do not show (architecture, concurrency, crypto, resumable state, limits), end a commit
+message with the trailer `Review-Tier: deep (why)`: its own line in the last paragraph,
+after a blank line. The script then prints deep; the same words inside prose do not count.
+Public API: "none" when the script's "public API:" line says unchanged, or the names
+added, changed or removed (the diff of dev-docs/api-surface.txt or of an archivey-codecs
+.pyi stub lists them). Removing or renaming a public name is the
 maintainer's call.
 Security: "yes" or "no", and the rule behind it. Yes when the change, on any path:
 allocates, loops or recurses on a size, count or offset read from the archive; adds
