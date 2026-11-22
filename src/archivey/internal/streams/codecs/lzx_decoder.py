@@ -372,24 +372,20 @@ class LzxDecoder:
         (``_header``). Its fixed fields are read again from their start when they
         run out: they are a few bytes."""
         if self._header is None:
-            start = (
-                self._bit_mark(),
+            mark = self._bit_mark()
+            kind, length, remaining = (
                 self._block_type,
                 self._block_length,
                 self._block_remaining,
-                self._intel_started,
             )
+            intel = self._intel_started
             try:
                 self._read_block_start()
             except _NeedMore:
-                mark, *fields = start
                 self._back_to(mark)
-                (
-                    self._block_type,
-                    self._block_length,
-                    self._block_remaining,
-                    self._intel_started,
-                ) = fields
+                self._block_type, self._block_length = kind, length
+                self._block_remaining = remaining
+                self._intel_started = intel
                 raise
             if self._block_type == _UNCOMPRESSED:
                 return
@@ -463,7 +459,8 @@ class LzxDecoder:
 
     def try_frame(self, frame_size: int) -> bytes | None:
         """The next ``frame_size`` bytes of output, or ``None`` when the input given
-        so far ends first: feed more (or end it) and call again with the same size.
+        so far ends first: feed more (or end it) and call again with the same size
+        (any size, if the frame read nothing yet).
         """
         if self._frame_size is None:
             if not 0 < frame_size <= FRAME_SIZE:

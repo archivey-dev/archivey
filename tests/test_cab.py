@@ -1751,6 +1751,28 @@ def test_lzx_push_in_any_pieces_decodes_as_all_at_once(seed: int) -> None:
             assert _lzx_push(window, s, sizes, pieces) == whole
 
 
+def test_lzx_push_frame_that_read_nothing_may_change_size() -> None:
+    """A frame that ran out of input before reading anything is not started, so the
+    next call may ask for another size; once it read something, it may not."""
+    from tests.cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(4)
+    data = bytes(rng.choice(b"abcde\xe8\x00") for _ in range(2 * FRAME))
+    stream = b"".join(LzxEncoder(window_bits=15, blocks=("verbatim",)).encode(data))
+    decoder = LzxDecoder(15)
+    decoder.feed(stream[:1])
+    assert decoder.try_frame(FRAME) is None
+    decoder.feed(stream[1:])
+    decoder.end()
+    assert decoder.try_frame(100) == data[:100]
+
+    decoder = LzxDecoder(15)
+    decoder.feed(stream[:200])
+    assert decoder.try_frame(FRAME) is None
+    with pytest.raises(ValueError, match="for a frame started at 32768"):
+        decoder.try_frame(100)
+
+
 def _empty_stored_blocks(count: int, tail: bytes) -> bytes:
     """An LZX stream of ``count`` empty uncompressed blocks, then one holding
     ``tail``: no output until the last block."""
