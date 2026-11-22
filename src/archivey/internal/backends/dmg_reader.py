@@ -22,8 +22,10 @@ until the parts of the plan that read them land.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import NamedTuple
+import struct
+import zlib
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, NamedTuple
 
 from archivey.diagnostics import (
     ArchiveStructureContext,
@@ -34,6 +36,8 @@ from archivey.diagnostics import (
 from archivey.exceptions import (
     ArchiveyError,
     CorruptionError,
+    ResourceLimitError,
+    ResourceUnavailableError,
     UnsupportedFeatureError,
 )
 from archivey.formats import (
@@ -52,9 +56,11 @@ from archivey.internal.backends.udif import (
     TRAILER,
     UdifImage,
     UdifSource,
+    crc32_value,
 )
 from archivey.internal.format_adapter import register_builtin_format
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.terminal import quoted
 from archivey.types import (
     ArchiveFormat,
@@ -64,6 +70,9 @@ from archivey.types import (
     MemberType,
     TrailerSignature,
 )
+
+if TYPE_CHECKING:
+    from archivey.formats import _SpanningCheck
 
 # An encrypted image (``hdiutil create -encryption``) starts with the ``encrcdsa`` (v2)
 # header; a pre-10.5 one ends with ``cdsaencr`` (v1). Neither has a readable ``koly``
@@ -106,6 +115,13 @@ def volume_names(labels: list[str]) -> list[str]:
         taken.add(name)
         names.append(name)
     return names
+
+
+class _NotRun(NamedTuple):
+    """A table the checksum pass could not check, and why (a limit, a refused
+    codec): not damage, but nothing proves the files it covers."""
+
+    cause: ArchiveyError
 
 
 class _Volume(NamedTuple):
@@ -165,6 +181,21 @@ class DmgReader(IndexedReader[FileData | None]):
         ]
         image.end_open()
         self._names: list[str] | None = None
+        # The volumes whose whole partition the run tables' CRC-32s cover (design
+        # §7.2): their files are CHECKSUM, which ``verify_all()``'s pass proves.
+        self._checked = [
+            image.crc_covers(v.candidate.start, v.candidate.length)
+            for v in self._volumes
+        ]
+        # Each checked volume's check, made again at each listing.
+        self._checks: dict[int, _SpanningCheck] = {}
+        # What the pass found, kept for every later ``verify_all()``: for each table
+        # (by index in ``image.tables``) the error, or ``None`` when it matched; and
+        # the image-wide one (data fork, master checksum).
+        self._table_results: dict[int, CorruptionError | _NotRun | None] | None = None
+        self._image_result: CorruptionError | None = None
+        if any(self._checked) and context._spanning_pass is not None:
+            context._spanning_pass(self._check_partitions)
 
     # ── Open ─────────────────────────────────────────────────────────────────────────
 
@@ -247,9 +278,19 @@ class DmgReader(IndexedReader[FileData | None]):
         listing; the other volumes are listed, then the first error is raised."""
         failure: ArchiveyError | None = None
         names = self._volume_names()
+        spanning = self._context._spanning_check
         for index, (volume, _) in enumerate(self._volumes):
             walk = _VolumeWalk(self._context, volume, index, names[index])
-            yield from walk.members()
+            check = None
+            if self._checked[index] and spanning is not None:
+                check = self._checks[index] = spanning(("dmg partition", index))
+            for record in walk.members():
+                # A file whose read is refused proves nothing, whatever the CRC says.
+                if check is not None and (
+                    record.locator is not None and record.locator.refusal is None
+                ):
+                    check.cover(record.member)
+                yield record
             if failure is None:
                 failure = walk.failure
         if failure is not None:
@@ -282,6 +323,139 @@ class DmgReader(IndexedReader[FileData | None]):
             return read(i * piece, min(piece, fork.size - i * piece))
 
         return MemberData(block_stream(fork.size, piece, read_piece), bounded=True)
+
+    # ── The checksum pass (design §7.2) ──────────────────────────────────────────────
+
+    def _check_partitions(self) -> None:
+        """``verify_all()``'s pass: check each CRC-32 table that overlaps a checked
+        volume's partition, whole, once; then pass or fail each volume's check. One
+        table that overlaps two partitions fails both.
+
+        The compressed runs the pass decodes are held to the archive-wide ratio
+        (``DecoderLimits.max_ratio`` against the file's size), on their own total:
+        member reads have their own. Past it, the pass stops, and the checks it did
+        not finish did not run (``SpanningCheck.did_not_run``), as for a codec the
+        policy refuses: no damage was found, but nothing proves those files either.
+        """
+        image = self._image
+        over = {
+            index: image.tables_over(v.candidate.start, v.candidate.length)
+            for index, v in enumerate(self._volumes)
+            if self._checked[index]
+        }
+        results = self._table_results
+        if results is None:
+            results = dict[int, CorruptionError | _NotRun | None]()
+            draw = self._pass_draw()
+            stopped: ArchiveyError | None = None
+            for table_indexes in over.values():
+                for t in table_indexes:
+                    if t in results:
+                        continue
+                    if stopped is not None:
+                        results[t] = _NotRun(stopped)
+                        continue
+                    results[t] = result = self._check_table(t, draw)
+                    if isinstance(result, _NotRun) and isinstance(
+                        result.cause, ResourceLimitError
+                    ):
+                        stopped = result.cause
+            self._image_result = self._check_image()
+            self._table_results = results
+        for index, table_indexes in over.items():
+            check = self._checks.get(index)
+            if check is None:
+                continue  # not listed yet: nothing covered
+            found = [results[t] for t in table_indexes if results[t] is not None]
+            if self._image_result is not None:
+                found.append(self._image_result)
+            failure = next((r for r in found if isinstance(r, CorruptionError)), None)
+            if failure is not None:
+                error = check.failed(failure.raw_message)
+                error.__cause__ = failure.__cause__
+            elif found:
+                not_run = found[0]
+                assert isinstance(not_run, _NotRun)
+                check.did_not_run(not_run.cause)
+            else:
+                check.passed()
+
+    def _pass_draw(self) -> Callable[[int], None]:
+        # Imported here, as the readers that hold member reads to the ratio do.
+        from archivey.internal.bomb_tracker import refuse_past_archive_ratio
+
+        config = self._context.config
+        size = self._image.file_size
+        total = 0
+
+        def draw(n: int) -> None:
+            nonlocal total
+            total += n
+            refuse_past_archive_ratio(
+                total,
+                limits=config.decoder_limits,
+                static_size=size,
+                consumed=None,
+                counted="runs the DMG checksum pass decoded",
+            )
+
+        return draw
+
+    def _check_table(
+        self, t: int, draw: Callable[[int], None]
+    ) -> CorruptionError | _NotRun | None:
+        """Table ``t``'s CRC-32: ``None`` when it matches, the damage when it does not
+        or a run does not decode, or why it could not be checked."""
+        table = self._image.tables[t]
+        try:
+            crc = self._image.table_crc(table, draw)
+        except CorruptionError as exc:
+            if from_source_callback(exc):
+                raise
+            error = CorruptionError(
+                f"the DMG run table {quoted(table.name)} could not be checked: "
+                f"{exc.raw_message}"
+            )
+            error.__cause__ = exc
+            return error
+        except (UnsupportedFeatureError, ResourceLimitError) as exc:
+            if isinstance(exc, ResourceUnavailableError) or from_source_callback(exc):
+                raise
+            return _NotRun(exc)
+        if crc != table.checksum:
+            return CorruptionError(
+                f"the DMG run table {quoted(table.name)} (disk sectors "
+                f"{table.first_sector} to {table.first_sector + table.sector_count}) "
+                f"decodes to CRC-32 0x{crc:08x}, not the 0x{table.checksum:08x} it "
+                "stores"
+            )
+        return None
+
+    def _check_image(self) -> CorruptionError | None:
+        """The ``koly`` block's checksums, when they are CRC-32s: the data fork's (its
+        stored bytes, read once more) and the master checksum (a CRC-32 of the tables'
+        CRC-32s in property-list order, checked only when every table has one)."""
+        image = self._image
+        koly = image.koly
+        master = crc32_value(koly.master_checksum)
+        checksums = image.plist_checksums
+        if master is not None and all(c is not None for c in checksums):
+            got = zlib.crc32(b"".join(struct.pack(">I", c) for c in checksums))
+            if got != master:
+                return CorruptionError(
+                    f"the UDIF master checksum is 0x{master:08x}, and the run tables' "
+                    f"CRC-32s give 0x{got:08x}"
+                )
+        stored = crc32_value(koly.data_checksum)
+        if stored is not None:
+            got = image.data_fork_crc()
+            if got != stored:
+                return CorruptionError(
+                    f"the UDIF data fork ({koly.data_fork_length} bytes at offset "
+                    f"{koly.data_fork_offset}) has CRC-32 0x{got:08x}, not the "
+                    f"0x{stored:08x} the koly block stores"
+                )
+        return None
 
     @override
     def archive_info(self) -> ReaderArchiveInfo:

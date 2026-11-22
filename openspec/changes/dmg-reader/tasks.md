@@ -71,10 +71,10 @@ and the maintainer merges the PR that adds it (it adds triggers).
 
 ## F. Partition CRC-32
 
-- [ ] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
+- [x] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
   partition (ignore runs excluded, runs outside the partition included, zero fill folded
   in O(log n)); one table straddling two partitions fails both; `verify_all()`
-- [ ] F.2 Data-fork and master checksums if cheap
+- [x] F.2 Data-fork and master checksums if cheap
 
 ## G. Encrypted images
 
