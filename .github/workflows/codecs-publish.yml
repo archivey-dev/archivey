@@ -17,7 +17,8 @@ name: archivey-codecs wheels
 # manylinux_2_28 or musllinux_1_2 image, whose interpreters live in /opt/python.
 # Each wheel, on every platform, is installed in a clean environment with archivey from
 # this checkout and runs the package's own tests (test_api.py, test_parity.py) with
-# CODECS_REQUIRED=1, so a wheel that does not import fails instead of skipping.
+# CODECS_REQUIRED=1, so a wheel that does not import fails instead of skipping. The abi3
+# wheel runs them on 3.11 (its floor) and on 3.14.
 # musllinux wheels are tested in the same pypa musllinux image. A free-threaded wheel
 # must also leave the GIL off after import
 # (`-W error` turns CPython's re-enable warning into a failure).
@@ -64,6 +65,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Rust toolchain
         run: rustup component add rustfmt clippy
       - name: cargo fmt
@@ -94,11 +97,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Pythons for the build (macOS, Windows) and the tests
         if: matrix.libc != 'musl'
-        run: uv python install 3.11 3.13t 3.14t
+        run: uv python install 3.11 3.14 3.13t 3.14t
       - name: Interpreter paths for maturin
         run: |
           # Outside Linux maturin builds on the host; on Linux, in the pypa image.
@@ -123,7 +128,7 @@ jobs:
         if: matrix.libc != 'musl'
         run: |
           set -euo pipefail
-          for py in 3.11 3.13t 3.14t; do
+          for py in 3.11 3.14 3.13t 3.14t; do
             case "$py" in
               *t) wheel="$(ls dist/*-cp${py//[.t]/}-cp${py//./}-*.whl)" ;;
               *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
@@ -146,8 +151,9 @@ jobs:
       - name: Test each wheel on musl
         if: matrix.libc == 'musl'
         run: |
-          docker run --rm -v "$PWD":/w -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
-            for tag in cp311-cp311 cp313-cp313t cp314-cp314t; do
+          # Read-only: the container cannot change the wheels the next step uploads.
+          docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$PWD":/w:ro -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
+            for tag in cp311-cp311 cp314-cp314 cp313-cp313t cp314-cp314t; do
               case "$tag" in
                 *t) wheel="$(ls dist/*-"$tag"-*.whl)" ;;
                 *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
@@ -176,6 +182,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Build sdist
