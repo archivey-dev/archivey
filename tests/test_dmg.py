@@ -38,6 +38,7 @@ from archivey import (
     detect_format,
     open_archive,
 )
+from archivey.internal.backends import dmg_encrypted
 from archivey.internal.backends.dmg_reader import volume_names
 from tests import dmg_build as d
 from tests.conftest import requires
@@ -243,6 +244,26 @@ def test_an_encrypted_builder_image_reads_as_the_plain_one(options: dict) -> Non
     assert data == plain_data
     assert sorted(members) == sorted(plain_members)
     assert all(m.is_encrypted for m in members.values())  # type: ignore[attr-defined]
+
+
+@_NEEDS_CRYPTO
+@pytest.mark.parametrize("mark", [True, False], ids=["mark", "no-mark"])
+def test_an_encrypted_image_with_its_koly_block_first_reads(mark: bool) -> None:
+    # The old layout puts the koly block in the first 512 bytes; the right password
+    # finds it there, as the unencrypted reader does, and is not sent to the raw-disk
+    # refusal.
+    plain = _image(koly_at_front=True)
+    image = _encrypted(plain, entries=[d.EncryptedEntry(mark=mark)])
+    _, data = _read_all(image, password="secret")
+    assert data == _read_all(plain)[1]
+    with pytest.raises(EncryptionError, match="Wrong password"):
+        _open(image, password="other")
+
+
+@_NEEDS_CRYPTO
+def test_image_keys_keep_the_keys_out_of_their_repr() -> None:
+    keys = dmg_encrypted.ImageKeys(b"K" * 16, b"H" * 20, True)
+    assert "KKKK" not in repr(keys) and "HHHH" not in repr(keys)
 
 
 @_NEEDS_CRYPTO

@@ -22,6 +22,7 @@ import io
 import struct
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from typing import BinaryIO, NamedTuple
 
 from archivey.exceptions import (
@@ -91,9 +92,11 @@ class EncryptedHeader(NamedTuple):
     entries: tuple[_PasswordEntry, ...]
 
 
-class ImageKeys(NamedTuple):
-    aes_key: bytes
-    hmac_key: bytes
+@dataclass(frozen=True)
+class ImageKeys:
+    # The unwrapped keys stay out of the repr, as ``AesParams.key`` does.
+    aes_key: bytes = field(repr=False)
+    hmac_key: bytes = field(repr=False)
     # Whether the decrypted image ends with a ``koly`` block. A password confirmed by
     # the key mark alone unlocks an image that does not: a read-write (UDRW) one.
     has_koly: bool
@@ -283,7 +286,9 @@ class Unlocker:
         self._context = context
         self.backend = get_crypto_backend(context.config.formats._libraries_off)
         note_crypto_use(context._usage)
-        # The ciphertext of the blocks that hold the last 512 bytes: the ``koly``.
+        # The ciphertext of the blocks that hold the last 512 bytes, where the
+        # ``koly`` block is, and of those that hold the first 512, where an old image
+        # keeps it (as ``UdifImage`` looks for it).
         size = header.data_size
         first = max(0, size - 512) // header.block_size
         last = (size - 1) // header.block_size
@@ -291,6 +296,10 @@ class Unlocker:
         self._tail = source.read_exact(
             header.data_offset + first * header.block_size,
             (last - first + 1) * header.block_size,
+        )
+        head_blocks = (min(size, 512) - 1) // header.block_size + 1
+        self._head = source.read_exact(
+            header.data_offset, head_blocks * header.block_size
         )
 
     def check(self, password: bytes) -> tuple[ImageKeys | None, PasswordConfirmVerdict]:
@@ -331,6 +340,10 @@ class Unlocker:
         koly = tail[koly_at : koly_at + 512] if koly_at >= 0 else b""
         if parse_koly(koly, 0) is not None:
             return ImageKeys(aes_key, hmac_key, True)
+        if koly_at >= 0:
+            head = self._decrypt(aes_key, hmac_key, 0, self._head)
+            if parse_koly(head[:512], 0) is not None:
+                return ImageKeys(aes_key, hmac_key, True)
         if plain[size + _HMAC_KEY_SIZE :] == _KEY_MARK:
             return ImageKeys(aes_key, hmac_key, False)
         return None

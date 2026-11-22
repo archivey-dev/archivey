@@ -101,8 +101,9 @@ field's first 16 bytes (the 8 stated, then zeros); vfdecrypt and dmg2img describ
 (cipher 17) with an 8-byte IV in older images, read too. The unwrapped bytes, after
 their PKCS#7 padding, are the AES key, the 20-byte HMAC-SHA1 key and, on every
 fixture, the mark `CKIE\0`. A password is `CONFIRMED` when the padding is right and
-the last 512 bytes of the decrypted image are a `koly` block, or, with no `koly`, when
-the mark is there; a password that confirms by the mark alone unlocks a read-write
+the decrypted image has a `koly` block in its last 512 bytes or, as an old layout
+does, its first 512 (where the unencrypted reader looks), or, with no `koly`, when the
+mark is there; a password that confirms by the mark alone unlocks a read-write
 image, which is refused by name.
 
 Block `n` of the image (block size bytes from `data offset + n * block size`) is
@@ -120,8 +121,8 @@ is `ResourceLimitError`; no key entries, an entry outside the header (between th
 table and the encrypted data), 0 PBKDF2 iterations, a salt over 32 bytes, an IV over the
 cipher's block, or a wrapped key that is not a whole number of blocks inside its entry
 is `CorruptionError`; a file shorter than the encrypted data is `TruncatedError`. All of
-this runs before a password is asked for. Only the `koly` block's blocks are decrypted
-to check a password.
+this runs before a password is asked for. Only the blocks that hold the last and the
+first 512 bytes are decrypted to check a password.
 
 ### 2.2 Open and list
 
