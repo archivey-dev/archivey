@@ -274,7 +274,7 @@ class _ParseBudget:
 _OTHER_TREE_REPORTS = 16
 # What ``IsoReader._report_unlisted`` renders a reported file's path from: a directory
 # entry, or a UDF path already decoded.
-_NameSource = TypeVar("_NameSource")
+_PathSource = TypeVar("_PathSource")
 
 
 # The key the UDF tree is counted under in ``_ParseBudget``, beside the ISO 9660 trees'
@@ -1410,8 +1410,8 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         shape: Literal[
             "file_only_in_joliet", "file_only_in_iso9660", "file_only_in_udf"
         ],
-        files: Iterator[tuple[int | None, _NameSource]],
-        path_of: Callable[[_NameSource], str],
+        files: Iterator[tuple[int | None, _PathSource]],
+        path_of: Callable[[_PathSource], str],
         listed_extents: set[int],
     ) -> None:
         """Report the files of ``files``, ``(extent, path source)``, whose extent no
@@ -1469,8 +1469,8 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
 
     @staticmethod
     def _entry_tree_path(entry: IsoEntry, name_of: Callable[[IsoEntry], str]) -> str:
-        """An entry's path in its tree, from its parent links: each directory's
-        ``name_of``, root left out, joined with ``/``."""
+        """An entry's path in its tree, from its parent links: the ``name_of`` of each
+        directory above it, root left out, then its own, joined with ``/``."""
         parts = [name_of(entry)]
         parent = entry.parent
         while parent is not None and parent.parent is not None:
