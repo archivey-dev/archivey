@@ -248,7 +248,8 @@ class SalvageState:
                 length=length,
                 reason="no_header",
             ),
-            f"Salvage skipped {length} bytes at offset {offset}{_in_layer(layer)} of "
+            f"Salvage skipped {length} {'byte' if length == 1 else 'bytes'} at offset "
+            f"{offset}{_in_layer(layer)} of "
             f"the {self._format_name} archive: no header passes the format's checks "
             "in it.",
         )
