@@ -842,22 +842,26 @@ class SalvageLimits:
     """Caps on the search a reader opened with ``open_archive(salvage=True)`` makes.
 
     Where damage stops the member walk, a salvage reader searches forward for the next
-    header that passes its format's checks. These limits bound that search. Each
-    reader counts from zero, and an archive read inside another (``ReaderContext.
-    open_nested``) is a reader of its own. The limits that apply to every read apply
-    to a salvage reader unchanged: a found member is decoded and extracted under
-    :class:`DecoderLimits` and :class:`ExtractionLimits` like any other.
+    header that passes its format's checks. These limits bound that search. Each walk of
+    the archive counts from zero, and an archive read inside another
+    (``ReaderContext.open_nested``) is a reader of its own. The limits that apply to
+    every read apply to a salvage reader unchanged: a found member is decoded and
+    extracted under :class:`DecoderLimits` and :class:`ExtractionLimits` like any other.
     """
 
     max_search_bytes: int | None = None
-    """Most bytes one reader's searches may examine, all searches and all layers
-    together (the archive's own bytes and a decoded stream inside it). ``None``, the
-    default, does not cap the search: it examines each byte at most once per layer,
-    so it cannot cost more than one read of each layer.
+    """Most bytes one walk's searches may examine, all layers together (the
+    archive's own bytes and a decoded stream inside it). ``None``, the default, does
+    not cap the search: it examines each byte at most once per layer in a walk.
 
     When the cap is reached, the search stops there, records one
     ``ARCHIVE_REGION_SKIPPED`` with ``reason="search_limit"`` and lists nothing after
     it; the listing ends in the damage error, as it does without salvage.
+
+    Only the listing walk records. A reader that walks the archive again from its
+    start to reach a member's data searches the same way, up to the same cap counted
+    from zero, so it finds the same members and records nothing; each such walk can
+    cost the listing's search again.
     """
 
     max_reported_regions: int = 1_000

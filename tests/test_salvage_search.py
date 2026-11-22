@@ -17,6 +17,7 @@ from archivey.diagnostics import RegionSkippedContext
 from archivey.internal.diagnostics_collector import DiagnosticCollector
 from archivey.internal.salvage import (
     HeaderSearch,
+    QuietSalvageState,
     SalvageState,
     requesting_salvage,
     search_forward,
@@ -391,8 +392,13 @@ def test_a_small_budget_reads_no_more_than_it_can_examine() -> None:
     layer = _Layer(b"\x00" * (4 << 20))
     result = search_forward(state, layer.read_at, search, start=0)
     assert result.limit_reached
-    assert sum(size for _, size in layer.reads) <= 100 + search.max_header_size - 1
+    # With no ``end``, one byte more tells the layer's end from the budget's.
+    assert sum(size for _, size in layer.reads) <= 100 + search.max_header_size
     assert state.searched_bytes == 100
+    state, _ = _state(max_search_bytes=100)
+    layer = _Layer(b"\x00" * (4 << 20))
+    search_forward(state, layer.read_at, search, start=0, end=4 << 20)
+    assert sum(size for _, size in layer.reads) <= 100 + search.max_header_size - 1
 
 
 def test_an_end_behind_the_position_is_refused_and_moves_nothing() -> None:
@@ -442,3 +448,56 @@ def test_the_search_limit_message_says_where_the_search_started_and_stopped() ->
     message = collector.snapshot().retained[-1].message
     assert "started at offset 10" in message
     assert "before examining a byte" in message
+
+
+def test_a_budget_that_covers_an_unsized_layer_to_its_end_is_not_a_limit() -> None:
+    """With no ``end`` the search learns where the layer ends only from a short
+    read; a budget that pays for every byte left still ends in ``no_header``."""
+    search = HeaderSearch(find_header=lambda w, s: None, step=1, max_header_size=1)
+    state, collector = _state(max_search_bytes=10)
+    result = search_forward(state, _Layer(b"\x00" * 10).read_at, search, start=0)
+    assert result.found is None and not result.limit_reached
+    assert [(r.offset, r.length, r.reason) for r in _regions(collector)] == [
+        (0, 10, "no_header")
+    ]
+
+
+def test_an_unsized_layer_that_ends_on_a_window_edge_is_not_a_limit() -> None:
+    """The window span, not the budget, stops the read exactly at the layer's end,
+    and the budget pays for every byte left: the search reads one byte more to see
+    the end, and gives the same answer as with ``end``."""
+    search = HeaderSearch(find_header=lambda w, s: None, step=2, max_header_size=2)
+    for end in (None, 25):
+        state, collector = _state(max_search_bytes=25)
+        result = search_forward(
+            state, _Layer(b"\x00" * 25).read_at, search, start=0, end=end, window_size=2
+        )
+        assert result.found is None and not result.limit_reached
+        assert state.searched_bytes == 25
+        assert [(r.offset, r.length, r.reason) for r in _regions(collector)] == [
+            (0, 25, "no_header")
+        ]
+
+
+def test_a_second_walk_searches_quietly_as_the_first_did() -> None:
+    """A walk started over to reach member data uses a :class:`QuietSalvageState`:
+    it finds the same header from the start, and the reader's budget and records
+    stay as the listing walk left them."""
+    data = b"\x00" * 40 + MAGIC + b"rest"
+    state, collector = _state(max_search_bytes=1000)
+    search = _magic_search()
+    assert search_forward(state, _Layer(data).read_at, search, start=0).found == 40
+    searched = state.searched_bytes
+    records = len(collector.snapshot().retained)
+    again = QuietSalvageState(
+        requested=True,
+        enabled=True,
+        limits=state.limits,
+        collector=collector,
+        archive_name="x.bin",
+        format_name="TEST",
+    )
+    assert search_forward(again, _Layer(data).read_at, search, start=0).found == 40
+    again.finish()
+    assert state.searched_bytes == searched
+    assert len(collector.snapshot().retained) == records
