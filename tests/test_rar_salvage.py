@@ -832,3 +832,53 @@ def test_a_rar_inside_another_archive_records_forward_only_reader() -> None:
         if isinstance(c, SalvageUnavailableContext) and c.format == "RAR"
     ]
     assert [c.reason for c in rar] == ["forward_only_reader"]
+
+
+def test_crafted_rar3_ext_time_candidates_parse_no_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RAR 1.5-4 ``FILE`` candidate with extended times every 8 bytes, each
+    declaring a 57 KiB name: the CRC16 is checked before any name is decoded, so no
+    candidate is parsed (before the fix each one was, about 10 s per MiB)."""
+    from archivey.internal.backends import rar_search
+
+    parsed = 0
+    parse = rar_search._parse_rar3_file_header
+
+    def counting(*args: object, **kwargs: object) -> object:
+        nonlocal parsed
+        parsed += 1
+        return parse(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rar_search, "_parse_rar3_file_header", counting)
+    data = bytes.fromhex("00 00 74 e0 10 ff ff 00") * ((1 << 20) // 8)
+    started = time.perf_counter()
+    assert Rar3Finder().find(data, 0, None) is None
+    assert parsed == 0
+    assert time.perf_counter() - started < 30
+
+
+@pytest.mark.parametrize(
+    ("name", "cut"),
+    [
+        ("comment__.rar", 8),
+        ("basic_solid__.rar", 8),
+        ("basic_solid__rar4.rar", 7),
+        pytest.param("comment_compressed__rar4.rar", 7, marks=requires_binary("unrar")),
+    ],
+)
+def test_a_main_header_found_first_is_the_archives_own(
+    name: str, cut: int, tmp_path: Path
+) -> None:
+    """Only the signature cut: the lost start finds MAIN first, so its flags and its
+    comment are the archive's, as for an intact one."""
+    with open_archive(_RAR / name) as reader:
+        names = [m.name for m in reader.members()]
+        archive = reader._archive  # type: ignore[attr-defined]
+        intact = (archive.is_solid, archive.comment)
+    path = _write(tmp_path, (_RAR / name).read_bytes()[cut:])
+    with open_archive(path, salvage=True) as reader:
+        assert [m.name for m in reader.members_report().members] == names
+        archive = reader._archive  # type: ignore[attr-defined]
+        assert not archive.main_lost
+        assert (archive.is_solid, archive.comment) == intact

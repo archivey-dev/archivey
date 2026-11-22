@@ -3339,6 +3339,9 @@ class _Rar3Walk:
         # Headers a lost start's search found, in order, before the walk reads on.
         self.prefound: list[int] = []
         self.main_lost = False
+        # Set when a lost start's search found this volume's own MAIN first: its
+        # comment, before any member, is this archive's (``_own_comment``).
+        self.main_found_first = False
         self.open_error: CorruptionError | None = None
         self.ended_in_damage = False
 
@@ -3347,6 +3350,12 @@ class _Rar3Walk:
         for _ in self.walk():
             pass
         return self.result()
+
+    @property
+    def _own_comment(self) -> bool:
+        """Whether a comment service here is this archive's: before any damage, or
+        after a MAIN a lost start found first and before any member."""
+        return not self.past_damage or (self.main_found_first and not self.members)
 
     @property
     def _main_passed(self) -> bool:
@@ -3649,6 +3658,7 @@ class _Rar3Walk:
             proven=self.password_proven,
         )
         self.main_seen = True
+        self.main_found_first = self.main_lost
         self.main_lost = False
         self.resume_from = block.data_offset
         if flags & _RAR3_MAIN_COMMENT:
@@ -3795,13 +3805,13 @@ class _Rar3Walk:
             if self.yield_files:
                 self.pending = ForwardMember(member, block.data_offset, packed_size)
                 return
-        elif self.pending_lost is not None:
+        elif self.pending_lost is not None and not self._own_comment:
             # A service header right after lost bytes: the member before it is not
             # the one it describes, and its comment may be a nested archive's.
             pass
         elif member.filename == RAR3_UOW_NAME and self.members:
             self._attach_owner(member)
-        elif not self.past_damage and self._is_readable_comment(
+        elif self._own_comment and self._is_readable_comment(
             member, block.data_offset, packed_size
         ):
             self._read_comment_service(member, block.data_offset, packed_size)
@@ -5024,6 +5034,9 @@ class _Rar5Walk:
         # A search to start before the first header is read (a lost start).
         self.pending_search: int | None = None
         self.main_lost = False
+        # Set when a lost start's search found this volume's own MAIN first: its
+        # comment, before any member, is this archive's (``_own_comment``).
+        self.main_found_first = False
         self.open_error: CorruptionError | None = None
         self.ended_in_damage = False
         self.headers_read = 0
@@ -5033,6 +5046,12 @@ class _Rar5Walk:
         for _ in self.walk():
             pass
         return self.result()
+
+    @property
+    def _own_comment(self) -> bool:
+        """Whether a comment service here is this archive's: before any damage, or
+        after a MAIN a lost start found first and before any member."""
+        return not self.past_damage or (self.main_found_first and not self.members)
 
     @property
     def _main_passed(self) -> bool:
@@ -5420,6 +5439,10 @@ class _Rar5Walk:
         self.is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
         self.is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
         self.main_seen = True
+        # A lost start's search found this MAIN first: it is the archive's own, so
+        # its flags stand and the members' flags do not replace them.
+        self.main_found_first = self.main_lost
+        self.main_lost = False
         _seek_after_packed(source, block.data_offset, block.add_size)
         # Header-encrypted QO stores IV+ciphertext header copies and
         # file-encrypts the QO payload; reconstructed data_offset then
@@ -5558,7 +5581,7 @@ class _Rar5Walk:
                 self.damaged_service_headers_omitted += 1
             if (
                 _is_stored_rar5_cmt(member)
-                and not self.past_damage
+                and self._own_comment
                 and _span_in_file(source, block.data_offset, member.compress_size)
             ):
                 source.seek(block.data_offset)

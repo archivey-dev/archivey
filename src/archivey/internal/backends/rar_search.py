@@ -431,16 +431,16 @@ def rar3_header_check(
     if name_size < 1 or head_size < fixed_end:
         return False
     is_service = block_type == _RAR3_SUB
-    crc_end: int | None
     if is_service:
         crc_end = head_size
     elif flags & _RAR3_FILE_EXTTIME:
-        crc_end = None  # where the extended times end, which the parse says
+        # Where the extended times end, read from their flag word alone: the
+        # name is not decoded before the CRC16 passes, so a candidate costs the
+        # bytes it spans (hashed once, ``_WindowCrc``) and not a parse of them.
+        crc_end = _rar3_ext_time_end(window, pos + fixed_end, end) - pos
     else:
         crc_end = fixed_end
-    if crc_end is not None and (
-        hash_slice(window, pos + 2, pos + crc_end) & 0xFFFF != head_crc
-    ):
+    if hash_slice(window, pos + 2, pos + crc_end) & 0xFFFF != head_crc:
         return False
     try:
         _member, parsed_end = _parse_rar3_file_header(
@@ -455,9 +455,28 @@ def rar3_header_check(
         )
     except CorruptionError:
         return False
-    if crc_end is None:
-        return hash_slice(window, pos + 2, pos + parsed_end) & 0xFFFF == head_crc
     return parsed_end == crc_end
+
+
+def _rar3_ext_time_end(window: bytes, at: int, end: int) -> int:
+    """Where a RAR 1.5-4 ``EXTTIME`` block that starts at ``at`` ends, in a header
+    that ends at ``end``. It walks the block as ``_parse_rar3_ext_time`` does: a flag
+    word, then per time (mtime, ctime, atime, arctime) a DOS word unless it is the
+    mtime, and up to 3 bytes of fraction."""
+    if at + 2 > end:
+        return at
+    flags = _S_U16.unpack_from(window, at)[0]
+    at += 2
+    for shift in (12, 8, 4, 0):
+        slot = flags >> shift
+        if not slot & 8:
+            continue
+        if shift != 12:
+            if at + 4 > end:
+                continue
+            at += 4
+        at = min(at + (slot & 3), end)
+    return at
 
 
 def _direct_crc(window: bytes, start: int, stop: int) -> int:
