@@ -19,6 +19,7 @@ from archivey import (
     ArchiveyConfig,
     DiagnosticCode,
     DiagnosticPolicy,
+    ListingLimits,
     SalvageLimits,
     open_archive,
 )
@@ -716,30 +717,118 @@ def test_cpio_gz_found_size_past_the_layer_end_does_not_use_up_the_budget(
     assert f"No CPIO header at offset {len(a)}" in str(error)
 
 
-def test_cpio_gz_walked_on_size_past_the_layer_end_reads_as_the_plain_file(
-    tmp_path: Path,
+@pytest.mark.parametrize("name", ["a.cpio", "a.cpio.gz"])
+def test_cpio_walked_on_size_past_the_layer_end_is_not_listed(
+    name: str, tmp_path: Path
 ) -> None:
-    """The same size on a member walked on to: the check of the header after its
-    data reads forward too, finds the layer's end, and leaves the member
-    unconfirmed. The gzipped archive then lists and ends as the plain one does,
-    not in the listing budget."""
+    """The same size on a member walked on to: its data runs past the layer's end,
+    so it is not listed, as a found one is not, and the search goes on past it. The
+    pass ends in the first damage."""
     a = _newc("A", b"a" * 100, 1)
     members = [a, _zeroed_magic(_newc("B", b"b", 2)), _newc("C", b"c" * 40, 3)]
-    passes = []
-    for name in ("a.cpio", "a.cpio.gz"):
-        path = _with_huge_size(tmp_path, members, name)
-        with open_archive(path, salvage=True) as reader:
-            report = reader.members_report()
-            found = {
-                c.member_name: c.confirmed
-                for d in reader.diagnostics.retained
-                if isinstance(c := d.context, SalvageScanContext)
-            }
-        error = report.error
-        assert error is not None
-        passes.append(([m.name for m in report.members], found, type(error)))
-    assert passes[0] == passes[1]
-    assert passes[1][:2] == (["A", "C", "huge"], {"C": True, "huge": False})
+    path = _with_huge_size(tmp_path, members, name)
+    with open_archive(path, salvage=True) as reader:
+        report = reader.members_report()
+        found = {
+            c.member_name: c.confirmed
+            for d in reader.diagnostics.retained
+            if isinstance(c := d.context, SalvageScanContext)
+        }
+    assert [m.name for m in report.members] == ["A", "C"]
+    assert found == {"C": True}
+    assert type(report.error) is CorruptionError
+    assert f"No CPIO header at offset {len(a)}" in str(report.error)
+
+
+def test_ar_walked_on_size_past_the_layer_end_is_not_listed(tmp_path: Path) -> None:
+    raw = bytearray(b"!<arch>\n")
+    raw += _ar_header(b"A/", 100) + b"a" * 100
+    damage_at = len(raw)
+    raw += b"X" * 60 + b"b" * 10
+    raw += _ar_header(b"C/", 40) + b"c" * 40
+    raw += _ar_header(b"D/", 9999999999) + bytes(1 << 20)
+    path = _write(tmp_path, bytes(raw), "a.a")
+    members, diagnostics, error = _assert_add_only(path)
+    assert [m[0] for m in members] == ["A", "C"]
+    assert [c.confirmed for c in _found(diagnostics)] == [True]
+    assert type(error) is CorruptionError
+    assert f"No ar member header at offset {damage_at}" in str(error)
+
+
+def test_deb_walked_on_size_past_the_layer_end_is_not_listed(tmp_path: Path) -> None:
+    """A ``.deb`` whose control tar the search finds past damage, then a data tar
+    header whose size runs past the package's end: the data tar is not opened, and
+    the pass ends in the first damage."""
+    from tests.test_deb import CONTROL, _ar, _tar
+
+    control = _tar([("./control", CONTROL)], "gz")
+    raw = bytearray(_ar((b"debian-binary", b"2.0\n"), (b"_extra", b"x" * 20)))
+    extra_at = 8 + 60 + 4
+    raw[extra_at + 58] = ord("!")
+    raw += _ar((b"control.tar.gz", control))[8:]
+    raw += _ar_header(b"data.tar.xz", 9999999999) + bytes(1 << 20)
+    path = _write(tmp_path, bytes(raw), "a.deb")
+    with open_archive(path, salvage=True, format="deb") as reader:
+        report = reader.members_report()
+    names = [m.name for m in report.members]
+    assert names and all(n.startswith("DEBIAN") for n in names)
+    assert type(report.error) is CorruptionError
+    assert f"offset {extra_at}" in str(report.error)
+
+
+def _many_candidates(tmp_path: Path, sizes: Callable[[int, int, int], int]) -> Path:
+    """A ``.cpio.gz``: ``A``, ``B`` with its magic zeroed, 40 headers that pass the
+    checks, then 4 MiB of data and the trailer. ``sizes(i, start, end)`` gives the
+    size field of header ``i``, whose data starts at ``start``, where the 4 MiB end
+    at ``end``."""
+    import gzip
+    import random
+
+    data = bytes(random.Random(0).choices(b"abcd", k=4 << 20))
+    head = _newc("A", b"a" * 100, 1) + _zeroed_magic(_newc("B", b"b", 2))
+    out = bytearray(head)
+    count = 40
+    headers = [_newc(f"fake{i:02}", b"", 10 + i) for i in range(count)]
+    data_end = len(head) + sum(len(h) for h in headers) + len(data)
+    for i, header in enumerate(headers):
+        fake = bytearray(header)
+        fake[54:62] = b"%08X" % sizes(i, len(out) + len(header), data_end)
+        out += fake
+    out += data + _newc("TRAILER!!!", b"", 0)
+    return _write(tmp_path, gzip.compress(bytes(out), 6), "a.cpio.gz")
+
+
+@pytest.mark.parametrize(
+    ("sizes", "budget"),
+    [
+        pytest.param(lambda i, start, end: 0xFFFFFF00, 96, id="past-the-end"),
+        pytest.param(
+            lambda i, start, end: end - 64 * (i + 1) - start,
+            320,
+            id="just-before-the-end",
+        ),
+    ],
+)
+def test_cpio_gz_probes_read_the_layer_once(
+    sizes: Callable[[int, int, int], int], budget: int, tmp_path: Path
+) -> None:
+    """40 candidate headers whose sizes run past the 4 MiB layer, or end just
+    before its end: the probes of their data ends and of the headers after them
+    read forward through the layer once in all, not once per candidate, and the
+    pass ends in the first damage within ``budget`` MiB of decoding. With a probe
+    reading forward from the walk's position each time, the two needed about 207
+    and 527 MiB; now about 51 and 211. Just before the end, each candidate is
+    held and listed unconfirmed, and the walk skips its 4 MiB of data before it
+    searches on: that skip, not a probe, is most of the 211."""
+    path = _many_candidates(tmp_path, sizes)
+    limits = ListingLimits(max_decoded_bytes=budget << 20)
+    with open_archive(
+        path, salvage=True, config=ArchiveyConfig(listing_limits=limits)
+    ) as reader:
+        report = reader.members_report()
+    assert report.members[0].name == "A"
+    assert type(report.error) is CorruptionError
+    assert "No CPIO header at offset 212" in str(report.error)
 
 
 def test_a_cpio_inside_another_archive_names_the_forward_only_reader() -> None:

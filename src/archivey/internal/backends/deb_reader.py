@@ -557,6 +557,12 @@ class DebReader(SequentialReader):
                 # Past the damage, a member claims its data only when the header
                 # after it passes too, or the package ends there.
                 assert salvage is not None
+                if not searched and not salvage.holds(offset + HEADER_SIZE + size):
+                    # Data that runs past the layer's end, as ``_search`` refuses for
+                    # a found header: not listed, since reading it would end the pass
+                    # in TruncatedError. The search goes on past this header.
+                    search_from = salvage.after(offset)
+                    continue
                 confirmed = _ar_confirmed(
                     salvage, offset + HEADER_SIZE + size + (size & 1)
                 )

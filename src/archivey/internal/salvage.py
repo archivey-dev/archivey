@@ -636,6 +636,10 @@ class WalkSalvage:
         self._open_reader = open_reader
         self.seek = seek
         self._position = position
+        # On a layer of unknown size: how far the probes have read, and the layer's
+        # end once one reached it (``read_at``).
+        self._held_to = 0
+        self._end: int | None = None
         self._report_found = report_found
         self._format_name = format_name
 
@@ -672,42 +676,71 @@ class WalkSalvage:
         """Up to ``n`` bytes of the layer from ``offset``, for a check of a header
         the search did not read: the next one, or the first one's magic.
 
-        On a decoded layer of unknown size, a probe past the walk's position reads
-        forward to ``offset`` rather than seeking there. A decoder that has not reached
-        its end takes a seek to any offset, and the decoded-bytes budget would charge
-        the whole gap, up to an offset a damaged size field gave, without decoding it.
-        Read forward, the probe decodes and charges only what the layer holds, and
-        stops at its end.
+        On a decoded layer of unknown size, a probe past the bytes known to be there
+        reads forward to ``offset`` rather than seeking there. A decoder that has not
+        reached its end takes a seek to any offset, and the decoded-bytes budget would
+        charge the whole gap, up to an offset a damaged size field gave, without
+        decoding it. The walk keeps how far its probes have read (``_held_to``) and,
+        once one reaches it, the layer's end (``_end``): a later probe reads forward
+        only past ``_held_to``, a probe behind it reads its bytes where they are, and
+        a probe at or past ``_end`` reads nothing. So the walk's probes together read
+        forward through the layer at most once, however many headers the search finds.
 
         A probe the decoding limits refuse (the ratio limit, or the listing's budget)
         reads as nothing: the candidate fails its check, and the pass ends in the first
         damage, not in the limit.
         """
+        if self.size is not None:
+            return self._read_at_refused_as_nothing(offset, n)
+        if n <= 0 or (self._end is not None and offset >= self._end):
+            return b""
+        start = max(self._position(), self._held_to)
+        if offset <= start:
+            data = self._read_at_refused_as_nothing(offset, n)
+        else:
+            data = self._read_forward(start, offset, n)
+        if data:
+            self._held_to = max(self._held_to, offset + len(data))
+        else:
+            # The layer ends at ``offset`` or before, or the limits refuse a read
+            # there: a later probe there reads nothing either, without a read.
+            self._end = offset if self._end is None else min(self._end, offset)
+        return data
+
+    def _read_at_refused_as_nothing(self, offset: int, n: int) -> bytes:
         try:
-            start = self._position()
-            if self.size is not None or offset <= start:
-                return self._read_at(offset, n)
-            read, close = self._open_reader(start)
-            try:
-                at = start
-                while at < offset:
-                    got = len(read(at, min(offset - at, _PROBE_STEP)))
-                    if not got:
-                        return b""
-                    at += got
-                return read(offset, n)
-            finally:
-                close()
+            return self._read_at(offset, n)
         except AlwaysStopResourceLimitError:
             return b""
 
+    def _read_forward(self, start: int, offset: int, n: int) -> bytes:
+        """``read_at`` past ``start``, the furthest offset known to be there: read
+        forward from it, noting how far the layer goes."""
+        read, close = self._open_reader(start)
+        try:
+            at = start
+            while at < offset:
+                got = len(read(at, min(offset - at, _PROBE_STEP)))
+                if not got:
+                    return b""
+                at += got
+                self._held_to = max(self._held_to, at)
+            return read(offset, n)
+        except AlwaysStopResourceLimitError:
+            return b""
+        finally:
+            close()
+
     def holds(self, end: int) -> bool:
-        """Whether the layer has bytes up to ``end``: a found member whose data runs
-        past the layer's end is not listed, since reading it would stop the pass. On
-        a decoded layer of unknown size, a probe the limits refuse is not held."""
+        """Whether the layer has bytes up to ``end``: a member past the damage whose
+        data runs past the layer's end is not listed, since reading it would stop the
+        pass. On a decoded layer of unknown size, ``end`` within what the probes have
+        read is held without a read, and a probe the limits refuse is not held."""
         if self.size is not None:
             return end <= self.size
-        return end <= 0 or len(self.read_at(end - 1, 1)) == 1
+        if end <= max(self._held_to, self._position()):
+            return True
+        return len(self.read_at(end - 1, 1)) == 1
 
     def found(
         self,

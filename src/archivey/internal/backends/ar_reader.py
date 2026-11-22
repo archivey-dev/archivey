@@ -249,6 +249,12 @@ class ArReader(SequentialReader):
                 # claims its data only when the header after it passes too.
                 assert salvage is not None
                 size = entry.size
+                if not searched and not salvage.holds(offset + HEADER_SIZE + size):
+                    # Data that runs past the layer's end, as ``_search`` refuses for
+                    # a found header: not listed, since reading it would end the pass
+                    # in TruncatedError. The search goes on past this header.
+                    search_from = salvage.after(offset)
+                    continue
                 confirmed = ar_confirmed(
                     salvage, offset + HEADER_SIZE + size + (size & 1)
                 )

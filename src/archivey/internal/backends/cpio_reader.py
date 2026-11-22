@@ -326,6 +326,12 @@ class CpioReader(SequentialReader):
                 # Past the damage every member is one the default does not list: the
                 # one the search found, and those walked on from it.
                 assert salvage is not None
+                if not searched and not salvage.holds(stream.offset + header.file_size):
+                    # Data that runs past the layer's end, as ``_search`` refuses for
+                    # a found header: not listed, since reading it would end the pass
+                    # in TruncatedError. The search goes on past this header.
+                    search_from = salvage.after(header.offset)
+                    continue
                 confirmed = self._confirmed(salvage, header)
                 salvage.found(
                     member,
