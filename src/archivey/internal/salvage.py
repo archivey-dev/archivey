@@ -89,7 +89,9 @@ def requesting_salvage(
     """
     before = getattr(_local, "request", _NO_REQUEST)
     _local.request = SalvageRequest(
-        requested=requested, supported=supported, lost_start=lost_start
+        requested=requested,
+        supported=supported,
+        lost_start=requested and lost_start,
     )
     try:
         yield
@@ -166,8 +168,12 @@ class SalvageState:
 
     A format calls :func:`search_forward` with this state, and :meth:`finish` when its
     walk ends, which records the ``report_limit`` record if any range went
-    unreported. A walk started over after a failure calls :meth:`restart` first, so
-    it searches again from zero, as the first walk did.
+    unreported. The budget, the records and the layer positions are the listing
+    walk's: only that walk charges and records. A listing walk started over after a
+    failure calls :meth:`restart` first. Any other walk from the start, such as one
+    a random-access reader runs to reach a member's data, possibly while the listing
+    walk runs, searches with a :class:`QuietSalvageState` of its own, so it leaves
+    this state as it is.
     """
 
     def __init__(
@@ -185,7 +191,7 @@ class SalvageState:
         self.enabled = enabled
         # Whether the reader starts with a search from offset 0 when its first
         # header fails there (``SalvageRequest.lost_start``).
-        self.lost_start = lost_start
+        self.lost_start = enabled and lost_start
         self.limits = limits
         self._collector = collector
         self._archive_name = archive_name
@@ -193,7 +199,14 @@ class SalvageState:
         self.restart()
 
     def restart(self) -> None:
-        """Forget every search, for a walk that starts over from the archive's start."""
+        """Forget every search, for a listing walk that starts over from the
+        archive's start after a failure: the walk then searches, charges the budget
+        and records again from zero, as the first listing walk did.
+
+        A walk that starts over only to reach a member's data, beside a listing that
+        stays, does not call this: it searches with a :class:`QuietSalvageState` of
+        its own, which finds the same members, charges nothing to this state and
+        records nothing."""
         # Bytes the searches have examined, all layers together.
         self.searched_bytes = 0
         # Set once max_search_bytes stops a search; every later search stops at once.
@@ -374,8 +387,9 @@ def search_forward(
     serve it without seeking back. ``end``, when known, is where the layer ends; the
     search reads nothing at or past it, and an ``end`` before ``start`` or before the
     layer's search position is a bug (``AssertionError``). Under a budget the search
-    reads no further than the last header the budget lets it reach, and with no
-    budget left it reads nothing.
+    reads no further than the last header the budget lets it reach (one byte more
+    when ``end`` is not known, to see the layer's end), and with no budget left it
+    reads nothing.
 
     The candidate positions are ``base + k * search.step``. The search starts at the
     first one at or after ``start``, or at the first one this layer's earlier
@@ -423,8 +437,12 @@ def search_forward(
         return SearchResult(found=None, limit_reached=True)
     # With a budget, no read goes past the last header the budget lets the search
     # reach: the bytes it may examine, plus the rest of a header that starts there.
+    # With no ``end``, one byte more: only a short read shows the layer ends there,
+    # and a budget that pays for every byte left is then no limit.
     read_limit = (
-        None if remaining is None else pos + remaining + search.max_header_size - 1
+        None
+        if remaining is None
+        else pos + remaining + search.max_header_size - (0 if end is None else 1)
     )
 
     span = window_size + search.max_header_size - 1

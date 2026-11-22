@@ -20,8 +20,10 @@ in archive order, between the default's members where their bytes are. The pass 
 still end in the error that ends the default pass; an archive the default reads without
 error SHALL read the same with `salvage=True` in this step.
 
-A nested reader archivey opens itself SHALL inherit the flag. A format without salvage
-support SHALL read as the default and record `SALVAGE_UNAVAILABLE` once at open.
+A nested reader archivey opens itself SHALL inherit the flag; a format whose search
+cannot run on such a forward-only reader SHALL record `SALVAGE_UNAVAILABLE` there and
+read as the default. A format without salvage support SHALL read as the default and
+record `SALVAGE_UNAVAILABLE` once at open.
 
 #### Scenario: the switch
 
