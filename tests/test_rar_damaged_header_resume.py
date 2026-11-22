@@ -501,6 +501,27 @@ def test_rar4_a_landing_followed_by_the_clean_end_is_followed(tail: str) -> None
     assert [m.header_damaged for m in archive.members] == [False, True, False]
 
 
+def test_rar4_a_landing_whose_data_runs_past_the_end_is_not_followed() -> None:
+    """The landing passes its CRC16, and its own packed size points past the end of
+    the file. The read there is empty, as at the end, but only the end itself stands
+    in for the second header: past it, one CRC16 match (2^-16) would confirm the
+    jump. So the walk stops at the damaged header, with no cut reported. Fails if
+    ``_Rar3Walk._probe`` takes any empty read for the clean end.
+
+    The cost: a damaged header followed by an intact last member that the file cuts
+    short is not followed either, and that member is not listed."""
+    landing = _rar3_stored("fake", b"z" * 1000)[:-1000]
+    data = (
+        _rar3_start()
+        + _rar3_stored("a.txt", b"a")
+        + _rar3_stored("b.bin", b"x" * 10 + landing, pack_size=10)
+    )
+    archive = _parse(data)
+    assert [m.filename for m in archive.members] == ["a.txt"]
+    assert archive.damaged is not None
+    assert archive.truncated is None
+
+
 def test_rar4_nine_damaged_headers_in_a_row_stop_the_walk() -> None:
     """The chain cap is 8 in RAR 1.5-4 too. Fails if ``_MAX_DAMAGED_HEADER_CHAIN``
     is raised."""
