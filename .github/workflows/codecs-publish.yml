@@ -14,11 +14,12 @@ name: archivey-codecs wheels
 # free-threaded CPython from 3.14t on, which abi3 does not cover. No 3.13t wheel:
 # maturin refuses free-threaded 3.13 inside the manylinux containers ("only supported on
 # 3.14 and later"), and 3.13t's free threading is experimental; 3.13t uses archivey's
-# Python decoders. Each wheel is
-# installed in a clean environment with archivey from this checkout and runs the
-# package's own tests (test_api.py, test_parity.py) with CODECS_REQUIRED=1, so a wheel
-# that does not import fails instead of skipping. musllinux wheels are tested in an
-# Alpine container (abi3 only: there is no free-threaded Alpine image).
+# Python decoders. Each wheel, on every platform, is installed in a clean environment
+# with archivey from this checkout and runs the package's own tests (test_api.py,
+# test_parity.py) with CODECS_REQUIRED=1, so a wheel that does not import fails instead
+# of skipping. musllinux wheels are tested in the pypa musllinux image, which has both
+# CPython 3.11 and 3.14t. A free-threaded wheel must also leave the GIL off after import
+# (`-W error` turns CPython's re-enable warning into a failure).
 #
 # Trusted Publishing must be set up on the index side, once, for project
 # `archivey-codecs`, as a "pending publisher" (the project does not exist yet):
@@ -83,7 +84,7 @@ jobs:
           - { name: manylinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: auto, libc: glibc }
           - { name: musllinux x86_64, os: ubuntu-latest, target: x86_64, manylinux: musllinux_1_2, libc: musl }
           - { name: musllinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: musllinux_1_2, libc: musl }
-          - { name: macOS arm64, os: macos-14, target: aarch64 }
+          - { name: macOS arm64, os: macos-latest, target: aarch64 }
           - { name: macOS x86_64, os: macos-15-intel, target: x86_64 }
           - { name: Windows x86_64, os: windows-latest, target: x64 }
           - { name: Windows arm64, os: windows-11-arm, target: aarch64 }
@@ -109,7 +110,7 @@ jobs:
         if: matrix.libc == 'musl'
         run: echo "INTERPRETERS=python3.11 python3.14t" >> "$GITHUB_ENV"
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           working-directory: ${{ env.PACKAGE }}
           target: ${{ matrix.target }}
@@ -136,16 +137,30 @@ jobs:
             [ -x "$py_exe" ] || py_exe="$RUNNER_TEMP/venv/Scripts/python.exe"
             CODECS_REQUIRED=1 "$py_exe" -m pytest -q -c /dev/null \
               --rootdir=. -p no:cacheprovider "$PACKAGE/tests"
+            case "$py" in
+              *t) "$py_exe" -W error -c 'import sys, archivey_codecs._codecs; assert not sys._is_gil_enabled()' ;;
+            esac
             echo "::endgroup::"
           done
-      - name: Test the abi3 wheel on Alpine
+      - name: Test each wheel on musl
         if: matrix.libc == 'musl'
         run: |
-          docker run --rm -v "$PWD":/w -w /w python:3.12-alpine sh -euc '
-            python -m venv /tmp/venv
-            /tmp/venv/bin/pip install -q dist/*-abi3-*.whl . pytest
-            CODECS_REQUIRED=1 /tmp/venv/bin/python -m pytest -q -c /dev/null \
-              --rootdir=. -p no:cacheprovider "$0/tests"
+          docker run --rm -v "$PWD":/w -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
+            for tag in cp311-cp311 cp314-cp314t; do
+              case "$tag" in
+                *t) wheel="$(ls dist/*-cp314-cp314t-*.whl)" ;;
+                *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
+              esac
+              echo "$tag: $wheel"
+              rm -rf /tmp/venv
+              "/opt/python/$tag/bin/python" -m venv /tmp/venv
+              /tmp/venv/bin/pip install -q "$wheel" . pytest
+              CODECS_REQUIRED=1 /tmp/venv/bin/python -m pytest -q -c /dev/null \
+                --rootdir=. -p no:cacheprovider "$0/tests"
+              case "$tag" in
+                *t) /tmp/venv/bin/python -W error -c "import sys, archivey_codecs._codecs; assert not sys._is_gil_enabled()" ;;
+              esac
+            done
           ' "$PACKAGE"
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -163,7 +178,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v5
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           working-directory: ${{ env.PACKAGE }}
           command: sdist
