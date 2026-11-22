@@ -1307,7 +1307,8 @@ the walk stops on damage, `rar_search` searches forward through the shared drive
 - **Lost start.** No signature, under a `.rar` name or `format="rar"`: both finders,
   and the first confirmed header sets the version. A damaged MAIN is read past the same
   way. Without MAIN, the flags come from the file headers (and, for a later volume,
-  from volume 1).
+  from volume 1). No comment is read past damage, except the one right after a MAIN
+  that a lost start's search finds first: that MAIN is the archive's own.
 - **Volumes.** Each volume is its own search layer (`volume_index` in the contexts).
   After a volume that ends in damage the walk goes on to every later volume given;
   members there are `method="next_volume"`.

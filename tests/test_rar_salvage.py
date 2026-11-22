@@ -54,7 +54,12 @@ from archivey.internal.backends.rar_search import (
     crc32_from_prefixes,
     is_rar5_qo_copy,
 )
-from tests.conftest import requires_binary, requires_unrar_cli, unrar_reads_from_pipes
+from tests.conftest import (
+    requires,
+    requires_binary,
+    requires_unrar_cli,
+    unrar_reads_from_pipes,
+)
 from tests.rar_util import write_rar29_stored
 
 _RAR = Path(__file__).parent / "fixtures" / "rar"
@@ -606,7 +611,7 @@ def test_a_found_solid_member_whose_stream_crosses_lost_bytes_is_refused(
     with open_archive(path, salvage=True) as reader:
         members = reader.members_report().members
         assert [m.name for m in members] == ["a.txt", "d.txt"]
-        reader.read(members[0])
+        # Refused from the listing, before any program would run.
         with pytest.raises(CorruptionError, match="solid stream runs through"):
             reader.read(members[1])
 
@@ -715,6 +720,7 @@ def test_a_later_volume_with_a_damaged_main_header(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@requires("cryptography")
 @pytest.mark.parametrize(
     "name", ["encrypted_header__.rar", "encrypted_header__rar4.rar"]
 )
@@ -882,3 +888,19 @@ def test_a_main_header_found_first_is_the_archives_own(
         archive = reader._archive  # type: ignore[attr-defined]
         assert not archive.main_lost
         assert (archive.is_solid, archive.comment) == intact
+
+
+def test_after_a_damaged_main_a_found_comment_is_not_the_archives(
+    tmp_path: Path,
+) -> None:
+    """The signature is intact and MAIN is damaged, so a MAIN the search finds later
+    is another archive's (here one stored after the damage): its flags are read, as
+    after a lost start, but its comment is not the outer archive's."""
+    inner = (_RAR / "comment__.rar").read_bytes()
+    data = _RAR5_SIGNATURE + bytes(64) + inner
+    path = _write(tmp_path, data)
+    with open_archive(path, salvage=True) as reader:
+        report = reader.members_report()
+        assert report.members
+        assert isinstance(report.error, CorruptionError)
+        assert reader._archive.comment is None  # type: ignore[attr-defined]

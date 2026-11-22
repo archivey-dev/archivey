@@ -3340,8 +3340,11 @@ class _Rar3Walk:
         self.prefound: list[int] = []
         self.main_lost = False
         # Set when a lost start's search found this volume's own MAIN first: its
-        # comment, before any member, is this archive's (``_own_comment``).
+        # comment, before any member, is this archive's (``_own_comment``). Only a
+        # lost start (``lose_main``): after a damaged MAIN (``_lose_damaged_main``)
+        # a MAIN found later is some other archive's, so its comment is not read.
         self.main_found_first = False
+        self.start_lost = False
         self.open_error: CorruptionError | None = None
         self.ended_in_damage = False
 
@@ -3373,6 +3376,7 @@ class _Rar3Walk:
         from the last. With none, the walk searches from ``start`` first.
         """
         self.main_lost = True
+        self.start_lost = True
         self.past_damage = True
         assert self.salvage is not None
         if not found:
@@ -3658,7 +3662,7 @@ class _Rar3Walk:
             proven=self.password_proven,
         )
         self.main_seen = True
-        self.main_found_first = self.main_lost
+        self.main_found_first = self.main_lost and self.start_lost
         self.main_lost = False
         self.resume_from = block.data_offset
         if flags & _RAR3_MAIN_COMMENT:
@@ -5035,8 +5039,11 @@ class _Rar5Walk:
         self.pending_search: int | None = None
         self.main_lost = False
         # Set when a lost start's search found this volume's own MAIN first: its
-        # comment, before any member, is this archive's (``_own_comment``).
+        # comment, before any member, is this archive's (``_own_comment``). Only a
+        # lost start (``lose_main``): after a damaged MAIN (``_lose_damaged_main``)
+        # a MAIN found later is some other archive's, so its comment is not read.
         self.main_found_first = False
+        self.start_lost = False
         self.open_error: CorruptionError | None = None
         self.ended_in_damage = False
         self.headers_read = 0
@@ -5063,6 +5070,7 @@ class _Rar5Walk:
         from ``first``, the header a search found, or, with ``None``, from the
         header a search from ``start`` finds."""
         self.main_lost = True
+        self.start_lost = True
         self.past_damage = True
         assert self.salvage is not None
         if first is None:
@@ -5439,9 +5447,9 @@ class _Rar5Walk:
         self.is_solid = bool(main_flags & _RAR5_MAIN_SOLID)
         self.is_volume = bool(main_flags & _RAR5_MAIN_ISVOL)
         self.main_seen = True
-        # A lost start's search found this MAIN first: it is the archive's own, so
-        # its flags stand and the members' flags do not replace them.
-        self.main_found_first = self.main_lost
+        # A search found this MAIN first: its flags stand, and the members' flags do
+        # not replace them. After a lost start it is the archive's own, comment too.
+        self.main_found_first = self.main_lost and self.start_lost
         self.main_lost = False
         _seek_after_packed(source, block.data_offset, block.add_size)
         # Header-encrypted QO stores IV+ciphertext header copies and

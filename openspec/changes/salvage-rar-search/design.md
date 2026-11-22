@@ -342,7 +342,8 @@ Then:
   version turns out to be RAR 1.5-4, they are listed before the confirmed one. When it
   is RAR5, they are dropped. Members cap the buffer (`ListingLimits.max_members`).
 - **A MAIN header found first** is used as the archive's MAIN: only the signature or an
-  SFX stub was lost. Its flags are read as usual.
+  SFX stub was lost. Its flags are read as usual, and so is the archive comment that
+  follows it before the first member (§19).
 - **A RAR5 ENCRYPTION header found first**, or a RAR 1.5-4 MAIN with the
   header-encryption flag: the normal encrypted walk starts there, with the password.
   Nothing after damage is searched (§10).
@@ -597,8 +598,12 @@ open:
   encrypted headers), with a RAR-specific message. A RAR read forward only, inside
   another archive (`RarForwardReader`), uses `"forward_only_reader"`. RAR has no data
   re-walk: member reads go by offset, so `QuietSalvageState` is not needed.
-- **A stored RAR5 archive comment** (`CMT`) is not read once the walk is past damage:
-  a found `CMT` may belong to an inner archive.
+- **An archive comment** (a RAR5 `CMT`, a RAR 1.5-4 `CMT` service) is not read once
+  the walk is past damage: a found one may belong to an inner archive. One exception:
+  after a lost start (§8.1) whose search finds MAIN first, the comment after that MAIN
+  and before the first member is the archive's own, and is read. After a damaged MAIN
+  (§8.2) the rule holds: a MAIN found later is another archive's. Its flags are still
+  read, as §8.2 says it does what §8.1 does, but not its comment.
 - **Found members are flagged at open.** The parse reads the whole archive, so every
   `MEMBER_FOUND_BY_SCAN` is recorded with the listing, and the damage error is raised
   after the last member. A lost start's or a damaged MAIN's error
