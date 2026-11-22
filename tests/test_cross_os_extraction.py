@@ -631,6 +631,7 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
         _Claim,
         _RunState,
     )
+    from archivey.internal.placements import Placements
 
     _refuse_read_only(monkeypatch)
     dest = tmp_path / "out"
@@ -647,7 +648,7 @@ def test_anti_item_removes_a_read_only_file_this_run_wrote(
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths={written},
-        collision_map={"f": _Claim(written, 0, written)},
+        placements=Placements(by_key={"f": _Claim(written, 0, written)}),
     )
     anti = ArchiveMember(type=MemberType.ANTI, name="f")
     result = coordinator._apply_anti_item(anti, written)

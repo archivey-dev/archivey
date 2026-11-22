@@ -6919,6 +6919,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
     with the same collision key both marked current, which last-entry-wins prevents.
     """
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -6940,7 +6941,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     result = coordinator._apply_anti_item(anti, written)
 
@@ -6953,6 +6954,7 @@ def test_anti_delete_releases_the_collision_claim(tmp_path: Path) -> None:
 def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
     """A no-op anti (nothing written this run at that path) releases nothing."""
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -6973,7 +6975,7 @@ def test_anti_no_op_leaves_an_unrelated_claim_alone(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=set(),
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     coordinator._apply_anti_item(anti, pre_existing)
 
@@ -6991,6 +6993,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
     the file it names survived.
     """
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -7011,7 +7014,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     result = coordinator._apply_anti_item(anti, dest / "readme")
 
@@ -7030,6 +7033,7 @@ def test_anti_item_finds_a_case_variant_through_the_collision_map(
 def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
     """TRUSTED keys on the exact name, so ``readme`` leaves ``README`` alone."""
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -7050,7 +7054,7 @@ def test_anti_item_is_exact_under_trusted(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     coordinator._apply_anti_item(anti, dest / "readme")
 
@@ -7066,6 +7070,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
     file ``X`` (claimed under key ``x``). An anti-item ``x`` names the directory.
     """
     from archivey.internal.extraction import _Claim, _RunState
+    from archivey.internal.placements import Placements
 
     dest = tmp_path / "out"
     dest.mkdir()
@@ -7090,7 +7095,7 @@ def test_anti_item_prefers_the_exact_directory_it_names(tmp_path: Path) -> None:
         reader=cast("BaseArchiveReader", SimpleNamespace()),
         links=LinkWatch(dest.resolve(), None),
         written_paths=written_paths,
-        collision_map=collision_map,
+        placements=Placements(by_key=collision_map),
     )
     result = coordinator._apply_anti_item(anti, directory)
 
