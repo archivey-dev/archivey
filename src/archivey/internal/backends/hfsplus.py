@@ -1027,10 +1027,12 @@ def _decode_chunk(
                         more := stream.read(want + 1 - len(out))
                     ):
                         out += more
+        # The LZVN and LZFSE decoders refuse any output past ``want`` themselves, and
+        # their message names ``want``.
         elif kind in _LZVN_KINDS:
-            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want + 1)
+            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want)
         else:
-            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want + 1)
+            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want)
     except (CorruptionError, TruncatedError) as exc:
         raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
     if len(out) != want:
