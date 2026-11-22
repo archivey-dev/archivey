@@ -133,11 +133,12 @@ def _passes(window: bytes, at: int, magics: frozenset[bytes]) -> bool:
 def _header_search(magics: frozenset[bytes], step: int) -> HeaderSearch:
     """The salvage search for the headers of ``magics``, at every ``step`` bytes."""
 
-    def find_header(window: bytes, start: int) -> int | None:
+    def find_header(window: bytes, start: int, stop: int) -> int | None:
         at = start
         while True:
-            # The three ASCII magics share their first five bytes.
-            i = window.find(b"07070", at)
+            # The three ASCII magics share their first five bytes. The end bound
+            # lets a match start only before ``stop``.
+            i = window.find(b"07070", at, stop + 4)
             if i < 0:
                 return None
             if i % step == 0 and _passes(window, i, magics):

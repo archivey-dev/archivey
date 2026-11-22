@@ -117,6 +117,26 @@ def _gnu_ar(files: list[tuple[str, bytes]] = AR_FILES) -> tuple[bytes, dict[str,
     return bytes(out), offsets
 
 
+# The finders ---------------------------------------------------------------------------
+
+
+def test_the_finders_examine_no_candidate_at_or_past_stop() -> None:
+    """``find_header(window, start, stop)`` examines only the candidate positions
+    before ``stop``, though the window holds the header at ``stop`` whole."""
+    from archivey.internal.backends.ar_reader import _SEARCH_ANY_BYTE, AR_HEADER_SEARCH
+    from archivey.internal.backends.cpio_reader import _ASCII_MAGICS, _header_search
+
+    cpio = bytes(8) + _newc("f", b"data", 1)
+    for step in (1, 4):
+        find = _header_search(_ASCII_MAGICS, step).find_header
+        assert find(cpio, 0, 8) is None
+        assert find(cpio, 0, 9) == 8
+    ar = bytes(8) + _ar_header(b"f/", 4) + b"data"
+    for search in (AR_HEADER_SEARCH, _SEARCH_ANY_BYTE):
+        assert search.find_header(ar, 0, 8) is None
+        assert search.find_header(ar, 0, 9) == 8
+
+
 # Reading -----------------------------------------------------------------------------
 
 

@@ -131,10 +131,12 @@ def _passes(window: bytes, at: int) -> bool:
 def _search_at(step: int) -> HeaderSearch:
     """The salvage search for an ar header at every ``step`` bytes."""
 
-    def find_header(window: bytes, start: int) -> int | None:
+    def find_header(window: bytes, start: int, stop: int) -> int | None:
         at = start + 58
         while True:
-            end = window.find(_HEADER_END, at)
+            # The end bound lets a header end match only for a candidate before
+            # ``stop``.
+            end = window.find(_HEADER_END, at, stop + 59)
             if end < 0:
                 return None
             candidate = end - 58
