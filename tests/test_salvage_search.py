@@ -462,6 +462,23 @@ def test_a_budget_that_covers_an_unsized_layer_to_its_end_is_not_a_limit() -> No
     ]
 
 
+def test_an_unsized_layer_that_ends_on_a_window_edge_is_not_a_limit() -> None:
+    """The window span, not the budget, stops the read exactly at the layer's end,
+    and the budget pays for every byte left: the search reads one byte more to see
+    the end, and gives the same answer as with ``end``."""
+    search = HeaderSearch(find_header=lambda w, s: None, step=2, max_header_size=2)
+    for end in (None, 25):
+        state, collector = _state(max_search_bytes=25)
+        result = search_forward(
+            state, _Layer(b"\x00" * 25).read_at, search, start=0, end=end, window_size=2
+        )
+        assert result.found is None and not result.limit_reached
+        assert state.searched_bytes == 25
+        assert [(r.offset, r.length, r.reason) for r in _regions(collector)] == [
+            (0, 25, "no_header")
+        ]
+
+
 def test_a_second_walk_searches_quietly_as_the_first_did() -> None:
     """A walk started over to reach member data uses a :class:`QuietSalvageState`:
     it finds the same header from the start, and the reader's budget and records

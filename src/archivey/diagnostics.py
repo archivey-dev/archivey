@@ -296,8 +296,10 @@ class DiagnosticCode(StrEnum):
     :class:`~archivey.SalvageLimits` limit. The range may hold member data nothing
     lists. Reported once per range, at listing. Salvage only."""
     SALVAGE_UNAVAILABLE = "salvage_unavailable"
-    """``open_archive(salvage=True)`` opened a format that has no salvage search, so
-    the archive is read as it is without ``salvage=True``. Reported once, at open."""
+    """``open_archive(salvage=True)`` opened a format whose salvage search cannot run:
+    the format has none, or its search cannot run on this reader (an archive inside
+    another one, read forward only). The archive is read as it is without
+    ``salvage=True``. The context's ``reason`` says which. Reported once, at open."""
     # No per-member extraction outcome has a code here. Extraction returns a structured
     # per-item report, so ``ExtractionResult`` is the sole carrier of those facts — see
     # the placement clause in ``openspec/specs/diagnostics``.
@@ -1440,12 +1442,16 @@ class RegionSkippedContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class SalvageUnavailableContext(_JsonSafeContext):
-    """``open_archive(salvage=True)`` opened a format with no salvage search
-    (``SALVAGE_UNAVAILABLE``). ``format`` is the archive format's name."""
+    """``open_archive(salvage=True)`` opened a format whose salvage search cannot run
+    (``SALVAGE_UNAVAILABLE``). ``format`` is the archive format's name. ``reason`` is
+    ``"no_salvage_search"`` when archivey has no salvage search for the format, and
+    ``"forward_only_reader"`` when the format has one but it cannot run on this
+    reader: an archive inside another one, which archivey reads forward only."""
 
     kind: Literal["salvage_unavailable"] = "salvage_unavailable"
     archive_name: str | None = None
     format: str = ""
+    reason: Literal["no_salvage_search", "forward_only_reader"] = "no_salvage_search"
 
 
 DiagnosticContext = (

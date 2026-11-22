@@ -29,7 +29,7 @@ import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -37,7 +37,8 @@ from archivey.diagnostics import (
     SalvageScanContext,
     SalvageUnavailableContext,
 )
-from archivey.exceptions import ArchiveyError, ResourceLimitError
+from archivey.exceptions import ArchiveyError
+from archivey.internal.bomb_tracker import AlwaysStopResourceLimitError
 from archivey.internal.logs import backends as logger
 from archivey.internal.overrides import override
 from archivey.terminal import escape_control_chars
@@ -339,30 +340,37 @@ def _in_layer(layer: str) -> str:
     return "" if layer == ARCHIVE_LAYER else f" of its {layer} stream"
 
 
+# ``SalvageUnavailableContext.reason``.
+SalvageUnavailableReason = Literal["no_salvage_search", "forward_only_reader"]
+
+_UNAVAILABLE_CAUSES: dict[SalvageUnavailableReason, str] = {
+    "no_salvage_search": "archivey has no salvage search for this format",
+    "forward_only_reader": (
+        "this format's salvage search cannot run on an archive inside another one, "
+        "which archivey reads forward only"
+    ),
+}
+
+
 def emit_salvage_unavailable(
     collector: DiagnosticCollector,
     *,
     archive_name: str | None,
     format_name: str,
-    forward_only: bool = False,
+    reason: SalvageUnavailableReason = "no_salvage_search",
 ) -> None:
-    """Record ``SALVAGE_UNAVAILABLE`` for a reader asked to salvage whose format has
-    no salvage search, or, with ``forward_only``, whose search needs to move back in
-    a layer this reader reads forward only (an archive inside another one)."""
-    why = (
-        "this reader reads its archive forward only, inside another archive, and the "
-        "search needs to go back"
-        if forward_only
-        else "archivey has no salvage search for this format"
-    )
+    """Record ``SALVAGE_UNAVAILABLE`` for a reader asked to salvage whose format's
+    search cannot run: ``"no_salvage_search"`` when the format has none,
+    ``"forward_only_reader"`` when it cannot run on this forward-only reader."""
     collector.emit(
         code=DiagnosticCode.SALVAGE_UNAVAILABLE,
         message=(
-            f"salvage=True has no effect on {format_name}: {why}, so the archive is "
-            "read as it is without it."
+            f"salvage=True has no effect on {format_name}: "
+            f"{_UNAVAILABLE_CAUSES[reason]}, so the archive is read as it is "
+            "without it."
         ),
         context=SalvageUnavailableContext(
-            archive_name=archive_name, format=format_name
+            archive_name=archive_name, format=format_name, reason=reason
         ),
         logger=logger,
     )
@@ -388,8 +396,8 @@ def search_forward(
     search reads nothing at or past it, and an ``end`` before ``start`` or before the
     layer's search position is a bug (``AssertionError``). Under a budget the search
     reads no further than the last header the budget lets it reach (one byte more
-    when ``end`` is not known, to see the layer's end), and with no budget left it
-    reads nothing.
+    when ``end`` is not known and the budget pays for every byte read, to see
+    whether the layer ends there), and with no budget left it reads nothing.
 
     The candidate positions are ``base + k * search.step``. The search starts at the
     first one at or after ``start``, or at the first one this layer's earlier
@@ -437,12 +445,8 @@ def search_forward(
         return SearchResult(found=None, limit_reached=True)
     # With a budget, no read goes past the last header the budget lets the search
     # reach: the bytes it may examine, plus the rest of a header that starts there.
-    # With no ``end``, one byte more: only a short read shows the layer ends there,
-    # and a budget that pays for every byte left is then no limit.
     read_limit = (
-        None
-        if remaining is None
-        else pos + remaining + search.max_header_size - (0 if end is None else 1)
+        None if remaining is None else pos + remaining + search.max_header_size - 1
     )
 
     span = window_size + search.max_header_size - 1
@@ -465,23 +469,28 @@ def search_forward(
         elif end is not None and buf_end >= end:
             at_end = True
 
-        if at_end:
-            # Every position before the layer's end is examined; a header that does
-            # not fit there fails find_header's own check.
-            last_fit = buf_end - 1
-        else:
-            last_fit = buf_end - search.max_header_size
-        last = last_fit
         remaining = state.remaining_bytes()
-        budget_bound = False
-        # A position costs ``step`` bytes, or what is left of the layer at its end,
-        # so the rest of a layer that has ended costs what is left of it.
-        if remaining is not None and not (at_end and buf_end - pos <= remaining):
-            last_affordable = pos + (remaining // step - 1) * step
-            # Below ``pos`` when the budget cannot pay for one more position.
-            if last_affordable < last or last_affordable < pos:
-                last = min(last, last_affordable)
-                budget_bound = True
+        last, budget_bound = _last_position(
+            pos, buf_end, at_end, remaining, step, search.max_header_size
+        )
+        if (
+            budget_bound
+            and end is None
+            and not at_end
+            and remaining is not None
+            and buf_end - pos <= remaining
+        ):
+            # The budget pays for every byte read, and with no ``end`` only a read
+            # shows whether the layer ends here. If it does, the budget is no limit.
+            probe = read_at(buf_end, 1)
+            if probe:
+                buf += probe
+                buf_end += len(probe)
+            else:
+                at_end = True
+            last, budget_bound = _last_position(
+                pos, buf_end, at_end, remaining, step, search.max_header_size
+            )
 
         if last >= pos:
             found = search.find_header(buf, 0)
@@ -527,6 +536,29 @@ def search_forward(
             return SearchResult(found=None, limit_reached=True)
 
 
+def _last_position(
+    pos: int,
+    buf_end: int,
+    at_end: bool,
+    remaining: int | None,
+    step: int,
+    max_header_size: int,
+) -> tuple[int, bool]:
+    """The last position this window may examine, and whether the budget set it."""
+    # At the layer's end every position before it is examined; a header that does
+    # not fit there fails find_header's own check.
+    last = buf_end - 1 if at_end else buf_end - max_header_size
+    # A position costs ``step`` bytes, or what is left of the layer at its end, so
+    # the rest of a layer that has ended costs what is left of it.
+    if remaining is None or (at_end and buf_end - pos <= remaining):
+        return last, False
+    last_affordable = pos + (remaining // step - 1) * step
+    # Below ``pos`` when the budget cannot pay for one more position.
+    if last_affordable < last or last_affordable < pos:
+        return min(last, last_affordable), True
+    return last, False
+
+
 def _record_no_header(
     state: SalvageState, layer: str, region_start: int, layer_end: int
 ) -> None:
@@ -565,6 +597,10 @@ class QuietSalvageState(SalvageState):
         pass
 
 
+# The step of a probe that reads forward through a decoded layer (``WalkSalvage``).
+_PROBE_STEP = 1 << 20
+
+
 class WalkSalvage:
     """What a sequential reader's walk uses to search past damage in the layer it
     reads: built by archivey for each layer a random-access walk reads, and handed
@@ -589,6 +625,7 @@ class WalkSalvage:
             [int], tuple[Callable[[int, int], bytes], Callable[[], None]]
         ],
         seek: Callable[[int], None],
+        position: Callable[[], int],
         report_found: Callable[[ArchiveMember, SalvageScanContext, str], None] | None,
         format_name: str,
     ) -> None:
@@ -598,6 +635,7 @@ class WalkSalvage:
         self._read_at = read_at
         self._open_reader = open_reader
         self.seek = seek
+        self._position = position
         self._report_found = report_found
         self._format_name = format_name
 
@@ -634,14 +672,33 @@ class WalkSalvage:
         """Up to ``n`` bytes of the layer from ``offset``, for a check of a header
         the search did not read: the next one, or the first one's magic.
 
-        A probe the decoding limits refuse (a decoded layer read past what the
-        archive's size allows, at an offset a damaged size field gave) reads as
-        nothing: the candidate fails its check, and the pass ends in the first
+        On a decoded layer of unknown size, a probe past the walk's position reads
+        forward to ``offset`` rather than seeking there. A decoder that has not reached
+        its end takes a seek to any offset, and the decoded-bytes budget would charge
+        the whole gap, up to an offset a damaged size field gave, without decoding it.
+        Read forward, the probe decodes and charges only what the layer holds, and
+        stops at its end.
+
+        A probe the decoding limits refuse (the ratio limit, or the listing's budget)
+        reads as nothing: the candidate fails its check, and the pass ends in the first
         damage, not in the limit.
         """
         try:
-            return self._read_at(offset, n)
-        except ResourceLimitError:
+            start = self._position()
+            if self.size is not None or offset <= start:
+                return self._read_at(offset, n)
+            read, close = self._open_reader(start)
+            try:
+                at = start
+                while at < offset:
+                    got = len(read(at, min(offset - at, _PROBE_STEP)))
+                    if not got:
+                        return b""
+                    at += got
+                return read(offset, n)
+            finally:
+                close()
+        except AlwaysStopResourceLimitError:
             return b""
 
     def holds(self, end: int) -> bool:
@@ -669,7 +726,7 @@ class WalkSalvage:
         where = (
             "by a header search"
             if searched
-            else "walking on after a member a header search found"
+            else "by walking on from a member a header search found"
         )
         how = (
             "the header after its data passes too"

@@ -865,8 +865,8 @@ class _PluginAdapter(BaseArchiveReader):
         # only. One search (``search_forward``) reads forward, so it can run there;
         # whether the walk can go back after it, into the data of a member the search
         # found but could not confirm, is the format's call, and a format that cannot
-        # records SALVAGE_UNAVAILABLE. The refusal of ``streaming=True`` with
-        # ``salvage=True`` is for a caller's open_archive only.
+        # records SALVAGE_UNAVAILABLE (reason "forward_only_reader"). The refusal of
+        # ``streaming=True`` with ``salvage=True`` is for a caller's open_archive only.
         with (
             collector.member_ids_from(first),
             reading_inside(self),
@@ -2052,7 +2052,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     self._diagnostics_collector,
                     archive_name=self._archive_name,
                     format_name=self._format.display_name,
-                    forward_only=True,
+                    reason="forward_only_reader",
                 )
             else:
                 context._salvage = self._walk_salvages.get
@@ -2265,6 +2265,7 @@ class SequentialReaderAdapter(_PluginAdapter):
             read_at=read_at,
             open_reader=open_reader,
             seek=lambda offset: forward._move_to(offset, stream.seek),
+            position=lambda: forward.offset,
             report_found=report_found if listing else None,
             format_name=self._format.display_name,
         )

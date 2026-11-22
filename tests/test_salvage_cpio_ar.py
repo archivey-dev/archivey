@@ -663,5 +663,102 @@ def test_found_message_says_how_the_member_was_reached(tmp_path: Path) -> None:
         ]
     assert "by a header search" in messages[0]
     assert all(
-        "walking on after a member a header search found" in m for m in messages[1:]
+        "by walking on from a member a header search found" in m for m in messages[1:]
     )
+
+
+# Review round 2 ----------------------------------------------------------------------
+
+
+def _with_huge_size(tmp_path: Path, members: list[bytes], name: str) -> Path:
+    """``members``, then a header that passes the checks with ``filesize=FFFFFF00``,
+    8 MiB that do not compress and the trailer; gzipped for a ``.gz`` name. The
+    decoder is not at its end when a probe looks past the fake header's data."""
+    import gzip
+    import random
+
+    fake = bytearray(_newc("huge", b"", 9))
+    fake[54:62] = b"FFFFFF00"
+    noise = random.Random(0).randbytes(8 << 20)
+    raw = b"".join(members) + bytes(fake) + noise + _newc("TRAILER!!!", b"", 0)
+    if name.endswith(".gz"):
+        raw = gzip.compress(raw, compresslevel=1)
+    return _write(tmp_path, raw, name)
+
+
+def _zeroed_magic(member: bytes) -> bytes:
+    return b"\0" * 6 + member[6:]
+
+
+def _stream_names(path: Path) -> tuple[list[str], BaseException | None]:
+    names: list[str] = []
+    try:
+        with open_archive(path, salvage=True) as reader:
+            for member, _stream in reader.stream_members():
+                names.append(member.name)
+    except CorruptionError as err:
+        return names, err
+    return names, None
+
+
+def test_cpio_gz_found_size_past_the_layer_end_does_not_use_up_the_budget(
+    tmp_path: Path,
+) -> None:
+    """The probe of a found header's data end reads forward, so it charges the
+    listing budget only for what it decodes: the 8 MiB the layer holds, not the 4 GiB
+    the size field claims. The pass ends in the first damage."""
+    a = _newc("A", b"a" * 100, 1)
+    members = [a, _zeroed_magic(_newc("B", b"b", 2))]
+    path = _with_huge_size(tmp_path, members, "a.cpio.gz")
+    names, error = _stream_names(path)
+    assert names == ["A"]
+    assert type(error) is CorruptionError
+    assert f"No CPIO header at offset {len(a)}" in str(error)
+
+
+def test_cpio_gz_walked_on_size_past_the_layer_end_reads_as_the_plain_file(
+    tmp_path: Path,
+) -> None:
+    """The same size on a member walked on to: the check of the header after its
+    data reads forward too, finds the layer's end, and leaves the member
+    unconfirmed. The gzipped archive then lists and ends as the plain one does,
+    not in the listing budget."""
+    a = _newc("A", b"a" * 100, 1)
+    members = [a, _zeroed_magic(_newc("B", b"b", 2)), _newc("C", b"c" * 40, 3)]
+    passes = []
+    for name in ("a.cpio", "a.cpio.gz"):
+        path = _with_huge_size(tmp_path, members, name)
+        with open_archive(path, salvage=True) as reader:
+            report = reader.members_report()
+            found = {
+                c.member_name: c.confirmed
+                for d in reader.diagnostics.retained
+                if isinstance(c := d.context, SalvageScanContext)
+            }
+        error = report.error
+        assert error is not None
+        passes.append(([m.name for m in report.members], found, type(error)))
+    assert passes[0] == passes[1]
+    assert passes[1][:2] == (["A", "C", "huge"], {"C": True, "huge": False})
+
+
+def test_a_cpio_inside_another_archive_names_the_forward_only_reader() -> None:
+    """A package's CPIO payload is read forward only, so it records
+    ``SALVAGE_UNAVAILABLE`` with the reason that says so."""
+    import io
+
+    from archivey.diagnostics import SalvageUnavailableContext
+    from tests.test_pkg import _PRODUCT
+
+    with open_archive(io.BytesIO(_PRODUCT), salvage=True) as reader:
+        reader.members()
+        reasons = {
+            d.context.format: d.context.reason
+            for d in reader.diagnostics.retained
+            if isinstance(d.context, SalvageUnavailableContext)
+        }
+    assert reasons == {
+        "PKG": "no_salvage_search",
+        "CPIO_PBZX": "forward_only_reader",
+        "CPIO_GZIP": "forward_only_reader",
+    }
