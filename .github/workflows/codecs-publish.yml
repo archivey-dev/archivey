@@ -11,14 +11,15 @@ name: archivey-codecs wheels
 #   • Run workflow -> target=pypi                            -> real PyPI from the ref
 #
 # Wheels: one abi3 wheel (CPython 3.11 and later) per platform, plus one wheel per
-# free-threaded CPython from 3.14t on, which abi3 does not cover. No 3.13t wheel:
-# maturin refuses free-threaded 3.13 inside the manylinux containers ("only supported on
-# 3.14 and later"), and 3.13t's free threading is experimental; 3.13t uses archivey's
-# Python decoders. Each wheel, on every platform, is installed in a clean environment
-# with archivey from this checkout and runs the package's own tests (test_api.py,
-# test_parity.py) with CODECS_REQUIRED=1, so a wheel that does not import fails instead
-# of skipping. musllinux wheels are tested in the pypa musllinux image, which has both
-# CPython 3.11 and 3.14t. A free-threaded wheel must also leave the GIL off after import
+# free-threaded CPython (3.13t, 3.14t), which abi3 does not cover. maturin gets each
+# interpreter as a path: it refuses the bare name `python3.13t` ("only supported on 3.14
+# and later") but builds for that interpreter's path. On Linux the build runs in the pypa
+# manylinux_2_28 or musllinux_1_2 image, whose interpreters live in /opt/python.
+# Each wheel, on every platform, is installed in a clean environment with archivey from
+# this checkout and runs the package's own tests (test_api.py, test_parity.py) with
+# CODECS_REQUIRED=1, so a wheel that does not import fails instead of skipping.
+# musllinux wheels are tested in the same pypa musllinux image. A free-threaded wheel
+# must also leave the GIL off after import
 # (`-W error` turns CPython's re-enable warning into a failure).
 #
 # Trusted Publishing must be set up on the index side, once, for project
@@ -80,8 +81,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: manylinux x86_64, os: ubuntu-latest, target: x86_64, manylinux: auto, libc: glibc }
-          - { name: manylinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: auto, libc: glibc }
+          - { name: manylinux x86_64, os: ubuntu-latest, target: x86_64, manylinux: manylinux_2_28, libc: glibc }
+          - { name: manylinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: manylinux_2_28, libc: glibc }
           - { name: musllinux x86_64, os: ubuntu-latest, target: x86_64, manylinux: musllinux_1_2, libc: musl }
           - { name: musllinux aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: musllinux_1_2, libc: musl }
           - { name: macOS arm64, os: macos-latest, target: aarch64 }
@@ -97,24 +98,24 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Pythons for the build (macOS, Windows) and the tests
         if: matrix.libc != 'musl'
+        run: uv python install 3.11 3.13t 3.14t
+      - name: Interpreter paths for maturin
         run: |
-          uv python install 3.11 3.14t
-          # maturin builds on the host outside Linux, so it gets each interpreter's path.
-          # On Linux it builds in the manylinux container, which has its own.
+          # Outside Linux maturin builds on the host; on Linux, in the pypa image.
           if [ "${{ runner.os }}" = Linux ]; then
-            echo "INTERPRETERS=python3.11 python3.14t" >> "$GITHUB_ENV"
+            echo "INTERPRETERS=/opt/python/cp311-cp311/bin/python /opt/python/cp313-cp313t/bin/python /opt/python/cp314-cp314t/bin/python" >> "$GITHUB_ENV"
           else
-            echo "INTERPRETERS=$(uv python find 3.11) $(uv python find 3.14t)" >> "$GITHUB_ENV"
+            echo "INTERPRETERS=$(uv python find 3.11) $(uv python find 3.13t) $(uv python find 3.14t)" >> "$GITHUB_ENV"
           fi
-      - name: Interpreters for the musllinux build
-        if: matrix.libc == 'musl'
-        run: echo "INTERPRETERS=python3.11 python3.14t" >> "$GITHUB_ENV"
       - name: Build wheels
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1.51.0
         with:
           working-directory: ${{ env.PACKAGE }}
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
+          # The pypa image, not maturin-action's default musl cross image: it has the
+          # interpreters the paths above name.
+          container: ${{ matrix.manylinux && format('quay.io/pypa/{0}_{1}', matrix.manylinux, matrix.target) || '' }}
           args: --release --locked --out ${{ github.workspace }}/dist -i ${{ env.INTERPRETERS }}
       - name: List wheels
         run: ls -l dist/
@@ -122,7 +123,7 @@ jobs:
         if: matrix.libc != 'musl'
         run: |
           set -euo pipefail
-          for py in 3.11 3.14t; do
+          for py in 3.11 3.13t 3.14t; do
             case "$py" in
               *t) wheel="$(ls dist/*-cp${py//[.t]/}-cp${py//./}-*.whl)" ;;
               *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
@@ -146,9 +147,9 @@ jobs:
         if: matrix.libc == 'musl'
         run: |
           docker run --rm -v "$PWD":/w -w /w "quay.io/pypa/musllinux_1_2_${{ matrix.target }}" sh -euc '
-            for tag in cp311-cp311 cp314-cp314t; do
+            for tag in cp311-cp311 cp313-cp313t cp314-cp314t; do
               case "$tag" in
-                *t) wheel="$(ls dist/*-cp314-cp314t-*.whl)" ;;
+                *t) wheel="$(ls dist/*-"$tag"-*.whl)" ;;
                 *)  wheel="$(ls dist/*-abi3-*.whl)" ;;
               esac
               echo "$tag: $wheel"
