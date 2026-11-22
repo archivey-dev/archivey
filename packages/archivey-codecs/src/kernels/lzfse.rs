@@ -63,6 +63,9 @@ const FREQ_VALUE: [u16; 32] = [
 
 const V1_SIZE: usize = 772; // sizeof(lzfse_compressed_block_header_v1), padded
 const V2_FIXED: usize = 28; // after the magic: n_raw and three packed words
+/// The longest match a `bvx1` or `bvx2` triple can code: the last match-length symbol's
+/// base plus its 11 extra bits.
+const MAX_MATCH: u64 = 312 + (1 << 11) - 1;
 
 fn too_long<T>(max_length: u64) -> Result<T> {
     corrupt(format!(
@@ -453,7 +456,8 @@ fn value_table(
 }
 
 /// The bit stream of an `fse_in_stream` (the 64-bit variant), read backwards; `pos`
-/// is the offset of the next byte above the loaded ones.
+/// is the offset of the lowest byte loaded so far, and a refill loads the bytes just
+/// below it.
 struct BackBits {
     accum: u64,
     nbits: u32,
@@ -709,7 +713,11 @@ fn fse_block(
     let mut bits = BackBits::new(src, lit_end, lmd_end, lmd_bits)?;
     let block_start = out.len();
     let block_limit = block_start + n_raw as usize;
-    room(out, n_raw as usize, max_length);
+    // The most this block can write: its literals and its longest matches. `n_raw` alone
+    // may claim 4 GiB in a 52-byte block, and an allocation that large can abort the
+    // process; the decode below never writes past this, so it never reallocates.
+    let most = (n_literals as u64 + n_matches * MAX_MATCH).min(n_raw);
+    room(out, most as usize, max_length);
     let (mut l_state, mut m_state, mut d_state) =
         (l_state0 as usize, m_state0 as usize, d_state0 as usize);
     let mut used = 0usize;
@@ -781,6 +789,27 @@ mod tests {
         let mut out = b"xab".to_vec();
         copy_match(&mut out, 2, 7);
         assert_eq!(out, b"xababababa".to_vec());
+    }
+
+    #[test]
+    fn a_bvx2_block_reserves_only_what_it_can_write() {
+        // n_raw 0xFFFFFFFF, no literals, no matches, empty frequency area, 8-byte
+        // payloads of zeros: the block decodes to 0 bytes and is refused.
+        let mut data = b"bvx2".to_vec();
+        data.extend_from_slice(&u32::MAX.to_le_bytes());
+        data.extend_from_slice(&(8u64 << 20 | 7u64 << 60).to_le_bytes());
+        data.extend_from_slice(&(8u64 << 40 | 7u64 << 60).to_le_bytes());
+        data.extend_from_slice(&32u64.to_le_bytes());
+        data.extend_from_slice(&[0; 16]);
+        data.extend_from_slice(END);
+        let mut out = Vec::new();
+        let err = fse_block(&data, 0, true, &mut out, usize::MAX).unwrap_err();
+        assert!(
+            matches!(err, crate::kernels::error::DecodeError::Corrupt(ref m)
+                if m == "LZFSE block decodes to 0 bytes, its header says 4294967295"),
+            "{err:?}"
+        );
+        assert!(out.capacity() < 1024, "{}", out.capacity());
     }
 
     #[test]
