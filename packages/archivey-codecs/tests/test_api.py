@@ -24,7 +24,9 @@ from archivey_codecs import (
     bcj2,
     crc16_arc,
     filters,
+    lzfse,
     lzo1x,
+    lzvn,
     lzw,
     lzx,
     zipcrypto,
@@ -44,7 +46,9 @@ def test_kernels_table() -> None:
         "arm64": 1,
         "bcj2": 1,
         "crc16_arc": 1,
+        "lzfse": 1,
         "lzo1x": 1,
+        "lzvn": 1,
         "lzw": 1,
         "lzx": 1,
         "riscv": 1,
@@ -103,6 +107,43 @@ def test_lzo_exact_size() -> None:
         lzo1x.decompress(_LZO_ABC, out_size=2)
     with pytest.raises(CorruptDataError, match="follow the end marker"):
         lzo1x.decompress(_LZO_ABC + b"x", out_size=3)
+
+
+# ── LZFSE and LZVN ─────────────────────────────────────────────────────────────────
+
+_LZFSE_ABC = b"bvx-\x03\0\0\0abc" + b"bvx$"
+# One literal ``a``, a 3-byte match at distance 1, the end-of-stream opcode.
+_LZVN_A4 = bytes([0x40, 0x01]) + b"a" + bytes([0x06]) + bytes(7)
+
+
+@pytest.mark.parametrize(
+    ("module", "data", "out"),
+    [(lzfse, _LZFSE_ABC, b"abc"), (lzvn, _LZVN_A4, b"aaaa")],
+    ids=["lzfse", "lzvn"],
+)
+def test_lzfse_and_lzvn_sizes(module, data: bytes, out: bytes) -> None:
+    """``out_size=`` is exact; ``max_size=`` is a bound; exactly one is given."""
+    n = len(out)
+    assert module.decompress(data, out_size=n) == out
+    assert module.decompress(bytearray(data), max_size=n + 100) == out
+    assert module.decompress(memoryview(data), max_size=n) == out
+    with pytest.raises(CorruptDataError, match=f"decodes to {n} bytes, not {n + 1}"):
+        module.decompress(data, out_size=n + 1)
+    for kwargs in ({"out_size": n - 1}, {"max_size": n - 1}):
+        with pytest.raises(CorruptDataError, match=f"more than {n - 1} bytes"):
+            module.decompress(data, **kwargs)
+    for kwargs in ({}, {"out_size": n, "max_size": n}):
+        with pytest.raises(TypeError, match="exactly one of out_size= and max_size="):
+            module.decompress(data, **kwargs)
+    with pytest.raises(TruncatedDataError):
+        module.decompress(data[:-1], max_size=n)
+    with pytest.raises(CorruptDataError, match="1 bytes follow the end"):
+        module.decompress(data + b"x", max_size=n)
+
+
+def test_lzfse_unknown_magic_is_named_as_python_shows_it() -> None:
+    with pytest.raises(CorruptDataError, match=r"magic b'bvx\\x00'"):
+        lzfse.decompress(b"bvx\0" + bytes(8), max_size=10)
 
 
 # ── Branch filters ─────────────────────────────────────────────────────────────────

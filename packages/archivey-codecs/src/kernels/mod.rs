@@ -6,6 +6,7 @@ pub mod bcj2;
 pub mod crc16;
 pub mod error;
 pub mod filters;
+pub mod lzfse;
 pub mod lzo;
 pub mod lzw;
 pub mod lzx;

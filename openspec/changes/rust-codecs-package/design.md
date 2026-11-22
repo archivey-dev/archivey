@@ -55,6 +55,12 @@ multiple of 4, no literal overrun, the distance check on every triple, nothing a
 the Python decoder on every DMG fixture and the DMG fuzz corpus. ADC (DMG's other
 codec) follows the same shape if measurement shows it is slow.
 
+Built 2026-11-22 as `lzfse.decompress` and `lzvn.decompress` (raw LZVN, which HFS+
+compressed files store), one kernel each in `KERNELS`; the `lzfse` revision also covers
+the LZVN decoder inside `bvxn` blocks, so a change to LZVN raises both. Like LZO, each
+takes `out_size=` (exact) or `max_size=` (a bound): archivey's callers pass the most a
+run may decode to and check the length themselves, with their own message.
+
 Later, by value: LHA/ARJ static-Huffman and LHarc `-lh1-`; PPMd and Deflate64 as
 in-process decoders (new decoders, each needs the DR-20 damaged-input evaluation); the
 DOS-era ZIP methods and ARJ method 4.
@@ -104,7 +110,8 @@ The 0.1 names, one per kernel (stubs ship from 0.1, so these are settled here):
 | ARM64 filter | `"arm64"` | `filters.Arm64Decoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | RISC-V filter | `"riscv"` | `filters.RiscvDecoder` | `(start_offset=0)`; `decode(data) -> bytes`, `flush()` |
 | CRC-16/ARC | `"crc16_arc"` | `crc16_arc`, `Crc16Arc` | `(data, value=0) -> int`; `Crc16Arc(data=b"")` |
-| LZFSE/LZVN (later) | `"lzfse"` | `lzfse.decompress` | `(chunk, *, out_size)` |
+| LZFSE | `"lzfse"` | `lzfse.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
+| LZVN (raw, decmpfs) | `"lzvn"` | `lzvn.decompress` | `(data, *, out_size)` or `(data, *, max_size)` |
 
 - ZipCrypto is a cipher, so its object is a `Decryptor` with `decrypt()`, not a
   decompressor. It has `copy()`, `getstate()` and `from_state()` (the header and 12

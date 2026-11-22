@@ -95,7 +95,8 @@ Ruled 2026-11-21 (A0.2): the fast path is archivey's own LZFSE and LZVN kernel i
 - [ ] H.1 LZFSE and LZVN kernel in `archivey-codecs` with a bounded output and the
   Python decoder's checks; archivey uses it when the package is installed
 - [ ] H.2 Tests that both decoders agree on every fixture and on the A0 fuzz corpus;
-  `--all-configs`
+  `--all-configs` (kernel against the Python decoder: `packages/archivey-codecs/tests/
+  test_parity.py`; the reads through archivey come with H.1's hook)
 
 ## On archive
 
