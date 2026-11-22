@@ -1049,14 +1049,14 @@ def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
 def test_cab_lzx_kernel_is_not_used_when_switched_off_or_no_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _fake(monkeypatch, lzx=1)
+    module = _fake(monkeypatch, lzx=2)
     assert native.lzx(frozenset(), isolated=False) is not None
     assert native.lzx(EXCLUDED, isolated=False) is None
     _child_kernels(monkeypatch, None)
     assert native.lzx(frozenset(), isolated=True) is None
     _child_kernels(monkeypatch, module)
     assert native.lzx(frozenset(), isolated=True) is not None
-    _fake(monkeypatch, lzx=0)
+    _fake(monkeypatch, lzx=1)
     assert native.lzx(frozenset(), isolated=False) is None
 
 
@@ -1080,7 +1080,7 @@ class _FakeLzx:
 def test_a_panic_in_a_cab_lzx_read_is_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _fake(monkeypatch, lzx=1)
+    module = _fake(monkeypatch, lzx=2)
     module.lzx = types.SimpleNamespace(Decompressor=_FakeLzx)
     monkeypatch.setattr(_FakeLzx, "built", 0)
     _, raw, names = _lzx_cabs()[0]
@@ -1421,11 +1421,11 @@ def test_cab_lzx_in_the_child_reads_the_same(child_builds: list[str]) -> None:
 
 
 @needs_codecs
-def test_cab_lzx_held_error_in_the_child_reads_the_same(
+def test_cab_lzx_failed_block_in_the_child_reads_the_same(
     child_builds: list[str],
 ) -> None:
-    """A failed block's error is held, and each later frame is decoded on a copy
-    restored from the kernel's saved state: in a child of its own here."""
+    """A failed block's error comes from the frame that reads it, with the kernel in
+    a child."""
     text = b"".join(b"line %d\n" % i for i in range(30000))
     files = [CabFile("a", text[:66536]), CabFile("b", text[66536:])]
     encoder = LzxEncoder(
@@ -1444,7 +1444,7 @@ def test_cab_lzx_held_error_in_the_child_reads_the_same(
                 assert _cab_results(bytes(bad), ISOLATED_CONFIG, order) == (
                     _cab_results(bytes(bad), OFF, order)
                 )
-    assert "lzx.Decompressor.from_state" in child_builds
+    assert "lzx.Decompressor" in child_builds
 
 
 @needs_codecs
@@ -1648,7 +1648,7 @@ def test_an_excluded_package_starts_no_child(monkeypatch: pytest.MonkeyPatch) ->
 def test_an_old_kernel_in_the_child_is_not_used(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(native_child, "_table", [{"lzw": 0, "lzx": 1}])
+    monkeypatch.setattr(native_child, "_table", [{"lzw": 0, "lzx": 2}])
     monkeypatch.setattr(native, "_too_old_logged", set())
     assert native.lzw(frozenset(), isolated=True) is None
     assert native.lzx(frozenset(), isolated=True) is not None

@@ -87,8 +87,7 @@ def _start() -> DecoderChild:
 class _KernelProxy(_ChildProxy):
     """A kernel object in a child. The attributes the child reports with each reply
     (``decoder_worker._Codecs.report``) come with an ``OK`` reply only, so a call
-    that raised asks for them again: a wrapper reads some after an error, such as
-    LZX's ``error_in``."""
+    that raised asks for them again: a wrapper may read some after an error."""
 
     def _call(self, method: str, data: bytes | None, *args: object) -> bytes:
         try:
@@ -154,25 +153,13 @@ class ChildLzxDecompressor(_KernelProxy):
     def flush(self, max_length: int = -1) -> bytes:
         return self._call("flush", None, max_length)
 
-    def getstate(self) -> bytes:
-        return self._call("getstate", None)
-
     @property
     def eof(self) -> bool:
         return self._child.flag("eof")
 
-    @property
-    def total_in(self) -> int:
-        return cast("Any", self._child.reported("total_in"))
-
-    @property
-    def error_in(self) -> int | None:
-        return cast("Any", self._child.reported("error_in"))
-
 
 class _ChildLzx:
-    """``lzx.Decompressor`` the class: built with ``(window_bits, output_size=)``,
-    or restored with :meth:`from_state`."""
+    """``lzx.Decompressor`` the class: built with ``(window_bits, output_size=)``."""
 
     def __init__(self, kernels: ChildCodecs) -> None:
         self._kernels = kernels
@@ -183,10 +170,6 @@ class _ChildLzx:
         child = self._kernels.build(
             "lzx.Decompressor", window_bits, output_size=output_size
         )
-        return ChildLzxDecompressor(child)
-
-    def from_state(self, state: bytes) -> ChildLzxDecompressor:
-        child = self._kernels.build("lzx.Decompressor.from_state", bytes(state))
         return ChildLzxDecompressor(child)
 
 

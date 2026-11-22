@@ -348,7 +348,7 @@ class _Codecs:
     """archivey-codecs' decoding kernels, one kernel object at a time.
 
     ``build`` makes the object from its dotted name in the package (such as
-    ``"lzw.Decompressor"`` or ``"lzx.Decompressor.from_state"``); every other ``CALL``
+    ``"lzw.Decompressor"`` or ``"lzx.Decompressor"``); every other ``CALL``
     runs that object's method of the same name. :meth:`report` goes with each reply
     (``_state``): the attributes the parent's wrappers read after each call, so that
     reading one costs no round trip.
@@ -358,7 +358,6 @@ class _Codecs:
     REPORTED = (
         "total_in",
         "total_out",
-        "error_in",
         "truncation",
         "header_params",
         "nine_bit_widens",
