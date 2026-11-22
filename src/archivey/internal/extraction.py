@@ -3312,10 +3312,16 @@ class ExtractionCoordinator:
         matches only by its exact path. Nothing is deleted that this run did not write.
         """
         written_paths = self._state.written_paths
-        if dest_path not in written_paths:
-            claim = self._state.placements.at_key(self._collision_key(dest_path))
-            if claim is not None and claim.path in written_paths:
-                dest_path = claim.path
+        claim = self._state.placements.at_key(self._collision_key(dest_path))
+        # The claim's own spelling is the one the run wrote and claimed: on Windows
+        # ``readme`` is in ``written_paths`` when ``README`` is (``WindowsPath``
+        # equality folds case), and the claim is released by its spelling.
+        if (
+            claim is not None
+            and claim.path in written_paths
+            and (dest_path not in written_paths or claim.path == dest_path)
+        ):
+            dest_path = claim.path
         if dest_path not in written_paths:
             return ExtractionResult(
                 original, dest_path, ExtractionStatus.EXTRACTED, None
