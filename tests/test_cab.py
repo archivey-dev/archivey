@@ -750,8 +750,11 @@ def _end(w: BitWriter, pad: int = 8) -> bytes:
 
 
 def _decoder(data: bytes) -> LzxDecoder:
-    chunks = iter([data])
-    return LzxDecoder(15, lambda: next(chunks, None))
+    """A decoder given all of ``data``, for tests that call its readers directly."""
+    decoder = LzxDecoder(15)
+    decoder.feed(data)
+    decoder.end()
+    return decoder
 
 
 @pytest.mark.parametrize(
@@ -1684,3 +1687,64 @@ def test_members_before_a_bad_record_read_unchecked() -> None:
             stream.read()
             seen.append((member.name, member.verified))
     assert seen == [(NAMES[0], Verification.LENGTH), (NAMES[1], Verification.LENGTH)]
+
+
+def _lzx_push(window: int, data: bytes, sizes: list[int], pieces: list[int]):
+    """Decode ``data`` pushed in ``pieces``-sized slices, a slice each time a frame
+    runs out of input: the output and the error, if any."""
+    decoder = LzxDecoder(window)
+    out = bytearray()
+    at = 0
+    try:
+        for size in sizes:
+            while (frame := decoder.try_frame(size)) is None:
+                if at >= len(data):
+                    decoder.end()
+                    continue
+                n = pieces[len(out) % len(pieces)] if pieces else len(data)
+                decoder.feed(data[at : at + n])
+                at += n
+            out += frame
+    except (CorruptionError, TruncatedError) as exc:
+        return bytes(out), (type(exc), str(exc))
+    return bytes(out), None
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_lzx_push_in_any_pieces_decodes_as_all_at_once(seed: int) -> None:
+    """The push decoder keeps its place inside a frame: fed in slices down to one
+    byte, it gives the same frames and the same error as fed everything at once, on
+    valid streams and damaged ones."""
+    from tests.cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(seed)
+    window = rng.choice((15, 16, 17, 21))
+    size = rng.randint(1, 3 * FRAME)
+    data = bytes(rng.choice(b"abcde\xe8\x00") for _ in range(size))
+    enc = LzxEncoder(
+        window_bits=window,
+        blocks=rng.choice(
+            [
+                ("verbatim",),
+                ("aligned",),
+                ("uncompressed",),
+                ("verbatim", "uncompressed", "aligned"),
+            ]
+        ),
+        block_size=rng.choice((FRAME, 10_000, 1_000)),
+        e8_file_size=rng.choice((0, size)),
+    )
+    stream = b"".join(enc.encode(data))
+    sizes = [min(FRAME, size - i) for i in range(0, size, FRAME)]
+    streams = [stream]
+    for _ in range(3):
+        damaged = bytearray(stream)
+        damaged[rng.randrange(len(damaged))] ^= 1 << rng.randrange(8)
+        streams.append(bytes(damaged))
+    streams.append(stream[: rng.randrange(len(stream))])
+    for s in streams:
+        whole = _lzx_push(window, s, sizes, [])
+        if s is stream:
+            assert whole == (data, None)
+        for pieces in ([1], [3, 1, 7], [rng.randint(1, 5000) for _ in range(5)]):
+            assert _lzx_push(window, s, sizes, pieces) == whole

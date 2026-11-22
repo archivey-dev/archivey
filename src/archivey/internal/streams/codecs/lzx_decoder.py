@@ -118,23 +118,41 @@ def _delta(length: int, code: int) -> int:
     return value & 0xFF
 
 
+class _NeedMore(Exception):
+    """The input given so far ends before the frame does (push mode)."""
+
+
 class LzxDecoder:
     """Decodes one LZX stream, a frame at a time.
 
-    ``more`` returns the next run of input bytes (a cabinet's next data block), or
-    ``None`` at the end of the input. The caller says how long each frame is: 32 KiB,
-    except the last.
+    Push: give input with :meth:`feed` and :meth:`end`, and ask for frames with
+    :meth:`try_frame`, which returns ``None`` when the input given so far ends
+    before the frame does. The decoder keeps its place, the start of the symbol
+    or block header it could not finish, and the next call goes on from there, so
+    an input given one data block at a time decodes once.
+
+    Pull: with ``more``, :meth:`decode_frame` asks it for input whenever the
+    frame needs more: it returns the next run of input bytes (a cabinet's next data
+    block), or ``None`` at the end of the input. It is the push mode, fed one run
+    each time the frame runs out, so input is asked for at the same points.
+
+    The caller says how long each frame is: 32 KiB, except the last.
     """
 
-    def __init__(self, window_bits: int, more: Callable[[], bytes | None]) -> None:
+    def __init__(
+        self, window_bits: int, more: Callable[[], bytes | None] | None = None
+    ) -> None:
         if not MIN_WINDOW_BITS <= window_bits <= MAX_WINDOW_BITS:
             raise CorruptionError(f"LZX window of 2**{window_bits} bytes")
         self._window_size = 1 << window_bits
         self._window = bytearray(self._window_size)
         self._main_symbols = _NUM_CHARS + (_POSITION_SLOTS[window_bits - 15] << 3)
         self._more = more
-        # Input: unread bytes from ``_pos``, and a bit buffer of ``_nbits`` bits.
-        self._buf = b""
+        # Input: unread bytes from ``_pos``, and a bit buffer of ``_nbits`` bits. The
+        # buffer only grows inside a frame (it is trimmed when one starts), so a
+        # place kept to resume from stays valid as input arrives.
+        self._buf = bytearray()
+        self._ended = False
         self._pos = 0
         self._bits = 0
         self._nbits = 0
@@ -158,6 +176,21 @@ class LzxDecoder:
         self._window_pos = 0
         self._offset = 0  # bytes of output so far
         self._frame = 0
+        # The frame being decoded, once it started: its size, and where in the window.
+        self._frame_size: int | None = None
+        self._frame_start = 0
+
+    # ── Push input ───────────────────────────────────────────────────────────────────
+
+    def feed(self, data: bytes) -> None:
+        """Give the next input bytes."""
+        if self._ended:
+            raise ValueError("feed() after end()")
+        self._buf += data
+
+    def end(self) -> None:
+        """Say the input has ended: past it come the zero bytes lzxd.c reads."""
+        self._ended = True
 
     # ── Input ────────────────────────────────────────────────────────────────────────
 
@@ -174,26 +207,22 @@ class LzxDecoder:
         self._buf, self._pos = buf, pos
         self._bits, self._nbits = bits, nbits
 
-    def _input_more(self, buf: bytes, pos: int) -> tuple[bytes, int]:
-        """The unread input with at least two bytes more, pulling the next run.
+    def _input_more(self, buf: bytearray, pos: int) -> tuple[bytearray, int]:
+        """The unread input with at least two bytes more, or :class:`_NeedMore`
+        when the input given so far has no more.
 
         Past the end of the input come zero bytes, so the decoder can look ahead as
         it does inside the stream; :meth:`_realign` refuses a stream that
         lzxd.c would have read more than two of them for.
         """
-        # Keep the last few bytes read: words read ahead into the bit buffer go back
-        # to the byte input before an uncompressed block (``_align_for_raw``).
-        keep = min(pos, 8)
-        rest, pos = buf[pos - keep :], keep
-        while len(rest) - pos < 2:
-            data = None if self._padding else self._more()
-            if data is None:
-                if self._padding >= _MAX_PADDING:
-                    raise TruncatedError("LZX stream ends before its output")
-                self._padding += 2
-                data = b"\0\0"
-            rest += data
-        return rest, pos
+        while len(buf) - pos < 2:
+            if not self._ended:
+                raise _NeedMore
+            if self._padding >= _MAX_PADDING:
+                raise TruncatedError("LZX stream ends before its output")
+            self._padding += 2
+            buf += b"\0\0"
+        return buf, pos
 
     def _realign(self) -> None:
         """Realign the input to a 16-bit word at the end of a frame, and refuse a
@@ -247,21 +276,19 @@ class LzxDecoder:
         self._since_symbol = start - self._nbits
         return entry >> 5
 
-    def _raw_bytes(self, n: int) -> bytes:
+    def _raw_bytes(self, n: int) -> bytearray:
         """``n`` bytes straight from the input, once the bit buffer is empty."""
         assert self._nbits == 0
         buf, pos = self._buf, self._pos
-        while len(buf) - pos < n:
-            data = None if self._padding else self._more()
-            if data is None:
-                # As lzxd.c, read the two zero bytes past the end, but no further.
-                if self._padding >= _PADDING_ALLOWED:
-                    raise TruncatedError("LZX stream ends inside an uncompressed block")
-                self._padding += _PADDING_ALLOWED
-                data = bytes(_PADDING_ALLOWED)
-            keep = min(pos, 8)
-            buf, pos = buf[pos - keep :] + data, keep
-        self._buf, self._pos = buf, pos + n
+        if len(buf) - pos < n:
+            if not self._ended:
+                raise _NeedMore
+            # As lzxd.c, read the two zero bytes past the end, but no further.
+            if self._padding or len(buf) - pos + _PADDING_ALLOWED < n:
+                raise TruncatedError("LZX stream ends inside an uncompressed block")
+            self._padding += _PADDING_ALLOWED
+            buf += bytes(_PADDING_ALLOWED)
+        self._pos = pos + n
         # lzxd.c reads stored bytes as it uses them: it holds nothing ahead.
         self._since_symbol = _MAX_CODE
         return buf[pos : pos + n]
@@ -337,32 +364,95 @@ class LzxDecoder:
     # ── Frames ───────────────────────────────────────────────────────────────────────
 
     def decode_frame(self, frame_size: int) -> bytes:
-        """The next ``frame_size`` bytes of output: 32 KiB, or less for the last."""
-        if not 0 < frame_size <= FRAME_SIZE:
-            raise ValueError(f"frame size {frame_size}")
-        if not self._header_read:
-            if self._read_bits(1):
-                high = self._read_bits(16)
-                self._intel_size = (high << 16) | self._read_bits(16)
-            self._header_read = True
-        frame_start = self._window_pos
-        todo = frame_size
-        while todo > 0:
+        """The next ``frame_size`` bytes of output: 32 KiB, or less for the last.
+        Pull mode: asks ``more`` for input each time the frame runs out; without
+        it, the input given must cover the frame."""
+        more = self._more
+        while (out := self.try_frame(frame_size)) is None:
+            if more is None:
+                raise ValueError("the input given ends inside the frame")
+            data = more()
+            if data is None:
+                self.end()
+            else:
+                self.feed(data)
+        return out
+
+    def _snapshot(self) -> dict[str, object]:
+        """What a block header or the stream header can change, to resume from its
+        start: the input buffer only grows inside a frame, so it is shared."""
+        saved = self.__dict__.copy()
+        saved["_main_lengths"] = self._main_lengths[:]
+        saved["_length_lengths"] = self._length_lengths[:]
+        return saved
+
+    def _resume_from(self, saved: dict[str, object]) -> None:
+        self.__dict__.update(saved)
+
+    def try_frame(self, frame_size: int) -> bytes | None:
+        """The next ``frame_size`` bytes of output, or ``None`` when the input given
+        so far ends first: feed more (or end it) and call again with the same size.
+        """
+        if self._frame_size is None:
+            if not 0 < frame_size <= FRAME_SIZE:
+                raise ValueError(f"frame size {frame_size}")
+            # Trim the input read, keeping the last few bytes: words read ahead into
+            # the bit buffer go back to the byte input before an uncompressed block
+            # (``_align_for_raw``).
+            drop = self._pos - min(self._pos, 8)
+            if drop > 4096:
+                del self._buf[:drop]
+                self._pos -= drop
+            if not self._header_read:
+                saved = self._snapshot()
+                try:
+                    if self._read_bits(1):
+                        high = self._read_bits(16)
+                        self._intel_size = (high << 16) | self._read_bits(16)
+                except _NeedMore:
+                    self._resume_from(saved)
+                    return None
+                self._header_read = True
+            self._frame_size = frame_size
+            self._frame_start = self._window_pos
+        elif frame_size != self._frame_size:
+            raise ValueError(
+                f"frame size {frame_size} for a frame started at {self._frame_size}"
+            )
+        frame_start = self._frame_start
+        while (todo := frame_size - (self._window_pos - frame_start)) > 0:
             if self._block_remaining == 0:
-                self._read_block_header()
+                saved = self._snapshot()
+                try:
+                    self._read_block_header()
+                except _NeedMore:
+                    self._resume_from(saved)
+                    return None
             run = min(self._block_remaining, todo)
             if self._block_type == _UNCOMPRESSED:
+                at, since = self._pos, self._since_symbol
+                try:
+                    data = self._raw_bytes(run)
+                except _NeedMore:
+                    self._pos, self._since_symbol = at, since
+                    return None
                 pos = self._window_pos
-                self._window[pos : pos + run] = self._raw_bytes(run)
+                self._window[pos : pos + run] = data
                 self._window_pos = pos + run
                 done = run
             else:
-                done = self._decode_run(run)
+                before = self._window_pos
+                try:
+                    done = self._decode_run(run)
+                except _NeedMore:
+                    # The run stopped at the start of a symbol: keep what it decoded.
+                    self._block_remaining -= self._window_pos - before
+                    return None
             # A match may run past ``run`` inside its block, not past the frame.
             if done > self._block_remaining:
                 raise CorruptionError("LZX match runs past the end of its block")
             self._block_remaining -= done
-            todo -= done
+        self._frame_size = None
         if self._window_pos - frame_start != frame_size:
             raise CorruptionError("LZX match runs past the end of a frame")
         self._realign()
@@ -415,8 +505,14 @@ class LzxDecoder:
                     bpos += 4
                     nbits += 32
                 else:
-                    bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
+                    try:
+                        bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
+                    except _NeedMore:
+                        self._stop_run(r0, r1, r2, bits, nbits, bpos, top, pos)
+                        raise
                     blen = len(buf)
+            # The symbol's start, to resume from if its extra bits run out of input.
+            start_nbits, start_top = nbits, top
             top = nbits
             entry = main_table[(bits >> (nbits - main_root)) & main_mask]
             if entry < 0:
@@ -464,7 +560,14 @@ class LzxDecoder:
                 # At most 17 verbatim bits, or 14 and a 16-bit aligned peek.
                 if nbits < 32:
                     filled = nbits
-                    bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
+                    try:
+                        bits, nbits, buf, bpos = self._slow_fill(bits, nbits, buf, bpos)
+                    except _NeedMore:
+                        # Only the codes read since the symbol began changed ``nbits``.
+                        self._stop_run(
+                            r0, r1, r2, bits, start_nbits, bpos, start_top, pos
+                        )
+                        raise
                     blen = len(buf)
                     top += nbits - filled
                 extra = extra_bits[slot]
@@ -511,9 +614,27 @@ class LzxDecoder:
         self._window_pos = pos
         return pos - start
 
+    def _stop_run(
+        self,
+        r0: int,
+        r1: int,
+        r2: int,
+        bits: int,
+        nbits: int,
+        bpos: int,
+        top: int,
+        pos: int,
+    ) -> None:
+        """Keep the hot loop's place at the start of the symbol the input ran out
+        in, to resume from there."""
+        self._r0, self._r1, self._r2 = r0, r1, r2
+        self._bits, self._nbits, self._pos = bits, nbits, bpos
+        self._since_symbol = top - nbits
+        self._window_pos = pos
+
     def _slow_fill(
-        self, bits: int, nbits: int, buf: bytes, pos: int
-    ) -> tuple[int, int, bytes, int]:
+        self, bits: int, nbits: int, buf: bytearray, pos: int
+    ) -> tuple[int, int, bytearray, int]:
         """:meth:`_refill` to 32 bits from the hot loop's locals."""
         self._bits, self._nbits, self._buf, self._pos = bits, nbits, buf, pos
         self._refill(32)
