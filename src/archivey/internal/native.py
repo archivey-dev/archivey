@@ -9,11 +9,14 @@ so the choice changes speed only. Design: openspec change ``rust-codecs-package`
 A kernel is used when all of these hold:
 
 - the call's ``FormatPolicy`` does not turn ``OptionalLibrary.ARCHIVEY_CODECS`` off
-  (``exclude_libraries`` or ``only_libraries``), the only switch;
+  (``exclude_libraries`` or ``only_libraries``), the one switch a caller sets for it;
 - the package is installed and imports;
 - its ``KERNELS`` revision for that kernel is at least :data:`MIN_REVISIONS`' (an older
   one may differ from this archivey's Python twin, so it is skipped, logged once at
-  DEBUG).
+  DEBUG);
+- for a decoding kernel (ARM64, RISC-V), the call's ``process_isolation`` is not
+  ``NATIVE_DECODERS``: until the decoder child runs these kernels, the Python twin keeps
+  that setting's promise that no native decoder runs in this process.
 
 A missed check in a kernel panics, and PyO3 raises ``pyo3_runtime.PanicException``, a
 ``BaseException`` that passes ``except Exception``. :func:`panic_to_corruption` turns it
@@ -33,7 +36,9 @@ from archivey.internal.streams.codecs import deps
 from archivey.types import OptionalLibrary
 
 MIN_REVISIONS: dict[str, int] = {
+    "arm64": 1,
     "crc16_arc": 1,
+    "riscv": 1,
     "zipcrypto": 1,
 }
 """The oldest revision of each kernel this archivey uses: the one whose output and
@@ -195,5 +200,79 @@ def zipcrypto(
     def new(password: bytes) -> NativeZipCrypto:
         with panic_to_corruption("ZipCrypto"):
             return NativeZipCrypto(decryptor(password))
+
+    return new
+
+
+# ── ARM64 and RISC-V branch filters ───────────────────────────────────────────────────
+
+
+class Branch(Protocol):
+    """One stream through a branch filter, as archivey's filter decoder drives it."""
+
+    def decode(self, data: bytes) -> bytes:
+        """Return the decoded prefix of everything fed so far. The last few bytes can
+        be the start of an instruction that the end of the chunk cut off, so they are
+        held back for the next call: at most 3 for ARM64, 7 for RISC-V."""
+        ...
+
+    def flush(self) -> bytes:
+        """At the end of the input: the bytes held back, unchanged."""
+        ...
+
+
+class _BranchDecoder(Protocol):
+    """``archivey_codecs.filters.Arm64Decoder`` or ``RiscvDecoder``."""
+
+    def decode(self, data: bytes) -> bytes: ...
+
+    def flush(self) -> bytes: ...
+
+
+class NativeBranch:
+    """archivey-codecs' ARM64 or RISC-V decoder, as a :class:`Branch`."""
+
+    __slots__ = ("_decoder", "_latch")
+
+    def __init__(self, decoder: _BranchDecoder, kernel: str) -> None:
+        self._decoder = decoder
+        self._latch = Latch(kernel)
+
+    def decode(self, data: bytes) -> bytes:
+        with self._latch.guard():
+            return self._decoder.decode(data)
+
+    def flush(self) -> bytes:
+        with self._latch.guard():
+            return self._decoder.flush()
+
+
+_BRANCH_CLASSES = {
+    "arm64": ("Arm64Decoder", "ARM64"),
+    "riscv": ("RiscvDecoder", "RISC-V"),
+}
+
+
+def branch_filter(
+    kernel: str, excluded: frozenset[OptionalLibrary], *, isolated: bool
+) -> Callable[[int], NativeBranch] | None:
+    """A constructor of :class:`NativeBranch` from the filter's start offset, or
+    ``None`` to use the Python filter. ``kernel`` is ``"arm64"`` or ``"riscv"``.
+
+    ``isolated`` is ``ProcessIsolation.NATIVE_DECODERS``, which promises that no native
+    decoder runs in this process. Until the decoder child can run these kernels, the
+    Python filter keeps that promise: it gives the same bytes, only slower.
+    """
+    if isolated:
+        return None
+    module = kernels(kernel, excluded)
+    if module is None:
+        return None
+    class_name, label = _BRANCH_CLASSES[kernel]
+    decoder = getattr(module.filters, class_name)
+
+    def new(start_offset: int) -> NativeBranch:
+        with panic_to_corruption(label):
+            return NativeBranch(decoder(start_offset), label)
 
     return new

@@ -10,6 +10,7 @@ import io
 import logging
 import types
 import zipfile
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -21,16 +22,25 @@ from archivey import (
     EncryptionError,
     FormatPolicy,
     OptionalLibrary,
+    ProcessIsolation,
     open_archive,
 )
 from archivey.internal import native
 from archivey.internal.backends import lha_reader, zipcrypto
 from archivey.internal.streams.codecs import deps
+from archivey.internal.streams.codecs.arm64_filter import FILTER_ARM64, arm64_decode
+from archivey.internal.streams.codecs.isolated import IN_PROCESS, ISOLATED
+from archivey.internal.streams.codecs.lzma_filter_decoder import (
+    PythonBranch,
+    branch_maker,
+)
+from archivey.internal.streams.codecs.riscv_filter import FILTER_RISCV, riscv_decode
 from tests.lha_util import Member, archive
 from tests.zipcrypto import build_stored_zipcrypto_zip, build_zipcrypto_zip
 
 EXCLUDED = frozenset({OptionalLibrary.ARCHIVEY_CODECS})
 OFF = ArchiveyConfig(formats=FormatPolicy(exclude_libraries={"archivey-codecs"}))
+RISCV_7Z = Path(__file__).parent / "fixtures" / "sevenzip" / "riscv_lzma2.7z"
 
 
 class PanicException(BaseException):
@@ -72,6 +82,42 @@ class _FakeDecryptor:
         return self._keys.decrypt(data)
 
 
+class _FakeBranch:
+    """Stands in for ``archivey_codecs.filters.Arm64Decoder`` and ``RiscvDecoder``:
+    the Python filter, recorded. With ``panic`` set, decoding raises the fake panic."""
+
+    built: ClassVar[list[int]] = []
+    panic: ClassVar[bool] = False
+    calls: ClassVar[int] = 0
+
+    def __init__(self, start_offset: int = 0) -> None:
+        type(self).built.append(start_offset)
+        self._python = PythonBranch(self.decode_with, start_offset)
+
+    @staticmethod
+    def decode_with(data: bytes, pc: int) -> bytes:
+        """The Python filter this fake stands in for: set by each subclass."""
+        raise NotImplementedError
+
+    def decode(self, data: bytes) -> bytes:
+        type(self).calls += 1
+        if self.panic:
+            raise PanicException("attempt to subtract with overflow")
+        return self._python.decode(data)
+
+    def flush(self) -> bytes:
+        type(self).calls += 1
+        return self._python.flush()
+
+
+class _FakeArm64(_FakeBranch):
+    decode_with = staticmethod(arm64_decode)
+
+
+class _FakeRiscv(_FakeBranch):
+    decode_with = staticmethod(riscv_decode)
+
+
 def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamespace:
     """Install a fake ``archivey_codecs`` whose ``KERNELS`` is ``kernels``."""
 
@@ -80,12 +126,16 @@ def _fake(monkeypatch: pytest.MonkeyPatch, **kernels: int) -> types.SimpleNamesp
 
     monkeypatch.setattr(_FakeDecryptor, "built", [])
     monkeypatch.setattr(_FakeDecryptor, "panic", False)
+    monkeypatch.setattr(_FakeBranch, "built", [])
+    monkeypatch.setattr(_FakeBranch, "panic", False)
+    monkeypatch.setattr(_FakeBranch, "calls", 0)
     monkeypatch.setattr(_FakeDecryptor, "panic_header", False)
     monkeypatch.setattr(_FakeDecryptor, "calls", 0)
     module = types.SimpleNamespace(
         KERNELS=kernels,
         crc16_arc=crc16_arc,
         zipcrypto=types.SimpleNamespace(Decryptor=_FakeDecryptor),
+        filters=types.SimpleNamespace(Arm64Decoder=_FakeArm64, RiscvDecoder=_FakeRiscv),
     )
     package = deps.LazyOptional(OptionalLibrary.ARCHIVEY_CODECS, present=True)
     package._module = module  # type: ignore[assignment]
@@ -226,6 +276,89 @@ def test_a_panic_in_a_zipcrypto_read_is_corruption(
     # The switch turns the kernel off: Python's keys read the same archive.
     with open_archive(io.BytesIO(raw), password=b"pw", config=OFF) as reader:
         assert reader.read("a.txt") == b"x" * 5000
+
+
+@pytest.mark.parametrize(
+    ("filter_id", "kernel"), [(FILTER_ARM64, "arm64"), (FILTER_RISCV, "riscv")]
+)
+def test_branch_filters_use_the_kernel_unless_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch, filter_id: int, kernel: str
+) -> None:
+    _fake(monkeypatch, **{kernel: 1})
+
+    def built(excluded: frozenset[OptionalLibrary], *, isolated: bool) -> object:
+        make = branch_maker(
+            filter_id,
+            0x1000,
+            excluded=excluded,
+            natives=ISOLATED if isolated else IN_PROCESS,
+        )
+        assert make is not None
+        return make()
+
+    assert isinstance(built(frozenset(), isolated=False), native.NativeBranch)
+    assert _FakeBranch.built == [0x1000]
+    # Turned off, or under NATIVE_DECODERS until the decoder child runs the kernel.
+    assert isinstance(built(EXCLUDED, isolated=False), PythonBranch)
+    assert isinstance(built(frozenset(), isolated=True), PythonBranch)
+    assert _FakeBranch.built == [0x1000]
+
+
+def test_an_old_branch_kernel_is_not_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, arm64=0, riscv=1)
+    make = branch_maker(FILTER_ARM64, 0, excluded=frozenset(), natives=IN_PROCESS)
+    assert make is not None
+    assert isinstance(make(), PythonBranch)
+    assert branch_maker(0x03, 0, excluded=frozenset(), natives=IN_PROCESS) is None
+
+
+def test_a_branch_filter_refuses_every_call_after_a_panic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, arm64=1)
+    make = branch_maker(FILTER_ARM64, 0, excluded=frozenset(), natives=IN_PROCESS)
+    assert make is not None
+    branch = make()
+    assert branch.decode(b"\x00" * 8) == b"\x00" * 8
+    _FakeBranch.panic = True
+    with pytest.raises(CorruptionError, match="ARM64 decoder failed") as info:
+        branch.decode(b"\x00" * 8)
+    calls = _FakeBranch.calls
+    for again in (branch.flush, lambda: branch.decode(b"\x00" * 8)):
+        with pytest.raises(CorruptionError) as repeat:
+            again()
+        assert repeat.value is info.value
+    assert _FakeBranch.calls == calls
+
+
+def test_a_7z_riscv_read_uses_the_kernel_unless_switched_off_or_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, riscv=1)
+    isolated = ArchiveyConfig(process_isolation=ProcessIsolation.NATIVE_DECODERS)
+    results = []
+    for config, used in ((None, True), (OFF, False), (isolated, False)):
+        _FakeBranch.built.clear()
+        with open_archive(RISCV_7Z, config=config) as reader:
+            results.append([reader.read(m) for m in reader.members()])
+        assert bool(_FakeBranch.built) is used
+    assert results[0] == results[1] == results[2]
+
+
+def test_a_panic_in_a_7z_riscv_read_is_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake(monkeypatch, riscv=1)
+    _FakeBranch.panic = True
+    with (
+        pytest.raises(CorruptionError, match="RISC-V decoder failed") as info,
+        open_archive(RISCV_7Z) as reader,
+    ):
+        for member in reader.members():
+            reader.read(member)
+    assert isinstance(info.value.__cause__, PanicException)
+    with open_archive(RISCV_7Z, config=OFF) as reader:
+        assert all(reader.read(m) for m in reader.members())
 
 
 def test_a_zipcrypto_state_refuses_every_call_after_a_panic(
@@ -377,3 +510,18 @@ def test_zipcrypto_kernel_matches_python_keys() -> None:
     ) == zipcrypto.parallel_plaintext_crc32(
         [b"a", b"pw"], header, io.BytesIO(body), excluded=EXCLUDED
     )
+
+
+@needs_codecs
+@pytest.mark.parametrize(
+    "name", ["riscv_lzma2.7z", "riscv_offset_lzma2.7z", "riscv_special_lzma2.7z"]
+)
+def test_7z_riscv_uses_the_kernel_and_reads_the_same(name: str) -> None:
+    make = branch_maker(FILTER_RISCV, 0, excluded=frozenset(), natives=IN_PROCESS)
+    assert make is not None
+    assert isinstance(make(), native.NativeBranch)
+    results = []
+    for config in (None, OFF):
+        with open_archive(RISCV_7Z.with_name(name), config=config) as reader:
+            results.append([reader.read(m) for m in reader.members()])
+    assert results[0] == results[1]

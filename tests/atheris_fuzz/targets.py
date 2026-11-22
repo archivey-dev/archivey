@@ -33,6 +33,7 @@ from archivey.internal.backends.sevenzip_detect import (
 from archivey.internal.backends.sevenzip_reader import load_sevenzip_archive
 from archivey.internal.backends.zip_detect import validate_zip_local_header
 from archivey.internal.config import StreamConfig
+from archivey.internal.excluded_libraries import NO_EXCLUSIONS
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.streams.codecs import (
     Codec,
@@ -665,6 +666,7 @@ def _fuzz_filter_stream(payload: bytes, lzma_filter: dict[str, int]) -> None:
         lzma_filter=lzma_filter,
         unpack_size=unpack,
         seekable=True,
+        excluded=NO_EXCLUSIONS,
     ) as stream:
         got = stream.read(4096)
         if not stream.seekable():
