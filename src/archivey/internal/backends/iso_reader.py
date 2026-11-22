@@ -46,6 +46,7 @@ wrapping the image, not mounted here.
 from __future__ import annotations
 
 import io
+import itertools
 import re
 import stat
 import struct
@@ -470,9 +471,12 @@ def _sorted_children(directory: IsoEntry) -> list[IsoEntry]:
     ECMA-119 9.3 has a writer record a directory's entries sorted by identifier, and
     every writer seen does. Sorting here lists an image that does not in the same
     order. The sort is stable, so entries that share an identifier keep their on-disc
-    order, which decides which of them is current.
+    order, which decides which of them is current. A directory already in order comes
+    back as its own ``children`` list, not a copy; callers do not change it.
     """
     children = directory.children or []
+    if all(a.ident <= b.ident for a, b in itertools.pairwise(children)):
+        return children
     return sorted(children, key=_ident_of)
 
 
@@ -725,6 +729,13 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         # directory, built the first time a link target is followed through it, so
         # following many targets through one wide directory stays linear.
         self._rock_ridge_children: dict[int, dict[bytes, IsoEntry]] = {}
+        # Each directory's entries in identifier order (``_sorted_children``), by
+        # ``id()`` of the directory. Name and link target decoding can ask for one
+        # directory's entries many times: a link target such as ``x\xff/../x\xff/..``
+        # searches ``x\xff`` once per component (``_joliet_directory``), and so do
+        # many ``CL`` placeholders pointing at one directory. Without this, each
+        # search would sort the whole directory again.
+        self._sorted: dict[int, list[IsoEntry]] = {}
         # The primary tree's first directory at each extent, for Rock Ridge ``CL``
         # relocation; built on the first ``CL`` entry met (``_relocated``).
         self._entry_at_extent: dict[int, IsoEntry] | None = None
@@ -1202,7 +1213,11 @@ class IsoReader(IndexedReader["IsoEntry | UdfEntry"]):
         names it from the placeholder's ``NM``. A placeholder that points at nothing
         is listed as the file record it is.
         """
-        for child in _sorted_children(directory):
+        key = id(directory)
+        ordered = self._sorted.get(key)
+        if ordered is None:
+            ordered = self._sorted[key] = _sorted_children(directory)
+        for child in ordered:
             named = child
             if use_rr and child.rr is not None:
                 if child.is_dir and child.parent_linked:
