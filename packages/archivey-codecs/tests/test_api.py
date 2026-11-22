@@ -329,18 +329,6 @@ def test_lzx_damage_raises_again() -> None:
             d.decompress(_LZX_BAD)
 
 
-def test_lzx_error_in_says_how_far_the_failed_frame_read() -> None:
-    """The bad block header is in the first word after the 1-bit E8 flag: the frame
-    fails having read two words, and padding past the input does not count."""
-    d = lzx.Decompressor(15, output_size=100)
-    assert d.error_in is None
-    with pytest.raises(archivey_codecs.CorruptDataError):
-        d.decompress(_LZX_BAD + bytes(100_000))
-    assert d.error_in is not None
-    assert 2 <= d.error_in <= 8
-    assert d.total_in == 0  # the failed frame is undone
-
-
 def test_lzx_window_range() -> None:
     with pytest.raises(archivey_codecs.CorruptDataError, match="window"):
         lzx.Decompressor(14)
@@ -413,15 +401,15 @@ def test_lzx_state_after_a_capped_flush() -> None:
         assert d.flush() == _HELLO[max(at, 1) :]
 
 
-def test_lzx_state_after_a_failed_flush_raises_again() -> None:
+def test_lzx_after_an_error_raises_again_and_refuses_getstate() -> None:
     d = lzx.Decompressor(15, output_size=len(_HELLO))
     d.decompress(_LZX_HELLO[:-10])
     with pytest.raises(archivey_codecs.TruncatedDataError):
         d.flush()
-    r = lzx.Decompressor.from_state(d.getstate())
-    r.decompress(_LZX_HELLO[r.total_in : -10])
     with pytest.raises(archivey_codecs.TruncatedDataError):
-        r.flush()
+        d.flush()
+    with pytest.raises(ValueError, match="after a decode error"):
+        d.getstate()
 
 
 def test_lzw_flush_keeps_its_cap(tmp_path) -> None:

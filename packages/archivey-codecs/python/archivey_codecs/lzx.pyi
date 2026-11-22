@@ -25,8 +25,4 @@ class Decompressor:
     @property
     def total_in(self) -> int: ...
     @property
-    def error_in(self) -> int | None:
-        """After a decode error: the input the failed frame had read when it found
-        the error, counted as ``total_in`` counts it; ``None`` before any error."""
-    @property
     def total_out(self) -> int: ...
