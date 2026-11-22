@@ -780,6 +780,41 @@ def test_a_compressed_chunk_past_its_size_names_that_size(
         reader.read("c")
 
 
+@pytest.mark.parametrize("damage", ["renamed", "moved", "missing"])
+def test_a_folder_thread_that_disagrees_is_reported(damage: str) -> None:
+    """Paths come from the folder records; a thread record that is missing or names
+    another parent or name is reported once, and the listing is the same."""
+    nodes = [d.Node("a/x", data=b"x"), d.Node("b/y", data=b"y")]
+
+    def patch(records: list[d.CatalogRecord]) -> None:
+        def folder_id(name: str) -> int:
+            raw = name.encode("utf-16-be")
+            record = next(
+                r
+                for r in records
+                if r.name == raw and struct.unpack_from(">h", r.body)[0] == 1
+            )
+            return struct.unpack_from(">I", record.body, 8)[0]
+
+        a = folder_id("a")
+        thread = next(
+            r
+            for r in records
+            if r.parent == a and struct.unpack_from(">h", r.body)[0] == 3
+        )
+        if damage == "missing":
+            records.remove(thread)
+        elif damage == "moved":
+            struct.pack_into(">I", thread.body, 4, folder_id("b"))
+        else:
+            struct.pack_into(">H", thread.body, 10, ord("z"))
+
+    with _open(_image(nodes, hfs_options={"patch_catalog": patch})) as reader:
+        names = sorted(m.name for m in reader.members())
+        assert _structures(reader) == ["folder_thread"]
+    assert names == ["a/", "a/x", "b/", "b/y"]
+
+
 # ── Limits and UDIF structure ────────────────────────────────────────────────────────
 
 

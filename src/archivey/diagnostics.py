@@ -703,6 +703,9 @@ class ArchiveStructureContext(_JsonSafeContext):
     - ``"member_type"``: an HFS+ file's BSD mode and its Finder type and creator
       disagree on whether it is a symlink; the mode decides. Reported on the member;
       ``offset`` is the file's catalog id.
+    - ``"folder_thread"``: HFS+ folders whose thread record is missing or names another
+      parent or name than the folder record. Reported once per volume; the folder
+      records decide the paths, and ``offset`` is the first such folder's catalog id.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"

@@ -62,7 +62,8 @@ are ticked once its first run on `main` is green; APFS joins M.2 with Part E.
 
 ## D. Polish
 
-- [ ] D.1 Anything part B's review defers
+- [x] D.1 Anything part B's review defers: the folder thread cross-check (one
+  `folder_thread` diagnostic per volume)
 
 ## E. APFS
 
