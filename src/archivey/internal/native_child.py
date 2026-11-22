@@ -153,6 +153,9 @@ class ChildLzxDecompressor(_KernelProxy):
     def flush(self, max_length: int = -1) -> bytes:
         return self._call("flush", None, max_length)
 
+    def set_output_size(self, output_size: int) -> None:
+        self._call("set_output_size", None, output_size)
+
     @property
     def eof(self) -> bool:
         return self._child.flag("eof")

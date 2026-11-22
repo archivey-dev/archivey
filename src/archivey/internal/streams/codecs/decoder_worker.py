@@ -356,8 +356,6 @@ class _Codecs:
 
     # The kernel attributes reported with each reply, where the kernel has them.
     REPORTED = (
-        "total_in",
-        "total_out",
         "truncation",
         "header_params",
         "nine_bit_widens",
