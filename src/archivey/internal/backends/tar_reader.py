@@ -134,7 +134,7 @@ from archivey.internal.overrides import override
 from archivey.internal.password import _PasswordCandidates
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
-from archivey.internal.salvage import ARCHIVE_LAYER
+from archivey.internal.salvage import ARCHIVE_LAYER, QuietSalvageState
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -1521,6 +1521,10 @@ class TarReader(BaseArchiveReader):
 
     def _emit_found(self, member: ArchiveMember, index: int, found: _Found) -> None:
         """Record ``MEMBER_FOUND_BY_SCAN`` for ``member``, listed at ``index``."""
+        # A repeat reader (an inner tar built again to reach member data) finds the
+        # members the listing's reader found and flagged (``SalvageRequest.repeat``).
+        if isinstance(self._salvage_mode, QuietSalvageState):
+            return
         self._diagnostics_collector.emit(
             code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,
             message=(

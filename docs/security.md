@@ -192,12 +192,14 @@ to be malicious. It doesn't count on them to handle every input: when one fails,
   folder. Reading a file still checks it's the one listed where the filesystem reports file
   identities. Where it doesn't, only the last part of the path is checked, after the file is opened,
   so a folder above it swapped for a link can serve a same-size file from outside.
-- **`salvage=True` lists what other tools don't, on purpose.** Past damage, it lists any bytes that
-  pass as a header of the format, so the same file gives you members that other tools and
-  archivey's default reading don't list. A header of an archive stored inside a member passes too,
-  and a crafted file can put one anywhere. Use `salvage=True` to recover data from an archive
-  you already trust, never to decide what an archive holds or whether it's safe. Extraction checks
-  every found member as it checks any other, so the guarantees at the top of this page still hold.
+- **Use `salvage=True` only to recover data from an archive you already trust.** Never use it to
+  decide what an archive holds or whether it's safe. Past damage, a format with salvage support
+  lists any bytes that pass as one of its headers, so the same file gives you members that other
+  tools and archivey's default reading don't list. A header of an archive stored inside a member
+  passes too, and a crafted file can put one anywhere. Extraction checks every found member as it
+  checks any other, so the guarantees at the top of this page still hold. TAR, compressed or not,
+  has salvage support; every other format reads as it does without `salvage=True` and records
+  `SALVAGE_UNAVAILABLE`.
 
 ## Decoders in a child process
 

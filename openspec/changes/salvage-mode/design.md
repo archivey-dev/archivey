@@ -111,9 +111,11 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
      damage starts a new search.
    - The first damage error is kept and raised at the end of the pass, as today. A
      search that finds nothing changes nothing about it.
-   - The format supplies `find_header(window: bytes, start: int) -> int | None`, pure on
-     bytes: the first offset at or after `start` where a header passes the format's own
-     check. This is also the shape of the later plugin hook (design §7.7).
+   - The format supplies
+     `find_header(window: bytes, start: int, stop: int) -> int | None`, pure on bytes:
+     the first candidate offset at or after `start` and before `stop` where a header
+     passes the format's own check. It examines no offset at or after `stop`. This is
+     also the shape of the later plugin hook (design §7.7).
 
 5. **Add-only, by construction.** The search starts only where the default walk stopped,
    so every default member comes first, unchanged, with the same diagnostics. The test

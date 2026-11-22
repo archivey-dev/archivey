@@ -243,15 +243,21 @@ def test_find_header_takes_ustar_and_gnu_magic_on_block_boundaries() -> None:
 
     find = tar_header_search(v7=False).find_header
     window = bytes(3 * BLOCKSIZE) + gnu[:BLOCKSIZE]
-    assert find(window, 0) == 3 * BLOCKSIZE
-    assert find(window, 4 * BLOCKSIZE) is None
+    assert find(window, 0, len(window)) == 3 * BLOCKSIZE
+    assert find(window, 4 * BLOCKSIZE, len(window)) is None
     # Off a block boundary, a header is not seen.
-    assert find(bytes(100) + gnu[:BLOCKSIZE] + bytes(BLOCKSIZE), 0) is None
+    off = bytes(100) + gnu[:BLOCKSIZE] + bytes(BLOCKSIZE)
+    assert find(off, 0, len(off)) is None
     # "ustar" in data before the header does not hide it.
     junk = bytearray(2 * BLOCKSIZE)
     junk[300:305] = b"ustar"
     junk[257:262] = b"ustar"
-    assert find(bytes(junk) + gnu[:BLOCKSIZE], 0) == 2 * BLOCKSIZE
+    assert find(bytes(junk) + gnu[:BLOCKSIZE], 0, 3 * BLOCKSIZE) == 2 * BLOCKSIZE
+    # A header at ``stop`` or past it is not examined, though the window holds it.
+    for v7_rule in (False, True):
+        bounded = tar_header_search(v7=v7_rule).find_header
+        assert bounded(window, 0, 3 * BLOCKSIZE) is None
+        assert bounded(window, 0, 3 * BLOCKSIZE + 1) == 3 * BLOCKSIZE
 
 
 # ---------------------------------------------------------------------------
@@ -1654,6 +1660,31 @@ def test_a_deb_with_a_damaged_data_tar_lists_past_the_damage() -> None:
     assert salvage.members[: len(default.members)] == default.members
     assert len(salvage.names) == len(default.names) + 7
     assert salvage.found()
+
+
+def test_a_deb_s_damaged_data_tar_records_its_salvage_once() -> None:
+    """Reading the members of a ``.deb`` builds its data tar's reader again, as a
+    repeat reader: it salvages as the listing's did and records no
+    ``ARCHIVE_REGION_SKIPPED``, ``MEMBER_FOUND_BY_SCAN`` or ``SALVAGE_UNAVAILABLE``
+    again."""
+    from tests.test_deb import CONTROL, _ar, _tar as _deb_tar
+
+    tar = _build(12, max_size=2000)
+    raw = _ar(
+        (b"debian-binary", b"2.0\n"),
+        (b"control.tar", _deb_tar([("./control", CONTROL)])),
+        (b"data.tar", _zeroed(tar.data, tar.offsets[4], BLOCKSIZE)),
+    )
+    seen: list[DiagnosticCode] = []
+    config = ArchiveyConfig(on_diagnostic=lambda d: seen.append(d.code))
+    with open_archive(io.BytesIO(raw), salvage=True, config=config) as reader:
+        files = [m for m in reader.members_report().members if m.is_file]
+        listed = list(seen)
+        assert listed.count(DiagnosticCode.ARCHIVE_REGION_SKIPPED) == 1
+        assert listed.count(DiagnosticCode.SALVAGE_UNAVAILABLE) == 1
+        for member in files:
+            reader.read(member)
+    assert seen == listed
 
 
 # ---------------------------------------------------------------------------
