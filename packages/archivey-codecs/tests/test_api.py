@@ -399,11 +399,56 @@ def test_lzx_state_of_a_frame_ended_by_a_late_output_size() -> None:
     d = lzx.Decompressor(15)
     assert d.decompress(data) == b""
     d.set_output_size(10)
+    # The second block's header is after the stream: it is given back.
+    assert d.total_in == len(first)
     r = lzx.Decompressor.from_state(d.getstate())
-    assert r.decompress(data[r.total_in :] + b"tail") == b"0123456789"
+    assert not r.needs_input
+    assert r.decompress(b"") == b"0123456789"
     assert r.eof
-    assert d.decompress(b"tail") == b"0123456789"
-    assert r.unused_data == d.unused_data
+    assert d.decompress(b"") == b"0123456789"
+    assert d.eof
+    assert d.unused_data == data[len(first) :]
+    # The restored decoder holds no input: what follows `total_in` is not given.
+    assert r.unused_data == b""
+    assert d.total_in == r.total_in == len(first)
+
+
+def test_lzx_output_size_given_late_drops_an_error_after_the_stream() -> None:
+    """The block after the stream's last one is damaged: a late output size that
+    ends the stream before it drops the error, and gives that block back."""
+    r_regs = (1).to_bytes(4, "little") * 3
+    first = bytes.fromhex("0030a000") + r_regs + b"0123456789"
+    bad = bytes.fromhex("00e000000000")  # block type 7, after the first block
+    d = lzx.Decompressor(15)
+    with pytest.raises(archivey_codecs.CorruptDataError, match="block type 7"):
+        d.decompress(first + bad)
+    d.set_output_size(10)
+    assert d.decompress(b"") == b"0123456789"
+    assert d.eof
+    assert d.unused_data == bad
+
+
+def test_lzx_stream_cut_inside_a_block_on_a_frame_boundary() -> None:
+    """Without an output size, input that ends where a frame ends but inside a
+    block is a cut stream, not a clean end."""
+    r_regs = (1).to_bytes(4, "little") * 3
+    # One uncompressed block of 32778 bytes, of which 32768 are given.
+    data = bytes.fromhex("0830a000") + r_regs + bytes(range(256)) * 128
+    d = lzx.Decompressor(15)
+    out = d.decompress(data)
+    with pytest.raises(archivey_codecs.TruncatedDataError):
+        out += d.flush()
+    assert out == bytes(range(256)) * 128
+
+
+def test_lzx_takes_no_input_after_a_decode_error() -> None:
+    d = lzx.Decompressor(15)
+    with pytest.raises(archivey_codecs.CorruptDataError):
+        d.decompress(_LZX_BAD)
+    assert not d.needs_input
+    with pytest.raises(archivey_codecs.CorruptDataError):
+        d.decompress(b"x" * 100)
+    assert not d.needs_input
 
 
 def test_lzx_state_whose_frame_disagrees_with_its_output_size() -> None:

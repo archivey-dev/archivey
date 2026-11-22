@@ -272,6 +272,11 @@ pub struct LzxDecoder {
     /// out), to go back to when a late output size ends the stream at the frame's
     /// start: what the frame read is then not part of the stream.
     frame_back: Option<Box<LzxDecoder>>,
+    /// The decoder as the first block header that started after the frame in
+    /// progress had decoded `.1` bytes (more than 0) began, and the input position
+    /// then. A late output size that ends the stream there goes back to it: the
+    /// header and what it read are then not part of the stream.
+    block_back: Option<(Box<LzxDecoder>, usize, usize)>,
 }
 
 #[inline(always)]
@@ -323,6 +328,7 @@ impl LzxDecoder {
             frame_mark: (0, 0),
             header: None,
             frame_back: None,
+            block_back: None,
         })
     }
 
@@ -371,12 +377,18 @@ impl LzxDecoder {
             .map(|size| (size, self.window_pos - self.frame_start))
     }
 
+    /// Whether a block has bytes still to decode, or its header is half read.
+    pub fn inside_block(&self) -> bool {
+        self.block_remaining > 0 || self.header.is_some()
+    }
+
     /// Give the frame in progress a new size, once the output size is known late. The
     /// frame decodes as if it had that size from its start, as long as it has not
     /// decoded past it: a run stops at the first symbol at or past its end either
     /// way. A size of 0 (the output ends where the frame starts) leaves no frame in
-    /// progress; what it read stays read (`rewind_frame` gives it back where it
-    /// can). `false` when it has decoded past `size`.
+    /// progress. Either way what it read stays read (`rewind_frame` and
+    /// `rewind_block` give it back where they can). `false` when it has decoded past
+    /// `size`.
     pub fn resize_frame(&mut self, size: usize) -> bool {
         let Some((_, done)) = self.frame_in_progress() else {
             return false;
@@ -385,6 +397,35 @@ impl LzxDecoder {
             return false;
         }
         self.frame_size = (size > 0).then_some(size);
+        true
+    }
+
+    /// When the frame in progress has decoded `size` bytes, go back to where the
+    /// block header that started there began: what was read from there on is unread
+    /// again, as if the frame had had that size from its start. `false`, and nothing
+    /// changed, when no such place is kept (a state was restored inside the frame,
+    /// or the input read since was dropped).
+    pub fn rewind_block(&mut self, size: usize) -> bool {
+        if size == 0 || self.frame_in_progress().map(|(_, done)| done) != Some(size) {
+            return false;
+        }
+        let Some((_, pos, at)) = &self.block_back else {
+            return false;
+        };
+        if *at != size || *pos > self.buf.len() {
+            return false;
+        }
+        let pos = *pos;
+        let Some((mut back, _, _)) = self.block_back.take() else {
+            return false;
+        };
+        back.window = std::mem::take(&mut self.window);
+        back.buf = std::mem::take(&mut self.buf);
+        back.pos = pos;
+        back.padding = self.padding;
+        back.frame_mark = self.frame_mark;
+        back.frame_back = self.frame_back.take();
+        *self = *back;
         true
     }
 
@@ -415,15 +456,17 @@ impl LzxDecoder {
         true
     }
 
-    /// All but the window, the input buffer and `frame_back`.
+    /// All but the window, the input buffer, `frame_back` and `block_back`.
     fn snapshot(&mut self) -> LzxDecoder {
         let window = std::mem::take(&mut self.window);
         let buf = std::mem::take(&mut self.buf);
         let back = self.frame_back.take();
+        let block_back = self.block_back.take();
         let saved = self.clone();
         self.window = window;
         self.buf = buf;
         self.frame_back = back;
+        self.block_back = block_back;
         saved
     }
 
@@ -444,6 +487,9 @@ impl LzxDecoder {
             self.buf.drain(..drop);
             self.pos -= drop;
             self.frame_mark.0 = self.frame_mark.0.wrapping_sub(drop);
+            if let Some((_, pos, _)) = &mut self.block_back {
+                *pos = pos.wrapping_sub(drop);
+            }
         }
     }
 
@@ -1020,6 +1066,10 @@ impl LzxDecoder {
             if self.header.is_some() || self.block_remaining == 0 {
                 if self.header.is_none() {
                     self.trim();
+                    if so_far > 0 && self.block_back.as_ref().is_none_or(|b| b.2 != so_far) {
+                        let back = Box::new(self.snapshot());
+                        self.block_back = Some((back, self.pos, so_far));
+                    }
                 }
                 if let Err(e) = self.read_block_header(input) {
                     if matches!(e, DecodeError::Source(_)) {
@@ -1070,6 +1120,7 @@ impl LzxDecoder {
         }
         self.frame_size = None;
         self.frame_back = None;
+        self.block_back = None;
         if self.window_pos - frame_start != frame_size {
             return corrupt("LZX match runs past the end of a frame");
         }
