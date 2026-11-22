@@ -89,6 +89,13 @@ del _slot
 # the look-ahead here reads further, so it may add more, but uses no more than two.
 _PADDING_ALLOWED = 2
 _MAX_PADDING = 8
+# The input read is dropped once more than this much of it is held, so a trim moves
+# a few bytes per kilobyte read, not per block.
+_TRIM_AT = 4096
+
+# The trees a block header reads lengths for, in order: main lengths (True) or
+# length-tree lengths (False), and the range read (-1: the window's main symbols).
+_TREES = ((True, 0, 256), (True, 256, -1), (False, 0, 249))
 
 Tree = huffman_table.Tree
 _MAX_CODE = huffman_table.MAX_CODE
@@ -149,8 +156,8 @@ class LzxDecoder:
         self._main_symbols = _NUM_CHARS + (_POSITION_SLOTS[window_bits - 15] << 3)
         self._more = more
         # Input: unread bytes from ``_pos``, and a bit buffer of ``_nbits`` bits. The
-        # buffer only grows inside a frame (it is trimmed when one starts), so a
-        # place kept to resume from stays valid as input arrives.
+        # buffer is trimmed only where no place to resume from is kept (the start of
+        # a frame or a block header), so such a place stays valid as input arrives.
         self._buf = bytearray()
         self._ended = False
         self._pos = 0
@@ -179,6 +186,12 @@ class LzxDecoder:
         # The frame being decoded, once it started: its size, and where in the window.
         self._frame_size: int | None = None
         self._frame_start = 0
+        # The input position when the frame started: a frame that ran out of input
+        # before reading anything is not started yet.
+        self._frame_mark = (0, 0)
+        # A block header that ran out of input inside its trees: which tree (an
+        # index into ``_TREES``), the next length to read, and its pretree once read.
+        self._header: tuple[int, int, Tree | None] | None = None
 
     # ── Push input ───────────────────────────────────────────────────────────────────
 
@@ -305,31 +318,99 @@ class LzxDecoder:
 
     # ── Trees ────────────────────────────────────────────────────────────────────────
 
-    def _read_lengths(self, lengths: list[int], first: int, last: int) -> None:
-        pre = [self._read_bits(4) for _ in range(_PRETREE_SYMBOLS)]
-        table = _build_table(pre, _PRETREE_SYMBOLS, "pretree")
-        x = first
-        while x < last:
-            code = self._read_symbol(table, "pretree")
-            if code == 17:
-                run = self._read_bits(4) + 4
-                lengths[x : x + run] = [0] * run
-                x += run
-            elif code == 18:
-                run = self._read_bits(5) + 20
-                lengths[x : x + run] = [0] * run
-                x += run
-            elif code == 19:
-                run = self._read_bits(1) + 4
-                code = self._read_symbol(table, "pretree")
-                value = _delta(lengths[x], code)
-                lengths[x : x + run] = [value] * run
-                x += run
-            else:
-                lengths[x] = _delta(lengths[x], code)
-                x += 1
+    def _bit_mark(self) -> tuple[int, int, int, int]:
+        """The input position, to go back to when a read runs out of input."""
+        return self._pos, self._bits, self._nbits, self._since_symbol
+
+    def _back_to(self, mark: tuple[int, int, int, int]) -> None:
+        self._pos, self._bits, self._nbits, self._since_symbol = mark
+
+    def _read_lengths(self, tree: int, pre: Tree | None, x: int) -> None:
+        """Read tree ``tree``'s code lengths from ``x`` on, after its pretree
+        ``pre`` (read first when ``None``). When the input runs out, the header's
+        place is kept in ``_header`` and the input goes back to the start of the
+        pretree or of the length symbol it was in: each symbol writes its lengths
+        only once all its bits are read, so going on from there is exact."""
+        main, first, last = _TREES[tree]
+        lengths = self._main_lengths if main else self._length_lengths
+        if last < 0:
+            last = self._main_symbols
+        mark = self._bit_mark()
+        try:
+            if pre is None:
+                pre_lengths = [self._read_bits(4) for _ in range(_PRETREE_SYMBOLS)]
+                pre = _build_table(pre_lengths, _PRETREE_SYMBOLS, "pretree")
+                x = first
+            while x < last:
+                mark = self._bit_mark()
+                code = self._read_symbol(pre, "pretree")
+                if code == 17:
+                    run = self._read_bits(4) + 4
+                    lengths[x : x + run] = [0] * run
+                    x += run
+                elif code == 18:
+                    run = self._read_bits(5) + 20
+                    lengths[x : x + run] = [0] * run
+                    x += run
+                elif code == 19:
+                    run = self._read_bits(1) + 4
+                    code = self._read_symbol(pre, "pretree")
+                    value = _delta(lengths[x], code)
+                    lengths[x : x + run] = [value] * run
+                    x += run
+                else:
+                    lengths[x] = _delta(lengths[x], code)
+                    x += 1
+        except _NeedMore:
+            self._back_to(mark)
+            # ``pre`` is still ``None`` when its own lengths ran out.
+            self._header = (tree, x, pre)
+            raise
 
     def _read_block_header(self) -> None:
+        """Read a block header, or go on with one that ran out of input in its trees
+        (``_header``). Its fixed fields are read again from their start when they
+        run out: they are a few bytes."""
+        if self._header is None:
+            start = (
+                self._bit_mark(),
+                self._block_type,
+                self._block_length,
+                self._block_remaining,
+                self._intel_started,
+            )
+            try:
+                self._read_block_start()
+            except _NeedMore:
+                mark, *fields = start
+                self._back_to(mark)
+                (
+                    self._block_type,
+                    self._block_length,
+                    self._block_remaining,
+                    self._intel_started,
+                ) = fields
+                raise
+            if self._block_type == _UNCOMPRESSED:
+                return
+            self._header = (0, 0, None)
+        while self._header is not None:
+            tree, x, pre = self._header
+            self._read_lengths(tree, pre, x)
+            if tree == 1:
+                main = self._main_lengths
+                self._main_table = _build_table(main, _MAIN_MAX, "main")
+                if main[0xE8]:
+                    self._intel_started = True
+            elif tree == 2:
+                self._length_table = _build_table(
+                    self._length_lengths, _LENGTH_MAX, "length", may_be_empty=True
+                )
+            self._header = (tree + 1, 0, None) if tree < 2 else None
+
+    def _read_block_start(self) -> None:
+        """A block header's fixed fields: type, length, the aligned tree, or an
+        uncompressed block's repeated offsets."""
         if self._block_type == _UNCOMPRESSED and self._block_length & 1:
             self._raw_bytes(1)
         block_type = self._read_bits(3)
@@ -341,17 +422,8 @@ class LzxDecoder:
             aligned = [self._read_bits(3) for _ in range(_ALIGNED_SYMBOLS)]
             self._aligned_table = _build_table(aligned, _ALIGNED_SYMBOLS, "aligned")
         if block_type in (_VERBATIM, _ALIGNED):
-            main = self._main_lengths
-            self._read_lengths(main, 0, _NUM_CHARS)
-            self._read_lengths(main, _NUM_CHARS, self._main_symbols)
-            self._main_table = _build_table(main, _MAIN_MAX, "main")
-            if main[0xE8]:
-                self._intel_started = True
-            self._read_lengths(self._length_lengths, 0, _LENGTH_SYMBOLS)
-            self._length_table = _build_table(
-                self._length_lengths, _LENGTH_MAX, "length", may_be_empty=True
-            )
-        elif block_type == _UNCOMPRESSED:
+            return
+        if block_type == _UNCOMPRESSED:
             self._intel_started = True
             self._align_for_raw()
             stored = self._raw_bytes(12)
@@ -378,16 +450,16 @@ class LzxDecoder:
                 self.feed(data)
         return out
 
-    def _snapshot(self) -> dict[str, object]:
-        """What a block header or the stream header can change, to resume from its
-        start: the input buffer only grows inside a frame, so it is shared."""
-        saved = self.__dict__.copy()
-        saved["_main_lengths"] = self._main_lengths[:]
-        saved["_length_lengths"] = self._length_lengths[:]
-        return saved
-
-    def _resume_from(self, saved: dict[str, object]) -> None:
-        self.__dict__.update(saved)
+    def _trim(self) -> None:
+        """Drop the input read, keeping the last few bytes: words read ahead into the
+        bit buffer go back to the byte input before an uncompressed block
+        (``_align_for_raw``). Only where no place to resume from is kept."""
+        drop = self._pos - min(self._pos, 8)
+        if drop > _TRIM_AT:
+            del self._buf[:drop]
+            self._pos -= drop
+            pos, nbits = self._frame_mark
+            self._frame_mark = (pos - drop, nbits)
 
     def try_frame(self, frame_size: int) -> bytes | None:
         """The next ``frame_size`` bytes of output, or ``None`` when the input given
@@ -396,21 +468,16 @@ class LzxDecoder:
         if self._frame_size is None:
             if not 0 < frame_size <= FRAME_SIZE:
                 raise ValueError(f"frame size {frame_size}")
-            # Trim the input read, keeping the last few bytes: words read ahead into
-            # the bit buffer go back to the byte input before an uncompressed block
-            # (``_align_for_raw``).
-            drop = self._pos - min(self._pos, 8)
-            if drop > 4096:
-                del self._buf[:drop]
-                self._pos -= drop
+            self._trim()
+            self._frame_mark = (self._pos, self._nbits)
             if not self._header_read:
-                saved = self._snapshot()
+                mark = self._bit_mark()
                 try:
                     if self._read_bits(1):
                         high = self._read_bits(16)
                         self._intel_size = (high << 16) | self._read_bits(16)
                 except _NeedMore:
-                    self._resume_from(saved)
+                    self._back_to(mark)
                     return None
                 self._header_read = True
             self._frame_size = frame_size
@@ -421,13 +488,13 @@ class LzxDecoder:
             )
         frame_start = self._frame_start
         while (todo := frame_size - (self._window_pos - frame_start)) > 0:
-            if self._block_remaining == 0:
-                saved = self._snapshot()
+            if self._header is not None or self._block_remaining == 0:
+                if self._header is None:
+                    self._trim()
                 try:
                     self._read_block_header()
                 except _NeedMore:
-                    self._resume_from(saved)
-                    return None
+                    return self._stalled()
             run = min(self._block_remaining, todo)
             if self._block_type == _UNCOMPRESSED:
                 at, since = self._pos, self._since_symbol
@@ -435,7 +502,7 @@ class LzxDecoder:
                     data = self._raw_bytes(run)
                 except _NeedMore:
                     self._pos, self._since_symbol = at, since
-                    return None
+                    return self._stalled()
                 pos = self._window_pos
                 self._window[pos : pos + run] = data
                 self._window_pos = pos + run
@@ -447,7 +514,7 @@ class LzxDecoder:
                 except _NeedMore:
                     # The run stopped at the start of a symbol: keep what it decoded.
                     self._block_remaining -= self._window_pos - before
-                    return None
+                    return self._stalled()
             # A match may run past ``run`` inside its block, not past the frame.
             if done > self._block_remaining:
                 raise CorruptionError("LZX match runs past the end of its block")
@@ -464,6 +531,16 @@ class LzxDecoder:
         if self._window_pos == self._window_size:
             self._window_pos = 0
         return out
+
+    def _stalled(self) -> None:
+        """The frame ran out of input. One that has read nothing yet is not started,
+        so the next call may ask for another size."""
+        if (
+            self._window_pos == self._frame_start
+            and self._header is None
+            and (self._pos, self._nbits) == self._frame_mark
+        ):
+            self._frame_size = None
 
     def _decode_run(self, run: int) -> int:
         """Decode symbols until at least ``run`` bytes are out; return how many."""
