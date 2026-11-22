@@ -52,6 +52,9 @@ and the maintainer merges the PR that adds it (it adds triggers).
   format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO; HFS+, HFSX, APFS from Part E), then
   archivey's listing and file hashes match the mounted volume's
 
+Both are `scripts/investigations/dmg_macos_check.py`, run by `dmg-macos.yml`. They
+are ticked once its first run on `main` is green; APFS joins M.2 with Part E.
+
 ## C. User docs
 
 - [ ] C.1 `docs/formats.md` §Disk images and the formats table (maintainer's docs
@@ -63,18 +66,18 @@ and the maintainer merges the PR that adds it (it adds triggers).
 
 ## E. APFS
 
-- [ ] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
+- [x] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
   damaged key ranges of skipped nodes (design §6A.6)
-- [ ] E.2 Reader integration; several volumes per container
-- [ ] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
-- [ ] E.4 Handbook page section
+- [x] E.2 Reader integration; several volumes per container
+- [x] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
+- [x] E.4 Handbook page section
 
 ## F. Partition CRC-32
 
-- [ ] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
+- [x] F.1 Spanning check over whole CRC-bearing `blkx` tables that overlap a filesystem
   partition (ignore runs excluded, runs outside the partition included, zero fill folded
   in O(log n)); one table straddling two partitions fails both; `verify_all()`
-- [ ] F.2 Data-fork and master checksums if cheap
+- [x] F.2 Data-fork and master checksums if cheap
 
 ## G. Encrypted images
 

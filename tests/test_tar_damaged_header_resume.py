@@ -304,6 +304,29 @@ def test_two_damaged_headers_apart_are_both_followed() -> None:
     assert isinstance(error, CorruptionError)
 
 
+def test_the_end_of_pass_error_names_four_followed_headers_and_counts_the_rest() -> (
+    None
+):
+    """The error names the first four followed headers and counts the rest, as a RAR
+    walk does: an archive of many damaged headers does not grow it with its size."""
+    count = 400
+    data, offsets = _build((10,) * count)
+    damaged_at = offsets[1::2]
+    damaged = _flip(data, *(offset + 5 for offset in damaged_at))
+    names, error = _names(damaged)
+    assert len(names) == count
+    assert isinstance(error, CorruptionError)
+    message = str(error)
+    assert len(message) < 1000
+    assert message.count("failed its checksum") == 4
+    assert f"member header at offset {damaged_at[3]} " in message
+    assert f"offset {damaged_at[4]} " not in message
+    assert f"; and {len(damaged_at) - 4} more damaged headers were followed." in message
+    five = _flip(data, *(offset + 5 for offset in damaged_at[:5]))
+    _, error = _names(five)
+    assert "; and 1 more damaged header was followed." in str(error)
+
+
 def test_eight_damaged_headers_in_a_row_are_followed_nine_are_not() -> None:
     sizes = (10,) * 11
     data, offsets = _build(sizes)
@@ -335,6 +358,9 @@ def test_a_damaged_extended_header_is_followed(fmt: int, access: str) -> None:
     ]
     assert seen[2][2] == ["member_header_damaged"]
     assert isinstance(error, CorruptionError)
+    assert f"the extended header at offset {offsets[2]} failed its checksum" in str(
+        error
+    )
 
 
 @pytest.mark.parametrize("fmt", [tarfile.GNU_FORMAT, tarfile.PAX_FORMAT])
@@ -346,6 +372,7 @@ def test_a_damaged_member_header_after_an_extended_header(fmt: int) -> None:
     assert len(seen) == len(_SIZES)
     assert seen[2][2] == ["member_header_damaged"]
     assert isinstance(error, CorruptionError)
+    assert f"the member header at offset {header} failed its checksum" in str(error)
 
 
 def test_a_damaged_extended_header_size_stops_where_it_stopped() -> None:
@@ -378,6 +405,20 @@ def test_a_pipe_stops_at_a_damaged_header_past_its_held_bytes() -> None:
     assert "save the archive to a file" in str(error)
     names, error = _names(damaged, "random")
     assert len(names) == 3
+
+
+def test_a_seekable_source_streamed_past_its_held_bytes_says_drop_streaming() -> None:
+    """``streaming=True`` keeps the walk forward-only on a source that can seek too
+    (``stream_members()`` never seeks), so the hold applies. The source already is a
+    file: the error says to open it without ``streaming=True``."""
+    sizes = (10, KEEP_BYTES + BLOCKSIZE, 10)
+    data, offsets = _build(sizes)
+    damaged = _flip(data, offsets[1] + 5)
+    names, error = _names(damaged, "streaming")
+    assert names == ["dir/file0.txt"]
+    assert isinstance(error, CorruptionError)
+    assert "open the archive without streaming=True" in str(error)
+    assert "save the archive to a file" not in str(error)
 
 
 @pytest.mark.parametrize("access", ["random", "streaming", "pipe"])

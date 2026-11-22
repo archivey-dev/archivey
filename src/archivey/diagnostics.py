@@ -138,8 +138,9 @@ class DiagnosticCode(StrEnum):
     ARCHIVE_UNLISTED_DATA = "archive_unlisted_data"
     """A ZIP read from a pipe holds a member its central directory does not list. It
     is left out of the listing, as a read from a file never sees it. Or a DMG disk
-    image holds a partition beside the HFS+ volumes it lists whose contents archivey
-    does not read (an APFS container, an HFS volume, or no filesystem it knows)."""
+    image holds a partition beside the volumes it lists whose contents archivey does
+    not read (an HFS volume, an APFS container it refuses, or no filesystem it knows),
+    or an APFS volume it refuses (encrypted or sealed) beside the volumes it lists."""
     ARCHIVE_UNREAD_SESSION = "archive_unread_session"
     """A CD image holds a session its listing does not read, which another reading
     of the same file does. A raw image (a ``.bin``) read without its ``.cue`` sheet
@@ -155,7 +156,9 @@ class DiagnosticCode(StrEnum):
     read), a partition map that fails its checks (the run tables' ranges are read), a
     partition map or run table name that disagrees with the filesystem the partition
     holds (the filesystem decides), an HFS+ file whose mode and Finder type disagree on
-    whether it is a symlink (the mode decides). The listing comes from what the
+    whether it is a symlink (the mode decides), an APFS directory entry whose type
+    disagrees with its inode's mode (the mode decides), a newest APFS checkpoint that
+    is incomplete (an older one is read). The listing comes from what the
     read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
@@ -702,7 +705,14 @@ class ArchiveStructureContext(_JsonSafeContext):
       at different sectors; the map's range is read. ``offset`` is the map's start.
     - ``"member_type"``: an HFS+ file's BSD mode and its Finder type and creator
       disagree on whether it is a symlink; the mode decides. Reported on the member;
-      ``offset`` is the file's catalog id.
+      ``offset`` is the file's catalog id. Also an APFS directory entry whose type
+      disagrees with its inode's mode (the mode decides), with ``offset`` the inode id.
+    - ``"apfs_checkpoint"``: the newest APFS checkpoint is incomplete (a
+      checkpoint-map block is missing or damaged), so an older one is read.
+      ``offset`` is the disk offset of that newest container superblock.
+    - ``"link_count"``: an APFS file's sibling-link records (one per hard-link name)
+      disagree with its inode's link count; the directory records decide what is
+      listed. ``offset`` is the inode id.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"

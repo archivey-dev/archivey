@@ -82,7 +82,10 @@ SYMLINK_MAX = 1024
 XATTR_VALUE_MAX = 1024
 # decmpfs headers and inline data are kept for the read; a value is at most one chunk
 # and the header, so this bounds what one attribute can keep.
-_DECMPFS_KEEP = DECMPFS_CHUNK + 64
+DECMPFS_KEEP = DECMPFS_CHUNK + 64
+# What one kept extent costs in memory: a (start, count) tuple of two ints, and its
+# slots in the list and in the final tuple.
+_EXTENT_CHARGE = 96
 # The block a fork read gathers at a time through the extents.
 READ_PIECE = 1 << 20
 
@@ -90,7 +93,7 @@ _S_IFMT = 0o170000
 _S_IFREG = 0o100000
 _S_IFDIR = 0o040000
 _S_IFLNK = 0o120000
-_SPECIAL = {
+SPECIAL_FILES = {
     0o010000: "fifo",
     0o020000: "char_device",
     0o060000: "block_device",
@@ -287,6 +290,13 @@ class HfsVolume:
         total = self.header.total_blocks
         extents = list(fork.extents)
         have = sum(count for _, count in extents)
+        if cnid == _EXTENTS_FILE and have < fork.total_blocks:
+            # TN1150: the extents overflow file has no overflow extents of its own.
+            # Looking them up would build its B-tree again, and recurse.
+            raise CorruptionError(
+                f"the extents overflow file's eight extents hold {have} blocks, less "
+                f"than its {fork.total_blocks}"
+            )
         while have < fork.total_blocks:
             more = self._overflow.find(cnid, fork_type, have)
             if not more:
@@ -590,8 +600,8 @@ def file_kind(info: FileInfo) -> tuple[str, str | None]:
     if info.mode:
         if kind == _S_IFLNK:
             return SYMLINK, None
-        if kind in _SPECIAL:
-            return SPECIAL, _SPECIAL[kind]
+        if kind in SPECIAL_FILES:
+            return SPECIAL, SPECIAL_FILES[kind]
         if kind in (_S_IFREG, 0):
             return REGULAR, None
         if kind == _S_IFDIR:
@@ -696,12 +706,16 @@ def folder_path(
     cache: dict[int, str | None],
     cnid: int,
     looped: set[int],
+    charge: Callable[[int, str], None],
 ) -> str | None:
     """The path of folder ``cnid`` below the root (``""`` for the root), or ``None``
     when its chain does not reach the root: a folder the first pass did not find, or a
     chain that comes back to a folder. For a loop, the folder's cnid goes in ``looped``,
     so the walk lists the other members and raises at its end. ``seen`` ends a loop and
-    the cache keeps the whole walk linear in the number of folders."""
+    the cache keeps the whole walk linear in the number of folders. Each path the cache
+    keeps is charged to ``max_metadata_bytes``: the paths of a chain grow with the
+    square of its depth, and the folders inside a hidden folder never become members,
+    so no member name is charged for them."""
     if cnid in cache:
         return cache[cnid]
     chain: list[int] = []
@@ -729,6 +743,7 @@ def folder_path(
             continue
         name = folders[each][1]
         base = f"{base}/{name}" if base else name
+        charge(len(base) + 32, "the HFS+ folder paths")
         cache[each] = base
     return cache[cnid]
 
@@ -756,6 +771,10 @@ def read_attributes(
     fork = volume.header.attributes_file
     if not fork.size:
         return found, bad, None
+    # The extents of a fork attribute with extent records (0x30), and their block
+    # count, gathered in a list so that N records take linear time.
+    grown: dict[tuple[int, str], tuple[list[tuple[int, int]], int]] = {}
+    failure: ArchiveyError | None = None
     try:
         tree = _BTree(volume, _ATTRIBUTES_FILE, fork, "attributes")
         for key, data in tree.leaf_records():
@@ -779,12 +798,13 @@ def read_attributes(
                 if 16 + size > len(data):
                     bad.add(cnid)
                     continue
-                keep = _DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
+                keep = DECMPFS_KEEP if name == DECMPFS else XATTR_VALUE_MAX
                 value = data[16 : 16 + size] if size <= keep else None
                 charge(
                     2 * length + (len(value) if value else 0) + 32, "HFS+ attributes"
                 )
                 attrs[name] = Attribute(value, size, None)
+                grown.pop((cnid, name), None)
             elif record_type == 0x20:
                 if len(data) < 8 + _FORK.size:
                     bad.add(cnid)
@@ -792,6 +812,7 @@ def read_attributes(
                 attr_fork = parse_fork(data, 8)
                 charge(2 * length + 128, "HFS+ attributes")
                 attrs[name] = Attribute(None, attr_fork.size, attr_fork)
+                grown.pop((cnid, name), None)
             elif record_type == 0x30:
                 # More extents of an attribute's fork: kept with it, in key order.
                 existing = attrs.get(name)
@@ -799,17 +820,35 @@ def read_attributes(
                     bad.add(cnid)
                     continue
                 more = struct.unpack_from(">16I", data, 8)
-                extents = existing.fork.extents + tuple(
-                    (more[i], more[i + 1]) for i in range(0, 16, 2) if more[i + 1]
-                )
-                attrs[name] = existing._replace(
-                    fork=existing.fork._replace(extents=extents)
-                )
+                added = [(more[i], more[i + 1]) for i in range(0, 16, 2) if more[i + 1]]
+                charge(_EXTENT_CHARGE * len(added), "HFS+ attributes")
+                kept = grown.get((cnid, name))
+                if kept is None:
+                    extents = list(existing.fork.extents)
+                    blocks = sum(count for _, count in extents)
+                else:
+                    extents, blocks = kept
+                extents += added
+                blocks += sum(count for _, count in added)
+                if blocks > existing.fork.total_blocks:
+                    # More blocks than the fork has: the attribute is damaged and
+                    # dropped, so its later extent records find nothing to grow.
+                    bad.add(cnid)
+                    del attrs[name]
+                    grown.pop((cnid, name), None)
+                    continue
+                grown[(cnid, name)] = (extents, blocks)
             else:
                 bad.add(cnid)
     except ArchiveyError as exc:
-        return found, bad, exc
-    return found, bad, None
+        failure = exc
+    for (cnid, name), (extents, _) in grown.items():
+        attribute = found[cnid][name]
+        if attribute.fork is not None:
+            found[cnid][name] = attribute._replace(
+                fork=attribute.fork._replace(extents=tuple(extents))
+            )
+    return found, bad, failure
 
 
 def attribute_value(volume: HfsVolume, cnid: int, attribute: Attribute) -> bytes:
@@ -819,7 +858,7 @@ def attribute_value(volume: HfsVolume, cnid: int, attribute: Attribute) -> bytes
     fork = attribute.fork
     if fork is None:
         raise CorruptionError(f"the attribute of file {cnid} was not kept")
-    if fork.size > _DECMPFS_KEEP:
+    if fork.size > DECMPFS_KEEP:
         raise CorruptionError(
             f"an attribute of file {cnid} is {fork.size} bytes, more than archivey "
             "reads"
@@ -866,14 +905,16 @@ _LZFSE_KINDS = (11, 12)
 
 
 def decmpfs_reader(
-    volume: HfsVolume,
     context: ReaderContext,
     cnid: int,
     header: Decmpfs,
-    rsrc: Fork,
+    fork_size: int,
+    open_fork: Callable[[], Callable[[int, int], bytes]],
 ) -> Callable[[int], bytes]:
     """``read_block(i)`` for a ``block_stream`` of 64 KiB chunks over the decoded
-    file. Every length is checked before it is used."""
+    file. ``open_fork()`` gives ``read(offset, n)`` over the ``fork_size`` bytes of the
+    resource fork (an HFS+ fork, or APFS's ``com.apple.ResourceFork`` attribute), and is
+    called only for a type stored there. Every length is checked before it is used."""
     kind, size = header.kind, header.size
     if kind not in _INLINE and kind not in _IN_RESOURCE_FORK:
         raise UnsupportedFeatureError(
@@ -906,12 +947,11 @@ def decmpfs_reader(
             return _decode_chunk(context, kind, header.inline, size, cnid)
 
         return inline_block
-    if not rsrc.size:
+    if not fork_size:
         raise CorruptionError(
             f"file {cnid} is compressed in its resource fork, which is empty"
         )
-    read = volume.fork_reader(cnid, RESOURCE_FORK, rsrc)
-    fork_size = rsrc.size
+    read = open_fork()
     if kind == 4:
         if fork_size < 260:
             raise CorruptionError(f"the resource fork of file {cnid} is too short")
@@ -965,8 +1005,18 @@ def _decode_chunk(
 ) -> bytes:
     """One decmpfs chunk, which must decode to exactly ``want`` bytes."""
     try:
-        if kind in (1, 10):
+        if kind == 1:
             out = data
+        elif kind == 10:
+            # Each chunk is its raw block behind a 0xCC byte. The macOS kernel reads
+            # that layout and refuses a chunk without the byte (EINVAL), as the macOS
+            # check against hdiutil found (tasks.md §M).
+            if data[:1] != b"\xcc":
+                raise CorruptionError(
+                    f"a type 10 chunk of the compressed file {cnid} does not start "
+                    "with the 0xCC byte macOS requires"
+                )
+            out = data[1:]
         elif kind == 9:
             # 7-Zip (``HfsHandler.cpp``) reads type 9 only after a 0xCC byte and
             # refuses it without; no macOS sample shows what Apple writes or accepts
@@ -988,10 +1038,12 @@ def _decode_chunk(
                         more := stream.read(want + 1 - len(out))
                     ):
                         out += more
+        # The LZVN and LZFSE decoders refuse any output past ``want`` themselves, and
+        # their message names ``want``.
         elif kind in _LZVN_KINDS:
-            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want + 1)
+            out = data[1:] if data[:1] == b"\x06" else lzvn_decompress(data, want)
         else:
-            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want + 1)
+            out = data[1:] if data[:1] == b"\xff" else lzfse_decompress(data, want)
     except (CorruptionError, TruncatedError) as exc:
         raise CorruptionError(f"the compressed data of file {cnid}: {exc}") from None
     if len(out) != want:

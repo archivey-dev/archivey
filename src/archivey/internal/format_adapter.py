@@ -319,8 +319,16 @@ class _PluginAdapter(BaseArchiveReader):
         )
         context._nest = self._nest
         context._spanning_check = self._new_spanning_check
+        # The reader's own passes for checks no member read reaches
+        # (``ReaderContext._spanning_pass``), run by ``verify_all()``.
+        self._spanning_passes: list[Callable[[], None]] = []
+        # The members whose read failed in the ``verify_all()`` running a pass: a
+        # check that passes does not raise them (``SpanningCheck.passed``).
+        self._failed_reads: frozenset[int] = frozenset()
+        context._spanning_pass = self._spanning_passes.append
         context._passwords = passwords
         context._decompress_coder = self._decompress_coder
+        context._keep_metadata = self._listing_tracker.keep
         if self._listing_decode is not None:
             context._listing_draw = self._listing_decode.draw
         self._reader = self._open_reader(context)
@@ -334,6 +342,18 @@ class _PluginAdapter(BaseArchiveReader):
         """``ReaderContext._spanning_check()``: a check over several members' data
         that the reader runs itself, named ``key``."""
         return SpanningCheck(self, key)
+
+    @override
+    def _run_spanning_passes(self, failed: frozenset[int]) -> None:
+        if not self._spanning_passes:
+            return
+        self._failed_reads = failed
+        try:
+            for run in self._spanning_passes:
+                with self._translated_errors(), self._handle_guard():
+                    run()
+        finally:
+            self._failed_reads = frozenset()
 
     def _wrong_reader(self, reader: object, method: str, noun: str) -> NoReturn:
         # Every interface check raises through ``_plugin_bug()``, wherever it runs.
@@ -1423,10 +1443,14 @@ class SpanningCheck:
             self._covers.append(member)
 
     def passed(self) -> None:
-        """The check matched: every covered file is checked."""
+        """The check matched: every covered file is checked, except one whose own
+        read failed in the ``verify_all()`` running the check
+        (``ReaderContext._spanning_pass``): its bytes are not all proved."""
         self._adapter._spanning_check_ran(self._key)
+        failed = self._adapter._failed_reads
         for member in self._covers:
-            raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
+            if id(member) not in failed:
+                raise_member_level(member, Verification.CHECKSUM, Verification.CHECKSUM)
 
     def failed(self, message: str) -> SpanningCheckError:
         """The check did not match. Returns the error for the reader to raise; every
@@ -1437,6 +1461,12 @@ class SpanningCheck:
         # stops before the payload's end does not run it again.
         self._adapter._spanning_unreachable[self._key] = error
         return error
+
+    def did_not_run(self, cause: BaseException | None) -> None:
+        """The check could not run (``cause`` says why: a limit, a codec the policy
+        refuses), so nothing proves the covered files: every later ``verify_all()``
+        returns each one that has not reached ``CHECKSUM`` another way."""
+        self._adapter._note_spanning_unreachable(self._key, self._covers, cause)
 
 
 class HeldInnerData(io.BytesIO):
