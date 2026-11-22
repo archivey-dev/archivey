@@ -68,6 +68,7 @@ from archivey.internal.diagnostics_collector import (
 from archivey.internal.hashing.blake2sp import Blake2sp
 from archivey.internal.logs import integrity as logger
 from archivey.internal.overrides import override
+from archivey.internal.streams.callers_source import from_source_callback
 from archivey.internal.streams.decompressor_stream import (
     _LARGE_READ_STEP,
     retire_decoder_children,
@@ -644,8 +645,11 @@ class MemberVerifier:
         """Under :attr:`returns_failed_chunk`, keep ``exc`` for the next read to raise
         and tell the caller to return ``data``, the bytes of the read whose check
         failed. ``False`` when the read withholds them (the default), has none, or
-        was interrupted (an exception that is not an ``Exception``)."""
+        was interrupted (an exception that is not an ``Exception``), or when ``exc``
+        is the caller's own ``on_source_read`` exception, a stop that is raised now."""
         if not (self.returns_failed_chunk and data and isinstance(exc, Exception)):
+            return False
+        if from_source_callback(exc):
             return False
         # Without its traceback: the frames it names hold the chunk returned.
         self._deferred = exc.with_traceback(None)

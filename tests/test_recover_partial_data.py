@@ -15,12 +15,13 @@ import random
 import struct
 import tarfile
 import zipfile
+import zlib
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
-from archivey import ArchiveyConfig, PartialDataRecovery, open_archive
+from archivey import ArchiveyConfig, PartialDataRecovery, Verification, open_archive
 from archivey.config import PartialDataRecoveryStr
 from archivey.exceptions import ArchiveyError, ArchiveyUsageError, CorruptionError
 from tests.streams_util import NonSeekableBytesIO
@@ -309,6 +310,30 @@ def test_all_raises_once_and_a_rewind_checks_again() -> None:
         assert _read_in_chunks(stream, 1 << 16) == (_CRC_PAYLOAD, CorruptionError)
 
 
+@pytest.mark.parametrize("how", _SOURCES)
+@pytest.mark.parametrize("n", [1 << 16, -1], ids=["sized", "to_end"])
+def test_a_waiting_error_survives_read_zero_and_close_comes_first(
+    how: str, n: int
+) -> None:
+    """``read(0)`` stays a no-op that leaves the waiting error for the next read
+    that asks for bytes, and a closed stream raises its ``ValueError``, not it."""
+    data = _zip_with_a_bad_crc(zipfile.ZIP_DEFLATED)
+    for closes in (False, True):
+        with _open(data, how, _ALL) as archive:
+            for stream in _bad_member(archive, how):
+                got = b""
+                while len(got) < len(_CRC_PAYLOAD):
+                    got += stream.read(n)
+                assert stream.read(0) == b""
+                if closes:
+                    stream.close()
+                    with pytest.raises(ValueError, match="closed"):
+                        stream.read(1)
+                else:
+                    with pytest.raises(CorruptionError):
+                        stream.read(1)
+
+
 def test_all_reads_an_undamaged_member_as_the_default_does() -> None:
     data = _zip_with_a_bad_crc(zipfile.ZIP_DEFLATED)
     with open_archive(io.BytesIO(data), config=_ALL) as archive:
@@ -339,6 +364,43 @@ def _zip_longer_than_declared() -> bytes:
     return bytes(data)
 
 
+def _zip_one_byte_past_declared() -> bytes:
+    """A STORED ZIP whose ``big.bin`` holds 1001 bytes and declares 1000, with the
+    stored CRC that of the 1000 declared bytes: only the size check catches the extra
+    byte, and the read that finds it reaches the end of the data."""
+    payload = (bytes(range(256)) * 4)[:1001]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", payload)
+        zf.writestr("good.txt", b"good")
+    data = bytearray(buf.getvalue())
+    central = data.index(b"PK\x01\x02")
+    crc = zlib.crc32(payload[:1000])
+    for crc_at, size_at in ((14, 22), (central + 16, central + 24)):
+        struct.pack_into("<I", data, crc_at, crc)
+        struct.pack_into("<I", data, size_at, 1000)
+    return bytes(data)
+
+
+@pytest.mark.parametrize("reads_again", [True, False])
+def test_a_trimmed_overrun_never_verifies_the_member(reads_again: bool) -> None:
+    """At ALL a pipe's read returns the declared bytes of a member that runs past
+    them. Whether the caller then reads the error or moves on without reading again,
+    the pass that drains the member keeps the size verdict: the bytes it counted stop
+    at the declared size, and the CRC of those bytes matches."""
+    data = _zip_one_byte_past_declared()
+    with _open(data, "pipe", _ALL) as archive:
+        for member, stream in archive.stream_members():
+            if member.name != "big.bin":
+                continue
+            assert len(stream.read(4096)) == 1000
+            if reads_again:
+                with pytest.raises(CorruptionError):
+                    stream.read(4096)
+            big = member
+        assert big.verified is not Verification.CHECKSUM
+
+
 @pytest.mark.parametrize("how", _SOURCES)
 def test_an_overrun_read_returns_its_declared_bytes_only_at_all(how: str) -> None:
     """A read past a member's declared size raises at the default level and returns
@@ -356,3 +418,64 @@ def test_an_overrun_read_returns_its_declared_bytes_only_at_all(how: str) -> Non
                 with pytest.raises(CorruptionError):
                     stream.read(4096)
                 break
+
+
+def test_an_on_source_read_stop_is_never_deferred_at_all(tmp_path: Any) -> None:
+    """At ALL a read to the end that fails after some steps returns their bytes and
+    keeps the error. The caller's own ``on_source_read`` exception is a stop, not the
+    member's verdict: it comes out of that first read."""
+    payload = _text(3 * 2**20 + 5, 7)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", payload)
+    path = tmp_path / "a.zip"
+    path.write_bytes(buf.getvalue())
+    stop = CorruptionError("stop from callback")
+    armed: list[int] = []
+
+    def callback(progress: object) -> None:
+        if armed:
+            armed.append(1)
+            if len(armed) == 3:
+                raise stop
+
+    config = ArchiveyConfig(
+        recover_partial_data=PartialDataRecovery.ALL,
+        on_source_read=callback,
+        source_read_step=0,
+    )
+    with open_archive(path, config=config) as archive, archive.open("big.bin") as f:
+        armed.append(0)
+        with pytest.raises(CorruptionError) as caught:
+            f.read()
+    assert caught.value is stop
+
+
+@pytest.mark.parametrize("n", [len(_CRC_PAYLOAD), 1 << 16], ids=["sized", "chunks"])
+def test_a_deferred_check_is_reported_when_found(n: int) -> None:
+    """At ALL the read whose check fails returns its bytes and the next read raises.
+    The layers that watch a member's errors (a RAR pipe whose output may stop lining up
+    after a failed member) hear of it when the check fails, not only on that next read:
+    a caller can move on to the next member without making it."""
+    from archivey.internal.hashing import crc32_digest
+    from archivey.internal.streams.archive_stream import ArchiveStreamImpl
+    from archivey.types import HashAlgorithm
+
+    bad = crc32_digest(zlib.crc32(_CRC_PAYLOAD) ^ 0xFFFF)
+    seen: list[BaseException] = []
+    stream = ArchiveStreamImpl(
+        lambda: io.BytesIO(_CRC_PAYLOAD),
+        translate=lambda _exc: None,
+        stamp=seen.append,
+        expected_hashes={HashAlgorithm.CRC32: bad},
+        expected_size=len(_CRC_PAYLOAD),
+    )
+    stream.return_failed_chunks()
+    got = b""
+    while len(got) < len(_CRC_PAYLOAD):
+        got += stream.read(n)
+    assert got == _CRC_PAYLOAD
+    assert [type(e) for e in seen] == [CorruptionError]
+    with pytest.raises(CorruptionError):
+        stream.read(1)
+    stream.close()

@@ -433,6 +433,10 @@ class _PassData:
     # The overrun found by the caller's read that returned the bytes up to the declared
     # size (``_read_chunk(trim=True)``): the next read raises it.
     _overrun: CorruptionError | None = None
+    # The same overrun, kept once the next read raised it: the bytes past the declared
+    # size were dropped, so the size and CRC counted on what is left must not pass
+    # (``_finish``).
+    _overran: CorruptionError | None = None
     # ``PartialDataRecovery.ALL`` on the caller's handle (``return_failed_chunks``).
     _returns_failed = False
 
@@ -1226,7 +1230,7 @@ class _PassData:
             chunk = chunk[: declared - self._size]
             if not (trim and chunk):
                 raise error
-            self._overrun = error
+            self._overrun = self._overran = error
         if budget is not None:
             budget._draw_bytes(len(chunk))
         if chunk:
@@ -1292,8 +1296,11 @@ class _PassData:
         size_ok = file_size == self._size or (
             self._deferred() and file_size == self._size & 0xFFFF_FFFF
         )
-        # A failed AES code comes first: the data is not what was written.
-        if error is None and not size_ok:
+        # A failed AES code comes first: the data is not what was written. Then an
+        # overrun a trimmed read dropped: what was counted stops at the declared size.
+        if error is None and self._overran is not None:
+            error = self._overran
+        elif error is None and not size_ok:
             # In the words a read through the size check gives (streams/verify.py).
             if self._size < file_size:
                 error = TruncatedError(

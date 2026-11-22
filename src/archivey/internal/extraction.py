@@ -165,6 +165,22 @@ _WINDOWS = os.name == "nt"
 _DIRECTORY_LINKS = _WINDOWS
 
 
+_FROM_PROGRESS = "_archivey_raised_by_on_progress"
+
+
+def _mark_progress_callback(exc: BaseException) -> None:
+    """Mark ``exc`` as raised by the caller's ``on_progress`` callback."""
+    try:
+        setattr(exc, _FROM_PROGRESS, True)
+    except AttributeError:  # an exception type that refuses new attributes
+        pass
+
+
+def _from_progress_callback(exc: BaseException) -> bool:
+    """Whether ``exc`` was raised by the caller's ``on_progress`` callback."""
+    return getattr(exc, _FROM_PROGRESS, False) is True
+
+
 def _dir_mode_as_stored(mode: int) -> int:
     """The mode ``os.stat`` reports for a directory after ``os.chmod(path, mode)``.
 
@@ -2381,7 +2397,7 @@ class ExtractionCoordinator:
             # so that member's result must stop reporting it EXTRACTED. This member's
             # own result is recorded by the caller's handler.
             if self._current.removed_existing:
-                self._mark_overwritten(prior)
+                self._mark_overwritten(prior or self._trusted_kept_partial(dest_path))
             raise
 
         return self._settle_placement(
@@ -2428,7 +2444,8 @@ class ExtractionCoordinator:
         # ``results`` instead of two members both reporting EXTRACTED at one path. A
         # partial file ``OnError.KEEP_PARTIAL`` kept landed as well.
         if _wrote_at_path(result):
-            self._mark_overwritten(prior)
+            assert result.path is not None
+            self._mark_overwritten(prior or self._trusted_kept_partial(result.path))
             if transformed.type == MemberType.DIRECTORY and result.path is not None:
                 self._state.written_dirs.setdefault(
                     self._collision_key(result.path), []
@@ -2891,6 +2908,7 @@ class ExtractionCoordinator:
                 exc, (FilterRejectionError, ResourceLimitError, DiagnosticRaisedError)
             )
             and not from_source_callback(exc)
+            and not _from_progress_callback(exc)
         )
 
     def _kept_partial_failure(
@@ -4477,6 +4495,24 @@ class ExtractionCoordinator:
         unremoved.clear()
         return first
 
+    def _trusted_kept_partial(self, path: Path) -> _Claim | None:
+        """Under TRUSTED, the claim of a partial file ``OnError.KEEP_PARTIAL`` kept at
+        exactly ``path``, or ``None``.
+
+        TRUSTED reports no collision, so ``_resolve_collision`` returns no prior claim
+        and an earlier member keeps its result when a later one lands on its name. A
+        kept partial file is different: its FAILED result must stop naming a path that
+        now holds the later member's content."""
+        if self._policy is not ExtractionPolicy.TRUSTED:
+            return None
+        claim = self._state.collision_map.get(self._collision_key(path))
+        if claim is None or claim.path != path:
+            return None
+        earlier = self._state.results[claim.result_index]
+        if earlier.status is not ExtractionStatus.FAILED or earlier.path != path:
+            return None
+        return claim
+
     def _mark_overwritten(self, prior: _Claim | None) -> None:
         """Revise a clobbered member's result to OVERWRITTEN: its content is gone.
 
@@ -5563,18 +5599,25 @@ class ExtractionCoordinator:
         if self._on_progress is None:
             return
         state = self._state
-        self._on_progress(
-            ExtractionProgress(
-                member=member,
-                bytes_written=state.tracker.total_bytes,
-                total_bytes_estimated=state.total_estimate,
-                members_done=members_done,
-                members_total=state.members_total,
-                member_bytes_written=member_bytes_written,
-                members_extracted=state.members_extracted,
-                members_blocked=state.members_blocked,
+        try:
+            self._on_progress(
+                ExtractionProgress(
+                    member=member,
+                    bytes_written=state.tracker.total_bytes,
+                    total_bytes_estimated=state.total_estimate,
+                    members_done=members_done,
+                    members_total=state.members_total,
+                    member_bytes_written=member_bytes_written,
+                    members_extracted=state.members_extracted,
+                    members_blocked=state.members_blocked,
+                )
             )
-        )
+        except BaseException as exc:
+            # The caller's own exception, raised from inside a member's copy loop:
+            # it says nothing about the member's data, so it never keeps a partial
+            # file (``_keeps_partial``).
+            _mark_progress_callback(exc)
+            raise
 
     @staticmethod
     def _close(stream: BinaryIO | None) -> None:

@@ -728,7 +728,9 @@ class ArchiveStreamImpl(ArchiveStream):
             try:
                 chunk = self._read(_KEEPING_STEP)
             except ArchiveyError as exc:
-                if not chunks:
+                # The caller's own ``on_source_read`` exception is a stop, never the
+                # member's verdict: raised now, with the bytes before it.
+                if not chunks or from_source_callback(exc):
                     raise
                 # Without its traceback: the frames it names hold the bytes returned.
                 self._pending_failure = exc.with_traceback(None)
@@ -837,6 +839,17 @@ class ArchiveStreamImpl(ArchiveStream):
             "stream."
         )
 
+    def _note_deferred(self, error: Exception) -> None:
+        """Tell the layers that watch this stream's errors (``stamp``) about a check
+        the verifier just failed and deferred (``return_failed_chunks``), as if it
+        raised now. The caller may move on without the read that raises it, and a pass
+        that has to know a member failed (a RAR pipe's output may stop lining up after
+        it) must still hear of it. The raise itself stays for the next read."""
+        if isinstance(error, ArchiveyError):
+            self._stamp(error)
+            if _is_content_verdict(error) and self._inner is not None:
+                retire_decoder_children(self._inner)
+
     def _fail_unless_closed(self, e: Exception) -> NoReturn:
         """``_fail``, unless this stream was closed while the call ran.
 
@@ -942,9 +955,13 @@ class ArchiveStreamImpl(ArchiveStream):
         # fails inside a decoder after its compressed chunk has left the source, and the
         # member would then report damage on every later read, even after ``seek(0)``.
         n = check_read_size(n)
-        if self._returns_failed_chunks:
+        # A closed stream's ValueError first, and ``read(0)`` stays a no-op that
+        # leaves a waiting error for the next read that asks for bytes.
+        if self._returns_failed_chunks and not self.closed:
             pending = self._pending_failure
             if pending is not None:
+                if n == 0:
+                    return b""
                 self._pending_failure = None
                 raise pending
             if n < 0:
@@ -976,7 +993,10 @@ class ArchiveStreamImpl(ArchiveStream):
             inner = cast("BinaryIO", ratio)
         try:
             if verifier is not None:
+                waiting = verifier.deferred
                 data = verifier.read(inner, n)
+                if waiting is None and verifier.deferred is not None:
+                    self._note_deferred(verifier.deferred)
             elif n == 0:
                 return b""
             else:

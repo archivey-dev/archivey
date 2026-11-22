@@ -20,6 +20,7 @@ import pytest
 from archivey import (
     ArchiveyConfig,
     DecoderLimits,
+    ExtractionPolicy,
     ExtractionStatus,
     OnError,
     OverwritePolicy,
@@ -409,3 +410,76 @@ def test_a_kept_member_counts_once_toward_the_ratio(tmp_path: Path, mode: str) -
     assert by_name["bad.bin"].status is ExtractionStatus.FAILED
     assert (dest / "bad.bin").read_bytes() == payload
     assert (dest / "good.txt").read_bytes() == b"good"
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_a_progress_callback_error_keeps_nothing(tmp_path: Path, mode: str) -> None:
+    # The caller's on_progress raises OSError part-way through a member's copy. That
+    # says nothing about the member's data, so nothing lands: the existing file stays.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("big.bin", _PAYLOAD)
+    src = tmp_path / "a.zip"
+    src.write_bytes(buf.getvalue())
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "big.bin").write_bytes(b"mine")
+
+    raised: list[bool] = []
+
+    def on_progress(progress: object) -> None:
+        # Once, from inside the copy loop (after the first full chunk).
+        if getattr(progress, "member_bytes_written", 0) and not raised:
+            raised.append(True)
+            raise OSError("disk of the progress log is full")
+
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        on_error=OnError.KEEP_PARTIAL,
+        overwrite=OverwritePolicy.REPLACE,
+        on_progress=on_progress,
+    )
+    (result,) = report.results
+    assert raised
+    assert result.status is ExtractionStatus.FAILED
+    assert result.path is None
+    assert (dest / "big.bin").read_bytes() == b"mine"
+    assert not list(dest.rglob(".archivey-tmp-*"))
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_trusted_later_member_on_a_kept_partial_name_clears_its_path(
+    tmp_path: Path, mode: str
+) -> None:
+    # TRUSTED reports no collision. A filter maps ``b.bin`` onto ``a.bin``'s name, so
+    # under REPLACE it lands over the partial file ``a.bin`` kept: the failed result
+    # must stop naming that path.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.bin", _PAYLOAD)
+        zf.writestr("b.bin", b"second")
+    data = bytearray(buf.getvalue())
+    data[data.find(_PAYLOAD[:4096]) + 100] ^= 0xFF
+    src = tmp_path / "two.zip"
+    src.write_bytes(bytes(data))
+    dest = tmp_path / "out"
+    source, streaming = _source(src, mode)
+    report = open_and_extract(
+        source,
+        dest,
+        streaming=streaming,
+        on_error=OnError.KEEP_PARTIAL,
+        overwrite=OverwritePolicy.REPLACE,
+        policy=ExtractionPolicy.TRUSTED,
+        filter=lambda m: m.replace(name="a.bin") if m.name == "b.bin" else m,
+    )
+    first, second = report.results
+    assert first.status is ExtractionStatus.FAILED
+    assert first.path is None
+    assert first.requested_path == dest / "a.bin"
+    assert second.status is ExtractionStatus.EXTRACTED
+    assert second.path == dest / "a.bin"
+    assert (dest / "a.bin").read_bytes() == b"second"
