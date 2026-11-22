@@ -16,3 +16,6 @@ archivey-codecs has its own version and its own releases, tagged `codecs-vX.Y.Z`
 - `bcj2.Decompressor`: BCJ2 reading its four input streams, with `read(max_length)`,
   the output size (`out_size=`), `total_in` per stream, `getstate()` and
   `from_state()` (restored onto four new streams placed at `total_in`).
+- `lzfse.decompress` and `lzvn.decompress`: Apple's LZFSE streams and raw LZVN, as DMG
+  images and HFS+ compressed files store them, with an exact `out_size=` or a
+  `max_size=` bound.
