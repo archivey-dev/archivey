@@ -556,15 +556,19 @@ Where the code departs from the decisions above, or settles what they leave open
 - **No listing-time `max_ratio` check.** The read holds `DecoderLimits` as for any
   folder; the dictionary from the unpacked size makes `max_decoder_memory` the check
   that bites (tested). Task 3.6's `max_ratio` item is not done.
-- **R3 is bounded by its work, not only by the bytes it claims.** Every byte it
-  hashes counts against `max_search_bytes`, each rule hashes at most 16 times the tail,
-  and the zero-run ends are matched through one table of zero-byte CRC preimages, not
-  one CRC per end (review round 1: 10 KB of crafted tail took 10 s before). R3a, with a
+- **R3 is bounded by its work, not only by the bytes it claims.** Each rule hashes
+  at most 16 times the tail, and the zero-run ends are matched through one table of
+  zero-byte CRC preimages, not one CRC per end (review round 1: 10 KB of crafted tail
+  took 10 s before). `max_search_bytes` still counts the tail once, when R3 claims it,
+  as its contract says; charging each hash made a cut archive under a cap of three
+  times its size list nothing (review round 2). R3a, with a
   fixed size, still hashes once per end, so a long zero run can stop it at the work
   bound before its last ends.
 - **The header copy's decode is held to `max_metadata_bytes`** as well as to
-  `MAX_NEXT_HEADER_SIZE`, before it runs, and stops once its output passes 1 MiB and
-  128 times its input: a stream of zeros otherwise decodes to the cap from a few KB.
+  `MAX_NEXT_HEADER_SIZE`, before it runs, and so is the sum of the bytes decoded across
+  all of one walk's candidates: a tail of many streams that each decode to the cap
+  from a few KB costs one cap. No compression ratio bounds it: a real header of many
+  empty files decodes about 320 times larger than its stream.
 - **The LZMA1 member at offset 32 is `confirmed=False`**: only its position says it is
   a stream. Its first five bytes must be `00` then not four zeros, so an all-zero area
   lists nothing.

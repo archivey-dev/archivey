@@ -85,11 +85,6 @@ _HEADER_SECOND = frozenset((0x02, 0x03, 0x04, 0x05))
 # How much input the LZMA1 header decode takes at once; a failing piece is fed again
 # one byte at a time, so the bytes decoded before the failure are kept.
 _LZMA1_PIECE = 1 << 12
-# The header decode stops once its output passes _HEADER_RATIO_FLOOR bytes and
-# _HEADER_RATIO times the input fed in: a real 7z header does not compress that far,
-# and a stream of zeros would otherwise decode to the header cap from a few KB.
-_HEADER_RATIO = 128
-_HEADER_RATIO_FLOOR = 1 << 20
 # The most bytes from a candidate the stream search reads to judge it: its first
 # LZMA chunk must end within them (a few uncompressed chunks may come first).
 _STREAM_HEADER_SPAN = 1 << 18
@@ -475,16 +470,13 @@ def _lzma1_header_start(data: bytes) -> bool:
 def decode_lzma1_prefix(data: bytes, max_out: int) -> bytes:
     """Decode ``data`` as LZMA1 with 7-Zip's properties, keeping the bytes decoded
     before an error: LZMA1 has no end marker, so a decode runs on past its stream
-    into whatever follows. The output is at most ``max_out`` bytes (the dictionary is
-    sized from it), and stops once it passes :data:`_HEADER_RATIO_FLOOR` bytes and
-    :data:`_HEADER_RATIO` times the input fed in."""
+    into whatever follows. The output is at most ``max_out`` bytes, and the
+    dictionary is sized from it."""
     dict_size = max(max_out, 1 << 12)
 
-    def feed(
-        decoder: lzma.LZMADecompressor, piece: bytes, out: bytearray, fed: int
-    ) -> bool:
+    def feed(decoder: lzma.LZMADecompressor, piece: bytes, out: bytearray) -> bool:
         """Feed ``piece``; ``False`` when the output reached a bound."""
-        room = min(max_out, max(_HEADER_RATIO_FLOOR, _HEADER_RATIO * fed)) - len(out)
+        room = max_out - len(out)
         if room <= 0:
             return False
         out += decoder.decompress(piece, max_length=room)
@@ -497,17 +489,17 @@ def decode_lzma1_prefix(data: bytes, max_out: int) -> bytes:
     for at in range(0, len(data), _LZMA1_PIECE):
         fed = min(len(data), at + _LZMA1_PIECE)
         try:
-            more = feed(decoder, data[at:fed], out, fed)
+            more = feed(decoder, data[at:fed], out)
         except lzma.LZMAError:
             # Decode the input before the failing piece again, then the piece one
             # byte at a time, so its bytes before the failure are kept.
             decoder = _lzma1_decoder(dict_size)
             out = bytearray()
             if at:
-                feed(decoder, data[:at], out, at)
+                feed(decoder, data[:at], out)
             for byte_at in range(at, fed):
                 try:
-                    if not feed(decoder, data[byte_at : byte_at + 1], out, byte_at + 1):
+                    if not feed(decoder, data[byte_at : byte_at + 1], out):
                         break
                 except lzma.LZMAError:
                     break
@@ -517,6 +509,20 @@ def decode_lzma1_prefix(data: bytes, max_out: int) -> bytes:
         if not more or decoder.eof:
             break
     return bytes(out)
+
+
+@dataclass
+class HeaderBudget:
+    """What one walk's header copies may cost: ``cap`` bytes for each copy, and
+    ``cap`` bytes decoded across all its LZMA1 candidates together, so that a tail
+    of many candidates that each decode far costs one cap, not one each."""
+
+    cap: int
+    left: int = -1
+
+    def __post_init__(self) -> None:
+        if self.left < 0:
+            self.left = self.cap
 
 
 def _input_for(max_header: int) -> int:
@@ -530,10 +536,15 @@ def _lzma1_copy(
     pos: int,
     span: int,
     streams: list[ContentStream],
-    max_header: int,
+    header: HeaderBudget,
 ) -> HeaderCopy | None:
-    data = read_at(pos, min(span, _input_for(max_header)))
-    return _check_copy(pos, decode_lzma1_prefix(data, max_header), streams)
+    max_out = header.left
+    if max_out <= 0:
+        return None
+    data = read_at(pos, min(span, _input_for(max_out)))
+    decoded = decode_lzma1_prefix(data, max_out)
+    header.left -= len(decoded)
+    return _check_copy(pos, decoded, streams)
 
 
 def copy_at(
@@ -541,25 +552,25 @@ def copy_at(
     pos: int,
     end: int,
     streams: list[ContentStream],
-    max_header: int = MAX_NEXT_HEADER_SIZE,
+    header: HeaderBudget,
 ) -> HeaderCopy | None:
     """The header copy at walk position ``pos``, when one starts there: a plain
     header, or after offset 32 an LZMA1 stream that decodes to one (LZMA1 is tried
     nowhere else after offset 32: its decode cannot tell content from wrong bytes).
-    Each is held to ``max_header`` bytes."""
+    Each is held to ``header``: its cap, and what is left of the walk's decoding."""
     span = end - pos
     head = read_at(pos, min(span, 64))
     if (
         len(head) >= 2
         and head[0] == 0x01
         and head[1] in _HEADER_SECOND
-        and span <= max_header
+        and span <= header.cap
     ):
         copy = _check_copy(pos, read_at(pos, span), streams)
         if copy is not None:
             return copy
     if pos > SIGNATURE_HEADER_SIZE and _lzma1_header_start(head):
-        return _lzma1_copy(read_at, pos, span, streams, max_header)
+        return _lzma1_copy(read_at, pos, span, streams, header)
     return None
 
 
@@ -568,11 +579,11 @@ def tail_copy_search(
     end: int,
     streams: list[ContentStream],
     claim: ClaimFn,
-    max_header: int = MAX_NEXT_HEADER_SIZE,
+    header: HeaderBudget,
 ) -> HeaderCopy | None:
     """The header copy in the area's last :data:`TAIL_COPY_SEARCH` bytes, from the
     end backwards, for when the walk stopped before reaching it (an LZMA1 or BCJ2
-    folder runs into it). Each decode is held to ``max_header`` bytes. An offset
+    folder runs into it). The decodes are held to ``header``. An offset
     whose byte is ``00`` and whose LZMA1 decode starts as a plain header goes on to
     the full decode and the copy's checks. No offset inside a complete stream the
     walk found is tried: the copy lies after the packed streams."""
@@ -589,7 +600,9 @@ def tail_copy_search(
     at = len(data)
     while (at := data.rfind(b"\x00", 0, at)) >= 0:
         if _lzma1_header_start(data[at : at + 64]):
-            copy = _lzma1_copy(read_at, lo + at, end - lo - at, streams, max_header)
+            if header.left <= 0:
+                return None
+            copy = _lzma1_copy(read_at, lo + at, end - lo - at, streams, header)
             if copy is not None:
                 return copy
     return None
@@ -647,13 +660,13 @@ def _walk_from(
     pos: int,
     end: int,
     result: WalkResult,
-    max_header: int,
+    header: HeaderBudget,
 ) -> int | None:
     """Walk from ``pos`` while a stream starts at each walk position, adding to
     ``result``. Gives where the search goes on from, or ``None`` when the walk
     reached the area's end, ran into a cut stream, or found the header copy."""
     while pos < end:
-        copy = copy_at(read_at, pos, end, result.streams, max_header)
+        copy = copy_at(read_at, pos, end, result.streams, header)
         if copy is not None:
             result.copy = copy
             return None
@@ -693,13 +706,15 @@ def walk_packed_area(
     """Walk the packed area from offset 32 to ``end``: the streams at walk positions
     and the header copy; when the walk stops before the area's end, the copy in the
     area's tail, then the streams the search finds. A header copy is held to
-    ``max_header`` bytes, decoded or plain."""
+    ``max_header`` bytes, decoded or plain, and so is the sum of the bytes decoded
+    across all the walk's LZMA1 candidates (:class:`HeaderBudget`)."""
     reader = CachedReader(read_at, end)
     result = WalkResult()
-    resume = _walk_from(reader, read_at, SIGNATURE_HEADER_SIZE, end, result, max_header)
+    header = HeaderBudget(max_header)
+    resume = _walk_from(reader, read_at, SIGNATURE_HEADER_SIZE, end, result, header)
     if resume is None:
         return result
-    copy = tail_copy_search(read_at, end, result.streams, claim, max_header)
+    copy = tail_copy_search(read_at, end, result.streams, claim, header)
     if copy is not None:
         result.copy = copy
         return result
@@ -719,7 +734,7 @@ def walk_packed_area(
             resume = found + 1
             continue
         result.streams.append(stream_from_chain(chain, end))
-        resume = _walk_from(reader, read_at, chain.end, end, result, max_header)
+        resume = _walk_from(reader, read_at, chain.end, end, result, header)
     return result
 
 
@@ -813,6 +828,7 @@ __all__ = [
     "ChunkReader",
     "ClaimFn",
     "ContentStream",
+    "HeaderBudget",
     "HeaderCopy",
     "SearchFn",
     "StreamFinder",

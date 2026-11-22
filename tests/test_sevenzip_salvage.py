@@ -14,6 +14,7 @@ import io
 import lzma
 import random
 import struct
+import zlib
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -36,8 +37,9 @@ from archivey.exceptions import (
     CorruptionError,
     ResourceLimitError,
     TruncatedError,
+    UnsupportedFeatureError,
 )
-from archivey.internal.backends import sevenzip_salvage_walk
+from archivey.internal.backends import sevenzip_salvage, sevenzip_salvage_walk
 from archivey.internal.backends.sevenzip_salvage import (
     R3_WORK_FACTOR,
     one_byte_candidates,
@@ -46,6 +48,7 @@ from archivey.internal.backends.sevenzip_salvage_walk import (
     BytesReader,
     CachedReader,
     ContentStream,
+    HeaderBudget,
     StreamFinder,
     content_name,
     copy_at,
@@ -683,14 +686,15 @@ def test_a_copy_whose_layout_disagrees_is_not_used() -> None:
     start, size = next_header_span(PLAIN)
     read_at = lambda o, n: PLAIN[o : o + n]  # noqa: E731
     first = packed_stream_spans(PLAIN)[0]
+    budget = HeaderBudget(1 << 20)
     agrees = ContentStream(first[0], first[1], "lzma2", len(FILES["file-00.txt"]), 1)
-    assert copy_at(read_at, start, start + size, [agrees]) is not None
+    assert copy_at(read_at, start, start + size, [agrees], budget) is not None
     moved = ContentStream(first[0] + 1, first[1], "lzma2", None, 1)
-    assert copy_at(read_at, start, start + size, [moved]) is None
+    assert copy_at(read_at, start, start + size, [moved], budget) is None
     resized = ContentStream(first[0], first[1], "lzma2", 1, 1)
-    assert copy_at(read_at, start, start + size, [resized]) is None
+    assert copy_at(read_at, start, start + size, [resized], budget) is None
     # The copy's packed streams must lie before it.
-    assert copy_at(read_at, first[0], start + size, []) is None
+    assert copy_at(read_at, first[0], start + size, [], budget) is None
 
 
 def test_the_lzma1_header_decode_is_bounded() -> None:
@@ -845,29 +849,35 @@ def _r3_bait(pattern: int, zeros: int) -> bytes:
     return signature + fields + b"\x01\x04" * (pattern // 2) + b"\xff" + bytes(zeros)
 
 
-def _searched_bytes(data: bytes, **kwargs: object) -> tuple[int, _Listing]:
-    with open_archive(io.BytesIO(data), salvage=True, **kwargs) as reader:  # type: ignore[call-overload]
-        reader.members_report()
-        searched = reader._salvage_mode.searched_bytes  # type: ignore[attr-defined]
-    return searched, _salvage(data, **kwargs)
+class _CountingZlib:
+    """``zlib`` for R3, counting the bytes its CRCs hash."""
+
+    def __init__(self) -> None:
+        self.hashed = 0
+
+    def crc32(self, data: bytes | memoryview, value: int = 0) -> int:
+        self.hashed += len(data)
+        return zlib.crc32(data, value)
 
 
 @pytest.mark.parametrize(("pattern", "zeros"), [(8_000, 2_000), (64_000, 8_000)])
-def test_r3_work_is_linear_in_the_tail(pattern: int, zeros: int) -> None:
-    """Every byte R3 hashes counts against the search budget, and each of its three
-    rules hashes at most R3_WORK_FACTOR times the tail, whatever count of starts and
-    ends the tail holds. (A CRC from each start to each end was cubic: 10 KB of this
-    took 10 s.)"""
+def test_r3_work_is_linear_in_the_tail(
+    pattern: int, zeros: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each of R3's three rules hashes at most R3_WORK_FACTOR times the tail,
+    whatever count of starts and ends the tail holds. (A CRC from each start to each
+    end was cubic: 10 KB of this took 10 s.)"""
+    counting = _CountingZlib()
+    monkeypatch.setattr(sevenzip_salvage, "zlib", counting)
     data = _r3_bait(pattern, zeros)
-    searched, listing = _searched_bytes(data)
-    # The CRCs are counted, beyond the tail's one claim, and they stay linear.
-    assert 2 * len(data) < searched <= (3 * R3_WORK_FACTOR + 4) * len(data)
+    listing = _salvage(data)
     assert listing.names == []
+    assert 0 < counting.hashed <= 3 * R3_WORK_FACTOR * len(data)
 
 
-def test_r3_stops_at_a_small_search_budget() -> None:
+def test_r3_stops_at_a_search_budget_short_of_its_tail() -> None:
     data = _r3_bait(8_000, 2_000)
-    listing = _salvage(data, limit=50_000)
+    listing = _salvage(data, limit=1_000)
     assert "search_limit" in [r.reason for r in listing.regions()]
     assert "max_search_bytes" in str(listing.error)
 
@@ -900,15 +910,14 @@ def test_the_header_decode_stops_at_its_bounds() -> None:
     bomb = _lzma1_bomb(8 << 20)
     assert len(bomb) < 4096
     assert len(decode_lzma1_prefix(bomb, 1 << 16)) == 1 << 16
-    # A ratio no real header reaches stops it near 1 MiB, under a large cap.
-    assert len(decode_lzma1_prefix(bomb, 64 << 20)) <= 1 << 20
 
 
 def test_a_header_copy_candidate_is_held_to_max_metadata_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The tail search decodes a candidate to ``max_metadata_bytes`` at most, not to
-    the parser's 64 MiB limit, and the dictionary is sized from it."""
+    """The tail search's candidates decode ``max_metadata_bytes`` in all, not each,
+    and not the parser's 64 MiB limit: three candidates that each decode to 8 MiB
+    cost one cap."""
     decoded: list[int] = []
     real = sevenzip_salvage_walk.decode_lzma1_prefix
 
@@ -922,7 +931,7 @@ def test_a_header_copy_candidate_is_held_to_max_metadata_bytes(
     config = ArchiveyConfig(listing_limits=ListingLimits(max_metadata_bytes=1 << 16))
     with open_archive(io.BytesIO(data), salvage=True, config=config) as reader:
         assert not reader.members_report().members
-    assert decoded and max(decoded) <= 1 << 16
+    assert decoded and sum(decoded) <= 1 << 16
 
 
 def test_an_all_zero_area_lists_no_member() -> None:
@@ -960,3 +969,42 @@ def test_a_long_lead_in_is_not_decoded_to_judge_a_chain() -> None:
         chain = scan_chain(reader, 0, len(data))
         assert chain is not None and chain.status == "broken"
         assert first_lzma_chunk_decodes(reader, chain) is decodes
+
+
+def test_r3_charges_the_search_budget_once_for_its_tail() -> None:
+    """``max_search_bytes`` counts each byte R3 examines once, not each CRC over it:
+    a cut 2.5 MB archive with a damaged start header lists its streams under a cap of
+    three times the file."""
+    rng = random.Random(1770)
+    files = {f"part-{i}.bin": rng.randbytes(500_000) for i in range(5)}
+    data = write_7z(files)
+    damaged = flip(data[: len(data) * 3 // 4], 20)
+    assert len(damaged) > 1_800_000
+    listing = _salvage(damaged, limit=3 * len(damaged))
+    assert listing.names[:3] == [content_name(i) for i in range(3)]
+    assert "search_limit" not in [r.reason for r in listing.regions()]
+
+
+def test_a_header_copy_of_many_empty_members_is_read_whole() -> None:
+    """A header of many empty files compresses far: 30 000 of them decode to over
+    1 MiB from a few KB. The copy is read whole, every member named."""
+    empty = [f"empty/{i:06d}.txt" for i in range(30_000)]
+    data = write_7z(FILES, empty=empty, mtime=133_000_000_000_000_000)
+    damaged = data[: next_header_span(data)[0]]
+    with open_archive(io.BytesIO(damaged), salvage=True) as reader:
+        report = reader.members_report()
+    names = [m.name for m in report.members]
+    assert names == [*FILES, *empty]
+    assert isinstance(report.error, TruncatedError)
+
+
+def test_an_unsupported_feature_in_a_crc_confirmed_header_is_raised() -> None:
+    """R1 finds the end header under its CRC: the unknown coder id it names is real,
+    and the open says so, where an R4 candidate's would mean no header at all."""
+    start, size = next_header_span(NONSOLID)
+    at = NONSOLID.index(b"\x03\x01\x01", start)
+    unknown = NONSOLID[:at] + b"\x03\x01\x7f" + NONSOLID[at + 3 :]
+    next_header = unknown[start : start + size]
+    damaged = flip(_set_field(unknown, 28, "<I", zlib.crc32(next_header)), 8)
+    with pytest.raises(UnsupportedFeatureError, match="coder method"):
+        open_archive(io.BytesIO(damaged), salvage=True)

@@ -1364,10 +1364,16 @@ class SevenZipReader(BaseArchiveReader):
                 max_metadata_bytes=self._config.listing_limits.max_metadata_bytes,
                 budget=self._stage_draws,
             )
-        except (CorruptionError, TruncatedError, UnsupportedFeatureError):
-            # A candidate found by a byte pattern (R4, a header copy) may be no header
-            # at all: an unknown property or coder id in it says so as often as a
-            # parse failure, and the next candidate, or the walk, comes next.
+        except (CorruptionError, TruncatedError):
+            return False
+        except UnsupportedFeatureError:
+            # A candidate found only by a byte pattern or its parse (R4, a header
+            # copy) may be no header at all: an unknown property or coder id in it
+            # says so as often as a parse failure, and the next candidate, or the
+            # walk, comes next. A CRC-32 confirmed an R1 to R3 find's bytes, so the
+            # feature it names is real and the caller hears of it.
+            if find.crc_checked:
+                raise
             return False
         # A CRC-32 confirmed the end header's bytes, or its decode passed the folder
         # CRC of the encoded header; a plain header found by its parse alone, or an

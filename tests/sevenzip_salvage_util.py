@@ -146,17 +146,47 @@ def _streams_info(
     return out + b"\x00"
 
 
+def _bits(values: list[bool]) -> bytes:
+    """A 7z bit vector, most significant bit first."""
+    out = bytearray((len(values) + 7) // 8)
+    for index, value in enumerate(values):
+        if value:
+            out[index // 8] |= 0x80 >> (index % 8)
+    return bytes(out)
+
+
+def _file_property(prop: int, data: bytes) -> bytes:
+    return bytes([prop]) + _num(len(data)) + data
+
+
 def write_7z(
-    files: dict[str, bytes], *, solid: bool = False, encode_header: bool = True
+    files: dict[str, bytes],
+    *,
+    solid: bool = False,
+    encode_header: bool = True,
+    empty: list[str] | None = None,
+    mtime: int | None = None,
 ) -> bytes:
-    """A 7z of ``files``, LZMA2, laid out as 7-Zip lays it out."""
+    """A 7z of ``files``, LZMA2, laid out as 7-Zip lays it out. ``empty`` names
+    empty files listed after them, and ``mtime`` gives every member that time."""
+    empty = empty or []
     names = list(files)
     groups = [names] if solid else [[name] for name in names]
     packed: list[bytes] = []
     for group in groups:
         packed.append(lzma2_stream(b"".join(files[n] for n in group)))
     coder = _coder(_LZMA2, _lzma2_props(_DICT))
-    name_blob = b"".join((n + "\0").encode("utf-16le") for n in names)
+    listed = names + empty
+    name_blob = b"".join((n + "\0").encode("utf-16le") for n in listed)
+    properties = b""
+    if empty:
+        flags = [False] * len(names) + [True] * len(empty)
+        properties += _file_property(0x0E, _bits(flags))
+        properties += _file_property(0x0F, _bits([True] * len(empty)))
+    properties += _file_property(0x11, b"\x00" + name_blob)
+    if mtime is not None:
+        times = struct.pack("<Q", mtime) * len(listed)
+        properties += _file_property(0x14, b"\x01\x00" + times)
     header = (
         b"\x01\x04"
         + _streams_info(
@@ -168,11 +198,8 @@ def write_7z(
             [[files[n] for n in group] for group in groups],
         )
         + b"\x05"
-        + _num(len(names))
-        + b"\x11"
-        + _num(len(name_blob) + 1)
-        + b"\x00"
-        + name_blob
+        + _num(len(listed))
+        + properties
         + b"\x00\x00"
     )
     body = b"".join(packed)
