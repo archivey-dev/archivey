@@ -714,7 +714,8 @@ field would be false for most members of an ordinary read.
   2026-09-23, PR 398).
 - RAR stream spool: "let's add a cap, it would be a config field" (2026-09-26, PR 485).
 - PPMd in-process threshold is a config field, not a constant (2026-09-26, PR 481).
-- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612). No longer
+  applies: since PR 1701 the native ISO parser does not read path tables to list.
 - Hard-link copies at the link-count limit count toward `max_ratio`; cross-device copies
   count only toward bytes (2026-10-07, PR 623).
 - A container inside a compression stream (a `.tar.gz`, a handler's `.cpio.xz`) holds
@@ -761,7 +762,8 @@ rule.
   (2026-09-26, PR 493).
 - `detect_format` must not allocate an LZMA dictionary at whatever size a crafted header
   declares (2026-10-07).
-- ISO path-table entries count against `max_members` (2026-10-06, PR 612).
+- ISO path-table entries count against `max_members` (2026-10-06, PR 612). No longer
+  applies: since PR 1701 the native ISO parser does not read path tables to list.
 - Decoder memory is capped before allocation (PR 398).
 
 **Known limits.** Limits cap bytes, entries and key-derivation rounds, not time; the
