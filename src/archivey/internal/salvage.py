@@ -28,7 +28,7 @@ import threading
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from archivey.diagnostics import (
     DiagnosticCode,
@@ -201,7 +201,13 @@ class SalvageState:
 
     def _examined(self, layer: str, start: int, stop: int) -> None:
         """Count the bytes from ``start`` to ``stop`` as examined, and move the
-        layer's position to ``stop``."""
+        layer's position to ``stop``. The position never moves back: a byte behind it
+        was examined already, and examining it again would count it twice."""
+        if stop < self.position(layer) or stop < start:
+            raise AssertionError(
+                f"the {layer} search position would move back, from "
+                f"{self.position(layer)} to {stop}"
+            )
         self.searched_bytes += stop - start
         self._positions[layer] = stop
 
@@ -211,33 +217,16 @@ class SalvageState:
         layer: str,
         offset: int,
         length: int | None,
-        reason: Literal["no_header", "search_limit"],
     ) -> None:
-        """Record one ``ARCHIVE_REGION_SKIPPED``, within ``max_reported_regions``.
-
-        A ``"no_header"`` range past the cap is counted for :meth:`finish` instead.
-        The ``"search_limit"`` record is made whatever the count: it is the one that
-        says why the listing stops.
-        """
-        if (
-            reason == "no_header"
-            and self._reported_regions >= self.limits.max_reported_regions
-        ):
+        """Record one ``ARCHIVE_REGION_SKIPPED`` with ``reason="no_header"``, within
+        ``max_reported_regions``. A range past the cap is counted for :meth:`finish`
+        instead."""
+        if self._reported_regions >= self.limits.max_reported_regions:
             if self._first_unreported is None:
                 self._first_unreported = (layer, offset)
             self._unreported_regions += 1
             return
-        if reason == "no_header":
-            self._reported_regions += 1
-            what = "no header passes the format's checks in it"
-            span = f"{length} bytes at offset {offset}"
-        else:
-            what = (
-                "SalvageLimits.max_search_bytes "
-                f"({self.limits.max_search_bytes}) stopped the search there; "
-                "nothing after it is listed"
-            )
-            span = f"the bytes from offset {offset}"
+        self._reported_regions += 1
         self._emit(
             RegionSkippedContext(
                 archive_name=self._archive_name,
@@ -245,10 +234,39 @@ class SalvageState:
                 layer=layer,
                 offset=offset,
                 length=length,
-                reason=reason,
+                reason="no_header",
             ),
-            f"Salvage skipped {span}{_in_layer(layer)} of the {self._format_name} "
-            f"archive: {what}.",
+            f"Salvage skipped {length} bytes at offset {offset}{_in_layer(layer)} of "
+            f"the {self._format_name} archive: no header passes the format's checks "
+            "in it.",
+        )
+
+    def record_search_limit(
+        self, *, layer: str, started_at: int, examined_from: int, stopped_at: int
+    ) -> None:
+        """Record the ``ARCHIVE_REGION_SKIPPED`` with ``reason="search_limit"`` for a
+        search that started at ``started_at`` and that ``max_search_bytes`` stopped at
+        ``stopped_at``, having examined the bytes from ``examined_from``. It is made
+        whatever the count of records, as ``report_limit`` is: it says why the listing
+        stops."""
+        if stopped_at > examined_from:
+            stop = f"stopped at offset {stopped_at}, after the bytes it examined"
+        else:
+            stop = "stopped before examining a byte"
+        searched = "" if layer == ARCHIVE_LAYER else f"the {layer} stream of "
+        self._emit(
+            RegionSkippedContext(
+                archive_name=self._archive_name,
+                format=self._format_name,
+                layer=layer,
+                offset=started_at,
+                length=None,
+                reason="search_limit",
+            ),
+            f"Salvage stopped searching {searched}the {self._format_name} "
+            f"archive: SalvageLimits.max_search_bytes "
+            f"({self.limits.max_search_bytes}) ran out. The search started at offset "
+            f"{started_at} and {stop}; nothing after it is listed.",
         )
 
     def finish(self) -> None:
@@ -325,7 +343,10 @@ def search_forward(
     them, or fewer only where the layer ends. Within one call the search reads
     forward, each read starting where the one before ended, so a decoded stream can
     serve it without seeking back. ``end``, when known, is where the layer ends; the
-    search reads nothing at or past it.
+    search reads nothing at or past it, and an ``end`` before ``start`` or before the
+    layer's search position is a bug (``AssertionError``). Under a budget the search
+    reads no further than the last header the budget lets it reach, and with no
+    budget left it reads nothing.
 
     The candidate positions are ``base + k * search.step``. The search starts at the
     first one at or after ``start``, or at the first one this layer's earlier
@@ -343,10 +364,18 @@ def search_forward(
         raise AssertionError("search_forward called on a reader that does not salvage")
     if start < base:
         raise AssertionError(f"search start {start} is before the base {base}")
+    if end is not None and (end < start or end < state.position(layer)):
+        raise AssertionError(
+            f"search end {end} is before the start {start} or before the "
+            f"{layer} search position {state.position(layer)}"
+        )
     if state.limit_reached:
         return SearchResult(found=None, limit_reached=True)
     step = search.step
     region_start = max(start, state.position(layer))
+    if end is not None and region_start >= end:
+        # An empty range: nothing to examine or record, and the position stays.
+        return SearchResult(found=None)
     # The first candidate position at or after region_start.
     pos = base + -(-(region_start - base) // step) * step
     if end is not None and pos >= end:
@@ -354,6 +383,20 @@ def search_forward(
         state._examined(layer, end, end)
         _record_no_header(state, layer, region_start, end)
         return SearchResult(found=None)
+    examined_from = pos
+    remaining = state.remaining_bytes()
+    if remaining == 0:
+        # Stop before reading: a read could only fetch bytes nobody may examine.
+        state.limit_reached = True
+        state.record_search_limit(
+            layer=layer, started_at=region_start, examined_from=pos, stopped_at=pos
+        )
+        return SearchResult(found=None, limit_reached=True)
+    # With a budget, no read goes past the last header the budget lets the search
+    # reach: the bytes it may examine, plus the rest of a header that starts there.
+    read_limit = (
+        None if remaining is None else pos + remaining + search.max_header_size - 1
+    )
 
     span = window_size + search.max_header_size - 1
     # The bytes read so far, from ``pos``; ``buf_end`` is the layer offset after them.
@@ -364,6 +407,8 @@ def search_forward(
         want = span - len(buf)
         if end is not None:
             want = min(want, end - buf_end)
+        if read_limit is not None:
+            want = min(want, read_limit - buf_end)
         if want > 0 and not at_end:
             chunk = read_at(buf_end, want)
             buf += chunk
@@ -386,8 +431,9 @@ def search_forward(
         # so the rest of a layer that has ended costs what is left of it.
         if remaining is not None and not (at_end and buf_end - pos <= remaining):
             last_affordable = pos + (remaining // step - 1) * step
-            if last_affordable < last:
-                last = last_affordable
+            # Below ``pos`` when the budget cannot pay for one more position.
+            if last_affordable < last or last_affordable < pos:
+                last = min(last, last_affordable)
                 budget_bound = True
 
         if last >= pos:
@@ -409,7 +455,6 @@ def search_forward(
                             layer=layer,
                             offset=region_start,
                             length=header_at - region_start,
-                            reason="no_header",
                         )
                     return SearchResult(found=header_at)
             # The last candidate position examined, then the first one after it.
@@ -426,8 +471,11 @@ def search_forward(
             return SearchResult(found=None)
         if budget_bound:
             state.limit_reached = True
-            state.record_region(
-                layer=layer, offset=region_start, length=None, reason="search_limit"
+            state.record_search_limit(
+                layer=layer,
+                started_at=region_start,
+                examined_from=examined_from,
+                stopped_at=pos,
             )
             return SearchResult(found=None, limit_reached=True)
 
@@ -440,5 +488,4 @@ def _record_no_header(
             layer=layer,
             offset=region_start,
             length=layer_end - region_start,
-            reason="no_header",
         )

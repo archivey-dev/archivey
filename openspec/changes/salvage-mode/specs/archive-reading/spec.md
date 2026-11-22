@@ -42,8 +42,9 @@ runs out, the search SHALL stop, record `ARCHIVE_REGION_SKIPPED` with `length=No
 `reason="search_limit"`, list nothing further, and the pass SHALL end in the damage
 error, whose message names the limit. `max_reported_regions` SHALL cap the
 `ARCHIVE_REGION_SKIPPED` records, not the walk: past it, one last record with
-`reason="report_limit"` SHALL count the rest. Decoding and extraction limits SHALL apply
-to salvaged members unchanged.
+`reason="report_limit"` SHALL count the rest. The `search_limit` and `report_limit`
+records SHALL NOT count against `max_reported_regions`. Decoding and extraction limits
+SHALL apply to salvaged members unchanged.
 
 #### Scenario: search limits
 

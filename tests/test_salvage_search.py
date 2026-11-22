@@ -374,3 +374,71 @@ def test_the_salvage_request_goes_to_the_first_reader_only() -> None:
     assert (first.requested, first.supported) == (True, False)
     assert second.requested is False
     assert take_salvage_request().requested is False
+
+
+def test_a_zero_budget_reads_nothing() -> None:
+    state, collector = _state(max_search_bytes=0)
+    layer = _Layer(b"\x00" * 10_000)
+    result = search_forward(state, layer.read_at, _magic_search(), start=0)
+    assert result.limit_reached
+    assert layer.reads == []
+    assert [r.reason for r in _regions(collector)] == ["search_limit"]
+
+
+def test_a_small_budget_reads_no_more_than_it_can_examine() -> None:
+    search = _magic_search(header=8)
+    state, _ = _state(max_search_bytes=100)
+    layer = _Layer(b"\x00" * (4 << 20))
+    result = search_forward(state, layer.read_at, search, start=0)
+    assert result.limit_reached
+    assert sum(size for _, size in layer.reads) <= 100 + search.max_header_size - 1
+    assert state.searched_bytes == 100
+
+
+def test_an_end_behind_the_position_is_refused_and_moves_nothing() -> None:
+    data = b"\x00" * 300
+    state, collector = _state()
+    search = _magic_search()
+    assert (
+        search_forward(state, _Layer(data).read_at, search, start=0, end=200).found
+        is None
+    )
+    assert state.position() == 200
+    with pytest.raises(AssertionError, match="end"):
+        search_forward(state, _Layer(data).read_at, search, start=0, end=50)
+    assert state.position() == 200
+    # The range up to 200 was searched: asking again examines and records nothing.
+    again = search_forward(state, _Layer(data).read_at, search, start=0, end=200)
+    assert again.found is None
+    assert state.position() == 200
+    assert state.searched_bytes == 200
+    assert [(r.offset, r.length) for r in _regions(collector)] == [(0, 200)]
+
+
+def test_an_end_before_the_start_is_refused() -> None:
+    state, _ = _state()
+    with pytest.raises(AssertionError, match="end"):
+        search_forward(
+            state, _Layer(b"\x00" * 400).read_at, _magic_search(), start=300, end=80
+        )
+    assert state.position() == 0
+
+
+def test_the_cursor_never_moves_back() -> None:
+    state, _ = _state()
+    search_forward(state, _Layer(b"\x00" * 100).read_at, _magic_search(), start=0)
+    with pytest.raises(AssertionError, match="back"):
+        state._examined("archive", 40, 50)
+
+
+def test_the_search_limit_message_says_where_the_search_started_and_stopped() -> None:
+    state, collector = _state(max_search_bytes=30)
+    search_forward(state, _Layer(b"\x00" * 100).read_at, _magic_search(), start=10)
+    message = collector.snapshot().retained[-1].message
+    assert "started at offset 10" in message
+    assert "stopped at offset 40" in message
+    state, collector = _state(max_search_bytes=0)
+    search_forward(state, _Layer(b"\x00" * 100).read_at, _magic_search(), start=10)
+    message = collector.snapshot().retained[-1].message
+    assert "started at offset 10" in message
+    assert "before examining a byte" in message

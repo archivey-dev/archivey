@@ -30,9 +30,11 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
    touched: "salvage needs random access to a seekable file; save the stream to a file
    first". Random access already refuses a non-seekable source at open, so no second
    check is needed. `stream_members()`, `extract_all()` and `verify_all()` on a
-   random-access reader work as usual. A nested archive archivey opens itself (a deb's
-   `data.tar`, an RPM payload, a `.pkg` payload) inherits the flag;
-   `reader.open_archive` / `open_archive(parent=...)` takes it as given by the caller.
+   random-access reader work as usual. A nested archive archivey opens itself
+   (`ReaderContext.open_nested`: a deb's `data.tar`, a `.pkg` payload, a makeself
+   payload) inherits the flag; `reader.open_archive` / `open_archive(parent=...)` takes
+   it as given by the caller. An RPM's CPIO payload is not a nested reader: the RPM
+   reader parses it itself, under its own salvage state.
 
 2. **`SalvageLimits`.**
 
@@ -205,7 +207,7 @@ Choices the decisions above left open, made while building PR 1:
 - **One `SALVAGE_UNAVAILABLE` per reader**: a `.deb` opened with `salvage=True` records
   it for the package and for each inner tar while TAR has no search.
 - **The budget** counts `step` bytes per candidate position examined (fewer at a
-  layer's end). With `max_search_bytes=0` nothing is examined.
+  layer's end). With `max_search_bytes=0` nothing is read or examined.
 - **The `search_limit` record** has the `offset` where the stopped search started.
   **The `report_limit` record** has the `offset` of the first range not reported and
   `length=None`; its message gives the count, since the context has no count field. A

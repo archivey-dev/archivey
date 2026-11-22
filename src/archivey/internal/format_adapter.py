@@ -852,7 +852,12 @@ class _PluginAdapter(BaseArchiveReader):
             head = data.read(1) or b""
         config = self._nested_config()
         # An inner archive salvages when this one was asked to, whether or not this
-        # format has a salvage search of its own.
+        # format has a salvage search of its own. The inner reader is built with
+        # streaming=True because its source is the member's data, which reads forward
+        # only. That is allowed with salvage: a salvage search reads forward within one
+        # call (``search_forward``), so it needs no seek. The refusal of
+        # ``streaming=True`` with ``salvage=True`` is for a caller's open_archive, whose
+        # source may be a pipe that cannot be read again.
         with (
             collector.member_ids_from(first),
             reading_inside(self),
