@@ -915,7 +915,7 @@ def _boot_block_flipper(which: set[int]) -> Callable[[int, bytes], bytes]:
     return encode
 
 
-def _two_volumes(*, merged: bool = False, flip: set[int] = frozenset()) -> bytes:  # type: ignore[assignment]
+def _two_volumes(*, merged: bool = False, flip: frozenset[int] = frozenset()) -> bytes:
     """Two HFS+ volumes in a GPT disk, in zlib runs of 8 sectors. With ``merged``,
     one run table covers both partitions and the sectors between them. ``flip``
     names the volumes whose boot blocks the stored runs change."""
@@ -949,7 +949,7 @@ def _failed(report) -> set[str]:
 
 
 def test_a_change_no_member_reads_is_caught_by_verify_all() -> None:
-    image = _two_volumes(flip={1})
+    image = _two_volumes(flip=frozenset({1}))
     with _open(image) as reader:
         # Every read passes: the changed byte is in no member's data.
         assert reader.read("Two/readme.txt") == b"in Two\n" * 50
@@ -970,7 +970,7 @@ def test_one_table_over_two_partitions_is_checked_whole() -> None:
         assert reader.verify_all().ok
         assert {m.verified for m in _files(reader)} == {Verification.CHECKSUM}
     # A change in the second partition fails the files of both.
-    with _open(_two_volumes(merged=True, flip={1})) as reader:
+    with _open(_two_volumes(merged=True, flip=frozenset({1}))) as reader:
         report = reader.verify_all()
         assert _failed(report) == {"One/readme.txt", "Two/readme.txt"}
         assert "both volumes" in str(report.failures[0][1])
@@ -1072,3 +1072,53 @@ def test_the_pass_is_held_to_the_archive_wide_ratio() -> None:
         assert member.verified is Verification.LENGTH
     with _open(image) as reader:
         assert reader.verify_all().ok
+
+
+def test_raw_runs_that_share_stored_bytes_count_toward_the_pass_ratio() -> None:
+    hfs = d.write_hfsplus([d.Node("a.txt", data=b"small\n")])
+    volume = hfs.volume + bytes(-len(hfs.volume) % d.SECTOR)
+    first_filler = len(volume) // d.SECTOR
+    filler = b"\x01" * (4 << 20)  # 1024 raw runs of 8 sectors past the volume
+    sectors = first_filler + len(filler) // d.SECTOR
+
+    def alias(index: int, mish: bytearray) -> None:
+        # Every filler run reads the first filler run's stored bytes.
+        (count,) = struct.unpack_from(">I", mish, d.MISH.size - 4)
+        first = None
+        for i in range(count):
+            at = d.MISH.size + d.RUN.size * i
+            kind, _, sector, _, offset, _ = d.RUN.unpack_from(mish, at)
+            if kind != d.RAW or sector < first_filler:
+                continue
+            if first is None:
+                first = offset
+            struct.pack_into(">QQ", mish, at + 24, first, 8 * d.SECTOR)
+
+    stored = [False]
+
+    def store_once(kind: int, data: bytes) -> bytes:
+        # The filler's bytes are stored once; ``alias`` points every run at them.
+        if data != filler[: len(data)]:
+            return data
+        if stored[0]:
+            return b""
+        stored[0] = True
+        return data
+
+    image = d.write_udif(
+        [volume, filler],
+        tables=[d.Table("disk image (Apple_HFS : 0)", 0, sectors)],
+        choose=lambda sector, data: d.RAW,
+        encode=store_once,
+        run_sectors=8,
+        patch_mish=alias,
+    ).image
+    assert len(image) < len(volume) + (256 << 10)
+    # 4 MiB of raw runs read from 4 KiB of stored filler: past a ratio of 2.
+    limits = DecoderLimits(max_ratio=2.0, ratio_activation_threshold=0)
+    with _open(image, config=ArchiveyConfig(decoder_limits=limits)) as reader:
+        assert reader.read("a.txt") == b"small\n"
+        ((member, error),) = reader.verify_all().failures
+        assert member.name == "a.txt"
+        assert "did not run" in str(error)
+        assert isinstance(error.__cause__, ResourceLimitError)

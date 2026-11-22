@@ -135,9 +135,10 @@ through `ReaderContext._spanning_pass`) after it has read the members:
 - The `koly` block's data-fork CRC-32 (the stored bytes read once more) and master
   checksum (a CRC-32 of the tables' CRC-32s in property-list order) are checked in the
   same pass, and a mismatch fails every checked file.
-- The compressed runs the pass decodes are held to `DecoderLimits.max_ratio` against
-  the file's size, on their own total. Past it, or on a codec the policy refuses, the
-  pass stops and the files it did not prove are failures saying the check did not run.
+- The runs the pass decodes or reads, raw ones included (runs may share stored bytes),
+  are held to `DecoderLimits.max_ratio` against the file's size, on their own total.
+  Past it, or on a codec the policy refuses, the pass stops and the files it did not
+  prove are failures saying the check did not run.
 - The pass runs once per reader; later `verify_all()` calls reuse its result.
 
 ### 2.5 Extract

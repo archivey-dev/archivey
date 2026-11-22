@@ -815,8 +815,10 @@ class UdifImage:
         """The CRC-32 of ``table``'s runs as the format defines it: every run but the
         ignore runs, decoded, in sector order. One run is in memory at a time (a raw
         one in slices); a zero-fill run is folded in without its bytes. Decode errors
-        raise, naming the run. ``draw(n)`` is told the decoded size of each
-        compressed run before it is decoded, and may raise to stop."""
+        raise, naming the run. ``draw(n)`` is told the size of each run that stores
+        bytes (compressed or raw) before any of it is read, and may raise to stop:
+        runs may share stored bytes, so even raw runs can read far more than the
+        file holds."""
         crc = 0
         for index in range(table.first_run, table.end_run):
             kind = self._kind[index]
@@ -827,6 +829,8 @@ class UdifImage:
                 crc = crc32_zeros(crc, size)
             elif kind == RAW:
                 self._check_raw(index)
+                if draw is not None:
+                    draw(size)
                 for at in range(0, size, CHECK_SLICE):
                     n = min(CHECK_SLICE, size - at)
                     data = self._read_file(

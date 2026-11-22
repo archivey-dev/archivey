@@ -331,7 +331,8 @@ class DmgReader(IndexedReader[FileData | None]):
         volume's partition, whole, once; then pass or fail each volume's check. One
         table that overlaps two partitions fails both.
 
-        The compressed runs the pass decodes are held to the archive-wide ratio
+        The runs the pass decodes or reads (compressed and raw: several runs may
+        point at the same stored bytes) are held to the archive-wide ratio
         (``DecoderLimits.max_ratio`` against the file's size), on their own total:
         member reads have their own. Past it, the pass stops, and the checks it did
         not finish did not run (``SpanningCheck.did_not_run``), as for a codec the
@@ -396,7 +397,7 @@ class DmgReader(IndexedReader[FileData | None]):
                 limits=config.decoder_limits,
                 static_size=size,
                 consumed=None,
-                counted="runs the DMG checksum pass decoded",
+                counted="runs the DMG checksum pass read",
             )
 
         return draw
