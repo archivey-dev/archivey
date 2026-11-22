@@ -253,6 +253,32 @@ def dmg_seeds() -> list[bytes]:
     return [b"", _koly_block(), b"encrcdsa" + bytes(504)] + images
 
 
+def dmg_apfs_seeds() -> list[bytes]:
+    """Small UDIF images of APFS containers from ``tests/apfs_build.py``: hashed and
+    plain keys, a tree of several leaves under an index root, a folder, a symlink, a
+    hard link, a sparse file, a clone, extended attributes (embedded and streamed) and
+    decmpfs files, in zlib runs (the 4 KiB blocks compress to a few KiB)."""
+    from tests import apfs_build as apfs, dmg_build as build
+
+    nodes = [
+        build.Node("a.txt", data=b"hello dmg\n", xattrs={"com.example": b"v"}),
+        build.Node("d/b.txt", data=b"x" * 5000, compression=8),
+        build.Node("d/c.txt", data=b"y" * 300, compression=3),
+        build.Node("l", kind="symlink", target="a.txt"),
+        build.Node("d/h", kind="hardlink", target="a.txt"),
+        build.Node("s.bin", data=b"s" * 4096 + bytes(4096) + b"t" * 4096),
+        build.Node("k.bin", data=b"s" * 4096 + bytes(4096) + b"t" * 4096),
+    ]
+    options = {"holes": {"s.bin": [(4096, 4096)]}, "clones": {"k.bin": "s.bin"}}
+    images = [
+        apfs.apfs_dmg(apfs.write_apfs(nodes, hashed=hashed, **options).container)  # type: ignore[arg-type]
+        for hashed in (True, False)
+    ]
+    split = apfs.write_apfs(nodes, leaf_records=4, omap_leaf_entries=2, **options)  # type: ignore[arg-type]
+    images.append(apfs.apfs_dmg(split.container, layout="none"))
+    return images
+
+
 def xar_seeds() -> list[bytes]:
     """Tiny blobs and the bsdtar archives in tests/fixtures/external/xar_bsdtar, one per
     encoding, each a few kilobytes."""

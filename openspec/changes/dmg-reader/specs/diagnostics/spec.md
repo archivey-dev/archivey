@@ -12,16 +12,19 @@ UDIF code signature outside the file or overlapping another structure, ignored),
 run tables' ranges are read), `"partition_name"` (a map type or run table name says
 another filesystem than the partition holds; the filesystem decides),
 `"partition_start"` (the map and a run table place a partition at different sectors;
-the map's range is read) or `"member_type"` (an HFS+ file's mode and Finder type
-disagree on whether it is a symlink; the mode decides, reported on the member). The
+the map's range is read), `"member_type"` (an HFS+ file's mode and Finder type
+disagree on whether it is a symlink, reported on the member, or an APFS directory
+entry's type disagrees with its inode's mode; the mode decides) or `"apfs_checkpoint"`
+(the newest APFS checkpoint is incomplete, and an older one is looked for). The
 code SHALL be in `ARCHIVE_INTEGRITY_CODES`, so `DiagnosticPolicy.STRICT` raises on it.
 
-A DMG image that holds, beside the HFS+ volumes it lists, a partition with contents
-archivey does not read (an APFS container, an HFS volume, or no known filesystem) SHALL
-report `ARCHIVE_UNLISTED_DATA` with `UnlistedDataContext`: `format="dmg"`, `member_name`
-the partition's name, `member_id=None`, `offset` its disk offset and `compressed_size`
-its length. A partition whose type holds no files (free space, the map itself, an EFI or
-Apple boot partition) SHALL not be reported.
+A DMG image that holds, beside the volumes it lists, a partition with contents archivey
+does not read (an HFS volume, an APFS container it refuses, or no known filesystem), or
+an APFS volume it refuses (encrypted or sealed), SHALL report `ARCHIVE_UNLISTED_DATA`
+with `UnlistedDataContext`: `format="dmg"`, `member_name` the partition's name (the
+volume's name for a refused APFS volume), `member_id=None`, `offset` the partition's
+disk offset and `compressed_size` its length. A partition whose type holds no files
+(free space, the map itself, an EFI or Apple boot partition) SHALL not be reported.
 
 #### Scenario: DMG structure reports
 
@@ -31,5 +34,7 @@ Apple boot partition) SHALL not be reported.
 | A GPT whose entries leave the disk in both copies | `structure="partition_map"`; the run tables' ranges are read |
 | An APM entry typed `Apple_APFS` holding HFS+ | `structure="partition_name"`; the volume is read |
 | A Finder symlink with a regular-file mode | `structure="member_type"` on the member; it lists as a file |
-| An APFS partition beside an HFS+ one | `ARCHIVE_UNLISTED_DATA` naming the APFS partition; the HFS+ volume is listed |
+| An HFS volume (an HFS wrapper) beside an HFS+ one | `ARCHIVE_UNLISTED_DATA` naming that partition; the HFS+ volume is listed |
+| An encrypted APFS volume beside a readable one | `ARCHIVE_UNLISTED_DATA` naming the encrypted volume; the other is listed |
+| A newest APFS checkpoint with a missing checkpoint-map block | `structure="apfs_checkpoint"`; the older complete checkpoint is read |
 | `DiagnosticPolicy.STRICT` and any of the above | The read raises |

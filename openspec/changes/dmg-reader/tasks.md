@@ -63,11 +63,11 @@ and the maintainer merges the PR that adds it (it adds triggers).
 
 ## E. APFS
 
-- [ ] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
+- [x] E.1 `apfs.py`: checkpoint, object maps, B-trees, Fletcher-64, filesystem records;
   damaged key ranges of skipped nodes (design §6A.6)
-- [ ] E.2 Reader integration; several volumes per container
-- [ ] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
-- [ ] E.4 Handbook page section
+- [x] E.2 Reader integration; several volumes per container
+- [x] E.3 `write_apfs` test writer; APFS fixtures; refusals; fuzz target
+- [x] E.4 Handbook page section
 
 ## F. Partition CRC-32
 

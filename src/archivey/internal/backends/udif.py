@@ -25,13 +25,14 @@ Detection keeps the ``koly`` signatures here (:data:`MAGIC`, :data:`TRAILER`): a
 from __future__ import annotations
 
 import bisect
+import contextlib
 import io
 import plistlib
 import struct
 import xml.parsers.expat
 from array import array
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from typing import TYPE_CHECKING, BinaryIO, NamedTuple
 
 from archivey.diagnostics import (
@@ -239,6 +240,8 @@ class UdifImage:
         # The open budget: the physical bytes read and the bytes decoded since the
         # property list, until ``end_open`` (design §7). ``None`` once open is done.
         self._budget: int | None = OPEN_BUDGET
+        self._budget_total = OPEN_BUDGET
+        self._budget_what = "opening the UDIF image"
         size = source.size
         if size is None:
             with source.view(0) as whole:
@@ -531,14 +534,27 @@ class UdifImage:
         budget."""
         self._budget = None
 
+    @contextlib.contextmanager
+    def budget(self, nbytes: int, what: str) -> Generator[None]:
+        """Count the physical bytes read and the bytes decoded inside the block
+        against ``nbytes``, as the open budget counts them; ``ResourceLimitError``
+        names ``what`` when they would exceed it. For a bounded step after the open,
+        such as the APFS checkpoint scan (design §6A.2)."""
+        saved = self._budget, self._budget_total, self._budget_what
+        self._budget, self._budget_total, self._budget_what = nbytes, nbytes, what
+        try:
+            yield
+        finally:
+            self._budget, self._budget_total, self._budget_what = saved
+
     def _spend(self, nbytes: int) -> None:
         if self._budget is None:
             return
         self._budget -= nbytes
         if self._budget < 0:
             raise ResourceLimitError(
-                f"opening the UDIF image read and decoded more than the "
-                f"{OPEN_BUDGET >> 20} MiB archivey allows at open"
+                f"{self._budget_what} read and decoded more than the "
+                f"{self._budget_total >> 20} MiB archivey allows for it"
             )
 
     def _read_file(self, offset: int, n: int, what: str) -> bytes:
