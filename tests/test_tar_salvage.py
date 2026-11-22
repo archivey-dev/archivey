@@ -913,7 +913,7 @@ def test_a_deb_extracts_a_member_bigger_than_the_hold(tmp_path: Path) -> None:
     ):
         reader.extract_all(tmp_path)
     written = {
-        str(p.relative_to(tmp_path)): p.read_bytes()
+        p.relative_to(tmp_path).as_posix(): p.read_bytes()
         for p in tmp_path.rglob("*")
         if p.is_file()
     }
@@ -1386,4 +1386,4 @@ def _gnu_extracts(path: Path, tmp_path: Path) -> set[str]:
         stdin=subprocess.DEVNULL,
         timeout=_GNU_TAR_TIMEOUT,
     )
-    return {str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()}
+    return {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
