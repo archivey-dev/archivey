@@ -40,6 +40,7 @@ from archivey.config import ArchiveyConfig, ListingLimits
 from archivey.cost import AccessCost, CostReceipt, ListingCost, StreamCapability
 from archivey.diagnostics import (
     ArchiveEofContext,
+    ArchiveStructureContext,
     DiagnosticCode,
     DigestContext,
 )
@@ -60,6 +61,7 @@ from archivey.internal.backends.sevenzip_detect import (
 )
 from archivey.internal.backends.sevenzip_methods import is_aes, lookup
 from archivey.internal.backends.sevenzip_parser import (
+    ZEROED_START_ERROR,
     EncodedHeader,
     FolderGraph,
     PlainHeader,
@@ -67,6 +69,7 @@ from archivey.internal.backends.sevenzip_parser import (
     SevenZipCoder,
     SevenZipFileRecord,
     SevenZipFolder,
+    SignatureInfo,
     compression_method_for_coder,
     empty_archive,
     encoded_header_slice,
@@ -377,7 +380,52 @@ def load_sevenzip_archive(
     signature = read_signature_and_next_header(fp, will_read=will_read)
     if not signature.header_data:
         return empty_archive(signature)
+    if signature.start_header_recovered_at is None:
+        return _load_from_signature(
+            fp,
+            signature,
+            passwords=passwords,
+            key_cache=key_cache,
+            stream_config=stream_config,
+            collector=collector,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+            budget=budget,
+        )
+    # The start header was zero and the next header was found by its position, as
+    # 7-Zip finds it. A header there that does not parse is the zero start header's
+    # error, as 7-Zip refuses the archive then.
+    try:
+        archive = _load_from_signature(
+            fp,
+            signature,
+            passwords=passwords,
+            key_cache=key_cache,
+            stream_config=stream_config,
+            collector=collector,
+            max_members=max_members,
+            max_metadata_bytes=max_metadata_bytes,
+            budget=budget,
+        )
+    except (CorruptionError, TruncatedError) as exc:
+        raise CorruptionError(ZEROED_START_ERROR) from exc
+    archive.start_header_recovered_at = signature.start_header_recovered_at
+    return archive
 
+
+def _load_from_signature(
+    fp: BinaryIO,
+    signature: SignatureInfo,
+    *,
+    passwords: _PasswordCandidates | None,
+    key_cache: SevenZipKeyCache | None,
+    stream_config: StreamConfig | None,
+    collector: DiagnosticCollector | None,
+    max_members: int | None,
+    max_metadata_bytes: int | None,
+    budget: NestDraws | StageDraws | None,
+) -> SevenZipArchive:
+    """Parse, decode and materialize the next header ``signature`` holds."""
     block = parse_header_block(signature.header_data, max_members=max_members)
     header_encrypted = False
     encoded_streams_end = 0
@@ -977,6 +1025,7 @@ class SevenZipReader(BaseArchiveReader):
             probe.close()
         self._volume_count = source.volume_count
         self._archive = self._load_archive()
+        self._report_recovered_start_header()
         self._init_folder_caches(self._archive)
         self._members = self._build_members()
         self._folder_members = self._members_by_folder()
@@ -1044,6 +1093,34 @@ class SevenZipReader(BaseArchiveReader):
                 self._origin + start, self._origin + end
             ),
             budget=self._stage_draws,
+        )
+
+    def _report_recovered_start_header(self) -> None:
+        """Report a start header that was zero, whose next header was found by its
+        position (``ARCHIVE_STRUCTURE_INCONSISTENT``, ``structure="start_header"``).
+
+        7-Zip opens such an archive with a warning and exit code 0: its write stopped
+        before it filled in the start header. ``offset`` is where the next header used
+        starts in the source.
+        """
+        recovered = self._archive.start_header_recovered_at
+        if recovered is None:
+            return
+        offset = self._origin + recovered
+        self._diagnostics_collector.emit(
+            code=DiagnosticCode.ARCHIVE_STRUCTURE_INCONSISTENT,
+            message=(
+                "7z start header is zero, as an interrupted 7-Zip write leaves it: "
+                f"the end header was found by its position, at offset {offset}, as "
+                "7-Zip finds it. No CRC covers where it was found."
+            ),
+            context=ArchiveStructureContext(
+                archive_name=self._archive_name,
+                format="7z",
+                structure="start_header",
+                offset=offset,
+            ),
+            logger=integrity_logger,
         )
 
     def _report_trailing_data(self) -> None:

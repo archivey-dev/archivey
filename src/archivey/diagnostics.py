@@ -153,14 +153,15 @@ class DiagnosticCode(StrEnum):
     but the sector addresses of a later data track start another one: the listing
     follows the sheet, and the image read without it lists that session."""
     ARCHIVE_STRUCTURE_INCONSISTENT = "archive_structure_inconsistent"
-    """A disk image's structures are damaged or disagree with each other in a way the
+    """An archive's structures are damaged or disagree with each other in a way the
     read works around, and the context's ``structure`` says which: a UDIF code signature
     outside the file (ignored), a primary GPT that fails its checks (the backup is
     read), a partition map that fails its checks (the run tables' ranges are read), a
     partition map or run table name that disagrees with the filesystem the partition
     holds (the filesystem decides), an HFS+ file whose mode and Finder type disagree on
-    whether it is a symlink (the mode decides). The listing comes from what the
-    read could check; another tool may read the damaged structure."""
+    whether it is a symlink (the mode decides), a 7z start header that is zero (the
+    end header is found by its position, as 7-Zip finds it). The listing comes from
+    what the read could check; another tool may read the damaged structure."""
     MEMBER_TIMESTAMP_INVALID = "member_timestamp_invalid"
     """A stored timestamp could not be used, so that time is left unset."""
     MEMBER_HEADER_DAMAGED = "member_header_damaged"
@@ -706,10 +707,10 @@ class UnreadSessionContext(_JsonSafeContext):
 
 @dataclass(frozen=True)
 class ArchiveStructureContext(_JsonSafeContext):
-    """A structure of a disk image that is damaged or disagrees with another, which
-    the read worked around (``ARCHIVE_STRUCTURE_INCONSISTENT``).
+    """A structure of a disk image or archive that is damaged or disagrees with
+    another, which the read worked around (``ARCHIVE_STRUCTURE_INCONSISTENT``).
 
-    ``format`` is ``"dmg"``. ``structure`` names it:
+    ``format`` is ``"dmg"`` or ``"7z"``. ``structure`` names it:
 
     - ``"code_signature"``: the UDIF code signature's range is outside the file or
       overlaps another structure. It is ignored; ``offset`` is where it says it starts.
@@ -727,6 +728,11 @@ class ArchiveStructureContext(_JsonSafeContext):
     - ``"member_type"``: an HFS+ file's BSD mode and its Finder type and creator
       disagree on whether it is a symlink; the mode decides. Reported on the member;
       ``offset`` is the file's catalog id.
+    - ``"start_header"`` (7z): the start header is zero, as 7-Zip leaves it when a
+      write stops before it fills it in, so the end header was found by its position,
+      as 7-Zip finds it: from the last pair of its first two bytes in the file's last
+      512 bytes, to the end of the file. ``offset`` is where that end header starts in
+      the source.
     """
 
     kind: Literal["archive_structure"] = "archive_structure"

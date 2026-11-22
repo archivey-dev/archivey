@@ -18,6 +18,12 @@ one line. How to write the entry: see
   (`ArchiveyConfig.salvage_limits`). No format has a salvage search yet, so every format
   reads as before and records `SALVAGE_UNAVAILABLE`.
 
+### Changed
+
+- A 7z whose start header is zero, as an interrupted 7-Zip write leaves it, now opens as
+  7-Zip opens it, with `ARCHIVE_STRUCTURE_INCONSISTENT`, instead of raising
+  `CorruptionError`.
+
 ## [0.5.1] - 2026-11-20
 
 A patch release with fixes for reading archives from a URL.

@@ -333,6 +333,10 @@ class SevenZipArchive:
     #: Signature-relative end of the archive: the later of the next header's end and
     #: the end of the last packed stream, an encoded header's own streams included.
     end_offset: int
+    #: Where the next header starts, signature-relative, when the start header was
+    #: zero and the next header was found by its position (7-Zip's rule for an
+    #: interrupted write, :func:`read_signature_and_next_header`); else ``None``.
+    start_header_recovered_at: int | None = None
 
 
 @dataclass(slots=True)
@@ -401,6 +405,9 @@ class SignatureInfo:
     # here or at its last packed stream, whichever is later (the reader takes the max
     # once the header has parsed).
     end_offset: int
+    # Where the next header starts, counted from the signature header, when the start
+    # header was zero and the next header was found by its position; else None.
+    start_header_recovered_at: int | None = None
 
 
 @dataclass(slots=True)
@@ -710,6 +717,8 @@ def read_signature_and_next_header(
             f"7z format version {fields.major_version}.{fields.minor_version} is not supported"
         )
     if not fields.start_header_crc_ok:
+        if start_header_is_zero(signature):
+            return _zeroed_start_header(fp, fields)
         raise CorruptionError("7z signature header CRC mismatch")
 
     if fields.next_header_offset > _MAX_SEEK_OFFSET:
@@ -754,6 +763,71 @@ def read_signature_and_next_header(
         fields.minor_version,
         header_data,
         SIGNATURE_HEADER_SIZE + fields.next_header_offset + fields.next_header_size,
+    )
+
+
+# How far from the end 7-Zip looks for the next header of an archive whose start header
+# is zero (``kCheckSize`` in 7zIn.cpp, ``FORMAT_7Z_RECOVERY``).
+ZEROED_START_TAIL = 512
+# The two bytes a next header starts with: kEncodedHeader then kPackInfo, or kHeader
+# then kMainStreamsInfo. 7-Zip's zeroed-start rule looks for these two pairs only.
+NEXT_HEADER_PAIRS = (b"\x17\x06", b"\x01\x04")
+ZEROED_START_ERROR = (
+    "7z signature header CRC mismatch: the start header is zero, as an interrupted "
+    "7-Zip write leaves it, and no end header was found in the last "
+    f"{ZEROED_START_TAIL} bytes"
+)
+
+
+def start_header_is_zero(signature: bytes) -> bool:
+    """Whether bytes 8 to 31 of the signature header, the start header and its CRC,
+    are all zero: what 7-Zip leaves when a write stops before it seeks back."""
+    return signature[8:SIGNATURE_HEADER_SIZE] == bytes(SIGNATURE_HEADER_SIZE - 8)
+
+
+def find_zeroed_start_next_header(tail: bytes) -> int | None:
+    """Where 7-Zip's rule for a zeroed start header puts the next header in ``tail``,
+    the last bytes of the file (at most :data:`ZEROED_START_TAIL`): the index of the
+    pair of :data:`NEXT_HEADER_PAIRS` nearest the end, or ``None``.
+
+    The last byte must be zero (a header's ``kEnd``), and fewer than three bytes is
+    no header, as in 7-Zip's ``FORMAT_7Z_RECOVERY``. Only the pair nearest the end
+    counts: the header runs from it to the end of the file.
+    """
+    if len(tail) < 3 or tail[-1] != 0:
+        return None
+    for index in range(len(tail) - 2, -1, -1):
+        if tail[index : index + 2] in NEXT_HEADER_PAIRS:
+            return index
+    return None
+
+
+def _zeroed_start_header(fp: BinaryIO, fields: SignatureHeaderFields) -> SignatureInfo:
+    """The next header of an archive whose start header is zero, found as 7-Zip finds
+    it: in the last 512 bytes, from the pair nearest the end to the end of the file.
+
+    7-Zip writes the start header as zeros first and fills it in last, so an
+    interrupted write leaves it zero with the archive otherwise whole. No CRC covers
+    the header found this way; an encoded header's decode still checks its folder
+    CRC. The archive is flagged at open (``ARCHIVE_STRUCTURE_INCONSISTENT``).
+    """
+    file_size = fp.seek(0, 2)
+    remaining = file_size - SIGNATURE_HEADER_SIZE
+    check = min(ZEROED_START_TAIL, remaining)
+    tail = b""
+    if check >= 3:
+        fp.seek(file_size - check)
+        tail = _read_stream_exact(fp, check, "7z next header")
+    found = find_zeroed_start_next_header(tail)
+    if found is None:
+        raise CorruptionError(ZEROED_START_ERROR)
+    header_start = file_size - check + found
+    return SignatureInfo(
+        fields.major_version,
+        fields.minor_version,
+        tail[found:],
+        file_size,
+        start_header_recovered_at=header_start,
     )
 
 

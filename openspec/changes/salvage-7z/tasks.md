@@ -11,14 +11,14 @@ stack on step 3's switch PR (`salvage-mode`).
 
 ## 1. Default: zeroed start header (PR 1)
 
-- [ ] 1.1 Fixtures: generate damaged copies in the test from 7-Zip archives written by
+- [x] 1.1 Fixtures: generate damaged copies in the test from 7-Zip archives written by
       the test (solid, non-solid, LZMA1, plain header of 150 and 594 bytes, BCJ, Delta,
       AES): bytes 8–31 zeroed; plus a non-zero byte; plus 16 zero bytes. Pin `7zz t` and
       `7z t` exit codes in a test that skips without them (DR-24).
-- [ ] 1.2 `read_signature_and_next_header`: the 512-byte rule, nearest pair only.
-- [ ] 1.3 `ARCHIVE_STRUCTURE_INCONSISTENT` with `structure="start_header"`; context
+- [x] 1.2 `read_signature_and_next_header`: the 512-byte rule, nearest pair only.
+- [x] 1.3 `ARCHIVE_STRUCTURE_INCONSISTENT` with `structure="start_header"`; context
       docstring; `STRICT` test.
-- [ ] 1.4 `dev-docs/formats/7z.md` §2.1: the zeroed rule and why.
+- [x] 1.4 `dev-docs/formats/7z.md` §2.1: the zeroed rule and why.
 
 ## 2. Salvage: header repair (PR 2)
 
