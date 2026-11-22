@@ -1643,7 +1643,7 @@ FILE header damaged unless stated.
 | Solid, a member with no stored digest after a listed damaged member | Its own bytes; `DIGEST_UNVERIFIABLE` (`reason="after_damaged_header"`) |
 | Solid RAR5, a name byte damaged, `stream_members()` | One pass; every member reads its own bytes; the damaged one flagged |
 | A RAR5 file copy or hard link whose source is the damaged member | Resolves to it as to any listed member |
-| From a pipe (`streaming=True`), a damaged member whose data and the next header fit in 4 MiB | As from a file: every member, the damaged one flagged |
+| From a pipe (`pipe=True`), a damaged member whose data and the next header fit in 4 MiB | As from a file: every member, the damaged one flagged |
 | From a pipe, a damaged member larger than 4 MiB | The members before it; `CorruptionError` saying a file would go on past the damage (from a file: every member) |
 | RAR 1.5-4, the last bytes of the third and fifth headers flipped (the fourth is intact) | Six listed, two flagged: the fifth confirms the fourth once its own sizes are confirmed |
 | `rar_decompressor="unar"`, read each member after the damage | Each returns its own bytes (the damaged member takes its `lsar` index, as `lsar` lists it) |

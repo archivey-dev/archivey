@@ -581,9 +581,10 @@ entries have no body of their own and SHALL be skipped; under `-v` each written 
 name SHALL go to stderr, and each skipped one as `skip NAME`. A pass reads forward
 only, so a link's target, an earlier member, is not read again for it.
 
-`ARCHIVE` `-` SHALL read the archive from stdin in streaming mode. When stdin is a pipe,
-a format that needs to seek SHALL be refused with the read-once message, naming the
-source as `stdin`; a redirect from a regular file can seek, so every format reads.
+`ARCHIVE` `-` SHALL read the archive from stdin in one forward pass, in pipe mode
+(`pipe=True`) when stdin cannot seek. When stdin is a pipe, a format that needs to seek
+SHALL be refused with the read-once message, naming the source as `stdin`; a redirect
+from a regular file can seek, so every format reads.
 
 Bytes reach stdout as they are decoded, so a member that fails its read or its digest
 check may already have written part or all of its bytes. The system SHALL then print the

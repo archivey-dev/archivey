@@ -156,7 +156,7 @@ def test_open_stream_peels_compressed_tar(
         assert _snapshot(peeled) == expected
 
     # The default forward-only stream is a non-seekable source, which open_archive
-    # reads in one pass under streaming=True, as it reads a pipe.
+    # reads only under pipe=True, as it reads a pipe.
     with open_archive(path, streaming=True) as direct:
         expected_pass = _stream_snapshot(direct)
     with open_stream(path) as stream, open_archive(stream, pipe=True) as peeled:

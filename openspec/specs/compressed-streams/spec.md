@@ -76,7 +76,7 @@ is refused as `ArchiveyUsageError` before detection runs, and so is
 | `open_stream("a.tar.gz")` | Returns the tar bytes; equal to `open_stream("a.tar.gz", format="gz").read()` |
 | `open_stream("a.tar.gz", format=ArchiveFormat.TAR_GZ)` or `format="tar.gz"` | The same tar bytes |
 | `open_archive(open_stream(p, seekable=True))` for every compressed-tar corpus fixture | Same members (every compared field) and data as `open_archive(p)`; `format` is `TAR` |
-| `open_archive(open_stream(p), streaming=True)` | Same `stream_members()` pass as `open_archive(p, streaming=True)` |
+| `open_archive(open_stream(p), pipe=True)` | Same `stream_members()` pass as `open_archive(p, streaming=True)` |
 | `open_stream("a.tar")`, `open_stream("a.zip")` | `FormatDetectionError` |
 | `open_stream(p, format=ArchiveFormat.TAR)`, `format=ArchiveFormat.ZIP` | `ArchiveyUsageError` |
 

@@ -467,9 +467,9 @@ the walk yielded before it.
 
 What archivey does with the spans:
 
-- **Pipes and passes.** Opened with `streaming=True`, the walk is the reader's one
-  forward pass, so `stream_members()`, iteration and `extract_all()` each read the
-  archive once, from a pipe too. The listing limits count members as they arrive.
+- **Pipes and passes.** Opened with `streaming=True` (or `pipe=True`, for a pipe), the
+  walk is the reader's one forward pass, so `stream_members()`, iteration and
+  `extract_all()` each read the archive once. The listing limits count members as they arrive.
 - **Random access on a file.** Opened from a file or a seekable stream without
   `streaming=True`, archivey walks the archive once to list it and records where each
   member's data starts. `open()` and `read()` then read a member directly, in any order.

@@ -197,10 +197,10 @@ def open_for_cli(
     (``pipe=True``): the user cannot choose the mode, so the CLI chooses the one that
     can work. Each verb then reads the archive in one forward pass. A verb that reads
     ``-`` from stdin passes the stream as ``stdin``, which opens in pipe mode as well
-    when it cannot seek; for
-    every other verb ``-`` is refused. ``format`` skips detection, as
-    ``open_archive(format=)`` does. ``progress`` shows how far the archive's file is
-    read (``ArchiveyConfig.on_source_read``); it is closed when the block ends.
+    when it cannot seek; for every other verb ``-`` is refused. ``format`` skips
+    detection, as ``open_archive(format=)`` does. ``progress`` shows how far the
+    archive's file is read (``ArchiveyConfig.on_source_read``); it is closed when the
+    block ends.
     """
     source: Any
     if archive == "-" and stdin is not None:

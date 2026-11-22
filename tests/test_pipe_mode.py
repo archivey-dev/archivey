@@ -22,12 +22,15 @@ from archivey import (
     StreamCapability,
     StreamNotSeekableError,
 )
+from tests.conftest import unrar_reads_from_pipes
 from tests.iso_minimal import minimal_iso
 from tests.streams_util import NonSeekableBytesIO
 
 FIXTURE_7Z = (
     Path(__file__).parent / "fixtures" / "damaged_member" / "7z_copy_nonsolid.7z"
 )
+SPANNED_ZIP = Path(__file__).parent / "fixtures" / "external" / "zip_spanned_infozip"
+RAR_FIXTURES = Path(__file__).parent / "fixtures" / "rar"
 
 
 def _zip_with_symlink() -> bytes:
@@ -288,3 +291,46 @@ def test_a_format_that_needs_seek_is_refused_under_pipe(make) -> None:
     # Without the flag, the seekable source reads as usual.
     with archivey.open_archive(io.BytesIO(data)) as reader:
         assert reader.members()
+
+
+def _split_zip(tmp_path: Path) -> Path:
+    """A stdlib ZIP cut in two numbered parts, ``s.zip.001`` and ``s.zip.002``."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("a.txt", "a" * 1000)
+        zf.writestr("b.txt", "b" * 1000)
+    data = buf.getvalue()
+    half = len(data) // 2
+    (tmp_path / "s.zip.001").write_bytes(data[:half])
+    (tmp_path / "s.zip.002").write_bytes(data[half:])
+    return tmp_path / "s.zip.001"
+
+
+@pytest.mark.parametrize("kind", ["spanned-path", "spanned-list", "split-path"])
+def test_a_volume_set_is_refused_under_pipe(kind: str, tmp_path: Path) -> None:
+    # One stream cannot join a set's parts; the refusal says so instead of asking for
+    # the parts the caller already gave.
+    if kind == "spanned-path":
+        source: object = SPANNED_ZIP / "set.zip"
+    elif kind == "spanned-list":
+        source = [SPANNED_ZIP / name for name in ("set.z01", "set.z02", "set.zip")]
+    else:
+        source = _split_zip(tmp_path)
+    with pytest.raises(ArchiveyUsageError, match="volume set of") as info:
+        archivey.open_archive(source, pipe=True)  # type: ignore[call-overload]  # source kinds vary
+    assert "without pipe=True" in str(info.value)
+    with archivey.open_archive(source, streaming=True) as reader:  # type: ignore[call-overload]  # source kinds vary
+        assert [m for m, _ in reader.stream_members()]
+
+
+@pytest.mark.skipif(
+    not unrar_reads_from_pipes(), reason="requires RARLAB unrar 7.00 or later"
+)
+def test_a_rar_volume_set_is_refused_under_pipe() -> None:
+    with pytest.raises(
+        StreamNotSeekableError, match="cannot be read as a pipe"
+    ) as info:
+        archivey.open_archive(RAR_FIXTURES / "stdin_vol.part1.rar", pipe=True)
+    message = str(info.value)
+    assert "without pipe=True" in message
+    assert "Open the volumes as files" not in message

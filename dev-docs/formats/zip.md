@@ -16,7 +16,7 @@ states the behaviour and links the row.
 | Stream capability | `SEEKABLE`; `FORWARD_ONLY` from a pipe |
 | Core dependencies | None — ZIP reads on a zero-dependency install |
 | Optional | `[recommended]`: Deflate64 (`inflate64`), PPMd (`pyppmd`), Zstd (`backports.zstd`, stdlib on 3.14+), WinZip AES (`cryptography`) |
-| Refuses | A pipe under `streaming=False` · from a pipe, a bit-3 LZMA member without the end marker (§2.2.2) · a split or spanned set with parts missing (both kinds are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
+| Refuses | A pipe without `pipe=True` · from a pipe, a bit-3 LZMA member without the end marker (§2.2.2) · a split or spanned set with parts missing (both kinds are joined, §2.2) · unknown compression methods, at read · LZMA with `lc + lp` over 4 and PPMd restore method 2, at read (§2.3) · AES without `cryptography` · PKWARE Strong Encryption, at read (§2.3) |
 
 The extras are named for what they provide, not for ZIP, because every one of those
 codecs is shared with 7z or TAR. See [`packaging-and-extras`](../../openspec/specs/packaging-and-extras/spec.md).

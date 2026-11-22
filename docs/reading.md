@@ -89,8 +89,10 @@ the same result on a pipe and on a file, and you can test code meant for a pipe 
 What a pipe gives isn't always what a file gives, and that is why archivey doesn't switch to it on
 its own. TAR, ZIP, cpio, ar, deb, RPM and makeself archives and single compressed files can come
 from a pipe, and so can a RAR archive when RARLAB `unrar` 7.00 or later is installed
-([RAR](formats.md#rar)). 7z, ISO, SquashFS, CAB, XAR, LHA and ARJ archives need a file or another
-source that can seek. `archivey.format_availability(format).required_source` says which a format
+([RAR](formats.md#rar)), in one volume. 7z, ISO, SquashFS, CAB, XAR, LHA and ARJ archives need a
+file or another source that can seek. So does a set of volumes, such as a split ZIP or a RAR in
+several parts, because a pipe carries one stream: open the set without `pipe=True`.
+`archivey.format_availability(format).required_source` says which a format
 needs. [Reading from a pipe](formats.md#reading-from-a-pipe) lists what changes for each format.
 
 A ZIP keeps the full details of its members, such as permissions, symlinks and comments, in an

@@ -5,27 +5,41 @@ a download in progress) can be read once, front to back. Remote objects sit in b
 you can seek, but each seek can cost a network round trip. Archive formats were designed
 with different assumptions: ZIP puts its index at the end, 7z too, TAR has no index at all,
 and compressed data cannot be entered in the middle. Archivey's answer is to make the
-caller say what they will do (`streaming=`), to keep the expensive capabilities off until
-asked for (`seekable_members=`, `concurrent_operations=`), to never buffer a pipe behind
-the caller's back, and then to make each format do the best it honestly can in each mode.
-This page explains the three switches, what each format can do from a pipe, and every
-place where the code had to bend.
+caller say what they will do (`streaming=`) and whether the source is a pipe (`pipe=`),
+to keep the expensive capabilities off until asked for (`seekable_members=`,
+`concurrent_operations=`), to never buffer a pipe behind the caller's back, and then to
+make each format do the best it honestly can in each mode. This page explains the
+switches, what each format can do from a pipe, and every place where the code had to
+bend.
 
-## The three switches, and why they exist
+## The switches, and why they exist
 
 ### `streaming` (ADR 0004)
 
 `open_archive(source, streaming=False)` (the default) promises random access: list the
 members, open any of them, in any order, as often as you like. That needs a source that
 can seek. `streaming=True` is the caller's promise to read once, front to back, through
-`stream_members()`, iteration or `extract_all()`; in exchange, archivey can read from a
-pipe. `members()`, `get()`, `open()` and `read()` raise on a streaming reader, uniformly,
-for every format. Even the types say so: `open_archive(..., streaming=True)` is annotated
-to return a `ForwardArchiveReader`, which lacks those methods.
+`stream_members()`, iteration or `extract_all()`. It still needs a source that can seek;
+a pipe takes `pipe=True` (below). `members()`, `get()`, `open()` and `read()` raise on a
+streaming reader, uniformly, for every format. Even the types say so:
+`open_archive(..., streaming=True)` is annotated to return a `ForwardArchiveReader`,
+which lacks those methods.
 
 An earlier design had an `Intent` enum (`AUTO`, `SEQUENTIAL`, `RANDOM`). It was dropped:
 `AUTO` never chose anything by itself, so there were really two modes, and a bool says
 that (ADR [0004](../decisions/0004-streaming-bool-not-intent-enum.md)).
+
+### `pipe` (maintainer, 2026-11-21)
+
+`open_archive(source, pipe=True)` reads the source once, front to back, as a pipe is
+read, whatever the object can do, and implies `streaming=True`. It is the only mode that
+reads a source that cannot seek: without it, such a source raises
+`StreamNotSeekableError` at open in both other modes. Reading a pipe differs from a
+one-pass read of a file for some formats (a ZIP's modes and symlinks arrive with its
+index at the end), so the caller chooses it rather than getting it because the object
+they passed happened not to seek. A seekable source under `pipe=True` is wrapped as a
+forward-only view (`ArchiveSource.read_as_pipe`), so the same call gives the same result
+on a pipe and on a file.
 
 ### `seekable_members` and `concurrent_operations` (ADR 0003)
 
@@ -51,10 +65,10 @@ own: several threads can open members, run passes and extract at once. Combined 
 
 ### No silent buffering (ADR 0010)
 
-With `streaming=False` and a pipe, archivey refuses at open. It does not quietly copy the
-pipe to memory or a temp file "to make ZIP work". That copy has no bound, and a caller who
-thought they were streaming would never see it. The error says what to do: open with
-`streaming=True`, or buffer it yourself (ADR
+Without `pipe=True`, a pipe is refused at open. With it, a format that needs to seek is
+refused. Archivey does not quietly copy the pipe to memory or a temp file "to make ZIP
+work". That copy has no bound, and a caller who thought they were streaming would never
+see it. The error says what to do: open with `pipe=True`, or buffer it yourself (ADR
 [0010](../decisions/0010-no-silent-buffer-nonseekable.md)). The one place archivey does
 copy a source to disk is RAR's `unrar`, which can only read files, and that copy is
 bounded by `SpoolLimits` and declared ([below](#rar-an-external-program-that-wants-a-file)).
@@ -64,7 +78,7 @@ bounded by `SpoolLimits` and declared ([below](#rar-an-external-program-that-wan
 The backend declares it (`SUPPORTS_STREAMING_NON_SEEKABLE` and `NON_SEEKABLE_REASON` on
 the `ReadBackend`; `non_seekable_reason` on an indexed handler):
 
-| Format | From a pipe (`streaming=True`) | Why |
+| Format | From a pipe (`pipe=True`) | Why |
 | --- | --- | --- |
 | TAR, `.tar.gz` and every compressed TAR | Yes | Header, data, header, data: made for tapes |
 | CPIO, ar, RPM, deb | Yes | The same shape (sequential readers) |

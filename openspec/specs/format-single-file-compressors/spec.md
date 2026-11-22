@@ -78,8 +78,8 @@ The backend SHALL expose these properties for every single-file compressor:
 
 Random access over a non-seekable source SHALL fail fast at open with
 `StreamNotSeekableError`; the backend MUST NOT buffer an unbounded source to
-simulate repeatable reads. Under `streaming=True`, every supported single-file
-codec including unix-compress `.Z` SHALL stream from non-seekable sources.
+simulate repeatable reads. Under `pipe=True`, every supported single-file codec
+including unix-compress `.Z` SHALL stream from non-seekable sources.
 
 Member-stream seekability is a stream-level property from index- or
 accelerator-backed decoders (for example xz indexes, CLEAR seek points for

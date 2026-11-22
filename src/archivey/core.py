@@ -722,7 +722,8 @@ def _read_as_pipe(resolved: ResolvedSource) -> ResolvedSource:
     A source that cannot seek already is one. A source that can is wrapped so that
     detection and the backend read it once, front to back, exactly as a pipe carrying
     the same bytes, with no path, volume paths or size to go by. A directory has no
-    bytes to carry and is refused. Closes the source when it raises.
+    bytes to carry, and a volume set's parts cannot be joined from one stream, so both
+    are refused. Closes the source when it raises.
     """
     source = resolved.source
     if source.is_directory:
@@ -730,6 +731,14 @@ def _read_as_pipe(resolved: ResolvedSource) -> ResolvedSource:
         raise _UsageValueError(
             "open_archive(pipe=True) reads a stream of bytes, and a directory is not "
             "one; open the directory without pipe=True."
+        )
+    parts = len(source.volume_paths)
+    if parts > 1:
+        source.close()
+        raise _UsageValueError(
+            f"open_archive(pipe=True) reads one stream, and this source is a volume "
+            f"set of {parts} parts, which a single stream cannot join; open the set "
+            "without pipe=True."
         )
     if not source.seekable():
         return resolved
@@ -1203,10 +1212,10 @@ def _backend_for_source(
     if source_is_read_once and not pipe:
         raise StreamNotSeekableError(
             f"This {resolved_format.display_name} source cannot seek, so it can be "
-            f"read only as a pipe, which differs from reading a file: a ZIP's "
-            f"permissions and symlinks arrive only at its end, damaged data can lose "
-            f"more, and detection sees only the start. Pass pipe=True to read it that "
-            f"way, or copy it to a file or a BytesIO first.",
+            "read only as a pipe, which can differ from reading a file (for example, "
+            "a ZIP's permissions and symlinks arrive only at its end, and damaged "
+            "data can lose more). Pass pipe=True to read it that way, or copy it to a "
+            "file or a BytesIO first.",
             source_format=resolved_format,
             archive_name=archive_name,
         )
@@ -1397,7 +1406,7 @@ def open_stream(
     For a compressed tar (``.tar.gz``, ``.tar.xz``, …), whether detected or passed as
     ``format=ArchiveFormat.TAR_GZ`` and so on, the returned stream removes the
     compression layer only and yields the tar bytes, as ``gzip.open`` does;
-    ``open_archive(open_stream(p), streaming=True)`` then lists the same members as
+    ``open_archive(open_stream(p), pipe=True)`` then lists the same members as
     ``open_archive(p)``. Any other container (ZIP, 7z, RAR, ISO, an uncompressed tar)
     has no compression layer to remove: detecting one raises
     :class:`~archivey.FormatDetectionError`, and passing one as ``format=`` raises
