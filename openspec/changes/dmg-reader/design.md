@@ -797,6 +797,15 @@ both with
 
 ### 6B.2 The v2 header (verify against the fixtures)
 
+> **Confirmed in Part G (2026-11-22)** on the four `hdiutil` fixtures; the confirmed
+> layout is in `dev-docs/formats/dmg.md` §2.1.1. Two differences from what follows:
+> macOS 26 wraps the key with **AES-192**-CBC (cipher `0x80000001`), stating an IV size
+> of 8 but using the IV field's first 16 bytes, and its blocks are **512** bytes. Part G
+> reads the wrap by its cipher field (AES, or 3DES as below for older images) and
+> block sizes 512 and 4096. The unwrapped key ends with the mark `CKIE\0`. The API
+> calls are the merged plugin password API (`NeedsPassword` from the handler's `open`),
+> not the `ReaderContext.unlock` of §6B.0.
+
 Big-endian. Layout as documented by vfdecrypt, dmg2img and the libyal notes on the
 "encrypted disk image" format; the implementer confirms each offset on
 `hfs-UDZO-AES-128.dmg` and `hfs-UDZO-AES-256.dmg` first and writes the confirmed layout
@@ -1220,7 +1229,7 @@ depend on A; the order after B is flexible except where noted.
 | **D. Hidden-content and edge polish** | Anything Part B's review defers: journal hiding cases, directory hard links if a fixture appears, xattr value caps, extra checks found by the corpus run. May be empty. | B | agent |
 | **E. APFS** | §6A: `apfs.py`, the reader using it, `write_apfs` builder, APFS fixtures, D5 multi-volume listing, Fletcher-64, refusals (encrypted volume, sealed, Fusion), fuzz target, handbook page section. | B | maintainer (new filesystem; davi decision D5) |
 | **F. Partition CRC-32 spanning check** | D4, as a partition pass (details in §7.2). | B | maintainer (changes a verification guarantee) |
-| **G. Encrypted images** | §6B: `dmg_crypto.py`, TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
+| **G. Encrypted images** | §6B: `dmg_encrypted.py`, AES and TripleDES key unwrap, password flow, `EncryptedDmgSource`, `encrypt_dmg` builder, AES fixtures. Starts by confirming §6B.2 on the fixtures and writing the confirmed layout into the handbook page. Works for HFS+ at once and for APFS once E is in. | B, and the plugin-interface password change (§6B.0); E for APFS images | maintainer (password handling, new crypto code) |
 | **H. LZFSE accelerator** | D3 as ruled in A0.2: archivey's own LZFSE and LZVN kernel in the `archivey-codecs` Rust package, with a bounded output and the same checks as the Python decoder, so the result never changes. archivey uses it when the package is installed. Tests that both decoders agree on every fixture and on the A0 fuzz corpus; `--all-configs` run. | A, and the `archivey-codecs` package | maintainer (new dependency) |
 
 Each part's PR body says which part of this plan it implements and lists any place it

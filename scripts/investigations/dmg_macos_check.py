@@ -7,8 +7,11 @@ Runs on macOS only, where ``hdiutil`` and ``fsck_hfs`` are. Two parts:
   ``fsck_hfs -n``; and once attached read-only, the mounted volume must hold what the
   writer put there (file bytes, hard links, symlinks, resource forks, extended
   attributes, compressed files read back through the file system).
+  The writer's encrypted images (``encrypt_dmg``: each key size, both key wraps, both
+  block sizes) are attached with the password ``archivey``.
 - **reader** (M.2): ``hdiutil create`` makes a fresh image of a small tree in every
-  format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO) and filesystem (HFS+, HFSX); archivey's
+  format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO), and UDZO encrypted with AES-128 and
+  AES-256 (password ``archivey``), and filesystem (HFS+, HFSX); archivey's
   listing, file hashes and one extended attribute must match the mounted volume's.
   The source tree holds a decmpfs-compressed file; each row notes whether it is still
   compressed inside the image.
@@ -48,6 +51,9 @@ FORMATS = ("UDZO", "UDBZ", "ULFO", "ULMO", "UDRO", "UDCO")
 # Formats that a newer hdiutil may no longer create; a refusal skips the row.
 OPTIONAL_FORMATS = frozenset({"UDCO"})
 FILESYSTEMS = ("HFS+", "HFSX")
+# The encrypted images: UDZO under each cipher, all with this password.
+ENCRYPTIONS = ("AES-128", "AES-256")
+PASSWORD = "archivey"
 # The M.2 source tree's extended attribute and transparently compressed file.
 XATTR_FILE, XATTR_NAME, XATTR_VALUE = "hello.txt", "com.example.test", b"xattr value"
 COMPRESSED_FILE = "compressed.txt"
@@ -71,9 +77,18 @@ class Result:
         return "ok" if not self.problems else "FAILED"
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
+def _run(*args: str, password: str | None = None) -> subprocess.CompletedProcess[str]:
+    """``args`` run; with ``password``, ``-stdinpass`` is added and the password sent
+    on standard input, which ``hdiutil`` reads to its end."""
+    if password is not None:
+        args = (*args[:2], "-stdinpass", *args[2:])
     return subprocess.run(
-        list(args), capture_output=True, text=True, timeout=TIMEOUT, check=False
+        list(args),
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT,
+        check=False,
+        input=password,
     )
 
 
@@ -82,7 +97,9 @@ def _nfc(text: str) -> str:
 
 
 @contextmanager
-def _attached(image: Path, *, mount: bool) -> Iterator[tuple[list[str], Path | None]]:
+def _attached(
+    image: Path, *, mount: bool, password: str | None = None
+) -> Iterator[tuple[list[str], Path | None]]:
     """The image attached read-only: its HFS device nodes, and its mount point."""
     args = ["hdiutil", "attach", "-readonly", "-nobrowse", "-noverify", "-plist"]
     mount_dir = None
@@ -92,7 +109,7 @@ def _attached(image: Path, *, mount: bool) -> Iterator[tuple[list[str], Path | N
     else:
         args.append("-nomount")
     try:
-        done = _run(*args, str(image))
+        done = _run(*args, str(image), password=password)
     except subprocess.TimeoutExpired:
         _remove_mount_dir(mount_dir)
         raise
@@ -185,7 +202,7 @@ def _xattr(path: Path, name: str) -> bytes | None:
 # ── M.1: the writer's images ─────────────────────────────────────────────────────────
 
 
-def _writer_cases() -> Iterator[tuple[str, bytes, list]]:
+def _writer_cases() -> Iterator[tuple[str, bytes, list, str | None]]:
     from tests import dmg_build as d
     from tests.test_dmg import _tree
 
@@ -201,23 +218,37 @@ def _writer_cases() -> Iterator[tuple[str, bytes, list]]:
     for layout in ("gpt", "apm", "none"):
         for label, codec in codecs.items():
             image = d.dmg_of(_tree(), layout=layout, codec=codec, hfs_options=hfs)
-            yield f"{layout} {label}", image, _tree()
+            yield f"{layout} {label}", image, _tree(), None
     for label, options in (("hfsx", {"hfsx": True}), ("journal", {"journal": "clean"})):
         image = d.dmg_of(_tree(), hfs_options={**hfs, **options})
-        yield f"gpt zlib {label}", image, _tree()
+        yield f"gpt zlib {label}", image, _tree(), None
+    plain = d.dmg_of(_tree(), hfs_options=hfs)
+    for label, wrap, key_bits, block_size in (
+        ("aes-128", "aes", 128, 512),
+        ("aes-256", "aes", 256, 512),
+        ("aes-128 3des-wrap", "3des", 128, 512),
+        ("aes-128 4096-blocks", "aes", 128, 4096),
+    ):
+        entry = d.EncryptedEntry(password=PASSWORD.encode(), wrap=wrap)
+        image = d.encrypt_dmg(
+            plain, entries=[entry], key_bits=key_bits, block_size=block_size
+        )
+        yield f"gpt zlib {label}", image, _tree(), PASSWORD
 
 
-def _check_writer_image(name: str, image: bytes, nodes: list, work: Path) -> Result:
+def _check_writer_image(
+    name: str, image: bytes, nodes: list, password: str | None, work: Path
+) -> Result:
     result = Result(name)
     path = work / f"{name.replace(' ', '-')}.dmg"
     path.write_bytes(image)
     try:
-        verify = _run("hdiutil", "verify", str(path))
+        verify = _run("hdiutil", "verify", str(path), password=password)
         if verify.returncode != 0:
             result.problems.append(
                 f"hdiutil verify: {verify.stderr.strip() or verify.stdout.strip()}"
             )
-        with _attached(path, mount=False) as (devices, _):
+        with _attached(path, mount=False, password=password) as (devices, _):
             for device in devices:
                 fsck = _run("fsck_hfs", "-n", device)
                 said = fsck.stdout + fsck.stderr
@@ -229,7 +260,7 @@ def _check_writer_image(name: str, image: bytes, nodes: list, work: Path) -> Res
                     lines = (fsck.stdout + fsck.stderr).strip().splitlines()
                     tail = " ".join(lines[-4:])
                     result.problems.append(f"fsck_hfs -n {device}: {tail}")
-        with _attached(path, mount=True) as (_, root):
+        with _attached(path, mount=True, password=password) as (_, root):
             assert root is not None
             result.problems += _compare_with_nodes(root, nodes)
     except _IMAGE_ERRORS as exc:
@@ -318,7 +349,7 @@ def _is_decmpfs(path: Path) -> bool:
 
 
 def _archivey_tree(
-    image: Path,
+    image: Path, password: str | None = None
 ) -> tuple[dict[str, tuple[str, object]], bytes | None, set[frozenset[str]]]:
     """archivey's listing (name -> (kind, value)), the source tree's extended
     attribute as archivey lists it, and its hard links as sets of names."""
@@ -327,7 +358,7 @@ def _archivey_tree(
     found: dict[str, tuple[str, object]] = {}
     xattr = None
     hashes: dict[str, str] = {}
-    with open_archive(image) as reader:
+    with open_archive(image, password=password) as reader:
         members = reader.members()
         for member in members:
             name = _nfc(member.name.rstrip("/"))
@@ -356,12 +387,18 @@ def _archivey_tree(
     return found, xattr, {frozenset(names) for names in groups.values()}
 
 
-def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
-    result = Result(f"{fmt} {fs}")
-    image = work / f"{fmt}-{fs.replace('+', 'P')}.dmg"
+def _check_fresh_image(
+    fmt: str, fs: str, src: Path, work: Path, encryption: str | None = None
+) -> Result:
+    label = fmt if encryption is None else f"{fmt} {encryption}"
+    result = Result(f"{label} {fs}")
+    image = work / f"{label.replace(' ', '-')}-{fs.replace('+', 'P')}.dmg"
+    password = None if encryption is None else PASSWORD
+    cipher = () if encryption is None else ("-encryption", encryption)
     made = _run(
         "hdiutil",
         "create",
+        *cipher,
         "-srcfolder",
         str(src),
         "-format",
@@ -372,6 +409,7 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
         "Vol",
         "-ov",
         str(image),
+        password=password,
     )
     if made.returncode != 0:
         message = f"hdiutil create: {made.stderr.strip()[:200]}"
@@ -382,12 +420,12 @@ def _check_fresh_image(fmt: str, fs: str, src: Path, work: Path) -> Result:
         return result
     ours_xattr, ours_links = None, set()
     try:
-        ours, ours_xattr, ours_links = _archivey_tree(image)
+        ours, ours_xattr, ours_links = _archivey_tree(image, password)
     except Exception as exc:  # noqa: BLE001 - every refusal is a result here
         result.problems.append(f"archivey: {type(exc).__name__}: {exc}")
         ours = {}
     try:
-        with _attached(image, mount=True) as (_, root):
+        with _attached(image, mount=True, password=password) as (_, root):
             assert root is not None
             theirs = _mounted_tree(root)
             theirs_links = _mounted_links(root)
@@ -457,8 +495,8 @@ def main() -> int:
             work = Path(tmp)
             if args.part in ("writer", "both"):
                 writer = [
-                    _check_writer_image(n, i, nodes, work)
-                    for n, i, nodes in _writer_cases()
+                    _check_writer_image(n, i, nodes, password, work)
+                    for n, i, nodes, password in _writer_cases()
                 ]
                 lines += _table("Writer images (M.1)", writer)
                 failed |= any(r.problems for r in writer)
@@ -473,6 +511,10 @@ def main() -> int:
                     reader = [
                         _check_fresh_image(fmt, fs, src, work)
                         for fmt in FORMATS
+                        for fs in FILESYSTEMS
+                    ] + [
+                        _check_fresh_image("UDZO", fs, src, work, encryption)
+                        for encryption in ENCRYPTIONS
                         for fs in FILESYSTEMS
                     ]
                     lines += _table(

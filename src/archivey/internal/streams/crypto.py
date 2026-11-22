@@ -135,6 +135,13 @@ class CryptoBackend(ABC):
         """Create an AES-CTR stage for ``params`` (see :class:`AesCtrParams`)."""
         ...
 
+    @abstractmethod
+    def triple_des_cbc_decrypt(self, key: bytes, iv: bytes, data: bytes) -> bytes:
+        """Decrypt ``data``, whole 8-byte blocks, with 3DES-EDE in CBC mode (a 24-byte
+        ``key``, an 8-byte ``iv``), leaving any padding in place. Only old encrypted
+        DMG images use it, to wrap their AES key; never for member data."""
+        ...
+
 
 class _CryptographyDecryptStage:
     """AES-256-CBC decrypt stage backed by ``cryptography`` Cipher."""
@@ -253,6 +260,21 @@ class _CryptographyBackend(CryptoBackend):
     @override
     def aes_ctr_keystream_stage(self, params: AesCtrParams) -> KeystreamStage:
         return _CryptographyCtrStage(params)
+
+    @override
+    def triple_des_cbc_decrypt(self, key: bytes, iv: bytes, data: bytes) -> bytes:
+        # The decrepit module holds TripleDES from cryptography 43 on; the copy under
+        # ``primitives`` warns and is due for removal.
+        from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+        from cryptography.hazmat.primitives.ciphers import Cipher, modes
+
+        if len(key) != 24 or len(iv) != 8 or len(data) % 8:
+            raise ValueError(
+                f"3DES-CBC takes a 24-byte key, an 8-byte IV and whole 8-byte blocks, "
+                f"not {len(key)}, {len(iv)} and {len(data)} bytes"
+            )
+        decryptor = Cipher(TripleDES(key), modes.CBC(iv)).decryptor()
+        return decryptor.update(data) + decryptor.finalize()
 
 
 def _crypto_available() -> bool:

@@ -20,6 +20,7 @@ on:
       - "src/archivey/internal/backends/disk_partitions.py"
       - "src/archivey/internal/backends/hfsplus.py"
       - "src/archivey/internal/backends/dmg_reader.py"
+      - "src/archivey/internal/backends/dmg_encrypted.py"
       - "src/archivey/internal/streams/codecs/adc_decoder.py"
       - "src/archivey/internal/streams/codecs/lzfse_decoder.py"
       - "tests/dmg_build.py"

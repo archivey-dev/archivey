@@ -535,6 +535,23 @@ def test_an_excluded_cryptography_refuses_rar_header_decryption() -> None:
         assert reader.members()
 
 
+@_both_forms
+@requires("cryptography")
+def test_an_excluded_cryptography_refuses_an_encrypted_dmg() -> None:
+    path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "external"
+        / "dmg_hdiutil"
+        / "hfs-UDZO-AES-128.dmg"
+    )
+    with pytest.raises(PackageNotInstalledError) as exc_info:
+        open_archive(path, password="archivey", config=_excluding(L.CRYPTOGRAPHY))
+    _assert_refused_by_policy(exc_info.value, L.CRYPTOGRAPHY)
+    with open_archive(path, password="archivey") as reader:
+        assert reader.read("hello.txt") == b"hello dmg\n"
+
+
 # The entry points into AES. Each takes the call's excluded set; a call that left it
 # out would decrypt with cryptography although the policy turns it off.
 # Each call that carries the policy to a cipher, with the keyword that carries it. Their

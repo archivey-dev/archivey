@@ -25,7 +25,7 @@ from __future__ import annotations
 import struct
 import zlib
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from archivey.diagnostics import (
     ArchiveStructureContext,
@@ -46,13 +46,20 @@ from archivey.formats import (
     IndexedReader,
     MemberData,
     MemberRecord,
+    NeedsPassword,
+    PasswordConfirmVerdict,
     ReaderArchiveInfo,
     ReaderContext,
     ReaderSource,
     TimeField,
     block_stream,
 )
-from archivey.internal.backends import apfs, disk_partitions as partitions, hfsplus
+from archivey.internal.backends import (
+    apfs,
+    disk_partitions as partitions,
+    dmg_encrypted,
+    hfsplus,
+)
 from archivey.internal.backends.udif import (
     MAGIC,
     TRAILER,
@@ -77,14 +84,10 @@ if TYPE_CHECKING:
     from archivey.formats import _SpanningCheck
 
 # An encrypted image (``hdiutil create -encryption``) starts with the ``encrcdsa`` (v2)
-# header; a pre-10.5 one ends with ``cdsaencr`` (v1). Neither has a readable ``koly``
-# block, so both are named here and refused (design §6B.1).
-ENCRYPTED_V2 = b"encrcdsa"
+# header (``dmg_encrypted``); a pre-10.5 one ends with ``cdsaencr`` (v1), which is
+# refused by name (design §6B.1).
+ENCRYPTED_V2 = dmg_encrypted.SIGNATURE
 ENCRYPTED_V1 = b"cdsaencr"
-ENCRYPTED_MESSAGE = (
-    "The file is an encrypted DMG disk image. Reading encrypted DMGs is not supported "
-    "yet."
-)
 
 # The names macOS gives a volume it mounts with no usable name (``/Volumes/Untitled``).
 _UNTITLED = "Untitled"
@@ -165,9 +168,18 @@ _READABLE = (partitions.HFS, partitions.HFSX, partitions.APFS)
 class DmgReader(IndexedReader[FileData | ApfsData | None]):
     """One open UDIF image."""
 
-    def __init__(self, source: ReaderSource, context: ReaderContext) -> None:
+    def __init__(
+        self,
+        source: ReaderSource,
+        context: ReaderContext,
+        *,
+        encryption: str | None = None,
+    ) -> None:
+        """``source`` is the UDIF image: the file, or for an encrypted image its
+        decrypted view, with ``encryption`` naming the cipher (``"AES-128"``)."""
         self._context = context
-        _refuse_encrypted(source)
+        self._encryption = encryption
+        self._encrypted = encryption is not None
         self._image = image = UdifImage(source, context)
         layout = partitions.layout(image, image.report_structure)
         self._scheme = layout.scheme
@@ -474,6 +486,8 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
                     record.locator is not None and record.locator.refusal is None
                 ):
                     check.cover(record.member)
+                if self._encrypted:
+                    record.member.is_encrypted = True
                 yield record
             if failure is None:
                 failure = walk.failure
@@ -723,10 +737,13 @@ class DmgReader(IndexedReader[FileData | ApfsData | None]):
         )
         if apfs_names:
             extra["dmg.apfs_volumes"] = apfs_names
+        if self._encryption is not None:
+            extra["dmg.encryption"] = self._encryption
         if len(labels) == 1:
             extra["dmg.volume_name"] = labels[0]
         return ReaderArchiveInfo(
             format_version="UDIF 4",  # the koly signature holds version 4
+            is_encrypted=self._encrypted,
             extra=extra,
         )
 
@@ -743,21 +760,38 @@ def _bytes_reader(data: bytes, what: str) -> Callable[[int, int], bytes]:
     return read
 
 
-def _refuse_encrypted(source: ReaderSource) -> None:
-    head = source.read_at(0, len(ENCRYPTED_V2))
+def _refuse_version_1(source: ReaderSource) -> None:
     size = source.size
-    tail = (
-        source.read_at(size - len(ENCRYPTED_V1), len(ENCRYPTED_V1))
-        if size is not None and size >= len(ENCRYPTED_V1)
-        else b""
-    )
-    if head == ENCRYPTED_V2:
-        raise UnsupportedFeatureError(ENCRYPTED_MESSAGE)
-    if tail == ENCRYPTED_V1:
+    if size is None or size < len(ENCRYPTED_V1):
+        return
+    if source.read_at(size - len(ENCRYPTED_V1), len(ENCRYPTED_V1)) == ENCRYPTED_V1:
         raise UnsupportedFeatureError(
             "The file is an encrypted DMG disk image in the version 1 (cdsaencr) "
             "layout, which archivey does not read."
         )
+
+
+def _open_encrypted(
+    source: ReaderSource, context: ReaderContext
+) -> NeedsPassword[dmg_encrypted.ImageKeys, IndexedReader[Any]]:
+    """The password request for an ``encrcdsa`` image; its ``then`` opens the
+    decrypted image (design §6B)."""
+    header = dmg_encrypted.read_header(source)
+    unlocker = dmg_encrypted.Unlocker(source, header, context)
+
+    def then(
+        keys: dmg_encrypted.ImageKeys, verdict: PasswordConfirmVerdict
+    ) -> DmgReader:
+        if not keys.has_koly:
+            raise UnsupportedFeatureError(
+                "The encrypted DMG disk image has no koly block at the end of its "
+                "decrypted data: it holds a read-write (raw disk) image, which "
+                "archivey does not read, or its last block is damaged."
+            )
+        image = dmg_encrypted.EncryptedDmgSource(source, header, keys, unlocker.backend)
+        return DmgReader(image, context, encryption=f"AES-{header.key_size * 8}")
+
+    return NeedsPassword("the disk image", unlocker.check, then=then)
 
 
 def _refuse_unreadable(found: list[tuple[partitions.Candidate, str | None]]) -> None:
@@ -1477,9 +1511,15 @@ class DmgHandler(IndexedFormatHandler):
     # trailers are past what a handler's ``magic`` can say.
     magic = ()
     uses_encoding = False
+    supports_password = True
 
     @override
-    def open(self, source: ReaderSource, context: ReaderContext) -> DmgReader:
+    def open(
+        self, source: ReaderSource, context: ReaderContext
+    ) -> DmgReader | NeedsPassword[dmg_encrypted.ImageKeys, IndexedReader[Any]]:
+        if dmg_encrypted.is_encrypted(source):
+            return _open_encrypted(source, context)
+        _refuse_version_1(source)
         return DmgReader(source, context)
 
 

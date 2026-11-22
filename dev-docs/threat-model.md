@@ -48,7 +48,7 @@ Older references use register ids (`O1` to `O22`, `C1` to `C4`). The
 
 | Boundary | What crosses it | What holds there |
 | --- | --- | --- |
-| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, the ISO 9660, Joliet, Rock Ridge and UDF trees, and DMG's UDIF run tables, partition maps, HFS+ B-trees and APFS checkpoints, object maps and B-trees; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
+| Source bytes to parsers | Archive structure | Pure-Python parsers for ZIP, 7z, RAR, TAR, SquashFS, XAR, CAB, LHA, ARJ, ar, deb, CPIO, RPM and makeself headers, the ISO 9660, Joliet, Rock Ridge and UDF trees, and DMG's encryption header, UDIF run tables, partition maps, HFS+ B-trees and APFS checkpoints, object maps and B-trees; every read a header field sizes goes through a bounded source ([resource use](#resource-use-is-bounded)) |
 | Parsers to decoders | Compressed streams, declared decoder parameters; on POSIX, a read-only descriptor of the archive file for a rapidgzip child that reads a member's byte range itself (the child's copy outlives the parent's handle, so the parent checks before each call that its own source is still open) | `DecoderLimits` checked before allocation; crash-prone native decoders in a child process ([errors](#errors-are-typed-and-honest)) |
 | archivey to external programs | Archive path, member selection, password | RARLAB `unrar` / `rar`, or `unar` under `"auto"`; fixed argv; a member name only inside an include-mask switch, or an entry index ([external programs](#external-programs-get-a-fixed-command-line)) |
 | archivey to the destination | Names, link targets, modes, data | `check_universal` and the extraction coordinator ([extraction](#extraction-stays-in-the-destination), [names](#names-are-safe-on-the-target-filesystem)) |
@@ -833,7 +833,11 @@ derivation runs in `hashlib` and cannot be interrupted. The caches
 make an honest archive cost one or two derivations. RAR3 is charged its fixed `2**18`;
 makeself openssl's fixed 10 000 PBKDF2 rounds are charged per payload, salt and
 candidate, cached on the reader (`makeself_reader.py` `_derive`), because a crafted
-header can name many payloads. ZIP AES's fixed 1000 rounds and makeself's one
+header can name many payloads. An encrypted DMG states its PBKDF2 count in each key
+entry, with no cap in the format (macOS writes 370,370 to 454,545, timed to the
+machine); each entry is charged per candidate before its derivation (`dmg_encrypted.py`
+`Unlocker._unwrap`), and a header holds at most 16 entries, so the default budget admits
+about 70 candidates on a fixture. ZIP AES's fixed 1000 rounds and makeself's one
 `EVP_BytesToKey` round are not counted. The budget is in rounds, not derivations,
 because a derivation count would either refuse honest per-member salting or admit
 hostile archives depending on declared cost. A spent budget raises `ResourceLimitError`,

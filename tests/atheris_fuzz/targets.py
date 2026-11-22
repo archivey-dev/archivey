@@ -137,7 +137,7 @@ _MAX_TAR_READ_BYTES = 64 * 1024
 # Filter payloads. A BCJ2 main stream of E8 bytes is the slow case; keep it here.
 _MAX_FILTER_BYTES = 64 * 1024
 
-# Empty + common corpus password for the encrypted ZIP and 7z seeds.
+# Empty + common corpus password for the encrypted ZIP, 7z and DMG seeds.
 _PASSWORD_CANDIDATES: list[str | bytes] = ["", "password"]
 
 
@@ -285,10 +285,14 @@ def squashfs_open_one(data: bytes) -> None:
 
 def dmg_open_one(data: bytes) -> None:
     """List a DMG image and read the first files: the koly block, the property list
-    and run tables, the partition map, then the HFS+ catalog, attributes and forks."""
+    and run tables, the partition map, then the HFS+ catalog, attributes and forks. The
+    corpus passwords unlock the encrypted seed, so its key entries and blocks are read."""
     try:
         with open_archive(
-            io.BytesIO(data), format=ArchiveFormat.DMG, config=_FUZZ_CONFIG
+            io.BytesIO(data),
+            format=ArchiveFormat.DMG,
+            config=_FUZZ_CONFIG,
+            password=_PASSWORD_CANDIDATES,
         ) as arc:
             _sample_seekable(
                 arc, max_reads=_MAX_MEMBER_READS, max_bytes=_MAX_ZIP_READ_BYTES
