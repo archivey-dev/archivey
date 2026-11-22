@@ -798,7 +798,7 @@ def _decmpfs(kind: int, data: bytes) -> tuple[bytes, bytes]:
             encoded = [chunk(lzfse_stored(b), b, b"\xff") for b in blocks]
         else:
             # Type 10: the type 8 offset table over raw blocks, each behind a 0xCC
-            # byte. The macOS check (plan M) found this is the layout the kernel
+            # byte. The macOS check (tasks.md §M) found this is the layout the kernel
             # reads; it refuses the same table without the 0xCC bytes (EINVAL).
             encoded = [b"\xcc" + b for b in blocks]
         offsets = [4 * (len(encoded) + 1)]

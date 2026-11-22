@@ -1009,7 +1009,7 @@ def _decode_chunk(
         elif kind == 10:
             # Each chunk is its raw block behind a 0xCC byte. The macOS kernel reads
             # that layout and refuses a chunk without the byte (EINVAL), as the macOS
-            # check against hdiutil found (plan M).
+            # check against hdiutil found (tasks.md §M).
             if data[:1] != b"\xcc":
                 raise CorruptionError(
                     f"a type 10 chunk of the compressed file {cnid} does not start "
