@@ -46,7 +46,7 @@ def test_kernels_table() -> None:
         "crc16_arc": 1,
         "lzo1x": 1,
         "lzw": 1,
-        "lzx": 1,
+        "lzx": 2,
         "riscv": 1,
         "zipcrypto": 1,
     }
