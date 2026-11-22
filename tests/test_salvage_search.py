@@ -226,6 +226,26 @@ def test_the_position_only_moves_forward() -> None:
     assert regions == [(0, 40), (41, 47)]
 
 
+def test_revisiting_searches_a_stepped_over_range_once() -> None:
+    """A second pass (TAR's two-pass rule) searches a range the first pass stepped
+    over without examining it: each byte of the layer counts once, and the
+    position after it is the first pass's again."""
+    data = b"\x00" * 40 + MAGIC + b"rest" + b"\x00" * 40 + MAGIC + b"rest" + bytes(40)
+    state, _ = _state()
+    search = _magic_search()
+    assert search_forward(state, _Layer(data).read_at, search, start=60).found == 88
+    assert state.searched_bytes == 29
+    with state.revisiting("archive", 0, 60):
+        found = search_forward(state, _Layer(data).read_at, search, start=0, end=60)
+        assert found.found == 40
+        rest = search_forward(state, _Layer(data).read_at, search, start=41, end=60)
+        assert rest.found is None
+    assert state.searched_bytes == 29 + 60
+    assert state.position() == 89
+    with pytest.raises(AssertionError), state.revisiting("archive", 10, 5):
+        pass
+
+
 def test_layers_have_their_own_positions_and_share_the_budget() -> None:
     data = b"\x00" * 30 + MAGIC + b"rest"
     state, collector = _state(max_search_bytes=50)

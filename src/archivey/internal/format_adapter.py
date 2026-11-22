@@ -77,6 +77,7 @@ from archivey.formats import (
     ReaderSource,
     SequentialFormatHandler,
     SequentialReader,
+    _TakenView,
 )
 from archivey.internal import format_args
 from archivey.internal.base_reader import (
@@ -848,16 +849,25 @@ class _PluginAdapter(BaseArchiveReader):
         # The decoder that gives ``data`` may not have read its header yet (an xz,
         # zstd or LZMA Alone member from ``ReaderContext.decompress``): the first
         # byte makes it declare its working set, so the inner cap counts it.
+        # A view of a seekable source (``ForwardStream._take_view``): the inner
+        # reader reads it with random access.
+        seekable = isinstance(data, _TakenView)
         with collector.member_ids_from(first), quiet():
             head = data.read(1) or b""
+            if seekable:
+                data.seek(0)
         config = self._nested_config()
         # An inner archive salvages when this one was asked to, whether or not this
         # format has a salvage search of its own. The inner reader is built with
         # streaming=True because its source is the member's data, which reads forward
-        # only. One search (``search_forward``) reads forward, so it can run there;
-        # whether the walk can go back after it, into the data of a member the search
-        # found but could not confirm, is the format's call, and a format that cannot
-        # records SALVAGE_UNAVAILABLE (reason "forward_only_reader"). The refusal of
+        # only, except over a view of a seekable source, which it reads with random
+        # access. Its reads there are the outer reader's bytes, which only a decode
+        # draws from the budgets: the inner reader's codec stages charge this listing,
+        # and its decoders share max_decoder_memory, as over a forward stream. One
+        # search (``search_forward``) reads forward, so it can run there; whether the
+        # walk can go back after it, into the data of a member the search found but
+        # could not confirm, is the format's call, and a format that cannot records
+        # SALVAGE_UNAVAILABLE (reason "forward_only_reader"). The refusal of
         # ``streaming=True`` with ``salvage=True`` is for a caller's open_archive only.
         with (
             collector.member_ids_from(first),
@@ -869,10 +879,12 @@ class _PluginAdapter(BaseArchiveReader):
         ):
             reader = backend_cls().open_read(
                 ArchiveSource.for_stream(
-                    cast(BinaryIO, _Primed(head, data)) if head else data
+                    cast(BinaryIO, _Primed(head, data))
+                    if head and not seekable
+                    else data
                 ),
                 format=fmt,
-                streaming=True,
+                streaming=not seekable,
                 passwords=None,
                 encoding=self._encoding,
                 archive_name=self._archive_name,
@@ -900,7 +912,12 @@ class _PluginAdapter(BaseArchiveReader):
                     data=None
                     if stream is None
                     else _NestedData(
-                        cast(BinaryIO, stream), collector, first, member, outer
+                        cast(BinaryIO, stream),
+                        collector,
+                        first,
+                        member,
+                        outer,
+                        on_demand=seekable,
                     ),
                 )
         finally:
@@ -1477,8 +1494,14 @@ class _NestedData(io.RawIOBase):
         first: int,
         inner: ArchiveMember,
         outer: ArchiveMember,
+        *,
+        on_demand: bool = False,
     ) -> None:
         self._stream = stream
+        # The inner reader reads with random access (a view of a seekable source):
+        # the data reads the inner archive only when read, so the outer walk moves
+        # past it without draining it, as a ``data_on_demand`` reader's.
+        self.on_demand = on_demand
         self._collector = collector
         self._first = first
         # What the inner reader attaches to its member while the data is read is
@@ -1527,6 +1550,12 @@ class _NestedData(io.RawIOBase):
                     self._pass_on_diagnostics()
             finally:
                 super().close()
+
+
+def _on_demand(data: object) -> bool:
+    """Whether a span's ``data`` reads its archive only when read
+    (:attr:`_NestedData.on_demand`)."""
+    return isinstance(data, _NestedData) and data.on_demand
 
 
 class _Nest:
@@ -1711,6 +1740,7 @@ class _Decoded:
         "done",
         "index",
         "name",
+        "on_demand",
         "prefix",
         "size",
         "stream",
@@ -1723,8 +1753,13 @@ class _Decoded:
         index: int,
         size: int | None,
         name: str,
+        *,
+        on_demand: bool = False,
     ) -> None:
         self.stream = stream
+        # The data reads its archive only when read (an inner reader with random
+        # access, ``_NestedData.on_demand``): the walk moves past it undrained.
+        self.on_demand = on_demand
         self.checked = checked
         self.index = index
         self.size = size
@@ -2216,6 +2251,12 @@ class SequentialReaderAdapter(_PluginAdapter):
             skip,
             functools.partial(self._decompress_layer, walk, layer),
         )
+        shared = layer.shared
+        if seekable and shared is not None and not layer.drawn:
+            # The archive's own bytes on a seekable source: an inner archive a
+            # built-in reader takes (``ForwardStream._take_view``) reads a view of
+            # them, so its reader can go back (maintainer ruling, 2026-11-22).
+            layer.forward._view_fn = shared.view
         return layer
 
     def _decompress_layer(
@@ -2586,7 +2627,14 @@ class SequentialReaderAdapter(_PluginAdapter):
         decoded: _Decoded | None = None
         if data is not None:
             stream = self._decoded_stream(data, index, layer)
-            decoded = _Decoded(stream, span.checked, index, member.size, member.name)
+            decoded = _Decoded(
+                stream,
+                span.checked,
+                index,
+                member.size,
+                member.name,
+                on_demand=_on_demand(data),
+            )
         forward = layer.forward
         record = _Span(layer, forward.offset, length, expected, custom or None, decoded)
         member._raw = record
@@ -2855,6 +2903,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                     index,
                     decoded.size,
                     decoded.name,
+                    on_demand=_on_demand(data),
                 )
             # A member on the way, read past under the name it is listed by.
             name = _listed_name(span)
@@ -2867,6 +2916,7 @@ class SequentialReaderAdapter(_PluginAdapter):
                             index,
                             span.member.size,
                             name,
+                            on_demand=_on_demand(data),
                         )
                     )
                 elif span.data_length:
@@ -2880,7 +2930,7 @@ class SequentialReaderAdapter(_PluginAdapter):
         reader's library is past it, and close it. A reader whose data reads the
         archive only when read (``SequentialReader.data_on_demand``) is not drained:
         the stream is closed, and nothing it would have decoded is decoded."""
-        if self._sequential.data_on_demand:
+        if self._sequential.data_on_demand or decoded.on_demand:
             decoded.close()
         else:
             decoded.finish()

@@ -202,12 +202,13 @@ Choices the decisions above left open, made while building PR 1:
   `parent=` is taken (`nesting.joining`). `open_archive` and `ReaderContext.open_nested`
   are the two openers; no `open_read` signature changed. A reader reads
   `self._salvage_mode` (`SalvageState`): `.enabled`, `.limits`.
-- **Nested readers** are built forward-only (`streaming=True` over the member's
-  stream). One search reads forward, so it can run there. Going back after it, into
-  the data of an unconfirmed member, is the format's call: TAR holds up to 4 MiB of
-  it, and CPIO and ar on a forward-only reader record `SALVAGE_UNAVAILABLE` with
-  `reason="forward_only_reader"` (a format with no search at all records
-  `reason="no_salvage_search"`).
+- **Nested readers** are built forward-only (`streaming=True` over the member's stream),
+  except a deb's tars on a plain file, which the TAR PR's second step reads with random
+  access (see "the two-pass rule" below). One search reads forward, so it can run there.
+  Going back after it, into the data of an unconfirmed member, is the format's call: TAR
+  holds up to 4 MiB of it, and CPIO and ar on a forward-only reader record
+  `SALVAGE_UNAVAILABLE` with `reason="forward_only_reader"` (a format with no search at
+  all records `reason="no_salvage_search"`).
 - **Walks.** The reader's `SalvageState` holds the listing walk's budget, records and
   layer positions. A listing walk started over calls `restart()`. Another walk from
   the start (to reach a member's data, possibly beside the listing walk) searches with
@@ -259,35 +260,73 @@ Choices made while building PR 2, where decisions 6 and 9 left them open:
   it (CPIO's variant). TAR does not read it: a first header that does not parse is
   damage at offset 0 under salvage, whatever the detection said, and the search runs at
   open, so a file with no header still fails at open.
-- **A forward-only walk** (a nested reader such as a deb's `data.tar`) reads through a
-  window that, from the first search on, keeps the last 4 MiB (the pipe span) it
-  read, so the search inside an unconfirmed member's data reads that data again and
+- **A forward-only walk** (a nested reader such as a makeself payload's TAR) reads
+  through a window that, from the first search on, keeps the last 4 MiB (the pipe span)
+  it read, so the search inside an unconfirmed member's data reads that data again and
   the walk goes back to the found header. Bytes it read past and no longer keeps (the
   damaged block itself, data read further than the span) read as zeros, which never
-  pass. A compressed TAR's walk reads its codec stream through the same window from
-  the first search on, because a seek back on a codec stream decodes again from a
-  restart point.
-- **Confirmation is bounded on a layer that is costly to go back on.** A plain file
-  seeks, so any size is confirmed. A forward-only walk looks at the block after a
-  member's data only when it is within the 4 MiB span of where the walk stands (the pipe
-  span). Past that span, a found member's size is trusted, as GNU tar reads a pipe: it
-  is listed unconfirmed, its data reads in full through the walk, and the walk goes on
-  from where the size points. When the block there does not confirm it, or the stream
-  ends before it (the data then ends quietly there, as a held read does), the search
-  goes back inside the member's data, from the first byte the walk's window still keeps,
-  which is at most 4 MiB before where the read ended. So a real member bigger than the
-  span reads whole and a tar stored in it is not listed, and a size that lies by more
-  than the span loses the members whose headers are in all but the last 4 MiB of the
-  read (the review's recommendation (round 3, K6), pending the maintainer's ruling). A
-  codec stream confirms past the span by decoding forward to the block, which the walk
-  decodes next anyway when the member is confirmed. That look is free for a member the
-  walk reached, whose walk goes on from the block whatever it holds, and for a found
-  member that it confirms. When it fails for a found member, the search goes back into
-  the data and decodes again from a restart point, so the failed looks share a budget:
-  their offsets may add up to the furthest offset the walk has decoded, and past that a
-  found member's look is capped at the span. The clean-end check reads each byte once
-  per walk: an end more than the 1 MiB scan away answers without a read, and the zeros
-  before the end are scanned once.
+  pass. A compressed TAR's walk reads its codec stream through the same window from the
+  first search on, because a seek back on a codec stream decodes again from a restart
+  point.
+- **Confirmation on a layer that is costly to go back on: the two-pass rule**
+  (maintainer ruling, 2026-11-22, project thread). A plain file seeks, so any size is
+  confirmed. A codec stream (`.tar.gz`, `.tar.xz`, ...) seeks back by decoding again
+  from a restart point, so a salvage walk there makes two passes, not one restart per
+  found member:
+  - **Pass 1** reads the layer forward once. It trusts each found member's size and
+    looks for a header where the size points; reading forward always reaches that
+    block, so the look costs nothing, and the walk reads it through its window,
+    which keeps the last 4 MiB before it. When the block confirms the member, the
+    walk goes on from there. When it does not, the search goes on from the first
+    byte the window still keeps, and the found member's data before that byte is a
+    gap: pass 1 records it and does not search it.
+  - **Pass 2** runs once pass 1 has ended, when pass 1 recorded a gap. It goes back
+    to the first gap (one restart of the decode) and reads forward, searching only
+    inside the gaps, in order, each search bounded by its gap's end. A member found
+    there is checked as in pass 1 while the block after its data is inside the gap
+    or within 4 MiB; a block past the gap and the hold is not decoded to: it
+    confirms the member when pass 1 listed a member at that offset or found the
+    clean end there. A search pass 2 would need behind where it stands searches the
+    4 MiB window it keeps (option (b) of PR 1768), never a third pass.
+  - **The listing** keeps archive order: the members pass 1 lists after its first
+    gap are held until pass 2 has searched the gaps, then listed with pass 2's in
+    order of their offsets. Each byte is examined once per layer: a gap is a range
+    pass 1's search position stepped over without examining it, and pass 2 searches
+    it under `SalvageState.revisiting`.
+  - Total decode: two passes over the layer, whatever the member count (about
+    1.1 to 2 times the compressed size on the test shapes: 40 found members that
+    each claim 6 MiB, 20 that claim 12 MiB, 300 dense ones that claim 16 MiB). This
+    replaces the per-look budget of PR 1768 (`_far_look_allowed` / `_far_spent`,
+    review round 3, K5/K7). The look past the hold reads forward to the block
+    (`_Window.skip_to`) and stops at the stream's end: a seek past the end counted
+    as decoded bytes, and the ratio guard stopped a listing whose found member
+    claimed 8 MiB past the end.
+- **A deb's tars on a plain file** read with random access. A deb opened with random
+  access hands its control and data tars to `open_nested` as seekable views of the
+  file (`ForwardStream._take_view`, internal: the public `take()` contract does not
+  change), and the inner reader is built without `streaming=True`. A plain data.tar
+  then confirms as the plain `.tar` does, so a deb's data.tar lists exactly what the
+  same tar lists; a compressed one follows the two-pass rule. The inner reader's
+  limits are the outer one's as before: its listing tracker charges outward, its
+  decoders share `max_decoder_memory` (`_nested_config`), its codec stages charge
+  `max_decoded_bytes`. The outer walk resumes after the view's bytes by its own
+  position (`_end_take` skips them), not by where the inner reader left the file.
+  The outer walk no longer drains such a member's data: the inner reader reads it
+  by offset when asked, as a `data_on_demand` reader's (`_NestedData.on_demand`).
+  So a plain data.tar's stored bytes are no longer drawn from `max_decoded_bytes`
+  during the listing, as for the same plain `.tar`. A forward-only walk keeps the
+  4 MiB hold (option (b)): a deb read with `streaming=True` or nested in another
+  reader, a makeself payload (its bytes are hashed as they pass, so a view does not
+  fit cheaply), a pkg payload. Such a walk trusts a found member's size past the
+  span, as GNU tar reads a pipe: it is listed unconfirmed, its data reads in full
+  through the walk, and the walk goes on from where the size points. When the
+  block there does not confirm it, or the stream ends before it, the search goes
+  back inside the member's data from the first byte the walk's window still keeps.
+  So a real member bigger than the span reads whole and a tar stored in it is not
+  listed, and a size that lies by more than the span loses the members whose
+  headers are in all but the last 4 MiB of the read. The clean-end check reads each
+  byte once per walk: an end more than the 1 MiB scan away answers without a read,
+  and the zeros before the end are scanned once.
 - **An unconfirmed found member's data, on a forward-only walk,** when the block
   after it is within the span and does not confirm it, is read from the window
   without moving the walk, and ends quietly where the stream ends: its size is not

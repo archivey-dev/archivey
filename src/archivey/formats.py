@@ -405,7 +405,12 @@ class ForwardStream:
         # Set once decompress() has handed the rest of the bytes to a decoded stream.
         self._handed_off = False
         # The stream take() returned last, until the walk moves past its bytes.
-        self._taken: _TakenBytes | None = None
+        self._taken: _TakenBytes | _TakenView | None = None
+        # Internal, set by the adapter; not for plugins. ``_view_fn(offset, n)``
+        # returns a seekable view of the archive's ``n`` bytes at ``offset``, when
+        # the stream reads a seekable source of its own (a plain file, not a pipe
+        # or a decoded layer): ``_take_view`` hands it out.
+        self._view_fn: Callable[[int, int], BinaryIO] | None = None
 
     @property
     def offset(self) -> int:
@@ -475,6 +480,25 @@ class ForwardStream:
         taken = self._taken = _TakenBytes(self, n)
         # Unbuffered, so that a read after the walk moved on raises at once rather than
         # returning what a buffer pulled in earlier.
+        return cast(BinaryIO, taken)
+
+    def _take_view(self, n: int) -> BinaryIO:
+        """Internal: :meth:`take`, but a seekable view of the ``n`` bytes when the
+        stream reads a seekable source (``_view_fn``), else :meth:`take` itself.
+
+        The view reads the source at its own position, so the walk's offset does
+        not move while it is read: the walk resumes after the ``n`` bytes as after
+        :meth:`take`, and the view refuses reads from then on. ``open_nested``
+        opens an inner archive over a view with random access, so its reader can
+        go back (``TarReader``'s salvage confirmations)."""
+        view_fn = self._view_fn
+        if view_fn is None:
+            return self.take(n)
+        if n < 0:
+            raise ValueError(f"ForwardStream.take() takes a size of 0 or more, got {n}")
+        self._check_not_handed_off()
+        self._end_take()
+        taken = self._taken = _TakenView(view_fn(self._offset, n), self._offset + n)
         return cast(BinaryIO, taken)
 
     def _end_take(self) -> None:
@@ -576,6 +600,59 @@ class _TakenBytes(io.RawIOBase):
             buffer[got : got + len(data)] = data
             got += len(data)
         return got
+
+
+class _TakenView(io.RawIOBase):
+    """What :meth:`ForwardStream._take_view` returns: a seekable view of the next
+    bytes of its stream, up to ``end``, read at its own position. Internal."""
+
+    def __init__(self, view: BinaryIO, end: int) -> None:
+        self._view = view
+        self.end = end
+        # Set once the walk moved past these bytes: a read then is a bug.
+        self.ended = False
+
+    def _check(self) -> None:
+        if self.ended:
+            raise ArchiveyUsageError(
+                "the stream ForwardStream.take() returned was read after the walk "
+                "moved past its bytes"
+            )
+
+    @override
+    def readable(self) -> bool:
+        return True
+
+    @override
+    def seekable(self) -> bool:
+        return True
+
+    @override
+    def readinto(self, buffer: Any) -> int:
+        self._check()
+        data = self._view.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    @override
+    def read(self, size: int | None = -1, /) -> bytes:
+        self._check()
+        return self._view.read(-1 if size is None else size)
+
+    @override
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        self._check()
+        return self._view.seek(offset, whence)
+
+    @override
+    def tell(self) -> int:
+        return self._view.tell()
+
+    @override
+    def close(self) -> None:
+        if not self.closed:
+            self._view.close()
+        super().close()
 
 
 class _SpanningCheck(Protocol):
