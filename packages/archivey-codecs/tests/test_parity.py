@@ -940,3 +940,45 @@ def test_lzx_without_output_size_flush_finishes_the_frame_in_progress() -> None:
         # The first data block only: the frame's last symbols look past it.
         assert d.decompress(blocks[0]) == b"", layout
         assert d.flush(FRAME) == data[:FRAME], layout
+
+
+def test_lzx_stored_stream_ending_on_a_frame_boundary() -> None:
+    """An uncompressed block reads no bits past its end, so the next frame runs out
+    of input at its first block header, having read nothing: it is not started.
+    So ``flush()`` without an output size sees the end, and a late
+    ``set_output_size()`` of the bytes decoded is accepted."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(12)
+    lzx = archivey_codecs.lzx
+    for frames in (1, 2):
+        data = bytes(rng.randrange(4) + 97 for _ in range(frames * FRAME))
+        s = b"".join(LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(data))
+        d = lzx.Decompressor(15)
+        assert d.decompress(s) + d.flush() == data, frames
+        assert d.eof, frames
+        d = lzx.Decompressor(15)
+        assert d.decompress(s) == data, frames
+        d.set_output_size(len(data))
+        assert d.eof, frames
+
+
+def test_lzx_input_fed_byte_by_byte_resumes_where_it_stopped() -> None:
+    """Fed one byte at a time, the decoder keeps its place at the start of the
+    symbol it ran out in, also inside a block header's trees: ``total_in`` stays
+    within a few bytes of the input given, and a header is not read again from its
+    start each time (which kept it up to a whole header behind)."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(13)
+    for layout in (("verbatim",), ("aligned",)):
+        data = sample_data(rng, 2 * FRAME)
+        s = b"".join(
+            LzxEncoder(window_bits=17, blocks=layout, block_size=1000).encode(data)
+        )
+        d = archivey_codecs.lzx.Decompressor(17, output_size=len(data))
+        out = bytearray()
+        for i in range(len(s)):
+            out += d.decompress(s[i : i + 1])
+            assert i + 1 - d.total_in <= 12, (layout, i)
+        assert bytes(out + d.flush()) == data, layout
