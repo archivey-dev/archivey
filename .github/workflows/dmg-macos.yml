@@ -45,6 +45,9 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       # Keep the dev group: the check imports tests.test_dmg, which imports pytest.
       - run: uv sync --python 3.12
+      - name: Probe type 10 (temporary)
+        continue-on-error: true
+        run: uv run --no-sync python scripts/investigations/dmg_type10_probe.py
       - name: Check images
         run: uv run --no-sync python scripts/investigations/dmg_macos_check.py --out results.md
       - name: Summary
