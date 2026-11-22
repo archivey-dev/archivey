@@ -238,9 +238,11 @@ falls back.
 
 In the Rock Ridge namespace the relocation directory (a root-level directory
 every child of which is a relocated directory: its `..` carries a PL record and a
-CL record points at its extent) SHALL NOT be listed; the relocated subtrees appear
-at their logical place. A directory whose `..` carries a PL record that no CL record
-points at SHALL be listed where it is stored, with its files.
+CL record the listing reaches points at its extent) SHALL NOT be listed; the
+relocated subtrees appear at their logical place. A directory whose `..` carries a PL
+record, and whose extent no CL record the listing reaches points at, SHALL be listed
+where it is stored, with its files. A CL record inside that directory's own subtree
+does not count, since the listing reaches it only through that directory.
 
 #### Scenario: ISO record matrix
 
@@ -265,6 +267,7 @@ points at SHALL be listed where it is stored, with its files.
 | Directory record pointing back at an ancestor extent | `CorruptionError` at open: the tree loops |
 | Rock Ridge tree 12 directories deep | Logical tree lists in full; no `rr_moved` member |
 | Rock Ridge directory under `rr_moved` whose `..` carries PL, with no CL pointing at it | Listed where stored: `rr_moved/` and the directory's files list |
+| Rock Ridge directory under `rr_moved` whose only CL sits inside its own subtree | Listed where stored; every file of the tree lists |
 
 ### Requirement: Decode Rock Ridge and plain names as UTF-8 first
 
