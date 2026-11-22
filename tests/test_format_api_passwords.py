@@ -493,7 +493,12 @@ def test_copied_context_close_raises_while_another_close_drains(
             outcome.append(exc)
 
     def provider(request: PasswordRequest) -> bytes | None:
-        closer = threading.Thread(target=box[0].close)
+        # A fresh context: on a build whose threads inherit the starter's context
+        # (free-threaded 3.14+), this thread would otherwise count as the
+        # provider's copied context, and its close() would raise.
+        closer = threading.Thread(
+            target=contextvars.Context().run, args=(box[0].close,)
+        )
         closers.append(closer)
         closer.start()
         state = box[0]._state
@@ -1035,7 +1040,11 @@ def test_another_thread_waits_for_the_answer_during_a_listing(tmp_path: Path) ->
         seen.append([m.name for m in box[0].members()])
 
     def provider(request: PasswordRequest) -> bytes | None:
-        thread = threading.Thread(target=list_members)
+        # A fresh context, as in the copied-context close test: an inherited one
+        # would make this thread the provider's.
+        thread = threading.Thread(
+            target=contextvars.Context().run, args=(list_members,)
+        )
         other.append(thread)
         thread.start()
         thread.join(timeout=0.3)
