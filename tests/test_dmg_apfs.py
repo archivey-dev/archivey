@@ -400,6 +400,26 @@ def test_a_checkpoint_area_over_the_scan_budget_is_a_resource_limit(
         reader.members()
 
 
+def test_a_checkpoint_area_in_zero_fill_runs_counts_against_the_scan_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Descriptor blocks of zeros are stored as zero-fill runs, which read nothing
+    # from the file; the scan still checks each one, so each counts.
+    monkeypatch.setattr(apfs, "SCAN_BUDGET", 4 * 4096)
+    written = _container()
+
+    def zero_ring(container: bytearray, info: a.Apfs) -> None:
+        size = info.block_size
+        container[size : size * (1 + a.DESC_BLOCKS)] = bytes(size * a.DESC_BLOCKS)
+
+    broken = _container(patch=zero_ring)
+    assert written.block_size == broken.block_size
+    # One run per block, so the zeroed blocks are runs of their own.
+    image = a.apfs_dmg(broken.container, codec=d.RAW, run_sectors=8)
+    with _open(image) as reader, pytest.raises(ResourceLimitError, match="checkpoint"):
+        reader.members()
+
+
 # ── Damaged nodes (D7) ───────────────────────────────────────────────────────────────
 
 

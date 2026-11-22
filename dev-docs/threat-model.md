@@ -456,29 +456,29 @@ data its pass keeps for link targets beside it.
   charges each HFS+ folder name, hard-link inode record and kept extended attribute as
   it keeps them, and the reader counts what APFS keeps for the archive's life (object
   maps, filesystem trees) against the same cap, with the APFS checkpoint scan bounded at
-  64 MiB read and decoded (`apfs.SCAN_BUDGET`); the open itself reads and decodes at
-  most 64 MiB past the property list (`udif.OPEN_BUDGET`). Zero-fill runs make a large
-  disk from a tiny file, so member reads count in the archive-wide ratio like ISO's, and
-  the in-house ADC, LZFSE and LZVN decoders are bounded by the run's sectors. Each run a
-  listing decodes, a cache miss included, counts toward `max_decoded_bytes`
-  (`ReaderContext._listing_draw`, from `UdifImage._decode_run`), so a catalog spread
-  over more runs than the cache holds cannot decode without bound
-  ([formats/dmg.md](formats/dmg.md) §4). The TAR walker keeps nothing behind the member
-  list, so nothing else is held. The caps bound memory, not work: a forward-only TAR
-  walk reads through every member it skips, and a TAR walk in either mode reads the
-  declared span of a link header whose first block is zero, each for the bytes present
-  rather than the size a header declares (a member declaring more than the archive holds
-  raises `TruncatedError` at the first short read), and that ZIP walk reads through the
-  data of every member whose local header leaves its size to a data descriptor, up
-  to one read of the file. The pipe pass also reads the entries its directory
-  places in the bytes it kept after the walk stopped (a gap between members, a second archive appended). Every byte each
-  attempt consumes there, a member read or a local header that fails to parse, is
-  counted against the bytes held, and past that the next entry is `CorruptionError`
-  before it is read (entries a writer laid out never overlap), so the attempts
-  consume the kept bytes at most twice, not once per entry. What the pass keeps of
-  an attempt whose local header does not parse is the parse error, without its
-  traceback, about 1 KB per entry, released when the pass completes and held by
-  the reader when it raises (the residual below).
+  64 MiB read, decoded or served from zero-fill runs (`apfs.SCAN_BUDGET`); the open
+  itself reads and decodes at most 64 MiB past the property list (`udif.OPEN_BUDGET`).
+  Zero-fill runs make a large disk from a tiny file, so member reads count in the
+  archive-wide ratio like ISO's, and the in-house ADC, LZFSE and LZVN decoders are
+  bounded by the run's sectors. Each run a listing decodes, a cache miss included,
+  counts toward `max_decoded_bytes` (`ReaderContext._listing_draw`, from
+  `UdifImage._decode_run`), so a catalog spread over more runs than the cache holds
+  cannot decode without bound ([formats/dmg.md](formats/dmg.md) §4). The TAR walker
+  keeps nothing behind the member list, so nothing else is held. The caps bound memory,
+  not work: a forward-only TAR walk reads through every member it skips, and a TAR walk
+  in either mode reads the declared span of a link header whose first block is zero,
+  each for the bytes present rather than the size a header declares (a member declaring
+  more than the archive holds raises `TruncatedError` at the first short read), and that
+  ZIP walk reads through the data of every member whose local header leaves its size to
+  a data descriptor, up to one read of the file. The pipe pass also reads the entries
+  its directory places in the bytes it kept after the walk stopped (a gap between
+  members, a second archive appended). Every byte each attempt consumes there, a member
+  read or a local header that fails to parse, is counted against the bytes held, and
+  past that the next entry is `CorruptionError` before it is read (entries a writer laid
+  out never overlap), so the attempts consume the kept bytes at most twice, not once per
+  entry. What the pass keeps of an attempt whose local header does not parse is the
+  parse error, without its traceback, about 1 KB per entry, released when the pass
+  completes and held by the reader when it raises (the residual below).
 - 7z checks `max_members` while parsing, at `open_archive`
   (`internal/backends/sevenzip_parser.py`, the `max_members` checks on folders, unpack
   streams, their sum and `num_files`). Member-scaled counts are also checked against the
