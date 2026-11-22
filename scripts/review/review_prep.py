@@ -5,7 +5,8 @@ The review loop's findings, measured over 38 pull requests (2026-09-23/24), are 
 by three shapes that a script can find faster than a reviewer:
 
 - a symbol or an exception type changed in `src/` and is still described the old way in a
-  spec or a handbook page (``sweep``; the CHANGELOG is left out, since the release writes it);
+  spec or a handbook page (``sweep``; the CHANGELOG is left out, since the release does
+  its final pass);
 - an added Markdown prose line over 100 columns (``width``, the same rule CI runs in
   ``scripts/checks/check_line_width.py``; Python lines are ruff's E501);
 - a new test the PR body says fails on `main`, which passes there (``red-on-base``).
