@@ -252,12 +252,13 @@ def dmg_seeds() -> list[bytes]:
         )
     ]
     seeds = [b"", _koly_block(), b"encrcdsa" + bytes(504)]
-    # An encrypted image (one PBKDF2 round, so a run spends no time deriving keys);
-    # the writer needs ``cryptography``.
+    # An encrypted image locked by the fuzz targets' corpus password, with one PBKDF2
+    # round so a run spends no time deriving keys; the writer needs ``cryptography``.
     if importlib.util.find_spec("cryptography") is not None:
         seeds.append(
             build.encrypt_dmg(
-                images[0], entries=[build.EncryptedEntry(password=b"pw", iterations=1)]
+                images[0],
+                entries=[build.EncryptedEntry(password=b"password", iterations=1)],
             )
         )
     return seeds + images

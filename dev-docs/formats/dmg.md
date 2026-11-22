@@ -109,7 +109,9 @@ Block `n` of the image (block size bytes from `data offset + n * block size`) is
 AES-CBC with the IV `HMAC-SHA1(hmac_key, n as a big-endian u32)[:16]`. The last block
 is whole in the file; the bytes past the image size are padding. `EncryptedDmgSource`
 decrypts a read's blocks in one CBC pass and then corrects the first 16 bytes of each
-later block for its own IV, and keeps the last 16 blocks it decrypted.
+later block for its own IV. It keeps the first and last block of each read's span
+in a cache of at most 16 blocks, so a later read that starts or ends in one of them
+does not decrypt it again.
 
 Every length is checked before the bytes it names are read: the version (2), cipher
 (AES), HMAC key size (160 bits) and block size (512 or 4096) are

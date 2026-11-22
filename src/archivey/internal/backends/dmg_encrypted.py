@@ -1,6 +1,6 @@
 """Encrypted DMG images: the ``encrcdsa`` (v2) header, the password check, and the
 decrypted view the UDIF reader runs on (design §6B of
-``openspec/changes/dmg-reader``; the layout in ``dev-docs/formats/dmg.md`` §8).
+``openspec/changes/dmg-reader``; the layout in ``dev-docs/formats/dmg.md`` §2.1.1).
 
 ``hdiutil -encryption`` encrypts a whole UDIF image (data fork, property list,
 ``koly`` block) and puts this header in front. The header holds one or more key
