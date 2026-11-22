@@ -5,9 +5,9 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Entries are written at release time, not by each pull request: new features, public
-API changes and security fixes get a line each, and other bug fixes are summarized in
-one line. How to write the entry: see
+Pull requests may add or edit lines under `[Unreleased]`, and the release does the final
+pass: new features, public API changes and security fixes get a line each, and other bug
+fixes are summarized in one line. How to write the entry: see
 [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md).
 
 ## [Unreleased]

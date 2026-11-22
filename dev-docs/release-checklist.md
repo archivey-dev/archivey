@@ -31,8 +31,10 @@ fails if the tag and either packaged version disagree.
 
 ## 1. Gather user-visible changes (CHANGELOG)
 
-Pull requests do not edit `CHANGELOG.md`; the release PR writes the whole entry. What
-goes in it:
+Pull requests may add or edit lines under `## [Unreleased]`, merged into the structure
+below (CONTRIBUTING.md §Cutting a release). The release PR does the final pass: add what
+the merged pull requests left out, merge lines on the same topic, drop what is not
+user-facing, and fix the order and wording. What goes in it:
 
 - one line per new feature and per public API change, counting a renamed or removed
   `archivey` verb or option and a changed exit code (**Added** / **Changed** /
@@ -83,7 +85,7 @@ the date in that heading.)
   line it prints is an **Added** item, a `-` line is **Removed**, and a `-` and `+` pair
   for the same name is **Changed** (or **Deprecated**, or a **Breaking:** line).
 
-- [ ] Write the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
+- [ ] Finish the entry under `## [Unreleased]`. `release.py start` (§6) moves it under
   a dated `## [X.Y.Z]` heading and writes the compare links.
 
 ---

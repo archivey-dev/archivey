@@ -184,9 +184,12 @@ See [`dev-docs/release-checklist.md`](dev-docs/release-checklist.md)
 (CHANGELOG triage, perf vs previous tag, docs, three-config tests, version bump,
 tag, publish). One-time repo rename / PyPI setup:
 [`dev-docs/release-repo-cutover.md`](dev-docs/release-repo-cutover.md).
-User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). Pull requests do not edit
-it: the release PR writes each version's entry (new features, public API changes and
-security fixes one line each, other bug fixes summarized in one line).
+User-facing history lives in [`CHANGELOG.md`](CHANGELOG.md). A pull request may add or
+edit a line under `## [Unreleased]` when the line fits the entry's sections: new
+features, public API changes and security fixes one line each, and all other bug fixes
+in the one shared **Fixed** line. Merge into an existing line on the same topic instead
+of adding one, and keep the list short and user-facing. The release PR does the final
+pass (triage, order, wording), so each entry is an organized list at release time.
 
 Whether a release can be a patch follows
 [`docs/how-it-is-built.md`](docs/how-it-is-built.md) §Versioning and stability, and
