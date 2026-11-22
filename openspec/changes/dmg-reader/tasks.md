@@ -52,6 +52,9 @@ and the maintainer merges the PR that adds it (it adds triggers).
   format (UDZO, UDBZ, ULFO, ULMO, UDRO, UDCO; HFS+, HFSX, APFS from Part E), then
   archivey's listing and file hashes match the mounted volume's
 
+Both are `scripts/investigations/dmg_macos_check.py`, run by `dmg-macos.yml`. They
+are ticked once its first run on `main` is green; APFS joins M.2 with Part E.
+
 ## C. User docs
 
 - [ ] C.1 `docs/formats.md` §Disk images and the formats table (maintainer's docs
