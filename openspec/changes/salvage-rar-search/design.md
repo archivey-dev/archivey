@@ -162,13 +162,14 @@ search, in place of "no later member of that volume is listed".
 
 ## 3. The RAR5 finder
 
-`find_rar5_header(window, start) -> int | None` in `internal/backends/rar_search.py`
-returns the first offset at or after `start` where a header passes the checks below, in
-this order. The checks are on **values**, as the walk decodes them, never on encodings,
-so a non-minimal vint passes wherever the walk accepts it. Each check is justified by
-the RAR5 technical note (rarlab.com, "RAR 5.0 archive format") or by `unrar`'s own
-reader. Only check 6 is the format's check. Checks 1 to 5 reject what the walk would
-also reject, so that they cost nothing in recall and exist only to avoid a CRC.
+`find_rar5_header(window, start, stop) -> int | None` in
+`internal/backends/rar_search.py` returns the first offset at or after `start` and
+before `stop` where a header passes the checks below, in this order. The checks are on
+**values**, as the walk decodes them, never on encodings, so a non-minimal vint passes
+wherever the walk accepts it. Each check is justified by the RAR5 technical note
+(rarlab.com, "RAR 5.0 archive format") or by `unrar`'s own reader. Only check 6 is the
+format's check. Checks 1 to 5 reject what the walk would also reject, so that they cost
+nothing in recall and exist only to avoid a CRC.
 
 1. **Header size: a vint of 1 to 3 bytes, value 3 or more.** The note: "This field must
    not be longer than 3 bytes in current implementation, resulting in 2 MB maximum
@@ -211,12 +212,12 @@ does not bound crafted input. The chosen way (§14) computes the CRC of a candid
 
 ## 4. The RAR 1.5-4 finder
 
-`find_rar3_header(window, start) -> int | None` looks for the two block types the walk
-lists or acts on after MAIN: FILE (`0x74`) and SUB (`0x7A`, "NEWSUB"). The older block
-types (`0x75` to `0x79`: old comment, authenticity, old sub-block, old recovery record,
-signature) hold no member, and the walk skips them as unknown blocks today. MAIN
-(`0x73`) is looked for only at a lost start (§8). ENDARC (`0x7B`) is not looked for;
-the confirmation check reads it (§5).
+`find_rar3_header(window, start, stop) -> int | None` looks for the two block types the
+walk lists or acts on after MAIN: FILE (`0x74`) and SUB (`0x7A`, "NEWSUB"). The older
+block types (`0x75` to `0x79`: old comment, authenticity, old sub-block, old recovery
+record, signature) hold no member, and the walk skips them as unknown blocks today. MAIN
+(`0x73`) is looked for only at a lost start (§8). ENDARC (`0x7B`) is not looked for; the
+confirmation check reads it (§5).
 
 1. **Type** `0x74` or `0x7A` at offset 2.
 2. **`HEAD_SIZE` (u16 at offset 5)** is at least 32 plus `NAME_SIZE`, plus 8 when the
@@ -511,7 +512,7 @@ changes agree:
    same skipped region, so that one `ARCHIVE_REGION_SKIPPED` covers the whole range.
 3. **`volume_index`** on both contexts (§12).
 4. **The finder may hold state for one search**, such as the lost-start version (§8.1).
-   A callable object satisfies `find_header(window, start) -> int | None`.
+   A callable object satisfies `find_header(window, start, stop) -> int | None`.
 
 ## 16. Found while measuring (default mode)
 

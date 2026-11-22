@@ -217,6 +217,7 @@ from archivey.internal.password_confirm import (
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
 from archivey.internal.resource_usage import ResourceUsageRecorder
+from archivey.internal.salvage import QuietSalvageState
 from archivey.internal.source import ArchiveSource
 from archivey.internal.spool import SpoolBudget
 from archivey.internal.streams.archive_stream import (
@@ -4011,6 +4012,9 @@ class RarReader(BaseArchiveReader):
 
     def _emit_salvage_unavailable(self, why: str) -> None:
         """Record ``SALVAGE_UNAVAILABLE`` for an archive salvage cannot search."""
+        if isinstance(self._salvage_mode, QuietSalvageState):
+            # A repeat reader: the first reader of this archive recorded it.
+            return
         self._diagnostics_collector.emit(
             code=DiagnosticCode.SALVAGE_UNAVAILABLE,
             message=f"salvage=True has no effect on this RAR archive: {why}.",
@@ -4027,6 +4031,10 @@ class RarReader(BaseArchiveReader):
         self, info: RarMemberInfo, found: RarFound, member: ArchiveMember, index: int
     ) -> None:
         """``MEMBER_FOUND_BY_SCAN`` for a member salvage listed past damage."""
+        if isinstance(self._salvage_mode, QuietSalvageState):
+            # A repeat reader (``SalvageRequest.repeat``): the first reader of this
+            # archive flagged the member.
+            return
         volume_index = info.volume_index if self._in_set else None
         where = f"byte {found.offset}"
         if volume_index is not None:

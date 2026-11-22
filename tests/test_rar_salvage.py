@@ -47,6 +47,7 @@ from archivey.exceptions import (
     UnsupportedFeatureError,
 )
 from archivey.internal.backends.rar_search import (
+    LostStartFinder,
     Rar3Finder,
     Rar5Finder,
     _WindowCrc,
@@ -287,6 +288,26 @@ def test_the_finders_find_every_header_the_walk_reads() -> None:
             counts[key] += 1
     assert counts[5] > 1000
     assert counts[4] > 50
+
+
+def test_the_finders_examine_no_position_at_or_past_stop() -> None:
+    """``find_header(window, start, stop)``: a header at ``stop`` is not found,
+    though the window holds it whole; one just before it is."""
+    seen = set()
+    for path in _single_plain_fixtures():
+        walked = _header_offsets(path)
+        if walked is None or walked[0] in seen or len(walked[1]) < 2:
+            continue
+        version, offsets = walked
+        seen.add(version)
+        data = path.read_bytes()
+        # Eight bytes no header passes at, then a member header and what follows.
+        window = bytes(8) + data[offsets[1] :]
+        finders = [LostStartFinder(), Rar5Finder() if version == 5 else Rar3Finder()]
+        for finder in finders:
+            assert finder(window, 0, 8) is None, (path.name, finder)
+            assert finder(window, 0, 9) == 8, (path.name, finder)
+    assert seen == {4, 5}
 
 
 def _reader(data: bytes):

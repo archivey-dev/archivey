@@ -1,7 +1,7 @@
 """Salvage mode's header search for RAR (``open_archive(salvage=True)``).
 
 The shared search driver (:mod:`archivey.internal.salvage`) asks a format for a
-``find_header(window, start)`` that is pure on bytes. This module holds RAR's two:
+``find_header(window, start, stop)`` that is pure on bytes. This module holds RAR's two:
 
 - :class:`Rar5Finder` finds a RAR5 header that passes its CRC-32.
 - :class:`Rar3Finder` finds a RAR 1.5-4 ``FILE`` or ``SUB`` header (and ``MAIN`` at a
@@ -326,8 +326,8 @@ class Rar5Finder:
     def __init__(self) -> None:
         self._crc = _WindowCrc()
 
-    def __call__(self, window: bytes, start: int) -> int | None:
-        return self.find(window, start, None)
+    def __call__(self, window: bytes, start: int, stop: int) -> int | None:
+        return self.find(window, start, stop)
 
     def find(self, window: bytes, start: int, stop: int | None) -> int | None:
         """As a call, looking only at positions before ``stop`` when it is given."""
@@ -493,8 +493,8 @@ class Rar3Finder:
         self._pattern = _RAR3_CANDIDATE_OR_MAIN if with_main else _RAR3_CANDIDATE
         self._crc = _WindowCrc()
 
-    def __call__(self, window: bytes, start: int) -> int | None:
-        return self.find(window, start, None)
+    def __call__(self, window: bytes, start: int, stop: int) -> int | None:
+        return self.find(window, start, stop)
 
     def find(self, window: bytes, start: int, stop: int | None) -> int | None:
         for match in self._pattern.finditer(window, start):
@@ -519,9 +519,9 @@ class LostStartFinder:
         self._rar5 = Rar5Finder()
         self._rar3 = Rar3Finder(with_main=True)
 
-    def __call__(self, window: bytes, start: int) -> int | None:
-        found = self._rar5.find(window, start, None)
-        older = self._rar3.find(window, start, found)
+    def __call__(self, window: bytes, start: int, stop: int) -> int | None:
+        found = self._rar5.find(window, start, stop)
+        older = self._rar3.find(window, start, stop if found is None else found)
         return older if older is not None else found
 
 
