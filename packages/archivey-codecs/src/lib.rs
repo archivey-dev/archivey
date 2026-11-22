@@ -1209,6 +1209,12 @@ impl LzxDecompressor {
     }
 
     /// Give the declared output size once it is known, before the last frame starts.
+    ///
+    /// Without an output size the decoder may already have read input after the
+    /// stream as the start of a next frame. A size that ends the output there gives
+    /// that input back as unused, and drops an error the decoder met in it. A decoder
+    /// restored from a state saved after it read that input cannot give it back: the
+    /// input stays consumed and the error stays.
     fn set_output_size(&mut self, output_size: u64) -> PyResult<()> {
         let decoded = self.inner.decoded();
         if output_size < decoded {
