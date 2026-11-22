@@ -917,3 +917,31 @@ def test_lzx_input_fed_byte_by_byte_resumes_where_it_stopped() -> None:
             out += d.decompress(s[i : i + 1])
             assert i + 1 - d.total_in <= 12, (layout, i)
         assert bytes(out + d.flush()) == data, layout
+
+
+def test_lzx_output_size_given_late_gives_back_what_follows_the_stream() -> None:
+    """A stream that ends on a frame boundary, followed by other bytes: without an
+    output size the decoder starts the next frame and reads them as a block header
+    (and may fail on them). A late ``set_output_size()`` that ends the output there
+    gives them back: they are unused data, and no error is left for them."""
+    from cab_util import FRAME, LzxEncoder
+
+    rng = random.Random(14)
+    lzx = archivey_codecs.lzx
+    data = bytes(rng.randrange(4) + 97 for _ in range(FRAME))
+    stream = b"".join(LzxEncoder(window_bits=15, blocks=("uncompressed",)).encode(data))
+    for tail in (bytes(8), bytes.fromhex("20000080") + bytes(range(39))):
+        d = lzx.Decompressor(15)
+        out = d.decompress(stream + tail)
+        try:
+            out += d.decompress(b"")
+        except archivey_codecs.CorruptDataError:
+            pass
+        d.set_output_size(FRAME)
+        assert out == data, tail
+        assert d.eof, tail
+        assert d.flush() == b"", tail
+        assert d.unused_data == tail, tail
+        assert d.total_in == len(stream), tail
+        restored = lzx.Decompressor.from_state(d.getstate())
+        assert restored.total_in == len(stream), tail
