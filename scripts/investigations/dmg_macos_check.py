@@ -99,15 +99,21 @@ def _attached(image: Path, *, mount: bool) -> Iterator[tuple[list[str], Path | N
     if done.returncode != 0:
         _remove_mount_dir(mount_dir)
         raise RuntimeError(f"hdiutil attach failed: {done.stderr.strip()}")
-    entities = plistlib.loads(done.stdout.encode())["system-entities"]
-    devices = [e["dev-entry"] for e in entities if "dev-entry" in e]
-    hfs = [
-        e["dev-entry"]
-        for e in entities
-        if "Apple_HFS" in e.get("content-hint", "")
-        or e.get("content-hint", "") == "48465300-0000-11AA-AA11-00306543ECAC"
-    ]
-    whole = min(devices, key=len)
+    try:
+        entities = plistlib.loads(done.stdout.encode())["system-entities"]
+        devices = [e["dev-entry"] for e in entities if "dev-entry" in e]
+        hfs = [
+            e["dev-entry"]
+            for e in entities
+            if "Apple_HFS" in e.get("content-hint", "")
+            or e.get("content-hint", "") == "48465300-0000-11AA-AA11-00306543ECAC"
+        ]
+        whole = min(devices, key=len)
+    except (plistlib.InvalidFileException, KeyError, TypeError, ValueError) as exc:
+        _remove_mount_dir(mount_dir)
+        raise RuntimeError(
+            f"hdiutil attach printed no usable device list: {exc}"
+        ) from exc
     try:
         yield hfs or [whole], mount_dir
     finally:
@@ -396,37 +402,45 @@ def main() -> int:
         return 2
     lines = ["# DMG check against hdiutil and fsck_hfs", ""]
     failed = False
-    with tempfile.TemporaryDirectory() as tmp:
-        work = Path(tmp)
-        if args.part in ("writer", "both"):
-            writer = [
-                _check_writer_image(n, i, nodes, work)
-                for n, i, nodes in _writer_cases()
-            ]
-            lines += _table("Writer images (M.1)", writer)
-            failed |= any(r.problems for r in writer)
-        if args.part in ("reader", "both"):
-            src = work / "src"
-            try:
-                _make_source(src)
-            except _IMAGE_ERRORS as exc:
-                lines += ["## M.2", "", f"The source tree failed: {exc}", ""]
-                failed = True
-            else:
-                reader = [
-                    _check_fresh_image(fmt, fs, src, work)
-                    for fmt in FORMATS
-                    for fs in FILESYSTEMS
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            if args.part in ("writer", "both"):
+                writer = [
+                    _check_writer_image(n, i, nodes, work)
+                    for n, i, nodes in _writer_cases()
                 ]
-                lines += _table("archivey against fresh hdiutil images (M.2)", reader)
-                failed |= any(r.problems for r in reader)
-                if not any(not r.skipped for r in reader):
-                    lines += ["M.2 compared no image.", ""]
+                lines += _table("Writer images (M.1)", writer)
+                failed |= any(r.problems for r in writer)
+            if args.part in ("reader", "both"):
+                src = work / "src"
+                try:
+                    _make_source(src)
+                except _IMAGE_ERRORS as exc:
+                    lines += ["## M.2", "", f"The source tree failed: {exc}", ""]
                     failed = True
-    text = "\n".join(lines)
-    print(text)
-    if args.out is not None:
-        args.out.write_text(text + "\n", encoding="utf-8")
+                else:
+                    reader = [
+                        _check_fresh_image(fmt, fs, src, work)
+                        for fmt in FORMATS
+                        for fs in FILESYSTEMS
+                    ]
+                    lines += _table(
+                        "archivey against fresh hdiutil images (M.2)", reader
+                    )
+                    failed |= any(r.problems for r in reader)
+                    if not any(not r.skipped for r in reader):
+                        lines += ["M.2 compared no image.", ""]
+                        failed = True
+    except Exception as exc:
+        # Keep the parts that finished in the report; the traceback still fails the run.
+        lines += ["", f"The check stopped: {type(exc).__name__}: {exc}"]
+        raise
+    finally:
+        text = "\n".join(lines)
+        print(text)
+        if args.out is not None:
+            args.out.write_text(text + "\n", encoding="utf-8")
     return 1 if failed else 0
 
 
