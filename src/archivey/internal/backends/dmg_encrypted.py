@@ -141,6 +141,8 @@ def read_header(source: ReaderSource) -> EncryptedHeader:
             f"the encrypted DMG image uses {block_size}-byte blocks; only "
             f"{' and '.join(map(str, _BLOCK_SIZES))} are supported"
         )
+    if count == 0:
+        raise CorruptionError("the encrypted DMG header declares no key entries")
     if count > _MAX_ENTRIES:
         raise ResourceLimitError(
             f"the encrypted DMG header declares {count} key entries; archivey reads "
@@ -224,6 +226,11 @@ def _password_entry(source: ReaderSource, at: int, length: int) -> _PasswordEntr
         raise UnsupportedFeatureError(
             f"the encrypted DMG image derives its key with algorithm {kdf}; only "
             "PBKDF2 is supported"
+        )
+    if iterations == 0:
+        raise CorruptionError(
+            f"the password key entry at byte {at} of the encrypted DMG header "
+            "declares 0 PBKDF2 iterations"
         )
     if algorithm == _ALG_AES and key_bits in (128, 192, 256):
         block = 16

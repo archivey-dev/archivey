@@ -1351,8 +1351,8 @@ class ArchiveInfoExtra(dict[str, object]):
       sorted: ``"raw"``, ``"adc"``, ``"zlib"``, ``"bzip2"``, ``"lzfse"``, ``"xz"``.
     * ``dmg.code_signature`` (``bool``) — the image carries a code signature (not
       checked).
-    * ``dmg.encryption`` (``str``) — ``"AES-128"`` or ``"AES-256"`` for an encrypted
-      image; absent otherwise.
+    * ``dmg.encryption`` (``str``) — ``"AES-128"``, ``"AES-192"`` or ``"AES-256"``
+      for an encrypted image (``hdiutil`` writes 128 and 256); absent otherwise.
     """
 
     __slots__ = ()

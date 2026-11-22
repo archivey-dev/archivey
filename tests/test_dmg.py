@@ -372,6 +372,16 @@ def _blob_patch(offset: int, fmt: str, value: int):
             "only CBC",
         ),
         (
+            {"patch_header": _header_patch(72, ">I", 0)},
+            CorruptionError,
+            "no key entries",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(8, ">I", 0))]},
+            CorruptionError,
+            "0 PBKDF2 iterations",
+        ),
+        (
             {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(12, ">I", 33))]},
             CorruptionError,
             "33-byte salt",

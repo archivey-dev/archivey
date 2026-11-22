@@ -10,7 +10,7 @@ the format.
 
 | | |
 | --- | --- |
-| Read | Yes: UDIF (`koly` version 4) with every run codec (zero fill, raw, ignore, ADC, zlib, bzip2, LZFSE, xz), GPT, Apple partition map or no map, HFS+, HFSX and APFS (unencrypted, unsealed volumes; the live tree, not snapshots), and those images encrypted with a password (`encrcdsa` v2, AES-128 or AES-256) |
+| Read | Yes: UDIF (`koly` version 4) with every run codec (zero fill, raw, ignore, ADC, zlib, bzip2, LZFSE, xz), GPT, Apple partition map or no map, HFS+, HFSX and APFS (unencrypted, unsealed volumes; the live tree, not snapshots), and those images encrypted with a password (`encrcdsa` v2, AES-128 or AES-256 as `hdiutil` writes them, and AES-192) |
 | Write | **Not shipped** |
 | Source | Seekable only (`required_source` is `SEEKABLE`): the run tables are at the end of the image and the filesystem metadata anywhere in the disk. A pipe is refused, or spooled by the caller |
 | Listing cost | The open reads the `koly` block, the property list and its run tables, the partition map, a 4 KiB probe of each partition, each HFS+ volume header (plus two 512-byte journal reads) and each APFS container's block 0; the first listing walks each HFS+ catalog twice and the attributes tree once, and for APFS scans the checkpoint ring, reads the object maps whole and walks each filesystem tree once |
@@ -114,11 +114,12 @@ later block for its own IV, and keeps the last 16 blocks it decrypted.
 Every length is checked before the bytes it names are read: the version (2), cipher
 (AES), HMAC key size (160 bits) and block size (512 or 4096) are
 `UnsupportedFeatureError` otherwise; more than 16 key entries, or an entry over 4 KiB,
-is `ResourceLimitError`; an entry outside the header (between the entry table and the
-encrypted data), a salt over 32 bytes, an IV over the cipher's block, or a wrapped key
-that is not a whole number of blocks inside its entry is `CorruptionError`; a file
-shorter than the encrypted data is `TruncatedError`. All of this runs before a password
-is asked for. Only the `koly` block's blocks are decrypted to check a password.
+is `ResourceLimitError`; no key entries, an entry outside the header (between the entry
+table and the encrypted data), 0 PBKDF2 iterations, a salt over 32 bytes, an IV over the
+cipher's block, or a wrapped key that is not a whole number of blocks inside its entry
+is `CorruptionError`; a file shorter than the encrypted data is `TruncatedError`. All of
+this runs before a password is asked for. Only the `koly` block's blocks are decrypted
+to check a password.
 
 ### 2.2 Open and list
 
