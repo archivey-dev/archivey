@@ -756,13 +756,15 @@ class _PluginAdapter(BaseArchiveReader):
         )
         # A walk started over to reach member data builds the inner reader again:
         # it salvages as the listing's did, and repeats none of its salvage records.
+        # So does every walk of a reader that is itself built again: its own listing
+        # walk reads what the first such reader's listing reported.
         spans = self._nested_spans(
             backend_cls,
             data,
             fmt,
             first=self._walk_index,
             nest=nest,
-            repeat=self._walk_step != _LISTING,
+            repeat=self._salvage_mode.repeat or self._walk_step != _LISTING,
         )
         self._nested_iterators.add(spans)
         return spans

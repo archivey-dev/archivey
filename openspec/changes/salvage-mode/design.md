@@ -92,7 +92,7 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
 
    ```text
    walk stops at damage D (default rules, follow-size included, already failed)
-     search from D: finder(window, start) -> offset of first candidate | None
+     search from D: finder(window, start, stop) -> first candidate in [start, stop) | None
        none in the layer      -> REGION_SKIPPED(D, end-D), walk ends
        candidate at C         -> REGION_SKIPPED(D, C-D) when C > D
                                  parse it as the walk parses any header
