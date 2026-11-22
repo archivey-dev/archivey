@@ -12,8 +12,9 @@ there, and walks on. This module owns the parts that do not depend on the format
   :class:`~archivey.SalvageLimits`, the search budget and the position each layer's
   search has reached, and the ``ARCHIVE_REGION_SKIPPED`` records with their cap.
 - :func:`search_forward`, the search itself. A format gives it a
-  :class:`HeaderSearch`: a ``find_header(window, start)`` function that is pure on
-  bytes, the step between candidate positions, and the longest header it needs.
+  :class:`HeaderSearch`: a ``find_header(window, start, stop)`` function that is pure
+  on bytes and examines only candidate starts before ``stop``, the step between
+  candidate positions, and the longest header it needs.
 
 The search reads the layer in windows, examines each candidate position at most
 once per layer (its position only moves forward), and counts what it examines
@@ -187,7 +188,13 @@ class SalvageState:
     a random-access reader runs to reach a member's data, possibly while the listing
     walk runs, searches with a :class:`QuietSalvageState` of its own, so it leaves
     this state as it is.
+
+    ``repeat`` is ``True`` on a :class:`QuietSalvageState`: a reader built with one
+    reads again what an earlier reader reported, and so does every reader it opens
+    inside itself (``SalvageRequest.repeat``).
     """
+
+    repeat = False
 
     def __init__(
         self,
@@ -546,6 +553,9 @@ def search_forward(
             pos = next_pos
 
         if at_end and pos >= buf_end and not budget_bound:
+            # The layer ends here, so no later search of it has anything to examine,
+            # even when this one examined no candidate position.
+            state._examined(layer, buf_end, buf_end)
             _record_no_header(state, layer, region_start, buf_end)
             return SearchResult(found=None)
         if budget_bound:
@@ -597,6 +607,8 @@ class QuietSalvageState(SalvageState):
     """The salvage state of a walk started over to reach member data: it searches as
     the listing walk did, so it finds the same members, and records nothing, since
     the listing walk recorded it all."""
+
+    repeat = True
 
     @override
     def _emit(self, context: RegionSkippedContext, message: str) -> None:

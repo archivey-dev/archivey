@@ -539,18 +539,28 @@ def test_a_variable_width_finder_visits_each_start_once_within_the_budget(
     assert state.searched_bytes == examined
 
 
-@pytest.mark.parametrize("end", [None, 3])
+@pytest.mark.parametrize("end_known", [False, True], ids=["unsized", "sized"])
+@pytest.mark.parametrize("size", [3, 4])
 def test_a_search_past_the_last_candidate_reports_only_bytes_that_exist(
-    end: int | None,
+    size: int, end_known: bool
 ) -> None:
-    """A search from offset 2 with step 4 has its first candidate at offset 4, past
-    a 3-byte layer's end: it reports the one byte left, with or without ``end``."""
+    """A search from offset 2 with step 4 has its first candidate at offset 4, at or
+    past the layer's end: it reports the bytes left after offset 2, with or without
+    ``end``, and moves the position to the end, so a second search reports nothing."""
     state, collector = _state()
     search = _magic_search(step=4, header=8)
-    result = search_forward(
-        state, _Layer(b"\x00" * 3).read_at, search, start=2, end=end
-    )
-    assert result.found is None and not result.limit_reached
+    data = b"abcd"[:size]
+    for _ in range(2):
+        result = search_forward(
+            state,
+            _Layer(data).read_at,
+            search,
+            start=2,
+            end=size if end_known else None,
+        )
+        assert result.found is None and not result.limit_reached
     assert [(r.offset, r.length, r.reason) for r in _regions(collector)] == [
-        (2, 1, "no_header")
+        (2, size - 2, "no_header")
     ]
+    assert state.position() == size
+    assert state.searched_bytes == 0
