@@ -27,7 +27,7 @@ from archivey.exceptions import CorruptionError, DiagnosticRaisedError
 from archivey.internal.backends.sevenzip_parser import (
     find_zeroed_start_next_header,
 )
-from tests.conftest import run_7z
+from tests.conftest import requires, run_7z
 from tests.sevenzip_salvage_util import (
     PASSWORD,
     SEVEN_ZIP,
@@ -147,13 +147,31 @@ def test_zeroed_bytes_with_a_recomputed_crc_open_as_today() -> None:
 
 @requires_7zip
 @pytest.mark.parametrize(
-    "kind", ["solid", "nonsolid", "lzma1", "bcj", "delta", "aes", "bcj2"]
+    "kind",
+    [
+        "solid",
+        "nonsolid",
+        "lzma1",
+        "bcj",
+        "delta",
+        pytest.param("aes", marks=requires("cryptography")),
+        "bcj2",
+    ],
 )
 def test_every_kind_of_archive_opens_with_a_zeroed_start_header(
     kind: str, sevenzip_builder: SevenZipBuilder
 ) -> None:
     data = sevenzip_builder.build(kind)
     assert read_all(zero_start_header(data)) == read_all(data)
+
+
+def test_a_pair_that_starts_no_header_is_refused_as_corrupt() -> None:
+    """The nearest ``01 04`` can be bytes of a file time: what follows it is then no
+    header, and an unknown property id there is the zero start header's error, not
+    an unsupported feature (seen with 7-Zip's own archives, by their timestamps)."""
+    damaged = zero_start_header(PLAIN_SHORT) + b"\x01\x04\x26\x00"
+    with pytest.raises(CorruptionError, match="start header is zero"):
+        open_archive(io.BytesIO(damaged))
 
 
 def test_a_plain_header_that_starts_before_the_last_512_bytes_is_refused() -> None:

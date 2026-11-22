@@ -447,7 +447,9 @@ def load_sevenzip_archive(
         )
     # The start header was zero and the next header was found by its position, as
     # 7-Zip finds it. A header there that does not parse is the zero start header's
-    # error, as 7-Zip refuses the archive then.
+    # error, as 7-Zip refuses the archive then. An unknown property id counts too:
+    # the ``01 04`` or ``17 06`` pair the rule takes can be bytes of another field
+    # (a file time), and then what follows it is no header at all.
     try:
         archive = _load_from_signature(
             fp,
@@ -460,7 +462,7 @@ def load_sevenzip_archive(
             max_metadata_bytes=max_metadata_bytes,
             budget=budget,
         )
-    except (CorruptionError, TruncatedError) as exc:
+    except (CorruptionError, TruncatedError, UnsupportedFeatureError) as exc:
         raise CorruptionError(ZEROED_START_ERROR) from exc
     archive.start_header_recovered_at = signature.start_header_recovered_at
     return archive

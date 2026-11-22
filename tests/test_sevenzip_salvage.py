@@ -48,7 +48,7 @@ from archivey.internal.backends.sevenzip_salvage_walk import (
     scan_chain,
 )
 from archivey.types import CompressionAlgorithm, Verification
-from tests.conftest import run_7z
+from tests.conftest import requires, run_7z
 from tests.sevenzip_salvage_util import (
     PASSWORD,
     SEVEN_ZIP,
@@ -316,7 +316,16 @@ def test_a_recomputed_crc_over_zeroed_fields_is_not_repaired() -> None:
 
 
 @requires_7zip
-@pytest.mark.parametrize("kind", ["solid", "nonsolid", "plain", "bcj", "aes"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "solid",
+        "nonsolid",
+        "plain",
+        "bcj",
+        pytest.param("aes", marks=requires("cryptography")),
+    ],
+)
 @pytest.mark.parametrize("damage", list(DAMAGES))
 def test_salvage_repairs_7zip_archives(
     kind: str, damage: str, sevenzip_builder: SevenZipBuilder

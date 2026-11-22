@@ -1754,6 +1754,11 @@ _SHARED_KIND_DISCRIMINATORS: Mapping[DiagnosticCode, tuple[str, frozenset[str]]]
                 frozenset({"directory"}),
             ),
             DiagnosticCode.SCAN_ENTRY_VANISHED: ("entry_kind", frozenset({"entry"})),
+            DiagnosticCode.MEMBER_FOUND_BY_SCAN: (
+                "method",
+                frozenset({"header_search", "header_repair"}),
+            ),
+            DiagnosticCode.MEMBER_NAME_UNKNOWN: ("method", frozenset({"content"})),
             DiagnosticCode.ENCODING_ARGUMENT_UNUSED: (
                 "argument",
                 frozenset({"encoding"}),
