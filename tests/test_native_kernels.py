@@ -994,6 +994,9 @@ def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
     for _, raw, names in _lzx_cabs():
         start = raw.index(b"a.txt\0") + 32  # past the file table, into the blocks
         variants = [raw, raw[: len(raw) // 2], raw[: len(raw) - 3]]
+        # Cut where a data block starts: the block table is short, so the folder has
+        # no output size and the input ends at a frame the reader still asks for.
+        variants += [raw[:at] for at, _ in _cab_blocks(raw)]
         for _ in range(25):
             bad = bytearray(raw)
             for _ in range(rng.randint(1, 3)):
