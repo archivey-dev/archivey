@@ -945,3 +945,24 @@ def test_both_damaged_split_headers_merge_only_when_both_flags_agree(
     else:
         assert len(archive.members) == 1
         assert len(archive.members[0].data_parts) == 2
+
+
+@pytest.mark.parametrize("version", ["rar5", "rar4"])
+def test_a_cleared_split_after_does_not_ask_for_another_volume(version: str) -> None:
+    """With no end block, the volume's last member says whether another volume
+    follows. ``b.txt``'s damaged ``SPLIT_AFTER`` is proved false by ``c.txt``, so the
+    single-file archive does not end in "volume 2 is missing". Fails if the walk
+    keeps ``needs_next_volume`` from any member."""
+    if version == "rar5":
+        data = b"Rar!\x1a\x07\x01\x00" + _block(b"\x01\x00\x00")
+        data += _stored("a.txt", b"a") + _stored("b.txt", b"b", header_flags=0x12)
+        data += _stored("c.txt", b"c")
+    else:
+        data = _rar3_start() + _rar3_stored("a.txt", b"a")
+        data += _rar3_stored("b.txt", b"b", flags=0x02) + _rar3_stored("c.txt", b"c")
+    damaged = _damage_name(data, "b.txt")
+    assert not _parse(damaged).needs_next_volume
+    seen, error = _read_pass(io.BytesIO(damaged))
+    assert [name for name, _, _ in seen] == ["a.txt", "X.txt", "c.txt"]
+    assert isinstance(error, CorruptionError)
+    assert not isinstance(error, TruncatedError)

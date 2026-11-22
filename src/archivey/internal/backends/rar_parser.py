@@ -3201,13 +3201,13 @@ class _Rar3Walk:
                 member.comment = _parse_rar3_old_comment_subblocks(
                     block.hdata, crc_pos, encoding=self.name_encoding
                 )
-            if _emit_file_member(
+            # The volume's last member decides; an intact end block overrides it.
+            self.needs_next_volume = _emit_file_member(
                 self.members,
                 member,
                 max_members=self.max_members,
                 max_metadata_bytes=self.max_metadata_bytes,
-            ):
-                self.needs_next_volume = True
+            )
             if self.yield_files:
                 self.pending = ForwardMember(member, block.data_offset, packed_size)
                 return
@@ -4230,7 +4230,7 @@ def _emit_and_skip_qo_run(
     """If ``tell()`` is a QO FILE, emit the consecutive cached run and seek past it.
 
     Returns ``None`` when ``tell()`` is not a QO FILE (caller parses the block).
-    Otherwise returns whether any emitted member has ``split_after``.
+    Otherwise returns whether the last emitted member has ``split_after``.
     """
     pos = source.tell()
     if pos not in qo_by_off:
@@ -4249,13 +4249,12 @@ def _emit_and_skip_qo_run(
         pos = nxt
     needs_next = False
     for member in run:
-        if _emit_file_member(
+        needs_next = _emit_file_member(
             members,
             member,
             max_members=max_members,
             max_metadata_bytes=max_metadata_bytes,
-        ):
-            needs_next = True
+        )
     seen_file_offsets.update(m.header_offset for m in run)
     _seek_to(source, pos)
     return needs_next
@@ -4455,8 +4454,7 @@ class _Rar5Walk:
                 max_metadata_bytes=self.max_metadata_bytes,
             )
             if skipped is not None:
-                if skipped:
-                    self.needs_next_volume = True
+                self.needs_next_volume = skipped
                 continue
 
             block = self._read_block(header_fd, header_start)
@@ -4789,13 +4787,13 @@ class _Rar5Walk:
             # QO copies are emitted in `_emit_and_skip_qo_run` before this
             # read; this branch is holes, FILE after QO, and the no-QO walk.
             if member.header_offset not in self.seen_file_offsets:
-                if _emit_file_member(
+                # As in the RAR 1.5-4 walk: the last member decides.
+                self.needs_next_volume = _emit_file_member(
                     self.members,
                     member,
                     max_members=self.max_members,
                     max_metadata_bytes=self.max_metadata_bytes,
-                ):
-                    self.needs_next_volume = True
+                )
                 self.seen_file_offsets.add(member.header_offset)
                 if self.yield_files:
                     self.pending = ForwardMember(
