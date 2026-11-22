@@ -99,8 +99,9 @@ class ImageKeys:
     # The unwrapped keys stay out of the repr, as ``AesParams.key`` does.
     aes_key: bytes = field(repr=False)
     hmac_key: bytes = field(repr=False)
-    # Whether the decrypted image ends with a ``koly`` block. A password confirmed by
-    # the key mark alone unlocks an image that does not: a read-write (UDRW) one.
+    # Whether the decrypted image has a ``koly`` block in its last 512 bytes or, in an
+    # old layout, its first 512. A password confirmed by the key mark alone unlocks an
+    # image with neither: a read-write (UDRW) one.
     has_koly: bool
 
 
