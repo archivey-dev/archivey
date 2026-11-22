@@ -1591,6 +1591,11 @@ PASSWORD_BLOB = struct.Struct(">4I32sI32s5I")
 CSSM_AES = 0x80000001
 CSSM_3DES = 17
 KEY_MARK = b"CKIE\0"
+# hdiutil's sizes: a password blob is 616 bytes (its wrapped-key field is 512), and the
+# encrypted data starts at 0x1DE00. ``hdiutil attach`` refuses an image with a shorter
+# blob as "corrupt".
+BLOB_SIZE = 616
+DATA_OFFSET = 0x1DE00
 
 
 @dataclass
@@ -1633,7 +1638,7 @@ def encrypt_dmg(
     blobs: list[bytes] = []
     for entry in entries:
         if entry.kind != 1:
-            blobs.append(bytes(PASSWORD_BLOB.size + 64))
+            blobs.append(bytes(BLOB_SIZE))
             continue
         plain = bytearray(aes_key + hmac_key + (KEY_MARK if entry.mark else b""))
         if entry.patch_plain:
@@ -1670,6 +1675,7 @@ def encrypt_dmg(
             )
             + wrapped
         )
+        blob += bytes(max(0, BLOB_SIZE - len(blob)))
         if entry.patch_blob:
             entry.patch_blob(blob)
         blobs.append(bytes(blob))
@@ -1678,7 +1684,7 @@ def encrypt_dmg(
     for blob in blobs:
         offsets.append(at)
         at += len(blob)
-    data_offset = at + (-at % 4096)
+    data_offset = max(DATA_OFFSET, at + (-at % 4096))
     header = bytearray(
         ENCRYPTED_HEADER.pack(
             b"encrcdsa",

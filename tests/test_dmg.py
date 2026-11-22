@@ -278,7 +278,7 @@ def test_an_encrypted_raw_disk_is_refused_after_its_password() -> None:
 def test_a_damaged_encrypted_block_is_corruption_not_a_wrong_password() -> None:
     image = bytearray(_encrypted(_image(codec=d.ZLIB)))
     # A byte inside the encrypted data fork, well before the plist and koly.
-    image[8192 + 2048] ^= 0xFF
+    image[d.DATA_OFFSET + 2048] ^= 0xFF
     with (
         pytest.raises(CorruptionError) as exc_info,
         _open(bytes(image), password="secret") as reader,
