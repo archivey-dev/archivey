@@ -184,6 +184,11 @@ Choices made in Part B that the plan left open:
     tests/test_detection_workspace.py tests/test_lzfse_decoder.py
 ```
 
+On macOS, `scripts/investigations/dmg_macos_check.py` checks the test writer's images
+with `hdiutil verify`, `fsck_hfs -n` and a read-only mount, and archivey against fresh
+`hdiutil create` images in every format. The `dmg-macos` workflow runs it weekly and
+after a merge that touches the DMG code; the table is its job summary.
+
 | Claim |
 | --- |
 | Every unencrypted HFS+ `hdiutil` fixture lists and reads as macOS mounts it (`test_an_hdiutil_image_lists_and_reads_as_macos_mounts_it`) |

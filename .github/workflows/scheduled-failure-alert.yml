@@ -31,6 +31,7 @@ on:
       - Benchmark wall-time
       - Review tally
       - Python distributions
+      - DMG against hdiutil
     types: [completed]
 
 permissions:

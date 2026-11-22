@@ -1,0 +1,60 @@
+name: DMG against hdiutil
+
+# Checks the DMG reader and its test writer against Apple's own tools, which only macOS
+# has (DMG plan, openspec/changes/dmg-reader/tasks.md section M):
+# scripts/investigations/dmg_macos_check.py makes every tests/dmg_build.py image pass
+# `hdiutil verify`, `fsck_hfs -n` and a read-only mount that shows what the writer put
+# there, and compares archivey's listing and hashes with the mounted volume of fresh
+# `hdiutil create` images in every format. The table goes in the run summary.
+#
+# Runs weekly, on demand, and after a merge to main that changes the DMG code, its
+# writer, or this check. It never runs on a pull request, like the other side
+# workflows; dispatch it on your branch to check a DMG change before merging.
+on:
+  schedule:
+    - cron: "41 6 * * 2"
+  push:
+    branches: [main]
+    paths:
+      - "src/archivey/internal/backends/udif.py"
+      - "src/archivey/internal/backends/disk_partitions.py"
+      - "src/archivey/internal/backends/hfsplus.py"
+      - "src/archivey/internal/backends/dmg_reader.py"
+      - "src/archivey/internal/streams/codecs/adc_decoder.py"
+      - "src/archivey/internal/streams/codecs/lzfse_decoder.py"
+      - "tests/dmg_build.py"
+      - "tests/test_dmg.py"
+      - "scripts/investigations/dmg_macos_check.py"
+      - ".github/workflows/dmg-macos.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dmg-macos-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: macOS / hdiutil and fsck_hfs
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --python 3.12
+      - name: Check images
+        run: |
+          set -o pipefail
+          uv run --no-sync python scripts/investigations/dmg_macos_check.py --out results.md
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f results.md ]; then cat results.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dmg-macos
+          path: results.md
+          if-no-files-found: ignore
