@@ -214,6 +214,48 @@ Choices the decisions above left open, made while building PR 1:
   format calls `SalvageState.finish()` at the end of its walk to record it, and
   `SalvageState.restart()` when a walk starts over.
 
+## Notes from the TAR PR
+
+Choices made while building PR 2, where decisions 6 and 9 left them open:
+
+- **Every added member is flagged.** The archive-reading delta says each member the
+  default does not list carries `MEMBER_FOUND_BY_SCAN`. So a member the normal walk
+  reaches after a confirmed found member is flagged too, with `offset` at its own chain
+  and `confirmed` from the block after its data. Only a member the search found starts
+  a search inside its data when it is unconfirmed; a walked member's next damage starts
+  a search where that damage is, as for any walk.
+- **The default's zero-block end starts no search**, even when non-zero bytes follow the
+  marker. The default reads that end without an error, and the archive-reading delta
+  says such an archive reads the same with `salvage=True` in this step. A run of zero
+  blocks from a header's start (4 KiB zeroed at a header) therefore looks like an intact
+  end with hidden content after it, which is step 5b. GNU tar stops there too ("A lone
+  zero block"), unless `--ignore-zeros`. Past the default's damage, a zero-block end
+  that is not the clean end (a nested tar's marker, with the outer members after it)
+  does start a search.
+- **The v7 rule needs a listed header.** A block with no magic passes only when at least
+  one header was listed and every one listed was v7, so a lost start never accepts a v7
+  block on its checksum alone. In v7 mode a v7 header confirms a found member.
+- **A found header that makes no member** (its chain does not parse, or it raises
+  `CorruptionError`) is passed over: the search goes on at the block after it. Past the
+  default's end, `CorruptionError` inside a walked chain ends that chain as a rejected
+  header does, and the search starts at the chain. Damage in the codec stream during a
+  search ends the walk; the pass ends in the default's error.
+- **The damage error's message** adds that salvage searched past it, and names the
+  search limit when it stopped the search. Its code and context are the default's.
+- **Lost start in core is a flag, not a format choice.** Detection already falls back
+  to the name's extension (`detected_by="extension"`), and `format=` skips detection, so
+  both already pick the reader. Core sets `SalvageRequest.lost_start` /
+  `SalvageState.lost_start` (`core._start_may_be_lost`: salvage requested and the
+  format came from `format=` or the extension), for a format whose search depends on
+  it (CPIO's variant). TAR does not read it: a first header that does not parse is
+  damage at offset 0 under salvage, whatever the detection said, and the search runs at
+  open, so a file with no header still fails at open.
+- **A forward-only walk** (a nested reader such as a deb's `data.tar`) does not search
+  bytes it has already read past and does not hold: the damaged block itself and an
+  extended chain's own data read as zeros, which never pass. It holds an unconfirmed
+  found member's data, up to the 4 MiB pipe span, for the search inside it; past that
+  span the rest of the data is not searched.
+
 ## Verification
 
 Q18: a member found by a search has the `verifiable` level its own read can reach. For

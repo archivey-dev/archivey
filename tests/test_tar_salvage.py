@@ -1,0 +1,753 @@
+"""TAR in salvage mode (``open_archive(salvage=True)``,
+``openspec/changes/salvage-mode`` design decisions 4, 5, 6 and 9).
+
+Where the default walk ends on damage, the walk searches forward one 512-byte block at
+a time for a header whose checksum passes and whose magic is ``ustar``. It lists each
+member it finds, flagged with ``MEMBER_FOUND_BY_SCAN``, and the pass still ends in the
+default's error. The damaged copies are made here from archives ``tarfile`` writes;
+the GNU tar comparison runs where GNU tar is installed.
+"""
+
+from __future__ import annotations
+
+import gzip
+import io
+import random
+import shutil
+import subprocess
+import tarfile
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from archivey import (
+    ArchiveyConfig,
+    DiagnosticCode,
+    DiagnosticPolicy,
+    SalvageLimits,
+    open_archive,
+)
+from archivey.diagnostics import (
+    Diagnostic,
+    RegionSkippedContext,
+    SalvageScanContext,
+)
+from archivey.exceptions import ArchiveyError, CorruptionError, FormatDetectionError
+from archivey.internal.backends.tar_parser import (
+    BLOCKSIZE,
+    TarEnd,
+    TarEndKind,
+    TarEntry,
+    TarWalker,
+    passes_header_search,
+    tar_header_search,
+)
+from archivey.internal.diagnostics_collector import collector_from_config
+from archivey.internal.salvage import SalvageState
+
+# ---------------------------------------------------------------------------
+# Building and damaging archives
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Tar:
+    data: bytes
+    names: list[str]
+    # Where each member's chain (its first header) starts.
+    offsets: list[int]
+    contents: dict[str, bytes]
+
+
+def _build(
+    count: int = 30,
+    *,
+    seed: int = 1,
+    fmt: int = tarfile.GNU_FORMAT,
+    max_size: int = 12_000,
+    names: list[str] | None = None,
+) -> _Tar:
+    rng = random.Random(seed)
+    buf = io.BytesIO()
+    contents: dict[str, bytes] = {}
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as tar:
+        for index in range(count):
+            name = names[index] if names else f"dir/file{index:02d}.bin"
+            content = rng.randbytes(rng.randrange(0, max_size))
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mtime = 1_700_000_000
+            tar.addfile(info, io.BytesIO(content))
+            contents[name] = content
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        members = tar.getmembers()
+    return _Tar(data, [m.name for m in members], [m.offset for m in members], contents)
+
+
+# Zeroed regions start this far into the block they hit, so a header there fails its
+# checksum. Zeros from a block's start read as the end-of-archive marker, and what
+# follows the marker is hidden content, a later step
+# (test_zeros_from_a_header_start_read_as_the_end).
+_INTO_BLOCK = 100
+
+
+def _zeroed(data: bytes, offset: int, length: int = 4096) -> bytes:
+    offset += _INTO_BLOCK
+    return data[:offset] + bytes(length) + data[offset + length :]
+
+
+def _flipped(data: bytes, *offsets: int) -> bytes:
+    out = bytearray(data)
+    for offset in offsets:
+        out[offset] ^= 0x41
+    return bytes(out)
+
+
+def _with_size(data: bytes, header: int, size: int) -> bytes:
+    """``data`` with the header at ``header`` given ``size``, its checksum fixed."""
+    block = bytearray(data[header : header + BLOCKSIZE])
+    block[124:136] = b"%011o\x00" % size
+    block[148:156] = b" " * 8
+    block[148:156] = b"%06o\x00 " % sum(block)
+    return data[:header] + bytes(block) + data[header + BLOCKSIZE :]
+
+
+# ---------------------------------------------------------------------------
+# Reading
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Listing:
+    members: list[tuple[str, int | None, bytes | None]]
+    diagnostics: list[Diagnostic]
+    error: BaseException | None
+
+    @property
+    def names(self) -> list[str]:
+        return [name for name, _, _ in self.members]
+
+    def of(self, code: DiagnosticCode) -> list[Diagnostic]:
+        return [d for d in self.diagnostics if d.code is code]
+
+    def found(self) -> dict[str, SalvageScanContext]:
+        out: dict[str, SalvageScanContext] = {}
+        for d in self.of(DiagnosticCode.MEMBER_FOUND_BY_SCAN):
+            assert isinstance(d.context, SalvageScanContext)
+            out[d.context.member_name] = d.context
+        return out
+
+    def regions(self) -> list[RegionSkippedContext]:
+        out = []
+        for d in self.of(DiagnosticCode.ARCHIVE_REGION_SKIPPED):
+            assert isinstance(d.context, RegionSkippedContext)
+            out.append(d.context)
+        return out
+
+
+def _list(source: object, **kwargs: object) -> _Listing:
+    """The members the reader lists (name, size, bytes read back), its diagnostics,
+    and the error that ended the listing."""
+    if isinstance(source, bytes):
+        source = io.BytesIO(source)
+    with open_archive(source, **kwargs) as reader:  # type: ignore[call-overload]
+        report = reader.members_report()
+        members = []
+        for member in report.members:
+            content = None
+            if member.is_file:
+                try:
+                    content = reader.read(member)
+                except ArchiveyError:
+                    content = None
+            members.append((member.name, member.size, content))
+        return _Listing(members, list(reader.diagnostics.retained), report.error)
+
+
+def _pass(
+    source: object, **kwargs: object
+) -> tuple[list[tuple[str, bytes | None]], BaseException | None]:
+    """The members ``stream_members()`` gives on a random-access reader, with bytes."""
+    if isinstance(source, bytes):
+        source = io.BytesIO(source)
+    seen: list[tuple[str, bytes | None]] = []
+    error: BaseException | None = None
+    with open_archive(source, **kwargs) as reader:  # type: ignore[call-overload]
+        try:
+            for member, stream in reader.stream_members():
+                seen.append((member.name, None if stream is None else stream.read()))
+        except CorruptionError as exc:
+            error = exc
+    return seen, error
+
+
+def _key(d: Diagnostic) -> tuple[object, ...]:
+    return (d.code, d.context)
+
+
+def _assert_add_only(default: _Listing, salvage: _Listing) -> None:
+    """Q2 / design decision 5: the default listing is a prefix of the salvage one,
+    member by member, and the default's diagnostics are among the salvage ones
+    (the damage error's message adds a salvage note, so messages are not compared)."""
+    assert salvage.members[: len(default.members)] == default.members
+    salvage_keys = [_key(d) for d in salvage.diagnostics]
+    for d in default.diagnostics:
+        assert _key(d) in salvage_keys, d
+    assert type(salvage.error) is type(default.error)
+
+
+def _assert_found_are_real(tar: _Tar, listing: _Listing, start: int = 0) -> None:
+    """Every member listed from ``start`` on is one of the archive's own, with its
+    own bytes when it is confirmed."""
+    found = listing.found()
+    for name, size, content in listing.members[start:]:
+        assert name in tar.contents, name
+        if found.get(name, None) is None or found[name].confirmed:
+            assert size == len(tar.contents[name])
+            assert content == tar.contents[name]
+
+
+# ---------------------------------------------------------------------------
+# find_header
+# ---------------------------------------------------------------------------
+
+
+def test_find_header_takes_ustar_and_gnu_magic_on_block_boundaries() -> None:
+    gnu = _build(2, fmt=tarfile.GNU_FORMAT).data
+    ustar = _build(2, fmt=tarfile.USTAR_FORMAT).data
+    v7 = _build(2, fmt=tarfile.USTAR_FORMAT).data
+    v7_block = bytearray(v7[:BLOCKSIZE])
+    v7_block[257:265] = bytes(8)
+    v7_block[148:156] = b" " * 8
+    v7_block[148:156] = b"%06o\x00 " % sum(v7_block)
+    assert passes_header_search(gnu[:BLOCKSIZE], v7=False)
+    assert passes_header_search(ustar[:BLOCKSIZE], v7=False)
+    assert not passes_header_search(bytes(v7_block), v7=False)
+    assert passes_header_search(bytes(v7_block), v7=True)
+    assert not passes_header_search(bytes(BLOCKSIZE), v7=True)
+    # A bad checksum fails, whatever the magic.
+    assert not passes_header_search(_flipped(gnu[:BLOCKSIZE], 10), v7=False)
+
+    find = tar_header_search(v7=False).find_header
+    window = bytes(3 * BLOCKSIZE) + gnu[:BLOCKSIZE]
+    assert find(window, 0) == 3 * BLOCKSIZE
+    assert find(window, 4 * BLOCKSIZE) is None
+    # Off a block boundary, a header is not seen.
+    assert find(bytes(100) + gnu[:BLOCKSIZE] + bytes(BLOCKSIZE), 0) is None
+    # "ustar" in data before the header does not hide it.
+    junk = bytearray(2 * BLOCKSIZE)
+    junk[300:305] = b"ustar"
+    junk[257:262] = b"ustar"
+    assert find(bytes(junk) + gnu[:BLOCKSIZE], 0) == 2 * BLOCKSIZE
+
+
+# ---------------------------------------------------------------------------
+# The damage corpus
+# ---------------------------------------------------------------------------
+
+
+def _corpus() -> list[tuple[str, bytes, _Tar]]:
+    tar = _build(30)
+    data, offsets = tar.data, tar.offsets
+    big = _build(40, seed=2, max_size=20_000)
+    cases = [
+        ("cut_mid_data", data[: offsets[12] + 700], tar),
+        ("cut_mid_header", data[: offsets[12] + 200], tar),
+    ]
+    for index in (3, 11, 20):
+        cases.append((f"zeroed_at_header_{index}", _zeroed(data, offsets[index]), tar))
+    for offset in (5000, 70_000):
+        cases.append((f"zeroed_at_{offset}", _zeroed(data, offset), tar))
+    cases.append(
+        ("magic_flipped_7", _flipped(data, offsets[7] + 257, offsets[7] + 258), tar)
+    )
+    cases.append(("size_too_small_9", _with_size(data, offsets[9], 1), tar))
+    gap = offsets[15] + 1000
+    cases.append(("deleted_64k", big.data[:gap] + big.data[gap + 65536 :], big))
+    # A found member that nothing confirms: the header after it is damaged too.
+    small = _build(20, max_size=3000)
+    unconfirmed = _zeroed(small.data, small.offsets[4], BLOCKSIZE)
+    unconfirmed = _flipped(unconfirmed, small.offsets[6] + 257, small.offsets[6] + 258)
+    cases.append(("unconfirmed", unconfirmed, small))
+    return cases
+
+
+_CORPUS = _corpus()
+
+
+@pytest.mark.parametrize(("name", "data", "tar"), _CORPUS, ids=[c[0] for c in _CORPUS])
+def test_salvage_is_add_only_on_the_damage_corpus(
+    name: str, data: bytes, tar: _Tar
+) -> None:
+    default = _list(data)
+    salvage = _list(data, salvage=True)
+    _assert_add_only(default, salvage)
+    _assert_found_are_real(tar, salvage, start=len(default.members))
+    # Listed in archive order, each name once.
+    order = [tar.names.index(n) for n in salvage.names]
+    assert order == sorted(order)
+    assert len(set(salvage.names)) == len(salvage.names)
+    # Every added member is flagged; no default member is.
+    found = salvage.found()
+    assert list(found) == salvage.names[len(default.members) :]
+
+
+def test_a_cut_adds_nothing() -> None:
+    tar = _build(10)
+    data = tar.data[: tar.offsets[6] + 700]
+    default = _list(data)
+    salvage = _list(data, salvage=True)
+    assert salvage.members == default.members
+    assert not salvage.found() and not salvage.regions()
+
+
+def test_4k_zeroed_lists_every_member_after_it_flagged_and_confirmed() -> None:
+    tar = _build(30)
+    start = tar.offsets[10]
+    data = _zeroed(tar.data, start)
+    salvage = _list(data, salvage=True)
+    first_after = next(
+        i for i, o in enumerate(tar.offsets) if o >= start + _INTO_BLOCK + 4096
+    )
+    # The member whose header was zeroed is lost; every one after the zeroed
+    # region is listed.
+    expected = tar.names[:10] + tar.names[first_after:]
+    assert salvage.names == expected
+    found = salvage.found()
+    # Every added member is flagged: the one the search found, and those the walk
+    # reached after it.
+    assert list(found) == tar.names[first_after:]
+    assert all(c.confirmed for c in found.values())
+    assert found[tar.names[first_after]].offset == tar.offsets[first_after]
+    assert found[tar.names[first_after]].unchecked == ("position",)
+    [region] = salvage.regions()
+    assert region.offset == start
+    assert region.length == tar.offsets[first_after] - start
+    assert region.reason == "no_header" and region.layer == "archive"
+    assert isinstance(salvage.error, CorruptionError)
+    assert "salvage mode searched past it" in str(salvage.error)
+    _assert_found_are_real(tar, salvage)
+
+
+def test_zeros_from_a_header_start_read_as_the_end() -> None:
+    """An intact end marker and a zeroed header look the same; the default's zero
+    block is its clean end, so salvage adds nothing after it in this step."""
+    tar = _build(20)
+    data = tar.data[: tar.offsets[8]] + bytes(4096) + tar.data[tar.offsets[8] + 4096 :]
+    default = _list(data)
+    salvage = _list(data, salvage=True)
+    assert salvage.members == default.members
+    assert not salvage.found() and not salvage.regions()
+
+
+def test_later_damage_starts_a_new_search() -> None:
+    tar = _build(30)
+    data = _zeroed(_zeroed(tar.data, tar.offsets[5], 1024), tar.offsets[20], 1024)
+    salvage = _list(data, salvage=True)
+    assert len(salvage.regions()) == 2
+    assert list(salvage.found()) == salvage.names[5:]
+    _assert_found_are_real(tar, salvage)
+    assert tar.names[20] not in salvage.names and tar.names[5] not in salvage.names
+
+
+def test_size_field_damage_without_salvage_reads_as_today() -> None:
+    tar = _build(20)
+    data = _with_size(tar.data, tar.offsets[9], 1)
+    default = _list(data)
+    assert default.names == tar.names[:10]
+    assert isinstance(default.error, CorruptionError)
+    salvage = _list(data, salvage=True)
+    _assert_add_only(default, salvage)
+    assert salvage.names[10:] == tar.names[10:]
+
+
+def test_unconfirmed_member_searches_inside_its_data() -> None:
+    tar = _build(20, max_size=3000)
+    data = _zeroed(tar.data, tar.offsets[4], BLOCKSIZE)
+    # The header after the found member fails too: nothing confirms it.
+    data = _flipped(data, tar.offsets[6] + 257, tar.offsets[6] + 258)
+    salvage = _list(data, salvage=True)
+    found = salvage.found()
+    assert found[tar.names[5]].confirmed is False
+    assert found[tar.names[7]].confirmed is True
+    assert salvage.names == tar.names[:4] + tar.names[5:6] + tar.names[7:]
+    _assert_found_are_real(tar, salvage)
+
+
+def test_a_full_name_field_with_no_long_name_record_is_unchecked() -> None:
+    names = [f"n{i}-" + "x" * (100 - 2 - len(str(i))) for i in range(6)]
+    assert all(len(n) == 100 for n in names)
+    tar = _build(6, names=names, max_size=2000)
+    data = _zeroed(tar.data, tar.offsets[2], BLOCKSIZE)
+    found = _list(data, salvage=True).found()
+    assert found[names[3]].unchecked == ("position", "name")
+
+
+def test_a_found_long_name_chain_names_its_member() -> None:
+    names = [f"dir/{'long' * 40}{i}.bin" for i in range(8)]
+    tar = _build(8, names=names, max_size=2000)
+    # The damage hits the third member's L header and the start of its name: the
+    # search finds the member header after them, which holds the name cut to 100
+    # bytes, and flags the name as unchecked.
+    data = _zeroed(tar.data, tar.offsets[3], BLOCKSIZE)
+    salvage = _list(data, salvage=True)
+    found = salvage.found()
+    cut = names[3][:100]
+    assert salvage.names == [*names[:3], cut, *names[4:]]
+    assert found[cut].unchecked == ("position", "name")
+    assert found[cut].offset == tar.offsets[3] + 2 * BLOCKSIZE
+    assert found[names[4]].unchecked == ("position",)
+    assert found[names[4]].offset == tar.offsets[4]
+
+
+def test_a_found_l_header_names_its_member() -> None:
+    names = [f"dir/{'long' * 40}{i}.bin" for i in range(8)]
+    tar = _build(8, names=names, max_size=2000)
+    # The second member's own header (after its L chain) is hit: the search from
+    # there finds the next member's L header.
+    member_header = tar.offsets[2] + 2 * BLOCKSIZE
+    data = _flipped(tar.data, member_header + 257, member_header + 258)
+    salvage = _list(data, salvage=True)
+    found = salvage.found()
+    assert salvage.names == names[:2] + names[3:]
+    assert found[names[3]].offset == tar.offsets[3]
+    assert found[names[3]].unchecked == ("position",)
+
+
+def test_pax_members_are_found_through_their_extended_headers() -> None:
+    names = [f"dir/{'p' * 150}{i}.bin" for i in range(8)]
+    tar = _build(8, names=names, fmt=tarfile.PAX_FORMAT, max_size=2000)
+    # The x header before the second member is hit; the search finds its next
+    # chain's x header, which names its member in full.
+    data = _flipped(tar.data, tar.offsets[2] + 257, tar.offsets[2] + 258)
+    salvage = _list(data, salvage=True)
+    assert salvage.names[:2] == names[:2]
+    assert salvage.names[-5:] == names[3:]
+    found = salvage.found()
+    assert found[names[3]].offset == tar.offsets[3]
+    assert found[names[3]].unchecked == ("position",)
+
+
+def test_64k_deleted_finds_every_member_whose_header_follows_the_gap() -> None:
+    tar = _build(40, seed=2, max_size=20_000)
+    gap = tar.offsets[15] + 1000
+    data = tar.data[:gap] + tar.data[gap + 65536 :]
+    default = _list(data)
+    salvage = _list(data, salvage=True)
+    # The walk past the gap reads the last header before it by its size and stops
+    # inside a later member's data; the search starts there, and every member whose
+    # header follows that point is listed, as GNU tar lists them.
+    added = salvage.names[len(default.names) :]
+    assert added == tar.names[tar.names.index(added[0]) :]
+    assert tar.offsets[tar.names.index(added[0])] >= gap + 65536
+    _assert_found_are_real(tar, salvage, start=len(default.names))
+
+
+def test_an_intact_archive_with_data_after_the_end_adds_nothing() -> None:
+    tar = _build(5)
+    inner = _build(3, seed=9).data
+    data = tar.data + inner
+    assert _list(data, salvage=True).names == _list(data).names == tar.names
+
+
+def test_search_limit_zero_lists_nothing_past_the_damage() -> None:
+    tar = _build(20)
+    data = _zeroed(tar.data, tar.offsets[8])
+    config = ArchiveyConfig(salvage_limits=SalvageLimits(max_search_bytes=0))
+    salvage = _list(data, salvage=True, config=config)
+    assert salvage.names == tar.names[:8]
+    [region] = salvage.regions()
+    assert region.reason == "search_limit" and region.length is None
+    assert isinstance(salvage.error, CorruptionError)
+    assert "max_search_bytes" in str(salvage.error)
+
+
+def test_strict_does_not_stop_the_salvage_listing() -> None:
+    tar = _build(20)
+    data = _zeroed(tar.data, tar.offsets[8])
+    config = ArchiveyConfig(diagnostic_policy=DiagnosticPolicy.STRICT)
+    salvage = _list(data, salvage=True, config=config)
+    default = _list(data)
+    assert len(salvage.names) > len(default.names)
+    assert isinstance(salvage.error, CorruptionError)
+
+
+def test_stream_members_and_extract_all_see_the_salvage_listing(tmp_path: Path) -> None:
+    tar = _build(20)
+    data = _zeroed(tar.data, tar.offsets[8])
+    listing = _list(data, salvage=True)
+    seen, error = _pass(data, salvage=True)
+    assert [n for n, _ in seen] == listing.names
+    assert all(content == tar.contents[n] for n, content in seen)
+    assert isinstance(error, CorruptionError)
+    path = tmp_path / "d.tar"
+    path.write_bytes(data)
+    with open_archive(path, salvage=True) as reader, pytest.raises(CorruptionError):
+        reader.extract_all(tmp_path / "out")
+    extracted = sorted(
+        str(p.relative_to(tmp_path / "out")) for p in (tmp_path / "out").rglob("*.bin")
+    )
+    assert extracted == sorted(listing.names)
+
+
+def test_a_nested_tar_lists_the_inner_members_then_the_outer_one() -> None:
+    inner = _build(4, seed=5, max_size=3000)
+    rng = random.Random(3)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tar:
+        for name, content in (
+            ("before.bin", rng.randbytes(1500)),
+            ("inner.tar", inner.data),
+            ("after.bin", rng.randbytes(2500)),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tar.addfile(info, io.BytesIO(content))
+    data = buf.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        offset = tar.getmember("inner.tar").offset
+    # The outer header fails its checksum and its magic: the default stops there.
+    data = _flipped(data, offset + 257, offset + 258)
+    default = _list(data)
+    assert default.names == ["before.bin"]
+    salvage = _list(data, salvage=True)
+    assert salvage.names == ["before.bin", *inner.names, "after.bin"]
+    found = salvage.found()
+    assert set(found) == {*inner.names, "after.bin"}
+    assert all(c.unchecked[0] == "position" for c in found.values())
+    # The inner archive's last member is followed by its end marker and then more
+    # bytes: no clean end, so nothing confirms it.
+    assert found[inner.names[-1]].confirmed is False
+    assert found["after.bin"].confirmed is True
+
+
+def test_compressed_tar_searches_the_decoded_stream() -> None:
+    tar = _build(20)
+    data = gzip.compress(_zeroed(tar.data, tar.offsets[8]), mtime=0)
+    default = _list(data)
+    salvage = _list(data, salvage=True)
+    _assert_add_only(default, salvage)
+    assert len(salvage.names) > len(default.names)
+    assert {r.layer for r in salvage.regions()} == {"gzip"}
+    _assert_found_are_real(tar, salvage)
+
+
+def test_codec_damage_ends_the_walk_as_today() -> None:
+    tar = _build(20)
+    raw = bytearray(gzip.compress(_zeroed(tar.data, tar.offsets[8]), mtime=0))
+    cut = len(raw) * 3 // 4
+    data = (
+        bytes(raw[:cut])
+        + bytes(b ^ 0x55 for b in raw[cut : cut + 64])
+        + bytes(raw[cut + 64 :])
+    )
+    default = _list(data)
+    salvage = _list(data, salvage=True)
+    _assert_add_only(default, salvage)
+    assert salvage.error is not None
+
+
+# ---------------------------------------------------------------------------
+# Lost start (design decision 9)
+# ---------------------------------------------------------------------------
+
+
+def test_lost_start_through_the_tar_extension(tmp_path: Path) -> None:
+    tar = _build(20)
+    path = tmp_path / "lost.tar"
+    path.write_bytes(tar.data[4096:])
+    with pytest.raises(CorruptionError):
+        open_archive(path)
+    salvage = _list(path, salvage=True)
+    first = next(i for i, o in enumerate(tar.offsets) if o >= 4096)
+    assert salvage.names == tar.names[first:]
+    assert salvage.regions()[0].offset == 0
+    assert salvage.regions()[0].length == tar.offsets[first] - 4096
+    assert salvage.found()[tar.names[first]].confirmed
+    assert isinstance(salvage.error, CorruptionError)
+    _assert_found_are_real(tar, salvage)
+
+
+def test_lost_start_through_format_and_not_without(tmp_path: Path) -> None:
+    tar = _build(20)
+    path = tmp_path / "lost.bin"
+    path.write_bytes(tar.data[4096:])
+    with pytest.raises(FormatDetectionError):
+        open_archive(path, salvage=True)
+    with_format = _list(path, salvage=True, format="tar")
+    via_name = tmp_path / "lost.tar"
+    via_name.write_bytes(tar.data[4096:])
+    assert with_format.names == _list(via_name, salvage=True).names
+    assert with_format.names
+
+
+def test_lost_start_with_no_header_raises_at_open(tmp_path: Path) -> None:
+    path = tmp_path / "junk.tar"
+    path.write_bytes(random.Random(4).randbytes(20_000))
+    with pytest.raises(CorruptionError, match="Not a TAR archive"):
+        open_archive(path, salvage=True)
+
+
+def test_the_reader_knows_its_start_may_be_lost(tmp_path: Path) -> None:
+    tar = _build(4)
+    path = tmp_path / "lost.tar"
+    path.write_bytes(tar.data[1024:])
+    with open_archive(path, salvage=True) as reader:
+        assert reader._salvage_mode.lost_start  # type: ignore[attr-defined]
+    good = tmp_path / "good.tar"
+    good.write_bytes(tar.data)
+    with open_archive(good, salvage=True) as reader:
+        assert not reader._salvage_mode.lost_start  # type: ignore[attr-defined]
+    with open_archive(good, salvage=True, format="tar") as reader:
+        assert reader._salvage_mode.lost_start  # type: ignore[attr-defined]
+    with open_archive(good, format="tar") as reader:
+        assert not reader._salvage_mode.lost_start  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# A forward-only walk (a nested reader's) finds what a seekable one finds
+# ---------------------------------------------------------------------------
+
+
+class _Forward(io.RawIOBase):
+    def __init__(self, data: bytes) -> None:
+        self._data = io.BytesIO(data)
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: bytearray | memoryview) -> int:  # type: ignore[override]
+        data = self._data.read(min(len(buffer), 3001))
+        memoryview(buffer).cast("B")[: len(data)] = data
+        return len(data)
+
+
+def _walk(data: bytes, *, seekable: bool) -> list[tuple[str, int, bool]]:
+    """A salvage walk straight over the walker: each member's name, header offset
+    and whether a search found it."""
+    collector = collector_from_config(ArchiveyConfig())
+    state = SalvageState(
+        requested=True,
+        enabled=True,
+        limits=SalvageLimits(),
+        collector=collector,
+        archive_name=None,
+        format_name="TAR",
+    )
+    stream = io.BytesIO(data) if seekable else io.BufferedReader(_Forward(data))
+    walker = TarWalker(stream, seekable=seekable)  # type: ignore[arg-type]
+    out: list[tuple[str, int, bool]] = []
+    found = False
+    entry: TarEntry | TarEnd = walker.next_entry()
+    while True:
+        if isinstance(entry, TarEntry):
+            out.append((entry.name.decode(), entry.header_offset, found))
+            if found and not walker.salvage_confirms(v7=False):
+                walker.hold_for_search()
+                result = walker.salvage_search(
+                    state, entry.header_offset + BLOCKSIZE, v7=False, layer="archive"
+                )
+                if result.found is None:
+                    break
+                entry = walker.next_entry()
+                continue
+            found = False
+            entry = walker.next_entry()
+            continue
+        if entry.kind is not TarEndKind.REJECTED:
+            break
+        result = walker.salvage_search(state, entry.offset, v7=False, layer="archive")
+        if result.found is None:
+            break
+        found = True
+        entry = walker.next_entry()
+    return out
+
+
+@pytest.mark.parametrize(("name", "data", "tar"), _CORPUS, ids=[c[0] for c in _CORPUS])
+def test_a_forward_only_walk_finds_what_a_seekable_one_finds(
+    name: str, data: bytes, tar: _Tar
+) -> None:
+    try:
+        seekable = _walk(data, seekable=True)
+    except ArchiveyError:
+        pytest.skip("the walk ends in an error before any search")
+    assert _walk(data, seekable=False) == seekable
+
+
+def test_a_deb_with_a_damaged_data_tar_lists_past_the_damage() -> None:
+    from tests.test_deb import CONTROL, _ar, _tar as _deb_tar
+
+    tar = _build(12, max_size=2000)
+    damaged = _zeroed(tar.data, tar.offsets[4], BLOCKSIZE)
+    raw = _ar(
+        (b"debian-binary", b"2.0\n"),
+        (b"control.tar", _deb_tar([("./control", CONTROL)])),
+        (b"data.tar", damaged),
+    )
+    default = _list(raw)
+    salvage = _list(raw, salvage=True)
+    assert salvage.members[: len(default.members)] == default.members
+    assert len(salvage.names) == len(default.names) + 7
+    assert salvage.found()
+
+
+# ---------------------------------------------------------------------------
+# GNU tar comparison (DR-24)
+# ---------------------------------------------------------------------------
+
+
+def _gnu_tar() -> str | None:
+    tar = shutil.which("tar")
+    if tar is None:
+        return None
+    try:
+        version = subprocess.run(
+            [tar, "--version"], capture_output=True, check=True, text=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return tar if "GNU tar" in version else None
+
+
+_GNU_TAR = _gnu_tar()
+
+
+@pytest.mark.skipif(_GNU_TAR is None, reason="needs GNU tar")
+@pytest.mark.parametrize(("name", "data", "tar"), _CORPUS, ids=[c[0] for c in _CORPUS])
+def test_salvage_extracts_the_member_set_gnu_tar_extracts(
+    name: str, data: bytes, tar: _Tar, tmp_path: Path
+) -> None:
+    assert _GNU_TAR is not None
+    path = tmp_path / "d.tar"
+    path.write_bytes(data)
+    assert set(_list(path, salvage=True).names) == _gnu_extracts(path, tmp_path)
+
+
+def _gnu_extracts(path: Path, tmp_path: Path) -> set[str]:
+    """The files GNU tar extracts from ``path``.
+
+    GNU tar's scan past a bad header stops at a zero block, which salvage reads as a
+    block with no header and searches past: ``--ignore-zeros`` reads on. Salvage
+    starts no search where the default walk itself ends on a zero block, as the
+    default reads that end without an error, so there GNU tar runs without it.
+    """
+    assert _GNU_TAR is not None
+    ignore_zeros = _list(path).error is not None
+    out = tmp_path / "gnu"
+    out.mkdir()
+    subprocess.run(
+        [
+            _GNU_TAR,
+            *(["--ignore-zeros"] if ignore_zeros else []),
+            "-xf",
+            str(path),
+            "-C",
+            str(out),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    return {str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()}

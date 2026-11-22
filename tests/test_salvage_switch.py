@@ -1,9 +1,10 @@
-"""``open_archive(salvage=True)``: the switch, before any format has a salvage search.
+"""``open_archive(salvage=True)``: the switch.
 
 Salvage needs a seekable file, so ``streaming=True`` is refused before the source is
-read. A format without a salvage search reads exactly as the default and records
-``SALVAGE_UNAVAILABLE`` once at open; ``salvage=False`` records none of the salvage
-codes.
+read. A format without a salvage search (ZIP here) reads exactly as the default and
+records ``SALVAGE_UNAVAILABLE`` once at open; one with a search (TAR) records none.
+``salvage=False`` records none of the salvage codes. TAR's search itself is tested in
+``tests/test_tar_salvage.py``.
 """
 
 from __future__ import annotations
@@ -97,9 +98,7 @@ def test_an_intact_archive_reads_the_same_with_salvage(make, tmp_path: Path) -> 
     assert _listing(path, salvage=True) == _listing(path)
 
 
-@pytest.mark.parametrize(
-    ("make", "fmt"), [(_zip, "ZIP"), (_tar, "TAR")], ids=["zip", "tar"]
-)
+@pytest.mark.parametrize(("make", "fmt"), [(_zip, "ZIP")], ids=["zip"])
 def test_a_format_without_salvage_records_unavailable_once(
     make, fmt: str, tmp_path: Path
 ) -> None:
@@ -122,6 +121,16 @@ def test_a_format_without_salvage_records_unavailable_once(
         assert isinstance(reader, BaseArchiveReader)
         assert reader._salvage_mode.requested
         assert not reader._salvage_mode.enabled
+
+
+def test_tar_salvages_and_records_no_unavailable(tmp_path: Path) -> None:
+    with open_archive(_tar(tmp_path / "a.tar"), salvage=True) as reader:
+        reader.members()
+        list(reader.stream_members())
+        assert not SALVAGE_CODES & set(reader.diagnostics.counts)
+        assert isinstance(reader, BaseArchiveReader)
+        assert reader._salvage_mode.requested
+        assert reader._salvage_mode.enabled
 
 
 @pytest.mark.parametrize("make", [_zip, _tar], ids=["zip", "tar"])
@@ -244,8 +253,11 @@ def test_scan_context_defaults_hold_position_unchecked() -> None:
 
 def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
     """A ``.deb``'s control and data tars are read by readers archivey opens itself
-    (``ReaderContext.open_nested``): they are asked to salvage when the package is,
-    and, with no TAR salvage search yet, each records ``SALVAGE_UNAVAILABLE``."""
+    (``ReaderContext.open_nested``): they are asked to salvage when the package is.
+    The package's own format (ar) has no search yet and records
+    ``SALVAGE_UNAVAILABLE``; the tars salvage and record none.
+    ``test_a_deb_with_a_damaged_data_tar_lists_past_the_damage``
+    (``tests/test_tar_salvage.py``) shows the inner search runs."""
     from tests.test_deb import _deb
 
     with open_archive(io.BytesIO(_deb()), salvage=True) as reader:
@@ -255,7 +267,7 @@ def test_a_nested_reader_archivey_opens_inherits_the_flag() -> None:
             for d in reader.diagnostics.retained
             if isinstance(d.context, SalvageUnavailableContext)
         ]
-    assert formats == ["DEB", "TAR", "TAR_XZ"]
+    assert formats == ["DEB"]
     with open_archive(io.BytesIO(_deb())) as reader:
         reader.members()
         assert not SALVAGE_CODES & set(reader.diagnostics.counts)

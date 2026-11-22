@@ -20,11 +20,11 @@
 
 ## 2. TAR (PR 2)
 
-- [ ] 2.1 `find_header` for TAR (magic + checksum; v7 rule).
-- [ ] 2.2 Walk: start search where the default ends on damage; confirmed / unconfirmed;
+- [x] 2.1 `find_header` for TAR (magic + checksum; v7 rule).
+- [x] 2.2 Walk: start search where the default ends on damage; confirmed / unconfirmed;
   resume normal walk.
-- [ ] 2.3 Lost start via `format=` / extension (core, shared).
-- [ ] 2.4 Tests: damage corpus (cuts, zeroed regions, byte flips, lost start, 64 KiB
+- [x] 2.3 Lost start via `format=` / extension (core, shared).
+- [x] 2.4 Tests: damage corpus (cuts, zeroed regions, byte flips, lost start, 64 KiB
   gap), add-only prefix test, nested-tar case, compressed TAR, GNU tar oracle (skips
   without it).
 
