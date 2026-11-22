@@ -42,6 +42,11 @@ _APFS_IMAGES = {
     "apfs-ULMO.dmg": ["xz"],
     "apfs-UDRO.dmg": ["raw"],
 }
+# The encrypted ones (password "archivey"): UDZO images inside the encrcdsa layer.
+_APFS_ENCRYPTED = {
+    "apfs-UDZO-AES-128.dmg": ["zlib"],
+    "apfs-UDZO-AES-256.dmg": ["zlib"],
+}
 
 
 def _open(image: bytes, **kwargs: object):
@@ -71,7 +76,7 @@ def _listed_until_error(image: bytes, error: type[Exception], match: str) -> lis
 # ── The hdiutil fixtures ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", sorted(_APFS_IMAGES))
+@pytest.mark.parametrize("name", sorted({**_APFS_IMAGES, **_APFS_ENCRYPTED}))
 def test_an_hdiutil_apfs_image_lists_and_reads_as_macos_mounts_it(name: str) -> None:
     hashes = {}
     for line in (
@@ -79,9 +84,13 @@ def test_an_hdiutil_apfs_image_lists_and_reads_as_macos_mounts_it(name: str) -> 
     ):
         digest, path = line.split(None, 1)
         hashes[path.removeprefix("./")] = digest
-    with open_archive(_FIXTURES / name) as reader:
+    encrypted = name in _APFS_ENCRYPTED
+    password = "archivey" if encrypted else None
+    with open_archive(_FIXTURES / name, password=password) as reader:
         members = {m.name: m for m in reader.members()}
         info = reader.info
+        assert info.is_encrypted is encrypted
+        assert all(m.is_encrypted is encrypted for m in members.values())
         files = {
             n: hashlib.sha256(reader.read(m)).hexdigest()
             for n, m in members.items()
@@ -128,7 +137,7 @@ def test_an_hdiutil_apfs_image_lists_and_reads_as_macos_mounts_it(name: str) -> 
     assert info.extra["dmg.filesystem"] == "APFS"
     assert info.extra["dmg.volume_name"] == "Fixture"
     assert info.extra["dmg.apfs_volumes"] == ["Fixture"]
-    assert info.extra["dmg.run_codecs"] == _APFS_IMAGES[name]
+    assert info.extra["dmg.run_codecs"] == {**_APFS_IMAGES, **_APFS_ENCRYPTED}[name]
 
 
 # ── Builder images ───────────────────────────────────────────────────────────────────

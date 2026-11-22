@@ -1351,6 +1351,8 @@ class ArchiveInfoExtra(dict[str, object]):
       sorted: ``"raw"``, ``"adc"``, ``"zlib"``, ``"bzip2"``, ``"lzfse"``, ``"xz"``.
     * ``dmg.code_signature`` (``bool``) — the image carries a code signature (not
       checked).
+    * ``dmg.encryption`` (``str``) — ``"AES-128"`` or ``"AES-256"`` for an encrypted
+      image; absent otherwise.
     """
 
     __slots__ = ()
@@ -1423,6 +1425,8 @@ class ArchiveInfoExtra(dict[str, object]):
     def __getitem__(self, key: Literal["dmg.run_codecs"], /) -> list[str]: ...
     @overload
     def __getitem__(self, key: Literal["dmg.code_signature"], /) -> bool: ...
+    @overload
+    def __getitem__(self, key: Literal["dmg.encryption"], /) -> str: ...
     @overload
     def __getitem__(self, key: str, /) -> object: ...
     @override

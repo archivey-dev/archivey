@@ -184,26 +184,31 @@ zeros. Encrypted volumes, sealed volumes and Fusion containers SHALL raise
 
 ### Requirement: Open a password-encrypted DMG
 
-An image that starts with `encrcdsa` SHALL be opened with the caller's `password=`: the
-password key entry is unwrapped (PBKDF2-HMAC-SHA1, 3DES-EDE-CBC with PKCS#7 padding),
-the unwrapped key SHALL be confirmed by decrypting the image's `koly` block, and the
-image SHALL then be read as an unencrypted one through 4 KiB AES-CBC blocks. With no
-password `open_archive` SHALL raise `EncryptionError`; with no right password among the
+An image that starts with `encrcdsa` SHALL be opened with the caller's `password=`: a
+password key entry is unwrapped (PBKDF2-HMAC-SHA1, then AES or 3DES in CBC mode with
+PKCS#7 padding, as the entry's cipher field says), the unwrapped key SHALL be confirmed
+by decrypting the image's `koly` block (or, with none, by the `CKIE` mark that ends the
+unwrapped key, after which an image with no `koly` block SHALL raise
+`UnsupportedFeatureError` as a read-write image), and the image SHALL then be read as an
+unencrypted one through AES-CBC blocks of the header's block size. With no password
+`open_archive` SHALL raise `EncryptionError`; with no right password among the
 candidates it SHALL raise the wrong-password `EncryptionError`. The key-derivation work
-SHALL count against archivey's key-derivation budget. Members SHALL report `encrypted`.
-Every length in the encrypted header (data block size, key-entry count and sizes, salt
-and wrapped-key lengths) SHALL be checked before any read: a data block size other than
-4096 SHALL raise `UnsupportedFeatureError`, a length past the header `CorruptionError`,
-and a length over its cap (16 key entries; 4 KiB for each key entry, the salt and the
-wrapped key) `ResourceLimitError`. `cdsaencr` v1 images and
-images with no password key entry SHALL raise `UnsupportedFeatureError`. Without
-`cryptography`, `PackageNotInstalledError`.
+SHALL count against archivey's key-derivation budget. The image and its members SHALL
+report `is_encrypted`, and `archive_info().extra["dmg.encryption"]` SHALL name the
+cipher (`"AES-128"`, `"AES-256"`). Every length in the encrypted header (data block
+size, key-entry count and sizes, salt, IV and wrapped-key lengths) SHALL be checked
+before any read and before a password is asked for: a data block size other than 512 or
+4096 SHALL raise `UnsupportedFeatureError`, a length past the header or its field
+`CorruptionError`, and a count or size over its cap (16 key entries; 4 KiB for each key
+entry) `ResourceLimitError`. `cdsaencr` v1 images and images with no password key entry
+SHALL raise `UnsupportedFeatureError`. Without `cryptography`,
+`PackageNotInstalledError`.
 
 #### Scenario: encrypted images
 
 | Case | Expected |
 | --- | --- |
-| `hfs-UDZO-AES-128.dmg` and `-AES-256.dmg` with `password="archivey"` | The fixture tree |
+| The four `-UDZO-AES-128.dmg` and `-AES-256.dmg` fixtures (HFS+ and APFS) with `password="archivey"` | The fixture tree |
 | No password | `EncryptionError` asking for one |
 | Wrong password | Wrong-password `EncryptionError` |
 | An iteration count over the budget | `ResourceLimitError` |

@@ -250,7 +250,11 @@ def dmg_seeds() -> list[bytes]:
             ("gpt", build.LZMA),
         )
     ]
-    return [b"", _koly_block(), b"encrcdsa" + bytes(504)] + images
+    # An encrypted image (one PBKDF2 round, so a run spends no time deriving keys).
+    encrypted = build.encrypt_dmg(
+        images[0], entries=[build.EncryptedEntry(password=b"pw", iterations=1)]
+    )
+    return [b"", _koly_block(), b"encrcdsa" + bytes(504), encrypted] + images
 
 
 def dmg_apfs_seeds() -> list[bytes]:

@@ -27,10 +27,12 @@ from archivey import (
     CorruptionError,
     DecoderLimits,
     DiagnosticCode,
+    EncryptionError,
     ListingLimits,
     MemberType,
     ResourceLimitError,
     StreamNotSeekableError,
+    TruncatedError,
     UnsupportedFeatureError,
     Verification,
     detect_format,
@@ -49,6 +51,16 @@ _HFS_IMAGES = {
     "hfs-ULMO.dmg": ["xz"],
     "hfs-UDRO.dmg": ["raw"],
 }
+# The encrypted ones (password "archivey"): UDZO images inside the encrcdsa layer.
+_HFS_ENCRYPTED = {
+    "hfs-UDZO-AES-128.dmg": ["zlib"],
+    "hfs-UDZO-AES-256.dmg": ["zlib"],
+}
+_ENCRYPTED_FIXTURES = [
+    *_HFS_ENCRYPTED,
+    "apfs-UDZO-AES-128.dmg",
+    "apfs-UDZO-AES-256.dmg",
+]
 
 
 def _open(image: bytes, **kwargs: object):
@@ -78,12 +90,16 @@ def _sha256_listing(name: str) -> dict[str, str]:
 # ── The hdiutil fixtures ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", sorted(_HFS_IMAGES))
+@pytest.mark.parametrize("name", sorted({**_HFS_IMAGES, **_HFS_ENCRYPTED}))
 def test_an_hdiutil_image_lists_and_reads_as_macos_mounts_it(name: str) -> None:
     hashes = _sha256_listing("hfs-sha256.txt")
-    with open_archive(_FIXTURES / name) as reader:
+    encrypted = name in _HFS_ENCRYPTED
+    password = "archivey" if encrypted else None
+    with open_archive(_FIXTURES / name, password=password) as reader:
         members = {m.name: m for m in reader.members()}
         info = reader.info
+        assert info.is_encrypted is encrypted
+        assert all(m.is_encrypted is encrypted for m in members.values())
         files = {
             n: hashlib.sha256(reader.read(m)).hexdigest()
             for n, m in members.items()
@@ -131,8 +147,11 @@ def test_an_hdiutil_image_lists_and_reads_as_macos_mounts_it(name: str) -> None:
     assert info.extra["dmg.volume_name"] == "Fixture"
     assert info.extra["dmg.volumes"] == ["Fixture"]
     assert info.extra["dmg.partition_scheme"] == "GPT"
-    assert info.extra["dmg.run_codecs"] == _HFS_IMAGES[name]
+    assert info.extra["dmg.run_codecs"] == {**_HFS_IMAGES, **_HFS_ENCRYPTED}[name]
     assert info.extra["dmg.code_signature"] is False
+    assert info.extra.get("dmg.encryption") == (
+        f"AES-{name[-7:-4]}" if encrypted else None
+    )
 
 
 def test_the_adc_image_reads() -> None:
@@ -143,20 +162,250 @@ def test_the_adc_image_reads() -> None:
     assert hashlib.sha256(data).hexdigest().startswith("f49602b2")
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        "hfs-UDZO-AES-128.dmg",
-        "hfs-UDZO-AES-256.dmg",
-        "apfs-UDZO-AES-128.dmg",
-        "apfs-UDZO-AES-256.dmg",
-    ],
-)
-def test_an_encrypted_image_is_refused_by_name(name: str) -> None:
+@pytest.mark.parametrize("name", sorted(_ENCRYPTED_FIXTURES))
+def test_an_encrypted_hdiutil_image_asks_for_its_password(name: str) -> None:
     path = _FIXTURES / name
     assert detect_format(path).format is ArchiveFormat.DMG
-    with pytest.raises(UnsupportedFeatureError, match="encrypted DMG disk image"):
+    with pytest.raises(EncryptionError, match="the disk image is encrypted"):
         open_archive(path)
+    with pytest.raises(EncryptionError, match="Wrong password for the disk image"):
+        open_archive(path, password="wrong")
+    # A list of passwords and a provider reach it as they reach a ZIP.
+    with open_archive(path, password=["wrong", "archivey"]) as reader:
+        assert reader.read("hello.txt") == b"hello dmg\n"
+    asked: list[object] = []
+
+    def provider(request: object) -> str:
+        asked.append(request)
+        return "archivey"
+
+    with open_archive(path, password=provider) as reader:
+        assert reader.read("hello.txt") == b"hello dmg\n"
+    assert len(asked) == 1
+
+
+@pytest.mark.parametrize("name", sorted(_ENCRYPTED_FIXTURES))
+def test_an_encrypted_image_charges_its_key_derivation(name: str) -> None:
+    # Each fixture asks for 370 370 to 454 545 PBKDF2 rounds (macOS times them).
+    config = ArchiveyConfig(
+        decoder_limits=DecoderLimits(max_key_derivation_rounds=300_000)
+    )
+    with pytest.raises(ResourceLimitError, match="key derivation"):
+        open_archive(_FIXTURES / name, password="archivey", config=config)
+
+
+def _encrypted(image: bytes | None = None, **options: object) -> bytes:
+    return d.encrypt_dmg(_image() if image is None else image, **options)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"key_bits": 256},
+        {"key_bits": 192},
+        {"block_size": 4096},
+        {"entries": [d.EncryptedEntry(wrap="3des")]},
+        # An image with no key mark: the koly block alone confirms the password.
+        {"entries": [d.EncryptedEntry(wrap="3des", mark=False)]},
+        {"entries": [d.EncryptedEntry(mark=False)]},
+    ],
+    ids=[
+        "aes-128",
+        "aes-256",
+        "aes-192",
+        "4096-blocks",
+        "3des",
+        "3des-no-mark",
+        "no-mark",
+    ],
+)
+def test_an_encrypted_builder_image_reads_as_the_plain_one(options: dict) -> None:
+    plain_members, plain_data = _read_all(_image())
+    members, data = _read_all(_encrypted(**options), password="secret")
+    assert data == plain_data
+    assert sorted(members) == sorted(plain_members)
+    assert all(m.is_encrypted for m in members.values())  # type: ignore[attr-defined]
+
+
+def test_any_password_entry_of_an_encrypted_image_unlocks_it() -> None:
+    image = _encrypted(
+        entries=[
+            d.EncryptedEntry(kind=2),  # a certificate entry, skipped
+            d.EncryptedEntry(password=b"first"),
+            d.EncryptedEntry(password=b"second", wrap="3des"),
+        ]
+    )
+    for password in ("first", "second"):
+        _, data = _read_all(image, password=password)
+        assert data["hello.txt"] == _expected()["hello.txt"]
+    with pytest.raises(EncryptionError, match="Wrong password"):
+        _open(image, password="third")
+
+
+def test_an_image_locked_only_by_a_certificate_is_refused_by_name() -> None:
+    image = _encrypted(entries=[d.EncryptedEntry(kind=2)])
+    with pytest.raises(UnsupportedFeatureError, match="certificate or keychain"):
+        _open(image, password="secret")
+
+
+def test_a_wrong_password_that_passes_the_padding_check_is_rejected() -> None:
+    # The unwrapped key's padding is right but neither the koly block nor the key
+    # mark is there: a wrong password passes the padding check about once in 256.
+    image = _encrypted(
+        entries=[
+            d.EncryptedEntry(
+                mark=False, patch_plain=lambda p: p.__setitem__(0, p[0] ^ 1)
+            )
+        ]
+    )
+    with pytest.raises(EncryptionError, match="Wrong password"):
+        _open(image, password="secret")
+
+
+def test_an_encrypted_raw_disk_is_refused_after_its_password() -> None:
+    raw = d.write_gpt(
+        [d.Partition(d.write_hfsplus([d.Node("a.txt", data=b"hi")]).volume)]
+    )
+    disk = b"".join(s for s in raw.segments if isinstance(s, bytes))
+    image = d.encrypt_dmg(disk)
+    with pytest.raises(EncryptionError, match="Wrong password"):
+        _open(image, password="nope")
+    with pytest.raises(UnsupportedFeatureError, match="read-write"):
+        _open(image, password="secret")
+
+
+def test_a_damaged_encrypted_block_is_corruption_not_a_wrong_password() -> None:
+    image = bytearray(_encrypted(_image(codec=d.ZLIB)))
+    # A byte inside the encrypted data fork, well before the plist and koly.
+    image[8192 + 2048] ^= 0xFF
+    with (
+        pytest.raises(CorruptionError) as exc_info,
+        _open(bytes(image), password="secret") as reader,
+    ):
+        for member in reader.members():
+            if member.is_file:
+                reader.read(member)
+    assert not isinstance(exc_info.value, EncryptionError)
+
+
+def _header_patch(offset: int, fmt: str, value: int):
+    def patch(header: bytearray) -> None:
+        struct.pack_into(fmt, header, offset, value)
+
+    return patch
+
+
+def _blob_patch(offset: int, fmt: str, value: int):
+    def patch(blob: bytearray) -> None:
+        struct.pack_into(fmt, blob, offset, value)
+
+    return patch
+
+
+@pytest.mark.parametrize(
+    ("options", "error", "match"),
+    [
+        (
+            {"patch_header": _header_patch(8, ">I", 3)},
+            UnsupportedFeatureError,
+            "version 3",
+        ),
+        (
+            {"patch_header": _header_patch(20, ">I", 17)},
+            UnsupportedFeatureError,
+            "only AES",
+        ),
+        (
+            {"patch_header": _header_patch(32, ">I", 256)},
+            UnsupportedFeatureError,
+            "HMAC key",
+        ),
+        (
+            {"patch_header": _header_patch(52, ">I", 1024)},
+            UnsupportedFeatureError,
+            "1024-byte blocks",
+        ),
+        (
+            {"patch_header": _header_patch(72, ">I", 17)},
+            ResourceLimitError,
+            "17 key entries",
+        ),
+        (
+            {"patch_header": _header_patch(64, ">Q", 8)},
+            CorruptionError,
+            "inside its own key table",
+        ),
+        (
+            {"patch_header": _header_patch(56, ">Q", 0)},
+            CorruptionError,
+            "0 bytes of encrypted data",
+        ),
+        (
+            {"patch_header": _header_patch(56, ">Q", 1 << 40)},
+            TruncatedError,
+            "before the end of its encrypted data",
+        ),
+        (
+            {"patch_header": _header_patch(80, ">Q", 1 << 20)},
+            CorruptionError,
+            "outside the header",
+        ),
+        (
+            {"patch_header": _header_patch(88, ">Q", 20)},
+            CorruptionError,
+            "shorter than its",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(0, ">I", 104))]},
+            UnsupportedFeatureError,
+            "algorithm 104",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(88, ">I", 99))]},
+            UnsupportedFeatureError,
+            "only AES and 3DES",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(96, ">I", 1))]},
+            UnsupportedFeatureError,
+            "only CBC",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(12, ">I", 33))]},
+            CorruptionError,
+            "33-byte salt",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(48, ">I", 17))]},
+            CorruptionError,
+            "17-byte IV",
+        ),
+        (
+            {"entries": [d.EncryptedEntry(patch_blob=_blob_patch(100, ">I", 40))]},
+            CorruptionError,
+            "40-byte wrapped key",
+        ),
+        (
+            {"patch_header": _header_patch(88, ">Q", 5000)},
+            ResourceLimitError,
+            "5000 bytes; archivey reads at most 4096",
+        ),
+    ],
+)
+def test_a_damaged_encrypted_header_is_refused_before_any_password(
+    options: dict, error: type[Exception], match: str
+) -> None:
+    image = _encrypted(**options)
+    for password in (None, "secret"):
+        with pytest.raises(error, match=match):
+            _open(image, password=password)
+
+
+def test_a_cut_encrypted_image_is_truncated_before_any_password() -> None:
+    image = _encrypted()
+    with pytest.raises(TruncatedError, match="before the end of its encrypted data"):
+        _open(image[:-1])
 
 
 def test_a_version_1_encrypted_image_is_named_from_its_last_bytes() -> None:
@@ -1156,7 +1405,9 @@ def _files(reader) -> list:
     return [m for m in reader.members() if m.is_file]
 
 
-@pytest.mark.parametrize("name", sorted(_HFS_IMAGES) + ["hfs-UDCO.dmg"])
+@pytest.mark.parametrize(
+    "name", sorted({**_HFS_IMAGES, **_HFS_ENCRYPTED}) + ["hfs-UDCO.dmg"]
+)
 def test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum(
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1170,7 +1421,8 @@ def test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum(
         return table_crc(self, table, draw)  # type: ignore[arg-type]
 
     monkeypatch.setattr(UdifImage, "table_crc", counted)
-    with open_archive(_FIXTURES / name) as reader:
+    password = "archivey" if name in _HFS_ENCRYPTED else None
+    with open_archive(_FIXTURES / name, password=password) as reader:
         files = _files(reader)
         assert files
         assert {m.verifiable for m in files} == {Verification.CHECKSUM}

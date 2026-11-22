@@ -1,8 +1,8 @@
 # DMG (UDIF disk images)
 
 Current maintainer truth for Apple's disk images. archivey reads UDIF images that hold
-HFS+, HFSX or APFS volumes; encrypted images are recognised and refused by name until
-the plan's part G lands (`openspec/changes/dmg-reader/`). Detection's
+HFS+, HFSX or APFS volumes, encrypted ones (`hdiutil -encryption`) included with their
+password; the plan is `openspec/changes/dmg-reader/`. Detection's
 trailer step is on [`topics/detection.md`](../topics/detection.md) §2.4. This page is
 the format.
 
@@ -10,12 +10,12 @@ the format.
 
 | | |
 | --- | --- |
-| Read | Yes: UDIF (`koly` version 4) with every run codec (zero fill, raw, ignore, ADC, zlib, bzip2, LZFSE, xz), GPT, Apple partition map or no map, HFS+, HFSX and APFS (unencrypted, unsealed volumes; the live tree, not snapshots) |
+| Read | Yes: UDIF (`koly` version 4) with every run codec (zero fill, raw, ignore, ADC, zlib, bzip2, LZFSE, xz), GPT, Apple partition map or no map, HFS+, HFSX and APFS (unencrypted, unsealed volumes; the live tree, not snapshots), and those images encrypted with a password (`encrcdsa` v2, AES-128 or AES-256) |
 | Write | **Not shipped** |
 | Source | Seekable only (`required_source` is `SEEKABLE`): the run tables are at the end of the image and the filesystem metadata anywhere in the disk. A pipe is refused, or spooled by the caller |
 | Listing cost | The open reads the `koly` block, the property list and its run tables, the partition map, a 4 KiB probe of each partition, each HFS+ volume header (plus two 512-byte journal reads) and each APFS container's block 0; the first listing walks each HFS+ catalog twice and the attributes tree once, and for APFS scans the checkpoint ring, reads the object maps whole and walks each filesystem tree once |
-| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python; zlib, bzip2 and xz through `ReaderContext.decompress` |
-| Refuses | Encrypted images (`encrcdsa`, `cdsaencr`), segmented images, images with no property list, HFS wrappers, HFS+ volumes whose journal may hold changes, APFS Fusion and prerelease-layout containers, encrypted and sealed APFS volumes, unknown run types (at read), directory hard links (at read) |
+| Core dependencies | None. ADC, LZFSE and LZVN are decoded in Python; zlib, bzip2 and xz through `ReaderContext.decompress`. An encrypted image needs `cryptography` (the `[recommended]` extra) |
+| Refuses | Version 1 encrypted images (`cdsaencr`), encrypted images locked only by a certificate or keychain key, encrypted read-write (raw disk) images, segmented images, images with no property list, HFS wrappers, HFS+ volumes whose journal may hold changes, APFS Fusion and prerelease-layout containers, encrypted and sealed APFS volumes, unknown run types (at read), directory hard links (at read) |
 | `format=` | `format="dmg"` opens a file as UDIF; one with no `koly` block is `CorruptionError` |
 
 The `.dmg` suffix is not registered: many files with that name are raw disks
@@ -59,6 +59,66 @@ image of an ISO 9660 disk is `ISO`. Two more signatures name encrypted images:
 `encrcdsa` at offset 0 (v2) and `cdsaencr` in the last 8 bytes (v1). The trailer step
 reads the longest trailer once and matches the shorter ones against its end, so its
 receipt is still one 512-byte tail read.
+
+### 2.1.1 Encrypted images
+
+`dmg_encrypted.py`. `hdiutil -encryption` encrypts the whole UDIF image (data fork,
+property list, `koly` block) and puts the `encrcdsa` header in front, so the handler's
+`open` returns a `NeedsPassword` for "the disk image" and its `then` opens `DmgReader`
+on `EncryptedDmgSource`, the decrypted image. Everything below then runs unchanged on
+that source, and its offsets in errors are the decrypted image's. The image and every
+member are `is_encrypted`.
+
+The header, big-endian, as the four `hdiutil` fixtures (macOS 26) hold it:
+
+| Offset | Size | Field | Fixtures |
+| --- | --- | --- | --- |
+| 0 | 8 | `encrcdsa` | |
+| 8 | 4 | version | 2 |
+| 12 | 4 | IV size | 16 |
+| 16 | 4 | mode | 5 |
+| 20 | 4 | cipher (CSSM id) | `0x80000001`, AES |
+| 24 | 4 | key bits | 128 or 256 |
+| 28 | 4 | PRNG algorithm | 91 |
+| 32 | 4 | HMAC key bits | 160 |
+| 36 | 16 | UUID | |
+| 52 | 4 | block size | 512 |
+| 56 | 8 | decrypted image size | the UDZO image's size |
+| 64 | 8 | encrypted data offset | 122368 |
+| 72 | 4 | key entries | 1 |
+| 76 | 20 each | entry: type (u32), blob offset (u64), blob size (u64) | type 1 (password), at 96, 616 bytes |
+
+A password blob: KDF (103 = PBKDF2) at 0, KDF PRNG at 4, iterations at 8 (370,370 to
+454,545: macOS times them), salt size at 12 and a 32-byte salt field at 16 (20 used),
+IV size at 48 and a 32-byte IV field at 52, wrapping key bits at 84 (192), wrapping
+cipher at 88, padding at 92 (7, PKCS#7), mode at 96 (6, CBC), wrapped-key size at 100
+and the wrapped key at 104.
+
+The unlock: PBKDF2-HMAC-SHA1 of the password gives a 24-byte key, charged first with
+`charge_key_derivation`. It decrypts the wrapped key in CBC mode. The fixtures wrap
+with AES-192 (cipher `0x80000001`) and state an IV size of 8, but the IV is the
+field's first 16 bytes (the 8 stated, then zeros); vfdecrypt and dmg2img describe 3DES
+(cipher 17) with an 8-byte IV in older images, read too. The unwrapped bytes, after
+their PKCS#7 padding, are the AES key, the 20-byte HMAC-SHA1 key and, on every
+fixture, the mark `CKIE\0`. A password is `CONFIRMED` when the padding is right and
+the last 512 bytes of the decrypted image are a `koly` block, or, with no `koly`, when
+the mark is there; a password that confirms by the mark alone unlocks a read-write
+image, which is refused by name.
+
+Block `n` of the image (block size bytes from `data offset + n * block size`) is
+AES-CBC with the IV `HMAC-SHA1(hmac_key, n as a big-endian u32)[:16]`. The last block
+is whole in the file; the bytes past the image size are padding. `EncryptedDmgSource`
+decrypts a read's blocks in one CBC pass and then corrects the first 16 bytes of each
+later block for its own IV, and keeps the last 16 blocks it decrypted.
+
+Every length is checked before the bytes it names are read: the version (2), cipher
+(AES), HMAC key size (160 bits) and block size (512 or 4096) are
+`UnsupportedFeatureError` otherwise; more than 16 key entries, or an entry over 4 KiB,
+is `ResourceLimitError`; an entry outside the header (between the entry table and the
+encrypted data), a salt over 32 bytes, an IV over the cipher's block, or a wrapped key
+that is not a whole number of blocks inside its entry is `CorruptionError`; a file
+shorter than the encrypted data is `TruncatedError`. All of this runs before a password
+is asked for. Only the `koly` block's blocks are decrypted to check a password.
 
 ### 2.2 Open and list
 
@@ -262,7 +322,11 @@ remembered (§2.2), B-tree nodes reached twice, directories reached twice and B-
 deeper than 32 levels are damage, the checkpoint scan has its own 64 MiB budget, and
 what the trees keep counts against `max_metadata_bytes`; a file of 1 TiB of holes stops
 at the ratio guard (`test_a_zero_extent_bomb_stops_at_the_ratio_guard`). The fuzz
-targets are `dmg` (HFS+) and `dmg_apfs` in `tests/atheris_fuzz/`.
+targets are `dmg` (HFS+) and `dmg_apfs` in `tests/atheris_fuzz/`. Encrypted images:
+the header's counts and lengths are checked before any read (§2.1.1), the iteration
+count is charged to `max_key_derivation_rounds` before each derivation, and the image
+is decrypted a read at a time, so its memory is the reads' own; the `dmg` seeds hold
+one encrypted image.
 
 ## 5. Sharp edges
 
@@ -271,7 +335,9 @@ targets are `dmg` (HFS+) and `dmg_apfs` in `tests/atheris_fuzz/`.
 | A `.dmg` that opens as a zip or not at all | **format** | No `koly` block: a raw disk (UDRW) or another format renamed (§3) |
 | `encrypted APFS volume` or `sealed APFS volume` | **archivey** | Native APFS encryption and sealed (system) volumes are not read |
 | `café.txt` composed on APFS, decomposed on HFS+ | **format** | Both store the name as written; HFS+ stores it decomposed |
-| `encrypted DMG disk image` | **archivey** | Encryption is part G of the plan |
+| `the disk image is encrypted: pass password= to read it` | **format** | An `hdiutil -encryption` image (§2.1.1); a wrong password is `Wrong password for the disk image` |
+| `read-write (raw disk) image` after the right password | **archivey** | An encrypted UDRW image: the decrypted data is a raw disk, which is not read (§3) |
+| `version 1 (cdsaencr)` | **archivey** | Pre-10.5 encrypted images are not read |
 | A hard link lists as `HARDLINK`, not two files | **archivey** | Links point backward (§2.2); 7-Zip writes both as empty files |
 | `com.apple.provenance` on every member's `extra["dmg.xattrs"]` | **format** | `hdiutil` adds it |
 | A name with `:` | **format** | HFS+ stores `/` in names; the Mac and 7-Zip show it as `:` |
@@ -310,7 +376,20 @@ Choices made in Part E:
 - **Extents and names are compared on (object id, type, offset) for damaged ranges**,
   so a damaged range's boundary counts as inside (conservative).
 
+Choices made in Part G:
+
+- **The key wrap is read by its cipher field**, AES (what every fixture holds) or
+  3DES (what older images hold, per vfdecrypt), where the plan named 3DES only.
+- **Block sizes 512 and 4096 are read.** The fixtures use 512; the plan expected 4096
+  only, as vfdecrypt describes.
+- **A password is confirmed by the `koly` block, else by the `CKIE` mark**, so the
+  right password on an encrypted read-write image gets its own refusal rather than
+  "wrong password".
+
 ## 7. Open questions
+
+- No fixture has a 3DES key wrap or 4096-byte blocks: both follow vfdecrypt and are
+  checked only against the test writer.
 
 - Journal replay (a volume with pending transactions is refused).
 - Whether any current tool still writes `koly` at offset 0.
@@ -340,7 +419,8 @@ after a merge that touches the DMG code; the table is its job summary.
 | Every APFS `hdiutil` fixture lists and reads as macOS mounts it (`test_an_hdiutil_apfs_image_lists_and_reads_as_macos_mounts_it`) |
 | APFS: plain and hashed keys, every layout and codec, sparse files and clones (`tests/test_dmg_apfs.py`) |
 | APFS damage: a checksum failure in every object kind is `CorruptionError`; a lost leaf fails only what it held, and a hole never reads as zeros when its extent may be lost (`test_a_lost_extent_leaf_*`) |
-| Encrypted images are refused by name |
+| Every encrypted `hdiutil` fixture lists and reads as macOS mounts it with the password `archivey`, and asks for it without (`test_an_encrypted_hdiutil_image_asks_for_its_password`) |
+| Encrypted test-writer images with each key size, key wrap and block size read as the plain image (`test_an_encrypted_builder_image_reads_as_the_plain_one`); a damaged header is refused before any password (`test_a_damaged_encrypted_header_is_refused_before_any_password`) |
 | 7-Zip extracts the same bytes, with the listed differences (`test_7zip_*`) |
 | Damage fails the member it touches, and a damaged catalog node delivers the members before it |
 | `verify_all()` raises every file of an `hdiutil` image to `CHECKSUM`, decoding each table once (`test_verify_all_raises_every_file_of_an_hdiutil_image_to_checksum`) |
