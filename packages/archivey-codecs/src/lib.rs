@@ -1203,11 +1203,12 @@ impl LzxDecompressor {
                 "an output size of {output_size}, below the {decoded} bytes already decoded"
             )));
         }
-        if let Some(size) = self.inner.frame_in_progress() {
+        if let Some((size, done)) = self.inner.frame_in_progress() {
             let frame = (output_size - decoded).min(lzx::FRAME_SIZE as u64) as usize;
             if frame != size && !self.inner.resize_frame(frame) {
+                let so_far = decoded + done as u64;
                 return Err(PyValueError::new_err(format!(
-                    "an output size of {output_size}, below the bytes already decoded"
+                    "an output size of {output_size}, below the {so_far} bytes already decoded"
                 )));
             }
         }
