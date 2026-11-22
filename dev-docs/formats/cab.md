@@ -170,16 +170,12 @@ missing bytes, as cabextract 1.11 does, and 3 bytes short is refused. It runs at
 
 When `archivey-codecs` is installed and allowed, its Rust port of this decoder runs
 instead (`native.NativeLzx`), with the same output and errors; not yet under
-`NATIVE_DECODERS`. The kernel takes input pushed to it, and tries a frame only once
-about two frames' input is queued, so it is given blocks the Python decoder has not
-pulled yet. A block whose checksum fails is therefore held back: the Python decoder
-raises its error only from the frame that first reads it. Until then each frame is
-decoded on a restored copy given zero bytes past the input, and kept only if the copy
-read none of them; a decode error on that copy raises only when the kernel's `error_in`
-shows it was found before the copy read past the input, as the Python decoder would
-meet it before pulling the failed block. `tests/test_native_kernels.py` compares the two
-on clean, cut and damaged cabinets, including unchecked damage before a failed block,
-and `tests/test_cab.py` runs with each decoder.
+`NATIVE_DECODERS`. The kernel takes input pushed to it and keeps its place when the
+input runs out inside a frame, so `NativeLzx` gives it the next block only when it has
+used all it was given, where the Python decoder pulls that block. A block whose
+checksum fails raises from the same frame in both. `tests/test_native_kernels.py`
+compares the two on clean, cut and damaged cabinets, including unchecked damage before
+a failed block, and `tests/test_cab.py` runs with each decoder.
 
 ## 3. Tests
 

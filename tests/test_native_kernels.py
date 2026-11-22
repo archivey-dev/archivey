@@ -1009,11 +1009,11 @@ def test_cab_lzx_uses_the_kernel_and_reads_the_same() -> None:
 def test_cab_lzx_kernel_is_not_used_when_switched_off_or_isolated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _fake(monkeypatch, lzx=1)
+    _fake(monkeypatch, lzx=2)
     assert native.lzx(frozenset(), isolated=False) is not None
     assert native.lzx(EXCLUDED, isolated=False) is None
     assert native.lzx(frozenset(), isolated=True) is None
-    _fake(monkeypatch, lzx=0)
+    _fake(monkeypatch, lzx=1)
     assert native.lzx(frozenset(), isolated=False) is None
 
 
@@ -1037,7 +1037,7 @@ class _FakeLzx:
 def test_a_panic_in_a_cab_lzx_read_is_corruption(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = _fake(monkeypatch, lzx=1)
+    module = _fake(monkeypatch, lzx=2)
     module.lzx = types.SimpleNamespace(Decompressor=_FakeLzx)
     monkeypatch.setattr(_FakeLzx, "built", 0)
     _, raw, names = _lzx_cabs()[0]
