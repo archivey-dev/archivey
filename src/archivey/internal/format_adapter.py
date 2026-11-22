@@ -857,8 +857,8 @@ class _PluginAdapter(BaseArchiveReader):
         # only. One search (``search_forward``) reads forward, so it can run there;
         # whether the walk can go back after it, into the data of a member the search
         # found but could not confirm, is the format's call, and a format that cannot
-        # records SALVAGE_UNAVAILABLE. The refusal of ``streaming=True`` with
-        # ``salvage=True`` is for a caller's open_archive only.
+        # records SALVAGE_UNAVAILABLE (reason "forward_only_reader"). The refusal of
+        # ``streaming=True`` with ``salvage=True`` is for a caller's open_archive only.
         with (
             collector.member_ids_from(first),
             reading_inside(self),

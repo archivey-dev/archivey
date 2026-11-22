@@ -41,7 +41,7 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
    ```python
    @dataclass(frozen=True)
    class SalvageLimits:
-       max_search_bytes: int | None = None   # bytes a search examines, per reader, all layers
+       max_search_bytes: int | None = None   # bytes a walk's searches examine, all layers
        max_reported_regions: int = 1_000     # ARCHIVE_REGION_SKIPPED records per reader
    ```
 
@@ -66,7 +66,7 @@ needs and decides what they left open. "Q*n*" below is a ruling of that design.
                       format, method, offset, confirmed, unchecked)
    RegionSkippedContext(kind="region_skipped", archive_name, format, layer,
                         offset, length, reason)
-   SalvageUnavailableContext(kind="salvage_unavailable", archive_name, format)
+   SalvageUnavailableContext(kind="salvage_unavailable", archive_name, format, reason)
    ```
 
    - `method`: `"header_search"` in this step (later: `"second_copy"`,
@@ -205,7 +205,9 @@ Choices the decisions above left open, made while building PR 1:
 - **Nested readers** are built forward-only (`streaming=True` over the member's
   stream). One search reads forward, so it can run there. Going back after it, into
   the data of an unconfirmed member, is the format's call: TAR holds up to 4 MiB of
-  it, and CPIO and ar on a forward-only reader record `SALVAGE_UNAVAILABLE`.
+  it, and CPIO and ar on a forward-only reader record `SALVAGE_UNAVAILABLE` with
+  `reason="forward_only_reader"` (a format with no search at all records
+  `reason="no_salvage_search"`).
 - **Walks.** The reader's `SalvageState` holds the listing walk's budget, records and
   layer positions. A listing walk started over calls `restart()`. Another walk from
   the start (to reach a member's data, possibly beside the listing walk) searches with
