@@ -281,6 +281,36 @@ would do. A patch release is §1 to §5 and these four commands.
 
 ---
 
+## archivey-codecs releases
+
+archivey-codecs (`packages/archivey-codecs`) has its own version, its own changelog
+and its own tags, `codecs-vX.Y.Z`. `publish.yml` runs on `v*` and does not match them;
+`codecs-publish.yml` does. It builds the abi3 wheel and the free-threaded wheels on
+every platform, tests each one against archivey from the same commit, builds the sdist,
+and uploads through Trusted Publishing.
+
+One-time setup (the project does not exist on PyPI before the first upload): add a
+pending publisher for project `archivey-codecs`, repository `archivey-dev/archivey`,
+workflow `codecs-publish.yml`, on PyPI with environment `pypi` and on TestPyPI with
+environment `testpypi`.
+
+1. A release PR sets `[package].version` in `packages/archivey-codecs/Cargo.toml`
+   (the only version: `pyproject.toml` reads it), moves the package `CHANGELOG.md`'s
+   `Unreleased` text under the version, and raises any changed kernel revisions.
+2. Before merging it, run the TestPyPI dry run from its branch: Actions →
+   archivey-codecs wheels → Run workflow, target `testpypi`. A TestPyPI filename can
+   never be uploaded again either, so a second dry run of the same version uploads
+   nothing new.
+3. After the merge, create the GitHub Release on the merge commit with tag
+   `codecs-vX.Y.Z`, and untick "Set as latest release" so the repository's latest
+   release stays archivey's. The tag starts `codecs-publish.yml`, which checks the tag
+   against `Cargo.toml` and publishes to PyPI after the `pypi` environment approval.
+4. Confirm the files on PyPI, each with provenance (an attestation).
+
+Release when a kernel is added or its revision changes, or for a security fix.
+
+---
+
 ## Quick command cheat sheet
 
 | Step | Command |
