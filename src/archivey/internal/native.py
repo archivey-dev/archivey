@@ -508,7 +508,7 @@ class NativeLzx:
     as there.
     """
 
-    __slots__ = ("_d", "_ended", "_latch", "_module", "_more")
+    __slots__ = ("_d", "_ended", "_latch", "_module", "_more", "_sized")
 
     # Its kernel object may be in a decoder child (``release_decoder``).
     holds_decoder_child = True
@@ -526,12 +526,20 @@ class NativeLzx:
             self._d = module.lzx.Decompressor(window_bits, output_size=output_size)
         self._more = more
         self._ended = False  # ``more`` returned ``None`` and the kernel was flushed
+        self._sized = output_size is not None
 
     def decode_frame(self, frame_size: int) -> bytes:
         """The next frame: ``frame_size`` bytes, 32 KiB except the last, as the
         kernel's ``output_size`` sets them."""
         with self._latch.guard(), codec_errors(self._module, "LZX"):
             d = self._d
+            if not self._sized:
+                # Without an output size the kernel ends the stream where its input
+                # does, at a frame boundary. The Python decoder decodes the frame it
+                # is asked for from the zero padding instead (and fails on it), so
+                # the kernel is told this frame is wanted. Every frame is returned
+                # whole, so ``total_out`` is what the kernel decoded.
+                d.set_output_size(d.total_out + frame_size)
             while True:
                 out = (
                     d.flush(frame_size)
