@@ -83,13 +83,16 @@ decmpfs type 10 was fixed); APFS joins M.2 with Part E.
 
 ## G. Encrypted images
 
-- [ ] G.0 Wait for the plugin-interface password change; use its public API
+- [x] G.0 Wait for the plugin-interface password change; use its public API
 
-- [ ] G.1 Confirm the `encrcdsa` v2 layout on the AES-128 and AES-256 fixtures; write it
+- [x] G.1 Confirm the `encrcdsa` v2 layout on the AES-128 and AES-256 fixtures; write it
   in the handbook page
-- [ ] G.2 TripleDES from cryptography's decrepit module in the crypto backend; key
+- [x] G.2 TripleDES from cryptography's decrepit module in the crypto backend; key
   unwrap; password flow; key-derivation budget
-- [ ] G.3 `EncryptedDmgSource`; `encrypt_dmg` test writer; damage tests
+- [x] G.3 `EncryptedDmgSource`; `encrypt_dmg` test writer; damage tests
+
+  Done 2026-11-22. The fixtures wrap the key with AES-192, not 3DES, and use 512-byte
+  blocks; both wraps and block sizes 512 and 4096 are read (design §6B.2 note).
 
 ## H. LZFSE accelerator
 

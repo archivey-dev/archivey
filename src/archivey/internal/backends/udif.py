@@ -914,7 +914,7 @@ class UdifSource(ReaderSource):
 
         def view(offset: int, n: int | None) -> BinaryIO:
             span = length - offset if n is None else min(n, length - offset)
-            raw = _DiskView(read_at, offset, max(0, span))
+            raw = DiskView(read_at, offset, max(0, span))
             return io.BufferedReader(raw, buffer_size=64 << 10)
 
         super().__init__(view, length, None, read_at)
@@ -930,7 +930,7 @@ class UdifSource(ReaderSource):
         return data
 
 
-class _DiskView(io.RawIOBase):
+class DiskView(io.RawIOBase):
     """A seekable stream over ``length`` bytes of a :class:`UdifSource` from
     ``start``."""
 
