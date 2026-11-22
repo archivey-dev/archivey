@@ -107,6 +107,7 @@ from archivey.internal.backends.sevenzip_salvage import (
 )
 from archivey.internal.backends.sevenzip_salvage_walk import (
     ContentStream,
+    ReadAt,
     content_archive,
     walk_packed_area,
 )
@@ -161,7 +162,7 @@ from archivey.internal.password_confirm import (
 )
 from archivey.internal.pe_resources import ProgramResources
 from archivey.internal.registry import register_reader
-from archivey.internal.salvage import ARCHIVE_LAYER
+from archivey.internal.salvage import HeaderSearch, search_forward
 from archivey.internal.source import ArchiveSource
 from archivey.internal.streams.archive_stream import (
     ArchiveStreamImpl,
@@ -1234,29 +1235,61 @@ class SevenZipReader(BaseArchiveReader):
             budget.stopped(file_size)
             outcome.limit_reached = self._salvage_mode.limit_reached
         if outcome.archive is None and not outcome.limit_reached:
-            self._walk_packed_area(signature, read_at, file_size, outcome)
+            self._walk_packed_area(view, signature, read_at, file_size, budget, outcome)
         return outcome
 
     def _walk_packed_area(
         self,
+        view: BinaryIO,
         signature: bytes,
-        read_at: Callable[[int, int], bytes],
+        read_at: ReadAt,
         file_size: int,
+        budget: TailBudget,
         outcome: _SalvageOutcome,
     ) -> None:
-        """Decision 4: with no usable end header, list each stream of the packed area
-        as a content member. The area ends where the start header puts the next
-        header, when it passes or was repaired and that is inside the file, and
-        otherwise at the end of the file."""
+        """Decisions 4 to 8: with no usable end header, walk the packed area. A header
+        copy the walk finds is read as the end header; otherwise each stream found is
+        a content member. The area ends where the start header puts the next header,
+        when it passes or was repaired and that is inside the file, and otherwise at
+        the end of the file."""
         end = file_size
         header_start = outcome.header_start
         if header_start is not None and SIGNATURE_HEADER_SIZE <= header_start < end:
             end = header_start
-        walk = walk_packed_area(read_at, end)
-        for offset, length in walk.skipped:
-            self._salvage_mode.record_region(
-                layer=ARCHIVE_LAYER, offset=self._origin + offset, length=length
+        origin = self._origin
+        state = self._salvage_mode
+        # R3 and R4 claimed the file's tail already; an area that ends before the
+        # file's end has a tail of its own.
+        tail = budget if end == file_size else TailBudget(state)
+
+        def search(
+            start: int, stop: int, finder: HeaderSearch, read: ReadAt
+        ) -> int | None:
+            # The search driver counts in the source, as the regions it records do.
+            result = search_forward(
+                state,
+                lambda offset, size: read(offset - origin, size),
+                finder,
+                start=origin + start,
+                end=origin + stop,
+                base=origin,
             )
+            return None if result.found is None else result.found - origin
+
+        def claim(lo: int, stop: int) -> int:
+            claimed = tail.claim(lo, stop)
+            tail.stopped(stop)
+            return claimed
+
+        walk = walk_packed_area(read_at, end, search=search, claim=claim)
+        outcome.limit_reached = state.limit_reached
+        if walk.copy is not None:
+            find = EndHeaderFind(walk.copy.start, walk.copy.data, "copy", False)
+            if self._try_salvage_load(view, signature, find, outcome, end_offset=end):
+                # The pack layout agrees with the walk, and the file CRCs in the copy
+                # check every read (decision 5).
+                outcome.confirmed = True
+                return
         if not walk.streams:
             return
         outcome.content = walk.streams
@@ -1295,12 +1328,15 @@ class SevenZipReader(BaseArchiveReader):
         signature: bytes,
         find: EndHeaderFind,
         outcome: _SalvageOutcome,
+        *,
+        end_offset: int | None = None,
     ) -> bool:
         """Parse and decode the end header ``find``, and keep the archive in
-        ``outcome`` when it loads."""
-        info = SignatureInfo(
-            signature[6], signature[7], find.data, find.start + len(find.data)
-        )
+        ``outcome`` when it loads. ``end_offset`` is where the archive ends, when the
+        header's bytes do not end it (a header copy decoded from a stream)."""
+        if end_offset is None:
+            end_offset = find.start + len(find.data)
+        info = SignatureInfo(signature[6], signature[7], find.data, end_offset)
         max_members = self._config.listing_limits.max_members
         try:
             block = parse_header_block(find.data, max_members=max_members)
@@ -1343,11 +1379,12 @@ class SevenZipReader(BaseArchiveReader):
         confirmed = salvaged.outcome.confirmed
         offset = self._origin + find.start
         unchecked: tuple[str, ...] = () if confirmed else ("position",)
-        check = (
-            "a CRC-32 confirms that end header"
-            if confirmed
-            else "only its parse checks that end header"
-        )
+        if find.rule == "copy":
+            check = "the file CRCs in it check each read"
+        elif confirmed:
+            check = "a CRC-32 confirms that end header"
+        else:
+            check = "only its parse checks that end header"
         for index, member in enumerate(self._members):
             self._diagnostics_collector.emit(
                 code=DiagnosticCode.MEMBER_FOUND_BY_SCAN,

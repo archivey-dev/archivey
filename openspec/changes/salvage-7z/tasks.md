@@ -33,10 +33,10 @@ stack on step 3's switch PR (`salvage-mode`).
 
 ## 3. Salvage: content (PR 3)
 
-- [ ] 3.1 `sevenzip_salvage.py`: LZMA2 chunk-chain walk (no decode), the stream search,
+- [x] 3.1 `sevenzip_salvage.py`: LZMA2 chunk-chain walk (no decode), the stream search,
       the LZMA1 trial at offset 32, the header-copy check (parse to `kEnd`, pack layout
       agreement) and its tail search.
-- [ ] 3.2 A header parse that stops at `kEnd` and reports where (for the copy).
+- [x] 3.2 A header parse that stops at `kEnd` and reports where (for the copy).
 - [x] 3.3 Content members: names, sizes, synthetic one-coder folders, dictionary from
       the unpacked size; feed the decoder so a failing piece keeps the bytes before it.
 - [x] 3.4 `MEMBER_NAME_UNKNOWN`: code, `DiagnosticCodeStr`, catalogue row, API surface,

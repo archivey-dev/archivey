@@ -15,9 +15,10 @@ one line. How to write the entry: see
 ### Added
 
 - `open_archive(salvage=True)` opts into salvage mode, capped by the new `SalvageLimits`
-  (`ArchiveyConfig.salvage_limits`): 7z repairs a damaged start or end header, or lists
-  a cut archive's packed streams under `__salvaged__/` (`MEMBER_NAME_UNKNOWN`), each
-  member flagged; other formats read as before and record `SALVAGE_UNAVAILABLE`.
+  (`ArchiveyConfig.salvage_limits`): 7z repairs a damaged start or end header, reads a
+  cut archive's header from the copy in its packed area, or else lists its packed
+  streams under `__salvaged__/` (`MEMBER_NAME_UNKNOWN`), each member flagged; other
+  formats read as before and record `SALVAGE_UNAVAILABLE`.
 
 ### Changed
 

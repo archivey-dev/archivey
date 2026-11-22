@@ -240,6 +240,30 @@ def next_header_span(data: bytes) -> tuple[int, int]:
     return 32 + offset, size
 
 
+def header_stream_start(data: bytes) -> int:
+    """Where the packed stream of an intact archive's encoded header starts."""
+    from archivey.internal.backends.sevenzip_parser import (
+        EncodedHeader,
+        encoded_header_slice,
+        parse_header_block,
+    )
+
+    start, size = next_header_span(data)
+    block = parse_header_block(data[start : start + size])
+    assert isinstance(block, EncodedHeader)
+    return encoded_header_slice(block)[1]
+
+
+def packed_stream_spans(data: bytes) -> list[tuple[int, int]]:
+    """``(start, end)`` of each packed stream an intact archive names, in order."""
+    with open_archive(io.BytesIO(data)) as reader:
+        archive = reader._archive  # type: ignore[attr-defined]
+    return [
+        (archive.pack_pos + pos, archive.pack_pos + pos + size)
+        for pos, size in zip(archive.pack_positions, archive.pack_sizes, strict=False)
+    ]
+
+
 def zero_start_header(data: bytes) -> bytes:
     """``data`` with bytes 8 to 31 zeroed, as an interrupted 7-Zip write leaves them."""
     return data[:8] + bytes(24) + data[32:]

@@ -11,6 +11,8 @@ the 7-Zip CLI writes where it is installed.
 from __future__ import annotations
 
 import io
+import lzma
+import random
 import struct
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -37,7 +39,11 @@ from archivey.exceptions import (
 from archivey.internal.backends.sevenzip_salvage import one_byte_candidates
 from archivey.internal.backends.sevenzip_salvage_walk import (
     CachedReader,
+    ContentStream,
+    StreamFinder,
     content_name,
+    copy_at,
+    decode_lzma1_prefix,
     lzma2_dict_prop,
     scan_chain,
 )
@@ -49,8 +55,10 @@ from tests.sevenzip_salvage_util import (
     SevenZipBuilder,
     fix_start_crc,
     flip,
+    header_stream_start,
     lzma2_stream,
     next_header_span,
+    packed_stream_spans,
     requires_7zip,
     source_files,
     write_7z,
@@ -381,14 +389,21 @@ def test_a_plain_end_header_that_fails_its_crc_is_used_unconfirmed() -> None:
 
 
 def test_an_encoded_end_header_whose_decode_fails_is_not_used() -> None:
-    """The folder CRC is the check: a header whose decode fails it is not used."""
+    """The folder CRC is the check: a header whose decode fails it is not used. The
+    header stream it names is intact, so the walk finds it as the header copy."""
     start, size = next_header_span(NONSOLID)
     damaged = flip(NONSOLID, start + size - 3)
     listing = _salvage(damaged)
-    assert not listing.found()
+    assert listing.contents == FILES
+    for context in listing.found().values():
+        assert (context.method, context.offset) == (
+            "header_search",
+            header_stream_start(NONSOLID),
+        )
+    _assert_add_only(damaged, listing)
 
 
-# No usable end header: the streams of the packed area (decisions 4, 6, 8) --------
+# No usable end header: the streams of the packed area (decisions 4 to 8) --------
 
 
 def _unknown(listing: _Listing) -> dict[str, SalvageScanContext]:
@@ -399,22 +414,12 @@ def _unknown(listing: _Listing) -> dict[str, SalvageScanContext]:
     return out
 
 
-def _streams(data: bytes) -> list[tuple[int, int]]:
-    """``(start, end)`` of each packed stream the intact ``data`` names, in order."""
-    with open_archive(io.BytesIO(data)) as reader:
-        archive = reader._archive  # type: ignore[attr-defined]
-    return [
-        (archive.pack_pos + pos, archive.pack_pos + pos + size)
-        for pos, size in zip(archive.pack_positions, archive.pack_sizes, strict=False)
-    ]
-
-
 def _assert_content(
     listing: _Listing, cut: int, data: bytes, files: list[bytes]
 ) -> None:
     """Each stream before ``cut`` is one content member, byte-exact; a stream the
     cut runs through has no size, and its read gives a prefix of its bytes."""
-    streams = [s for s in _streams(data) if s[0] < cut]
+    streams = [s for s in packed_stream_spans(data) if s[0] < cut]
     assert listing.names == [
         f"__salvaged__/7z-stream-{n:04d}.bin" for n in range(1, len(streams) + 1)
     ]
@@ -446,7 +451,7 @@ CUTS = {
     "75 %": lambda d: len(d) * 3 // 4,
     "95 %": lambda d: len(d) * 95 // 100,
     "100 bytes short": lambda d: len(d) - 100,
-    "before the end header": lambda d: next_header_span(d)[0],
+    "inside the header stream": lambda d: header_stream_start(d) + 4,
 }
 
 
@@ -518,7 +523,7 @@ def test_decoder_limits_hold_a_content_member() -> None:
     dictionary is the smallest that holds its unpacked size, and
     ``max_decoder_memory`` refuses one larger than it allows."""
     data = write_7z({"zeros": bytes(4 << 20)})
-    cut = data[: next_header_span(data)[0]]
+    cut = data[: header_stream_start(data) + 4]
     config = ArchiveyConfig(decoder_limits=DecoderLimits(max_decoder_memory=1 << 20))
     with open_archive(io.BytesIO(cut), salvage=True, config=config) as reader:
         [member] = reader.members_report().members
@@ -614,3 +619,197 @@ def test_aes_folders_list_nothing(sevenzip_builder: SevenZipBuilder) -> None:
     assert listing.names == []
     assert [r.reason for r in listing.regions()] == ["no_header"]
     assert isinstance(listing.error, TruncatedError)
+
+
+# The header copy (decision 5) ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("data", [NONSOLID, SOLID], ids=["nonsolid", "solid"])
+def test_a_cut_before_the_end_header_lists_from_its_copy(data: bytes) -> None:
+    """The encoded header's stream is still there: the walk reaches it at a walk
+    position, and its decode is the end header, every member named."""
+    damaged = data[: next_header_span(data)[0]]
+    listing = _salvage(damaged)
+    assert listing.contents == FILES
+    assert set(listing.found()) == set(FILES)
+    for context in listing.found().values():
+        assert (context.method, context.offset, context.confirmed) == (
+            "header_search",
+            header_stream_start(data),
+            True,
+        )
+        assert context.unchecked == ()
+    assert not listing.of(DiagnosticCode.MEMBER_NAME_UNKNOWN)
+    assert not listing.regions()
+    assert "a copy of the end header" in str(listing.error)
+    _assert_add_only(damaged, listing)
+
+
+def test_a_plain_header_at_a_walk_position_is_a_copy() -> None:
+    """A plain end header the start header no longer leads to, R1 to R3 failing
+    (three of its bytes changed, the next-header CRC among them), is found where
+    the last stream ends."""
+    damaged = flip(PLAIN, 13, 21, 29)
+    listing = _salvage(damaged)
+    assert listing.contents == FILES
+    for context in listing.found().values():
+        assert (context.method, context.offset, context.confirmed) == (
+            "header_search",
+            next_header_span(PLAIN)[0],
+            True,
+        )
+    _assert_add_only(damaged, listing)
+
+
+def test_a_copy_whose_layout_disagrees_is_not_used() -> None:
+    start, size = next_header_span(PLAIN)
+    read_at = lambda o, n: PLAIN[o : o + n]  # noqa: E731
+    first = packed_stream_spans(PLAIN)[0]
+    agrees = ContentStream(first[0], first[1], "lzma2", len(FILES["file-00.txt"]), 1)
+    assert copy_at(read_at, start, start + size, [agrees]) is not None
+    moved = ContentStream(first[0] + 1, first[1], "lzma2", None, 1)
+    assert copy_at(read_at, start, start + size, [moved]) is None
+    resized = ContentStream(first[0], first[1], "lzma2", 1, 1)
+    assert copy_at(read_at, start, start + size, [resized]) is None
+    # The copy's packed streams must lie before it.
+    assert copy_at(read_at, first[0], start + size, []) is None
+
+
+def test_the_lzma1_header_decode_is_bounded() -> None:
+    """It stops at an end marker, at its output bound, and at an error, keeping
+    the bytes before it."""
+    data = b"header bytes " * 1000
+    packed = lzma.compress(
+        data,
+        format=lzma.FORMAT_RAW,
+        filters=[{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 16}],
+    )
+    assert decode_lzma1_prefix(packed + b"\xff" * 5000, 1 << 20) == data
+    assert decode_lzma1_prefix(packed, 10) == data[:10]
+    rng = random.Random(1768)
+    garbage = b"\x00" + rng.randbytes(1 << 16)
+    out = decode_lzma1_prefix(garbage, 1 << 20)
+    try:
+        expected = _lzma1_decode_all(garbage)
+    except lzma.LZMAError:
+        pass
+    else:
+        assert out == expected[: len(out)]
+
+
+def _lzma1_decode_all(data: bytes) -> bytes:
+    decoder = lzma.LZMADecompressor(
+        lzma.FORMAT_RAW,
+        filters=[{"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20}],
+    )
+    return decoder.decompress(data)
+
+
+@requires_7zip
+@pytest.mark.parametrize(
+    "kind", ["solid", "nonsolid", "lzma1", "lzma1-nonsolid", "bcj", "bcj2", "mt"]
+)
+def test_cut_7zip_archives_before_the_end_header_list_every_member(
+    kind: str, sevenzip_builder: SevenZipBuilder
+) -> None:
+    """The copy is found at a walk position, or by the tail search when an LZMA1 or
+    BCJ2 folder stops the walk; every member is named and reads back."""
+    archive = sevenzip_builder.build(kind)
+    damaged = archive[: next_header_span(archive)[0]]
+    listing = _salvage(damaged)
+    assert listing.contents == source_files(12)
+    assert {c.method for c in listing.found().values()} == {"header_search"}
+    assert not listing.of(DiagnosticCode.MEMBER_NAME_UNKNOWN)
+
+
+# The stream search (decision 7) -------------------------------------------------------
+
+
+def _zero_second_stream(data: bytes, cut: int) -> tuple[bytes, list[tuple[int, int]]]:
+    spans = packed_stream_spans(data)
+    start = spans[1][0]
+    damaged = bytearray(data[:cut])
+    damaged[start : start + 4096] = bytes(4096)
+    return bytes(damaged), spans
+
+
+def test_a_zeroed_stream_start_is_searched_past() -> None:
+    """4 KiB zeroed at the start of the second stream, then cut: the search finds
+    the third stream, the walk goes on from it, and one region covers the gap."""
+    spans = packed_stream_spans(NONSOLID)
+    assert spans[1][1] - spans[1][0] > 4096
+    cut = spans[-1][0] + 10
+    damaged, _ = _zero_second_stream(NONSOLID, cut)
+    listing = _salvage(damaged)
+    files = list(FILES.values())
+    unknown = _unknown(listing)
+    offsets = [unknown[name].offset for name in listing.names]
+    assert offsets == [spans[0][0]] + [s[0] for s in spans[2:]]
+    assert [content for _, _, content in listing.members[:-1]] == [files[0]] + files[
+        2:-1
+    ]
+    assert all(c.confirmed for c in unknown.values())
+    [region] = listing.regions()
+    assert (region.reason, region.offset, region.length) == (
+        "no_header",
+        spans[1][0],
+        spans[2][0] - spans[1][0],
+    )
+    _assert_add_only(damaged, listing)
+
+
+def test_a_searched_stream_the_cut_runs_through_is_unconfirmed() -> None:
+    """The third stream has several chunks; the cut is past its first, so its
+    first LZMA chunk decodes and its chain runs to the area's end."""
+    rng = random.Random(1760)
+    big = bytes(rng.choice(b"abcdefghijklmnop") for _ in range(300_000))
+    data = write_7z({"a": FILES["file-00.txt"], "b": FILES["file-01.txt"], "c": big})
+    spans = packed_stream_spans(data)
+    assert spans[2][1] - spans[2][0] > 100_000
+    damaged, _ = _zero_second_stream(data, spans[2][0] + 100_000)
+    listing = _salvage(damaged)
+    unknown = _unknown(listing)
+    assert [unknown[n].offset for n in listing.names] == [spans[0][0], spans[2][0]]
+    last = unknown[listing.names[-1]]
+    assert last.confirmed is False
+    assert last.unchecked == ("name", "filters", "size")
+
+
+def test_max_search_bytes_zero_stops_the_stream_search() -> None:
+    spans = packed_stream_spans(NONSOLID)
+    damaged, _ = _zero_second_stream(NONSOLID, spans[-1][0] + 10)
+    listing = _salvage(damaged, limit=0)
+    assert listing.names == [content_name(0)]
+    assert [r.reason for r in listing.regions()] == ["search_limit"]
+    assert "max_search_bytes" in str(listing.error)
+
+
+def _finder_hits(data: bytes) -> list[int]:
+    finder = StreamFinder(lambda o, n: data[o : o + n], len(data))
+    window = finder.read(0, len(data))
+    hits: list[int] = []
+    start = 0
+    while (found := finder.find(window, start)) is not None:
+        hits.append(found)
+        start = found + 1
+    return hits
+
+
+def test_the_stream_search_finds_no_candidate_in_random_bytes() -> None:
+    rng = random.Random(1756)
+    assert _finder_hits(rng.randbytes(1 << 20)) == []
+
+
+def test_a_chain_of_uncompressed_chunks_only_is_not_a_candidate() -> None:
+    stored = b"\x01" + (999).to_bytes(2, "big") + bytes(1000) + b"\x00"
+    assert scan_chain(
+        CachedReader(lambda o, n: stored[o : o + n], len(stored)), 0, len(stored)
+    )
+    assert _finder_hits(b"\xaa" * 100 + stored + b"\xaa" * 100) == []
+
+
+def test_the_stream_search_finds_an_lzma2_stream() -> None:
+    rng = random.Random(1760)
+    stream = lzma2_stream(b"abc" * 50_000)
+    data = rng.randbytes(1000) + stream + rng.randbytes(1000)
+    assert _finder_hits(data) == [1000]

@@ -542,6 +542,47 @@ check `verifiable` can promise, so the level stays `UNLOCKED`.
 3. **Salvage content** (stacked on 2): decisions 4–10, `MEMBER_NAME_UNKNOWN`, CLI mark,
    handbook section.
 
+## Notes from the implementation
+
+Where the code departs from the decisions above, or settles what they leave open:
+
+- **The tail bytes are counted outside the driver.** R3 and R4, and the header copy's
+  tail search, claim the file's last bytes against `max_search_bytes` once
+  (`TailBudget`), not through `search_forward`. The stream search counts its own bytes
+  through the driver, so a byte in the tail can count twice: once for the tail search,
+  once for the stream search.
+- **The region message is the driver's.** `ARCHIVE_REGION_SKIPPED` says "no header
+  passes the format's checks in it", not the 7z text of decision 9.
+- **No listing-time `max_ratio` check.** The read holds `DecoderLimits` as for any
+  folder; the dictionary from the unpacked size makes `max_decoder_memory` the check
+  that bites (tested). Task 3.6's `max_ratio` item is not done.
+- **A broken chain at a walk position is listed only when its first LZMA chunk
+  decodes**, the check decision 7 gives a searched one: random or encrypted bytes pass a
+  first chunk header often enough (the AES folders listed junk without it). It reads to
+  its last whole chunk, then raises `TruncatedError`.
+- **The search needs the first LZMA chunk whole, within 256 KiB of the candidate**
+  (the driver's `max_header_size`). A stream whose first LZMA chunk the cut runs
+  through is not found by the search; the walk still finds one at a walk position.
+- **The finder reads past its window.** It checks the first chunks in the window the
+  driver gives, then reads the whole chain through the area's reader (the driver's reads
+  are contiguous, so the window's place in the area is where the last read ended).
+- **The header copy at a walk position wins over the LZMA2 chain** (`01` starts both):
+  it is tried first, and must list at least one file (`kHeader kEnd` alone is not a
+  copy). The plain copy is tried only when the rest of the area fits in
+  `MAX_NEXT_HEADER_SIZE`. A plain header that a cut runs through cannot be a copy, so
+  the "Plain header, cut before the end header" cell of decision 10 lists content
+  members.
+- **The tail search runs before the stream search**, so that a copy found there leaves
+  no `ARCHIVE_REGION_SKIPPED` behind it. It starts after the last complete stream.
+- **A salvage open never raises at open.** With nothing found it lists zero members and
+  the pass ends in the default's error, with a note on what salvage did.
+- **`verifiable` can rise after a read**, from `UNLOCKED` to `LENGTH`, as for any member
+  whose read completes.
+- **An `EncryptionError` from a repaired header propagates**, as the default's would.
+- **Not done in this step:** lost start (decision 11, task 2.4), so step 3's
+  `lost_start` plumbing from the TAR change is not copied; the CLI `name unknown` mark
+  (task 3.5); the `docs/` salvage page row (no such page exists yet).
+
 ## Open questions
 
 1. **List the LZMA1 member, whose last bytes may be wrong?** Measured: a solid LZMA1
