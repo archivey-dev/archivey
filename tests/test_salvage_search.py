@@ -1,9 +1,9 @@
 """The salvage search driver (``archivey.internal.salvage``) over synthetic finders.
 
-A format's ``find_header`` is pure on bytes, so these tests drive the search with
-small finders over in-memory layers and check the shared rules: windows and their
-overlap, the byte budget, each position examined once per layer, alignment from a
-base offset, and the ``ARCHIVE_REGION_SKIPPED`` records with their cap.
+A format's ``find_header(window, start, stop)`` is pure on bytes, so these tests drive
+the search with small finders over in-memory layers and check the shared rules: windows
+and their overlap, the byte budget, each position examined once per layer, alignment
+from a base offset, and the ``ARCHIVE_REGION_SKIPPED`` records with their cap.
 """
 
 from __future__ import annotations
@@ -31,11 +31,11 @@ def _magic_search(step: int = 1, header: int = 8) -> HeaderSearch:
     """A header is ``MAGIC`` at a candidate position, then ``header - 4`` more bytes
     that must be there too."""
 
-    def find(window: bytes, start: int) -> int | None:
+    def find(window: bytes, start: int, stop: int) -> int | None:
         at = start
         while True:
             at = window.find(MAGIC, at)
-            if at < 0:
+            if at < 0 or at >= stop:
                 return None
             if (at - start) % step == 0 and at + header <= len(window):
                 return at
@@ -202,7 +202,7 @@ def test_alignment_counts_from_the_base() -> None:
 
 
 def test_a_finder_off_the_grid_is_a_bug() -> None:
-    search = HeaderSearch(find_header=lambda w, s: 3, step=4, max_header_size=4)
+    search = HeaderSearch(find_header=lambda w, s, e: 3, step=4, max_header_size=4)
     state, _ = _state()
     with pytest.raises(AssertionError, match="not a candidate position"):
         search_forward(state, _Layer(b"\x00" * 64).read_at, search, start=0)
@@ -355,7 +355,7 @@ def test_a_reader_that_does_not_salvage_cannot_search() -> None:
 
 def test_header_search_needs_a_header_as_long_as_its_step() -> None:
     with pytest.raises(AssertionError):
-        HeaderSearch(find_header=lambda w, s: None, step=8, max_header_size=4)
+        HeaderSearch(find_header=lambda w, s, e: None, step=8, max_header_size=4)
 
 
 def test_region_context_is_json_safe() -> None:
@@ -453,7 +453,7 @@ def test_the_search_limit_message_says_where_the_search_started_and_stopped() ->
 def test_a_budget_that_covers_an_unsized_layer_to_its_end_is_not_a_limit() -> None:
     """With no ``end`` the search learns where the layer ends only from a short
     read; a budget that pays for every byte left still ends in ``no_header``."""
-    search = HeaderSearch(find_header=lambda w, s: None, step=1, max_header_size=1)
+    search = HeaderSearch(find_header=lambda w, s, e: None, step=1, max_header_size=1)
     state, collector = _state(max_search_bytes=10)
     result = search_forward(state, _Layer(b"\x00" * 10).read_at, search, start=0)
     assert result.found is None and not result.limit_reached
@@ -466,7 +466,7 @@ def test_an_unsized_layer_that_ends_on_a_window_edge_is_not_a_limit() -> None:
     """The window span, not the budget, stops the read exactly at the layer's end,
     and the budget pays for every byte left: the search reads one byte more to see
     the end, and gives the same answer as with ``end``."""
-    search = HeaderSearch(find_header=lambda w, s: None, step=2, max_header_size=2)
+    search = HeaderSearch(find_header=lambda w, s, e: None, step=2, max_header_size=2)
     for end in (None, 25):
         state, collector = _state(max_search_bytes=25)
         result = search_forward(
@@ -501,3 +501,56 @@ def test_a_second_walk_searches_quietly_as_the_first_did() -> None:
     again.finish()
     assert state.searched_bytes == searched
     assert len(collector.snapshot().retained) == records
+
+
+def test_a_one_byte_region_says_byte() -> None:
+    data = b"\x00" + MAGIC + b"rest"
+    state, collector = _state()
+    assert (
+        search_forward(state, _Layer(data).read_at, _magic_search(), start=0).found == 1
+    )
+    [record] = collector.snapshot().retained
+    assert "skipped 1 byte at offset 0" in record.message
+
+
+@pytest.mark.parametrize(("budget", "examined"), [(None, 14), (6, 6)])
+def test_a_variable_width_finder_visits_each_start_once_within_the_budget(
+    budget: int | None, examined: int
+) -> None:
+    """A finder whose headers vary in length checks a short header at a start a
+    fixed-width one could not reach. The search bounds the starts it may visit, so
+    it visits each one once, in one window, and none the budget does not pay for."""
+    # Each byte holds its own offset, so the finder knows where each start is.
+    data = bytes(range(14))
+    visited: list[int] = []
+
+    def find(window: bytes, start: int, stop: int) -> int | None:
+        for at in range(start, stop):
+            visited.append(window[at])
+            # A header is 1 to 8 bytes long, as its first byte says, and none
+            # passes. The window holds all of it unless the layer ends first.
+            assert at + 1 + window[at] % 8 <= len(window) or window[-1] == data[-1]
+        return None
+
+    search = HeaderSearch(find_header=find, step=1, max_header_size=8)
+    state, _ = _state(max_search_bytes=budget)
+    search_forward(state, _Layer(data).read_at, search, start=0, window_size=4)
+    assert visited == list(range(examined))
+    assert state.searched_bytes == examined
+
+
+@pytest.mark.parametrize("end", [None, 3])
+def test_a_search_past_the_last_candidate_reports_only_bytes_that_exist(
+    end: int | None,
+) -> None:
+    """A search from offset 2 with step 4 has its first candidate at offset 4, past
+    a 3-byte layer's end: it reports the one byte left, with or without ``end``."""
+    state, collector = _state()
+    search = _magic_search(step=4, header=8)
+    result = search_forward(
+        state, _Layer(b"\x00" * 3).read_at, search, start=2, end=end
+    )
+    assert result.found is None and not result.limit_reached
+    assert [(r.offset, r.length, r.reason) for r in _regions(collector)] == [
+        (2, 1, "no_header")
+    ]
