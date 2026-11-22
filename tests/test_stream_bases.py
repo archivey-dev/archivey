@@ -553,6 +553,10 @@ def test_readonly_stream_resume_offset_inventory() -> None:
         # the decompressed stream) in one pass. TAR stores member data as is, so no
         # codec above it has a table, and a pass's member streams are forward-only.
         tar_parser._ForwardSlice,
+        # A salvage-found, unconfirmed member's data on a forward-only walk: the
+        # bytes the walk's window holds, read forward once; stored bytes, no codec
+        # above it.
+        tar_parser._HeldSlice,
         # A random-access pass's member data: the slice above (or a sequential
         # format's span window), or a view from where it stopped once the walk moves
         # on. Forward-only, stored bytes.
