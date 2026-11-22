@@ -8,6 +8,7 @@
   :class:`lzma.LZMADecompressor`.
 - :mod:`archivey_codecs.lzo1x`: one-shot LZO1X blocks of a known output size.
 - :mod:`archivey_codecs.zipcrypto`: traditional PKWARE ZIP encryption.
+- :mod:`archivey_codecs.bcj2`: 7-Zip's four-stream BCJ2 x86 filter.
 - :mod:`archivey_codecs.filters`: the ARM64 and RISC-V branch-conversion filters.
 
 Every error is a :class:`CodecError`, a :class:`ValueError`. :data:`KERNELS` gives
@@ -16,7 +17,7 @@ each kernel's revision, raised whenever its output, errors or saved state change
 
 from types import MappingProxyType
 
-from archivey_codecs import _codecs, filters, lzo1x, lzw, lzx, zipcrypto
+from archivey_codecs import _codecs, bcj2, filters, lzo1x, lzw, lzx, zipcrypto
 from archivey_codecs._codecs import (
     CodecError,
     CorruptDataError,
@@ -36,6 +37,7 @@ __all__ = [
     "Crc16Arc",
     "TruncatedDataError",
     "UnsupportedDataError",
+    "bcj2",
     "crc16_arc",
     "filters",
     "lzo1x",
