@@ -119,6 +119,60 @@ def test_a_nested_reader_reports_the_member_size(tmp_path: Path) -> None:
     assert all(c.size == len(inner.getvalue()) for c in nested_calls)
 
 
+class _HintedPipe(io.RawIOBase):
+    """A non-seekable stream with an fsspec-style ``size`` claim."""
+
+    def __init__(self, data: bytes, size: int | None) -> None:
+        self._data = io.BytesIO(data)
+        if size is not None:
+            self.size = size
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        chunk = self._data.read(len(b))
+        b[: len(chunk)] = chunk
+        return len(chunk)
+
+
+@pytest.mark.parametrize("ratio", [1, 8])
+def test_a_size_hint_is_reported_but_does_not_set_the_report_step(
+    tmp_path: Path, ratio: int
+) -> None:
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        payload = os.urandom(8 * LOCAL_REPORT_STEP)
+        info = tarfile.TarInfo("big.bin")
+        info.size = len(payload)
+        tf.addfile(info, io.BytesIO(payload))
+    data = buf.getvalue()
+
+    def reports(size: int | None) -> list[SourceProgress]:
+        seen = _Recorder()
+        config = ArchiveyConfig(on_source_read=seen)
+        with (
+            open_archive(
+                _HintedPipe(data, size), config=config, streaming=True
+            ) as reader,
+            reader.stream_members() as members,
+        ):
+            for _, stream in members:
+                if stream is not None:
+                    stream.read()
+        return seen.calls
+
+    unhinted = reports(None)
+    hint = len(data) // ratio
+    hinted = reports(hint)
+    # The hint fills in ``size``; a hint that understates does not make every read
+    # past it report.
+    assert all(c.size == hint for c in hinted)
+    assert len(hinted) == len(unhinted)
+
+
 def test_a_nested_reader_with_its_own_callback_reports_there(tmp_path: Path) -> None:
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, "w") as zf:
